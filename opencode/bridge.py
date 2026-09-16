@@ -25,10 +25,12 @@ for _path in (str(_ROOT), str(_HOOKS)):
 
 _ATTEST_EVENT = "identity.attest"
 
-# Must stay equal to plugin.ts's UNCORRELATED_PERMISSION_EVENT: the two halves
-# of this adapter exchange the name by value, and a rename on one side silently
-# stops the audit rather than failing.
+# Must stay equal to plugin.ts's UNCORRELATED_PERMISSION_EVENT and
+# CONTROL_OPENED_EVENT: the two halves of this adapter exchange the names by
+# value, and a rename on one side silently stops the audit rather than failing.
 _UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
+_CONTROL_OPENED_EVENT = "control.opened"
+_CONTROL_PLANE_STAGE = "control-plane"
 
 # The lane named here is permission.ask, not decision_audit's
 # LANE_OPENCODE_PERMISSION ("opencode.permission_replied"): what is recorded is
@@ -103,13 +105,16 @@ def _record_uncorrelated_permission(raw: dict[str, object]) -> dict[str, object]
     change the outcome and the acknowledgment is unconditional -- an audit write
     that failed must not be reported to the plugin as a policy answer.
 
-    Two denials share this channel. Without a ``cause`` the request carried no
-    binding to any session Gaia ruled on (REASON_NO_SESSION_BINDING). With one,
-    the plugin tried to present ``approvalID`` and ``gaia approvals
-    opencode-present`` refused; the cause it returned is recorded verbatim
-    under REASON_PRESENTATION_FAILED so the refusal is queryable by approval.
+    Three denials share this channel. Without a ``cause`` the request carried
+    no binding to any session Gaia ruled on (REASON_NO_SESSION_BINDING). With
+    one, the plugin tried to present ``approvalID`` and either ``gaia approvals
+    opencode-present`` refused (REASON_PRESENTATION_FAILED) or, when ``stage``
+    is ``control-plane``, the HOST refused to create or prompt the consent
+    control session after the presentation (REASON_CONTROL_PLANE_FAILED). The
+    cause is recorded verbatim so the refusal is queryable by approval.
     """
     from gaia.approvals.decision_audit import (
+        REASON_CONTROL_PLANE_FAILED,
         REASON_NO_SESSION_BINDING,
         REASON_PRESENTATION_FAILED,
         record_decision_not_activated,
@@ -117,13 +122,37 @@ def _record_uncorrelated_permission(raw: dict[str, object]) -> dict[str, object]
 
     call_id = str(raw.get("callID") or "")
     cause = str(raw.get("cause") or "")
+    if not cause:
+        reason = REASON_NO_SESSION_BINDING
+    elif raw.get("stage") == _CONTROL_PLANE_STAGE:
+        reason = REASON_CONTROL_PLANE_FAILED
+    else:
+        reason = REASON_PRESENTATION_FAILED
     record_decision_not_activated(
-        reason=REASON_PRESENTATION_FAILED if cause else REASON_NO_SESSION_BINDING,
+        reason=reason,
         lane=PERMISSION_ASK_LANE,
         session_id=str(raw.get("sessionID") or ""),
         approval_id=str(raw.get("approvalID") or "") or None,
         detail=cause or "host permission request correlated to no Gaia verdict",
         details={"call_id": call_id},
+    )
+    return _ack()
+
+
+def _record_control_opened(raw: dict[str, object]) -> dict[str, object]:
+    """Record that the host accepted the consent question for one approval.
+
+    Acknowledged unconditionally for the same reason as the denial channel: the
+    control is already open, and an audit write must not become a policy answer.
+    """
+    from gaia.approvals.decision_audit import record_control_opened
+
+    record_control_opened(
+        approval_id=str(raw.get("approvalID") or ""),
+        session_id=str(raw.get("sessionID") or ""),
+        call_id=str(raw.get("callID") or ""),
+        control_session_id=str(raw.get("controlSessionID") or ""),
+        lane=PERMISSION_ASK_LANE,
     )
     return _ack()
 
@@ -135,6 +164,8 @@ def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict
         return _attest(raw)
     if raw.get("event") == _UNCORRELATED_PERMISSION_EVENT:
         return _record_uncorrelated_permission(raw)
+    if raw.get("event") == _CONTROL_OPENED_EVENT:
+        return _record_control_opened(raw)
     from adapters.opencode import OpenCodeAdapter
 
     adapter = OpenCodeAdapter()

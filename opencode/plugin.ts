@@ -339,6 +339,7 @@ const LIFECYCLE_EVENT_TYPES = new Set([
  * side silently stops the audit rather than failing.
  */
 export const UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
+export const CONTROL_OPENED_EVENT = "control.opened"
 
 export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
   if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
@@ -1036,13 +1037,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     if (typeof session?.create !== "function" || typeof session?.promptAsync !== "function" || !rootSessionID) {
       throw new Error("OpenCode control plane cannot provide a binary question")
     }
-    const failClosed = (cause: string): Error =>
-      new Error(`Gaia could not open the consent control plane for ${approval.approvalID}: ${cause}`)
+    const failClosed = async (cause: string): Promise<Error> => {
+      await reportUncorrelatedDenial(approval.sessionID, approval.callID, {
+        approvalID: approval.approvalID, cause, stage: "control-plane",
+      })
+      return new Error(`Gaia could not open the consent control plane for ${approval.approvalID}: ${cause}`)
+    }
     const created = await session.create({
       body: { parentID: rootSessionID, title: `Gaia ${approval.approvalID}` },
     })
     const createRejected = hostRejection(created)
-    if (createRejected) throw failClosed(`control-plane session.create failed: ${createRejected}`)
+    if (createRejected) throw await failClosed(`control-plane session.create failed: ${createRejected}`)
     const controlSessionID = created?.data?.id
     if (
       typeof controlSessionID !== "string"
@@ -1051,7 +1056,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       || controlSessionID === approval.sessionID
       || controlBySession.has(controlSessionID)
     ) {
-      throw failClosed(
+      throw await failClosed(
         "control-plane session.create failed: OpenCode did not create a fresh control-plane decision session",
       )
     }
@@ -1082,14 +1087,36 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       })
     } catch (error) {
       await abandonControl(control, controlSessionID)
-      throw failClosed(`control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`)
+      throw await failClosed(`control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`)
     }
     const promptRejected = hostRejection(prompted)
     if (promptRejected) {
       await abandonControl(control, controlSessionID)
-      throw failClosed(`control-plane prompt rejected: ${promptRejected}`)
+      throw await failClosed(`control-plane prompt rejected: ${promptRejected}`)
     }
+    await reportControlOpened(approval, controlSessionID)
     return control
+  }
+
+  /** Trace that the host accepted the consent question for this approval.
+   *
+   * `gaia approvals opencode-present` writes SHOWN before the prompt is
+   * attempted, so SHOWN alone only says the presentation was registered. This
+   * record is what says the question reached the host, and in which session.
+   * The opened control never depends on this call succeeding.
+   */
+  async function reportControlOpened(approval: PendingApproval, controlSessionID: string) {
+    try {
+      await send({
+        event: CONTROL_OPENED_EVENT,
+        sessionID: approval.sessionID,
+        callID: approval.callID,
+        approvalID: approval.approvalID,
+        controlSessionID,
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:control] opened control ${controlSessionID} went unaudited: ${error}`)
+    }
   }
 
   async function requestApproval(response: BridgeResponse, sessionID: string, callID: string) {
@@ -1124,12 +1151,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    *
    * A presentation Gaia refused travels on the same channel with the approval
    * it named and the cause Gaia returned, so the bridge records it under its
-   * own reason instead of as an uncorrelated request.
+   * own reason instead of as an uncorrelated request. A control plane the HOST
+   * refused after the presentation carries `stage: "control-plane"` so the
+   * bridge can tell the two refusals apart.
    */
   async function reportUncorrelatedDenial(
     sessionID: unknown,
     callID: unknown,
-    failure?: { approvalID: string; cause: string },
+    failure?: { approvalID: string; cause: string; stage?: "control-plane" },
   ) {
     try {
       await send({
@@ -1137,6 +1166,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         sessionID: typeof sessionID === "string" ? sessionID : "",
         callID: typeof callID === "string" ? callID : "",
         ...(failure ? { approvalID: failure.approvalID, cause: failure.cause } : {}),
+        ...(failure?.stage ? { stage: failure.stage } : {}),
       })
     } catch (error) {
       console.error(`[gaia-opencode:permission] uncorrelated denial went unaudited: ${error}`)
