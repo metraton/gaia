@@ -58,6 +58,9 @@ def test_exact_command_env_child_and_single_settlement(db_env):
     assert first["allowed"], first
     assert first["commandBefore"] == first["commandAfter"] == COMMAND
     assert _result(driven, "identity")["childIdentity"] == "gaia-system"
+    # The specialist's bash resolves the `gaia` shipped beside the plugin
+    # without ./bin/gaia, whatever PATH the serve process was started with.
+    assert _result(driven, "identity")["gaiaOnPath"] == str(DRIVER.parents[2] / "bin" / "gaia")
     _assert_settled_callback(driven, "settle")
     assert _result(driven, "settle")["commandAfter"] == COMMAND
     assert not _result(driven, "late-env")["allowed"]

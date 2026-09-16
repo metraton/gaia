@@ -236,11 +236,17 @@ async function runStep(step: any): Promise<void> {
       const output = { env: {} as Record<string, string> }
       await plugin["shell.env"]({ sessionID: step.sessionID, callID: step.callID, cwd: directory }, output)
       record.env = output.env
-      // Never execute the signed publication text: only observe the delivered child environment.
-      const child = Bun.spawn(["python3", "-B", "-c", "import os; print(os.environ.get('GAIA_DISPATCH_AGENT', '<unset>'))"], {
+      // Never execute the signed publication text: only observe the delivered
+      // child environment -- the identity it carries and which `gaia` it resolves.
+      const child = Bun.spawn([
+        "python3", "-B", "-c",
+        "import os, shutil; print(os.environ.get('GAIA_DISPATCH_AGENT', '<unset>')); print(shutil.which('gaia') or '<none>')",
+      ], {
         env: { ...process.env, ...output.env }, stdout: "pipe", stderr: "pipe",
       })
-      record.childIdentity = (await new Response(child.stdout).text()).trim()
+      const [childIdentity, gaiaOnPath] = (await new Response(child.stdout).text()).trim().split("\n")
+      record.childIdentity = childIdentity
+      record.gaiaOnPath = gaiaOnPath
       if (await child.exited !== 0) throw new Error("identity observation child failed")
       record.allowed = true
     } else if (step.kind === "after") {

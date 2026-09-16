@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url"
 import { lstatSync, realpathSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
+import { delimiter, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
 import { ShellEnvDelivery } from "./shell-env"
 
 type BridgeResponse = {
@@ -422,6 +422,7 @@ export class PermissionDecisionRouter {
 
 const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
+const gaiaBinDirectory = dirname(gaiaPath)
 
 function traceableBridgeRequest(event: Record<string, unknown>): Record<string, unknown> {
   const traceableArgs = (value: unknown) => {
@@ -1718,6 +1719,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     },
     "shell.env": async (call, output) => {
       if (!call.sessionID) throw new Error("Gaia shell environment lacks session identity")
+      // The `gaia` the kernel names is the one shipped beside this plugin, and
+      // OpenCode's bash inherits the serve process's PATH, which need not
+      // carry it (measured: a specialist fell back to ./bin/gaia).
+      output.env.PATH = [gaiaBinDirectory, output.env.PATH ?? process.env.PATH]
+        .filter(Boolean).join(delimiter)
       const context = roleContext(call.sessionID)
       if (!call.callID && isPrimarySession(call.sessionID)
         && context?.attestation && context.role === "gaia-orchestrator") return
