@@ -1033,7 +1033,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         path: { id: controlSessionID },
         body: {
           agent: "gaia-orchestrator",
-          system: ["Only the question tool is available. Free text has no decision authority."],
+          system: "Only the question tool is available. Free text has no decision authority.",
           tools: { "*": false, question: true },
           parts: [{ type: "text", text: instruction }],
         },
