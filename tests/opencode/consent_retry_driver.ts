@@ -27,6 +27,7 @@ import { pathToFileURL } from "node:url"
 import { assertPromptAsyncBody, assertSessionCreateBody } from "./sdk_body_contract.ts"
 
 const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
+const gaiaPath = new URL("../../bin/gaia", import.meta.url).pathname
 
 /** Bridge events that carry an audit record, never a policy verdict. */
 const AUDIT_TRACE_EVENTS = new Set([
@@ -255,6 +256,15 @@ async function runStep(step: any): Promise<void> {
         { output: step.output ?? "", metadata: step.metadata ?? {} },
       )
       record.allowed = true
+    } else if (step.kind === "gaia") {
+      // A Gaia CLI call made between host events, as the user or another
+      // session would make it; never a command from the set under test.
+      const child = Bun.spawn(["python3", "-B", gaiaPath, ...step.args], {
+        cwd: directory, env: { ...process.env, GAIA_HOST: "opencode" }, stdout: "pipe", stderr: "pipe",
+      })
+      record.stdout = (await new Response(child.stdout).text()).trim()
+      record.exitCode = await child.exited
+      record.allowed = record.exitCode === 0
     } else if (step.kind === "compact") {
       const output = { context: [] as string[] }
       await plugin["experimental.session.compacting"]({ sessionID: step.sessionID }, output)

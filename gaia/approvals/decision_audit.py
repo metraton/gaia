@@ -41,6 +41,7 @@ REASON_ACTIVATION_FAILED = "activation_failed"
 REASON_ALWAYS_REFUSED = "always_refused"
 REASON_PRESENTATION_FAILED = "presentation_failed"
 REASON_CONTROL_PLANE_FAILED = "control_plane_failed"
+REASON_DECIDE_FAILED = "decide_failed"
 
 # The positive counterpart: the host accepted the consent question. SHOWN in
 # approval_events is written before the question is attempted, so it records
@@ -58,7 +59,9 @@ CONTROL_CLOSE_DECIDED = "decided"
 # rejection is the consent layer working as designed. Only the reasons where a
 # signature was given and could not be honored -- or, for presentation_failed
 # and control_plane_failed, could never be asked for -- are graded above info,
-# because that grading is exactly what `gaia defects` reads.
+# because that grading is exactly what `gaia defects` reads. decide_failed is
+# the OpenCode plugin's report that `gaia approvals opencode-decide` refused a
+# reply the user did give.
 _SEVERITY_BY_REASON = {
     REASON_NO_SESSION_BINDING: "warning",
     REASON_NO_NONCE_IN_LABELS: "info",
@@ -66,6 +69,7 @@ _SEVERITY_BY_REASON = {
     REASON_ALWAYS_REFUSED: "info",
     REASON_PRESENTATION_FAILED: "warning",
     REASON_CONTROL_PLANE_FAILED: "warning",
+    REASON_DECIDE_FAILED: "warning",
 }
 
 _FALLBACK_SEVERITY = "warning"
@@ -340,6 +344,7 @@ __all__ = [
     "REASON_ACTIVATION_FAILED",
     "REASON_ALWAYS_REFUSED",
     "REASON_CONTROL_PLANE_FAILED",
+    "REASON_DECIDE_FAILED",
     "REASON_NO_NONCE_IN_LABELS",
     "REASON_NO_SESSION_BINDING",
     "REASON_PRESENTATION_FAILED",

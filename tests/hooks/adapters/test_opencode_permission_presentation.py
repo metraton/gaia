@@ -488,6 +488,73 @@ def test_the_bridge_records_a_control_plane_failure_under_its_own_reason(db_env,
     assert payload[DETAILS_PAYLOAD_KEY]["call_id"] == "call-rejected-trace"
 
 
+def test_the_bridge_records_a_refused_decision_under_its_own_reason(db_env, approval_id):
+    sys.path.insert(0, str(REPO_ROOT / "opencode"))
+    import bridge as opencode_bridge
+
+    from gaia.approvals.decision_audit import (
+        DECISION_NOT_ACTIVATED_EVENT,
+        DETAILS_PAYLOAD_KEY,
+        REASON_DECIDE_FAILED,
+    )
+    from gaia.store.reader import cross_surface_query
+
+    response = opencode_bridge.handle({
+        "event": "permission.uncorrelated",
+        "sessionID": SESSION_ID,
+        "callID": "call-decide",
+        "approvalID": approval_id,
+        "stage": "decide",
+        "cause": "approval is not pending",
+    })
+    assert response["action"] == "allow", response
+
+    rows = cross_surface_query(
+        surface="harness_events", type=DECISION_NOT_ACTIVATED_EVENT,
+        db_path=Path(db_env["GAIA_DB"]),
+    )
+    assert len(rows) == 1, rows
+    assert rows[0]["raw"]["severity"] == "warning"
+    payload = json.loads(rows[0]["raw"]["payload"])
+    assert payload["reason"] == REASON_DECIDE_FAILED
+    assert payload["approval_id"] == approval_id
+    assert payload["detail"] == "approval is not pending"
+    assert payload[DETAILS_PAYLOAD_KEY]["call_id"] == "call-decide"
+
+
+def test_the_bridge_records_a_closed_control_with_its_reason(db_env, approval_id):
+    sys.path.insert(0, str(REPO_ROOT / "opencode"))
+    import bridge as opencode_bridge
+
+    from gaia.approvals.decision_audit import CONTROL_CLOSED_EVENT
+    from gaia.store.reader import cross_surface_query
+
+    for reason, detail in (("decided", "once"), ("question_mismatch", "host asked [...]")):
+        response = opencode_bridge.handle({
+            "event": "control.closed",
+            "sessionID": SESSION_ID,
+            "callID": "call-closed",
+            "approvalID": approval_id,
+            "controlSessionID": "control-call-closed",
+            "reason": reason,
+            "detail": detail,
+        })
+        assert response["action"] == "allow", response
+
+    rows = cross_surface_query(
+        surface="harness_events", type=CONTROL_CLOSED_EVENT,
+        db_path=Path(db_env["GAIA_DB"]),
+    )
+    by_reason = {json.loads(row["raw"]["payload"])["reason"]: row["raw"] for row in rows}
+    assert set(by_reason) == {"decided", "question_mismatch"}, rows
+    assert by_reason["decided"]["severity"] == "info"
+    assert by_reason["question_mismatch"]["severity"] == "warning"
+    payload = json.loads(by_reason["question_mismatch"]["payload"])
+    assert payload["approval_id"] == approval_id
+    assert payload["control_session_id"] == "control-call-closed"
+    assert payload["detail"] == "host asked [...]"
+
+
 def test_the_bridge_records_an_opened_control_by_approval(db_env, approval_id):
     sys.path.insert(0, str(REPO_ROOT / "opencode"))
     import bridge as opencode_bridge

@@ -1003,11 +1003,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return typeof role === "string" ? role : undefined
   }
 
+  /** Hand the user's reply to Gaia; a refusal is logged and traced with Gaia's cause. */
   async function decide(
     approval: PendingApproval,
     reply: PermissionReply,
     lane: DecisionLane = "preferred",
-  ): Promise<boolean> {
+  ): Promise<{ ok: true } | { ok: false; cause: string }> {
     const decided = await gaia([
       "approvals", "opencode-decide", approval.approvalID,
       "--session-id", approval.sessionID,
@@ -1017,7 +1018,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       "--decision-lane", lane === "compatibility" ? "compatibility" : "preferred",
       "--json",
     ])
-    return decided.ok
+    if (decided.ok) return { ok: true }
+    const cause = gaiaFailureCause(decided)
+    console.error(`[gaia-opencode:control] decision '${reply}' for ${approval.approvalID} was refused by Gaia: ${cause}`)
+    await reportUncorrelatedDenial(approval.sessionID, approval.callID, {
+      approvalID: approval.approvalID, cause, stage: "decide",
+    })
+    return { ok: false, cause }
   }
 
   /** Release a control and leave the reason where a reader can find it.
@@ -1090,15 +1097,24 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       await closeControl(control, "decision_duplicate", `lane ${lane} after ${admission.lane}`)
       return false
     }
-    const applied = await decide(control.approval, reply, lane)
-    if (applied && reply === "once") {
+    const decided = await decide(control.approval, reply, lane)
+    if (decided.ok && reply === "once") {
       retryBySession.set(control.approval.sessionID, {
         ...control.retry,
         usedCallIDs: new Set(control.retry.usedCallIDs),
       })
     }
-    await clearPendingApproval(control.approval.approvalID, applied ? "decided" : "decide_failed", reply)
-    return applied
+    // Cleared on a refused decision too: the question is consumed and the
+    // lane admitted, so nothing left here could carry a second reply to Gaia.
+    // A control kept open would refuse every later call on its session and
+    // hold the specialist's original call pending, while a fresh attempt
+    // re-blocks on the same approval and presents a new question.
+    if (decided.ok) {
+      await clearPendingApproval(control.approval.approvalID, "decided", reply)
+    } else {
+      await clearPendingApproval(control.approval.approvalID, "decide_failed", decided.cause)
+    }
+    return decided.ok
   }
 
   /** The host's account of an SDK call that resolved with an error instead of throwing.
@@ -1258,13 +1274,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    * A presentation Gaia refused travels on the same channel with the approval
    * it named and the cause Gaia returned, so the bridge records it under its
    * own reason instead of as an uncorrelated request. A control plane the HOST
-   * refused after the presentation carries `stage: "control-plane"` so the
-   * bridge can tell the two refusals apart.
+   * refused after the presentation carries `stage: "control-plane"`, and a
+   * reply Gaia refused after the user gave it carries `stage: "decide"`, so
+   * the bridge can tell the three refusals apart.
    */
   async function reportUncorrelatedDenial(
     sessionID: unknown,
     callID: unknown,
-    failure?: { approvalID: string; cause: string; stage?: "control-plane" },
+    failure?: { approvalID: string; cause: string; stage?: "control-plane" | "decide" },
   ) {
     try {
       await send({

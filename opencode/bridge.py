@@ -33,6 +33,7 @@ _UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
 _CONTROL_OPENED_EVENT = "control.opened"
 _CONTROL_CLOSED_EVENT = "control.closed"
 _CONTROL_PLANE_STAGE = "control-plane"
+_DECIDE_STAGE = "decide"
 
 # The lane named here is permission.ask, not decision_audit's
 # LANE_OPENCODE_PERMISSION ("opencode.permission_replied"): what is recorded is
@@ -107,16 +108,19 @@ def _record_uncorrelated_permission(raw: dict[str, object]) -> dict[str, object]
     change the outcome and the acknowledgment is unconditional -- an audit write
     that failed must not be reported to the plugin as a policy answer.
 
-    Three denials share this channel. Without a ``cause`` the request carried
+    Four denials share this channel. Without a ``cause`` the request carried
     no binding to any session Gaia ruled on (REASON_NO_SESSION_BINDING). With
     one, the plugin tried to present ``approvalID`` and either ``gaia approvals
     opencode-present`` refused (REASON_PRESENTATION_FAILED) or, when ``stage``
     is ``control-plane``, the HOST refused to create or prompt the consent
-    control session after the presentation (REASON_CONTROL_PLANE_FAILED). The
-    cause is recorded verbatim so the refusal is queryable by approval.
+    control session after the presentation (REASON_CONTROL_PLANE_FAILED); when
+    ``stage`` is ``decide``, the user answered and ``gaia approvals
+    opencode-decide`` refused the reply (REASON_DECIDE_FAILED). The cause is
+    recorded verbatim so the refusal is queryable by approval.
     """
     from gaia.approvals.decision_audit import (
         REASON_CONTROL_PLANE_FAILED,
+        REASON_DECIDE_FAILED,
         REASON_NO_SESSION_BINDING,
         REASON_PRESENTATION_FAILED,
         record_decision_not_activated,
@@ -124,10 +128,13 @@ def _record_uncorrelated_permission(raw: dict[str, object]) -> dict[str, object]
 
     call_id = str(raw.get("callID") or "")
     cause = str(raw.get("cause") or "")
+    stage = raw.get("stage")
     if not cause:
         reason = REASON_NO_SESSION_BINDING
-    elif raw.get("stage") == _CONTROL_PLANE_STAGE:
+    elif stage == _CONTROL_PLANE_STAGE:
         reason = REASON_CONTROL_PLANE_FAILED
+    elif stage == _DECIDE_STAGE:
+        reason = REASON_DECIDE_FAILED
     else:
         reason = REASON_PRESENTATION_FAILED
     record_decision_not_activated(

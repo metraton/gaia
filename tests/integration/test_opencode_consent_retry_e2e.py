@@ -389,6 +389,42 @@ def test_non_yes_decisions_create_no_executable_effect(db_env, steps, expected_s
     assert _control_closures(db_path) == [(reason, approval_id) for reason in expected_closures]
 
 
+def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(db_env):
+    """The user answered, opencode-decide refused: the refusal must be queryable by approval.
+
+    The approval is rejected out of band between the presentation and the
+    answer, so the real CLI refuses the 'once' reply. The plugin traces the
+    cause (decide_failed) and clears the pending control instead of keeping a
+    control whose question is already consumed.
+    """
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "gaia", "label": "rejected-out-of-band", "args": ["approvals", "reject", approval_id]},
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+        {"kind": "replied", "label": "late-host-reply", "requestID": PERMISSION_ID, "reply": "once"},
+    ])
+
+    assert _step(driven, "rejected-out-of-band")["allowed"] is True, driven
+    # `gaia approvals reject` marks a presented approval revoked; what matters
+    # here is that the user's later 'once' could not turn it into a grant.
+    assert _approval_status(db_path, approval_id) not in ("pending", "approved")
+    assert _grant(db_path, approval_id) is None
+    refusals = _harness_payloads(db_path, "consent.decision.not_activated")
+    decide_refusals = [p for p in refusals if p["reason"] == "decide_failed"]
+    assert len(decide_refusals) == 1, refusals
+    assert decide_refusals[0]["approval_id"] == approval_id
+    assert decide_refusals[0]["session_id"] == SESSION_ID
+    assert decide_refusals[0]["details"]["call_id"] == CALL_ID
+    assert decide_refusals[0]["detail"], decide_refusals[0]
+    # One closure, with Gaia's cause; the late host reply finds no pending
+    # approval and records nothing more.
+    assert _control_closures(db_path) == [("decide_failed", approval_id)]
+    assert _harness_payloads(db_path, "consent.control.closed")[0]["detail"] == decide_refusals[0]["detail"]
+
+
 def test_drift_after_yes_is_refused_before_policy_and_changes_no_state(db_env):
     env, db_path = db_env
     approval_id = _request_set(env)
