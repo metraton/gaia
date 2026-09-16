@@ -543,6 +543,16 @@ class OpenCodeAdapter(HookAdapter):
         A call carrying no proof is left to the host-neutral policy: the
         question lane cannot produce one, and requiring it here gated that lane
         on evidence only the plugin's native lane can mint.
+
+        ``agent_id`` in the proof is the approval's own ``agent_id`` -- the Gaia
+        contract identity the requester passed to ``request-set`` (a hash such
+        as ``a69d869dc02031f54``), which ``opencode-present`` bound and minted
+        the correlation from. It lives in a different namespace from the host
+        role ``_policy_agent_type`` yields (``gaia-operator``), so it is checked
+        against the grant it names and the correlation it minted, never against
+        the role. The executing role is bound by the attestation and the
+        grant's session instead (measured 2026-09-16: a byte-identical retry
+        was refused because the two namespaces were compared as one).
         """
         command = cls._bash_command(event, tool_name)
         if command is None:
@@ -581,7 +591,8 @@ class OpenCodeAdapter(HookAdapter):
         if (
             not isinstance(approval_id, str)
             or re.fullmatch(r"P-[0-9a-f]{32}", approval_id) is None
-            or agent_id != cls._policy_agent_type(event)
+            or not isinstance(agent_id, str)
+            or not agent_id
             or proof.get("session_id") != event.session_id
             or retry_call_id != event.call_id
             or not isinstance(original_call_id, str)

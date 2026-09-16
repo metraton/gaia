@@ -19,6 +19,7 @@ type PendingApproval = {
   sessionID: string
   callID: string
   token: string
+  role: string
   surface: NativeConsentPresentation
 }
 
@@ -565,6 +566,76 @@ function boundRetry(approval: PendingApproval): BoundRetry {
     fingerprints: fingerprints.map(String),
     expectedIndex: 0,
     usedCallIDs: new Set([approval.callID]),
+  }
+}
+
+export type ConsentRetryRefusal = {
+  reason: "replayed_call_id" | "session_mismatch" | "role_mismatch" | "out_of_order" | "fingerprint_mismatch"
+  expected: string
+  received: string
+}
+
+export type ConsentRetryVerdict =
+  | { proof: Record<string, unknown>; refusal?: undefined }
+  | { proof?: undefined; refusal: ConsentRetryRefusal }
+
+/** Decide whether one tool call is the bound retry, a drifted claim to it, or unrelated.
+ *
+ * Unrelated returns `undefined`: a call that names none of the approved
+ * commands and reuses no retry call id claims nothing, so it travels with no
+ * proof and the host-neutral policy rules on it (the specialist loads skills,
+ * reads, and runs the Gaia CLI while a retry is bound). Only a call that does
+ * claim the retry -- an approved command's exact bytes, or a call id already
+ * spent on one -- is judged, and a judged call either yields the proof or the
+ * one comparison that refused it, expected against received.
+ *
+ * The role compared is the host role of the session the approval was
+ * presented to, never `agentID`: that field is the approval's Gaia contract
+ * identity (`a69d869dc02031f54`), and the session's agent is `gaia-operator`
+ * (measured 2026-09-16: comparing the two refused a byte-identical retry).
+ */
+export function evaluateConsentRetry(
+  retry: BoundRetry,
+  call: { sessionID?: string; callID?: string },
+  agent: string | undefined,
+  tool: string,
+  args: Record<string, unknown>,
+): ConsentRetryVerdict | undefined {
+  const callID = typeof call.callID === "string" && call.callID ? call.callID : undefined
+  const command = tool.toLowerCase() === "bash" && typeof args.command === "string" ? args.command : undefined
+  // A near miss -- the approved command with whitespace drift -- claims the retry
+  // and is judged on exact bytes, so it cannot slip to policy as a fresh command.
+  const collapse = (text: string) => text.trim().replace(/\s+/g, " ")
+  const claimedIndex = command === undefined
+    ? -1
+    : retry.commands.findIndex((approved) => collapse(approved) === collapse(command))
+  const replayed = callID !== undefined && retry.usedCallIDs.has(callID)
+  if (claimedIndex < 0 && !replayed) return undefined
+  const refuse = (reason: ConsentRetryRefusal["reason"], expected: string, received: string) => (
+    { refusal: { reason, expected, received } }
+  )
+  if (replayed || callID === undefined) return refuse("replayed_call_id", "an unused call id", String(callID))
+  if (call.sessionID !== retry.sessionID) return refuse("session_mismatch", retry.sessionID, String(call.sessionID))
+  if (agent !== retry.role) return refuse("role_mismatch", retry.role, String(agent))
+  if (claimedIndex !== retry.expectedIndex) {
+    return refuse("out_of_order", `command [${retry.expectedIndex}]`, `command [${claimedIndex}]`)
+  }
+  const fingerprint = commandFingerprint(command!)
+  if (retry.fingerprints[claimedIndex] !== fingerprint) {
+    return refuse("fingerprint_mismatch", retry.fingerprints[claimedIndex], fingerprint)
+  }
+  return {
+    proof: {
+      approval_id: retry.approvalID,
+      correlation_id: retry.correlationID,
+      agent_id: retry.agentID,
+      session_id: retry.sessionID,
+      original_call_id: retry.callID,
+      retry_call_id: callID,
+      command,
+      command_fingerprint: fingerprint,
+      expected_index: retry.expectedIndex,
+    },
   }
 }
 
@@ -1307,10 +1378,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
   }
 
-  async function requestApproval(response: BridgeResponse, sessionID: string, callID: string) {
+  async function requestApproval(response: BridgeResponse, sessionID: string, callID: string, role: string) {
     const id = approvalID(response)
     if (!id) return
-    const approval = { approvalID: id, sessionID, callID, token: crypto.randomUUID() }
+    const approval = { approvalID: id, sessionID, callID, role, token: crypto.randomUUID() }
     const presented = await gaia([
       "approvals", "opencode-present", id,
       "--session-id", sessionID,
@@ -1359,41 +1430,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       })
     } catch (error) {
       console.error(`[gaia-opencode:permission] uncorrelated denial went unaudited: ${error}`)
-    }
-  }
-
-  function consentRetry(
-    retry: BoundRetry | undefined,
-    call: { sessionID?: string; callID?: string },
-    agent: string | undefined,
-    tool: string,
-    args: Record<string, unknown>,
-  ): Record<string, unknown> | undefined {
-    const command = args.command
-    if (
-      !retry
-      || tool.toLowerCase() !== "bash"
-      || call.sessionID !== retry.sessionID
-      || typeof call.callID !== "string"
-      || !call.callID
-      || retry.usedCallIDs.has(call.callID)
-      || agent !== retry.agentID
-      || typeof command !== "string"
-      || retry.commands[retry.expectedIndex] !== command
-      || retry.fingerprints[retry.expectedIndex] !== commandFingerprint(command)
-    ) {
-      return undefined
-    }
-    return {
-      approval_id: retry.approvalID,
-      correlation_id: retry.correlationID,
-      agent_id: retry.agentID,
-      session_id: retry.sessionID,
-      original_call_id: retry.callID,
-      retry_call_id: call.callID,
-      command,
-      command_fingerprint: commandFingerprint(command),
-      expected_index: retry.expectedIndex,
     }
   }
 
@@ -1590,10 +1626,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       const normalized = normalizeBridgeToolRequest(call.tool, output.args, input)
       const retry = retryBySession.get(call.sessionID)
-      const retryProof = consentRetry(retry, call, agent, normalized.tool, normalized.args)
-      if (retry && !retryProof) {
+      const verdict = retry ? evaluateConsentRetry(retry, call, agent, normalized.tool, normalized.args) : undefined
+      if (verdict?.refusal) {
         throw new Error("Gaia refused a drifted or replayed consent retry")
       }
+      const retryProof = verdict?.proof
       const response = await send({
         event: "tool.execute.before",
         sessionID: call.sessionID,
@@ -1654,7 +1691,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         return
       }
       if (approvalID(response)) {
-        await requestApproval(response, call.sessionID, call.callID)
+        await requestApproval(response, call.sessionID, call.callID, agent ?? "")
         throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
       }
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")

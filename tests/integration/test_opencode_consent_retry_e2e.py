@@ -815,7 +815,7 @@ def test_plugin_delegates_the_permission_request_to_the_host_hook():
     source = PLUGIN.read_text()
     assert '"permission.ask"' in source
     assert "session.permission.create" not in source
-    assert "await requestApproval(response, call.sessionID, call.callID)\n        throw new Error" in source
+    assert 'await requestApproval(response, call.sessionID, call.callID, agent ?? "")\n        throw new Error' in source
 
 
 def test_overlapping_bound_workspaces_settle_independently(tmp_path, bootstrapped_db_template):
