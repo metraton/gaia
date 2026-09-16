@@ -101,21 +101,28 @@ def _record_uncorrelated_permission(raw: dict[str, object]) -> dict[str, object]
 
     The plugin has already denied it by the time this runs, so nothing here can
     change the outcome and the acknowledgment is unconditional -- an audit write
-    that failed must not be reported to the plugin as a policy answer. The
-    request carried no binding to any session Gaia ruled on, which is exactly
-    what REASON_NO_SESSION_BINDING names.
+    that failed must not be reported to the plugin as a policy answer.
+
+    Two denials share this channel. Without a ``cause`` the request carried no
+    binding to any session Gaia ruled on (REASON_NO_SESSION_BINDING). With one,
+    the plugin tried to present ``approvalID`` and ``gaia approvals
+    opencode-present`` refused; the cause it returned is recorded verbatim
+    under REASON_PRESENTATION_FAILED so the refusal is queryable by approval.
     """
     from gaia.approvals.decision_audit import (
         REASON_NO_SESSION_BINDING,
+        REASON_PRESENTATION_FAILED,
         record_decision_not_activated,
     )
 
     call_id = str(raw.get("callID") or "")
+    cause = str(raw.get("cause") or "")
     record_decision_not_activated(
-        reason=REASON_NO_SESSION_BINDING,
+        reason=REASON_PRESENTATION_FAILED if cause else REASON_NO_SESSION_BINDING,
         lane=PERMISSION_ASK_LANE,
         session_id=str(raw.get("sessionID") or ""),
-        detail="host permission request correlated to no Gaia verdict",
+        approval_id=str(raw.get("approvalID") or "") or None,
+        detail=cause or "host permission request correlated to no Gaia verdict",
         details={"call_id": call_id},
     )
     return _ack()

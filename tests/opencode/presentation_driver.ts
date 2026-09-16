@@ -18,8 +18,13 @@ import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 const scenario = JSON.parse(process.argv[2])
 const asked: Record<string, unknown>[] = []
 const controlPrompts: Record<string, unknown>[] = []
+const bridgeEvents: Record<string, unknown>[] = []
 
 async function gaiaBridge(event: Record<string, unknown>) {
+  if (event.event === "permission.uncorrelated") {
+    bridgeEvents.push(event)
+    return { action: "allow" as const }
+  }
   if (event.event === "identity.attest") {
     return { action: "allow" as const, attestation: `${event.sessionID}:${event.role}` }
   }
@@ -86,4 +91,4 @@ if (scenario.outcome === undefined || scenario.outcome === "pending" || scenario
   }
 }
 
-console.log(JSON.stringify({ asked, controlPrompts, error, originalInvocationExecuted }))
+console.log(JSON.stringify({ asked, controlPrompts, bridgeEvents, error, originalInvocationExecuted }))

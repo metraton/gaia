@@ -282,6 +282,106 @@ def test_an_unsealable_payload_is_never_presented_as_a_permission(db_env):
     assert "could not seal a complete consent surface" in delivered["error"]
 
 
+def test_an_approval_minted_without_a_session_is_adopted_by_the_presenting_session(db_env):
+    """request-set without --session-id persists NULL; presentation binds it, once."""
+    from gaia.approvals.store import get_by_id, get_history, insert_requested
+
+    unowned_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id=None)
+    assert get_by_id(unowned_id)["session_id"] is None
+
+    emitted = _present(db_env, unowned_id, token="adopt-token", call_id="call-adopt")
+    assert emitted["status"] == "presented"
+    assert get_by_id(unowned_id)["session_id"] == SESSION_ID
+    assert [e["event_type"] for e in get_history(unowned_id)] == ["REQUESTED", "SHOWN"]
+
+    foreign = subprocess.run(
+        [
+            sys.executable, str(GAIA_CLI), "approvals", "opencode-present", unowned_id,
+            "--session-id", "ses-someone-else",
+            "--call-id", "call-foreign",
+            "--token", "foreign-token",
+            "--json",
+        ],
+        env=db_env, capture_output=True, text=True, timeout=120,
+    )
+    assert foreign.returncode == 1, foreign.stdout
+    assert json.loads(foreign.stdout.strip().splitlines()[-1]) == {
+        "error": "OpenCode session does not own this approval"
+    }
+    assert get_by_id(unowned_id)["session_id"] == SESSION_ID
+    assert len(get_history(unowned_id)) == 2
+
+
+def test_plugin_presents_an_approval_minted_without_a_session(db_env):
+    from gaia.approvals.store import get_by_id, insert_requested
+
+    unowned_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id=None)
+    delivered = _drive_plugin(db_env, unowned_id, call_id="call-adopt-plugin")
+
+    assert delivered["asked"][0]["status"] == "ask", delivered
+    assert get_by_id(unowned_id)["session_id"] == SESSION_ID
+
+
+def test_a_refused_presentation_keeps_the_approval_id_and_gaia_cause(db_env):
+    """The agent must see WHICH approval failed and WHY Gaia refused, not a generic line."""
+    from gaia.approvals.store import get_history, insert_requested
+
+    foreign_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id="ses-other-owner")
+    delivered = _drive_plugin(db_env, foreign_id, call_id="call-refused")
+
+    assert delivered["asked"] == [], delivered
+    assert delivered["originalInvocationExecuted"] is False
+    assert foreign_id in delivered["error"], delivered["error"]
+    assert "OpenCode session does not own this approval" in delivered["error"]
+    assert [e["event_type"] for e in get_history(foreign_id)] == ["REQUESTED"]
+
+    # The driver also models the host raising its own permission request after
+    # the abort, which is reported uncorrelated (no approvalID); the plugin's
+    # presentation-failure trace is the one naming the approval.
+    traces = [
+        e for e in delivered["bridgeEvents"]
+        if e.get("event") == "permission.uncorrelated" and "approvalID" in e
+    ]
+    assert len(traces) == 1, delivered["bridgeEvents"]
+    assert traces[0]["approvalID"] == foreign_id
+    assert traces[0]["cause"] == "OpenCode session does not own this approval"
+    assert traces[0]["sessionID"] == SESSION_ID
+    assert traces[0]["callID"] == "call-refused"
+
+
+def test_the_bridge_records_a_refused_presentation_under_its_own_reason(db_env, approval_id):
+    sys.path.insert(0, str(REPO_ROOT / "opencode"))
+    import bridge as opencode_bridge
+
+    from gaia.approvals.decision_audit import (
+        DECISION_NOT_ACTIVATED_EVENT,
+        DETAILS_PAYLOAD_KEY,
+        REASON_PRESENTATION_FAILED,
+    )
+    from gaia.store.reader import cross_surface_query
+
+    response = opencode_bridge.handle({
+        "event": "permission.uncorrelated",
+        "sessionID": SESSION_ID,
+        "callID": "call-refused",
+        "approvalID": approval_id,
+        "cause": "OpenCode session does not own this approval",
+    })
+    assert response["action"] == "allow", response
+
+    rows = cross_surface_query(
+        surface="harness_events", type=DECISION_NOT_ACTIVATED_EVENT,
+        db_path=Path(db_env["GAIA_DB"]),
+    )
+    assert len(rows) == 1, rows
+    assert rows[0]["raw"]["severity"] == "warning"
+    payload = json.loads(rows[0]["raw"]["payload"])
+    assert payload["reason"] == REASON_PRESENTATION_FAILED
+    assert payload["approval_id"] == approval_id
+    assert payload["detail"] == "OpenCode session does not own this approval"
+    assert payload[DETAILS_PAYLOAD_KEY]["call_id"] == "call-refused"
+
+
 def test_a_surface_that_hides_a_sealed_field_is_named_not_shown(monkeypatch):
     envelope = _expected_envelope("P-tripwire")
     complete = consent_presentation.render_native_text(envelope)

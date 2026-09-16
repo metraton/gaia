@@ -443,17 +443,30 @@ async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
   return response
 }
 
-async function gaiaCapture(args: string[]): Promise<{ ok: boolean; stdout: string }> {
+async function gaiaCapture(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const child = Bun.spawn(["python3", gaiaPath, ...args], {
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [code, stdout] = await Promise.all([
+  const [code, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
   ])
-  return { ok: code === 0, stdout }
+  return { ok: code === 0, stdout, stderr }
+}
+
+/** The cause Gaia gave for a failed CLI call: its `--json` error line, else stderr. */
+export function gaiaFailureCause(result: { stdout: string; stderr: string }): string {
+  const lastLine = result.stdout.trim().split("\n").pop() ?? ""
+  try {
+    const emitted = JSON.parse(lastLine)
+    if (typeof emitted?.error === "string" && emitted.error) return emitted.error
+  } catch {
+    // Not a JSON line; fall through to stderr.
+  }
+  return result.stderr.trim() || "gaia exited non-zero without reporting a cause"
 }
 
 async function gaia(args: string[]): Promise<boolean> {
@@ -1043,7 +1056,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       "--token", approval.token,
       "--json",
     ])
-    if (!presented.ok) throw new Error("Gaia could not present the approval request")
+    if (!presented.ok) {
+      const cause = gaiaFailureCause(presented)
+      await reportUncorrelatedDenial(sessionID, callID, { approvalID: id, cause })
+      throw new Error(`Gaia could not present approval ${id}: ${cause}`)
+    }
     const surface = readConsentPresentation(presented.stdout)
     const pendingApproval = { ...approval, surface }
     const control = await openBinaryDecision(pendingApproval)
@@ -1057,13 +1074,22 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    * attempted. The bridge routes this onto Gaia's existing non-activation audit
    * channel, so the denial becomes queryable without a new record shape. The
    * denial itself never depends on this call succeeding.
+   *
+   * A presentation Gaia refused travels on the same channel with the approval
+   * it named and the cause Gaia returned, so the bridge records it under its
+   * own reason instead of as an uncorrelated request.
    */
-  async function reportUncorrelatedDenial(sessionID: unknown, callID: unknown) {
+  async function reportUncorrelatedDenial(
+    sessionID: unknown,
+    callID: unknown,
+    failure?: { approvalID: string; cause: string },
+  ) {
     try {
       await send({
         event: UNCORRELATED_PERMISSION_EVENT,
         sessionID: typeof sessionID === "string" ? sessionID : "",
         callID: typeof callID === "string" ? callID : "",
+        ...(failure ? { approvalID: failure.approvalID, cause: failure.cause } : {}),
       })
     } catch (error) {
       console.error(`[gaia-opencode:permission] uncorrelated denial went unaudited: ${error}`)

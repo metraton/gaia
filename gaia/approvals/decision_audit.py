@@ -39,16 +39,19 @@ REASON_NO_SESSION_BINDING = "no_session_binding"
 REASON_NO_NONCE_IN_LABELS = "no_nonce_in_labels"
 REASON_ACTIVATION_FAILED = "activation_failed"
 REASON_ALWAYS_REFUSED = "always_refused"
+REASON_PRESENTATION_FAILED = "presentation_failed"
 
 # A decision that grants nothing is not automatically a fault -- a plain
 # rejection is the consent layer working as designed. Only the reasons where a
-# signature was given and could not be honored are graded above info, because
-# that grading is exactly what `gaia defects` reads.
+# signature was given and could not be honored -- or, for presentation_failed,
+# could never be asked for -- are graded above info, because that grading is
+# exactly what `gaia defects` reads.
 _SEVERITY_BY_REASON = {
     REASON_NO_SESSION_BINDING: "warning",
     REASON_NO_NONCE_IN_LABELS: "info",
     REASON_ACTIVATION_FAILED: "warning",
     REASON_ALWAYS_REFUSED: "info",
+    REASON_PRESENTATION_FAILED: "warning",
 }
 
 _FALLBACK_SEVERITY = "warning"
@@ -228,6 +231,7 @@ __all__ = [
     "REASON_ALWAYS_REFUSED",
     "REASON_NO_NONCE_IN_LABELS",
     "REASON_NO_SESSION_BINDING",
+    "REASON_PRESENTATION_FAILED",
     "DecisionNotActivated",
     "build_decision_not_activated",
     "record_decision_not_activated",
