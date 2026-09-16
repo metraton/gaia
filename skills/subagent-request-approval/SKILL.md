@@ -15,10 +15,21 @@ same verb.
 Run one CLI request, with one `--command` per atomic item in execution order:
 
 ```
-gaia approvals request-set --command '<exact 0>' --command '<exact 1>' --rationale '<goal, risk, rollback, verification>' --agent-id <agent_id> --session-id <session_id>
+gaia approvals request-set --command '<exact 0>' --command '<exact 1>' --rationale '<goal, risk>' --verification '<check to run after>' --rollback '<how to undo>' --agent-id <agent_id> [--session-id <session_id>]
 ```
 
 A single predictable T3 command uses the identical verb with one `--command`.
+
+`--session-id` is optional, and the same rule governs `request-file-write`:
+pass it only when the dispatch handed you a session id; never invent one, and
+never guess one. Omitted, the row is born without an owner and the first host
+session that presents it adopts it, in the same write as the SHOWN event
+(`bin/cli/approvals.py::cmd_opencode_present`); from then on every other
+session is refused. A dispatched OpenCode agent has no way to learn its own
+session id -- the plugin exports nothing but `GAIA_DISPATCH_AGENT` into its
+shell -- so omitting the flag is the normal case there. A wrong value is worse
+than none: an approval owned by a session that will never present it cannot be
+presented by anyone, and dies pending with a single REQUESTED event.
 
 The CLI validates T3 eligibility, persists REQUESTED, and returns the
 `approval_id`, ordered set, and fingerprints. Relay those returned values inside

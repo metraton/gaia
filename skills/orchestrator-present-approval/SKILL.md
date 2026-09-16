@@ -76,41 +76,70 @@ A translated verb, any paraphrase of `Approve`, a short display label, a raw
 nonce, or suffix text after the bracket all read as no identifier. Activation
 then resolves that exact id; it never scans for a matching prefix.
 
-## What a harness has to be able to do
+## Two ways consent reaches Gaia
 
-Print text, and offer two controls where the chosen one returns either its own
-text or a correlation handle back to the request. That is the entire
-requirement. No harness renders the seven fields, none parses the sealed
-payload, none needs to know the field set, and none needs a decision primitive
-richer than two controls -- the split moved all of that Gaia-side, which is the
-practical dividend of printing the surface as text.
+The rendered surface is host-neutral. How the user's answer becomes an
+activated grant is not: there are two modalities, and the host you are running
+in fixes which one applies. Selecting the wrong one produces a user who
+believes they consented and a ledger that never heard it.
 
-Stated that way on purpose: this skill names no host. A harness either can do
-those two things or cannot, and that is decidable without per-host prose here.
-Host-specific instructions are the shape that went stale fastest -- the retired
-adapter documentation asserted a host's semantics against code that had already
-moved -- so what a particular host calls its controls belongs in that host's
-adapter, never in this skill.
+**Resolved by reply -- Claude Code.** Print the surface as text, then ask the
+binary question. The selected control's text comes back through
+`AskUserQuestion`, the resolver reads the `approval_id` out of it and activates
+the grant in that same call. The harness needs exactly two things: print text,
+and offer two controls whose chosen one returns its own text or a correlation
+handle. Nothing renders the seven fields or parses the sealed payload host-side.
+
+**Provoked by attempt -- OpenCode.** Printing the surface and asking the
+question activates nothing there. On that host the reply crosses the bridge as
+caller-supplied JSON, so the adapter strips the answer field from both tool
+containers before the shared resolver reads them
+(`hooks/adapters/opencode.py::_without_unverified_decision`) -- a forged
+`tool.execute.after` would otherwise sign for the user. The only live path is
+the host's native permission, and it is raised only when the specialist
+ATTEMPTS the operation: the attempt is denied carrying the `approval_id` of the
+set already pending (`hooks/modules/tools/bash_validator.py::_find_pending_plan_set_in_db`
+matches the attempted command to it, so no second request is minted); the plugin
+runs `gaia approvals opencode-present`, which records SHOWN and adopts the
+session when the row was minted without one; the host asks; the reply runs
+`gaia approvals opencode-decide`, which records the decision and arms the grant;
+the byte-identical command is retried. So on OpenCode the move after an
+APPROVAL_REQUEST is not to present anything: dispatch the owning specialist
+with `execution` to attempt the first command of the requested set, and let the
+host ask.
+
+In one line: on Claude Code consent is resolved by reply; on OpenCode it is
+provoked by attempt. This skill names the two hosts because the selection is
+the orchestrator's decision, not an adapter detail; what each host calls its
+controls still belongs in its adapter.
 
 ## What failure looks like
 
-If the reply resolves to no pending row, nothing activates. No grant is
-inserted, the ledger stays `PENDING`, and every retry of the blocked command
-re-blocks on the same `approval_id`. The outcome is indistinguishable from a
-decision never having been made -- while the user believes they consented. That
-is the incident this skill exists to prevent, and it is exactly as reachable on
-a single command as on a COMMAND_SET.
+On Claude Code, the reply resolves to no pending row. Nothing activates, no
+grant is inserted, the ledger stays `PENDING`, and every retry of the blocked
+command re-blocks on the same `approval_id` -- while the user believes they
+consented. That is the incident this skill exists to prevent, and it is exactly
+as reachable on a single command as on a COMMAND_SET. The residual risk has a
+fixed direction: resolution is the sole predicate and nothing else reads the
+reply, so an unresolvable reply under-grants and no reply shape over-grants. A
+reply that resolves to nothing is a finding, not a no-op: report it, then
+re-present with a well-formed control.
 
-The residual risk has a fixed direction, which is the one reassurance
-available: resolution is the sole predicate, and nothing else reads the reply,
-so an unresolvable reply under-grants. No reply shape over-grants.
+On OpenCode, the same picture -- one REQUESTED event, no SHOWN, status
+`pending`, empty decision -- is what a text presentation produces every time,
+however well-formed the control. Re-presenting is not a remedy there; it is a
+loop that never terminates (measured live, 2026-09-16). The remedy is the other
+modality: dispatch the specialist to attempt the first command. If that attempt
+itself fails to raise the permission, the error the specialist receives carries
+the `approval_id` and the cause Gaia returned verbatim
+(`opencode/plugin.ts::requestApproval`), and the refusal is recorded as a
+`presentation_failed` non-activation in `harness_events`
+(`opencode/bridge.py::_record_uncorrelated_permission`). Read the cause and act
+on it; do not re-present.
 
-**A reply that resolves to nothing is a finding, not a no-op.** Silence is what
-makes this failure dangerous, so a reply the resolver could not match is
-surfaced and reported, never absorbed as if the user had simply declined.
-Before dispatching execution, confirm with `gaia approvals show <approval_id>`
-that the approval you intend to execute actually left `pending`. Presentation
-and activation are separate events, and that read is the only thing that
+On either host, before dispatching execution confirm with `gaia approvals show
+<approval_id>` that the approval actually left `pending`. Presentation and
+activation are separate events, and that read is the only thing that
 distinguishes a grant that activated from one that is silently still pending.
 
 ## One decision per presentation

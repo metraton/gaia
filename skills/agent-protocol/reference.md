@@ -333,9 +333,15 @@ task). It accepts any closing state -- `APPROVAL_REQUEST`, `BLOCKED`,
 the one state that says the turn has not ended. `gaia contract validate
 --draft-id <id>` runs the same shape check without persisting.
 
-Do not pass `--session-id` unless the dispatch handed one over: the born row
-already carries the session attribution, and an invented value (the literal
-`unknown`, say) corrupts it.
+Do not pass `--session-id` unless the dispatch handed one over -- to `gaia
+contract`, and equally to `gaia approvals request-set` / `request-file-write`.
+The born contract row already carries the session attribution, and an invented
+value (the literal `unknown`, say) corrupts it. An approval row minted without
+the flag is simply unowned until the first host session presents it and adopts
+it (`bin/cli/approvals.py::cmd_opencode_present`); an approval minted with a
+guessed value is owned by a session that will never present it, and no other
+session can. `subagent-request-approval` states the same rule from the
+producer's side.
 
 **The gate at the wall.** `_resolve_subagent_stop_gate_full` in
 `hooks/adapters/claude_code.py` resolves this turn's own dispatch row and
