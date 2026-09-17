@@ -14,7 +14,7 @@ which never runs in the Python suite.
 | `presentation_driver.ts` | What the plugin hands the host's permission mechanism for one blocked call; observes the `bin/gaia` spawn boundary (cwd). |
 | `sdk_body_contract.ts` | The host stubs' type checks for `session.create` / `session.promptAsync` bodies, mirroring `@opencode-ai/sdk` 1.18.18. |
 | `isolated_bridge.py` | Asserts the private workspace before running `bridge.py` in-process. |
-| `*.test.ts` + `test_*.py` collectors | Pure bun unit tests (`shell_env_delivery`, `binary_question_match`) collected into pytest by a one-test wrapper each. |
+| `*.test.ts` + `test_*.py` collectors | Pure bun unit tests (`shell_env_delivery`, `binary_question_match`, `consent_retry_evaluate`, `second_root_attestation`) collected into pytest by a one-test wrapper each. |
 | `test_*.py` | Contract and gate tests that read `plugin.ts` or drive the bridge directly. |
 | `live/` | Opt-in smoke against a RUNNING `opencode serve`; see below. |
 

@@ -65,6 +65,8 @@ type RoleCapabilityContext = {
 
 type PermissionReply = "once" | "always" | "reject"
 
+type HostParentRecord = "none" | "present" | "unavailable"
+
 type WorkspaceContext = {
   cwd: string
   worktree?: string
@@ -873,10 +875,16 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // plugin receives caller-supplied names and cannot be the issuer of the
   // authority they would otherwise assert.
   const attestationBySession = new Map<string, string>()
-  // The session this run's parentless claim may be issued to. A child session
-  // cannot exist before the primary one has taken a turn, so the first session
-  // seen is the primary and every later one must inherit a grant instead.
-  let rootSessionID: string | undefined
+  // The sessions this run's parentless claim may be issued to. The first
+  // session seen is one: no child can exist before a primary has taken a turn.
+  // Every later session inherits a grant instead, unless the host's own record
+  // shows it has no parent -- a root the user opened after the first one, which
+  // the serve process hosts for its whole life (measured 2026-09-17: every root
+  // after the first was refused the control plane until the host restarted).
+  const primarySessions = new Set<string>()
+  // The host's last answer about a later session's parent, read back by the
+  // refusal trace so an unadmitted session says why.
+  const hostParentBySession = new Map<string, HostParentRecord>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
   // One issuance per session even when two edges reach it at once. Without it a
@@ -890,7 +898,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   /** The dispatch handle Gaia reads as agent_id, or undefined for the primary.
    *
    * One predicate answers "is this session a dispatch?" for every site that
-   * asks. A session other than the root one exists only because a dispatch
+   * asks. A session other than a primary one exists only because a dispatch
    * created it, so it is a subagent from its first tool call -- which is long
    * before the parent's tool.execute.after can report which call created it.
    * Keying the answer on that record alone left agent_id absent for the whole
@@ -902,14 +910,64 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    * on that session would leave the attested lane unreachable.
    */
   function isPrimarySession(sessionID: string): boolean {
-    return rootSessionID !== undefined && sessionID === rootSessionID
+    return primarySessions.has(sessionID)
   }
 
   function dispatchHandle(sessionID: string): string | undefined {
     // Both arms fail closed on an unknown primary: no handle is issued, so an
     // unidentifiable session is never handed the unrestricted subagent lane.
-    if (rootSessionID === undefined || isPrimarySession(sessionID)) return undefined
+    if (primarySessions.size === 0 || isPrimarySession(sessionID)) return undefined
     return dispatchBySession.get(sessionID) ?? sessionID
+  }
+
+  /** The primary session an approval's specialist answers to, or undefined when none is known. */
+  function primaryFor(sessionID: string): string | undefined {
+    if (isPrimarySession(sessionID)) return sessionID
+    const parent = childBindings.get(sessionID)?.parentSessionID
+    return parent !== undefined && isPrimarySession(parent) ? parent : undefined
+  }
+
+  /** The host's own record of the session's parent; the host, not this edge, says what is a root. */
+  async function hostParentRecord(sessionID: string): Promise<HostParentRecord> {
+    try {
+      const fetched = await input.client?.session?.get?.({ path: { id: sessionID } })
+      const record = fetched?.data as { id?: unknown; parentID?: unknown } | undefined
+      if (hostRejection(fetched) || record?.id !== sessionID) return "unavailable"
+      return typeof record.parentID === "string" && record.parentID ? "present" : "none"
+    } catch {
+      return "unavailable"
+    }
+  }
+
+  /** Admit the session to the parentless lane when it is the first seen or the host records no parent.
+   *
+   * Only the host's record can vouch for a later session: a child named by
+   * message.updated before its Task binding lands looks exactly like a fresh
+   * root from this edge. A host that cannot answer admits nothing, and is
+   * asked again on the next sighting; a recorded parent is final.
+   */
+  async function adoptPrimary(sessionID: string): Promise<void> {
+    if (primarySessions.has(sessionID) || childBindings.has(sessionID) || provisionalBindings.has(sessionID)) return
+    if (primarySessions.size === 0) {
+      primarySessions.add(sessionID)
+      return
+    }
+    if (hostParentBySession.get(sessionID) === "present") return
+    const parent = await hostParentRecord(sessionID)
+    hostParentBySession.set(sessionID, parent)
+    if (parent === "none") primarySessions.add(sessionID)
+  }
+
+  /** Why a named session presents no claim, for the refusal trace; a diagnosis, never an authority. */
+  function identityGap(sessionID: string): string | undefined {
+    if (!agentBySession.has(sessionID) || roleContext(sessionID)) return undefined
+    if (isPrimarySession(sessionID)) return "primary session was refused issuance"
+    if (childBindings.has(sessionID) || provisionalBindings.has(sessionID)) return "bound child was refused issuance"
+    switch (hostParentBySession.get(sessionID)) {
+      case "present": return "host records a parent and no dispatch bound the session"
+      case "none": return "host records no parent but issuance did not complete"
+      default: return "host session record unavailable, later session not admitted as primary"
+    }
   }
 
   function roleContext(sessionID: string): RoleCapabilityContext | undefined {
@@ -1078,8 +1136,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       agent = agentBySession.get(sessionID) ?? recovered
       if (!agent) return undefined
       agentBySession.set(sessionID, agent)
-      if (rootSessionID === undefined) rootSessionID = sessionID
     }
+    await adoptPrimary(sessionID)
     await attestOnce(sessionID, agent)
     return agent
   }
@@ -1222,16 +1280,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     let notifiedSessionID: string | undefined
     let notifyFailure: string | undefined
     const session = input?.client?.session
-    if (typeof session?.promptAsync !== "function" || !rootSessionID) {
-      notifyFailure = "no root session or host prompt API to notify"
+    const primarySessionID = primaryFor(sessionID)
+    if (typeof session?.promptAsync !== "function" || !primarySessionID) {
+      notifyFailure = "no primary session or host prompt API to notify"
     } else {
       try {
         const prompted = await session.promptAsync({
-          path: { id: rootSessionID },
+          path: { id: primarySessionID },
           body: { parts: [{ type: "text", text: activationNotice(approvalID, sessionID, nextIndex) }] },
         })
         notifyFailure = hostRejection(prompted)
-        if (!notifyFailure) notifiedSessionID = rootSessionID
+        if (!notifyFailure) notifiedSessionID = primarySessionID
       } catch (error) {
         notifyFailure = error instanceof Error ? error.message : String(error)
       }
@@ -1294,7 +1353,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
 
   async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
     const session = input?.client?.session
-    if (typeof session?.create !== "function" || typeof session?.promptAsync !== "function" || !rootSessionID) {
+    const primarySessionID = primaryFor(approval.sessionID)
+    if (typeof session?.create !== "function" || typeof session?.promptAsync !== "function" || !primarySessionID) {
       throw new Error("OpenCode control plane cannot provide a binary question")
     }
     const failClosed = async (cause: string): Promise<Error> => {
@@ -1304,7 +1364,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       return new Error(`Gaia could not open the consent control plane for ${approval.approvalID}: ${cause}`)
     }
     const created = await session.create({
-      body: { parentID: rootSessionID, title: `Gaia ${approval.approvalID}` },
+      body: { parentID: primarySessionID, title: `Gaia ${approval.approvalID}` },
     })
     const createRejected = hostRejection(created)
     if (createRejected) throw await failClosed(`control-plane session.create failed: ${createRejected}`)
@@ -1312,7 +1372,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     if (
       typeof controlSessionID !== "string"
       || !controlSessionID
-      || controlSessionID === rootSessionID
+      || controlSessionID === primarySessionID
       || controlSessionID === approval.sessionID
       || controlBySession.has(controlSessionID)
     ) {
@@ -1522,7 +1582,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             throw new Error("Gaia child role conflicts with its authorized dispatch")
           }
           agentBySession.set(info.sessionID, info.agent)
-          if (rootSessionID === undefined) rootSessionID = info.sessionID
+          await adoptPrimary(info.sessionID)
           await attestOnce(info.sessionID, info.agent)
         }
         return
@@ -1695,6 +1755,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         agentID: dispatchHandle(call.sessionID),
         agent,
         roleContext: roleContext(call.sessionID),
+        identityGap: identityGap(call.sessionID),
         tool: normalized.tool,
         args: normalized.args,
         cwd: normalized.cwd,
