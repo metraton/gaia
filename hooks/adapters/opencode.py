@@ -418,6 +418,7 @@ class OpenCodeAdapter(HookAdapter):
         original_tool = str(payload.get("tool_name", "")).lower()
         rejection = self._identity_rejection(event, original_tool)
         if rejection is not None:
+            rejection = self._with_identity_gap(rejection, payload)
             self._record_identity_refusal(event, original_tool, rejection)
             return HookResponse(output={"action": "deny", "reason": rejection}, exit_code=2)
         backstop = self._child_binding_backstop_denial(event)
@@ -833,6 +834,22 @@ class OpenCodeAdapter(HookAdapter):
             return "ordinary OpenCode agents cannot issue control-plane dispatches"
         return None
 
+    @staticmethod
+    def _identity_gap(payload: dict) -> str:
+        """The plugin's account of why the session presents no claim, or empty."""
+        return str(payload.get("identityGap") or "").strip()
+
+    @classmethod
+    def _with_identity_gap(cls, reason: str, payload: dict) -> str:
+        """Name the plugin's gap after the verdict so a refused root and a refused child read differently.
+
+        The gap is a diagnosis the plugin composed and is never trusted for
+        the verdict itself; it only makes the refusal the user sees, and the
+        row it leaves, say which session state produced it.
+        """
+        gap = cls._identity_gap(payload)
+        return f"{reason} ({gap})" if gap else reason
+
     @classmethod
     def _record_identity_refusal(
         cls, event: HookEvent, tool_name: str, reason: str,
@@ -882,6 +899,7 @@ class OpenCodeAdapter(HookAdapter):
                     getattr(context, "attestation", "") or ""
                 ),
                 "attestation_resolved": resolved,
+                "identity_gap": cls._identity_gap(payload),
             }
             EventWriter().write_event(
                 _IDENTITY_REFUSAL_EVENT,
