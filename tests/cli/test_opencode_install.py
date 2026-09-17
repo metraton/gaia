@@ -178,7 +178,7 @@ def test_translates_agent_tools_disallowed_tools_and_skills(tmp_path):
         "bash": "deny",
         "skill": {"*": "allow"},
         "external_directory": {
-            "*": "deny",
+            "*": "ask",
             "~/.gaia/scratch/**": "allow",
         },
     }
@@ -249,7 +249,7 @@ def test_contract_scratch_is_the_only_external_directory_for_subagents():
     )
 
     expected = {
-        "*": "deny",
+        "*": "ask",
         "~/.gaia/scratch/**": "allow",
     }
     specialists = {
@@ -272,7 +272,7 @@ def test_contract_scratch_is_the_only_external_directory_for_subagents():
         for agent in specialists.values()
     )
     assert list(expected.items()) == [
-        ("*", "deny"),
+        ("*", "ask"),
         ("~/.gaia/scratch/**", "allow"),
     ]
     from gaia.paths import evidence_dir, scratch_dir

@@ -324,8 +324,13 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
             agent["model"] = model
         permission = _opencode_frontmatter_permissions(frontmatter)
         if host_policy["mode"] == "subagent":
+            # "ask", never "deny": OpenCode evaluates a deny before any plugin
+            # hook runs, so a command Gaia already consented to died at the
+            # host gate with no trace (measured 2026-09-17, cp /dev/null).
+            # "ask" reaches the plugin's permission.ask, which carries Gaia's
+            # verdict through and denies uncorrelated requests with a trace.
             permission["external_directory"] = {
-                "*": "deny",
+                "*": "ask",
                 "~/.gaia/scratch/**": "allow",
             }
         permission.update(host_policy.get("permission", {}))
