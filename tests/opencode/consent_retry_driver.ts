@@ -315,6 +315,25 @@ async function runStep(step: any): Promise<void> {
         },
       })
       record.allowed = true
+    } else if (step.kind === "tool-error-part") {
+      // The host's own gate (ruleset deny, rejected prompt) throws inside
+      // tool.execute, so the real host fires no tool.execute.after; the errored
+      // part is the only signal the plugin receives for that call.
+      await plugin.event({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              type: "tool",
+              tool: step.tool ?? "bash",
+              sessionID: step.sessionID,
+              callID: step.callID,
+              state: { status: "error", error: step.error, input: argsByCall.get(step.callID) },
+            },
+          },
+        },
+      })
+      record.allowed = true
     } else if (step.kind === "replied") {
       await plugin.event({
         event: {

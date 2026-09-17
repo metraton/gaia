@@ -668,6 +668,55 @@ def test_fresh_bound_retry_reserves_exact_index_executes_settles_and_freezes(db_
     ) is None
 
 
+def test_a_retry_the_host_gate_refuses_after_gaia_allowed_it_is_traced_by_approval(db_env):
+    """Bloqueo -> present -> decide -> retry with accepted proof -> host gate refuses.
+
+    OpenCode evaluates its ruleset inside tool.execute and throws before
+    tool.execute.after (measured 2026-09-17: cp /dev/null under
+    external_directory "*": "deny"). The only host signal is the errored tool
+    part; without this handling the allowed retry vanished with no trace.
+    """
+    env, db_path = db_env
+    approval_id = _request_set(env)
+    host_error = (
+        "The user has specified a rule which prevents you from using this specific "
+        'tool call. Here are some of the relevant rules [{"permission":"external_directory",'
+        '"pattern":"*","action":"deny"}]'
+    )
+    driven = _drive(
+        env,
+        [
+            _before("pre-approval", FIRST_COMMAND),
+            {"kind": "control-decision", "label": "approve", "answer": "approve"},
+            _before("retry", FIRST_COMMAND, call_id=RETRY_CALL_ID),
+            {
+                "kind": "tool-error-part", "label": "host-refused", "sessionID": SESSION_ID,
+                "callID": RETRY_CALL_ID, "tool": "bash", "error": host_error,
+            },
+        ],
+    )
+    assert _step(driven, "retry")["allowed"] is True, driven
+    assert _step(driven, "host-refused")["allowed"] is True, driven
+
+    refusals = _harness_payloads(db_path, "consent.retry.refused")
+    assert len(refusals) == 1, refusals
+    refused = refusals[0]
+    assert refused["approval_id"] == approval_id
+    assert refused["reason"] == "host_gate_refused"
+    assert refused["lane"] == "opencode.plugin_gate"
+    assert refused["session_id"] == SESSION_ID
+    assert refused["call_id"] == RETRY_CALL_ID
+    assert refused["expected"] == "host execution of allowed command [0]"
+    assert refused["received"] == host_error
+
+    # The host refusal is neither a failed run nor withdrawn consent: the grant
+    # is not frozen, and the slot is left to the reservation TTL.
+    grant = _grant(db_path, approval_id)
+    assert grant["status"] == "PENDING"
+    assert grant["failed_index"] is None
+    assert grant["reservation_tool_use_id"] == RETRY_CALL_ID
+
+
 def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_env):
     """A different call cannot settle the reservation the retry established."""
     env, db_path = db_env

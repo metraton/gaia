@@ -571,7 +571,9 @@ function boundRetry(approval: PendingApproval): BoundRetry {
 }
 
 export type ConsentRetryRefusal = {
-  reason: "replayed_call_id" | "session_mismatch" | "role_mismatch" | "out_of_order" | "fingerprint_mismatch"
+  reason:
+    | "replayed_call_id" | "session_mismatch" | "role_mismatch" | "out_of_order" | "fingerprint_mismatch"
+    | "host_gate_refused"
   expected: string
   received: string
 }
@@ -1542,6 +1544,30 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           && typeof part.state?.metadata?.sessionId === "string"
         ) {
           await bindChild(part.sessionID, part.callID, part.state.metadata.sessionId, true)
+        }
+        // The host's own gate (ruleset deny, rejected prompt) throws inside
+        // tool.execute, and OpenCode fires tool.execute.after only on a result;
+        // this errored part is the only signal that a retry Gaia allowed never
+        // ran (measured 2026-09-17: cp /dev/null -> external_directory deny,
+        // reservation held, no trace). The reservation is left to its TTL:
+        // a host refusal is neither a failed run nor withdrawn consent.
+        if (
+          part?.type === "tool"
+          && part.state?.status === "error"
+          && typeof part.sessionID === "string"
+          && typeof part.callID === "string"
+        ) {
+          const key = `${part.sessionID}:${part.callID}`
+          const retried = retryByCall.get(key)
+          allowedByCall.delete(key)
+          if (retried) {
+            retryByCall.delete(key)
+            await reportConsentRetryRefused(retried, { sessionID: part.sessionID, callID: part.callID }, {
+              reason: "host_gate_refused",
+              expected: `host execution of allowed command [${retried.expectedIndex}]`,
+              received: String(part.state.error ?? "tool part errored without a message"),
+            })
+          }
         }
         return
       }
