@@ -67,11 +67,27 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
         })
 
     store.record_event.side_effect = record_event
+    store.activate_approval_atomically.return_value.success = True
+    store.activate_approval_atomically.return_value.retry_descriptor = {
+        "version": 1,
+        "kind": "SCOPE_SEMANTIC_SIGNATURE",
+        "approval_id": _APPROVAL_ID,
+        "command": "git push origin main",
+    }
     with patch("cli.approvals._import_approval_store", return_value=store):
         assert cmd_opencode_present(_args()) == 0
         assert cmd_opencode_decide(_args()) == 0
 
-    store.approve.assert_called_once_with(_APPROVAL_ID, "ses-1", agent_id="opencode-plugin")
+    store.activate_approval_atomically.assert_called_once_with(
+        _APPROVAL_ID,
+        approver_session="ses-1",
+        agent_id="opencode-plugin",
+        binding={
+            "agent_id": "opencode-plugin",
+            "session_id": "ses-1",
+            "call_id": "call-1",
+        },
+    )
     emitted = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert emitted["status"] == "approved"
     assert emitted["approval_id"] == _APPROVAL_ID
@@ -79,6 +95,7 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
     assert emitted["decision_lane"] == "preferred"
     assert emitted["correlation_id"].startswith("C-")
     assert emitted["protocol_version"] == "1"
+    assert emitted["retry_descriptor"] == store.activate_approval_atomically.return_value.retry_descriptor
 
 
 def _unowned_store():

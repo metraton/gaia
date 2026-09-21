@@ -219,6 +219,113 @@ def _before(label, command, *, call_id=CALL_ID):
     }
 
 
+def _file_before(label, tool, file_path, *, call_id, content="updated\n"):
+    return {
+        "kind": "before", "label": label, "sessionID": SESSION_ID,
+        "callID": call_id, "tool": tool,
+        "args": {"file_path": str(file_path), "content": content},
+    }
+
+
+def test_reactive_singular_bash_approval_arms_one_typed_identical_retry(db_env):
+    env, _db_path = db_env
+
+    driven = _drive(env, [
+        _before("blocked-singular", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve-singular", "answer": "approve"},
+        _before("retry-singular", FIRST_COMMAND, call_id=RETRY_CALL_ID),
+        {
+            "kind": "after", "label": "settle-singular", "sessionID": SESSION_ID,
+            "callID": RETRY_CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
+            "metadata": {"exitCode": 0},
+        },
+        _before("post-settlement", FIRST_COMMAND, call_id=LATER_CALL_ID),
+    ])
+
+    assert _step(driven, "blocked-singular")["allowed"] is False
+    assert _step(driven, "approve-singular")["allowed"] is True
+    assert _step(driven, "retry-singular")["allowed"] is True
+    retry_exchange = next(
+        item for item in _tool_exchanges(driven)
+        if item["sent"].get("callID") == RETRY_CALL_ID
+    )
+    assert retry_exchange["sent"]["consentRetry"] | {
+        "version": 1,
+        "kind": "SCOPE_SEMANTIC_SIGNATURE",
+        "command": FIRST_COMMAND,
+        "command_fingerprint": FIRST_FINGERPRINT,
+    } == retry_exchange["sent"]["consentRetry"]
+    assert _step(driven, "post-settlement")["allowed"] is False
+    post_exchange = next(
+        item for item in _tool_exchanges(driven)
+        if item["sent"].get("callID") == LATER_CALL_ID
+    )
+    assert "consentRetry" not in post_exchange["sent"]
+
+
+def test_protected_file_approval_arms_an_edit_retry_for_only_the_canonical_target(db_env):
+    env, db_path = db_env
+    protected = Path(env["WORKSPACE"]) / ".claude" / "hooks" / "pre_tool_use.py"
+
+    driven = _drive(env, [
+        _file_before("blocked-file", "write", protected, call_id=CALL_ID),
+        {"kind": "control-decision", "label": "approve-file", "answer": "approve"},
+        _file_before("retry-file", "edit", protected, call_id=RETRY_CALL_ID),
+        {
+            "kind": "after", "label": "settle-file", "sessionID": SESSION_ID,
+            "callID": RETRY_CALL_ID, "tool": "edit",
+            "args": {"file_path": str(protected), "content": "updated\n"},
+        },
+    ])
+
+    assert _step(driven, "blocked-file")["allowed"] is False
+    assert _step(driven, "approve-file")["allowed"] is True
+    approval_id = driven["permissionAsks"][0]["permission"]["metadata"]["gaiaApprovalID"]
+    assert _approval_status(db_path, approval_id) == "approved"
+    assert _grant(db_path, approval_id)["scope"] == "SCOPE_FILE_PATH"
+    assert len(driven["controlPrompts"]) == 2, driven
+    assert _step(driven, "retry-file")["allowed"] is True
+    retry_exchange = next(
+        item for item in _tool_exchanges(driven, tool="Edit")
+        if item["sent"].get("callID") == RETRY_CALL_ID
+    )
+    assert retry_exchange["sent"]["consentRetry"] | {
+        "version": 1,
+        "kind": "SCOPE_FILE_PATH",
+        "canonical_path": str(protected.resolve()),
+        "path_fingerprint": hashlib.sha256(str(protected.resolve()).encode()).hexdigest(),
+        "tool_family": "Edit",
+    } == retry_exchange["sent"]["consentRetry"]
+
+
+def test_file_retry_path_drift_fails_closed_and_clears_the_typed_claim(db_env):
+    env, db_path = db_env
+    protected = Path(env["WORKSPACE"]) / ".claude" / "hooks" / "pre_tool_use.py"
+    wrong = Path(env["WORKSPACE"]) / "src" / "other.py"
+
+    driven = _drive(env, [
+        _file_before("blocked-file", "write", protected, call_id=CALL_ID),
+        {"kind": "control-decision", "label": "approve-file", "answer": "approve"},
+        {
+            "kind": "before", "label": "unrelated-read", "sessionID": SESSION_ID,
+            "callID": "call-unrelated", "tool": "skill", "args": {"name": "agent-protocol"},
+        },
+        _file_before("wrong-file", "edit", wrong, call_id="call-wrong-file"),
+        _file_before("ordinary-after-clear", "edit", protected, call_id=RETRY_CALL_ID),
+    ])
+
+    assert _step(driven, "unrelated-read")["allowed"] is True
+    assert _step(driven, "wrong-file")["allowed"] is False
+    assert "path_mismatch" in _step(driven, "wrong-file")["error"]
+    assert any(item["reason"] == "path_mismatch" for item in _retry_refusals(db_path))
+    assert _step(driven, "ordinary-after-clear")["allowed"] is True
+    exchange = next(
+        item for item in _tool_exchanges(driven, tool="Edit")
+        if item["sent"].get("callID") == RETRY_CALL_ID
+    )
+    assert "consentRetry" not in exchange["sent"]
+
+
 def _grant(db_path, approval_id):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -345,11 +452,12 @@ def test_an_activated_approval_is_announced_to_the_orchestrator_and_traced(db_en
     notice = prompts[1]
     assert notice["path"] == {"id": ROOT_SESSION_ID}
     assert notice["body"]["parts"] == [{
-        "type": "text",
-        "text": (
-            f"Gaia: approval {approval_id} activated by the user. "
-            f"Resume the specialist session {SESSION_ID} (task_id) so it retries command [0] now."
-        ),
+            "type": "text",
+            "text": (
+                f"Gaia: approval {approval_id} has an executable COMMAND_SET grant "
+                "and typed retry descriptor. "
+                f"Resume the specialist session {SESSION_ID} (task_id) so it retries command [0] now."
+            ),
     }]
     assert "agent" not in notice["body"]
     applied = _harness_payloads(db_path, "consent.decision.applied")
@@ -566,7 +674,7 @@ def test_fresh_bound_retry_reserves_exact_index_executes_settles_and_freezes(db_
     """
     env, db_path = db_env
     approval_id = _request_set(env)
-    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import command_fingerprint, request_fingerprint
 
     # Attempt BEFORE any reply exists: no executable grant, so the tool call is
     # refused. This is the invocation the retry must later match identically.
@@ -621,17 +729,21 @@ def test_fresh_bound_retry_reserves_exact_index_executes_settles_and_freezes(db_
     proof = retry_exchange["sent"]["consentRetry"]
     assert proof == {
         "approval_id": approval_id,
+        "version": 1,
+        "kind": "COMMAND_SET",
         "correlation_id": (
             driven["permissionAsks"][0]["permission"]["metadata"]
             ["gaiaConsent"]["correlation_id"]
         ),
         "agent_id": AGENT_ID,
+        "role": AGENT_ID,
         "session_id": SESSION_ID,
         "original_call_id": CALL_ID,
         "retry_call_id": RETRY_CALL_ID,
         "command": FIRST_COMMAND,
         "command_fingerprint": FIRST_FINGERPRINT,
         "expected_index": 0,
+        "request_fingerprint": request_fingerprint([FIRST_COMMAND, SECOND_COMMAND]),
     }
 
     grant = _grant(db_path, approval_id)

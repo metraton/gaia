@@ -23,6 +23,29 @@ type PendingApproval = {
   surface: NativeConsentPresentation
 }
 
+type RetryOperation =
+  | {
+    version: 1
+    kind: "COMMAND_SET"
+    commands: string[]
+    fingerprints: string[]
+    requestFingerprint: string
+    expectedIndex: number
+  }
+  | {
+    version: 1
+    kind: "SCOPE_SEMANTIC_SIGNATURE"
+    command: string
+    commandFingerprint: string
+  }
+  | {
+    version: 1
+    kind: "SCOPE_FILE_PATH"
+    canonicalPath: string
+    pathFingerprint: string
+    toolFamily: ["Write", "Edit"]
+  }
+
 type BoundRetry = PendingApproval & {
   agentID: string
   correlationID: string
@@ -30,6 +53,7 @@ type BoundRetry = PendingApproval & {
   fingerprints: string[]
   expectedIndex: number
   usedCallIDs: Set<string>
+  operation: RetryOperation
 }
 
 export type BinaryDecisionRequest = {
@@ -357,9 +381,18 @@ export const CONSENT_RETRY_REFUSED_EVENT = "retry.refused"
  * The orchestrator re-dispatches with task_id = the specialist session, which
  * is the only shape the plugin's retry accounting accepts.
  */
-export function activationNotice(approvalID: string, specialistSessionID: string, nextIndex: number): string {
-  return `Gaia: approval ${approvalID} activated by the user. `
-    + `Resume the specialist session ${specialistSessionID} (task_id) so it retries command [${nextIndex}] now.`
+export function activationNotice(
+  approvalID: string,
+  specialistSessionID: string,
+  operation: RetryOperation,
+): string {
+  const retry = operation.kind === "COMMAND_SET"
+    ? `command [${operation.expectedIndex}]`
+    : operation.kind === "SCOPE_SEMANTIC_SIGNATURE"
+      ? "the exact approved Bash command"
+      : `the exact granted file target with ${operation.toolFamily.join("/")}`
+  return `Gaia: approval ${approvalID} has an executable ${operation.kind} grant and typed retry descriptor. `
+    + `Resume the specialist session ${specialistSessionID} (task_id) so it retries ${retry} now.`
 }
 
 /**
@@ -569,13 +602,114 @@ function boundRetry(approval: PendingApproval): BoundRetry {
     fingerprints: fingerprints.map(String),
     expectedIndex: 0,
     usedCallIDs: new Set([approval.callID]),
+    operation: {
+      version: 1,
+      kind: "COMMAND_SET",
+      commands: commands.map(String),
+      fingerprints: fingerprints.map(String),
+      requestFingerprint: String(metadata.request_fingerprint ?? ""),
+      expectedIndex: 0,
+    },
+  }
+}
+
+function boundRetryFromActivation(
+  approval: PendingApproval,
+  correlationID: string,
+  raw: unknown,
+): BoundRetry {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Gaia activation returned no typed retry descriptor")
+  }
+  const descriptor = raw as Record<string, unknown>
+  const binding = approval.surface.metadata.binding as Record<string, unknown> | undefined
+  if (descriptor.version !== 1) throw new Error("Gaia activation retry descriptor has an unsupported version")
+  if (descriptor.approval_id !== approval.approvalID) throw new Error("Gaia activation retry descriptor approval drifted")
+  if (descriptor.agent_id !== binding?.agent_id) throw new Error("Gaia activation retry descriptor agent drifted")
+  if (descriptor.session_id !== approval.sessionID) throw new Error("Gaia activation retry descriptor session drifted")
+  if (descriptor.original_call_id !== approval.callID) throw new Error("Gaia activation retry descriptor original call drifted")
+  let operation: RetryOperation
+  let commands: string[]
+  let fingerprints: string[]
+  let expectedIndex = 0
+  if (descriptor.kind === "COMMAND_SET") {
+    commands = Array.isArray(descriptor.commands) ? descriptor.commands.map(String) : []
+    fingerprints = Array.isArray(descriptor.fingerprints) ? descriptor.fingerprints.map(String) : []
+    expectedIndex = Number(descriptor.expected_index)
+    if (
+      commands.length === 0
+      || commands.length !== fingerprints.length
+      || !Number.isInteger(expectedIndex)
+      || expectedIndex < 0
+      || expectedIndex >= commands.length
+      || typeof descriptor.request_fingerprint !== "string"
+      || commands.some((command, index) => commandFingerprint(command) !== fingerprints[index])
+    ) throw new Error("Gaia activation returned an invalid COMMAND_SET retry descriptor")
+    operation = {
+      version: 1,
+      kind: "COMMAND_SET",
+      commands,
+      fingerprints,
+      requestFingerprint: descriptor.request_fingerprint,
+      expectedIndex,
+    }
+  } else if (descriptor.kind === "SCOPE_SEMANTIC_SIGNATURE") {
+    const command = descriptor.command
+    const fingerprint = descriptor.command_fingerprint
+    if (
+      typeof command !== "string"
+      || !command
+      || typeof fingerprint !== "string"
+      || commandFingerprint(command) !== fingerprint
+    ) throw new Error("Gaia activation returned an invalid semantic retry descriptor")
+    commands = [command]
+    fingerprints = [fingerprint]
+    operation = {
+      version: 1,
+      kind: "SCOPE_SEMANTIC_SIGNATURE",
+      command,
+      commandFingerprint: fingerprint,
+    }
+  } else if (descriptor.kind === "SCOPE_FILE_PATH") {
+    const canonicalPath = descriptor.canonical_path
+    const pathFingerprint = descriptor.path_fingerprint
+    const family = descriptor.tool_family
+    if (
+      typeof canonicalPath !== "string"
+      || !isAbsolute(canonicalPath)
+      || typeof pathFingerprint !== "string"
+      || commandFingerprint(canonicalPath) !== pathFingerprint
+      || !Array.isArray(family)
+      || family.join(":") !== "Write:Edit"
+    ) throw new Error("Gaia activation returned an invalid file retry descriptor")
+    commands = [canonicalPath]
+    fingerprints = [pathFingerprint]
+    operation = {
+      version: 1,
+      kind: "SCOPE_FILE_PATH",
+      canonicalPath,
+      pathFingerprint,
+      toolFamily: ["Write", "Edit"],
+    }
+  } else {
+    throw new Error("Gaia activation returned an unsupported retry descriptor kind")
+  }
+  return {
+    ...approval,
+    agentID: String(binding?.agent_id),
+    correlationID,
+    commands,
+    fingerprints,
+    expectedIndex,
+    usedCallIDs: new Set([approval.callID]),
+    operation,
   }
 }
 
 export type ConsentRetryRefusal = {
   reason:
     | "replayed_call_id" | "session_mismatch" | "role_mismatch" | "out_of_order" | "fingerprint_mismatch"
-    | "host_gate_refused"
+    | "path_mismatch" | "tool_family_mismatch" | "host_gate_refused"
   expected: string
   received: string
 }
@@ -607,39 +741,89 @@ export function evaluateConsentRetry(
   args: Record<string, unknown>,
 ): ConsentRetryVerdict | undefined {
   const callID = typeof call.callID === "string" && call.callID ? call.callID : undefined
-  const command = tool.toLowerCase() === "bash" && typeof args.command === "string" ? args.command : undefined
-  // A near miss -- the approved command with whitespace drift -- claims the retry
-  // and is judged on exact bytes, so it cannot slip to policy as a fresh command.
-  const collapse = (text: string) => text.trim().replace(/\s+/g, " ")
-  const claimedIndex = command === undefined
-    ? -1
-    : retry.commands.findIndex((approved) => collapse(approved) === collapse(command))
   const replayed = callID !== undefined && retry.usedCallIDs.has(callID)
-  if (claimedIndex < 0 && !replayed) return undefined
   const refuse = (reason: ConsentRetryRefusal["reason"], expected: string, received: string) => (
     { refusal: { reason, expected, received } }
   )
+  const operation = retry.operation
+  const command = tool.toLowerCase() === "bash" && typeof args.command === "string" ? args.command : undefined
+  const collapse = (text: string) => text.trim().replace(/\s+/g, " ")
+  let claimedIndex = -1
+  let fileTool: "Write" | "Edit" | undefined
+  let filePaths: string[] = []
+  if (operation.kind === "COMMAND_SET") {
+    claimedIndex = command === undefined
+      ? -1
+      : operation.commands.findIndex((approved) => collapse(approved) === collapse(command))
+    if (claimedIndex < 0 && !replayed) return undefined
+  } else if (operation.kind === "SCOPE_SEMANTIC_SIGNATURE") {
+    const claimed = command !== undefined && collapse(command) === collapse(operation.command)
+    if (!claimed && !replayed) return undefined
+  } else {
+    const canonical = canonicalFileTool(tool)
+    if (!canonical && !replayed) return undefined
+    fileTool = canonical === "apply_patch" ? "Edit" : canonical
+    filePaths = canonical === "apply_patch"
+      ? (Array.isArray(args.file_paths) ? args.file_paths.filter((path): path is string => typeof path === "string") : [])
+      : (typeof args.file_path === "string" ? [args.file_path] : [])
+  }
   if (replayed || callID === undefined) return refuse("replayed_call_id", "an unused call id", String(callID))
   if (call.sessionID !== retry.sessionID) return refuse("session_mismatch", retry.sessionID, String(call.sessionID))
   if (agent !== retry.role) return refuse("role_mismatch", retry.role, String(agent))
-  if (claimedIndex !== retry.expectedIndex) {
-    return refuse("out_of_order", `command [${retry.expectedIndex}]`, `command [${claimedIndex}]`)
+  if (operation.kind === "SCOPE_FILE_PATH") {
+    if (!fileTool || !operation.toolFamily.includes(fileTool)) {
+      return refuse("tool_family_mismatch", operation.toolFamily.join("/"), String(fileTool))
+    }
+    if (filePaths.length !== 1 || filePaths[0] !== operation.canonicalPath) {
+      return refuse("path_mismatch", operation.canonicalPath, filePaths.join(","))
+    }
+    return {
+      proof: {
+        version: operation.version,
+        kind: operation.kind,
+        approval_id: retry.approvalID,
+        correlation_id: retry.correlationID,
+        agent_id: retry.agentID,
+        role: retry.role,
+        session_id: retry.sessionID,
+        original_call_id: retry.callID,
+        retry_call_id: callID,
+        canonical_path: operation.canonicalPath,
+        path_fingerprint: operation.pathFingerprint,
+        tool_family: fileTool,
+      },
+    }
+  }
+  const expectedCommand = operation.kind === "COMMAND_SET"
+    ? operation.commands[operation.expectedIndex]
+    : operation.command
+  const expectedFingerprint = operation.kind === "COMMAND_SET"
+    ? operation.fingerprints[operation.expectedIndex]
+    : operation.commandFingerprint
+  if (operation.kind === "COMMAND_SET" && claimedIndex !== operation.expectedIndex) {
+    return refuse("out_of_order", `command [${operation.expectedIndex}]`, `command [${claimedIndex}]`)
   }
   const fingerprint = commandFingerprint(command!)
-  if (retry.fingerprints[claimedIndex] !== fingerprint) {
-    return refuse("fingerprint_mismatch", retry.fingerprints[claimedIndex], fingerprint)
+  if (command !== expectedCommand || expectedFingerprint !== fingerprint) {
+    return refuse("fingerprint_mismatch", expectedFingerprint, fingerprint)
   }
   return {
     proof: {
+      version: operation.version,
+      kind: operation.kind,
       approval_id: retry.approvalID,
       correlation_id: retry.correlationID,
       agent_id: retry.agentID,
+      role: retry.role,
       session_id: retry.sessionID,
       original_call_id: retry.callID,
       retry_call_id: callID,
       command,
       command_fingerprint: fingerprint,
-      expected_index: retry.expectedIndex,
+      ...(operation.kind === "COMMAND_SET" ? {
+        expected_index: operation.expectedIndex,
+        request_fingerprint: operation.requestFingerprint,
+      } : {}),
     },
   }
 }
@@ -1157,7 +1341,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     approval: PendingApproval,
     reply: PermissionReply,
     lane: DecisionLane = "preferred",
-  ): Promise<{ ok: true } | { ok: false; cause: string }> {
+  ): Promise<{ ok: true; retry?: BoundRetry } | { ok: false; cause: string }> {
     const decided = await gaia([
       "approvals", "opencode-decide", approval.approvalID,
       "--session-id", approval.sessionID,
@@ -1167,7 +1351,31 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       "--decision-lane", lane === "compatibility" ? "compatibility" : "preferred",
       "--json",
     ])
-    if (decided.ok) return { ok: true }
+    if (decided.ok) {
+      const lastLine = decided.stdout.trim().split("\n").pop() ?? ""
+      try {
+        const emitted = JSON.parse(lastLine)
+        if (
+          emitted.approval_id !== approval.approvalID
+          || emitted.correlation_id !== boundRetry(approval).correlationID
+        ) throw new Error("decision output drifted from the presented approval")
+        if (reply === "once") {
+          return {
+            ok: true,
+            retry: boundRetryFromActivation(
+              approval,
+              emitted.correlation_id,
+              emitted.retry_descriptor,
+            ),
+          }
+        }
+        return { ok: true }
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error)
+        console.error(`[gaia-opencode:control] decision '${reply}' for ${approval.approvalID} returned unusable activation: ${cause}`)
+        return { ok: false, cause }
+      }
+    }
     const cause = gaiaFailureCause(decided)
     console.error(`[gaia-opencode:control] decision '${reply}' for ${approval.approvalID} was refused by Gaia: ${cause}`)
     await reportUncorrelatedDenial(approval.sessionID, approval.callID, {
@@ -1248,11 +1456,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
     const decided = await decide(control.approval, reply, lane)
     if (decided.ok && reply === "once") {
+      if (!decided.retry) {
+        await closeControl(control, "decide_failed", "activation returned no typed retry descriptor")
+        return false
+      }
       retryBySession.set(control.approval.sessionID, {
-        ...control.retry,
-        usedCallIDs: new Set(control.retry.usedCallIDs),
+        ...decided.retry,
+        usedCallIDs: new Set(decided.retry.usedCallIDs),
       })
-      await announceActivation(control, lane)
+      await announceActivation(control, lane, decided.retry)
     }
     // Cleared on a refused decision too: the question is consumed and the
     // lane admitted, so nothing left here could carry a second reply to Gaia.
@@ -1274,9 +1486,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    * which session was notified (or none), because a grant nobody resumes is
    * exactly the state that used to look like a command never attempted.
    */
-  async function announceActivation(control: ControlDecision, lane: DecisionLane): Promise<void> {
+  async function announceActivation(
+    control: ControlDecision,
+    lane: DecisionLane,
+    retry: BoundRetry,
+  ): Promise<void> {
     const { approvalID, sessionID, callID } = control.approval
-    const nextIndex = control.retry.expectedIndex
+    if (!retry.operation) throw new Error("Gaia cannot announce activation without a typed retry descriptor")
     let notifiedSessionID: string | undefined
     let notifyFailure: string | undefined
     const session = input?.client?.session
@@ -1287,7 +1503,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       try {
         const prompted = await session.promptAsync({
           path: { id: primarySessionID },
-          body: { parts: [{ type: "text", text: activationNotice(approvalID, sessionID, nextIndex) }] },
+          body: { parts: [{ type: "text", text: activationNotice(approvalID, sessionID, retry.operation) }] },
         })
         notifyFailure = hostRejection(prompted)
         if (!notifyFailure) notifiedSessionID = primarySessionID
@@ -1307,7 +1523,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         controlSessionID: control.request.sessionID,
         reply: "once",
         lane,
-        nextIndex,
+        nextIndex: retry.expectedIndex,
         ...(notifiedSessionID ? { notifiedSessionID } : {}),
         ...(notifyFailure ? { notifyFailure } : {}),
       })
@@ -1622,6 +1838,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           allowedByCall.delete(key)
           if (retried) {
             retryByCall.delete(key)
+            if (retryBySession.get(part.sessionID) === retried) retryBySession.delete(part.sessionID)
             await reportConsentRetryRefused(retried, { sessionID: part.sessionID, callID: part.callID }, {
               reason: "host_gate_refused",
               expected: `host execution of allowed command [${retried.expectedIndex}]`,
@@ -1742,6 +1959,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       const verdict = retry ? evaluateConsentRetry(retry, call, agent, normalized.tool, normalized.args) : undefined
       if (retry && verdict?.refusal) {
         await reportConsentRetryRefused(retry, call, verdict.refusal)
+        if (retryBySession.get(call.sessionID) === retry) retryBySession.delete(call.sessionID)
         const { reason, expected, received } = verdict.refusal
         throw new Error(
           `Gaia refused consent retry for ${retry.approvalID}: ${reason} (expected ${expected}, received ${received})`,
@@ -1808,6 +2026,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         allowedByCall.add(`${call.sessionID}:${call.callID}`)
         return
       }
+      if (retry && retryProof && retryBySession.get(call.sessionID) === retry) {
+        retryBySession.delete(call.sessionID)
+      }
       if (approvalID(response)) {
         await requestApproval(response, call.sessionID, call.callID, agent ?? "")
         throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
@@ -1864,6 +2085,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         retryByCall.delete(retryKey)
         if (result.exit_code === 0) {
           retried.expectedIndex += 1
+          if (retried.operation?.kind === "COMMAND_SET") {
+            retried.operation.expectedIndex = retried.expectedIndex
+          }
           if (retried.expectedIndex >= retried.commands.length) {
             if (retryBySession.get(call.sessionID) === retried) retryBySession.delete(call.sessionID)
           }

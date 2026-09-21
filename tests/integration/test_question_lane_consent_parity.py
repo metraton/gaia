@@ -223,18 +223,23 @@ def _valid_proof(event, approval_id, *, index=0, command=FIRST_COMMAND):
 
     from adapters.consent_events import mint_correlation_id
     from adapters.opencode import ConsentBinding, OpenCodeAdapter
+    from gaia.approvals.command_set import request_fingerprint
 
     original_call_id = "call-original"
     agent_id = OpenCodeAdapter._policy_agent_type(event)
     return {
+        "version": 1,
+        "kind": "COMMAND_SET",
         "approval_id": approval_id,
         "agent_id": agent_id,
+        "role": agent_id,
         "session_id": event.session_id,
         "original_call_id": original_call_id,
         "retry_call_id": event.call_id,
         "command": command,
         "command_fingerprint": hashlib.sha256(command.encode("utf-8")).hexdigest(),
         "expected_index": index,
+        "request_fingerprint": request_fingerprint([FIRST_COMMAND, SECOND_COMMAND]),
         "correlation_id": mint_correlation_id(
             approval_id,
             ConsentBinding(

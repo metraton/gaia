@@ -27,6 +27,14 @@ function retry(overrides: Record<string, unknown> = {}) {
     fingerprints: COMMANDS.map(sha256),
     expectedIndex: 0,
     usedCallIDs: new Set(["call_fwv2msrC7uZKlZDftj64alRO"]),
+    operation: {
+      version: 1,
+      kind: "COMMAND_SET",
+      commands: COMMANDS,
+      fingerprints: COMMANDS.map(sha256),
+      requestFingerprint: "request-fingerprint",
+      expectedIndex: 0,
+    },
     ...overrides,
   } as any
 }
@@ -72,5 +80,73 @@ describe("evaluateConsentRetry", () => {
   test("an approved command claimed ahead of its turn is out of order", () => {
     const verdict = evaluateConsentRetry(retry(), call, ROLE, "bash", { command: COMMANDS[1] })
     expect(verdict?.refusal).toEqual({ reason: "out_of_order", expected: "command [0]", received: "command [1]" })
+  })
+
+  test("a reactive singular retry produces a typed proof for one identical fresh Bash call", () => {
+    const singular = retry({
+      operation: {
+        version: 1,
+        kind: "SCOPE_SEMANTIC_SIGNATURE",
+        command: COMMANDS[0],
+        commandFingerprint: sha256(COMMANDS[0]),
+      },
+    })
+
+    const verdict = evaluateConsentRetry(singular, call, ROLE, "bash", { command: COMMANDS[0] })
+
+    expect(verdict?.proof).toMatchObject({
+      version: 1,
+      kind: "SCOPE_SEMANTIC_SIGNATURE",
+      command: COMMANDS[0],
+      command_fingerprint: sha256(COMMANDS[0]),
+    })
+  })
+
+  test("a protected file retry binds the exact canonical target and Edit family", () => {
+    const path = "/home/jorge/ws/me/gaia/hooks/example.py"
+    const fileRetry = retry({
+      operation: {
+        version: 1,
+        kind: "SCOPE_FILE_PATH",
+        canonicalPath: path,
+        pathFingerprint: sha256(path),
+        toolFamily: ["Write", "Edit"],
+      },
+    })
+
+    const valid = evaluateConsentRetry(fileRetry, call, ROLE, "edit", { file_path: path })
+    const wrongPath = evaluateConsentRetry(fileRetry, call, ROLE, "write", { file_path: `${path}.other` })
+
+    expect(valid?.proof).toMatchObject({
+      version: 1,
+      kind: "SCOPE_FILE_PATH",
+      canonical_path: path,
+      path_fingerprint: sha256(path),
+      tool_family: "Edit",
+    })
+    expect(wrongPath?.refusal?.reason).toBe("path_mismatch")
+  })
+
+  test("apply_patch maps to Edit only for one exact granted target", () => {
+    const path = "/home/jorge/ws/me/gaia/hooks/example.py"
+    const fileRetry = retry({
+      operation: {
+        version: 1,
+        kind: "SCOPE_FILE_PATH",
+        canonicalPath: path,
+        pathFingerprint: sha256(path),
+        toolFamily: ["Write", "Edit"],
+      },
+    })
+
+    const valid = evaluateConsentRetry(fileRetry, call, ROLE, "apply_patch", { file_paths: [path] })
+    const extraTarget = evaluateConsentRetry(fileRetry, call, ROLE, "apply_patch", {
+      file_paths: [path, `${path}.other`],
+    })
+    const unrelated = evaluateConsentRetry(fileRetry, call, ROLE, "skill", { name: "agent-protocol" })
+
+    expect(valid?.proof?.tool_family).toBe("Edit")
+    expect(extraTarget?.refusal?.reason).toBe("path_mismatch")
+    expect(unrelated).toBeUndefined()
   })
 })

@@ -98,6 +98,15 @@ def clean_grants_dir(tmp_path, monkeypatch):
                 revoked_at            TEXT,
                 multi_use             INTEGER NOT NULL DEFAULT 0,
                 confirmed             INTEGER NOT NULL DEFAULT 0,
+                request_fingerprint   TEXT,
+                next_index            INTEGER NOT NULL DEFAULT 0,
+                reservation_index     INTEGER,
+                reservation_session_id TEXT,
+                reservation_tool_use_id TEXT,
+                reserved_tool_use_ids_json TEXT,
+                reservation_at        TEXT,
+                failed_index          INTEGER,
+                failure_reason        TEXT,
                 source                TEXT NOT NULL DEFAULT 'legacy'
             );
             """

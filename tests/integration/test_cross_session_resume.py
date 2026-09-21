@@ -305,8 +305,8 @@ class TestCmdApprove:
             rc = cmd_approve(args)
         assert rc == 1
 
-    def test_approve_with_yes_calls_store_approve(self):
-        """cmd_approve --yes calls store.approve() without prompting."""
+    def test_approve_with_yes_calls_typed_activation(self):
+        """cmd_approve --yes delegates to the shared typed service."""
         sys.path.insert(0, str(_REPO_ROOT / "bin"))
         from cli.approvals import cmd_approve
 
@@ -322,12 +322,15 @@ class TestCmdApprove:
                 "status": "pending",
                 "payload_json": json.dumps(_SAMPLE_PAYLOAD),
             }
+            store_mock.activate_approval_atomically.return_value.success = True
             mock_store.return_value = store_mock
             rc = cmd_approve(args)
         assert rc == 0
-        store_mock.approve.assert_called_once()
-        call_kwargs = store_mock.approve.call_args
-        assert call_kwargs[0][0] == approval_id
+        store_mock.activate_approval_atomically.assert_called_once_with(
+            approval_id,
+            approver_session="cli-session",
+            agent_id=None,
+        )
 
     def test_approve_json_output(self, capsys):
         """cmd_approve --json outputs JSON with status and approval_id."""
@@ -343,6 +346,7 @@ class TestCmdApprove:
                 "status": "pending",
                 "payload_json": json.dumps(_SAMPLE_PAYLOAD),
             }
+            store_mock.activate_approval_atomically.return_value.success = True
             mock_store.return_value = store_mock
             rc = cmd_approve(args)
 

@@ -7318,6 +7318,7 @@ def insert_semantic_grant(
     session_id: str | None = None,
     ttl_minutes: int = APPROVAL_GRANT_TTL_MINUTES,
     db_path: Path | None = None,
+    con: sqlite3.Connection | None = None,
 ) -> dict:
     """Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants (status=PENDING).
 
@@ -7341,6 +7342,7 @@ def insert_semantic_grant(
             expires. This is the GRANT window, distinct from the 24h pending
             window (DEFAULT_PENDING_TTL_MINUTES).
         db_path: Optional explicit DB path (used by tests).
+        con: Optional caller-owned transaction connection.
 
     Returns:
         {"status": "applied"} on success, {"status": "error", "reason": ...} otherwise.
@@ -7358,11 +7360,13 @@ def insert_semantic_grant(
         "scope_signature": scope_signature,
     }
 
-    con = _connect(db_path)
+    connection = con if con is not None else _connect(db_path)
+    owned = con is None
     try:
-        con.execute("BEGIN")
+        if owned:
+            connection.execute("BEGIN")
         try:
-            con.execute(
+            connection.execute(
                 """
                 INSERT OR IGNORE INTO approval_grants
                     (approval_id, agent_id, session_id, command_set_json,
@@ -7379,15 +7383,18 @@ def insert_semantic_grant(
                     expires_at,
                 ),
             )
-            con.commit()
+            if owned:
+                connection.commit()
         except Exception:
-            con.rollback()
+            if owned:
+                connection.rollback()
             raise
         return _applied()
     except Exception as exc:
         return {"status": "error", "reason": str(exc)}
     finally:
-        con.close()
+        if owned:
+            connection.close()
 
 
 def check_db_semantic_grant(
@@ -7655,6 +7662,7 @@ def insert_file_path_grant(
     session_id: str | None = None,
     ttl_minutes: int = FILE_PATH_GRANT_TTL_MINUTES,
     db_path: Path | None = None,
+    con: sqlite3.Connection | None = None,
 ) -> dict:
     """Insert a SCOPE_FILE_PATH row into approval_grants (status=PENDING).
 
@@ -7674,6 +7682,7 @@ def insert_file_path_grant(
             FILE_PATH_GRANT_TTL_MINUTES -- this lane's window, not the Bash
             lane's APPROVAL_GRANT_TTL_MINUTES.
         db_path: Optional explicit DB path (used by tests).
+        con: Optional caller-owned transaction connection.
 
     Returns:
         {"status": "applied"} on success, {"status": "error", "reason": ...} otherwise.
@@ -7689,11 +7698,13 @@ def insert_file_path_grant(
         "scope_signature": scope_signature,
     }
 
-    con = _connect(db_path)
+    connection = con if con is not None else _connect(db_path)
+    owned = con is None
     try:
-        con.execute("BEGIN")
+        if owned:
+            connection.execute("BEGIN")
         try:
-            con.execute(
+            connection.execute(
                 """
                 INSERT OR IGNORE INTO approval_grants
                     (approval_id, agent_id, session_id, command_set_json,
@@ -7710,15 +7721,18 @@ def insert_file_path_grant(
                     expires_at,
                 ),
             )
-            con.commit()
+            if owned:
+                connection.commit()
         except Exception:
-            con.rollback()
+            if owned:
+                connection.rollback()
             raise
         return _applied()
     except Exception as exc:
         return {"status": "error", "reason": str(exc)}
     finally:
-        con.close()
+        if owned:
+            connection.close()
 
 
 def check_db_file_path_grant(

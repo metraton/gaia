@@ -165,4 +165,4 @@ def test_the_policy_gate_still_traces_a_proof_that_names_no_live_grant(db_env, m
     assert payload["reason"] == "proof_rejected"
     assert payload["detail"] == rejection
     assert payload["approval_id"] == APPROVAL_ID
-    assert payload["expected"] == "a live plan-first grant naming this command"
+    assert payload["expected"] == "the active typed grant named by this proof"

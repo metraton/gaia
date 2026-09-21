@@ -32,6 +32,10 @@ Public API::
     approve(approval_id, approver_session, *, agent_id=None, con=None)
         -> None  -- convenience wrapper: pending -> approved
 
+    activate_approval_atomically(approval_id, *, approver_session, ...)
+        -> ApprovalActivationResult -- validates the sealed request and commits
+                                      approval plus executable grant together
+
     reject(approval_id, approver_session, *, agent_id=None, con=None)
         -> None  -- convenience wrapper: pending -> rejected
 
@@ -67,9 +71,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
+import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -118,6 +126,82 @@ _APPROVAL_ID_PREFIX = "P-"
 # capability window (shorter is safer) and this one is a de-duplication window
 # (shorter floods the user), so tightening one must not silently move the other.
 PENDING_REUSE_WINDOW_MINUTES = 30
+
+
+class ActivationStatus(str, Enum):
+    """Describe the outcome of an approval-to-grant activation attempt."""
+
+    ACTIVATED = "activated"
+    NOT_FOUND = "not_found"
+    NONCE_MISMATCH = "nonce_mismatch"
+    SESSION_MISMATCH = "session_mismatch"
+    EXPIRED = "expired"
+    INVALID_SIGNATURE = "invalid_signature"
+    INVALID_PENDING = "invalid_pending"
+    ERROR = "error"
+    CHAIN_TAMPER_DETECTED = "chain_tamper_detected"
+
+
+@dataclass(frozen=True)
+class ApprovalActivationResult:
+    """Report whether one sealed approval atomically became executable."""
+
+    success: bool
+    status: ActivationStatus
+    reason: str
+    grant_path: Optional[Path] = None
+    grant_scope: Optional[str] = None
+    idempotent: bool = False
+    retry_descriptor: Optional[dict[str, Any]] = None
+
+
+def _retry_descriptor(
+    *,
+    approval_id: str,
+    grant_scope: str,
+    agent_id: Optional[str],
+    session_id: Optional[str],
+    original_call_id: Optional[str],
+    command: Optional[str] = None,
+    file_path: Optional[str] = None,
+    command_set: Optional[list[dict]] = None,
+    request_fingerprint: Optional[str] = None,
+    expected_index: int = 0,
+) -> dict[str, Any]:
+    """Describe the exact executable operation created by activation."""
+    descriptor: dict[str, Any] = {
+        "version": 1,
+        "approval_id": approval_id,
+        "kind": grant_scope,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "original_call_id": original_call_id,
+    }
+    if grant_scope == "COMMAND_SET":
+        items = command_set or []
+        descriptor.update({
+            "commands": [item["command"] for item in items],
+            "fingerprints": [item["fingerprint"] for item in items],
+            "request_fingerprint": request_fingerprint,
+            "expected_index": expected_index,
+            "grant_identity": request_fingerprint,
+        })
+    elif grant_scope == "SCOPE_FILE_PATH":
+        path_fingerprint = hashlib.sha256((file_path or "").encode("utf-8")).hexdigest()
+        descriptor.update({
+            "canonical_path": file_path,
+            "path_fingerprint": path_fingerprint,
+            "tool_family": ["Write", "Edit"],
+            "grant_identity": path_fingerprint,
+        })
+    else:
+        command_fingerprint = hashlib.sha256((command or "").encode("utf-8")).hexdigest()
+        descriptor.update({
+            "command": command,
+            "command_fingerprint": command_fingerprint,
+            "grant_identity": command_fingerprint,
+        })
+    return descriptor
 
 # Length (in hex chars) of the content-derived suffix for COMMAND_SET ids.
 # 32 hex chars == 128 bits of the SHA-256 digest, matching the visual length of
@@ -860,6 +944,390 @@ def activate_command_set_atomically(
             connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             connection.execute(f"RELEASE SAVEPOINT {savepoint}")
         raise
+    finally:
+        if owned:
+            connection.close()
+
+
+def activate_approval_atomically(
+    approval_id: str,
+    *,
+    approver_session: str,
+    agent_id: Optional[str] = None,
+    binding: Optional[dict] = None,
+    shown_payload: Optional[dict | str] = None,
+    ttl_minutes: int = 5,
+    con: Optional[sqlite3.Connection] = None,
+) -> ApprovalActivationResult:
+    """Atomically turn one supported sealed approval into executable authority."""
+    from gaia.approvals.chain import ChainTamperError, verify_fingerprint
+    from gaia.approvals.command_set import command_fingerprint
+    from gaia.store import writer
+
+    if not isinstance(approval_id, str) or re.fullmatch(
+        r"P-[a-f0-9]{32}", approval_id
+    ) is None:
+        return ApprovalActivationResult(
+            False,
+            ActivationStatus.NOT_FOUND,
+            "Activation requires a canonical approval_id P-<32 lowercase hex>.",
+        )
+
+    hooks_dir = str(Path(__file__).resolve().parents[2] / "hooks")
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+    from modules.security.approval_scopes import (
+        SCOPE_FILE_PATH,
+        SCOPE_SEMANTIC_SIGNATURE,
+        build_approval_signature,
+        build_file_path_signature,
+    )
+
+    connection, owned = _get_con(con)
+    savepoint = f"activate_approval_{uuid.uuid4().hex}"
+
+    def finish(result: ApprovalActivationResult) -> ApprovalActivationResult:
+        if owned:
+            connection.commit()
+        else:
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return result
+
+    def rollback() -> None:
+        if owned:
+            connection.rollback()
+        else:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+    try:
+        if owned:
+            connection.execute("BEGIN IMMEDIATE")
+        else:
+            connection.execute(f"SAVEPOINT {savepoint}")
+
+        row = connection.execute(
+            "SELECT status, agent_id, session_id, payload_json FROM approvals WHERE id=?",
+            (approval_id,),
+        ).fetchone()
+        if row is None:
+            rollback()
+            return ApprovalActivationResult(
+                False, ActivationStatus.NOT_FOUND, f"Approval not found: {approval_id!r}."
+            )
+
+        def value(key: str, index: int):
+            return row[key] if hasattr(row, "keys") else row[index]
+
+        stored_payload = value("payload_json", 3)
+        if not stored_payload:
+            rollback()
+            return ApprovalActivationResult(
+                False, ActivationStatus.INVALID_PENDING, "Approval has no sealed payload."
+            )
+        try:
+            payload = json.loads(stored_payload)
+        except (TypeError, json.JSONDecodeError):
+            rollback()
+            return ApprovalActivationResult(
+                False, ActivationStatus.INVALID_PENDING, "Approval has invalid sealed payload."
+            )
+        if not isinstance(payload, dict):
+            rollback()
+            return ApprovalActivationResult(
+                False, ActivationStatus.INVALID_PENDING, "Approval payload must be an object."
+            )
+
+        stored_agent = value("agent_id", 1)
+        stored_session = value("session_id", 2)
+        effective_agent = stored_agent or agent_id
+        if agent_id and stored_agent and agent_id != stored_agent:
+            rollback()
+            return ApprovalActivationResult(
+                False, ActivationStatus.SESSION_MISMATCH, "Approval binding agent_id mismatch."
+            )
+        if binding is not None:
+            if not isinstance(binding, dict) or not binding.get("call_id"):
+                rollback()
+                return ApprovalActivationResult(
+                    False, ActivationStatus.SESSION_MISMATCH, "Approval binding is incomplete."
+                )
+            if binding.get("session_id") != stored_session or (
+                binding.get("agent_id")
+                and stored_agent
+                and binding["agent_id"] != stored_agent
+            ):
+                rollback()
+                return ApprovalActivationResult(
+                    False, ActivationStatus.SESSION_MISMATCH, "Approval binding mismatch."
+                )
+
+        request_type = payload.get("request_type")
+        if request_type not in (None, "COMMAND_SET"):
+            rollback()
+            return ApprovalActivationResult(
+                False,
+                ActivationStatus.INVALID_PENDING,
+                f"Unsupported approval request_type={request_type!r}.",
+            )
+
+        command: Optional[str] = None
+        file_path: Optional[str] = None
+        normalized_set: list[dict] = []
+        command_set = payload.get("command_set")
+        request_fingerprint = payload.get("request_fingerprint")
+        if request_type == "COMMAND_SET":
+            if not isinstance(command_set, list) or not command_set:
+                rollback()
+                return ApprovalActivationResult(
+                    False, ActivationStatus.INVALID_PENDING, "COMMAND_SET is empty or malformed."
+                )
+            for index, item in enumerate(command_set):
+                if not isinstance(item, dict) or not isinstance(item.get("command"), str):
+                    rollback()
+                    return ApprovalActivationResult(
+                        False,
+                        ActivationStatus.INVALID_PENDING,
+                        f"COMMAND_SET item {index} is not an exact command.",
+                    )
+                command = item["command"]
+                normalized_set.append(
+                    {
+                        "command": command,
+                        "fingerprint": command_fingerprint(command),
+                        "rationale": item.get("rationale", ""),
+                    }
+                )
+            grant_scope = "COMMAND_SET"
+            grant_identity = request_fingerprint
+        elif payload.get("scope") == SCOPE_FILE_PATH:
+            file_path = payload.get("exact_content")
+            signature = build_file_path_signature(file_path)
+            if signature is None:
+                rollback()
+                return ApprovalActivationResult(
+                    False,
+                    ActivationStatus.INVALID_SIGNATURE,
+                    "SCOPE_FILE_PATH approval has no valid exact path.",
+                )
+            grant_scope = "SCOPE_FILE_PATH"
+            grant_identity = file_path
+        else:
+            command = payload.get("exact_content")
+            commands = payload.get("commands")
+            if not command and isinstance(commands, list) and commands:
+                command = commands[0]
+            if not isinstance(command, str) or not command:
+                rollback()
+                return ApprovalActivationResult(
+                    False, ActivationStatus.INVALID_PENDING, "Semantic approval has no command."
+                )
+            operation = payload.get("operation", "")
+            danger_verb = ""
+            danger_category = "MUTATIVE"
+            if "intercepted:" in operation:
+                left, danger_verb = operation.split("intercepted:", 1)
+                danger_verb = danger_verb.strip()
+                danger_category = left.strip().split()[0] if left.strip() else "MUTATIVE"
+            signature = build_approval_signature(
+                command,
+                scope_type=SCOPE_SEMANTIC_SIGNATURE,
+                danger_verb=danger_verb,
+                danger_category=danger_category,
+            )
+            if signature is None:
+                rollback()
+                return ApprovalActivationResult(
+                    False,
+                    ActivationStatus.INVALID_SIGNATURE,
+                    "Could not build the semantic approval signature.",
+                )
+            grant_scope = "SCOPE_SEMANTIC_SIGNATURE"
+            grant_identity = command
+
+        original_call_id = binding.get("call_id") if isinstance(binding, dict) else None
+
+        def retry_descriptor(expected_index: int = 0) -> dict[str, Any]:
+            return _retry_descriptor(
+                approval_id=approval_id,
+                grant_scope=grant_scope,
+                agent_id=effective_agent,
+                session_id=stored_session,
+                original_call_id=original_call_id,
+                command=command,
+                file_path=file_path,
+                command_set=normalized_set,
+                request_fingerprint=request_fingerprint,
+                expected_index=expected_index,
+            )
+
+        try:
+            verify_fingerprint(approval_id, stored_payload, connection)
+        except Exception as exc:
+            rollback()
+            record_event(
+                approval_id,
+                "FAILED",
+                agent_id=effective_agent,
+                session_id=approver_session,
+                metadata_json=json.dumps(
+                    {
+                        "integrity_check": (
+                            "fingerprint_mismatch"
+                            if isinstance(exc, ChainTamperError)
+                            else "missing_requested_event"
+                        ),
+                        "error": str(exc),
+                        "activating_session": approver_session,
+                    },
+                    sort_keys=True,
+                ),
+            )
+            return ApprovalActivationResult(
+                False,
+                ActivationStatus.CHAIN_TAMPER_DETECTED,
+                f"Activation refused: payload integrity check failed: {exc}",
+            )
+
+        status = value("status", 0)
+        existing = connection.execute(
+            "SELECT scope, command_set_json, request_fingerprint, next_index FROM approval_grants "
+            "WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()
+        if status == "approved":
+            if existing is None:
+                rollback()
+                return ApprovalActivationResult(
+                    False,
+                    ActivationStatus.ERROR,
+                    "Approval is approved but has no executable grant.",
+                )
+            existing_scope = existing["scope"] if hasattr(existing, "keys") else existing[0]
+            existing_payload = existing["command_set_json"] if hasattr(existing, "keys") else existing[1]
+            existing_fingerprint = (
+                existing["request_fingerprint"] if hasattr(existing, "keys") else existing[2]
+            )
+            existing_index = existing["next_index"] if hasattr(existing, "keys") else existing[3]
+            try:
+                persisted = json.loads(existing_payload)
+            except (TypeError, json.JSONDecodeError):
+                persisted = None
+            matches = existing_scope == grant_scope
+            if grant_scope == "COMMAND_SET":
+                matches = matches and existing_fingerprint == grant_identity
+            elif grant_scope == "SCOPE_FILE_PATH":
+                matches = matches and isinstance(persisted, dict) and persisted.get("file_path") == grant_identity
+            else:
+                matches = matches and isinstance(persisted, dict) and persisted.get("command") == grant_identity
+            if not matches:
+                rollback()
+                return ApprovalActivationResult(
+                    False, ActivationStatus.ERROR, "Approved request has a mismatched grant."
+                )
+            return finish(
+                ApprovalActivationResult(
+                    True,
+                    ActivationStatus.ACTIVATED,
+                    "Approval already has its matching executable grant.",
+                    grant_scope=grant_scope,
+                    idempotent=True,
+                    retry_descriptor=retry_descriptor(int(existing_index or 0)),
+                )
+            )
+        if existing is not None:
+            rollback()
+            return ApprovalActivationResult(
+                False,
+                ActivationStatus.ERROR,
+                "Pending approval already has an executable grant.",
+            )
+        if status != "pending":
+            rollback()
+            return ApprovalActivationResult(
+                False, ActivationStatus.NOT_FOUND, f"Approval is not pending: {status!r}."
+            )
+
+        if request_type == "COMMAND_SET":
+            shown = shown_payload if isinstance(shown_payload, dict) else payload
+            activated = activate_command_set_atomically(
+                approval_id,
+                normalized_set,
+                request_fingerprint=request_fingerprint or "",
+                shown_payload=shown,
+                approver_session=approver_session,
+                agent_id=agent_id or stored_agent,
+                binding=binding,
+                con=connection,
+            )
+            return finish(
+                ApprovalActivationResult(
+                    True,
+                    ActivationStatus.ACTIVATED,
+                    "COMMAND_SET approval activated atomically.",
+                    grant_scope=grant_scope,
+                    idempotent=bool(activated.get("idempotent")),
+                    retry_descriptor=retry_descriptor(),
+                )
+            )
+
+        shown_json = (
+            shown_payload
+            if isinstance(shown_payload, str)
+            else canonical_payload(shown_payload or payload)
+        )
+        record_event(
+            approval_id,
+            "SHOWN",
+            agent_id=agent_id or stored_agent,
+            session_id=approver_session,
+            payload_json=shown_json,
+            con=connection,
+        )
+        record_event(
+            approval_id,
+            "APPROVED",
+            agent_id=agent_id or stored_agent,
+            session_id=approver_session,
+            con=connection,
+        )
+        connection.execute(
+            "UPDATE approvals SET status='approved', decided_at=? WHERE id=?",
+            (_now_iso(), approval_id),
+        )
+        if grant_scope == "SCOPE_FILE_PATH":
+            grant_result = writer.insert_file_path_grant(
+                approval_id=approval_id,
+                file_path=file_path,
+                scope_signature=signature.to_dict(),
+                agent_id=effective_agent,
+                session_id=approver_session,
+                con=connection,
+            )
+        else:
+            grant_result = writer.insert_semantic_grant(
+                approval_id=approval_id,
+                command=command,
+                scope_signature=signature.to_dict(),
+                agent_id=effective_agent,
+                session_id=approver_session,
+                ttl_minutes=ttl_minutes,
+                con=connection,
+            )
+        if grant_result.get("status") != "applied":
+            raise ValueError(grant_result.get("reason", "Grant creation failed"))
+        return finish(
+            ApprovalActivationResult(
+                True,
+                ActivationStatus.ACTIVATED,
+                f"{grant_scope} approval activated atomically.",
+                grant_scope=grant_scope,
+                retry_descriptor=retry_descriptor(),
+            )
+        )
+    except Exception as exc:
+        rollback()
+        return ApprovalActivationResult(False, ActivationStatus.ERROR, str(exc))
     finally:
         if owned:
             connection.close()

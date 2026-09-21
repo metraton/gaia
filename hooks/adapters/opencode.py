@@ -520,16 +520,21 @@ class OpenCodeAdapter(HookAdapter):
                 RETRY_REFUSED_PROOF_REJECTED,
                 record_consent_retry_refused,
             )
-            from gaia.approvals.store import record_execution_denial
+            from gaia.approvals.store import get_by_id, record_execution_denial
             from gaia.store.writer import find_pending_plan_command
 
-            command = cls._bash_command(event, tool_name)
-            if command is None:
-                return
-            match = find_pending_plan_command(command)
             proof = event.payload.get("consentRetry")
             claimed_id = proof.get("approval_id") if isinstance(proof, dict) else None
-            observed_fingerprint = hashlib.sha256(command.encode("utf-8")).hexdigest()
+            command = cls._bash_command(event, tool_name)
+            match = find_pending_plan_command(command) if command is not None else None
+            observed_fingerprint = (
+                hashlib.sha256(command.encode("utf-8")).hexdigest()
+                if command is not None else None
+            )
+            received = (
+                f"{event.session_id}/{event.call_id} as {cls._policy_agent_type(event)}"
+                + (f" fingerprint {observed_fingerprint}" if observed_fingerprint else f" tool {tool_name}")
+            )
             record_consent_retry_refused(
                 approval_id=match["approval_id"] if match else str(claimed_id or ""),
                 session_id=event.session_id or "",
@@ -537,25 +542,25 @@ class OpenCodeAdapter(HookAdapter):
                 reason=RETRY_REFUSED_PROOF_REJECTED,
                 expected=(
                     f"grant {match['approval_id']}[{match['index']}] fingerprint {match['fingerprint']}"
-                    if match else "a live plan-first grant naming this command"
+                    if match else "the active typed grant named by this proof"
                 ),
-                received=(
-                    f"{event.session_id}/{event.call_id} as {cls._policy_agent_type(event)}"
-                    f" fingerprint {observed_fingerprint}"
-                ),
+                received=received,
                 lane=LANE_OPENCODE_POLICY_GATE,
                 detail=reason,
             )
-            if match is None:
+            denial_approval_id = match["approval_id"] if match else claimed_id
+            if not isinstance(denial_approval_id, str):
+                return
+            if match is None and get_by_id(denial_approval_id) is None:
                 return
             record_execution_denial(
-                match["approval_id"],
+                denial_approval_id,
                 "consent_retry_proof_rejected",
                 host="opencode",
                 session_id=event.session_id,
                 call_id=event.call_id,
-                index=match["index"],
-                command_fingerprint=match["fingerprint"],
+                index=match["index"] if match else None,
+                command_fingerprint=match["fingerprint"] if match else observed_fingerprint,
                 agent_id=cls._policy_agent_type(event),
                 detail=reason,
             )
@@ -582,27 +587,11 @@ class OpenCodeAdapter(HookAdapter):
         grant's session instead (measured 2026-09-16: a byte-identical retry
         was refused because the two namespaces were compared as one).
         """
-        command = cls._bash_command(event, tool_name)
-        if command is None:
-            return None
-
-        try:
-            from gaia.store.writer import (
-                find_pending_plan_command,
-                list_approval_grants,
-            )
-
-            pending = find_pending_plan_command(command) is not None
-        except Exception as exc:
-            return f"OpenCode consent retry lookup failed closed: {exc}"
-
         proof = event.payload.get("consentRetry")
         if proof is None:
             return None
         if not isinstance(proof, dict):
             return "OpenCode consent retry proof is malformed"
-        if not pending:
-            return "OpenCode consent retry proof names no executable command"
         try:
             attestation = cls._resolved_attestation(event)
         except Exception:
@@ -614,10 +603,12 @@ class OpenCodeAdapter(HookAdapter):
         agent_id = proof.get("agent_id")
         original_call_id = proof.get("original_call_id")
         retry_call_id = proof.get("retry_call_id")
-        fingerprint = proof.get("command_fingerprint")
-        index = proof.get("expected_index")
         if (
-            not isinstance(approval_id, str)
+            proof.get("version") != 1
+            or proof.get("kind") not in {
+                "COMMAND_SET", "SCOPE_SEMANTIC_SIGNATURE", "SCOPE_FILE_PATH",
+            }
+            or not isinstance(approval_id, str)
             or re.fullmatch(r"P-[0-9a-f]{32}", approval_id) is None
             or not isinstance(agent_id, str)
             or not agent_id
@@ -626,15 +617,12 @@ class OpenCodeAdapter(HookAdapter):
             or not isinstance(original_call_id, str)
             or not original_call_id
             or original_call_id == retry_call_id
-            or proof.get("command") != command
-            or fingerprint != hashlib.sha256(command.encode("utf-8")).hexdigest()
-            or isinstance(index, bool)
-            or not isinstance(index, int)
-            or index < 0
+            or proof.get("role") != cls._policy_agent_type(event)
         ):
             return "OpenCode consent retry proof does not match this fresh tool call"
 
         try:
+            from gaia.store.writer import list_approval_grants
             from .consent_events import mint_correlation_id
 
             expected_correlation = mint_correlation_id(
@@ -650,42 +638,82 @@ class OpenCodeAdapter(HookAdapter):
                 (row for row in grants if row.get("approval_id") == approval_id),
                 None,
             )
-            items = json.loads(grant.get("command_set_json") or "[]") if grant else []
-            grant_index = int(grant.get("next_index") or 0) if grant else -1
-            matching_ids = []
-            for candidate in grants:
-                candidate_items = json.loads(candidate.get("command_set_json") or "[]")
-                candidate_index = int(candidate.get("next_index") or 0)
-                if (
-                    candidate.get("scope") == "COMMAND_SET"
-                    and candidate.get("source") == "plan-first"
-                    and not candidate.get("reservation_tool_use_id")
-                    and candidate_index >= 0
-                    and candidate_index < len(candidate_items)
-                    and isinstance(candidate_items[candidate_index], dict)
-                    and candidate_items[candidate_index].get("command") == command
-                    and candidate_items[candidate_index].get("fingerprint") == fingerprint
-                ):
-                    matching_ids.append(candidate.get("approval_id"))
+            grant_payload = json.loads(grant.get("command_set_json") or "null") if grant else None
         except Exception:
             return "OpenCode consent retry proof could not be verified"
 
         if (
             proof.get("correlation_id") != expected_correlation
             or grant is None
-            or grant.get("scope") != "COMMAND_SET"
-            or grant.get("source") != "plan-first"
-            or grant.get("reservation_tool_use_id")
             or grant.get("agent_id") != agent_id
             or grant.get("session_id") != event.session_id
-            or grant_index != index
-            or index >= len(items)
-            or not isinstance(items[index], dict)
-            or items[index].get("command") != command
-            or items[index].get("fingerprint") != fingerprint
-            or matching_ids != [approval_id]
         ):
             return "OpenCode consent retry proof drifted from its bound grant"
+
+        kind = proof["kind"]
+        if kind in {"COMMAND_SET", "SCOPE_SEMANTIC_SIGNATURE"}:
+            command = cls._bash_command(event, tool_name)
+            fingerprint = proof.get("command_fingerprint")
+            if (
+                command is None
+                or proof.get("command") != command
+                or fingerprint != hashlib.sha256(command.encode("utf-8")).hexdigest()
+            ):
+                return "OpenCode consent retry proof command drifted from this call"
+            if kind == "SCOPE_SEMANTIC_SIGNATURE":
+                if (
+                    grant.get("scope") != kind
+                    or not isinstance(grant_payload, dict)
+                    or grant_payload.get("command") != command
+                ):
+                    return "OpenCode semantic retry proof drifted from its active grant"
+                return None
+
+            index = proof.get("expected_index")
+            grant_index = int(grant.get("next_index") or 0)
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or grant.get("scope") != "COMMAND_SET"
+                or grant.get("source") != "plan-first"
+                or grant.get("reservation_tool_use_id")
+                or not isinstance(grant_payload, list)
+                or grant_index != index
+                or index >= len(grant_payload)
+                or not isinstance(grant_payload[index], dict)
+                or grant_payload[index].get("command") != command
+                or grant_payload[index].get("fingerprint") != fingerprint
+                or grant.get("request_fingerprint") != proof.get("request_fingerprint")
+            ):
+                return "OpenCode COMMAND_SET retry proof drifted from its bound grant"
+            return None
+
+        tool_input = event.payload.get("tool_input") or event.payload.get("args") or {}
+        policy_tool = cls._policy_tool_name(tool_name)
+        if policy_tool not in {"Write", "Edit"} or not isinstance(tool_input, dict):
+            return "OpenCode file retry proof names the wrong tool family"
+        if str(tool_name).lower() == "apply_patch":
+            paths = tool_input.get("file_paths")
+            actual_paths = paths if isinstance(paths, list) else []
+        else:
+            actual_path = tool_input.get("file_path")
+            actual_paths = [actual_path] if isinstance(actual_path, str) else []
+        canonical_path = proof.get("canonical_path")
+        if (
+            proof.get("tool_family") != policy_tool
+            or not isinstance(canonical_path, str)
+            or actual_paths != [canonical_path]
+            or proof.get("path_fingerprint")
+            != hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()
+        ):
+            return "OpenCode file retry proof path or tool family drifted from this call"
+        if (
+            grant.get("scope") != "SCOPE_FILE_PATH"
+            or not isinstance(grant_payload, dict)
+            or grant_payload.get("file_path") != canonical_path
+        ):
+            return "OpenCode file retry proof drifted from its active grant"
         return None
 
     def _adapt_task_with_kernel(

@@ -1460,9 +1460,9 @@ def cmd_approve(args) -> int:
         return 1
 
     current_status = approval.get("status", "?")
-    if current_status != "pending":
+    if current_status not in {"pending", "approved"}:
         _print_error(
-            f"Cannot approve approval {raw_id}: status is {current_status!r} (must be 'pending')",
+            f"Cannot approve approval {raw_id}: status is {current_status!r}",
             args,
         )
         return 1
@@ -1492,29 +1492,13 @@ def cmd_approve(args) -> int:
     session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-session"
     try:
         store = _import_approval_store()
-        payload = json.loads(approval.get("payload_json") or "{}")
-        if payload.get("request_type") == "COMMAND_SET":
-            from gaia.store.writer import insert_plan_command_set
-            con = store._open_db()
-            try:
-                con.execute("BEGIN IMMEDIATE")
-                applied = insert_plan_command_set(
-                    raw_id, payload["command_set"],
-                    request_fingerprint=payload["request_fingerprint"],
-                    agent_id=approval.get("agent_id"),
-                    session_id=approval.get("session_id"), con=con,
-                )
-                if applied.get("status") != "applied":
-                    raise RuntimeError(applied.get("reason", "grant persistence failed"))
-                store.approve(raw_id, approver_session=session_id, con=con)
-                con.commit()
-            except Exception:
-                con.rollback()
-                raise
-            finally:
-                con.close()
-        else:
-            store.approve(raw_id, approver_session=session_id)
+        activation = store.activate_approval_atomically(
+            raw_id,
+            approver_session=session_id,
+            agent_id=approval.get("agent_id"),
+        )
+        if not activation.success:
+            raise ValueError(activation.reason)
     except ValueError as exc:
         _print_error(str(exc), args)
         return 1
@@ -1631,7 +1615,9 @@ def cmd_request_file_write(args) -> int:
     return 0
 
 
-def _opencode_binding(args) -> tuple[dict | None, str | None]:
+def _opencode_binding(
+    args, *, allow_approved: bool = False
+) -> tuple[dict | None, str | None]:
     """Require matching presentations to agree on the approval's owning session.
 
     An approval whose row names no session has not been presented anywhere
@@ -1659,7 +1645,8 @@ def _opencode_binding(args) -> tuple[dict | None, str | None]:
 
     if approval is None:
         return None, f"No approval found for id: {approval_id}"
-    if approval.get("status") != "pending":
+    accepted_statuses = {"pending", "approved"} if allow_approved else {"pending"}
+    if approval.get("status") not in accepted_statuses:
         return None, f"Approval {approval_id} is not pending"
     owner = approval.get("session_id")
     if owner is not None and owner != session_id:
@@ -1837,7 +1824,7 @@ def cmd_opencode_decide(args) -> int:
     ``reject`` reply grants nothing; ``always`` is refused outright, because
     this protocol version issues no standing grant it could stand for.
     """
-    approval, error = _opencode_binding(args)
+    approval, error = _opencode_binding(args, allow_approved=True)
     if error:
         _print_error(error, args)
         return 1
@@ -1886,27 +1873,26 @@ def cmd_opencode_decide(args) -> int:
         return 1
     try:
         store = _import_approval_store()
+        retry_descriptor = None
         if decision.decision is consent.ConsentDecision.REJECT:
             store.reject(approval["id"], args.session_id, agent_id="opencode-plugin")
             status = "rejected"
         else:
-            payload = json.loads(approval.get("payload_json") or "{}")
-            if payload.get("request_type") == "COMMAND_SET":
-                store.activate_command_set_atomically(
-                    approval["id"],
-                    payload.get("command_set") or [],
-                    request_fingerprint=payload.get("request_fingerprint", ""),
-                    shown_payload=payload,
-                    approver_session=args.session_id,
-                    agent_id=binding.agent_id,
-                    binding={
-                        "agent_id": binding.agent_id,
-                        "session_id": binding.session_id,
-                        "call_id": binding.call_id,
-                    },
-                )
-            else:
-                store.approve(approval["id"], args.session_id, agent_id="opencode-plugin")
+            activation = store.activate_approval_atomically(
+                approval["id"],
+                approver_session=args.session_id,
+                agent_id=binding.agent_id,
+                binding={
+                    "agent_id": binding.agent_id,
+                    "session_id": binding.session_id,
+                    "call_id": binding.call_id,
+                },
+            )
+            if not activation.success:
+                raise ValueError(activation.reason)
+            retry_descriptor = getattr(activation, "retry_descriptor", None)
+            if not isinstance(retry_descriptor, dict):
+                retry_descriptor = None
             status = "approved"
     except Exception as exc:
         _print_error(f"OpenCode approval decision failed: {exc}", args)
@@ -1920,6 +1906,7 @@ def cmd_opencode_decide(args) -> int:
             "correlation_id": decision.correlation_id,
             "request_fingerprint": decision.request_fingerprint,
             "protocol_version": decision.protocol_version,
+            "retry_descriptor": retry_descriptor,
         }))
     return 0
 
