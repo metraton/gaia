@@ -1,6 +1,6 @@
 # Gaia Patterns -- Reference
 
-Package: `@jaguilar87/gaia` | Node >=18 | Python >=3.11
+Package: `@jaguilar87/gaia` | Node >=18 | Python >=3.12
 
 ---
 

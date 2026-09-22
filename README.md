@@ -199,7 +199,7 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 ## Requirements
 
 - **Node.js:** >=18.0.0
-- **Python:** >=3.11
+- **Python:** >=3.12
 - **Claude Code:** >=2.1.0
 - **Git:** >=2.30
 

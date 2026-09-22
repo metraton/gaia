@@ -107,7 +107,7 @@ A fresh install or an edit is invisible until Claude Code picks it up, and *how*
 
 | Workflow | File | Triggers |
 |----------|------|----------|
-| CI | `.github/workflows/ci.yml` | Push / PR -- runs pytest (Python 3.11/3.12), Node tests, plugin build verification, and `validate-manifests` |
+| CI | `.github/workflows/ci.yml` | Push / PR -- runs pytest (Python 3.12), Node tests, plugin build verification, and `validate-manifests` |
 | Publish | `.github/workflows/publish.yml` | GitHub Release event -- packs the npm tarball (`prepack` regenerates root manifests), validates, runs the sandbox gate, auto-detects npm tag from version (`-rc.` -> rc, `-beta.` -> beta, else -> latest), and publishes. It no longer builds/commits a `dist/` bundle or force-moves the tag (read-only checkout). |
 
 `NPM_TOKEN` lives in GitHub Secrets; local `npm publish` bypasses build verification and is not the supported path.
