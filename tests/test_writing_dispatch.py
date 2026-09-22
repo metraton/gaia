@@ -49,14 +49,14 @@ def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsy
     )
     result = dispatch_writing_agent(
         repo, "project-checkout", "contract-62", "agent-62",
-        [sys.executable, "-c", script], branch="task-62",
+        [sys.executable, "-c", script], branch="task-62", base="HEAD",
     )
     specialist = json.loads(result.stdout)
     printed = {"main": main_before, "worktree": {**specialist, **result.as_contract()}}
     print(json.dumps(printed, sort_keys=True))
     assert specialist["pwd"] == result.path
     assert specialist["branch"] == result.branch == "task-62"
-    assert specialist["status"].splitlines() == ["?? .gaia-worktree.json", "?? specialist.txt"]
+    assert specialist["status"].splitlines() == ["?? specialist.txt"]
     assert result.commit != main_before["commit"]
     assert result.as_contract() == {
         "path": result.path, "branch": "task-62", "commit": result.commit,
@@ -70,7 +70,7 @@ def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsy
 
 
 def test_failed_writing_dispatch_does_not_leave_worktree(tmp_path, monkeypatch):
-    from gaia.paths import worktrees_dir
+    from gaia.worktree import workspace_worktrees_root
 
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
     repo = _repo(tmp_path / "project-checkout")
@@ -78,6 +78,7 @@ def test_failed_writing_dispatch_does_not_leave_worktree(tmp_path, monkeypatch):
         dispatch_writing_agent(
             repo, "project-checkout", "contract-fail", "agent-fail",
             [sys.executable, "-c", "open('half-owned.txt','w').write('x'); raise SystemExit(7)"],
+            base="HEAD",
         )
     assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
-    assert not list(worktrees_dir().rglob("half-owned.txt"))
+    assert not list(workspace_worktrees_root(repo).rglob("half-owned.txt"))

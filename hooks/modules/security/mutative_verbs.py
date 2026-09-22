@@ -508,15 +508,17 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # runs internally, which never passes through this hook at all (it is a
     # subprocess of the already-classified CLI process, not a separate Bash
     # tool call). `create` is bounded by construction: the worktree is born
-    # under worktrees_dir() (never inside the caller's checkout), and its
-    # identity is stamped into the git lock's reason so the reclaim machinery
-    # can always find and account for it. `release` can never destroy
+    # under the workspace's git-ignored .project-worktrees root, its only
+    # network effect is fetching the remote's default branch into a
+    # remote-tracking ref, and its identity is stamped into the git lock's
+    # reason so the reclaim machinery can always find and account for it.
+    # `release` can never destroy
     # uncaptured work -- reclaim_worktree deposits a dirty worktree's full
     # diff as evidence BEFORE anything about it changes, and only ever calls
     # `git worktree remove` on a worktree already confirmed clean (see
     # gaia.retention.worktree_reclaim's module docstring). That call is
-    # forced ONLY to override Gaia's own untracked `.gaia-worktree.json`
-    # sidecar -- the one case a fresh, independently-recomputed content check
+    # forced ONLY to override an older worktree's untracked in-tree
+    # `.gaia-worktree.json` -- the one case a fresh, independently-recomputed content check
     # (`_exempt_metadata_filename`) has already proven carries no agent work
     # -- and stays unforced otherwise; `--force` never overrides anything
     # this module has not itself just verified is safe. Both `create` and
@@ -2516,7 +2518,7 @@ def _durable_store_under_scratch_targets(
 #   add / move  -> MUTATIVE.  Creating a worktree contracts an obligation to
 #                  clean it up later; that is the act worth a signature.
 #   remove      -> MUTATIVE, EXCEPT when every target resolves strictly inside
-#                  Gaia's central worktrees root and no force signal is present
+#                  a Gaia-managed worktrees root and no force signal is present
 #                  (see _git_worktree_recycles_only_managed_root).
 #   anything else (list, prune, lock, unlock, repair, or a subcommand added by
 #                  a future git) -> not handled here; the lane returns None and
@@ -2548,25 +2550,19 @@ GIT_WORKTREE_MUTATIVE_SUBCOMMANDS: FrozenSet[str] = frozenset({
 })
 
 
-def _gaia_worktrees_root() -> "str | None":
-    """Return the canonical (realpath) Gaia worktrees root, or None.
+def _gaia_worktrees_root(real_target: str) -> "str | None":
+    """Return the Gaia-managed worktrees root strictly containing *real_target*, or None.
 
-    Reads the location from gaia.paths.resolver.worktrees_dir() so a
-    GAIA_DATA_DIR override is honoured, then canonicalises it with
-    os.path.realpath.  Resolving at call time (rather than comparing against a
-    literal string prefix) is what makes the containment check in
-    _git_worktree_recycles_only_managed_root a statement about the real
-    directory instead of about the spelling of a path.
-
-    Fail-closed: any failure to import the resolver or resolve the path returns
-    None, which makes the worktree exception decline (stay T3).
+    The roots are those gaia.worktree creates under: the workspace root of the
+    repository the target belongs to, and the legacy central root.  Any
+    failure to resolve them returns None, which keeps the command at T3.
     """
-    import os
     try:
-        from gaia.paths.resolver import worktrees_dir
-        return os.path.realpath(str(worktrees_dir()))
+        from gaia.worktree import managed_root_containing
+        root = managed_root_containing(real_target)
     except Exception:
         return None
+    return None if root is None else str(root)
 
 
 def _git_worktree_positionals(tokens: tuple) -> List[str]:
@@ -2633,18 +2629,17 @@ def _git_worktree_has_force_signal(tokens: tuple) -> bool:
 
 
 def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
-    """Return True only if a `git worktree remove` recycles inside Gaia's root.
+    """Return True only if a `git worktree remove` recycles inside Gaia's managed roots.
 
     STRICT and fail-closed.  Returns True only when ALL of the following hold:
-      (a) the worktrees root resolves (GAIA_DATA_DIR honoured);
-      (b) no force signal is present -- see _git_worktree_has_force_signal;
-      (c) at least one removal target is present after ``worktree remove``;
-      (d) every target is ABSOLUTE after expanduser.  A relative target is
+      (a) no force signal is present -- see _git_worktree_has_force_signal;
+      (b) at least one removal target is present after ``worktree remove``;
+      (c) every target is ABSOLUTE after expanduser.  A relative target is
           refused because ``git -C <repo>`` resolves it against the repo, not
           against the hook's cwd, so its real destination is not knowable here;
-      (e) no target carries a glob metacharacter or a ``..`` component;
-      (f) every target, after os.path.realpath, lives strictly UNDER
-          ``worktrees_root + os.sep``.
+      (d) no target carries a glob metacharacter or a ``..`` component;
+      (e) every target, after os.path.realpath, lives strictly under a
+          managed root -- see _gaia_worktrees_root.
 
     realpath (not normpath) is deliberate: a path fabricated out of symlinks or
     parent-traversal segments is resolved to the directory it actually names
@@ -2655,10 +2650,6 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
     Any ambiguity returns False, keeping the command at T3.
     """
     import os
-    worktrees_root = _gaia_worktrees_root()
-    if not worktrees_root:
-        return False
-
     if _git_worktree_has_force_signal(tokens):
         return False
 
@@ -2676,8 +2667,7 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
         expanded = os.path.expanduser(target)
         if not os.path.isabs(expanded):
             return False
-        real = os.path.realpath(expanded)
-        if not real.startswith(worktrees_root + os.sep):
+        if _gaia_worktrees_root(os.path.realpath(expanded)) is None:
             return False
 
     return True
@@ -2710,8 +2700,9 @@ def _check_git_worktree(
             confidence="high",
             reason=(
                 "git worktree remove recycling only inside Gaia's managed "
-                "worktrees root (~/.gaia/worktrees); every target resolves "
-                "strictly under the runtime-resolved root via realpath and no "
+                "worktrees roots (<workspace>/.project-worktrees or the legacy "
+                "~/.gaia/worktrees); every target resolves strictly under one "
+                "via realpath and no "
                 "force flag overrides git's own uncommitted-changes refusal"
             ),
         )
