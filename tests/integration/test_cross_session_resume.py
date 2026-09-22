@@ -305,8 +305,11 @@ class TestCmdApprove:
             rc = cmd_approve(args)
         assert rc == 1
 
-    def test_approve_with_yes_calls_typed_activation(self):
+    def test_approve_with_yes_calls_typed_activation(self, monkeypatch):
         """cmd_approve --yes delegates to the shared typed service."""
+        # cmd_approve prefers CLAUDE_SESSION_ID over "cli-session", and the hook
+        # adapter caches a generated session id in os.environ for the process.
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
         sys.path.insert(0, str(_REPO_ROOT / "bin"))
         from cli.approvals import cmd_approve
 

@@ -244,11 +244,10 @@ class TestClassifyHostUnknown:
         result = classify_host("8.8.8.8")
         assert result.category == HostCategory.UNKNOWN
 
-    def test_is_unknown_property(self):
+    def test_unknown_host_is_not_local(self):
         result = classify_host("https://evil.com/api")
-        assert result.is_unknown is True
+        assert result.category == HostCategory.UNKNOWN
         assert result.is_local is False
-        assert result.is_known_registry is False
 
 
 # ============================================================================
@@ -332,14 +331,12 @@ class TestClassifyHostEdgeCases:
     def test_is_local_property(self):
         result = classify_host("localhost")
         assert result.is_local is True
-        assert result.is_known_registry is False
-        assert result.is_unknown is False
+        assert result.category == HostCategory.LOCALHOST
 
-    def test_is_known_registry_property(self):
+    def test_known_registry_is_not_local(self):
         result = classify_host("https://pypi.org/simple/")
-        assert result.is_known_registry is True
+        assert result.category == HostCategory.KNOWN_REGISTRY
         assert result.is_local is False
-        assert result.is_unknown is False
 
 
 # ============================================================================

@@ -32,7 +32,7 @@ from modules.security.approval_grants import (
     ACTIVATION_NOT_FOUND,
     DEFAULT_GRANT_TTL_MINUTES,
     ApprovalGrant,
-    activate_db_pending_by_prefix,
+    activate_db_pending_by_id,
     check_approval_grant,
     confirm_grant,
     consume_grant,
@@ -250,9 +250,9 @@ class TestNoncePrefixActivationCreatesGrant:
             nonce=nonce,
         )
 
-        # 2. Activate the DB pending by nonce prefix (simulates approval).
-        result = activate_db_pending_by_prefix(
-            nonce[:8], current_session_id=session_id,
+        # 2. Activate the DB pending by its approval_id (simulates approval).
+        result = activate_db_pending_by_id(
+            f"P-{nonce}", current_session_id=session_id,
         )
         assert result.success, f"Activation should succeed: {result.reason}"
 
@@ -274,7 +274,7 @@ class TestFullApprovalCycle:
 
         DB-only since the FS pending plane was retired: the deny writes a DB
         pending (insert_requested), the user-approval step activates that DB
-        pending by its nonce prefix (activate_db_pending_by_prefix), and the
+        pending by its approval_id (activate_db_pending_by_id), and the
         retry passes through on the resulting DB grant.
         """
         import re
@@ -324,10 +324,9 @@ class TestFullApprovalCycle:
             f"DB approval_id mismatch: stored={pending_rows[0]['id']}, deny={approval_id}"
         )
 
-        # Step 2: User approves -> activate the DB pending by its nonce prefix.
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        activation = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        # Step 2: User approves -> activate the DB pending by its approval_id.
+        activation = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert activation.success, f"Activation failed: {activation.reason}"
 
@@ -501,7 +500,7 @@ class TestConsumeGrant:
             danger_category="MUTATIVE",
             nonce=nonce,
         )
-        result = activate_db_pending_by_prefix(nonce[:8], current_session_id=session_id)
+        result = activate_db_pending_by_id(f"P-{nonce}", current_session_id=session_id)
         assert result.success, f"Activation should succeed: {result.reason}"
 
         # Verify grant exists before consume
@@ -533,7 +532,7 @@ class TestConsumeGrant:
             danger_category="MUTATIVE",
             nonce=nonce,
         )
-        activate_db_pending_by_prefix(nonce[:8], current_session_id=session_id)
+        activate_db_pending_by_id(f"P-{nonce}", current_session_id=session_id)
 
         # First consume succeeds
         assert consume_grant(command, session_id=session_id) is True
@@ -570,7 +569,7 @@ class TestConditionalActivation:
     ``[P-<nonce8>]`` tag (mandated by orchestrator-present-approval:
     "Without the suffix no grant is created"), the PostToolUse handler
     extracts it and activates the specific DB pending via
-    ``activate_db_pending_by_prefix``.
+    ``activate_db_pending_by_id``.
 
     The legacy "no-nonce session-wide activation" path (an unlabeled
     "Approve" activating ALL of a session's pendings) was dropped during
@@ -767,7 +766,7 @@ class TestConsumeGrantAtSubagentStop:
     model proven in test_double_approval_redirect.py):
 
         deny (DB pending)
-          -> activate (DB grant via activate_db_pending_by_prefix)
+          -> activate (DB grant via activate_db_pending_by_id)
           -> retry ALLOWED + grant CONSUMED in the same step
           -> second retry RE-BLOCKED (the consumed grant cannot match again).
 
@@ -789,7 +788,7 @@ class TestConsumeGrantAtSubagentStop:
         import re
         import gaia.approvals.store as astore
         import gaia.store.writer as gwriter
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
         from gaia.store.writer import check_db_semantic_grant
 
         command = "terraform apply"
@@ -840,9 +839,8 @@ class TestConsumeGrantAtSubagentStop:
         assert len(pending_rows) >= 1, "DB pending row must exist after deny"
 
         # Step 2: User approves -> DB grant activated (no filesystem involved).
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        activation = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        activation = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert activation.success, f"activation failed: {activation.reason}"
 

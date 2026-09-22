@@ -393,15 +393,14 @@ class TestShownEventPersistsTheSurface:
         db_path, assert_con, store = approvals_db
         from modules.security.approval_grants import (
             CONSENT_SURFACE_RECONSTRUCTED,
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
         )
 
         payload = _command_set_payload(BATCH_COMMANDS)
         approval_id = _insert_pending(store, payload)
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
 
-        assert activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=SESSION_ID
+        assert activate_db_pending_by_id(
+            approval_id, current_session_id=SESSION_ID
         ).success
 
         event = _shown_event(store, approval_id, assert_con)
@@ -422,7 +421,7 @@ class TestShownEventPersistsTheSurface:
         db_path, assert_con, store = approvals_db
         from modules.security.approval_grants import (
             CONSENT_SURFACE_CAPTURED,
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             render_consent_surface,
         )
 
@@ -430,8 +429,8 @@ class TestShownEventPersistsTheSurface:
         approval_id = _insert_pending(store, payload)
         presented = render_consent_surface(payload, approval_id)
 
-        assert activate_db_pending_by_prefix(
-            approval_id[len("P-"):len("P-") + 8],
+        assert activate_db_pending_by_id(
+            approval_id,
             current_session_id=SESSION_ID,
             presented_question=presented,
         ).success
@@ -448,13 +447,13 @@ class TestShownEventPersistsTheSurface:
         omission provable afterwards.
         """
         db_path, assert_con, store = approvals_db
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
         payload = _command_set_payload(BATCH_COMMANDS)
         approval_id = _insert_pending(store, payload)
 
-        result = activate_db_pending_by_prefix(
-            approval_id[len("P-"):len("P-") + 8],
+        result = activate_db_pending_by_id(
+            approval_id,
             current_session_id=SESSION_ID,
             presented_question=_legacy_singular_surface(payload),
         )
@@ -474,14 +473,14 @@ class TestChainUnaffected:
 
     def test_chain_valid_and_shown_fingerprint_still_null(self, approvals_db):
         db_path, assert_con, store = approvals_db
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
         from gaia.approvals.chain import validate_chain
 
         payload = _command_set_payload(BATCH_COMMANDS)
         approval_id = _insert_pending(store, payload)
-        assert activate_db_pending_by_prefix(
-            approval_id[len("P-"):len("P-") + 8], current_session_id=SESSION_ID
+        assert activate_db_pending_by_id(
+            approval_id, current_session_id=SESSION_ID
         ).success
 
         con = sqlite3.connect(str(db_path))

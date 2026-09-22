@@ -192,14 +192,14 @@ def _run_grant_cycle(workspace: Path) -> tuple[bool, str]:
 
     Uses the production pre_tool_use entry point (via the committed harness) for
     block and retry, and activates the pending approval at the DB plane
-    (``activate_db_pending_by_prefix``) -- deliberately NOT via any host-chosen
+    (``activate_db_pending_by_id``) -- deliberately NOT via any host-chosen
     activation route (risk R3). The retry runs under a DIFFERENT session id than
     the block to confirm the grant is session-agnostic, exactly as the shipped
     tests/integration/test_grant_cycle_no_session_env.py invariant requires.
     """
     from tests.fixtures.grant_cycle_harness import run_pre_tool_use_event
     from gaia.approvals.store import get_pending
-    from modules.security.approval_grants import activate_db_pending_by_prefix
+    from modules.security.approval_grants import activate_db_pending_by_id
 
     command = "git push origin winsmoke"
     block_session = "winsmoke-block"
@@ -228,8 +228,8 @@ def _run_grant_cycle(workspace: Path) -> tuple[bool, str]:
         return False, f"unexpected approval_id format: {approval_id!r}"
 
     # Phase 2: activate at the DB plane, under a DIFFERENT session (R3-safe).
-    activation = activate_db_pending_by_prefix(
-        approval_id[2:10], current_session_id=retry_session
+    activation = activate_db_pending_by_id(
+        approval_id, current_session_id=retry_session
     )
     if not getattr(activation, "success", False):
         return False, f"activate: failed status={getattr(activation,'status',None)!r} reason={getattr(activation,'reason',None)!r}"

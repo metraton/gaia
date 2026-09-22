@@ -2,7 +2,7 @@
 DB-primary CHECK-side cutover tests (Brief 71, FASE 3).
 
 Verifies:
-  1. activate_db_pending_by_prefix() inserts a row in approval_grants DB
+  1. activate_db_pending_by_id() inserts a row in approval_grants DB
      (not just a filesystem grant).
   2. check_approval_grant() finds the DB grant and allows the command.
   3. Consume marks the grant CONSUMED; a second check of the same command
@@ -154,7 +154,7 @@ def isolated_grants_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestActivationWritesToDB:
-    """activate_db_pending_by_prefix() inserts a row in approval_grants DB."""
+    """activate_db_pending_by_id() inserts a row in approval_grants DB."""
 
     def test_activation_inserts_db_row(self, file_db):
         """After activation, approval_grants has a PENDING row with correct approval_id."""
@@ -169,15 +169,13 @@ class TestActivationWritesToDB:
         )
         assert approval_id.startswith("P-")
 
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             ACTIVATION_ACTIVATED,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert result.success, f"Activation must succeed: {result.reason}"
@@ -223,15 +221,13 @@ class TestCheckFindsDBGrant:
             payload, agent_id="test-agent", session_id=session_id
         )
 
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
         )
 
-        activation_result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        activation_result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert activation_result.success
 
@@ -268,17 +264,15 @@ class TestConsumeReplayProtection:
             payload, session_id=session_id
         )
 
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
         )
         from gaia.store.writer import consume_db_semantic_grant
 
         # Activate.
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert result.success
 
@@ -327,16 +321,14 @@ class TestCrossSessionGrant:
             payload, agent_id="orchestrator", session_id=session_a
         )
 
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
         )
 
         # Activation happens under session B (the re-dispatched subagent's session).
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_b,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_b,
         )
         assert result.success, f"Cross-session activation must succeed: {result.reason}"
 
@@ -379,11 +371,9 @@ class TestFullCycleViaValidator:
         approval_id = m.group(1)
 
         # Step 3: Simulate user approval -- activate grant.
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
-        from modules.security.approval_grants import activate_db_pending_by_prefix
-        act_result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        from modules.security.approval_grants import activate_db_pending_by_id
+        act_result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert act_result.success, f"Activation must succeed: {act_result.reason}"
 
@@ -503,11 +493,10 @@ class TestFlagPathFullCycleViaValidator:
 
         # Step 3: user approves -> activate the grant under the orchestrator
         # session (cross-session: S_orch != S_sub), via the real activation path.
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
-        act_result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_orch,
+        act_result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_orch,
         )
         assert act_result.success, f"activation must succeed: {act_result.reason}"
 
@@ -593,7 +582,7 @@ class TestConsumeAtMatch:
         activating the grant. Returns the approval_id (now a PENDING grant)."""
         import re
         from modules.tools.bash_validator import validate_bash_command
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
         blocked = validate_bash_command(
             command, is_subagent=True, session_id=session_id
@@ -603,9 +592,7 @@ class TestConsumeAtMatch:
         m = re.search(r"approval_id:\s*(P-[0-9a-f-]+)", reason)
         assert m, f"deny reason must carry an approval_id: {reason}"
         approval_id = m.group(1)
-
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        act = activate_db_pending_by_prefix(nonce_prefix, current_session_id=session_id)
+        act = activate_db_pending_by_id(approval_id, current_session_id=session_id)
         assert act.success, f"activation must succeed: {act.reason}"
         return approval_id
 
@@ -680,15 +667,14 @@ class TestGrantReuse:
 
         import gaia.approvals.store as astore
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
         )
         from modules.tools.bash_validator import validate_bash_command
 
         payload = _sealed_payload(command)
         approval_id = astore.insert_requested(payload, session_id=session_id)
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        act = activate_db_pending_by_prefix(nonce_prefix, current_session_id=session_id)
+        act =activate_db_pending_by_id(approval_id, current_session_id=session_id)
         assert act.success, f"activation must succeed: {act.reason}"
 
         # The subagent never presented the command to validate(): the grant is

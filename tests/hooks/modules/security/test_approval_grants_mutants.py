@@ -54,7 +54,6 @@ from modules.security.approval_grants import (
     find_pending_for_command,
     find_pending_for_file,
     get_pending_approvals_for_session,
-    activate_db_pending_by_prefix,
     activate_db_pending_by_id,
     ACTIVATION_NOT_FOUND,
     DEFAULT_COMMAND_SET_TTL_MINUTES,
@@ -1586,31 +1585,6 @@ class TestSmallBehavioralSurvivorsBatch3:
 # logging-only slice NumberReplacers are NOT targeted -- they are equivalent
 # mutants no honest assertion can distinguish.
 # ===========================================================================
-class TestActivateDbPendingBatch4:
-    """activate_db_pending_by_prefix compatibility-shim branches."""
-
-    def test_get_pending_queried_all_sessions(self, monkeypatch):
-        """The retired ``activate_db_pending_by_prefix`` compatibility helper
-        (kept for legacy direct callers, never for consent -- see its own
-        docstring) still calls get_pending with all_sessions=True internally
-        before delegating to activate_db_pending_by_id. Kills the
-        ReplaceTrueWithFalse on THAT call: a session-scoped query would miss
-        the subagent's pending row. This exercises the compat shim itself,
-        not the canonical activation path -- deliberately out of the 97c8197
-        migration scope, since the shim's own contract is what is under test
-        here."""
-        captured = {}
-        def _gp(**kw):
-            captured.update(kw)
-            return []
-        monkeypatch.setattr("gaia.approvals.store.get_pending", _gp)
-        monkeypatch.setattr(
-            "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
-        )
-        activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
-        assert captured.get("all_sessions") is True
-
-
 class TestDbRowToPendingDictBatch4:
     """_db_row_to_pending_dict -- or-chain end + verb [-1] index."""
 

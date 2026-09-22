@@ -112,14 +112,6 @@ class HostClassification:
     def is_local(self) -> bool:
         return self.category == HostCategory.LOCALHOST
 
-    @property
-    def is_known_registry(self) -> bool:
-        return self.category == HostCategory.KNOWN_REGISTRY
-
-    @property
-    def is_unknown(self) -> bool:
-        return self.category == HostCategory.UNKNOWN
-
 
 # ---------------------------------------------------------------------------
 # Host extraction helpers

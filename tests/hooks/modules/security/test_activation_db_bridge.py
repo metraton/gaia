@@ -8,15 +8,13 @@ first.  When the filesystem file didn't exist, the grant was never activated
 and the subagent re-blocked eternally with the same approval_id.
 
 These tests verify:
-  1. activate_db_pending_by_prefix() creates a filesystem grant and writes
-     SHOWN+APPROVED events to the DB when given a DB-only pending.
-  2. The filesystem grant created by activate_db_pending_by_prefix() is
-     findable by check_approval_grant() (the CHECK side).
-  3. check/write alignment: what the validator reads is what activation writes.
-  4. _handle_ask_user_question_result() falls through to DB bridge when
-     load_pending_by_nonce_prefix() returns None.
-  5. Negative path: activate_db_pending_by_prefix returns NOT_FOUND when
-     no DB row matches the prefix.
+  1. activate_db_pending_by_id() activates a DB-only pending: the approval
+     flips to approved and SHOWN+APPROVED events are written.
+  2. check/write alignment: the grant activation writes is the one
+     check_approval_grant() reads.
+  3. _handle_ask_user_question_result() activates through the DB.
+  4. Negative path: activate_db_pending_by_id returns NOT_FOUND when no
+     DB row has that id.
 """
 
 from __future__ import annotations
@@ -332,11 +330,11 @@ def isolated_grants_dir(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Test 1: activate_db_pending_by_prefix creates filesystem grant + DB events
+# Test 1: activate_db_pending_by_id writes the DB grant + events
 # ---------------------------------------------------------------------------
 
-class TestActivateDbPendingByPrefix:
-    """Core unit tests for activate_db_pending_by_prefix()."""
+class TestActivateDbPendingById:
+    """Core unit tests for activate_db_pending_by_id()."""
 
     def test_activates_db_pending_creates_grant(self, db_and_store):
         """Given a DB REQUESTED row, activation inserts a DB semantic grant.
@@ -357,18 +355,14 @@ class TestActivateDbPendingByPrefix:
             session_id=session_id,
         )
         assert approval_id.startswith("P-"), f"Expected P-prefix, got: {approval_id}"
-
-        # Extract the nonce prefix (first 8 chars after "P-").
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
             ACTIVATION_ACTIVATED,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert result.success, f"Activation should succeed, got: {result.reason}"
@@ -392,12 +386,10 @@ class TestActivateDbPendingByPrefix:
             agent_id="test-agent",
             session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        from modules.security.approval_grants import activate_db_pending_by_id
 
-        from modules.security.approval_grants import activate_db_pending_by_prefix
-
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert result.success
 
@@ -419,12 +411,10 @@ class TestActivateDbPendingByPrefix:
             payload,
             session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        from modules.security.approval_grants import activate_db_pending_by_id
 
-        from modules.security.approval_grants import activate_db_pending_by_prefix
-
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert result.success
 
@@ -436,27 +426,20 @@ class TestActivateDbPendingByPrefix:
         assert row[0] == "approved", f"Expected status='approved', got: {row[0]}"
 
     def test_not_found_returns_error(self):
-        """NOT_FOUND when no DB row matches the prefix."""
+        """NOT_FOUND for a canonical id with no DB row."""
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             ACTIVATION_NOT_FOUND,
         )
 
-        result = activate_db_pending_by_prefix(
-            "deadbeef", current_session_id="test-bridge-session",
+        result = activate_db_pending_by_id(
+            "P-" + "deadbeef" * 4, current_session_id="test-bridge-session",
         )
         assert not result.success
         assert result.status == ACTIVATION_NOT_FOUND
 
-    # NOTE: the true full-path singular regression test (extract_nonce_from_label
-    # -> activate_db_pending_by_prefix -> bash_validator._validate_single_command)
-    # lives in tests/integration/test_command_set_runtime_v2_e2e.py, NOT here.
-    # This file's isolated_grants_dir autouse fixture (below) monkeypatches
-    # gaia.store.writer._connect to a hand-rolled inline approval_grants schema
-    # that predates the plan-first columns (no source/next_index/reservation_*),
-    # so reserve_plan_command's query fails closed with "no such column: source"
-    # for ANY test here that reaches it -- unrelated to the fix in
-    # approval_grants.py, a pre-existing test-infra gap in this file's fixture.
+    # The autouse isolated_grants_dir fixture's inline approval_grants schema lacks
+    # the plan-first columns, so no test here can reach reserve_plan_command.
 
 
 # ---------------------------------------------------------------------------
@@ -467,7 +450,7 @@ class TestCheckWriteAlignment:
     """The filesystem grant written by activation must be found by check_approval_grant()."""
 
     def test_grant_is_checkable_after_activation(self, db_and_store):
-        """check_approval_grant() returns the grant created by activate_db_pending_by_prefix()."""
+        """check_approval_grant() returns the grant created by activate_db_pending_by_id()."""
         db_path, assert_con, store = db_and_store
         command = "terraform apply"
         session_id = "test-bridge-session"
@@ -478,22 +461,20 @@ class TestCheckWriteAlignment:
             agent_id="test-agent",
             session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
         )
 
-        activation_result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        activation_result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert activation_result.success
 
         # The CHECK side should find the grant.
         grant = check_approval_grant(command, session_id=session_id)
         assert grant is not None, (
-            "check_approval_grant() must find the grant written by activate_db_pending_by_prefix()"
+            "check_approval_grant() must find the grant written by activate_db_pending_by_id()"
         )
         assert grant.approved_scope == command
         assert grant.confirmed, "Grant must have confirmed=True (user already approved)"
@@ -503,11 +484,8 @@ class TestCheckWriteAlignment:
 
         This replicates the exact scenario from the E2E failure:
           1. bash_validator blocks a T3 command and calls insert_requested() -> DB.
-          2. User approves via AskUserQuestion with [P-{prefix}] label.
-          3. _handle_ask_user_question_result calls
-             activate_db_pending_by_prefix() because no filesystem pending exists.
-          4. Filesystem grant is created.
-          5. bash_validator retry finds the grant and allows the command.
+          2. The approval is activated by its full approval_id.
+          3. bash_validator retry finds the grant and allows the command.
         """
         import gaia.approvals.store as astore
 
@@ -536,16 +514,13 @@ class TestCheckWriteAlignment:
         assert pending_rows[0]["id"] == approval_id
 
         # Step 2: Simulate user approval via AskUserQuestion.
-        # Extract nonce prefix from approval_id: P-{nonce_prefix=first_8_chars}...
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
         )
 
-        activation_result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        activation_result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert activation_result.success, (
             f"DB-bridge activation must succeed: {activation_result.reason}"
@@ -684,7 +659,7 @@ class TestHandleAskUserQuestionDbBridge:
 # ---------------------------------------------------------------------------
 # Test 4: COMMAND_SET create-side wiring (multi-command under one consent)
 #
-# Closes the orphaned-create gap: activate_db_pending_by_prefix must branch
+# Closes the orphaned-create gap: activate_db_pending_by_id must branch
 # into create_command_set_grant when the approved payload carries a set of
 # more than one command, and the resulting grant must be consumable by the
 # existing bash_validator consume path (match_command_set_grant +
@@ -692,7 +667,7 @@ class TestHandleAskUserQuestionDbBridge:
 # ---------------------------------------------------------------------------
 
 class TestActivateDbPendingCommandSet:
-    """activate_db_pending_by_prefix wires the COMMAND_SET create side."""
+    """activate_db_pending_by_id wires the COMMAND_SET create side."""
 
     def test_multi_command_payload_creates_command_set_grant(self, db_and_store):
         """A payload with >1 command activates into ONE COMMAND_SET grant,
@@ -709,15 +684,13 @@ class TestActivateDbPendingCommandSet:
         approval_id = store.insert_requested(
             payload, agent_id="test-agent", session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             ACTIVATION_ACTIVATED,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert result.success, f"Activation should succeed: {result.reason}"
@@ -752,17 +725,15 @@ class TestActivateDbPendingCommandSet:
         ]
         payload = _sealed_command_set_payload(command_set)
         approval_id = store.insert_requested(payload, session_id=session_id)
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
         from gaia.store.writer import PLAN_COMMAND_SET_TTL_MINUTES
         from datetime import datetime, timezone
 
         assert PLAN_COMMAND_SET_TTL_MINUTES == 60
 
         before = datetime.now(timezone.utc)
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert result.success
 
@@ -790,16 +761,14 @@ class TestActivateDbPendingCommandSet:
         ]
         payload = _sealed_command_set_payload(command_set)
         approval_id = store.insert_requested(payload, session_id=session_id)
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             match_command_set_grant,
         )
         from gaia.store.writer import mark_command_set_item_consumed
 
-        assert activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        assert activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         ).success
 
         # First command: matches at index 0, consume it.
@@ -866,10 +835,8 @@ class TestActivateDbPendingCommandSet:
         ]
         payload = _sealed_command_set_payload(command_set)
         approval_id = store.insert_requested(payload, session_id=session_a)
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             match_command_set_grant,
         )
         from gaia.store.writer import (
@@ -878,8 +845,8 @@ class TestActivateDbPendingCommandSet:
         )
 
         # Activate the grant under session A.
-        assert activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_a,
+        assert activate_db_pending_by_id(
+            approval_id, current_session_id=session_a,
         ).success
 
         # Demonstrate the ROOT CAUSE: the old session-scoped query would have
@@ -951,15 +918,13 @@ class TestActivateDbPendingCommandSet:
             [{"command": "terraform apply", "rationale": "one"}]
         )
         approval_id = store.insert_requested(payload, session_id=session_id)
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             check_approval_grant,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
         assert result.success
         # Singular path -> DB semantic grant, no COMMAND_SET grant.
@@ -1058,7 +1023,7 @@ class TestFingerprintEnforcementOnActivation:
         modifying the row AFTER it was written.  The stored fingerprint in
         approval_events (REQUESTED event) will now disagree with the modified
         payload_json, exactly as would happen if an orchestrator altered the
-        payload before calling activate_db_pending_by_prefix().
+        payload before calling activate_db_pending_by_id().
 
         DELIBERATELY SYNTHETIC NEGATIVE FIXTURE -- do not convert this dict to
         the real producer. What it probes is a payload that the producer never
@@ -1105,19 +1070,17 @@ class TestFingerprintEnforcementOnActivation:
             agent_id="test-agent",
             session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         # Tamper the payload_json in the DB after generation (simulates orchestrator
         # altering the command the user would see).
         self._tamper_payload_json_in_db(assert_con, approval_id, "rm -rf /production")
 
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             ACTIVATION_CHAIN_TAMPER_DETECTED,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert not result.success, "Tampered payload must NOT activate"
@@ -1141,13 +1104,12 @@ class TestFingerprintEnforcementOnActivation:
         approval_id = store.insert_requested(
             payload, session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
         self._tamper_payload_json_in_db(assert_con, approval_id, "git push --force origin main")
 
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert not result.success
@@ -1174,13 +1136,12 @@ class TestFingerprintEnforcementOnActivation:
             agent_id="test-agent",
             session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
         self._tamper_payload_json_in_db(assert_con, approval_id, "kubectl delete namespace production")
 
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert not result.success
@@ -1216,17 +1177,15 @@ class TestFingerprintEnforcementOnActivation:
             payload,
             agent_id="test-agent",
             session_id=session_id,
-        )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        # No tampering -- payload_json matches the REQUESTED fingerprint.
+        )        # No tampering -- payload_json matches the REQUESTED fingerprint.
 
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             ACTIVATION_ACTIVATED,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert result.success, f"Legitimate activation must succeed: {result.reason}"
@@ -1276,15 +1235,13 @@ class TestFingerprintEnforcementOnActivation:
         assert_con.commit()
 
         # There are no approval_events rows for this approval_id.
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             ACTIVATION_CHAIN_TAMPER_DETECTED,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert not result.success
@@ -1305,13 +1262,12 @@ class TestFingerprintEnforcementOnActivation:
         approval_id = store.insert_requested(
             payload, session_id=session_id,
         )
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
         self._tamper_payload_json_in_db(assert_con, approval_id, "gcloud projects delete all-projects")
 
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        result = activate_db_pending_by_id(
+            approval_id, current_session_id=session_id,
         )
 
         assert not result.success

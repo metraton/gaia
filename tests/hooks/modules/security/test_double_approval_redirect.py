@@ -189,7 +189,7 @@ class TestDoubleApprovalReproduction:
     def test_redirect_block_then_plain_retry_reuses_grant(self, db_and_store):
         import gaia.approvals.store as astore
         from modules.tools.bash_validator import validate_bash_command
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
         db_path, assert_con, store = db_and_store
         session_id = "test-dbl-session"
@@ -211,9 +211,8 @@ class TestDoubleApprovalReproduction:
         assert len(pending) == 1, f"exactly one pending expected, got {len(pending)}"
 
         # Step 2: user approves -> grant activated.
-        nonce_prefix = approval_id_1[len("P-"):len("P-") + 8]
-        activation = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=session_id,
+        activation = activate_db_pending_by_id(
+            approval_id_1, current_session_id=session_id,
         )
         assert activation.success, f"activation failed: {activation.reason}"
 

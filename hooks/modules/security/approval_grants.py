@@ -1049,46 +1049,6 @@ def activate_db_pending_by_id(
     )
 
 
-def activate_db_pending_by_prefix(
-    nonce_prefix: str,
-    current_session_id: Optional[str] = None,
-    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
-    presented_question: Optional[str] = None,
-    presented_label: Optional[str] = None,
-) -> ApprovalActivationResult:
-    """Compatibility helper for legacy direct callers; never use for consent."""
-    try:
-        from gaia.approvals.store import get_pending
-
-        candidates = [
-            row.get("id", "")
-            for row in get_pending(all_sessions=True)
-            if row.get("id", "").startswith(f"P-{nonce_prefix}")
-        ]
-        if len(candidates) != 1:
-            return ApprovalActivationResult(
-                success=False,
-                status=ACTIVATION_NOT_FOUND,
-                reason=(
-                    f"Legacy nonce prefix {nonce_prefix!r} resolved to "
-                    f"{len(candidates)} pending approvals."
-                ),
-            )
-        return activate_db_pending_by_id(
-            candidates[0],
-            current_session_id=current_session_id,
-            ttl_minutes=ttl_minutes,
-            presented_question=presented_question,
-            presented_label=presented_label,
-        )
-    except Exception as exc:
-        return ApprovalActivationResult(
-            success=False,
-            status=ACTIVATION_ERROR,
-            reason=f"Legacy prefix lookup failed: {exc}",
-        )
-
-
 # ============================================================================
 # Command-Set Grant Creation and Matching (M3 / D4 / D10)
 # ============================================================================

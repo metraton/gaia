@@ -19,7 +19,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security.approval_grants import (
     ApprovalGrant,
-    activate_db_pending_by_prefix,
+    activate_db_pending_by_id,
     check_approval_grant,
     cleanup_expired_grants,
     confirm_grant,
@@ -620,10 +620,10 @@ class TestCrossSessionNonceTargeted:
             nonce=nonce,
         )
 
-        # Activate by nonce prefix under session_B (cross-session: the DB
-        # lookup is all-sessions, the grant is created under current session).
-        result = activate_db_pending_by_prefix(
-            nonce[:8], current_session_id=session_b,
+        # Activate under session_B: the pending belongs to session_A, the grant
+        # is created under the activating session.
+        result = activate_db_pending_by_id(
+            f"P-{nonce}", current_session_id=session_b,
         )
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
@@ -662,8 +662,8 @@ class TestCrossSessionNonceTargeted:
             danger_category="MUTATIVE",
             nonce=nonce,
         )
-        result = activate_db_pending_by_prefix(
-            nonce[:8], current_session_id=session_b,
+        result = activate_db_pending_by_id(
+            f"P-{nonce}", current_session_id=session_b,
         )
         assert result.success is True
 
@@ -706,8 +706,8 @@ class TestCrossSessionNonceTargeted:
             nonce=nonce,
         )
 
-        result = activate_db_pending_by_prefix(
-            nonce[:8], current_session_id=session_b,
+        result = activate_db_pending_by_id(
+            f"P-{nonce}", current_session_id=session_b,
         )
         assert result.success is True
 
@@ -757,8 +757,8 @@ class TestCrossSessionNonceTargeted:
         )
 
         # Activate under session_B even though pending belongs to session_A
-        result = activate_db_pending_by_prefix(
-            nonce[:8], current_session_id=session_b,
+        result = activate_db_pending_by_id(
+            f"P-{nonce}", current_session_id=session_b,
         )
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED

@@ -50,9 +50,9 @@ class TestSimpleCommands:
         assert result.stages[0].operator is None
 
     def test_is_compound_false(self, decomposer):
-        """Test is_compound is False for simple commands."""
+        """Test stage countis False for simple commands."""
         result = decomposer.decompose("ls -la")
-        assert result.is_compound is False
+        assert len(result.stages) == 1
 
     def test_executables_property(self, decomposer):
         """Test executables property returns command names."""
@@ -95,9 +95,9 @@ class TestPipeDecomposition:
         assert result.stages[2].operator is None
 
     def test_is_compound_true(self, decomposer):
-        """Test is_compound is True for piped commands."""
+        """Test stage countis True for piped commands."""
         result = decomposer.decompose("ls | grep foo")
-        assert result.is_compound is True
+        assert len(result.stages) > 1
 
     def test_executables_multi(self, decomposer):
         """Test executables lists all commands in a pipe."""
@@ -281,12 +281,12 @@ class TestDecomposedCommand:
     """Test DecomposedCommand dataclass behavior."""
 
     def test_is_compound_single(self):
-        """Test is_compound with single stage."""
+        """Test stage countwith single stage."""
         dc = DecomposedCommand(raw="ls", stages=[Stage(command="ls", args=["ls"])])
-        assert dc.is_compound is False
+        assert len(dc.stages) == 1
 
     def test_is_compound_multi(self):
-        """Test is_compound with multiple stages."""
+        """Test stage countwith multiple stages."""
         dc = DecomposedCommand(
             raw="ls | cat",
             stages=[
@@ -294,7 +294,7 @@ class TestDecomposedCommand:
                 Stage(command="cat", args=["cat"]),
             ],
         )
-        assert dc.is_compound is True
+        assert len(dc.stages) > 1
 
     def test_executables_list(self):
         """Test executables returns list of command names."""
@@ -319,7 +319,6 @@ class TestEdgeCases:
         """Test empty string returns no stages."""
         result = decomposer.decompose("")
         assert result.stages == []
-        assert result.is_compound is False
 
     def test_none_input(self, decomposer):
         """Test None input returns no stages."""
