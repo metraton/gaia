@@ -14,14 +14,13 @@
  */
 
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
-import { assertPromptAsyncBody, assertSessionCreateBody } from "./sdk_body_contract.ts"
+import { assertPromptAsyncBody } from "./sdk_body_contract.ts"
 
 const scenario = JSON.parse(process.argv[2])
 const asked: Record<string, unknown>[] = []
 const controlPrompts: Record<string, unknown>[] = []
 const bridgeEvents: Record<string, unknown>[] = []
 const deletedSessions: string[] = []
-const controlSessionID = `control-${scenario.callID}`
 
 // The cwd of every `bin/gaia` process the plugin starts, observed at the spawn
 // boundary: the workspace Gaia attributes the presentation to is derived from
@@ -44,6 +43,7 @@ async function gaiaBridge(event: Record<string, unknown>) {
     return { action: "allow" as const, attestation: `${event.sessionID}:${event.role}` }
   }
   if (event.event === "tool.execute.before") {
+    if (String(event.tool).toLowerCase() === "task") return { action: "allow" as const }
     if (scenario.outcome === "timeout") {
       throw new Error("Gaia policy bridge timed out")
     }
@@ -67,10 +67,6 @@ const client = {
     async messages() {
       return { data: [{ info: { role: "assistant", agent: "gaia-orchestrator" } }] }
     },
-    async create(request: any) {
-      assertSessionCreateBody(request)
-      return { data: { id: controlSessionID, title: request.body.title } }
-    },
     async promptAsync(request: Record<string, unknown>) {
       assertPromptAsyncBody(request)
       controlPrompts.push(request)
@@ -91,6 +87,31 @@ const client = {
 }
 
 const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client, directory: scenario.directory })
+const rootSessionID = "ses-t4-root"
+const dispatchCallID = "call-t4-dispatch"
+
+await plugin.event({ event: {
+  type: "message.updated",
+  properties: { info: { role: "assistant", sessionID: rootSessionID, agent: "gaia-orchestrator" } },
+} })
+await plugin["tool.execute.before"](
+  { sessionID: rootSessionID, callID: dispatchCallID, tool: "task" },
+  { args: { subagent_type: "gaia-system" } },
+)
+await plugin.event({ event: {
+  type: "message.part.updated",
+  properties: { part: {
+    type: "tool",
+    tool: "task",
+    sessionID: rootSessionID,
+    callID: dispatchCallID,
+    state: { metadata: { sessionId: scenario.sessionID } },
+  } },
+} })
+await plugin["tool.execute.after"](
+  { sessionID: rootSessionID, callID: dispatchCallID, tool: "task", args: { subagent_type: "gaia-system" } },
+  { metadata: { sessionId: scenario.sessionID }, output: "" },
+)
 
 let error: string | undefined
 let originalInvocationExecuted = false
@@ -116,7 +137,12 @@ if (scenario.outcome === undefined || scenario.outcome === "pending" || scenario
   const permissionOutput = { status: "ask" as const }
   await plugin["permission.ask"](permission, permissionOutput)
   if (permissionOutput.status !== "deny") {
-    asked.push({ permission, status: permissionOutput.status })
+    try {
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: scenario.sessionID } } })
+      asked.push({ permission, status: permissionOutput.status })
+    } catch (thrown: any) {
+      error = String(thrown?.message ?? thrown)
+    }
   }
 }
 
@@ -126,7 +152,7 @@ let controlSessionLingered: boolean | undefined
 if (scenario.controlPrompt !== undefined) {
   try {
     await plugin["tool.execute.after"](
-      { sessionID: controlSessionID, callID: "probe-after", tool: "bash" },
+      { sessionID: scenario.sessionID, callID: "probe-after", tool: "bash" },
       { title: "probe", output: "", metadata: {} },
     )
     controlSessionLingered = false

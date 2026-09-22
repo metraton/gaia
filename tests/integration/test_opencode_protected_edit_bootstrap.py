@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[2]
 DRIVER = ROOT / "tests" / "opencode" / "protected_edit_driver.ts"
 
@@ -193,6 +192,9 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
         approval_ids.add(approval_id)
         permission = driven["permissionAsks"][result["permissionIndexes"][0]]["permission"]
         assert permission["metadata"]["gaiaApprovalID"] == approval_id
+        assert permission["metadata"]["gaiaConsent"]["operation"] == (
+            "FILE_WRITE command intercepted: write"
+        )
         assert exchange["sent"]["cwd"] == str(nested.resolve())
         assert exchange["sent"]["worktree"] == str(root.resolve())
         assert exchange["sent"]["originalTool"] == label.split("|", 1)[0]
@@ -217,6 +219,7 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
             )
         }
     assert approval_ids <= stored_ids
+    assert len(driven["controlPrompts"]) == len(expected)
     sample_result = by_label[next(iter(expected))]
     sample = _exchange(driven, sample_result["callID"])
     assert sample["sent"]["roleContext"] == {
@@ -252,21 +255,26 @@ def test_literal_apply_patch_relative_target_reaches_guard_before_native_patch(
     permission = driven["permissionAsks"][0]
     assert permission["status"] == "ask"
     assert permission["permission"]["metadata"]["gaiaApprovalID"] == exchange["received"]["approval_id"]
+    assert permission["permission"]["metadata"]["gaiaConsent"]["operation"] == (
+        "FILE_WRITE command intercepted: write"
+    )
+    assert len(driven["controlPrompts"]) == 1
     assert protected.read_text() == "ORIGINAL\n"
 
 
-def test_host_permission_without_bridge_approval_stays_denied(tmp_path):
-    """The driver cannot manufacture consent by delivering an uncorrelated event."""
+def test_host_permission_carries_through_a_correlated_bridge_allow(tmp_path):
+    """The host gate cannot revoke the bridge's one-call allow verdict."""
     root, _, unprotected = _workspace(tmp_path)
     driven = _drive(root, root, [
-        _step("uncorrelated", "Edit", {"path": str(unprotected)}, request_permission=True),
+        _step("bridge-allow", "Edit", {"path": str(unprotected)}, request_permission=True),
     ])
     result = driven["results"][0]
     assert result["beforeReturned"] is True
     assert _exchange(driven, result["callID"])["received"]["action"] == "allow"
-    assert result["allowed"] is False
-    assert driven["permissionAsks"][0]["status"] == "deny"
+    assert result["allowed"] is True
+    assert driven["permissionAsks"][0]["status"] == "allow"
     assert "gaiaApprovalID" not in driven["permissionAsks"][0]["permission"]["metadata"]
+    assert driven["controlPrompts"] == []
 
 
 def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed(tmp_path):
@@ -420,7 +428,12 @@ def test_invalid_args_and_patch_payloads_fail_before_the_production_bridge(tmp_p
         ),
         _step(
             "patch-move-after-body", "ApplyPatch",
-            {"patchText": "*** Begin Patch\n*** Update File: hooks/guard.py\n@@\n-X\n+Y\n*** Move to: hooks/new.py\n*** End Patch"},
+            {
+                "patchText": (
+                    "*** Begin Patch\n*** Update File: hooks/guard.py\n@@\n-X\n+Y\n"
+                    "*** Move to: hooks/new.py\n*** End Patch"
+                )
+            },
         ),
         _step(
             "patch-content-outside-operation", "apply_patch",

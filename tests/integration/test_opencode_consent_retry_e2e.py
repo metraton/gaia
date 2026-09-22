@@ -197,13 +197,25 @@ def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
     return _decide(env, approval_id, call_id=call_id, token=token)
 
 
-def _drive(env, steps, *, permission_id=PERMISSION_ID):
+def _drive(
+    env, steps, *, permission_id=PERMISSION_ID, initial_permissions=None,
+    question_during_prompt=False, duplicate_question_when_prompt_races=False,
+    racing_duplicate_delay_ms=20_000, auto_safe_idle=True,
+):
     """Run the real plugin under bun over the dispatch chain plus these steps."""
     scenario = {
         "permissionID": permission_id,
         "sessionID": SESSION_ID,
         "steps": DISPATCH_STEPS + list(steps),
+        "autoSafeIdle": auto_safe_idle,
     }
+    if initial_permissions is not None:
+        scenario["initialPermissions"] = {SESSION_ID: initial_permissions}
+    if question_during_prompt:
+        scenario["questionDuringPrompt"] = True
+    if duplicate_question_when_prompt_races:
+        scenario["duplicateQuestionWhenPromptRaces"] = True
+        scenario["racingDuplicateDelayMs"] = racing_duplicate_delay_ms
     result = subprocess.run(
         ["bun", str(DRIVER), json.dumps(scenario)],
         cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=300,
@@ -406,7 +418,7 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     assert _step(driven, "blocked")["allowed"] is False, driven
     decision = _step(driven, "approve")
     assert decision["allowed"] is True, driven
-    assert decision["controlSessionID"].startswith("control-")
+    assert decision["controlSessionID"] == SESSION_ID
     question = decision["question"]
     visible = question["question"]
     assert approval_id in visible
@@ -418,8 +430,9 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
         f"Reject [{approval_id}]",
     ]
     prompt = driven["controlPrompts"][0]["body"]
-    assert prompt["tools"] == {"*": False, "question": True}
+    assert "tools" not in prompt
     assert isinstance(prompt["system"], str), prompt["system"]
+    assert "agent" not in prompt
     assert _approval_status(db_path, approval_id) == "approved"
     grant = _grant(db_path, approval_id)
     assert grant is not None
@@ -430,6 +443,137 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     assert grant["reservation_tool_use_id"] is None
     assert _row_count(db_path, "approval_grants") == 1
     assert _control_closures(db_path) == [("decided", approval_id)]
+
+
+def test_pre_hook_accepts_the_measured_host_shape_with_custom_omitted(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {
+            "kind": "control-decision",
+            "label": "approve",
+            "answer": "approve",
+            "questionCallEncoding": "event-60148",
+            "questionEncoding": "event-60148",
+        },
+    ])
+
+    assert _step(driven, "approve")["allowed"] is True, driven
+    assert _approval_status(db_path, approval_id) == "approved"
+    assert _grant(db_path, approval_id) is not None
+    assert _control_closures(db_path) == [("decided", approval_id)]
+
+
+def test_a_second_exact_question_call_is_refused_before_decision(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {
+            "kind": "control-decision",
+            "label": "duplicate-call",
+            "answer": "approve",
+            "questionCallEncoding": "event-60148",
+            "secondQuestionCall": True,
+        },
+    ])
+
+    duplicate = _step(driven, "duplicate-call")
+    assert duplicate["allowed"] is False, driven
+    assert duplicate["error"] == "Gaia consent control plane permits one exact binary question"
+    assert _approval_status(db_path, approval_id) == "pending"
+    assert _grant(db_path, approval_id) is None
+    assert _control_closures(db_path) == [("drifted_tool_call", approval_id)]
+
+
+def test_control_prompt_preserves_specialist_permissions_until_typed_retry(db_env):
+    env, _db_path = db_env
+    original = [{"permission": "bash", "pattern": "*", "action": "ask"}]
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+        _before("retry", FIRST_COMMAND, call_id=RETRY_CALL_ID),
+    ], initial_permissions=original)
+
+    assert driven["sessionPermissions"][SESSION_ID] == original
+    assert driven["permissionTransitions"][0] == {
+        "sessionID": SESSION_ID, "before": original, "after": original,
+    }
+    assert _step(driven, "retry")["allowed"] is True
+
+
+def test_concurrent_approvals_are_serialized_and_each_native_answer_closes_only_its_control(db_env):
+    env, db_path = db_env
+    first_call = "call-concurrent-first"
+    second_call = "call-concurrent-second"
+
+    driven = _drive(env, [
+        {"kind": "concurrent", "steps": [
+            _before("blocked-first", FIRST_COMMAND, call_id=first_call),
+            _before("blocked-second", SECOND_COMMAND, call_id=second_call),
+        ]},
+        {"kind": "control-decision", "label": "reject-first", "answer": "reject"},
+        {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
+    ], permission_id=None)
+
+    assert _step(driven, "blocked-first")["allowed"] is False
+    assert _step(driven, "blocked-second")["allowed"] is False
+    assert len(driven["permissionAsks"]) == 2
+    assert len(driven["controlPrompts"]) == 2
+    approval_ids = [
+        item["permission"]["metadata"]["gaiaApprovalID"]
+        for item in driven["permissionAsks"]
+    ]
+    assert len(set(approval_ids)) == 2
+    assert all(_approval_status(db_path, approval_id) == "rejected" for approval_id in approval_ids)
+    assert sorted(_control_closures(db_path)) == sorted([
+        ("decided", approval_ids[0]), ("decided", approval_ids[1]),
+    ])
+
+
+def test_late_approval_waits_through_decision_idle_and_first_retry_lifecycle(db_env):
+    env, db_path = db_env
+    second_call = "call-late-second"
+    retry_call = "call-late-first-retry"
+
+    driven = _drive(env, [
+        _before("blocked-first", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve-first", "answer": "approve", "deferIdle": True},
+        _before("blocked-second-before-idle", SECOND_COMMAND, call_id=second_call),
+        {"kind": "observe-controls", "label": "before-idle"},
+        {"kind": "lifecycle", "label": "first-idle", "sessionID": SESSION_ID, "eventType": "session.idle"},
+        {"kind": "observe-controls", "label": "after-idle"},
+        _before("retry-first", FIRST_COMMAND, call_id=retry_call),
+        {
+            "kind": "after", "label": "settle-first", "sessionID": SESSION_ID,
+            "callID": retry_call, "tool": "bash", "command": FIRST_COMMAND,
+            "metadata": {"exitCode": 0},
+        },
+        {"kind": "observe-controls", "label": "after-first-settlement"},
+        {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
+    ], permission_id=None)
+
+    assert _step(driven, "blocked-first")["allowed"] is False
+    assert _step(driven, "blocked-second-before-idle")["allowed"] is False
+    assert _step(driven, "before-idle")["specialistControlPromptCount"] == 1
+    assert _step(driven, "after-idle")["specialistControlPromptCount"] == 1
+    assert _step(driven, "retry-first")["allowed"] is True
+    assert _step(driven, "after-first-settlement")["specialistControlPromptCount"] == 2
+
+    approval_ids = [
+        item["permission"]["metadata"]["gaiaApprovalID"]
+        for item in driven["permissionAsks"]
+    ]
+    assert len(approval_ids) == 2
+    assert _approval_status(db_path, approval_ids[0]) == "approved"
+    assert _approval_status(db_path, approval_ids[1]) == "rejected"
+    assert sorted(_control_closures(db_path)) == sorted([
+        ("decided", approval_ids[0]), ("decided", approval_ids[1]),
+    ])
 
 
 def test_an_activated_approval_is_announced_to_the_orchestrator_and_traced(db_env):
@@ -486,13 +630,14 @@ def test_a_rejection_is_not_announced(db_env):
     assert _harness_payloads(db_path, "consent.decision.applied") == []
 
 
-@pytest.mark.parametrize("encoding", ["reordered", "extra-keys"])
+@pytest.mark.parametrize("encoding", ["reordered", "extra-keys", "event-60148"])
 def test_the_hosts_own_encoding_of_the_question_still_correlates(db_env, encoding):
     """question.asked carries the host's re-serialization of the question, not the plugin's bytes.
 
     OpenCode's QuestionInfo orders keys question, header, options, multiple and
-    may add `custom`; the control must correlate on the consent-bearing fields,
-    or every live answer closes the control before it can be read.
+    may add or omit optional `custom`; the control must correlate on the
+    consent-bearing fields after validating the exact tool call, or every live
+    answer closes the control before it can be read.
     """
     env, db_path = db_env
     approval_id = _request_set(env)
@@ -506,6 +651,130 @@ def test_the_hosts_own_encoding_of_the_question_still_correlates(db_env, encodin
     assert _approval_status(db_path, approval_id) == "approved"
     assert _grant(db_path, approval_id) is not None
     assert _control_closures(db_path) == [("decided", approval_id)]
+
+
+def test_event_60148_correlates_while_prompt_async_is_still_resolving(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-reply", "label": "approve", "answer": "approve"},
+    ], question_during_prompt=True)
+
+    assert _step(driven, "blocked")["allowed"] is False, driven
+    assert _step(driven, "approve")["allowed"] is True, driven
+    assert _approval_status(db_path, approval_id) == "approved"
+    assert _grant(db_path, approval_id) is not None
+    assert _control_closures(db_path) == [("decided", approval_id)]
+
+
+def test_control_waits_for_original_turn_idle_before_the_measured_delayed_duplicate_shape(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "observe-controls", "label": "before-safe-idle"},
+        {"kind": "lifecycle", "label": "safe-idle", "sessionID": SESSION_ID, "eventType": "session.idle"},
+        {"kind": "control-reply", "label": "reject", "answer": "reject"},
+    ], question_during_prompt=True, duplicate_question_when_prompt_races=True, auto_safe_idle=False)
+
+    assert _step(driven, "blocked")["allowed"] is False, driven
+    assert _step(driven, "before-safe-idle")["specialistControlPromptCount"] == 0
+    assert len(driven["controlPrompts"]) == 1
+    assert driven["controlQuestionBeforeCalls"] == 1
+    assert driven["racingDuplicateAttempted"] is False
+    assert _step(driven, "reject")["allowed"] is True
+    assert _approval_status(db_path, approval_id) == "rejected"
+    assert _grant(db_path, approval_id) is None
+    assert _control_closures(db_path) == [("decided", approval_id)]
+
+
+def test_an_exact_pre_call_question_event_is_not_accepted_as_gaia_provenance(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {
+            "kind": "question-event",
+            "label": "unrelated-exact-event",
+            "questionEncoding": "event-60148",
+        },
+    ])
+
+    assert _step(driven, "unrelated-exact-event")["allowed"] is True, driven
+    assert _approval_status(db_path, approval_id) == "pending"
+    assert _grant(db_path, approval_id) is None
+    assert _control_closures(db_path) == [("question_mismatch", approval_id)]
+    closed = _harness_payloads(db_path, "consent.control.closed")[0]
+    assert "preceded the validated Gaia call" in closed["detail"]
+
+
+def test_a_later_question_event_closes_the_correlated_control_without_a_decision(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {
+            "kind": "control-decision",
+            "label": "duplicate",
+            "answer": "approve",
+            "questionEncoding": "event-60148",
+            "duplicateQuestionEvent": True,
+        },
+    ])
+
+    assert _step(driven, "duplicate")["allowed"] is True, driven
+    assert _approval_status(db_path, approval_id) == "pending"
+    assert _grant(db_path, approval_id) is None
+    assert _control_closures(db_path) == [("question_mismatch", approval_id)]
+    closed = _harness_payloads(db_path, "consent.control.closed")[0]
+    assert "second question" in closed["detail"]
+
+
+def test_unrelated_tool_call_is_denied_before_policy_and_releases_only_the_active_queue_entry(db_env):
+    env, db_path = db_env
+    first_call = "call-unrelated-first"
+    second_call = "call-unrelated-second"
+    unrelated_call = "call-unrelated-during-control"
+
+    driven = _drive(env, [
+        {"kind": "concurrent", "steps": [
+            _before("blocked-first", FIRST_COMMAND, call_id=first_call),
+            _before("blocked-second", SECOND_COMMAND, call_id=second_call),
+        ]},
+        _before("unrelated", "pwd", call_id=unrelated_call),
+        {"kind": "observe-controls", "label": "before-idle"},
+        {"kind": "lifecycle", "label": "idle", "sessionID": SESSION_ID, "eventType": "session.idle"},
+        {"kind": "observe-controls", "label": "after-idle"},
+        {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
+    ], permission_id=None)
+
+    unrelated = _step(driven, "unrelated")
+    assert unrelated["allowed"] is False, driven
+    assert unrelated["error"] == "Gaia consent control plane permits one exact binary question"
+    assert all(
+        exchange["sent"].get("callID") != unrelated_call
+        for exchange in driven["exchanges"]
+    ), driven["exchanges"]
+    assert _step(driven, "before-idle")["specialistControlPromptCount"] == 1
+    assert _step(driven, "after-idle")["specialistControlPromptCount"] == 2
+
+    approval_ids = [
+        item["permission"]["metadata"]["gaiaApprovalID"]
+        for item in driven["permissionAsks"]
+    ]
+    assert len(approval_ids) == 2
+    closures = _control_closures(db_path)
+    assert [reason for reason, _approval_id in closures] == ["drifted_tool_call", "decided"]
+    drifted_id = closures[0][1]
+    decided_id = closures[1][1]
+    assert {drifted_id, decided_id} == set(approval_ids)
+    assert _approval_status(db_path, drifted_id) == "pending"
+    assert _approval_status(db_path, decided_id) == "rejected"
 
 
 def test_a_question_that_is_not_gaias_closes_the_control_with_a_trace(db_env):

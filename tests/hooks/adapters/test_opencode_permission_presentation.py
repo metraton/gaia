@@ -396,13 +396,23 @@ def test_control_prompt_body_matches_the_installed_sdk_types(db_env, approval_id
 
     assert len(delivered["controlPrompts"]) == 1, delivered
     prompt = delivered["controlPrompts"][0]
-    assert prompt["path"] == {"id": "control-call-sdk-shape"}
+    assert prompt["path"] == {"id": SESSION_ID}
     body = prompt["body"]
     assert isinstance(body["system"], str) and body["system"]
-    assert body["agent"] == "gaia-orchestrator"
-    assert all(isinstance(enabled, bool) for enabled in body["tools"].values())
+    assert "agent" not in body
+    assert "tools" not in body
     assert body["parts"][0]["type"] == "text"
     assert isinstance(body["parts"][0]["text"], str)
+
+
+def test_control_question_uses_the_cached_specialist_child_instead_of_creating_a_hidden_child(
+    db_env, approval_id,
+):
+    """The active root can render questions only for child sessions already in its cache."""
+    delivered = _drive_plugin(db_env, approval_id, call_id="call-cached-child")
+
+    assert [prompt["path"]["id"] for prompt in delivered["controlPrompts"]] == [SESSION_ID]
+    assert delivered["deletedSessions"] == []
 
 
 def test_an_opened_control_is_traced_after_the_host_accepted_the_prompt(db_env, approval_id):
@@ -414,7 +424,7 @@ def test_an_opened_control_is_traced_after_the_host_accepted_the_prompt(db_env, 
     assert opened[0]["approvalID"] == approval_id
     assert opened[0]["sessionID"] == SESSION_ID
     assert opened[0]["callID"] == "call-opened"
-    assert opened[0]["controlSessionID"] == "control-call-opened"
+    assert opened[0]["controlSessionID"] == SESSION_ID
 
 
 def test_a_rejected_control_prompt_fails_closed_with_the_host_cause(db_env, approval_id):
@@ -431,7 +441,7 @@ def test_a_rejected_control_prompt_fails_closed_with_the_host_cause(db_env, appr
     ), error
     assert "BadRequestError" in error
     assert "[T3_BLOCKED]" not in error
-    assert delivered["deletedSessions"] == ["control-call-rejected-prompt"]
+    assert delivered["deletedSessions"] == []
     assert delivered["controlSessionLingered"] is False
     # The presentation was registered before the prompt was attempted; nothing
     # after it may claim the question reached the user.

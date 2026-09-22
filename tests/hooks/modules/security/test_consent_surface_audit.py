@@ -115,76 +115,13 @@ def _legacy_singular_surface(payload: dict) -> str:
     )
 
 
-def _make_v12_schema(con: sqlite3.Connection) -> None:
-    con.execute("PRAGMA foreign_keys = ON")
-    con.create_function("gaia_sha256", 1, lambda v: _sha256(v), deterministic=True)
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS approvals (
-            id           TEXT PRIMARY KEY,
-            agent_id     TEXT,
-            session_id   TEXT,
-            status       TEXT NOT NULL DEFAULT 'pending'
-                         CHECK (status IN ('pending','approved','rejected','revoked','expired')),
-            fingerprint  TEXT,
-            payload_json TEXT,
-            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            decided_at   TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS approval_events (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            approval_id   TEXT NOT NULL,
-            event_type    TEXT NOT NULL CHECK (event_type IN (
-                              'REQUESTED','SHOWN','APPROVED','REJECTED',
-                              'EXECUTED','FAILED','NOOP','REVOKED','REVERTED'
-                          )),
-            agent_id      TEXT,
-            session_id    TEXT,
-            payload_json  TEXT,
-            fingerprint   TEXT,
-            prev_hash     TEXT,
-            this_hash     TEXT,
-            metadata_json TEXT,
-            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            FOREIGN KEY (approval_id) REFERENCES approvals(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS approval_grants (
-            approval_id           TEXT PRIMARY KEY,
-            agent_id              TEXT,
-            session_id            TEXT,
-            command_set_json      TEXT NOT NULL,
-            scope                 TEXT NOT NULL DEFAULT 'COMMAND_SET',
-            created_at            TEXT NOT NULL
-                DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            expires_at            TEXT,
-            status                TEXT NOT NULL DEFAULT 'PENDING',
-            consumed_indexes_json TEXT,
-            consumed_at           TEXT,
-            revoked_at            TEXT
-        );
-
-        CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
-        BEFORE UPDATE ON approval_events
-        BEGIN
-            SELECT RAISE(ABORT, 'approval_events is append-only');
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
-        BEFORE DELETE ON approval_events
-        BEGIN
-            SELECT RAISE(ABORT, 'approval_events is append-only');
-        END;
-    """)
-
-
 @pytest.fixture()
 def approvals_db(tmp_path, monkeypatch):
     """File-backed approvals DB shared by gaia.approvals.store and gaia.store.writer."""
     db_path = tmp_path / "consent_surface.db"
-    seed = sqlite3.connect(str(db_path))
-    _make_v12_schema(seed)
-    seed.commit()
+    import gaia.store.writer as writer
+
+    seed = writer._connect(db_path)
 
     def _open() -> sqlite3.Connection:
         con = sqlite3.connect(str(db_path))
@@ -195,7 +132,6 @@ def approvals_db(tmp_path, monkeypatch):
 
     monkeypatch.setattr("gaia.approvals.store._open_db", _open)
 
-    import gaia.store.writer as writer
     monkeypatch.setattr(writer, "_connect", lambda db_path_arg=None: _open())
 
     import gaia.approvals.store as store
@@ -218,6 +154,20 @@ def approvals_db(tmp_path, monkeypatch):
 
     yield db_path, seed, store
     seed.close()
+
+
+def test_approvals_db_uses_current_grant_lifecycle_schema(approvals_db):
+    """The audit fixture follows production instead of freezing a local schema copy."""
+    _db_path, con, _store = approvals_db
+    columns = {row[1] for row in con.execute("PRAGMA table_info(approval_grants)")}
+    assert {
+        "request_fingerprint",
+        "next_index",
+        "reservation_tool_use_id",
+        "failed_index",
+        "failure_reason",
+        "source",
+    } <= columns
 
 
 def _insert_pending(store, payload: dict) -> str:
@@ -263,6 +213,8 @@ def test_payload_command_emptiness_domains_and_activation(payload):
     from adapters.consent_presentation import (
         UNBOUND_PRESENTATION,
         envelope_from_sealed_payload,
+    )
+    from adapters.consent_presentation import (
         payload_commands as neutral_payload_commands,
     )
     from modules.security.approval_grants import payload_commands
@@ -576,8 +528,9 @@ class TestChainUnaffected:
 
     def test_chain_valid_and_shown_fingerprint_still_null(self, approvals_db):
         db_path, assert_con, store = approvals_db
-        from gaia.approvals.chain import validate_chain
         from modules.security.approval_grants import activate_db_pending_by_prefix
+
+        from gaia.approvals.chain import validate_chain
 
         payload = _command_set_payload(BATCH_COMMANDS)
         approval_id = _insert_pending(store, payload)

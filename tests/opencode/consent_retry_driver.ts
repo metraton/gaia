@@ -35,21 +35,30 @@ const AUDIT_TRACE_EVENTS = new Set([
 ])
 
 /**
- * The host's own encoding of the question the model asked, as the
- * question.asked event carries it. OpenCode re-serializes QuestionInfo in its
- * own key order and may add keys the plugin never sent; `mismatch` is a
- * question that is NOT the one Gaia asked.
+ * The host's normalized copy of the question the model asked. OpenCode may use
+ * it for the pre-execution input or question.asked event, re-order keys, add
+ * keys the plugin never sent, or omit optional `custom`; `mismatch` is not the
+ * question Gaia asked.
  */
-function hostEncodedQuestion(question: any, encoding: string | undefined) {
+function hostNormalizedQuestion(question: any, encoding: string | undefined) {
   if (encoding === "reordered") {
     return {
       question: question.question,
       header: question.header,
       options: question.options.map((option: any) => ({ description: option.description, label: option.label })),
       multiple: question.multiple,
+      custom: question.custom,
     }
   }
   if (encoding === "extra-keys") return { ...question, custom: false, tool: "question" }
+  if (encoding === "event-60148") {
+    return {
+      question: question.question,
+      header: question.header,
+      options: question.options.map((option: any) => ({ ...option })),
+      multiple: false,
+    }
+  }
   if (encoding === "mismatch") {
     return { ...question, options: [{ ...question.options[0], label: `${question.options[0].label} ` }, question.options[1]] }
   }
@@ -175,6 +184,19 @@ if (scenario.pluginModulePath !== undefined
 const { GaiaOpenCodePlugin } = await import(scenario.pluginModulePath === undefined
   ? new URL("../../opencode/plugin.ts", import.meta.url).href
   : pathToFileURL(scenario.pluginModulePath).href)
+const sessionPermissions = new Map<string, unknown>(Object.entries(scenario.initialPermissions ?? {}))
+const permissionTransitions: Record<string, unknown>[] = []
+let promptRaceQuestion: {
+  sessionID: string
+  requestID: string
+  callID: string
+  questions: any[]
+  question: any
+} | undefined
+let plugin: any
+let beforeCallsInFlight = 0
+let controlQuestionBeforeCalls = 0
+let racingDuplicateAttempted = false
 
 const client = {
   session: {
@@ -187,19 +209,59 @@ const client = {
     },
     async promptAsync(request: any) {
       assertPromptAsyncBody(request)
+      const sessionID = request.path.id
+      const before = sessionPermissions.get(sessionID)
+      if (request.body.tools !== undefined) sessionPermissions.set(sessionID, structuredClone(request.body.tools))
+      permissionTransitions.push({ sessionID, before, after: sessionPermissions.get(sessionID) })
       controlPrompts.push(request)
+      if (scenario.questionDuringPrompt === true && request.body.system !== undefined && !promptRaceQuestion) {
+        const instruction = request.body.parts?.[0]?.text
+        const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
+        const questions = encoded ? JSON.parse(encoded).questions : undefined
+        if (!Array.isArray(questions)) throw new Error("driver observed no prompt-race control question")
+        const question = questions[0]
+        promptRaceQuestion = {
+          sessionID,
+          requestID: "question-during-prompt",
+          callID: "question-call-during-prompt",
+          questions,
+          question,
+        }
+        controlQuestionBeforeCalls++
+        await plugin["tool.execute.before"](
+          { sessionID, callID: promptRaceQuestion.callID, tool: "question" },
+          { args: { questions } },
+        )
+        await plugin.event({ event: {
+          type: "question.asked",
+          properties: {
+            sessionID,
+            id: promptRaceQuestion.requestID,
+            questions: [hostNormalizedQuestion(question, "event-60148")],
+          },
+        } })
+        if (scenario.duplicateQuestionWhenPromptRaces === true && beforeCallsInFlight > 0) {
+          racingDuplicateAttempted = true
+          await Bun.sleep(scenario.racingDuplicateDelayMs ?? 20_000)
+          controlQuestionBeforeCalls++
+          await plugin["tool.execute.before"](
+            { sessionID, callID: promptRaceQuestion.callID, tool: "question" },
+            { args: { questions } },
+          )
+        }
+      }
       return { data: undefined, response: { ok: true, status: 204 } }
     },
   },
 }
 
 const directory = process.env.WORKSPACE ?? process.cwd()
-const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client, directory })
+plugin = await GaiaOpenCodePlugin({ gaiaBridge, client, directory })
 const argsByCall = new Map<string, any>()
 
 async function presentPermission(step: any) {
   const permission = {
-    id: scenario.permissionID ?? "perm-1",
+    id: step.permissionID ?? scenario.permissionID ?? `perm-${permissionAsks.length + 1}`,
     sessionID: step.sessionID,
     callID: step.callID,
     title: "host permission",
@@ -220,11 +282,18 @@ async function runStep(step: any): Promise<void> {
       // bytes the plugin forwarded across two steps that declare the same input.
       const args = step.reuseArgs ? argsByCall.get(step.callID) : step.args ?? { command: step.command }
       argsByCall.set(step.callID, args)
+      lastBridgeAction = undefined
+      lastBridgeRequiresApproval = false
       record.commandBefore = args.command
-      await plugin["tool.execute.before"](
-        { sessionID: step.sessionID, callID: step.callID, tool: step.tool ?? "bash" },
-        { args },
-      )
+      beforeCallsInFlight++
+      try {
+        await plugin["tool.execute.before"](
+          { sessionID: step.sessionID, callID: step.callID, tool: step.tool ?? "bash" },
+          { args },
+        )
+      } finally {
+        beforeCallsInFlight--
+      }
       record.commandAfter = args.command
       if (lastBridgeAction === "allow") {
         record.allowed = true
@@ -345,6 +414,61 @@ async function runStep(step: any): Promise<void> {
           },
         },
       })
+      await plugin.event({ event: {
+        type: "session.idle",
+        properties: { sessionID: step.sessionID ?? scenario.sessionID },
+      } })
+      record.allowed = true
+    } else if (step.kind === "observe-controls") {
+      record.controlPromptCount = controlPrompts.length
+      record.specialistControlPromptCount = controlPrompts.filter(
+        (prompt) => prompt?.path?.id === scenario.sessionID && prompt?.body?.system !== undefined,
+      ).length
+      record.allowed = true
+    } else if (step.kind === "question-event") {
+      const prompt = controlPrompts.at(-1)
+      const controlSessionID = prompt?.path?.id
+      const instruction = prompt?.body?.parts?.[0]?.text
+      const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
+      const questions = encoded ? JSON.parse(encoded).questions : undefined
+      if (typeof controlSessionID !== "string" || !Array.isArray(questions)) {
+        throw new Error("driver observed no structured Gaia control question")
+      }
+      await plugin.event({ event: {
+        type: "question.asked",
+        properties: {
+          sessionID: controlSessionID,
+          id: step.requestID ?? `question-event-${controlPrompts.length}`,
+          questions: [hostNormalizedQuestion(questions[0], step.questionEncoding)],
+        },
+      } })
+      record.allowed = true
+    } else if (step.kind === "control-reply") {
+      if (!promptRaceQuestion) throw new Error("driver observed no prompt-race question lifecycle")
+      const selected = step.answer === "approve"
+        ? promptRaceQuestion.question.options[0].label
+        : promptRaceQuestion.question.options[1].label
+      await plugin.event({ event: {
+        type: "question.replied",
+        properties: {
+          sessionID: promptRaceQuestion.sessionID,
+          requestID: promptRaceQuestion.requestID,
+          answers: [[selected]],
+        },
+      } })
+      await plugin["tool.execute.after"](
+        {
+          sessionID: promptRaceQuestion.sessionID,
+          callID: promptRaceQuestion.callID,
+          tool: "question",
+          args: { questions: promptRaceQuestion.questions },
+        },
+        { output: "User has answered your questions.", metadata: { answers: [[selected]] } },
+      )
+      await plugin.event({ event: {
+        type: "session.idle",
+        properties: { sessionID: promptRaceQuestion.sessionID },
+      } })
       record.allowed = true
     } else if (step.kind === "control-decision") {
       const prompt = controlPrompts.at(-1)
@@ -356,19 +480,33 @@ async function runStep(step: any): Promise<void> {
         throw new Error("driver observed no structured Gaia control question")
       }
       const question = questions[0]
+      const callQuestions = [hostNormalizedQuestion(question, step.questionCallEncoding)]
       const requestID = step.requestID ?? `question-${controlPrompts.length}`
       const callID = step.callID ?? `question-call-${controlPrompts.length}`
-      await plugin["tool.execute.before"](
-        { sessionID: controlSessionID, callID, tool: "question" },
-        { args: { questions } },
-      )
-      await plugin.event({ event: {
+      const askedEvent = { event: {
         type: "question.asked",
         properties: {
           sessionID: controlSessionID, id: requestID,
-          questions: [hostEncodedQuestion(question, step.questionEncoding)],
+          questions: [hostNormalizedQuestion(question, step.questionEncoding)],
         },
-      } })
+      } }
+      await plugin["tool.execute.before"](
+        { sessionID: controlSessionID, callID, tool: "question" },
+        { args: { questions: callQuestions } },
+      )
+      if (step.secondQuestionCall === true) {
+        await plugin["tool.execute.before"](
+          { sessionID: controlSessionID, callID: `${callID}-second`, tool: "question" },
+          { args: { questions: callQuestions } },
+        )
+      }
+      await plugin.event(askedEvent)
+      if (step.duplicateQuestionEvent === true) {
+        await plugin.event({ event: {
+          ...askedEvent.event,
+          properties: { ...askedEvent.event.properties, id: `${requestID}-duplicate` },
+        } })
+      }
       const selected = step.answer === "approve"
         ? question.options[0].label
         : step.answer === "reject"
@@ -383,9 +521,12 @@ async function runStep(step: any): Promise<void> {
         },
       } })
       await plugin["tool.execute.after"](
-        { sessionID: controlSessionID, callID, tool: "question", args: { questions } },
+        { sessionID: controlSessionID, callID, tool: "question", args: { questions: callQuestions } },
         { output: "User has answered your questions.", metadata: { answers: [[selected]] } },
       )
+      if (step.deferIdle !== true) {
+        await plugin.event({ event: { type: "session.idle", properties: { sessionID: controlSessionID } } })
+      }
       record.controlSessionID = controlSessionID
       record.question = question
       record.selected = selected
@@ -399,6 +540,7 @@ async function runStep(step: any): Promise<void> {
     // propagated -- a driver that died here would report nothing.
     if (step.kind === "before" && lastBridgeRequiresApproval) {
       await presentPermission(step)
+      record.requiresApproval = true
     }
     record.allowed = false
     record.error = String(thrown?.message ?? thrown)
@@ -446,6 +588,13 @@ for (const step of scenario.steps) {
   } else {
     await runStep(step)
   }
+  const labels = step.kind === "concurrent" ? step.steps.map((item: any) => item.label) : [step.label]
+  const blockedControlNeedsIdle = stepResults.some(
+    (result) => labels.includes(result.label) && result.requiresApproval === true,
+  )
+  if (scenario.autoSafeIdle !== false && blockedControlNeedsIdle && controlPrompts.length === 0) {
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: scenario.sessionID } } })
+  }
 }
 
 /** Keep identity regression reports useful without emitting issued credentials. */
@@ -472,6 +621,10 @@ console.log(JSON.stringify({
   exchanges: scenario.redactIdentityRecords ? exchanges.map(redactIdentity) : exchanges,
   permissionAsks,
   controlPrompts,
+  permissionTransitions,
+  sessionPermissions: Object.fromEntries(sessionPermissions),
   observations,
   maxActiveIssuers,
+  controlQuestionBeforeCalls,
+  racingDuplicateAttempted,
 }))

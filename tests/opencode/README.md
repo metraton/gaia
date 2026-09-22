@@ -32,10 +32,12 @@ test asserting exact bytes and has not been investigated. Not fixed here.
 
 ## `live/` -- the smoke that needs a real host
 
-`live/control_plane_smoke.ts` measures the literal `question.asked` /
-`question.replied` events a real host emits for Gaia's consent question. It is
-opt-in: without `OPENCODE_SMOKE_BASE_URL` it prints `SKIP` and exits 0, so the
-pytest suite never reaches it. Run it by hand:
+`live/control_plane_smoke.ts` observes the literal `question.asked` /
+`question.replied` / `session.idle` lifecycle a real host emits when the Gaia
+plugin presents consent in an already-known specialist child. It creates no
+session, sends no synthetic control prompt, and records no decision itself. It
+is opt-in: without `OPENCODE_SMOKE_BASE_URL` it prints `SKIP` and exits 0, so the
+pytest suite never reaches it. Start it before exercising a normal Gaia flow:
 
 ```
 OPENCODE_SMOKE_BASE_URL=http://127.0.0.1:10788 \
@@ -44,20 +46,28 @@ OPENCODE_SMOKE_PASSWORD=<OPENCODE_SERVER_PASSWORD of the serve process> \
 bun tests/opencode/live/control_plane_smoke.ts
 ```
 
-The header of the file documents every variable (`OPENCODE_SMOKE_AGENT`,
-`OPENCODE_SMOKE_ROOT_ONLY`, `OPENCODE_SMOKE_SDK_DIR`, basic auth). It talks to
-a real LLM through the host and deletes the sessions it creates.
+The header documents the SDK and basic-auth variables. After the watcher is
+running, ask Gaia normally for an operation that reaches native consent and
+answer the binary question in the host UI. Do not locate, copy, or open an
+internal session: the smoke derives the specialist session from the signed
+`question.asked` event and only observes it.
 
-Why it cannot measure the control plane while the Gaia plugin is loaded
-(measured 2026-09-16, five runs): the plugin's `tool.execute.before` sends every
-tool call to the bridge, and the adapter denies the `question` call of any
-session the plugin did not open itself -- `gaia-orchestrator` is refused as a
-"control-plane role declared without an attested runtime context", and a native
-agent's child session is refused by the child-session-binding backstop until a
-Task dispatch binds it. These are identity gates, not T3. So an external SDK
-client can measure the host's `question.asked` shape only against a serve
-WITHOUT the plugin, and the plugin's own correlation can only be exercised
-through a real dispatch (a specialist attempting a T3 command) with the plugin
-loaded. The structural correlation (`matchesBinaryQuestion`) makes the host's
-key order irrelevant to the plugin; the smoke remains the tool for judging any
-future host change in the event shape itself.
+The smoke deliberately runs with the Gaia plugin loaded. The plugin, not the
+smoke, already knows the specialist child from its Task binding and reuses it;
+there is no newly-uncached control session for an SDK client to create. The
+first consent-control prompt waits for that reused specialist session's
+`session.idle` from the original blocked turn before the plugin presents it.
+This pre-presentation wait is separate from the post-decision `session.idle`
+that arms an approved retry or advances the next queued control. The
+plugin emits exactly one native question with `multiple: false` and
+`custom: false`; OpenCode's normalized `tool.execute.before` input and observed
+`question.asked` copy may omit the optional `custom` field. Gaia treats only
+that omission as the emitted `false`, at those two lifecycle boundaries and
+only after its exact
+question call has entered the exclusive control-owned lifecycle. Unrelated tool
+calls or question events, extra entries, duplicate or late questions, field
+drift, `custom: true` or a string value, and malformed `multiple` or `options`
+fail closed. Legitimate later approvals remain queued, while safe-idle retry
+arming, the pre-activation block, and FIFO scheduling remain covered by the
+deterministic suites. The live watcher checks the signed question/reply/idle
+ordering without replacing that policy evidence.

@@ -67,6 +67,7 @@ export type BinaryDecisionRequest = {
     question: string
     options: Array<{ label: string; description: string }>
     multiple: false
+    custom: false
   }
 }
 
@@ -76,7 +77,16 @@ type ControlDecision = {
   retry: BoundRetry
   questionCallID?: string
   questionID?: string
+  awaitingSafeIdle: boolean
+  presenting: boolean
+  presented: boolean
   closed: boolean
+}
+
+type DeferredActivation = {
+  control: ControlDecision
+  lane: DecisionLane
+  retry: BoundRetry
 }
 
 type RoleCapabilityContext = {
@@ -853,6 +863,7 @@ export function binaryDecisionRequest(
         { label: reject, description: "Create no grant and perform no operation" },
       ],
       multiple: false,
+      custom: false,
     },
   }
 }
@@ -860,14 +871,14 @@ export function binaryDecisionRequest(
 /**
  * Whether the host's copy of the question is the one binary question Gaia
  * asked, compared by the fields that carry consent: header, question text,
- * the ordered option labels and descriptions, and single choice.
+ * the ordered option labels and descriptions, single choice, and no custom
+ * answer.
  *
  * Compared structurally, never as serialized bytes: the host re-encodes the
  * question (QuestionInfo declares question, header, options, multiple, custom
  * in that order; the plugin sends header first) and may add keys of its own
- * (`custom`, `tool`). A byte comparison closed the control on every such
- * re-encoding, silently. A missing `multiple` reads as single choice, which is
- * what Gaia asked for.
+ * (`tool`). A byte comparison closed the control on every such re-encoding,
+ * silently.
  */
 export function matchesBinaryQuestion(
   questions: unknown,
@@ -877,7 +888,7 @@ export function matchesBinaryQuestion(
   const question = questions[0] as Record<string, unknown> | null
   if (!question || typeof question !== "object") return false
   if (question.header !== expected.header || question.question !== expected.question) return false
-  if (Boolean(question.multiple) !== expected.multiple) return false
+  if (question.multiple !== expected.multiple || question.custom !== expected.custom) return false
   const options = question.options
   if (!Array.isArray(options) || options.length !== expected.options.length) return false
   return expected.options.every((option, index) => {
@@ -886,6 +897,32 @@ export function matchesBinaryQuestion(
       && candidate.label === option.label
       && candidate.description === option.description
   })
+}
+
+/** Match OpenCode's normalized pre-execution copy of Gaia's question. */
+export function matchesHostBinaryQuestionCall(
+  questions: unknown,
+  expected: BinaryDecisionRequest["question"],
+): boolean {
+  if (!Array.isArray(questions) || questions.length !== 1) return false
+  const question = questions[0] as Record<string, unknown> | null
+  if (!question || typeof question !== "object") return false
+  const hasCustom = Object.prototype.hasOwnProperty.call(question, "custom")
+  if (hasCustom && question.custom !== false) return false
+  return matchesBinaryQuestion([{ ...question, custom: false }], expected)
+}
+
+/** Match OpenCode's event copy after the exact question tool call was validated. */
+export function matchesHostBinaryQuestionEvent(
+  questions: unknown,
+  expected: BinaryDecisionRequest["question"],
+  exactQuestionCallValidated: boolean,
+): boolean {
+  if (!exactQuestionCallValidated || !Array.isArray(questions) || questions.length !== 1) return false
+  const question = questions[0] as Record<string, unknown> | null
+  if (!question || typeof question !== "object" || question.multiple !== false) return false
+  if (question.custom !== undefined && question.custom !== false) return false
+  return matchesBinaryQuestion([{ ...question, custom: false }], expected)
 }
 
 export function readBinaryDecision(
@@ -1031,8 +1068,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // Claude Code, where PreToolUse is the last word. Consumed on use, so one
   // verdict frees exactly the one call it ruled on.
   const allowedByCall = new Set<string>()
-  const controlBySession = new Map<string, ControlDecision>()
+  const controlsBySession = new Map<string, ControlDecision[]>()
   const controlByQuestion = new Map<string, ControlDecision>()
+  const releasedControlCalls = new Set<string>()
+  const controlsAwaitingIdle = new Set<string>()
+  const deferredRetryBySession = new Map<string, DeferredActivation>()
   const retryBySession = new Map<string, BoundRetry>()
   const retryByCall = new Map<string, BoundRetry>()
   const agentBySession = new Map<string, string>()
@@ -1423,20 +1463,95 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
   }
 
-  async function clearPendingApproval(
-    approvalID: string,
+  function activeControl(sessionID: string): ControlDecision | undefined {
+    return controlsBySession.get(sessionID)?.[0]
+  }
+
+  function owningControl(sessionID: string): ControlDecision | undefined {
+    const control = activeControl(sessionID)
+    return control && (control.presenting || control.presented) ? control : undefined
+  }
+
+  function controlForApproval(approval: PendingApproval): ControlDecision | undefined {
+    return (controlsBySession.get(approval.sessionID) ?? []).find((control) => (
+      control.approval.approvalID === approval.approvalID
+      && control.approval.callID === approval.callID
+      && control.approval.token === approval.token
+    ))
+  }
+
+  async function correlateQuestionEvent(
+    control: ControlDecision,
+    requestID: string,
+    questions: unknown,
+  ): Promise<void> {
+    if (control.questionCallID === undefined) {
+      await clearControl(control, "question_mismatch", `question ${requestID} preceded the validated Gaia call`)
+      return
+    }
+    if (control.questionID || controlByQuestion.has(requestID)) {
+      await clearControl(control, "question_mismatch", `second question ${requestID} for one control`)
+      return
+    }
+    if (!matchesHostBinaryQuestionEvent(questions, control.request.question, control.questionCallID !== undefined)) {
+      await clearControl(control, "question_mismatch", `host asked ${JSON.stringify(questions)}`)
+      return
+    }
+    control.questionID = requestID
+    controlByQuestion.set(requestID, control)
+  }
+
+  async function presentNextControl(sessionID: string, propagateError = false): Promise<void> {
+    if (
+      retryBySession.has(sessionID)
+      || deferredRetryBySession.has(sessionID)
+      || controlsAwaitingIdle.has(sessionID)
+    ) return
+    const control = activeControl(sessionID)
+    if (!control || control.closed || control.awaitingSafeIdle || control.presenting || control.presented) return
+    try {
+      await presentControl(control)
+    } catch (error) {
+      if (propagateError) throw error
+      console.error(`[gaia-opencode:control] queued control for ${control.approval.approvalID} failed: ${error}`)
+    }
+  }
+
+  async function releaseControl(
+    control: ControlDecision,
     reason: ControlCloseReason,
     detail?: string,
+    advance = true,
+  ): Promise<void> {
+    await closeControl(control, reason, detail)
+    const sessionID = control.request.sessionID
+    const controls = controlsBySession.get(sessionID)
+    const wasActive = controls?.[0] === control
+    if (controls) {
+      const index = controls.indexOf(control)
+      if (index !== -1) controls.splice(index, 1)
+      if (controls.length === 0) controlsBySession.delete(sessionID)
+    }
+    if (control.questionCallID) releasedControlCalls.add(`${sessionID}:${control.questionCallID}`)
+    if (advance && wasActive) {
+      if (control.presented) controlsAwaitingIdle.add(sessionID)
+      else await presentNextControl(sessionID)
+    }
+  }
+
+  async function clearControl(
+    control: ControlDecision,
+    reason: ControlCloseReason,
+    detail?: string,
+    advance = true,
   ): Promise<void> {
     for (const [key, approval] of pendingByCall) {
-      if (approval.approvalID === approvalID) pendingByCall.delete(key)
+      if (approval.token === control.approval.token) pendingByCall.delete(key)
     }
     for (const [key, approval] of pending) {
-      if (approval.approvalID === approvalID) pending.delete(key)
+      if (approval.token === control.approval.token) pending.delete(key)
     }
-    for (const control of controlBySession.values()) {
-      if (control.approval.approvalID === approvalID) await closeControl(control, reason, detail)
-    }
+    await releaseControl(control, reason, detail, advance)
   }
 
   async function applyDecision(
@@ -1446,25 +1561,21 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<boolean> {
     const existing = retryBySession.get(control.approval.sessionID)
     if (reply === "once" && existing && existing.correlationID !== control.retry.correlationID) {
-      await closeControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
+      await clearControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
       return false
     }
     const admission = decisions.admit(control.request.correlationID, lane)
     if (!admission.accepted) {
-      await closeControl(control, "decision_duplicate", `lane ${lane} after ${admission.lane}`)
+      await clearControl(control, "decision_duplicate", `lane ${lane} after ${admission.lane}`)
       return false
     }
     const decided = await decide(control.approval, reply, lane)
     if (decided.ok && reply === "once") {
       if (!decided.retry) {
-        await closeControl(control, "decide_failed", "activation returned no typed retry descriptor")
+        await clearControl(control, "decide_failed", "activation returned no typed retry descriptor")
         return false
       }
-      retryBySession.set(control.approval.sessionID, {
-        ...decided.retry,
-        usedCallIDs: new Set(decided.retry.usedCallIDs),
-      })
-      await announceActivation(control, lane, decided.retry)
+      deferredRetryBySession.set(control.approval.sessionID, { control, lane, retry: decided.retry })
     }
     // Cleared on a refused decision too: the question is consumed and the
     // lane admitted, so nothing left here could carry a second reply to Gaia.
@@ -1472,9 +1583,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     // hold the specialist's original call pending, while a fresh attempt
     // re-blocks on the same approval and presents a new question.
     if (decided.ok) {
-      await clearPendingApproval(control.approval.approvalID, "decided", reply)
+      await clearControl(control, "decided", reply)
     } else {
-      await clearPendingApproval(control.approval.approvalID, "decide_failed", decided.cause)
+      await clearControl(control, "decide_failed", decided.cause)
     }
     return decided.ok
   }
@@ -1549,28 +1660,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       || "host resolved with an error carrying no detail"
   }
 
-  /** Release a control whose question never reached the host.
-   *
-   * The child session already exists by then, so it is deleted when the SDK
-   * can; an orphan that survives is reported, never allowed to keep a control
-   * registered for a question nobody will answer.
-   */
-  async function abandonControl(control: ControlDecision, controlSessionID: string, cause: string): Promise<void> {
-    await closeControl(control, "prompt_rejected", cause)
-    if (controlBySession.get(controlSessionID) === control) controlBySession.delete(controlSessionID)
-    const session = input?.client?.session
-    if (typeof session?.delete !== "function") return
-    try {
-      await session.delete({ path: { id: controlSessionID } })
-    } catch (error) {
-      console.error(`[gaia-opencode:control] orphan control session ${controlSessionID} was not deleted: ${error}`)
-    }
+  /** Release a control whose question never reached the host. */
+  async function abandonControl(control: ControlDecision, cause: string): Promise<void> {
+    await releaseControl(control, "prompt_rejected", cause)
   }
 
-  async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
+  async function presentControl(control: ControlDecision): Promise<void> {
+    const approval = control.approval
     const session = input?.client?.session
-    const primarySessionID = primaryFor(approval.sessionID)
-    if (typeof session?.create !== "function" || typeof session?.promptAsync !== "function" || !primarySessionID) {
+    if (typeof session?.promptAsync !== "function") {
       throw new Error("OpenCode control plane cannot provide a binary question")
     }
     const failClosed = async (cause: string): Promise<Error> => {
@@ -1579,60 +1677,66 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       })
       return new Error(`Gaia could not open the consent control plane for ${approval.approvalID}: ${cause}`)
     }
-    const created = await session.create({
-      body: { parentID: primarySessionID, title: `Gaia ${approval.approvalID}` },
-    })
-    const createRejected = hostRejection(created)
-    if (createRejected) throw await failClosed(`control-plane session.create failed: ${createRejected}`)
-    const controlSessionID = created?.data?.id
-    if (
-      typeof controlSessionID !== "string"
-      || !controlSessionID
-      || controlSessionID === primarySessionID
-      || controlSessionID === approval.sessionID
-      || controlBySession.has(controlSessionID)
-    ) {
-      throw await failClosed(
-        "control-plane session.create failed: OpenCode did not create a fresh control-plane decision session",
-      )
-    }
-    const request = binaryDecisionRequest(approval, controlSessionID)
-    const control: ControlDecision = {
-      approval,
-      request,
-      retry: boundRetry(approval),
-      closed: false,
-    }
-    controlBySession.set(controlSessionID, control)
+    const controlSessionID = control.request.sessionID
+    control.presenting = true
     const instruction = [
       "You are a mechanical consent control plane.",
       "Invoke the question tool exactly once with the JSON below and do nothing else.",
       "Do not answer the question, infer consent, rewrite any text, or emit approval prose.",
-      JSON.stringify({ questions: [request.question] }),
+      JSON.stringify({ questions: [control.request.question] }),
     ].join("\n")
     let prompted: unknown
     try {
       prompted = await session.promptAsync({
         path: { id: controlSessionID },
         body: {
-          agent: "gaia-orchestrator",
           system: "Only the question tool is available. Free text has no decision authority.",
-          tools: { "*": false, question: true },
           parts: [{ type: "text", text: instruction }],
         },
       })
     } catch (error) {
       const cause = `control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`
-      await abandonControl(control, controlSessionID, cause)
+      control.presenting = false
+      await abandonControl(control, cause)
       throw await failClosed(cause)
     }
     const promptRejected = hostRejection(prompted)
     if (promptRejected) {
       const cause = `control-plane prompt rejected: ${promptRejected}`
-      await abandonControl(control, controlSessionID, cause)
+      control.presenting = false
+      await abandonControl(control, cause)
       throw await failClosed(cause)
     }
+    control.presenting = false
+    if (control.closed) {
+      throw new Error(`Gaia consent control ${approval.approvalID} closed before promptAsync resolved`)
+    }
+    control.presented = true
     await reportControlOpened(approval, controlSessionID)
+  }
+
+  async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
+    const primarySessionID = primaryFor(approval.sessionID)
+    if (!primarySessionID || approval.sessionID === primarySessionID) {
+      throw new Error("OpenCode control plane requires an approval session bound to an active primary")
+    }
+    const controlSessionID = approval.sessionID
+    const control: ControlDecision = {
+      approval,
+      request: binaryDecisionRequest(approval, controlSessionID),
+      retry: boundRetry(approval),
+      awaitingSafeIdle: false,
+      presenting: false,
+      presented: false,
+      closed: false,
+    }
+    const controls = controlsBySession.get(controlSessionID) ?? []
+    control.awaitingSafeIdle = controls.length === 0
+      && !controlsAwaitingIdle.has(controlSessionID)
+      && !deferredRetryBySession.has(controlSessionID)
+      && !retryBySession.has(controlSessionID)
+    controls.push(control)
+    controlsBySession.set(controlSessionID, controls)
     return control
   }
 
@@ -1745,7 +1849,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       pendingByCall.clear()
       allowedByCall.clear()
       controlByQuestion.clear()
-      controlBySession.clear()
+      controlsBySession.clear()
+      releasedControlCalls.clear()
+      controlsAwaitingIdle.clear()
+      deferredRetryBySession.clear()
       retryByCall.clear()
       retryBySession.clear()
     },
@@ -1753,24 +1860,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (event.type === "question.asked") {
         const sessionID = event.properties?.sessionID
         const requestID = event.properties?.id
-        const control = typeof sessionID === "string" ? controlBySession.get(sessionID) : undefined
+        const control = typeof sessionID === "string" ? owningControl(sessionID) : undefined
         if (!control || control.closed || typeof requestID !== "string" || !requestID) return
-        if (control.questionID || controlByQuestion.has(requestID)) {
-          await closeControl(control, "question_mismatch", `second question ${requestID} for one control`)
-          return
-        }
-        if (!matchesBinaryQuestion(event.properties?.questions, control.request.question)) {
-          await closeControl(control, "question_mismatch", `host asked ${JSON.stringify(event.properties?.questions)}`)
-          return
-        }
-        control.questionID = requestID
-        controlByQuestion.set(requestID, control)
+        await correlateQuestionEvent(control, requestID, event.properties?.questions)
         return
       }
       if (event.type === "question.rejected") {
         const requestID = event.properties?.requestID ?? event.properties?.id
         const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
-        if (control) await closeControl(control, "question_rejected")
+        if (control) await clearControl(control, "question_rejected")
         return
       }
       if (event.type === "question.replied") {
@@ -1780,9 +1878,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (!control || control.closed || control.request.sessionID !== sessionID) return
         const reply = readBinaryDecision(control.request, event.properties?.answers)
         if (!reply) {
-          await clearPendingApproval(
-            control.approval.approvalID, "reply_unreadable", JSON.stringify(event.properties?.answers),
-          )
+          await clearControl(control, "reply_unreadable", JSON.stringify(event.properties?.answers))
           return
         }
         await applyDecision(control, reply, "control")
@@ -1838,7 +1934,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           allowedByCall.delete(key)
           if (retried) {
             retryByCall.delete(key)
-            if (retryBySession.get(part.sessionID) === retried) retryBySession.delete(part.sessionID)
+            if (retryBySession.get(part.sessionID) === retried) {
+              retryBySession.delete(part.sessionID)
+              await presentNextControl(part.sessionID)
+            }
             await reportConsentRetryRefused(retried, { sessionID: part.sessionID, callID: part.callID }, {
               reason: "host_gate_refused",
               expected: `host execution of allowed command [${retried.expectedIndex}]`,
@@ -1851,10 +1950,45 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
         const sessionID = event.properties?.sessionID
         if (typeof sessionID === "string") {
-          const control = controlBySession.get(sessionID)
-          if (control) {
-            await closeControl(control, "session_ended", event.type)
-            controlBySession.delete(sessionID)
+          const controlWaitingForIdle = activeControl(sessionID)
+          if (event.type === "session.idle" && controlWaitingForIdle?.awaitingSafeIdle) {
+            controlWaitingForIdle.awaitingSafeIdle = false
+            await presentNextControl(sessionID, true)
+            shellIdentities.clearSession(sessionID)
+            await send({ event: event.type, sessionID })
+            return
+          }
+          if (event.type === "session.idle" && controlsAwaitingIdle.delete(sessionID)) {
+            const activation = deferredRetryBySession.get(sessionID)
+            if (activation) {
+              deferredRetryBySession.delete(sessionID)
+              retryBySession.set(sessionID, {
+                ...activation.retry,
+                usedCallIDs: new Set(activation.retry.usedCallIDs),
+              })
+              await announceActivation(activation.control, activation.lane, activation.retry)
+            } else {
+              await presentNextControl(sessionID)
+            }
+            shellIdentities.clearSession(sessionID)
+            await send({ event: event.type, sessionID })
+            return
+          }
+          if (event.type === "session.idle") {
+            const control = activeControl(sessionID)
+            if (control) {
+              await clearControl(control, "session_ended", event.type, false)
+              await presentNextControl(sessionID)
+            }
+            shellIdentities.clearSession(sessionID)
+            await send({ event: event.type, sessionID })
+            return
+          }
+          const controls = [...(controlsBySession.get(sessionID) ?? [])]
+          if (controls.length > 0) {
+            for (const control of controls) await clearControl(control, "session_ended", event.type, false)
+            controlsAwaitingIdle.delete(sessionID)
+            deferredRetryBySession.delete(sessionID)
             return
           }
           shellIdentities.clearSession(sessionID)
@@ -1871,11 +2005,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (!approval) return
       if (approval.sessionID !== sessionID) return
       const reply = normalizePermissionReply(event.properties.response ?? event.properties.reply)
-      const control = [...controlBySession.values()].find(
-        (candidate) => candidate.approval.approvalID === approval.approvalID,
-      )
-      if (!reply || !control || control.closed) {
-        await clearPendingApproval(approval.approvalID, "permission_reply_unusable", `${event.type} on ${requestID}`)
+      const control = controlForApproval(approval)
+      if (!control || control.closed) {
+        pending.delete(requestID)
+        return
+      }
+      if (control !== activeControl(sessionID) || !control.presented) return
+      if (!reply) {
+        await clearControl(control, "permission_reply_unusable", `${event.type} on ${requestID}`)
         return
       }
       await applyDecision(control, reply, lane)
@@ -1923,17 +2060,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       output.status = "ask"
     },
     "tool.execute.before": async (call, output) => {
-      const control = controlBySession.get(call.sessionID)
+      const control = owningControl(call.sessionID)
       if (control) {
         if (control.closed) {
           throw new Error("Gaia consent control plane is already closed")
         }
+        const tool = canonicalBridgeToolName(call.tool)
         if (
-          canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
-          || !matchesBinaryQuestion(output.args?.questions, control.request.question)
-          || (control.questionCallID !== undefined && control.questionCallID !== call.callID)
+          tool !== "AskUserQuestion"
+          || !matchesHostBinaryQuestionCall(output.args?.questions, control.request.question)
+          || control.questionCallID !== undefined
         ) {
-          await closeControl(control, "drifted_tool_call", `${call.tool} ${call.callID}`)
+          await clearControl(control, "drifted_tool_call", `${tool} ${call.callID}`)
           throw new Error("Gaia consent control plane permits one exact binary question")
         }
         control.questionCallID = call.callID
@@ -1960,6 +2098,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (retry && verdict?.refusal) {
         await reportConsentRetryRefused(retry, call, verdict.refusal)
         if (retryBySession.get(call.sessionID) === retry) retryBySession.delete(call.sessionID)
+        await presentNextControl(call.sessionID)
         const { reason, expected, received } = verdict.refusal
         throw new Error(
           `Gaia refused consent retry for ${retry.approvalID}: ${reason} (expected ${expected}, received ${received})`,
@@ -2028,6 +2167,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       if (retry && retryProof && retryBySession.get(call.sessionID) === retry) {
         retryBySession.delete(call.sessionID)
+        await presentNextControl(call.sessionID)
       }
       if (approvalID(response)) {
         await requestApproval(response, call.sessionID, call.callID, agent ?? "")
@@ -2036,16 +2176,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },
     "tool.execute.after": async (call, output) => {
-      const control = controlBySession.get(call.sessionID)
+      if (releasedControlCalls.delete(`${call.sessionID}:${call.callID}`)) return
+      const control = owningControl(call.sessionID)
       if (control) {
-        if (
-          canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
-          || control.questionCallID !== call.callID
-        ) {
-          await closeControl(control, "drifted_tool_result", `${call.tool} ${call.callID}`)
-          throw new Error("Gaia refused a drifted control-plane tool result")
-        }
-        return
+        const tool = canonicalBridgeToolName(call.tool)
+        if (tool === "AskUserQuestion" && control.questionCallID === call.callID) return
+        await clearControl(control, "drifted_tool_result", `${tool} ${call.callID}`)
+        throw new Error("Gaia refused a drifted control-plane tool result")
       }
       shellIdentities.forget(call.sessionID, call.callID)
       // The call is over, so an allow the host never submitted to its gate has
@@ -2089,10 +2226,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             retried.operation.expectedIndex = retried.expectedIndex
           }
           if (retried.expectedIndex >= retried.commands.length) {
-            if (retryBySession.get(call.sessionID) === retried) retryBySession.delete(call.sessionID)
+            if (retryBySession.get(call.sessionID) === retried) {
+              retryBySession.delete(call.sessionID)
+              await presentNextControl(call.sessionID)
+            }
           }
         } else if (retryBySession.get(call.sessionID) === retried) {
           retryBySession.delete(call.sessionID)
+          await presentNextControl(call.sessionID)
         }
       }
     },
