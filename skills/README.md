@@ -47,7 +47,7 @@ restrictions, and model.
 `hooks/hooks.json` carries no `Skill` matcher, so a `Skill(...)` call never
 reaches PreToolUse. This route is entirely host-side too.
 
-Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation.
+Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation. Approval presentation then branches by host: Claude Code is reply-resolved; OpenCode is attempt-provoked and resumes the same specialist by task id.
 
 The preload route above describes Claude Code, not a host-independent guarantee.
 OpenCode's agent prompt reference does not preload a `skills:` list; the agent uses

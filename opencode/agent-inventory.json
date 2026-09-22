@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "agents": [
+    "agents/gaia-orchestrator.md",
+    "agents/gaia-operator.md",
+    "agents/gaia-system.md",
+    "agents/developer.md",
+    "agents/cloud-troubleshooter.md",
+    "agents/gitops-operator.md",
+    "agents/platform-architect.md",
+    "agents/gaia-planner.md",
+    "agents/gaia-verifier.md"
+  ]
+}

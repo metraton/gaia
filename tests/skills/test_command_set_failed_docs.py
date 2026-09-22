@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills"
 
@@ -20,25 +19,31 @@ def test_approval_reference_names_failed_and_frozen_remainder() -> None:
     assert "unusable under this grant" in content
 
 
-def test_execution_requires_new_consent_for_retry_and_remainder() -> None:
+def test_command_execution_owns_fail_fast_and_fresh_consent() -> None:
     command = _read("command-execution")
     execution = _read("execution")
+    assert "first non-zero or mismatched result ends execution" in command
+    assert "terminal/frozen `FAILED`" in command
     assert "cannot authorize a retry or any" in command
-    assert "remaining index" in command
-    assert "new approval for every retry/remainder command" in command
-    assert "neither retry nor remainder may execute under" in execution
-    assert "Every retry and every still-needed remainder command is a new" in execution
-    assert "Unused items in the frozen grant do not" in execution
-    assert "authorize execution" in execution
+    assert "Later indexes stay untouched" in command
+    assert "fresh investigation" in command
+    assert "new request and new approval" in command
+    assert "apply `command-execution`'s COMMAND_SET fail-fast rule" in execution
+    assert "terminal/frozen `FAILED`" not in execution
 
 
-def test_all_protocol_branches_reject_failed_grant_resume() -> None:
-    expected = {
-        "agent-protocol": "failed COMMAND_SET is terminal/frozen",
-        "subagent-request-approval": "previous COMMAND_SET in `FAILED` cannot be resumed",
-        "agent-response": "treat `FAILED` as a",
-        "pending-approvals": "COMMAND_SET grant in `FAILED` is not pending or resumable",
-    }
-    for skill, phrase in expected.items():
-        assert phrase in _read(skill), f"{skill} must freeze FAILED COMMAND_SET grants"
-    assert "terminal/frozen grant" in _read("agent-response")
+def test_agent_protocol_owns_failed_set_consumer_reconciliation() -> None:
+    protocol = _read("agent-protocol")
+    assert "never evidence that execution\nhappened" in protocol
+    assert "completed indexes, the failed index, and untouched indexes" in protocol
+    assert "three distinct" in protocol
+    assert "failed COMMAND_SET is terminal/frozen" in protocol
+    assert "fresh investigation and the approval branch" in protocol
+
+
+def test_other_audited_branches_cross_link_instead_of_restate() -> None:
+    execution = _read("execution")
+    producer = _read("subagent-request-approval")
+    assert "`command-execution` for the\nexecution-time stop" in producer
+    assert "`agent-protocol` for consumer reconciliation" in producer
+    assert "does not duplicate the failure rule" in execution

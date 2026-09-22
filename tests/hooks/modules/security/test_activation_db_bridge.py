@@ -84,6 +84,32 @@ def _make_v12_schema(con: sqlite3.Connection) -> None:
             FOREIGN KEY (approval_id) REFERENCES approvals(id)
         );
 
+        CREATE TABLE IF NOT EXISTS approval_grants (
+            approval_id              TEXT PRIMARY KEY,
+            agent_id                 TEXT,
+            session_id               TEXT,
+            command_set_json         TEXT NOT NULL,
+            scope                    TEXT NOT NULL DEFAULT 'COMMAND_SET',
+            created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            expires_at               TEXT,
+            status                   TEXT NOT NULL DEFAULT 'PENDING',
+            consumed_indexes_json    TEXT,
+            consumed_at              TEXT,
+            revoked_at               TEXT,
+            multi_use                INTEGER NOT NULL DEFAULT 0,
+            confirmed                INTEGER NOT NULL DEFAULT 0,
+            request_fingerprint      TEXT,
+            next_index               INTEGER NOT NULL DEFAULT 0,
+            reservation_index        INTEGER,
+            reservation_session_id   TEXT,
+            reservation_tool_use_id  TEXT,
+            reserved_tool_use_ids_json TEXT,
+            reservation_at           TEXT,
+            failed_index             INTEGER,
+            failure_reason           TEXT,
+            source                   TEXT NOT NULL DEFAULT 'legacy'
+        );
+
         CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
         BEFORE UPDATE ON approval_events
         BEGIN
@@ -142,13 +168,21 @@ def _sealed_command_set_payload(
         f"{[item['command'] for item in command_set]}"
     )
     sealed_under = mutative[-1]
-    return _build_sealed_payload(
+    payload = _build_sealed_payload(
         command=command_set[0]["command"],
         verb=sealed_under.verb,
         category=sealed_under.category,
         agent_type=agent_type,
         command_set=command_set,
     )
+    if len(command_set) > 1:
+        from gaia.approvals.command_set import request_fingerprint
+
+        payload["request_type"] = "COMMAND_SET"
+        payload["request_fingerprint"] = request_fingerprint(
+            item["command"] for item in command_set
+        )
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -156,17 +190,23 @@ def _sealed_command_set_payload(
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def db_and_store(tmp_path, monkeypatch):
+def db_and_store(tmp_path, monkeypatch, isolated_grants_dir):
     """File-backed DB + patched store._open_db for isolation."""
     db_path = tmp_path / "test_bridge.db"
     con = sqlite3.connect(str(db_path))
     _make_v12_schema(con)
     con.commit()
 
-    monkeypatch.setattr(
-        "gaia.approvals.store._open_db",
-        lambda: sqlite3.connect(str(db_path)),
-    )
+    def connect_test_db(db_path_arg=None):
+        connection = sqlite3.connect(str(db_path))
+        connection.row_factory = sqlite3.Row
+        connection.create_function(
+            "gaia_sha256", 1, lambda value: _sha256(value), deterministic=True
+        )
+        return connection
+
+    monkeypatch.setattr("gaia.approvals.store._open_db", connect_test_db)
+    monkeypatch.setattr("gaia.store.writer._connect", connect_test_db)
 
     import gaia.approvals.store as store
     orig_get_pending = store.get_pending
@@ -209,7 +249,7 @@ def isolated_grants_dir(tmp_path, monkeypatch):
     # isolated DB (not ~/.gaia/gaia.db).  The approval_grants table is created
     # on demand in this empty DB -- no rows, so the DB path returns None and
     # check_approval_grant() falls through to the filesystem path as before.
-    writer_db_path = tmp_path / "writer_isolation.db"
+    writer_db_path = tmp_path / "test_bridge.db"
     import sqlite3 as _sqlite3
     import hashlib as _hashlib
 
@@ -267,7 +307,19 @@ def isolated_grants_dir(tmp_path, monkeypatch):
                 status               TEXT NOT NULL DEFAULT 'PENDING',
                 consumed_indexes_json TEXT,
                 consumed_at          TEXT,
-                revoked_at           TEXT
+                revoked_at           TEXT,
+                multi_use            INTEGER NOT NULL DEFAULT 0,
+                confirmed            INTEGER NOT NULL DEFAULT 0,
+                request_fingerprint  TEXT,
+                next_index           INTEGER NOT NULL DEFAULT 0,
+                reservation_index    INTEGER,
+                reservation_session_id TEXT,
+                reservation_tool_use_id TEXT,
+                reserved_tool_use_ids_json TEXT,
+                reservation_at       TEXT,
+                failed_index         INTEGER,
+                failure_reason       TEXT,
+                source               TEXT NOT NULL DEFAULT 'legacy'
             );
         """)
         con.commit()
@@ -690,8 +742,8 @@ class TestActivateDbPendingCommandSet:
         ]
         assert json.loads(row["consumed_indexes_json"] or "[]") == []
 
-    def test_command_set_grant_ttl_is_5_minutes(self, db_and_store):
-        """The COMMAND_SET grant created on activation carries a 5-minute TTL."""
+    def test_command_set_grant_uses_plan_first_ttl(self, db_and_store):
+        """Typed COMMAND_SET activation uses the canonical plan-first TTL."""
         db_path, assert_con, store = db_and_store
         session_id = "test-bridge-session"
         command_set = [
@@ -702,13 +754,11 @@ class TestActivateDbPendingCommandSet:
         approval_id = store.insert_requested(payload, session_id=session_id)
         nonce_prefix = approval_id[len("P-"):len("P-") + 8]
 
-        from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
-            DEFAULT_COMMAND_SET_TTL_MINUTES,
-        )
+        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from gaia.store.writer import PLAN_COMMAND_SET_TTL_MINUTES
         from datetime import datetime, timezone
 
-        assert DEFAULT_COMMAND_SET_TTL_MINUTES == 5
+        assert PLAN_COMMAND_SET_TTL_MINUTES == 60
 
         before = datetime.now(timezone.utc)
         result = activate_db_pending_by_prefix(
@@ -723,9 +773,9 @@ class TestActivateDbPendingCommandSet:
             row["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
         ).replace(tzinfo=timezone.utc)
         ttl_minutes = (expires_at - before).total_seconds() / 60
-        # Allow a small execution-time window; the window is centred on 5.
-        assert 4 <= ttl_minutes <= 6, (
-            f"COMMAND_SET TTL must be ~5 min, got {ttl_minutes:.2f}"
+        # Allow a small execution-time window around the canonical plan-first TTL.
+        assert 59 <= ttl_minutes <= 61, (
+            f"COMMAND_SET TTL must be ~60 min, got {ttl_minutes:.2f}"
         )
 
     def test_command_set_consumable_by_bash_validator(self, db_and_store):

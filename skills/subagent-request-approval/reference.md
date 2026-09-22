@@ -7,6 +7,8 @@ gaia approvals request-set \
   --command '<exact T3 command 0>' \
   --command '<exact T3 command 1>' \
   --rationale '<bounded goal>' \
+  --verification '<desired-state check after execution>' \
+  --rollback '<how to undo the effect>' \
   --agent-id <agent_id> \
   --session-id <session_id>
 ```
@@ -21,16 +23,25 @@ before any attempt, the same way a longer set is requested.
 The CLI persists a REQUESTED payload containing `request_type`, `operation`,
 `exact_content`, `commands`, `command_set` (each command plus SHA-256
 fingerprint), the order-sensitive `request_fingerprint`, `scope`, `risk_level`,
-`rollback_hint`, and `rationale`. Relay its returned approval id and data; do not
-derive them.
+`rollback_hint`, `verification`, and `rationale`. Its direct output is `status`,
+the canonical `approval_id`, and `command_set` with per-command fingerprints.
+The order-sensitive fingerprint is read back from the pending JSON returned by
+`gaia approvals list --json`; match by the full canonical id and never derive it.
 
-The reactive single-command path is separate and begins only after the hook
+The reactive single-command path is separate and begins only after the
+pre-execution policy gate
 already returned `[T3_BLOCKED]` for an attempted command. Relay its sealed
 payload unchanged, checkpoint, and stop. A blocked command must not be
 rewritten or folded into a retrospective set. Prefer the proactive one-command
 request-set above when the T3 command is known in advance from read-only
 investigation, so consent is sought because the operation is mutative, not
 because the hook intercepted it.
+
+Reactive singular command and protected-path FILE_WRITE retries are supported
+as typed grants on OpenCode (`hooks/adapters/opencode.py::_consent_retry_rejection`):
+the former binds `SCOPE_SEMANTIC_SIGNATURE`, the latter `SCOPE_FILE_PATH`.
+Request-set-of-one remains the preferred proactive path for a predictable
+command because it seals rollback and verification before any attempt.
 
 Grouping criteria are semantic, not merely numeric: one goal, exact known
 commands, ordered execution, coherent risk/rollback/verification, and no

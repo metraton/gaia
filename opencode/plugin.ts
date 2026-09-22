@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url"
 import { lstatSync, realpathSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
+import { delimiter, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
 import { ShellEnvDelivery } from "./shell-env"
 
 type BridgeResponse = {
@@ -19,8 +19,32 @@ type PendingApproval = {
   sessionID: string
   callID: string
   token: string
+  role: string
   surface: NativeConsentPresentation
 }
+
+type RetryOperation =
+  | {
+    version: 1
+    kind: "COMMAND_SET"
+    commands: string[]
+    fingerprints: string[]
+    requestFingerprint: string
+    expectedIndex: number
+  }
+  | {
+    version: 1
+    kind: "SCOPE_SEMANTIC_SIGNATURE"
+    command: string
+    commandFingerprint: string
+  }
+  | {
+    version: 1
+    kind: "SCOPE_FILE_PATH"
+    canonicalPath: string
+    pathFingerprint: string
+    toolFamily: ["Write", "Edit"]
+  }
 
 type BoundRetry = PendingApproval & {
   agentID: string
@@ -29,6 +53,7 @@ type BoundRetry = PendingApproval & {
   fingerprints: string[]
   expectedIndex: number
   usedCallIDs: Set<string>
+  operation: RetryOperation
 }
 
 export type BinaryDecisionRequest = {
@@ -42,6 +67,7 @@ export type BinaryDecisionRequest = {
     question: string
     options: Array<{ label: string; description: string }>
     multiple: false
+    custom: false
   }
 }
 
@@ -51,7 +77,16 @@ type ControlDecision = {
   retry: BoundRetry
   questionCallID?: string
   questionID?: string
+  awaitingSafeIdle: boolean
+  presenting: boolean
+  presented: boolean
   closed: boolean
+}
+
+type DeferredActivation = {
+  control: ControlDecision
+  lane: DecisionLane
+  retry: BoundRetry
 }
 
 type RoleCapabilityContext = {
@@ -63,6 +98,8 @@ type RoleCapabilityContext = {
 }
 
 type PermissionReply = "once" | "always" | "reject"
+
+type HostParentRecord = "none" | "present" | "unavailable"
 
 type WorkspaceContext = {
   cwd: string
@@ -332,6 +369,61 @@ const LIFECYCLE_EVENT_TYPES = new Set([
   "session.compacted",
 ])
 
+/**
+ * The bridge event that records a host permission request matching no Gaia
+ * verdict. Must stay equal to bridge.py's UNCORRELATED_PERMISSION_EVENT: the
+ * two halves of this adapter exchange the name by value, and a rename on one
+ * side silently stops the audit rather than failing.
+ */
+export const UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
+export const CONTROL_OPENED_EVENT = "control.opened"
+export const CONTROL_CLOSED_EVENT = "control.closed"
+export const DECISION_APPLIED_EVENT = "decision.applied"
+export const CONSENT_RETRY_REFUSED_EVENT = "retry.refused"
+
+/**
+ * The one message the plugin puts in the orchestrator's session once the user
+ * activated an approval. Deterministic so the orchestrator can match it, and
+ * addressed to the ROOT session because the specialist's turn is already over:
+ * its blocked attempt was a tool error that ended the turn, so nobody is left
+ * in that session to retry, and a prompt sent there would run the specialist
+ * with no dispatch, no contract row and no coordinator reading the result.
+ * The orchestrator re-dispatches with task_id = the specialist session, which
+ * is the only shape the plugin's retry accounting accepts.
+ */
+export function activationNotice(
+  approvalID: string,
+  specialistSessionID: string,
+  operation: RetryOperation,
+): string {
+  const retry = operation.kind === "COMMAND_SET"
+    ? `command [${operation.expectedIndex}]`
+    : operation.kind === "SCOPE_SEMANTIC_SIGNATURE"
+      ? "the exact approved Bash command"
+      : `the exact granted file target with ${operation.toolFamily.join("/")}`
+  return `Gaia: approval ${approvalID} has an executable ${operation.kind} grant and typed retry descriptor. `
+    + `Resume the specialist session ${specialistSessionID} (task_id) so it retries ${retry} now.`
+}
+
+/**
+ * Why a consent control was released. Recorded verbatim by the bridge, so a
+ * reader of harness_events can tell which exit the control took; `decided` is
+ * the one exit where the user's answer reached Gaia.
+ */
+export type ControlCloseReason =
+  | "decided"
+  | "decide_failed"
+  | "question_mismatch"
+  | "question_rejected"
+  | "reply_unreadable"
+  | "permission_reply_unusable"
+  | "decision_duplicate"
+  | "retry_conflict"
+  | "prompt_rejected"
+  | "session_ended"
+  | "drifted_tool_call"
+  | "drifted_tool_result"
+
 export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
   if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
   if (typeof eventType === "string" && COMPATIBILITY_PERMISSION_EVENTS.includes(eventType)) {
@@ -377,6 +469,7 @@ export class PermissionDecisionRouter {
 
 const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
+const gaiaBinDirectory = dirname(gaiaPath)
 
 function traceableBridgeRequest(event: Record<string, unknown>): Record<string, unknown> {
   const traceableArgs = (value: unknown) => {
@@ -407,11 +500,23 @@ function traceableBridgeRequest(event: Record<string, unknown>): Record<string, 
   }
 }
 
-async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
+/** The directory Gaia's own processes run from, so their writes are attributed
+ * to the session's workspace: `resolve_workspace` derives the workspace from
+ * the cwd, and `opencode serve` may run from a directory that is not the
+ * project (measured: events from a /home/jorge serve landed in workspace
+ * 'jorge' instead of 'me'). Undefined when the host handed no absolute
+ * directory, which leaves the spawn inheriting this process's cwd. */
+function gaiaDirectory(input: any): string | undefined {
+  const directory = input?.directory
+  return typeof directory === "string" && isAbsolute(directory) ? directory : undefined
+}
+
+async function bridge(event: Record<string, unknown>, cwd: string | undefined): Promise<BridgeResponse> {
   if (process.env.GAIA_DEBUG) {
     console.error(`[gaia-opencode-bridge:request] ${JSON.stringify(traceableBridgeRequest(event))}`)
   }
   const child = Bun.spawn(["python3", bridgePath, "--shell-env-v1"], {
+    cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
     stdout: "pipe",
@@ -435,21 +540,34 @@ async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
   return response
 }
 
-async function gaiaCapture(args: string[]): Promise<{ ok: boolean; stdout: string }> {
+async function gaiaCapture(
+  args: string[],
+  cwd: string | undefined,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const child = Bun.spawn(["python3", gaiaPath, ...args], {
+    cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [code, stdout] = await Promise.all([
+  const [code, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
   ])
-  return { ok: code === 0, stdout }
+  return { ok: code === 0, stdout, stderr }
 }
 
-async function gaia(args: string[]): Promise<boolean> {
-  return (await gaiaCapture(args)).ok
+/** The cause Gaia gave for a failed CLI call: its `--json` error line, else stderr. */
+export function gaiaFailureCause(result: { stdout: string; stderr: string }): string {
+  const lastLine = result.stdout.trim().split("\n").pop() ?? ""
+  try {
+    const emitted = JSON.parse(lastLine)
+    if (typeof emitted?.error === "string" && emitted.error) return emitted.error
+  } catch {
+    // Not a JSON line; fall through to stderr.
+  }
+  return result.stderr.trim() || "gaia exited non-zero without reporting a cause"
 }
 
 export type NativeConsentPresentation = {
@@ -494,6 +612,229 @@ function boundRetry(approval: PendingApproval): BoundRetry {
     fingerprints: fingerprints.map(String),
     expectedIndex: 0,
     usedCallIDs: new Set([approval.callID]),
+    operation: {
+      version: 1,
+      kind: "COMMAND_SET",
+      commands: commands.map(String),
+      fingerprints: fingerprints.map(String),
+      requestFingerprint: String(metadata.request_fingerprint ?? ""),
+      expectedIndex: 0,
+    },
+  }
+}
+
+function boundRetryFromActivation(
+  approval: PendingApproval,
+  correlationID: string,
+  raw: unknown,
+): BoundRetry {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Gaia activation returned no typed retry descriptor")
+  }
+  const descriptor = raw as Record<string, unknown>
+  const binding = approval.surface.metadata.binding as Record<string, unknown> | undefined
+  if (descriptor.version !== 1) throw new Error("Gaia activation retry descriptor has an unsupported version")
+  if (descriptor.approval_id !== approval.approvalID) throw new Error("Gaia activation retry descriptor approval drifted")
+  if (descriptor.agent_id !== binding?.agent_id) throw new Error("Gaia activation retry descriptor agent drifted")
+  if (descriptor.session_id !== approval.sessionID) throw new Error("Gaia activation retry descriptor session drifted")
+  if (descriptor.original_call_id !== approval.callID) throw new Error("Gaia activation retry descriptor original call drifted")
+  let operation: RetryOperation
+  let commands: string[]
+  let fingerprints: string[]
+  let expectedIndex = 0
+  if (descriptor.kind === "COMMAND_SET") {
+    commands = Array.isArray(descriptor.commands) ? descriptor.commands.map(String) : []
+    fingerprints = Array.isArray(descriptor.fingerprints) ? descriptor.fingerprints.map(String) : []
+    expectedIndex = Number(descriptor.expected_index)
+    if (
+      commands.length === 0
+      || commands.length !== fingerprints.length
+      || !Number.isInteger(expectedIndex)
+      || expectedIndex < 0
+      || expectedIndex >= commands.length
+      || typeof descriptor.request_fingerprint !== "string"
+      || commands.some((command, index) => commandFingerprint(command) !== fingerprints[index])
+    ) throw new Error("Gaia activation returned an invalid COMMAND_SET retry descriptor")
+    operation = {
+      version: 1,
+      kind: "COMMAND_SET",
+      commands,
+      fingerprints,
+      requestFingerprint: descriptor.request_fingerprint,
+      expectedIndex,
+    }
+  } else if (descriptor.kind === "SCOPE_SEMANTIC_SIGNATURE") {
+    const command = descriptor.command
+    const fingerprint = descriptor.command_fingerprint
+    if (
+      typeof command !== "string"
+      || !command
+      || typeof fingerprint !== "string"
+      || commandFingerprint(command) !== fingerprint
+    ) throw new Error("Gaia activation returned an invalid semantic retry descriptor")
+    commands = [command]
+    fingerprints = [fingerprint]
+    operation = {
+      version: 1,
+      kind: "SCOPE_SEMANTIC_SIGNATURE",
+      command,
+      commandFingerprint: fingerprint,
+    }
+  } else if (descriptor.kind === "SCOPE_FILE_PATH") {
+    const canonicalPath = descriptor.canonical_path
+    const pathFingerprint = descriptor.path_fingerprint
+    const family = descriptor.tool_family
+    if (
+      typeof canonicalPath !== "string"
+      || !isAbsolute(canonicalPath)
+      || typeof pathFingerprint !== "string"
+      || commandFingerprint(canonicalPath) !== pathFingerprint
+      || !Array.isArray(family)
+      || family.join(":") !== "Write:Edit"
+    ) throw new Error("Gaia activation returned an invalid file retry descriptor")
+    commands = [canonicalPath]
+    fingerprints = [pathFingerprint]
+    operation = {
+      version: 1,
+      kind: "SCOPE_FILE_PATH",
+      canonicalPath,
+      pathFingerprint,
+      toolFamily: ["Write", "Edit"],
+    }
+  } else {
+    throw new Error("Gaia activation returned an unsupported retry descriptor kind")
+  }
+  return {
+    ...approval,
+    agentID: String(binding?.agent_id),
+    correlationID,
+    commands,
+    fingerprints,
+    expectedIndex,
+    usedCallIDs: new Set([approval.callID]),
+    operation,
+  }
+}
+
+export type ConsentRetryRefusal = {
+  reason:
+    | "replayed_call_id" | "session_mismatch" | "role_mismatch" | "out_of_order" | "fingerprint_mismatch"
+    | "path_mismatch" | "tool_family_mismatch" | "host_gate_refused"
+  expected: string
+  received: string
+}
+
+export type ConsentRetryVerdict =
+  | { proof: Record<string, unknown>; refusal?: undefined }
+  | { proof?: undefined; refusal: ConsentRetryRefusal }
+
+/** Decide whether one tool call is the bound retry, a drifted claim to it, or unrelated.
+ *
+ * Unrelated returns `undefined`: a call that names none of the approved
+ * commands and reuses no retry call id claims nothing, so it travels with no
+ * proof and the host-neutral policy rules on it (the specialist loads skills,
+ * reads, and runs the Gaia CLI while a retry is bound). Only a call that does
+ * claim the retry -- an approved command's exact bytes, or a call id already
+ * spent on one -- is judged, and a judged call either yields the proof or the
+ * one comparison that refused it, expected against received.
+ *
+ * The role compared is the host role of the session the approval was
+ * presented to, never `agentID`: that field is the approval's Gaia contract
+ * identity (`a69d869dc02031f54`), and the session's agent is `gaia-operator`
+ * (measured 2026-09-16: comparing the two refused a byte-identical retry).
+ */
+export function evaluateConsentRetry(
+  retry: BoundRetry,
+  call: { sessionID?: string; callID?: string },
+  agent: string | undefined,
+  tool: string,
+  args: Record<string, unknown>,
+): ConsentRetryVerdict | undefined {
+  const callID = typeof call.callID === "string" && call.callID ? call.callID : undefined
+  const replayed = callID !== undefined && retry.usedCallIDs.has(callID)
+  const refuse = (reason: ConsentRetryRefusal["reason"], expected: string, received: string) => (
+    { refusal: { reason, expected, received } }
+  )
+  const operation = retry.operation
+  const command = tool.toLowerCase() === "bash" && typeof args.command === "string" ? args.command : undefined
+  const collapse = (text: string) => text.trim().replace(/\s+/g, " ")
+  let claimedIndex = -1
+  let fileTool: "Write" | "Edit" | undefined
+  let filePaths: string[] = []
+  if (operation.kind === "COMMAND_SET") {
+    claimedIndex = command === undefined
+      ? -1
+      : operation.commands.findIndex((approved) => collapse(approved) === collapse(command))
+    if (claimedIndex < 0 && !replayed) return undefined
+  } else if (operation.kind === "SCOPE_SEMANTIC_SIGNATURE") {
+    const claimed = command !== undefined && collapse(command) === collapse(operation.command)
+    if (!claimed && !replayed) return undefined
+  } else {
+    const canonical = canonicalFileTool(tool)
+    if (!canonical && !replayed) return undefined
+    fileTool = canonical === "apply_patch" ? "Edit" : canonical
+    filePaths = canonical === "apply_patch"
+      ? (Array.isArray(args.file_paths) ? args.file_paths.filter((path): path is string => typeof path === "string") : [])
+      : (typeof args.file_path === "string" ? [args.file_path] : [])
+  }
+  if (replayed || callID === undefined) return refuse("replayed_call_id", "an unused call id", String(callID))
+  if (call.sessionID !== retry.sessionID) return refuse("session_mismatch", retry.sessionID, String(call.sessionID))
+  if (agent !== retry.role) return refuse("role_mismatch", retry.role, String(agent))
+  if (operation.kind === "SCOPE_FILE_PATH") {
+    if (!fileTool || !operation.toolFamily.includes(fileTool)) {
+      return refuse("tool_family_mismatch", operation.toolFamily.join("/"), String(fileTool))
+    }
+    if (filePaths.length !== 1 || filePaths[0] !== operation.canonicalPath) {
+      return refuse("path_mismatch", operation.canonicalPath, filePaths.join(","))
+    }
+    return {
+      proof: {
+        version: operation.version,
+        kind: operation.kind,
+        approval_id: retry.approvalID,
+        correlation_id: retry.correlationID,
+        agent_id: retry.agentID,
+        role: retry.role,
+        session_id: retry.sessionID,
+        original_call_id: retry.callID,
+        retry_call_id: callID,
+        canonical_path: operation.canonicalPath,
+        path_fingerprint: operation.pathFingerprint,
+        tool_family: fileTool,
+      },
+    }
+  }
+  const expectedCommand = operation.kind === "COMMAND_SET"
+    ? operation.commands[operation.expectedIndex]
+    : operation.command
+  const expectedFingerprint = operation.kind === "COMMAND_SET"
+    ? operation.fingerprints[operation.expectedIndex]
+    : operation.commandFingerprint
+  if (operation.kind === "COMMAND_SET" && claimedIndex !== operation.expectedIndex) {
+    return refuse("out_of_order", `command [${operation.expectedIndex}]`, `command [${claimedIndex}]`)
+  }
+  const fingerprint = commandFingerprint(command!)
+  if (command !== expectedCommand || expectedFingerprint !== fingerprint) {
+    return refuse("fingerprint_mismatch", expectedFingerprint, fingerprint)
+  }
+  return {
+    proof: {
+      version: operation.version,
+      kind: operation.kind,
+      approval_id: retry.approvalID,
+      correlation_id: retry.correlationID,
+      agent_id: retry.agentID,
+      role: retry.role,
+      session_id: retry.sessionID,
+      original_call_id: retry.callID,
+      retry_call_id: callID,
+      command,
+      command_fingerprint: fingerprint,
+      ...(operation.kind === "COMMAND_SET" ? {
+        expected_index: operation.expectedIndex,
+        request_fingerprint: operation.requestFingerprint,
+      } : {}),
+    },
   }
 }
 
@@ -522,8 +863,66 @@ export function binaryDecisionRequest(
         { label: reject, description: "Create no grant and perform no operation" },
       ],
       multiple: false,
+      custom: false,
     },
   }
+}
+
+/**
+ * Whether the host's copy of the question is the one binary question Gaia
+ * asked, compared by the fields that carry consent: header, question text,
+ * the ordered option labels and descriptions, single choice, and no custom
+ * answer.
+ *
+ * Compared structurally, never as serialized bytes: the host re-encodes the
+ * question (QuestionInfo declares question, header, options, multiple, custom
+ * in that order; the plugin sends header first) and may add keys of its own
+ * (`tool`). A byte comparison closed the control on every such re-encoding,
+ * silently.
+ */
+export function matchesBinaryQuestion(
+  questions: unknown,
+  expected: BinaryDecisionRequest["question"],
+): boolean {
+  if (!Array.isArray(questions) || questions.length !== 1) return false
+  const question = questions[0] as Record<string, unknown> | null
+  if (!question || typeof question !== "object") return false
+  if (question.header !== expected.header || question.question !== expected.question) return false
+  if (question.multiple !== expected.multiple || question.custom !== expected.custom) return false
+  const options = question.options
+  if (!Array.isArray(options) || options.length !== expected.options.length) return false
+  return expected.options.every((option, index) => {
+    const candidate = options[index] as Record<string, unknown> | null
+    return Boolean(candidate) && typeof candidate === "object"
+      && candidate.label === option.label
+      && candidate.description === option.description
+  })
+}
+
+/** Match OpenCode's normalized pre-execution copy of Gaia's question. */
+export function matchesHostBinaryQuestionCall(
+  questions: unknown,
+  expected: BinaryDecisionRequest["question"],
+): boolean {
+  if (!Array.isArray(questions) || questions.length !== 1) return false
+  const question = questions[0] as Record<string, unknown> | null
+  if (!question || typeof question !== "object") return false
+  const hasCustom = Object.prototype.hasOwnProperty.call(question, "custom")
+  if (hasCustom && question.custom !== false) return false
+  return matchesBinaryQuestion([{ ...question, custom: false }], expected)
+}
+
+/** Match OpenCode's event copy after the exact question tool call was validated. */
+export function matchesHostBinaryQuestionEvent(
+  questions: unknown,
+  expected: BinaryDecisionRequest["question"],
+  exactQuestionCallValidated: boolean,
+): boolean {
+  if (!exactQuestionCallValidated || !Array.isArray(questions) || questions.length !== 1) return false
+  const question = questions[0] as Record<string, unknown> | null
+  if (!question || typeof question !== "object" || question.multiple !== false) return false
+  if (question.custom !== undefined && question.custom !== false) return false
+  return matchesBinaryQuestion([{ ...question, custom: false }], expected)
 }
 
 export function readBinaryDecision(
@@ -607,7 +1006,7 @@ export function questionAnswers(output: any): Record<string, string> | undefined
 }
 
 /** Apply a bridge response's updated_input onto the live args object, field
- * by field, never by whole-object reassignment. OpenCode 1.18.23 hands this
+ * by field, never by whole-object reassignment. OpenCode 1.18.18 hands this
  * hook the args object it will actually pass to the tool; a full
  * `output.args = updatedInput` replaces the reference the host already
  * captured and is a measured no-op (memory:
@@ -663,8 +1062,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   await announceLiveness(input)
   const pending = new Map<string, PendingApproval>()
   const pendingByCall = new Map<string, PendingApproval>()
-  const controlBySession = new Map<string, ControlDecision>()
+  // `sessionID:callID` pairs Gaia ALLOWED in tool.execute.before. OpenCode runs
+  // its own permission gate AFTER that verdict, and a second gate that can deny
+  // what Gaia granted makes an approval mean something different here than on
+  // Claude Code, where PreToolUse is the last word. Consumed on use, so one
+  // verdict frees exactly the one call it ruled on.
+  const allowedByCall = new Set<string>()
+  const controlsBySession = new Map<string, ControlDecision[]>()
   const controlByQuestion = new Map<string, ControlDecision>()
+  const releasedControlCalls = new Set<string>()
+  const controlsAwaitingIdle = new Set<string>()
+  const deferredRetryBySession = new Map<string, DeferredActivation>()
   const retryBySession = new Map<string, BoundRetry>()
   const retryByCall = new Map<string, BoundRetry>()
   const agentBySession = new Map<string, string>()
@@ -681,16 +1089,26 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // not name that scope -- a field it sent would be a scope its own caller
   // could name, and a claim checked against a ledger the claimant chooses
   // carries no provenance.
+  const workspaceDirectory = gaiaDirectory(input)
   const send: (event: Record<string, unknown>) => Promise<BridgeResponse> =
-    typeof input?.gaiaBridge === "function" ? input.gaiaBridge : bridge
+    typeof input?.gaiaBridge === "function"
+      ? input.gaiaBridge
+      : (event) => bridge(event, workspaceDirectory)
+  const gaia = (args: string[]) => gaiaCapture(args, workspaceDirectory)
   // A claim the host process was granted, never one this edge composed: the
   // plugin receives caller-supplied names and cannot be the issuer of the
   // authority they would otherwise assert.
   const attestationBySession = new Map<string, string>()
-  // The session this run's parentless claim may be issued to. A child session
-  // cannot exist before the primary one has taken a turn, so the first session
-  // seen is the primary and every later one must inherit a grant instead.
-  let rootSessionID: string | undefined
+  // The sessions this run's parentless claim may be issued to. The first
+  // session seen is one: no child can exist before a primary has taken a turn.
+  // Every later session inherits a grant instead, unless the host's own record
+  // shows it has no parent -- a root the user opened after the first one, which
+  // the serve process hosts for its whole life (measured 2026-09-17: every root
+  // after the first was refused the control plane until the host restarted).
+  const primarySessions = new Set<string>()
+  // The host's last answer about a later session's parent, read back by the
+  // refusal trace so an unadmitted session says why.
+  const hostParentBySession = new Map<string, HostParentRecord>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
   // One issuance per session even when two edges reach it at once. Without it a
@@ -704,7 +1122,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   /** The dispatch handle Gaia reads as agent_id, or undefined for the primary.
    *
    * One predicate answers "is this session a dispatch?" for every site that
-   * asks. A session other than the root one exists only because a dispatch
+   * asks. A session other than a primary one exists only because a dispatch
    * created it, so it is a subagent from its first tool call -- which is long
    * before the parent's tool.execute.after can report which call created it.
    * Keying the answer on that record alone left agent_id absent for the whole
@@ -716,14 +1134,64 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    * on that session would leave the attested lane unreachable.
    */
   function isPrimarySession(sessionID: string): boolean {
-    return rootSessionID !== undefined && sessionID === rootSessionID
+    return primarySessions.has(sessionID)
   }
 
   function dispatchHandle(sessionID: string): string | undefined {
     // Both arms fail closed on an unknown primary: no handle is issued, so an
     // unidentifiable session is never handed the unrestricted subagent lane.
-    if (rootSessionID === undefined || isPrimarySession(sessionID)) return undefined
+    if (primarySessions.size === 0 || isPrimarySession(sessionID)) return undefined
     return dispatchBySession.get(sessionID) ?? sessionID
+  }
+
+  /** The primary session an approval's specialist answers to, or undefined when none is known. */
+  function primaryFor(sessionID: string): string | undefined {
+    if (isPrimarySession(sessionID)) return sessionID
+    const parent = childBindings.get(sessionID)?.parentSessionID
+    return parent !== undefined && isPrimarySession(parent) ? parent : undefined
+  }
+
+  /** The host's own record of the session's parent; the host, not this edge, says what is a root. */
+  async function hostParentRecord(sessionID: string): Promise<HostParentRecord> {
+    try {
+      const fetched = await input.client?.session?.get?.({ path: { id: sessionID } })
+      const record = fetched?.data as { id?: unknown; parentID?: unknown } | undefined
+      if (hostRejection(fetched) || record?.id !== sessionID) return "unavailable"
+      return typeof record.parentID === "string" && record.parentID ? "present" : "none"
+    } catch {
+      return "unavailable"
+    }
+  }
+
+  /** Admit the session to the parentless lane when it is the first seen or the host records no parent.
+   *
+   * Only the host's record can vouch for a later session: a child named by
+   * message.updated before its Task binding lands looks exactly like a fresh
+   * root from this edge. A host that cannot answer admits nothing, and is
+   * asked again on the next sighting; a recorded parent is final.
+   */
+  async function adoptPrimary(sessionID: string): Promise<void> {
+    if (primarySessions.has(sessionID) || childBindings.has(sessionID) || provisionalBindings.has(sessionID)) return
+    if (primarySessions.size === 0) {
+      primarySessions.add(sessionID)
+      return
+    }
+    if (hostParentBySession.get(sessionID) === "present") return
+    const parent = await hostParentRecord(sessionID)
+    hostParentBySession.set(sessionID, parent)
+    if (parent === "none") primarySessions.add(sessionID)
+  }
+
+  /** Why a named session presents no claim, for the refusal trace; a diagnosis, never an authority. */
+  function identityGap(sessionID: string): string | undefined {
+    if (!agentBySession.has(sessionID) || roleContext(sessionID)) return undefined
+    if (isPrimarySession(sessionID)) return "primary session was refused issuance"
+    if (childBindings.has(sessionID) || provisionalBindings.has(sessionID)) return "bound child was refused issuance"
+    switch (hostParentBySession.get(sessionID)) {
+      case "present": return "host records a parent and no dispatch bound the session"
+      case "none": return "host records no parent but issuance did not complete"
+      default: return "host session record unavailable, later session not admitted as primary"
+    }
   }
 
   function roleContext(sessionID: string): RoleCapabilityContext | undefined {
@@ -851,7 +1319,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
 
   /** Read the session's agent back from the host's own message record. */
   async function hostAgent(sessionID: string, dispatching?: string): Promise<string | undefined> {
-    // OpenCode 1.18.23 passes tool.execute.before exactly {tool, sessionID,
+    // OpenCode 1.18.18 passes tool.execute.before exactly {tool, sessionID,
     // callID} at every trigger site, so this edge has no agent to read from the
     // call. The name that identifies the session travels the event bus instead,
     // which can still be undelivered when a dispatch arrives -- and a dispatch
@@ -892,8 +1360,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       agent = agentBySession.get(sessionID) ?? recovered
       if (!agent) return undefined
       agentBySession.set(sessionID, agent)
-      if (rootSessionID === undefined) rootSessionID = sessionID
     }
+    await adoptPrimary(sessionID)
     await attestOnce(sessionID, agent)
     return agent
   }
@@ -908,12 +1376,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return typeof role === "string" ? role : undefined
   }
 
+  /** Hand the user's reply to Gaia; a refusal is logged and traced with Gaia's cause. */
   async function decide(
     approval: PendingApproval,
     reply: PermissionReply,
     lane: DecisionLane = "preferred",
-  ): Promise<boolean> {
-    return gaia([
+  ): Promise<{ ok: true; retry?: BoundRetry } | { ok: false; cause: string }> {
+    const decided = await gaia([
       "approvals", "opencode-decide", approval.approvalID,
       "--session-id", approval.sessionID,
       "--call-id", approval.callID,
@@ -922,25 +1391,167 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       "--decision-lane", lane === "compatibility" ? "compatibility" : "preferred",
       "--json",
     ])
+    if (decided.ok) {
+      const lastLine = decided.stdout.trim().split("\n").pop() ?? ""
+      try {
+        const emitted = JSON.parse(lastLine)
+        if (
+          emitted.approval_id !== approval.approvalID
+          || emitted.correlation_id !== boundRetry(approval).correlationID
+        ) throw new Error("decision output drifted from the presented approval")
+        if (reply === "once") {
+          return {
+            ok: true,
+            retry: boundRetryFromActivation(
+              approval,
+              emitted.correlation_id,
+              emitted.retry_descriptor,
+            ),
+          }
+        }
+        return { ok: true }
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error)
+        console.error(`[gaia-opencode:control] decision '${reply}' for ${approval.approvalID} returned unusable activation: ${cause}`)
+        return { ok: false, cause }
+      }
+    }
+    const cause = gaiaFailureCause(decided)
+    console.error(`[gaia-opencode:control] decision '${reply}' for ${approval.approvalID} was refused by Gaia: ${cause}`)
+    await reportUncorrelatedDenial(approval.sessionID, approval.callID, {
+      approvalID: approval.approvalID, cause, stage: "decide",
+    })
+    return { ok: false, cause }
   }
 
-  function closeControl(control: ControlDecision): void {
+  /** Release a control and leave the reason where a reader can find it.
+   *
+   * Every exit is logged AND traced through the bridge: a control that closes
+   * without a trace is indistinguishable from one the host never answered,
+   * which is how a user's answer came to vanish with nothing to query
+   * (measured 2026-09-16). A control already closed is left alone, so the
+   * clear that follows a decision does not record a second exit.
+   */
+  async function closeControl(
+    control: ControlDecision,
+    reason: ControlCloseReason,
+    detail?: string,
+  ): Promise<void> {
+    if (control.closed) return
     control.closed = true
     if (control.questionID && controlByQuestion.get(control.questionID) === control) {
       controlByQuestion.delete(control.questionID)
     }
+    const { approvalID, sessionID, callID } = control.approval
+    const controlSessionID = control.request.sessionID
+    console.error(
+      `[gaia-opencode:control] closed control for ${approvalID} in ${controlSessionID}: ${reason}`
+      + (detail ? ` -- ${detail}` : ""),
+    )
+    try {
+      await send({
+        event: CONTROL_CLOSED_EVENT,
+        sessionID,
+        callID,
+        approvalID,
+        controlSessionID,
+        reason,
+        ...(detail ? { detail } : {}),
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:control] closed control ${controlSessionID} went unaudited: ${error}`)
+    }
   }
 
-  function clearPendingApproval(approvalID: string): void {
+  function activeControl(sessionID: string): ControlDecision | undefined {
+    return controlsBySession.get(sessionID)?.[0]
+  }
+
+  function owningControl(sessionID: string): ControlDecision | undefined {
+    const control = activeControl(sessionID)
+    return control && (control.presenting || control.presented) ? control : undefined
+  }
+
+  function controlForApproval(approval: PendingApproval): ControlDecision | undefined {
+    return (controlsBySession.get(approval.sessionID) ?? []).find((control) => (
+      control.approval.approvalID === approval.approvalID
+      && control.approval.callID === approval.callID
+      && control.approval.token === approval.token
+    ))
+  }
+
+  async function correlateQuestionEvent(
+    control: ControlDecision,
+    requestID: string,
+    questions: unknown,
+  ): Promise<void> {
+    if (control.questionCallID === undefined) {
+      await clearControl(control, "question_mismatch", `question ${requestID} preceded the validated Gaia call`)
+      return
+    }
+    if (control.questionID || controlByQuestion.has(requestID)) {
+      await clearControl(control, "question_mismatch", `second question ${requestID} for one control`)
+      return
+    }
+    if (!matchesHostBinaryQuestionEvent(questions, control.request.question, control.questionCallID !== undefined)) {
+      await clearControl(control, "question_mismatch", `host asked ${JSON.stringify(questions)}`)
+      return
+    }
+    control.questionID = requestID
+    controlByQuestion.set(requestID, control)
+  }
+
+  async function presentNextControl(sessionID: string, propagateError = false): Promise<void> {
+    if (
+      retryBySession.has(sessionID)
+      || deferredRetryBySession.has(sessionID)
+      || controlsAwaitingIdle.has(sessionID)
+    ) return
+    const control = activeControl(sessionID)
+    if (!control || control.closed || control.awaitingSafeIdle || control.presenting || control.presented) return
+    try {
+      await presentControl(control)
+    } catch (error) {
+      if (propagateError) throw error
+      console.error(`[gaia-opencode:control] queued control for ${control.approval.approvalID} failed: ${error}`)
+    }
+  }
+
+  async function releaseControl(
+    control: ControlDecision,
+    reason: ControlCloseReason,
+    detail?: string,
+    advance = true,
+  ): Promise<void> {
+    await closeControl(control, reason, detail)
+    const sessionID = control.request.sessionID
+    const controls = controlsBySession.get(sessionID)
+    const wasActive = controls?.[0] === control
+    if (controls) {
+      const index = controls.indexOf(control)
+      if (index !== -1) controls.splice(index, 1)
+      if (controls.length === 0) controlsBySession.delete(sessionID)
+    }
+    if (control.questionCallID) releasedControlCalls.add(`${sessionID}:${control.questionCallID}`)
+    if (advance && wasActive) {
+      if (control.presented) controlsAwaitingIdle.add(sessionID)
+      else await presentNextControl(sessionID)
+    }
+  }
+
+  async function clearControl(
+    control: ControlDecision,
+    reason: ControlCloseReason,
+    detail?: string,
+    advance = true,
+  ): Promise<void> {
     for (const [key, approval] of pendingByCall) {
-      if (approval.approvalID === approvalID) pendingByCall.delete(key)
+      if (approval.token === control.approval.token) pendingByCall.delete(key)
     }
     for (const [key, approval] of pending) {
-      if (approval.approvalID === approvalID) pending.delete(key)
+      if (approval.token === control.approval.token) pending.delete(key)
     }
-    for (const control of controlBySession.values()) {
-      if (control.approval.approvalID === approvalID) closeControl(control)
-    }
+    await releaseControl(control, reason, detail, advance)
   }
 
   async function applyDecision(
@@ -950,124 +1561,284 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<boolean> {
     const existing = retryBySession.get(control.approval.sessionID)
     if (reply === "once" && existing && existing.correlationID !== control.retry.correlationID) {
-      closeControl(control)
+      await clearControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
       return false
     }
     const admission = decisions.admit(control.request.correlationID, lane)
     if (!admission.accepted) {
-      closeControl(control)
+      await clearControl(control, "decision_duplicate", `lane ${lane} after ${admission.lane}`)
       return false
     }
-    const applied = await decide(control.approval, reply, lane)
-    if (applied && reply === "once") {
-      retryBySession.set(control.approval.sessionID, {
-        ...control.retry,
-        usedCallIDs: new Set(control.retry.usedCallIDs),
-      })
+    const decided = await decide(control.approval, reply, lane)
+    if (decided.ok && reply === "once") {
+      if (!decided.retry) {
+        await clearControl(control, "decide_failed", "activation returned no typed retry descriptor")
+        return false
+      }
+      deferredRetryBySession.set(control.approval.sessionID, { control, lane, retry: decided.retry })
     }
-    clearPendingApproval(control.approval.approvalID)
-    return applied
+    // Cleared on a refused decision too: the question is consumed and the
+    // lane admitted, so nothing left here could carry a second reply to Gaia.
+    // A control kept open would refuse every later call on its session and
+    // hold the specialist's original call pending, while a fresh attempt
+    // re-blocks on the same approval and presents a new question.
+    if (decided.ok) {
+      await clearControl(control, "decided", reply)
+    } else {
+      await clearControl(control, "decide_failed", decided.cause)
+    }
+    return decided.ok
   }
 
-  async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
+  /** Give the user's "yes" an actor: tell the orchestrator, and record that it was told.
+   *
+   * The grant is armed by then; neither the notice nor its trace can undo it,
+   * so both failures are logged and the activation stands. The trace carries
+   * which session was notified (or none), because a grant nobody resumes is
+   * exactly the state that used to look like a command never attempted.
+   */
+  async function announceActivation(
+    control: ControlDecision,
+    lane: DecisionLane,
+    retry: BoundRetry,
+  ): Promise<void> {
+    const { approvalID, sessionID, callID } = control.approval
+    if (!retry.operation) throw new Error("Gaia cannot announce activation without a typed retry descriptor")
+    let notifiedSessionID: string | undefined
+    let notifyFailure: string | undefined
     const session = input?.client?.session
-    if (typeof session?.create !== "function" || typeof session?.promptAsync !== "function" || !rootSessionID) {
+    const primarySessionID = primaryFor(sessionID)
+    if (typeof session?.promptAsync !== "function" || !primarySessionID) {
+      notifyFailure = "no primary session or host prompt API to notify"
+    } else {
+      try {
+        const prompted = await session.promptAsync({
+          path: { id: primarySessionID },
+          body: { parts: [{ type: "text", text: activationNotice(approvalID, sessionID, retry.operation) }] },
+        })
+        notifyFailure = hostRejection(prompted)
+        if (!notifyFailure) notifiedSessionID = primarySessionID
+      } catch (error) {
+        notifyFailure = error instanceof Error ? error.message : String(error)
+      }
+    }
+    if (notifyFailure) {
+      console.error(`[gaia-opencode:control] activation of ${approvalID} was not announced to the orchestrator: ${notifyFailure}`)
+    }
+    try {
+      await send({
+        event: DECISION_APPLIED_EVENT,
+        sessionID,
+        callID,
+        approvalID,
+        controlSessionID: control.request.sessionID,
+        reply: "once",
+        lane,
+        nextIndex: retry.expectedIndex,
+        ...(notifiedSessionID ? { notifiedSessionID } : {}),
+        ...(notifyFailure ? { notifyFailure } : {}),
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:control] activation of ${approvalID} went unaudited: ${error}`)
+    }
+  }
+
+  /** The host's account of an SDK call that resolved with an error instead of throwing.
+   *
+   * The generated client returns `{ error, response }` for a rejected request
+   * unless it was built with throwOnError, which OpenCode's plugin client is
+   * not. Reading the outcome is therefore the only way to learn the host
+   * refused; an awaited call that "succeeded" proves nothing on its own.
+   */
+  function hostRejection(result: unknown): string | undefined {
+    const outcome = result as { error?: unknown; response?: { ok?: boolean; status?: number } } | undefined
+    if (outcome?.error === undefined && outcome?.response?.ok !== false) return undefined
+    const status = outcome?.response?.status
+    const error = outcome?.error
+    const detail = typeof error === "string" ? error : error === undefined ? "" : JSON.stringify(error)
+    return [status === undefined ? "" : `HTTP ${status}`, detail].filter(Boolean).join(" ")
+      || "host resolved with an error carrying no detail"
+  }
+
+  /** Release a control whose question never reached the host. */
+  async function abandonControl(control: ControlDecision, cause: string): Promise<void> {
+    await releaseControl(control, "prompt_rejected", cause)
+  }
+
+  async function presentControl(control: ControlDecision): Promise<void> {
+    const approval = control.approval
+    const session = input?.client?.session
+    if (typeof session?.promptAsync !== "function") {
       throw new Error("OpenCode control plane cannot provide a binary question")
     }
-    const created = await session.create({
-      body: { parentID: rootSessionID, title: `Gaia ${approval.approvalID}` },
-    })
-    const controlSessionID = created?.data?.id ?? created?.id
-    if (
-      typeof controlSessionID !== "string"
-      || !controlSessionID
-      || controlSessionID === rootSessionID
-      || controlSessionID === approval.sessionID
-      || controlBySession.has(controlSessionID)
-    ) {
-      throw new Error("OpenCode did not create a fresh control-plane decision session")
+    const failClosed = async (cause: string): Promise<Error> => {
+      await reportUncorrelatedDenial(approval.sessionID, approval.callID, {
+        approvalID: approval.approvalID, cause, stage: "control-plane",
+      })
+      return new Error(`Gaia could not open the consent control plane for ${approval.approvalID}: ${cause}`)
     }
-    const request = binaryDecisionRequest(approval, controlSessionID)
-    const control: ControlDecision = {
-      approval,
-      request,
-      retry: boundRetry(approval),
-      closed: false,
-    }
-    controlBySession.set(controlSessionID, control)
+    const controlSessionID = control.request.sessionID
+    control.presenting = true
     const instruction = [
       "You are a mechanical consent control plane.",
       "Invoke the question tool exactly once with the JSON below and do nothing else.",
       "Do not answer the question, infer consent, rewrite any text, or emit approval prose.",
-      JSON.stringify({ questions: [request.question] }),
+      JSON.stringify({ questions: [control.request.question] }),
     ].join("\n")
+    let prompted: unknown
     try {
-      await session.promptAsync({
+      prompted = await session.promptAsync({
         path: { id: controlSessionID },
         body: {
-          agent: "gaia-orchestrator",
-          system: ["Only the question tool is available. Free text has no decision authority."],
-          tools: { "*": false, question: true },
+          system: "Only the question tool is available. Free text has no decision authority.",
           parts: [{ type: "text", text: instruction }],
         },
       })
     } catch (error) {
-      closeControl(control)
-      throw error
+      const cause = `control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`
+      control.presenting = false
+      await abandonControl(control, cause)
+      throw await failClosed(cause)
     }
+    const promptRejected = hostRejection(prompted)
+    if (promptRejected) {
+      const cause = `control-plane prompt rejected: ${promptRejected}`
+      control.presenting = false
+      await abandonControl(control, cause)
+      throw await failClosed(cause)
+    }
+    control.presenting = false
+    if (control.closed) {
+      throw new Error(`Gaia consent control ${approval.approvalID} closed before promptAsync resolved`)
+    }
+    control.presented = true
+    await reportControlOpened(approval, controlSessionID)
+  }
+
+  async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
+    const primarySessionID = primaryFor(approval.sessionID)
+    if (!primarySessionID || approval.sessionID === primarySessionID) {
+      throw new Error("OpenCode control plane requires an approval session bound to an active primary")
+    }
+    const controlSessionID = approval.sessionID
+    const control: ControlDecision = {
+      approval,
+      request: binaryDecisionRequest(approval, controlSessionID),
+      retry: boundRetry(approval),
+      awaitingSafeIdle: false,
+      presenting: false,
+      presented: false,
+      closed: false,
+    }
+    const controls = controlsBySession.get(controlSessionID) ?? []
+    control.awaitingSafeIdle = controls.length === 0
+      && !controlsAwaitingIdle.has(controlSessionID)
+      && !deferredRetryBySession.has(controlSessionID)
+      && !retryBySession.has(controlSessionID)
+    controls.push(control)
+    controlsBySession.set(controlSessionID, controls)
     return control
   }
 
-  async function requestApproval(response: BridgeResponse, sessionID: string, callID: string) {
+  /** Trace that the host accepted the consent question for this approval.
+   *
+   * `gaia approvals opencode-present` writes SHOWN before the prompt is
+   * attempted, so SHOWN alone only says the presentation was registered. This
+   * record is what says the question reached the host, and in which session.
+   * The opened control never depends on this call succeeding.
+   */
+  async function reportControlOpened(approval: PendingApproval, controlSessionID: string) {
+    try {
+      await send({
+        event: CONTROL_OPENED_EVENT,
+        sessionID: approval.sessionID,
+        callID: approval.callID,
+        approvalID: approval.approvalID,
+        controlSessionID,
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:control] opened control ${controlSessionID} went unaudited: ${error}`)
+    }
+  }
+
+  /** Trace a refused claim to the bound retry, with the comparison that refused it.
+   *
+   * The specialist receives the same cause in the thrown error; this record is
+   * what lets the orchestrator read it once that turn has ended. The refusal
+   * never depends on this call succeeding.
+   */
+  async function reportConsentRetryRefused(
+    retry: BoundRetry,
+    call: { sessionID?: string; callID?: string },
+    refusal: ConsentRetryRefusal,
+  ) {
+    try {
+      await send({
+        event: CONSENT_RETRY_REFUSED_EVENT,
+        sessionID: call.sessionID,
+        callID: call.callID,
+        approvalID: retry.approvalID,
+        reason: refusal.reason,
+        expected: refusal.expected,
+        received: refusal.received,
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:consent] refused retry of ${retry.approvalID} went unaudited: ${error}`)
+    }
+  }
+
+  async function requestApproval(response: BridgeResponse, sessionID: string, callID: string, role: string) {
     const id = approvalID(response)
     if (!id) return
-    const approval = { approvalID: id, sessionID, callID, token: crypto.randomUUID() }
-    const presented = await gaiaCapture([
+    const approval = { approvalID: id, sessionID, callID, role, token: crypto.randomUUID() }
+    const presented = await gaia([
       "approvals", "opencode-present", id,
       "--session-id", sessionID,
       "--call-id", callID,
       "--token", approval.token,
       "--json",
     ])
-    if (!presented.ok) throw new Error("Gaia could not present the approval request")
+    if (!presented.ok) {
+      const cause = gaiaFailureCause(presented)
+      await reportUncorrelatedDenial(sessionID, callID, { approvalID: id, cause })
+      throw new Error(`Gaia could not present approval ${id}: ${cause}`)
+    }
     const surface = readConsentPresentation(presented.stdout)
     const pendingApproval = { ...approval, surface }
     const control = await openBinaryDecision(pendingApproval)
     if (!control.closed) pendingByCall.set(`${sessionID}:${callID}`, pendingApproval)
   }
 
-  function consentRetry(
-    retry: BoundRetry | undefined,
-    call: { sessionID?: string; callID?: string },
-    agent: string | undefined,
-    tool: string,
-    args: Record<string, unknown>,
-  ): Record<string, unknown> | undefined {
-    const command = args.command
-    if (
-      !retry
-      || tool.toLowerCase() !== "bash"
-      || call.sessionID !== retry.sessionID
-      || typeof call.callID !== "string"
-      || !call.callID
-      || retry.usedCallIDs.has(call.callID)
-      || agent !== retry.agentID
-      || typeof command !== "string"
-      || retry.commands[retry.expectedIndex] !== command
-      || retry.fingerprints[retry.expectedIndex] !== commandFingerprint(command)
-    ) {
-      return undefined
-    }
-    return {
-      approval_id: retry.approvalID,
-      correlation_id: retry.correlationID,
-      agent_id: retry.agentID,
-      session_id: retry.sessionID,
-      original_call_id: retry.callID,
-      retry_call_id: call.callID,
-      command,
-      command_fingerprint: commandFingerprint(command),
-      expected_index: retry.expectedIndex,
+  /** Leave a durable trace of a denial that otherwise only reached stderr.
+   *
+   * A request denied here and a request never made are indistinguishable to the
+   * user: that is how a signed approval came to look like a command nobody ever
+   * attempted. The bridge routes this onto Gaia's existing non-activation audit
+   * channel, so the denial becomes queryable without a new record shape. The
+   * denial itself never depends on this call succeeding.
+   *
+   * A presentation Gaia refused travels on the same channel with the approval
+   * it named and the cause Gaia returned, so the bridge records it under its
+   * own reason instead of as an uncorrelated request. A control plane the HOST
+   * refused after the presentation carries `stage: "control-plane"`, and a
+   * reply Gaia refused after the user gave it carries `stage: "decide"`, so
+   * the bridge can tell the three refusals apart.
+   */
+  async function reportUncorrelatedDenial(
+    sessionID: unknown,
+    callID: unknown,
+    failure?: { approvalID: string; cause: string; stage?: "control-plane" | "decide" },
+  ) {
+    try {
+      await send({
+        event: UNCORRELATED_PERMISSION_EVENT,
+        sessionID: typeof sessionID === "string" ? sessionID : "",
+        callID: typeof callID === "string" ? callID : "",
+        ...(failure ? { approvalID: failure.approvalID, cause: failure.cause } : {}),
+        ...(failure?.stage ? { stage: failure.stage } : {}),
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:permission] uncorrelated denial went unaudited: ${error}`)
     }
   }
 
@@ -1076,8 +1847,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       shellIdentities.clear()
       pending.clear()
       pendingByCall.clear()
+      allowedByCall.clear()
       controlByQuestion.clear()
-      controlBySession.clear()
+      controlsBySession.clear()
+      releasedControlCalls.clear()
+      controlsAwaitingIdle.clear()
+      deferredRetryBySession.clear()
       retryByCall.clear()
       retryBySession.clear()
     },
@@ -1085,24 +1860,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (event.type === "question.asked") {
         const sessionID = event.properties?.sessionID
         const requestID = event.properties?.id
-        const control = typeof sessionID === "string" ? controlBySession.get(sessionID) : undefined
+        const control = typeof sessionID === "string" ? owningControl(sessionID) : undefined
         if (!control || control.closed || typeof requestID !== "string" || !requestID) return
-        if (
-          control.questionID
-          || controlByQuestion.has(requestID)
-          || JSON.stringify(event.properties?.questions) !== JSON.stringify([control.request.question])
-        ) {
-          closeControl(control)
-          return
-        }
-        control.questionID = requestID
-        controlByQuestion.set(requestID, control)
+        await correlateQuestionEvent(control, requestID, event.properties?.questions)
         return
       }
       if (event.type === "question.rejected") {
         const requestID = event.properties?.requestID ?? event.properties?.id
         const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
-        if (control) closeControl(control)
+        if (control) await clearControl(control, "question_rejected")
         return
       }
       if (event.type === "question.replied") {
@@ -1112,7 +1878,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (!control || control.closed || control.request.sessionID !== sessionID) return
         const reply = readBinaryDecision(control.request, event.properties?.answers)
         if (!reply) {
-          clearPendingApproval(control.approval.approvalID)
+          await clearControl(control, "reply_unreadable", JSON.stringify(event.properties?.answers))
           return
         }
         await applyDecision(control, reply, "control")
@@ -1128,7 +1894,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             throw new Error("Gaia child role conflicts with its authorized dispatch")
           }
           agentBySession.set(info.sessionID, info.agent)
-          if (rootSessionID === undefined) rootSessionID = info.sessionID
+          await adoptPrimary(info.sessionID)
           await attestOnce(info.sessionID, info.agent)
         }
         return
@@ -1151,15 +1917,78 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         ) {
           await bindChild(part.sessionID, part.callID, part.state.metadata.sessionId, true)
         }
+        // The host's own gate (ruleset deny, rejected prompt) throws inside
+        // tool.execute, and OpenCode fires tool.execute.after only on a result;
+        // this errored part is the only signal that a retry Gaia allowed never
+        // ran (measured 2026-09-17: cp /dev/null -> external_directory deny,
+        // reservation held, no trace). The reservation is left to its TTL:
+        // a host refusal is neither a failed run nor withdrawn consent.
+        if (
+          part?.type === "tool"
+          && part.state?.status === "error"
+          && typeof part.sessionID === "string"
+          && typeof part.callID === "string"
+        ) {
+          const key = `${part.sessionID}:${part.callID}`
+          const retried = retryByCall.get(key)
+          allowedByCall.delete(key)
+          if (retried) {
+            retryByCall.delete(key)
+            if (retryBySession.get(part.sessionID) === retried) {
+              retryBySession.delete(part.sessionID)
+              await presentNextControl(part.sessionID)
+            }
+            await reportConsentRetryRefused(retried, { sessionID: part.sessionID, callID: part.callID }, {
+              reason: "host_gate_refused",
+              expected: `host execution of allowed command [${retried.expectedIndex}]`,
+              received: String(part.state.error ?? "tool part errored without a message"),
+            })
+          }
+        }
         return
       }
       if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
         const sessionID = event.properties?.sessionID
         if (typeof sessionID === "string") {
-          const control = controlBySession.get(sessionID)
-          if (control) {
-            closeControl(control)
-            controlBySession.delete(sessionID)
+          const controlWaitingForIdle = activeControl(sessionID)
+          if (event.type === "session.idle" && controlWaitingForIdle?.awaitingSafeIdle) {
+            controlWaitingForIdle.awaitingSafeIdle = false
+            await presentNextControl(sessionID, true)
+            shellIdentities.clearSession(sessionID)
+            await send({ event: event.type, sessionID })
+            return
+          }
+          if (event.type === "session.idle" && controlsAwaitingIdle.delete(sessionID)) {
+            const activation = deferredRetryBySession.get(sessionID)
+            if (activation) {
+              deferredRetryBySession.delete(sessionID)
+              retryBySession.set(sessionID, {
+                ...activation.retry,
+                usedCallIDs: new Set(activation.retry.usedCallIDs),
+              })
+              await announceActivation(activation.control, activation.lane, activation.retry)
+            } else {
+              await presentNextControl(sessionID)
+            }
+            shellIdentities.clearSession(sessionID)
+            await send({ event: event.type, sessionID })
+            return
+          }
+          if (event.type === "session.idle") {
+            const control = activeControl(sessionID)
+            if (control) {
+              await clearControl(control, "session_ended", event.type, false)
+              await presentNextControl(sessionID)
+            }
+            shellIdentities.clearSession(sessionID)
+            await send({ event: event.type, sessionID })
+            return
+          }
+          const controls = [...(controlsBySession.get(sessionID) ?? [])]
+          if (controls.length > 0) {
+            for (const control of controls) await clearControl(control, "session_ended", event.type, false)
+            controlsAwaitingIdle.delete(sessionID)
+            deferredRetryBySession.delete(sessionID)
             return
           }
           shellIdentities.clearSession(sessionID)
@@ -1176,11 +2005,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (!approval) return
       if (approval.sessionID !== sessionID) return
       const reply = normalizePermissionReply(event.properties.response ?? event.properties.reply)
-      const control = [...controlBySession.values()].find(
-        (candidate) => candidate.approval.approvalID === approval.approvalID,
-      )
-      if (!reply || !control || control.closed) {
-        clearPendingApproval(approval.approvalID)
+      const control = controlForApproval(approval)
+      if (!control || control.closed) {
+        pending.delete(requestID)
+        return
+      }
+      if (control !== activeControl(sessionID) || !control.presented) return
+      if (!reply) {
+        await clearControl(control, "permission_reply_unusable", `${event.type} on ${requestID}`)
         return
       }
       await applyDecision(control, reply, lane)
@@ -1193,11 +2025,19 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         : undefined
       const approval = key ? pendingByCall.get(key) : undefined
       if (!approval) {
+        // A pair Gaia already allowed carries its verdict through: deciding it
+        // again here would let the host's gate revoke consent Gaia granted.
+        // Deleting is the consume -- the allow is spent on this one request.
+        if (key && allowedByCall.delete(key)) {
+          output.status = "allow"
+          return
+        }
         // This hook must never turn an uncorrelated or unsupported host request
         // into consent. Keep the host's request denied and make the capability
         // failure observable to the host log/stderr.
         output.status = "deny"
         console.error("[gaia-opencode:permission] denied uncorrelated permission request")
+        await reportUncorrelatedDenial(sessionID, callID)
         return
       }
       if (permission.id === undefined || permission.sessionID !== approval.sessionID) {
@@ -1220,17 +2060,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       output.status = "ask"
     },
     "tool.execute.before": async (call, output) => {
-      const control = controlBySession.get(call.sessionID)
+      const control = owningControl(call.sessionID)
       if (control) {
         if (control.closed) {
           throw new Error("Gaia consent control plane is already closed")
         }
+        const tool = canonicalBridgeToolName(call.tool)
         if (
-          canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
-          || JSON.stringify(output.args?.questions) !== JSON.stringify([control.request.question])
-          || (control.questionCallID !== undefined && control.questionCallID !== call.callID)
+          tool !== "AskUserQuestion"
+          || !matchesHostBinaryQuestionCall(output.args?.questions, control.request.question)
+          || control.questionCallID !== undefined
         ) {
-          closeControl(control)
+          await clearControl(control, "drifted_tool_call", `${tool} ${call.callID}`)
           throw new Error("Gaia consent control plane permits one exact binary question")
         }
         control.questionCallID = call.callID
@@ -1253,10 +2094,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       const normalized = normalizeBridgeToolRequest(call.tool, output.args, input)
       const retry = retryBySession.get(call.sessionID)
-      const retryProof = consentRetry(retry, call, agent, normalized.tool, normalized.args)
-      if (retry && !retryProof) {
-        throw new Error("Gaia refused a drifted or replayed consent retry")
+      const verdict = retry ? evaluateConsentRetry(retry, call, agent, normalized.tool, normalized.args) : undefined
+      if (retry && verdict?.refusal) {
+        await reportConsentRetryRefused(retry, call, verdict.refusal)
+        if (retryBySession.get(call.sessionID) === retry) retryBySession.delete(call.sessionID)
+        await presentNextControl(call.sessionID)
+        const { reason, expected, received } = verdict.refusal
+        throw new Error(
+          `Gaia refused consent retry for ${retry.approvalID}: ${reason} (expected ${expected}, received ${received})`,
+        )
       }
+      const retryProof = verdict?.proof
       const response = await send({
         event: "tool.execute.before",
         sessionID: call.sessionID,
@@ -1264,6 +2112,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         agentID: dispatchHandle(call.sessionID),
         agent,
         roleContext: roleContext(call.sessionID),
+        identityGap: identityGap(call.sessionID),
         tool: normalized.tool,
         args: normalized.args,
         cwd: normalized.cwd,
@@ -1310,27 +2159,35 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             cwd: resolve(directory), args: output.args,
           })
         }
+        // Recorded last, so every check this branch still owes has passed: a
+        // throw above aborts the call, and a call that never runs must not
+        // leave a verdict the host's permission gate could later honor.
+        allowedByCall.add(`${call.sessionID}:${call.callID}`)
         return
       }
+      if (retry && retryProof && retryBySession.get(call.sessionID) === retry) {
+        retryBySession.delete(call.sessionID)
+        await presentNextControl(call.sessionID)
+      }
       if (approvalID(response)) {
-        await requestApproval(response, call.sessionID, call.callID)
+        await requestApproval(response, call.sessionID, call.callID, agent ?? "")
         throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
       }
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },
     "tool.execute.after": async (call, output) => {
-      const control = controlBySession.get(call.sessionID)
+      if (releasedControlCalls.delete(`${call.sessionID}:${call.callID}`)) return
+      const control = owningControl(call.sessionID)
       if (control) {
-        if (
-          canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
-          || control.questionCallID !== call.callID
-        ) {
-          closeControl(control)
-          throw new Error("Gaia refused a drifted control-plane tool result")
-        }
-        return
+        const tool = canonicalBridgeToolName(call.tool)
+        if (tool === "AskUserQuestion" && control.questionCallID === call.callID) return
+        await clearControl(control, "drifted_tool_result", `${tool} ${call.callID}`)
+        throw new Error("Gaia refused a drifted control-plane tool result")
       }
       shellIdentities.forget(call.sessionID, call.callID)
+      // The call is over, so an allow the host never submitted to its gate has
+      // no request left to answer and must not outlive the call that earned it.
+      allowedByCall.delete(`${call.sessionID}:${call.callID}`)
       const agent = agentBySession.get(call.sessionID)
       if (call.tool === "task") {
         const sessionID = output.metadata?.sessionId
@@ -1365,16 +2222,28 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         retryByCall.delete(retryKey)
         if (result.exit_code === 0) {
           retried.expectedIndex += 1
+          if (retried.operation?.kind === "COMMAND_SET") {
+            retried.operation.expectedIndex = retried.expectedIndex
+          }
           if (retried.expectedIndex >= retried.commands.length) {
-            if (retryBySession.get(call.sessionID) === retried) retryBySession.delete(call.sessionID)
+            if (retryBySession.get(call.sessionID) === retried) {
+              retryBySession.delete(call.sessionID)
+              await presentNextControl(call.sessionID)
+            }
           }
         } else if (retryBySession.get(call.sessionID) === retried) {
           retryBySession.delete(call.sessionID)
+          await presentNextControl(call.sessionID)
         }
       }
     },
     "shell.env": async (call, output) => {
       if (!call.sessionID) throw new Error("Gaia shell environment lacks session identity")
+      // The `gaia` the kernel names is the one shipped beside this plugin, and
+      // OpenCode's bash inherits the serve process's PATH, which need not
+      // carry it (measured: a specialist fell back to ./bin/gaia).
+      output.env.PATH = [gaiaBinDirectory, output.env.PATH ?? process.env.PATH]
+        .filter(Boolean).join(delimiter)
       const context = roleContext(call.sessionID)
       if (!call.callID && isPrimarySession(call.sessionID)
         && context?.attestation && context.role === "gaia-orchestrator") return

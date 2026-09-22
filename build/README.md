@@ -19,7 +19,7 @@ Reads build/gaia.manifest.json
         |
 Resolves "all" fields to concrete file lists
         |
-Regenerates hooks/hooks.json (the hooks CC loads) + .claude-plugin/plugin.json (metadata only, no inline hooks) in place at the package root
+Regenerates hooks/hooks.json, .claude-plugin/plugin.json, and opencode/agent-inventory.json in place at the package root
         |
 --- later, when Claude Code loads the plugin ---
         |
@@ -65,6 +65,6 @@ build/
 
 - [`hooks/README.md`](../hooks/README.md) — hook entry points and pipeline architecture
 - [`agents/README.md`](../agents/README.md) — agent definitions and frontmatter conventions
-- [`scripts/build-plugin.py`](../scripts/build-plugin.py) — reads this manifest and regenerates the package root's `.claude-plugin/plugin.json` + `hooks/hooks.json` in place
+- [`scripts/build-plugin.py`](../scripts/build-plugin.py) — reads this manifest and regenerates plugin metadata, hook configuration, and the packaged OpenCode agent inventory in place
 - [`bin/cli/doctor.py`](../bin/cli/doctor.py) — `gaia doctor` detects missing hooks and broken registrations
 - [`package.json`](../package.json) — version source and `files` array (controls what gets published)

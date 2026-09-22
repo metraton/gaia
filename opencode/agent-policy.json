@@ -9,15 +9,7 @@
         "*": "deny"
       },
       "task": {
-        "*": "deny",
-        "cloud-troubleshooter": "allow",
-        "developer": "allow",
-        "gaia-operator": "allow",
-        "gaia-planner": "allow",
-        "gaia-system": "allow",
-        "gaia-verifier": "allow",
-        "gitops-operator": "allow",
-        "platform-architect": "allow"
+        "*": "deny"
       },
       "edit": "deny",
       "glob": "deny",

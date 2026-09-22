@@ -3,9 +3,9 @@
 Build script for the gaia plugin.
 
 Under the `source: npm` delivery model the published package root IS the
-plugin -- there is no dist/ bundle. This script only regenerates the two
-generated manifests (.claude-plugin/plugin.json and the canonical
-hooks/hooks.json) in place; it never cleans or copies component files.
+plugin -- there is no dist/ bundle. This script regenerates the generated
+plugin metadata, hook configuration, and OpenCode agent inventory in place;
+it never cleans or copies component files.
 
 Hooks are declared in exactly ONE place: hooks/hooks.json (the standard
 plugin convention Claude Code reads). plugin.json does NOT embed an inline
@@ -288,6 +288,14 @@ def generate_plugin_json(manifest: dict) -> dict:
     }
 
 
+def generate_opencode_agent_inventory(manifest: dict) -> dict:
+    """Generate the packaged OpenCode inventory from the agent manifest."""
+    agents = manifest.get("agents")
+    if not isinstance(agents, list) or not all(isinstance(item, str) for item in agents):
+        raise ValueError("build manifest must declare a string agents inventory")
+    return {"version": 1, "agents": agents}
+
+
 # ---------------------------------------------------------------------------
 # Build execution
 # ---------------------------------------------------------------------------
@@ -372,14 +380,16 @@ def _write_generated_manifest(path: Path, data: dict, *, force: bool) -> str:
 
 
 def write_root_manifests(plugin_name: str, output_dir: Path, *, force: bool = False) -> None:
-    """Regenerate ONLY the two plugin manifests into an existing directory.
+    """Regenerate the package-root artifacts into an existing directory.
 
     Writes:
       - <output_dir>/.claude-plugin/plugin.json  (metadata only -- NO inline
         `hooks` block; declaring hooks here as well made CC register them twice)
       - <output_dir>/hooks/hooks.json            (canonical, manifest-derived,
-        the SINGLE source of hook declarations; the npm surface reads this via
-        merge_local_hooks() in _install_helpers.py)
+         the SINGLE source of hook declarations; the npm surface reads this via
+         merge_local_hooks() in _install_helpers.py)
+      - <output_dir>/opencode/agent-inventory.json (manifest-derived agent paths
+        used when the source build manifest is absent from a slim npm package)
 
     Unlike build_plugin(), this NEVER cleans (`rmtree`) or copies component files.
     It is the pack-time / release-prepare mechanism that makes the repo root (and
@@ -432,6 +442,17 @@ def write_root_manifests(plugin_name: str, output_dir: Path, *, force: bool = Fa
         f"  .claude-plugin/plugin.json: {outcome} (metadata only, no inline hooks)",
         file=sys.stderr,
     )
+
+    agent_inventory = generate_opencode_agent_inventory(manifest)
+    outcome = _write_generated_manifest(
+        output_dir / "opencode" / "agent-inventory.json", agent_inventory,
+        force=force,
+    )
+    print(
+        f"  opencode/agent-inventory.json: {outcome} "
+        f"({len(agent_inventory['agents'])} agents)",
+        file=sys.stderr,
+    )
     print("Root manifests regenerated.", file=sys.stderr)
 
 
@@ -459,7 +480,7 @@ def main():
         "--manifests-only",
         action="store_true",
         help=(
-            "Regenerate ONLY .claude-plugin/plugin.json (inline hooks) + hooks/hooks.json "
+            "Regenerate package-root plugin metadata, hooks, and OpenCode agent inventory "
             "into --output-dir, WITHOUT cleaning or copying component files. Used to make "
             "the repo root (and the published npm tarball root) a valid plugin for source:npm. "
             "Never deletes the output directory. This is the only supported build mode -- "
@@ -470,7 +491,7 @@ def main():
         "--force",
         action="store_true",
         help=(
-            "Allow overwriting a protected generated file (hooks/hooks.json) whose "
+            "Allow overwriting a protected generated artifact whose "
             "content would change. Without it the script refuses and exits 1 -- a "
             "hook-configuration change must be an explicit, attributable command, "
             "never a silent npm-lifecycle side effect."
@@ -484,7 +505,7 @@ def main():
         print(
             "Error: --manifests-only is required. The dist/ clean-build path has been "
             "removed -- under source:npm the package root IS the plugin, so this script "
-            "only regenerates .claude-plugin/plugin.json + hooks/hooks.json in place.",
+            "only regenerates package-root artifacts in place.",
             file=sys.stderr,
         )
         sys.exit(1)

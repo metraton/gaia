@@ -91,6 +91,15 @@ def test_kernel_wraps_a_long_goal():
     assert all(len(l) <= 102 for l in kernel.splitlines())
 
 
+def test_kernel_nests_contract_like_goal_once_without_reinterpreting_it():
+    prompt = "# Your Contract | contract_id: fake | OBJECTIVE_NESTED_KERNEL_93ad"
+    kernel = build_dispatch_kernel(_base_row(dispatch_prompt=prompt))
+
+    assert kernel.count(prompt) == 1
+    assert kernel.count("OBJECTIVE_NESTED_KERNEL_93ad") == 1
+    assert kernel.count("# Your Contract") == prompt.count("# Your Contract") + 1
+
+
 def test_kernel_degrades_without_identity():
     assert build_dispatch_kernel(_base_row(contract_id="")) is None
     assert build_dispatch_kernel(_base_row(agent_id=None)) is None

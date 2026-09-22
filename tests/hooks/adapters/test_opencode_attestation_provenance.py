@@ -349,21 +349,32 @@ def test_a_second_session_named_by_the_host_takes_no_control_plane_claim(drive):
     assert classify_session_role(_policy_payload(late)) is not SessionRole.ORCHESTRATOR
 
 
-def test_the_ledger_binds_the_control_plane_to_one_session_per_run():
-    issue(
-        host_run="run-unique",
+def test_the_ledger_attests_each_parentless_control_plane_session_once():
+    """A serve hosts every root the user opens; each gets its own depth-0 claim, once."""
+    first = issue(
+        host_run="run-many-roots",
         session_id="ses-root",
         role="gaia-orchestrator",
         issuer=_ISSUER,
     )
+    second = issue(
+        host_run="run-many-roots",
+        session_id="ses-other",
+        role="gaia-orchestrator",
+        issuer=_ISSUER,
+    )
 
-    with pytest.raises(AttestationDenied, match="already bound"):
-        issue(
-            host_run="run-unique",
-            session_id="ses-other",
-            role="gaia-orchestrator",
-            issuer=_ISSUER,
-        )
+    assert first.token != second.token
+    assert (second.depth, second.granted_by) == (0, None)
+    assert resolve(
+        host_run="run-many-roots", token=second.token, session_id="ses-other",
+        role="gaia-orchestrator", issuer=_ISSUER,
+    ) == second
+    assert issue(
+        host_run="run-many-roots", session_id="ses-root", role="gaia-orchestrator", issuer=_ISSUER,
+    ) == first
+    with pytest.raises(AttestationDenied, match="already attested"):
+        issue(host_run="run-many-roots", session_id="ses-root", role="developer", issuer=_ISSUER)
 
 
 def test_a_delegation_chain_stops_at_the_declared_ceiling():

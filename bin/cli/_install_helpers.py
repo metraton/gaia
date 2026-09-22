@@ -40,7 +40,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -304,12 +304,18 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
     """Derive OpenCode agent entries from Gaia's canonical Markdown sources."""
     agents = dict(existing) if isinstance(existing, dict) else {}
     default = policy.get("default", {})
-    for source in sorted((package_root / "agents").glob("*.md")):
+    definitions = []
+    for source in _opencode_agent_sources(package_root):
         frontmatter = _agent_frontmatter(source)
         name = frontmatter.get("name")
         description = frontmatter.get("description")
         if not name or not description:
             continue
+        definitions.append((source, frontmatter, name, description))
+    specialist_names = sorted(
+        name for _, _, name, _ in definitions if name != "gaia-orchestrator"
+    )
+    for source, frontmatter, name, description in definitions:
         host_policy = {**default, **policy.get(name, {})}
         agent = {
             "description": description,
@@ -324,17 +330,67 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
             agent["model"] = model
         permission = _opencode_frontmatter_permissions(frontmatter)
         if host_policy["mode"] == "subagent":
+            # "ask", never "deny": OpenCode evaluates a deny before any plugin
+            # hook runs, so a command Gaia already consented to died at the
+            # host gate with no trace (measured 2026-09-17, cp /dev/null).
+            # "ask" reaches the plugin's permission.ask, which carries Gaia's
+            # verdict through and denies uncorrelated requests with a trace.
             permission["external_directory"] = {
-                "*": "deny",
+                "*": "ask",
                 "~/.gaia/scratch/**": "allow",
             }
         permission.update(host_policy.get("permission", {}))
         if name == "gaia-orchestrator":
+            # The shipped manifest owns dispatch inventory.  Keeping specialist
+            # names in agent-policy.json as well made every agent addition a
+            # second, independently drifting policy edit.
+            permission["task"] = {
+                "*": "deny",
+                **{specialist: "allow" for specialist in specialist_names},
+            }
             permission.update(_opencode_orchestrator_paths(package_root))
         if permission:
             agent["permission"] = permission
         agents[name] = agent
     return agents
+
+
+def _opencode_agent_sources(package_root: Path) -> list[Path]:
+    """Return only agent sources named by an authoritative inventory."""
+    candidates = (
+        package_root / "build" / "gaia.manifest.json",
+        package_root / "opencode" / "agent-inventory.json",
+    )
+    entries = next(
+        (
+            validated
+            for candidate in candidates
+            if (payload := _read_json(candidate)) is not None
+            if (validated := _opencode_inventory_entries(payload)) is not None
+        ),
+        [],
+    )
+    orchestrator = package_root / "agents" / "gaia-orchestrator.md"
+    specialists = [package_root / entry for entry in entries if entry != "agents/gaia-orchestrator.md"]
+    return [orchestrator, *specialists]
+
+
+def _opencode_inventory_entries(payload: object) -> list[str] | None:
+    """Validate an inventory without widening on malformed input."""
+    if not isinstance(payload, dict):
+        return None
+    entries = payload.get("agents")
+    if not isinstance(entries, list) or not all(isinstance(item, str) for item in entries):
+        return None
+    if len(entries) != len(set(entries)):
+        return None
+    for entry in entries:
+        path = PurePosixPath(entry)
+        if path.is_absolute() or len(path.parts) != 2:
+            return None
+        if path.parts[0] != "agents" or path.suffix != ".md" or ".." in path.parts:
+            return None
+    return entries
 
 
 def _opencode_orchestrator_paths(package_root: Path) -> dict[str, Any]:

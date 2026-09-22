@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -165,15 +164,22 @@ def test_plugin_has_a_positive_process_liveness_signal():
     assert "host log failed" in source
 
 
-def test_orchestrator_bash_is_restricted_to_gaia_cli():
+def test_static_orchestrator_policy_grants_no_shell_command():
     import json
 
     policy = json.loads((PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text())
 
     assert policy["gaia-orchestrator"]["permission"]["bash"] == {
         "*": "deny",
-        "gaia *": "allow",
     }
+
+
+def test_static_orchestrator_policy_has_no_independent_agent_inventory():
+    import json
+
+    policy = json.loads((PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text())
+
+    assert policy["gaia-orchestrator"]["permission"]["task"] == {"*": "deny"}
 
 
 def test_updated_input_applies_field_by_field_for_task_and_bash_never_reassigns():
@@ -194,11 +200,13 @@ def test_updated_input_applies_field_by_field_for_task_and_bash_never_reassigns(
       const {{ applyUpdatedInput }} = await import({json.dumps(str(plugin))})
       const results = {{}}
 
-      const taskOutput = {{ args: {{ subagent_type: "developer", description: "d" }} }}
+      const taskOutput = {{ args: {{ subagent_type: "developer", description: "d", task_id: "ses-child" }} }}
       applyUpdatedInput(taskOutput, {{ prompt: "MUTATED PROMPT" }})
       results.task = {{
         prompt: taskOutput.args.prompt,
         subagent_type_preserved: taskOutput.args.subagent_type === "developer",
+        description_preserved: taskOutput.args.description === "d",
+        task_id_preserved: taskOutput.args.task_id === "ses-child",
       }}
 
       const bashOutput = {{ args: {{ command: "rm -rf /", timeout: 5000 }} }}
@@ -215,6 +223,8 @@ def test_updated_input_applies_field_by_field_for_task_and_bash_never_reassigns(
 
     assert payload["task"]["prompt"] == "MUTATED PROMPT"
     assert payload["task"]["subagent_type_preserved"] is True
+    assert payload["task"]["description_preserved"] is True
+    assert payload["task"]["task_id_preserved"] is True
     assert payload["bash"]["command"] == "echo cleaned"
     assert payload["bash"]["timeout_preserved"] is True
 
@@ -223,7 +233,10 @@ def test_plugin_preserves_bash_failure_signals_for_post_tool_policy():
     import json
     import subprocess
     plugin = PACKAGE_ROOT / "opencode" / "plugin.ts"
-    script = f'import {{ toolResult }} from {json.dumps(str(plugin))}; console.log(JSON.stringify(toolResult({{output:"", metadata:{{exitCode:9}}}})))'
+    script = (
+        f'import {{ toolResult }} from {json.dumps(str(plugin))};'
+        'console.log(JSON.stringify(toolResult({output:"", metadata:{exitCode:9}})))'
+    )
     result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
     assert json.loads(result.stdout)["exit_code"] == 9
 
@@ -258,7 +271,10 @@ def test_native_question_is_canonical_only_at_both_bridge_lifecycle_edges():
       const selected = "Approve -- MUTATIVE command intercepted: chmod [P-45443d6f383f438db974e94b167b3a07]"
       await hooks["tool.execute.after"](
          {{ sessionID: "root", callID: "question-call", tool: "question", args }},
-        {{ output: `User has answered your questions: "Proceed?"="${{selected}}".`, metadata: {{ answers: [[selected]] }} }},
+        {{
+          output: `User has answered your questions: "Proceed?"="${{selected}}".`,
+          metadata: {{ answers: [[selected]] }},
+        }},
       )
       console.log(JSON.stringify(requests.filter((request) => request.event.startsWith("tool.execute."))))
     '''

@@ -42,8 +42,8 @@ def gaia_manifest() -> dict:
 
     Under the `source: npm` delivery model there is no dist/ build step to
     exercise -- the package root IS the plugin, and component files already
-    live there (scripts/build-plugin.py only regenerates the two generated
-    manifests in place via --manifests-only). So "the built plugin" for test
+    live there (scripts/build-plugin.py only regenerates package-root artifacts
+    in place via --manifests-only). So "the built plugin" for test
     purposes is the source tree itself: load the manifest directly and check
     its declared entries resolve under PROJECT_ROOT.
     """
@@ -307,6 +307,29 @@ class TestHooksJsonManifestSync:
             "manifest (never the generated file) and run "
             "`npm run generate:plugin-root`."
         )
+
+    def test_opencode_agent_inventory_matches_generator_output(self, gaia_manifest):
+        """The packaged fallback is exactly the manifest-derived inventory."""
+        build_plugin = _load_build_plugin_module()
+        expected = build_plugin.generate_opencode_agent_inventory(gaia_manifest)
+        actual = json.loads(
+            (PROJECT_ROOT / "opencode" / "agent-inventory.json").read_text()
+        )
+
+        assert actual == expected
+        assert set(actual["agents"]) == set(gaia_manifest["agents"])
+
+    def test_opencode_agent_inventory_is_in_build_and_npm_distribution(self, gaia_manifest):
+        """Both published inventories include the generated fallback artifact."""
+        build_plugin = _load_build_plugin_module()
+        artifact = PROJECT_ROOT / "opencode" / "agent-inventory.json"
+        assert artifact in build_plugin.resolve_file_list(gaia_manifest)
+        result = subprocess.run(
+            ["npm", "pack", "--dry-run", "--ignore-scripts", "--json"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True, check=True, timeout=60,
+        )
+        paths = {entry["path"] for entry in json.loads(result.stdout)[0]["files"]}
+        assert "opencode/agent-inventory.json" in paths
 
     def test_drift_guard_passes_on_the_working_tree(self, capsys):
         """The publish-time guard agrees with the suite on the real files."""

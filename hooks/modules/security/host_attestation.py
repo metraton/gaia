@@ -7,9 +7,13 @@ every consumer checked presence and none checked provenance. Issuance therefore
 happens here, inside a Gaia-side process, from a nonce this module mints and
 records; a value a caller can put in a tool argument resolves against no record.
 
-The ledger is scoped to one host run so the control-plane binding is unique
-within that run: the primary session takes it, and a child session whose
-host-declared name is a control-plane spelling finds it already bound.
+The ledger is scoped to one host run. Within it a session is attested once,
+and a control-plane claim is only ever parentless: an attested parent cannot
+mint a control-plane child, so a child session whose host-declared name is a
+control-plane spelling is refused. Several parentless control-plane sessions
+may coexist in one run -- an OpenCode serve hosts every root the user opens for
+its whole life -- and which sessions are parentless is the plugin's reading of
+the host's own session record, checked before it asks for a parentless claim.
 
 That scoping is only worth anything if the run cannot be named by whoever is
 asking, which is what ``host_run_id`` establishes: the namespace identifies the
@@ -167,13 +171,6 @@ def issue(
     else:
         depth = 0
         granted_by = None
-        if _is_control_plane(role):
-            bound = _control_plane_holder(records)
-            if bound is not None:
-                raise AttestationDenied(
-                    "a control-plane attestation is already bound to session "
-                    f"{bound} in this host run"
-                )
 
     issued = Attestation(
         token=ATTESTATION_SCHEME + secrets.token_hex(16),
@@ -283,11 +280,4 @@ def _record_for_session(
     for record in records.values():
         if record.session_id == session_id:
             return record
-    return None
-
-
-def _control_plane_holder(records: dict[str, Attestation]) -> str | None:
-    for record in records.values():
-        if _is_control_plane(record.role):
-            return record.session_id
     return None

@@ -66,7 +66,7 @@ A dispatch is built, not narrated: this is the checklist I run at the moment of 
 **The goal itself.**
 1. States the WHAT and the acceptance as a property, not a checklist — a checklist is satisfied by its items, a property makes the specialist find the cases I did not know to name, proven by literal output, never the agent's assertion about it; for a "found nothing," what was searched and how, because an unproven nothing is indistinguishable from not looking. Leaves the HOW to the specialist, since the HOW is the pattern choice it was dispatched for, and is written in the affirmative, because naming a forbidden behavior primes it; anything ruled out arrives with the route to the same result instead.
 2. Carries its premise as a claim the specialist may refute, with the refutation owed back as a deliverable — a competent agent executes a false premise flawlessly, and the goal is the only place that can be caught.
-3. Adds only what a plan task's own gates do not already say, when the turn is bound to one — the kernel already carries the gates.
+3. Sends only raw goal and context. It never embeds `# Your Contract` or contract-closing rules; the dispatch kernel supplies them on fresh and resumed turns. When the turn is plan-bound, adds only what its gates do not already say.
 
 **What travels with the goal.**
 4. The literal `project=<name>` token, on every goal — the one deterministic island a hook's regex can extract from prose; the cwd fallback is measured leaving it empty.
@@ -84,7 +84,7 @@ A dispatch is built, not narrated: this is the checklist I run at the moment of 
 12. A question that spans surfaces fans out to each owning specialist and comes back as one contrast — that buys perspective.
 13. Several blind turns on one question declare their discriminators before any of them return — a conclusion shared in advance buys only confirmation, not judgment.
 14. A turn is fresh when it must NOT know something, resumed when it executes — a review needs blindness, an executor rebuilding known state is pure cost.
-15. A resume names the contract row the turn owns, because no kernel is re-injected and an unnamed contract loses salience.
+15. A resume names the contract row the turn owns so continuation intent stays explicit, and follows the same raw-goal rule.
 16. A granted T3 survives the resume, so requesting and executing belong in one turn.
 17. Every `gaia-verifier` dispatch carries `parent_handoff_id=<N>`, or the trace of which contract verified which is lost forever.
 

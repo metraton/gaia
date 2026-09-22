@@ -39,16 +39,55 @@ REASON_NO_SESSION_BINDING = "no_session_binding"
 REASON_NO_NONCE_IN_LABELS = "no_nonce_in_labels"
 REASON_ACTIVATION_FAILED = "activation_failed"
 REASON_ALWAYS_REFUSED = "always_refused"
+REASON_PRESENTATION_FAILED = "presentation_failed"
+REASON_CONTROL_PLANE_FAILED = "control_plane_failed"
+REASON_DECIDE_FAILED = "decide_failed"
+
+# The positive counterpart: the host accepted the consent question. SHOWN in
+# approval_events is written before the question is attempted, so it records
+# the presentation; this event records the question reaching the host.
+CONTROL_OPENED_EVENT = "consent.control.opened"
+
+# Every release of an opened control, with the plugin's reason for releasing
+# it. A control closed for any reason but a recorded decision is a consent
+# path that ended without the user's answer reaching Gaia, which is why only
+# CONTROL_CLOSE_DECIDED is graded info.
+CONTROL_CLOSED_EVENT = "consent.control.closed"
+CONTROL_CLOSE_DECIDED = "decided"
+
+# A tool call that claimed an armed consent retry and was refused, with the one
+# comparison that refused it. The specialist gets the same cause in its error;
+# this record is what lets the orchestrator read it after the turn ended. The
+# lane names the gate that refused: the plugin judges the call against its own
+# bound retry before policy; the policy adapter judges the proof the plugin
+# forwarded against the grant it names.
+CONSENT_RETRY_REFUSED_EVENT = "consent.retry.refused"
+LANE_OPENCODE_PLUGIN_GATE = "opencode.plugin_gate"
+LANE_OPENCODE_POLICY_GATE = "opencode.policy_gate"
+RETRY_REFUSED_PROOF_REJECTED = "proof_rejected"
+
+# The user's "yes" reached Gaia and the plugin armed the grant. approval_events
+# holds the decision itself (opencode-decide writes it); this record holds what
+# the plugin did next -- which session it told to resume the specialist, or
+# that it could tell none -- because an armed grant nobody resumes is the state
+# that used to read as a command never attempted.
+DECISION_APPLIED_EVENT = "consent.decision.applied"
 
 # A decision that grants nothing is not automatically a fault -- a plain
 # rejection is the consent layer working as designed. Only the reasons where a
-# signature was given and could not be honored are graded above info, because
-# that grading is exactly what `gaia defects` reads.
+# signature was given and could not be honored -- or, for presentation_failed
+# and control_plane_failed, could never be asked for -- are graded above info,
+# because that grading is exactly what `gaia defects` reads. decide_failed is
+# the OpenCode plugin's report that `gaia approvals opencode-decide` refused a
+# reply the user did give.
 _SEVERITY_BY_REASON = {
     REASON_NO_SESSION_BINDING: "warning",
     REASON_NO_NONCE_IN_LABELS: "info",
     REASON_ACTIVATION_FAILED: "warning",
     REASON_ALWAYS_REFUSED: "info",
+    REASON_PRESENTATION_FAILED: "warning",
+    REASON_CONTROL_PLANE_FAILED: "warning",
+    REASON_DECIDE_FAILED: "warning",
 }
 
 _FALLBACK_SEVERITY = "warning"
@@ -218,17 +257,209 @@ def record_decision_not_activated(
         return None
 
 
+def _record_control_event(
+    event_type: str, *, result: str, severity: str, meta: dict[str, Any]
+) -> int | None:
+    """Append one control-plane lifecycle record.
+
+    Same substrate and failure policy as :func:`record_decision_not_activated`:
+    a failed append is logged and swallowed, because the control it describes
+    has already changed state and an audit hiccup must not change it again.
+    """
+    try:
+        from gaia.project import resolve_workspace
+        from gaia.store.writer import write_harness_event
+
+        return write_harness_event(
+            workspace=resolve_workspace(),
+            event_type=event_type,
+            source=DECISION_NOT_ACTIVATED_SOURCE,
+            agent="",
+            result=result,
+            severity=severity,
+            meta=meta,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to record %s for %s (non-fatal): %s",
+            event_type, meta.get("approval_id"), exc,
+        )
+        return None
+
+
+def record_control_opened(
+    *,
+    approval_id: str,
+    session_id: str,
+    call_id: str,
+    control_session_id: str,
+    lane: str,
+) -> int | None:
+    """Append the record that the host accepted the consent question."""
+    return _record_control_event(
+        CONTROL_OPENED_EVENT,
+        result=(
+            f"consent question for {approval_id} reached the host "
+            f"in control session {control_session_id}"
+        ),
+        severity="info",
+        meta={
+            "lane": lane,
+            "approval_id": approval_id,
+            "session_id": session_id,
+            "call_id": call_id,
+            "control_session_id": control_session_id,
+        },
+    )
+
+
+def record_control_closed(
+    *,
+    approval_id: str,
+    session_id: str,
+    call_id: str,
+    control_session_id: str,
+    reason: str,
+    lane: str,
+    detail: str = "",
+) -> int | None:
+    """Append the record that the plugin released the control for one approval.
+
+    ``reason`` is the plugin's own vocabulary, recorded verbatim: the reader
+    needs to know which exit the control took, and a vocabulary duplicated here
+    would drift from the code that takes those exits.
+    """
+    meta: dict[str, Any] = {
+        "lane": lane,
+        "reason": reason,
+        "approval_id": approval_id,
+        "session_id": session_id,
+        "call_id": call_id,
+        "control_session_id": control_session_id,
+    }
+    if detail:
+        meta["detail"] = detail
+    result = f"{reason}: consent control for {approval_id} closed in session {control_session_id}"
+    if detail:
+        result = f"{result} -- {detail}"
+    return _record_control_event(
+        CONTROL_CLOSED_EVENT,
+        result=result,
+        severity="info" if reason == CONTROL_CLOSE_DECIDED else "warning",
+        meta=meta,
+    )
+
+
+def record_consent_retry_refused(
+    *,
+    approval_id: str,
+    session_id: str,
+    call_id: str,
+    reason: str,
+    expected: str,
+    received: str,
+    lane: str,
+    detail: str = "",
+) -> int | None:
+    """Append the record that a claimed consent retry was refused, and on what.
+
+    ``reason`` is the refusing gate's own vocabulary, recorded verbatim for the
+    same reason as :func:`record_control_closed`; ``expected`` and ``received``
+    are the two sides of the comparison that failed, so the reader does not
+    have to reproduce the call to learn which field drifted.
+    """
+    meta: dict[str, Any] = {
+        "lane": lane,
+        "reason": reason,
+        "expected": expected,
+        "received": received,
+        "approval_id": approval_id,
+        "session_id": session_id,
+        "call_id": call_id,
+    }
+    if detail:
+        meta["detail"] = detail
+    result = (
+        f"{reason}: consent retry for {approval_id} refused in session {session_id}"
+        f" -- expected {expected}, received {received}"
+    )
+    if detail:
+        result = f"{result} -- {detail}"
+    return _record_control_event(
+        CONSENT_RETRY_REFUSED_EVENT, result=result, severity="warning", meta=meta,
+    )
+
+
+def record_decision_applied(
+    *,
+    approval_id: str,
+    session_id: str,
+    call_id: str,
+    control_session_id: str,
+    reply: str,
+    lane: str,
+    next_index: int | None,
+    notified_session_id: str = "",
+    notify_failure: str = "",
+) -> int | None:
+    """Append the record that a grant was armed and the orchestrator told.
+
+    ``notified_session_id`` names the session that received the activation
+    notice; empty means no session was told, and ``notify_failure`` says why.
+    Graded warning in that case: the grant exists, but nothing in the host is
+    now moving toward the retry.
+    """
+    meta: dict[str, Any] = {
+        "lane": lane,
+        "reply": reply,
+        "approval_id": approval_id,
+        "session_id": session_id,
+        "call_id": call_id,
+        "control_session_id": control_session_id,
+        "next_index": next_index,
+        "notified_session_id": notified_session_id,
+    }
+    if notify_failure:
+        meta["notify_failure"] = notify_failure
+    told = (
+        f"orchestrator session {notified_session_id} told to resume {session_id}"
+        if notified_session_id
+        else f"no session told to resume {session_id} -- {notify_failure or 'unspecified'}"
+    )
+    return _record_control_event(
+        DECISION_APPLIED_EVENT,
+        result=f"{reply}: grant for {approval_id} armed at index {next_index}; {told}",
+        severity="info" if notified_session_id else "warning",
+        meta=meta,
+    )
+
+
 __all__ = [
+    "CONSENT_RETRY_REFUSED_EVENT",
+    "CONTROL_CLOSED_EVENT",
+    "CONTROL_CLOSE_DECIDED",
+    "CONTROL_OPENED_EVENT",
+    "DECISION_APPLIED_EVENT",
     "DECISION_NOT_ACTIVATED_EVENT",
     "DECISION_NOT_ACTIVATED_SOURCE",
     "DETAILS_PAYLOAD_KEY",
     "LANE_CLAUDE_CODE_QUESTION",
     "LANE_OPENCODE_PERMISSION",
+    "LANE_OPENCODE_PLUGIN_GATE",
+    "LANE_OPENCODE_POLICY_GATE",
     "REASON_ACTIVATION_FAILED",
     "REASON_ALWAYS_REFUSED",
+    "REASON_CONTROL_PLANE_FAILED",
+    "REASON_DECIDE_FAILED",
     "REASON_NO_NONCE_IN_LABELS",
     "REASON_NO_SESSION_BINDING",
+    "REASON_PRESENTATION_FAILED",
+    "RETRY_REFUSED_PROOF_REJECTED",
     "DecisionNotActivated",
     "build_decision_not_activated",
+    "record_consent_retry_refused",
+    "record_control_closed",
+    "record_control_opened",
+    "record_decision_applied",
     "record_decision_not_activated",
 ]

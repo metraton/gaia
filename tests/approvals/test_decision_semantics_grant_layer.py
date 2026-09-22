@@ -32,6 +32,11 @@ from cli.approvals import cmd_opencode_decide, cmd_opencode_present, register  #
 from gaia.approvals import store  # noqa: E402
 from gaia.approvals.command_set import command_fingerprint, request_fingerprint  # noqa: E402
 from gaia.store import writer  # noqa: E402
+from modules.security.approval_grants import (  # noqa: E402
+    generate_nonce,
+    write_pending_approval_for_file,
+)
+from modules.tools.bash_validator import _build_sealed_payload  # noqa: E402
 
 _PLUGIN = _REPO_ROOT / "opencode" / "plugin.ts"
 _SESSION = "ses-1"
@@ -40,16 +45,25 @@ _CALL = "call-1"
 _TOKEN = "presentation-token"
 _COMMAND = "git status --short"
 _OTHER_COMMAND = "git status --porcelain"
+_MUTATIVE_COMMAND = "git push origin main"
 
 
 @pytest.fixture
 def isolated_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "gaia.db"
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
-    con = sqlite3.connect(tmp_path / "gaia.db")
+    monkeypatch.setenv("GAIA_DB", str(db_path))
+    con = sqlite3.connect(db_path)
     con.executescript(writer._SCHEMA_PATH.read_text())
     con.commit()
     con.close()
-    return tmp_path / "gaia.db"
+    from gaia.paths import db_path as resolved_db_path
+
+    assert resolved_db_path().resolve() == db_path.resolve()
+    with writer._connect() as connection:
+        actual_path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+    assert actual_path.resolve() == db_path.resolve()
+    return db_path
 
 
 def _reply_from_the_real_plugin(raw_reply: str) -> tuple[str, str]:
@@ -113,6 +127,31 @@ def _seed_presented_command_set(command: str = _COMMAND) -> str:
     return approval_id
 
 
+def _seed_presented_semantic_approval() -> str:
+    payload = _build_sealed_payload(
+        _MUTATIVE_COMMAND,
+        verb="push",
+        category="MUTATIVE",
+        agent_type=_AGENT,
+    )
+    approval_id = store.insert_requested(payload, agent_id=_AGENT, session_id=_SESSION)
+    assert cmd_opencode_present(_present_args(approval_id)) == 0
+    return approval_id
+
+
+def _seed_presented_file_path_approval(file_path: Path) -> str:
+    nonce = generate_nonce()
+    pending = write_pending_approval_for_file(
+        nonce,
+        str(file_path.resolve()),
+        session_id=_SESSION,
+    )
+    assert pending is not None
+    approval_id = f"P-{nonce}"
+    assert cmd_opencode_present(_present_args(approval_id)) == 0
+    return approval_id
+
+
 def _grant_shape(db_path: Path, approval_id: str) -> dict | None:
     """The grant a decision produced, or None when it produced none."""
     con = sqlite3.connect(db_path)
@@ -144,12 +183,131 @@ def _grant_count(db_path: Path) -> int:
         con.close()
 
 
+def _grant_row(db_path: Path, approval_id: str) -> dict | None:
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT scope, status, command_set_json FROM approval_grants "
+            "WHERE approval_id=?",
+            (approval_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    return dict(row) if row is not None else None
+
+
 def _approval_status(db_path: Path, approval_id: str) -> str:
     con = sqlite3.connect(db_path)
     try:
         return con.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()[0]
     finally:
         con.close()
+
+
+def test_a_once_reply_atomically_creates_an_executable_semantic_grant(isolated_db):
+    approval_id = _seed_presented_semantic_approval()
+
+    assert cmd_opencode_decide(
+        _decide_args(approval_id, reply="once", lane="preferred")
+    ) == 0
+
+    grant = _grant_row(isolated_db, approval_id)
+    status = _approval_status(isolated_db, approval_id)
+    assert grant is not None, (
+        "OpenCode once decision approved a singular semantic command without "
+        f"creating its executable grant; approval status={status!r}"
+    )
+    assert status == "approved"
+    assert grant["scope"] == "SCOPE_SEMANTIC_SIGNATURE"
+    assert grant["status"] == "PENDING"
+    assert writer.check_db_semantic_grant(
+        _MUTATIVE_COMMAND, db_path=isolated_db
+    )["approval_id"] == approval_id
+
+
+def test_a_once_reply_atomically_creates_the_exact_file_path_grant(isolated_db, tmp_path):
+    canonical_path = (tmp_path / "protected.py").resolve()
+    approval_id = _seed_presented_file_path_approval(canonical_path)
+
+    assert cmd_opencode_decide(
+        _decide_args(approval_id, reply="once", lane="preferred")
+    ) == 0
+
+    grant = _grant_row(isolated_db, approval_id)
+    status = _approval_status(isolated_db, approval_id)
+    assert grant is not None, (
+        "OpenCode once decision approved a SCOPE_FILE_PATH request without "
+        f"creating its exact executable grant; approval status={status!r}"
+    )
+    assert status == "approved"
+    assert grant["scope"] == "SCOPE_FILE_PATH"
+    assert grant["status"] == "PENDING"
+    assert json.loads(grant["command_set_json"])["file_path"] == str(canonical_path)
+    assert writer.check_db_file_path_grant(
+        str(canonical_path), db_path=isolated_db
+    )["approval_id"] == approval_id
+
+
+def test_semantic_grant_failure_does_not_approve_the_request(
+    isolated_db, monkeypatch
+):
+    approval_id = _seed_presented_semantic_approval()
+    monkeypatch.setattr(
+        writer,
+        "insert_semantic_grant",
+        lambda *args, **kwargs: {"status": "error", "reason": "injected failure"},
+    )
+
+    rc = cmd_opencode_decide(
+        _decide_args(approval_id, reply="once", lane="preferred")
+    )
+
+    status = _approval_status(isolated_db, approval_id)
+    assert status == "pending", (
+        "semantic grant insertion failure left the approval committed as "
+        f"{status!r}; cmd_opencode_decide rc={rc}"
+    )
+    assert rc == 1
+    assert _grant_row(isolated_db, approval_id) is None
+
+
+def test_file_path_grant_failure_does_not_approve_the_request(
+    isolated_db, tmp_path, monkeypatch
+):
+    canonical_path = (tmp_path / "protected.py").resolve()
+    approval_id = _seed_presented_file_path_approval(canonical_path)
+    monkeypatch.setattr(
+        writer,
+        "insert_file_path_grant",
+        lambda *args, **kwargs: {"status": "error", "reason": "injected failure"},
+    )
+
+    rc = cmd_opencode_decide(
+        _decide_args(approval_id, reply="once", lane="preferred")
+    )
+
+    status = _approval_status(isolated_db, approval_id)
+    assert status == "pending", (
+        "file-path grant insertion failure left the approval committed as "
+        f"{status!r}; cmd_opencode_decide rc={rc}"
+    )
+    assert rc == 1
+    assert _grant_row(isolated_db, approval_id) is None
+
+
+def test_duplicate_opencode_once_decision_is_idempotent(isolated_db):
+    approval_id = _seed_presented_semantic_approval()
+    args = _decide_args(approval_id, reply="once", lane="preferred")
+
+    assert cmd_opencode_decide(args) == 0
+    assert cmd_opencode_decide(args) == 0
+
+    assert _approval_status(isolated_db, approval_id) == "approved"
+    assert _grant_count(isolated_db) == 1
+    assert [
+        event["event_type"] for event in store.get_history(approval_id)
+    ].count("APPROVED") == 1
 
 
 def test_a_once_reply_grants_one_index_and_the_grant_refuses_the_second_attempt(isolated_db):

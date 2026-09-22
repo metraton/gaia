@@ -80,6 +80,11 @@ tests/
 
 ### OpenCode transport delivery boundary
 
+The OpenCode adapter's real-plugin drivers, stubbed-host boundary, and opt-in
+real-host limitation are documented in [`opencode/README.md`](./opencode/README.md).
+The Python suite does not start a real OpenCode host; `tests/opencode/live/`
+requires an already running `opencode serve` and explicit environment variables.
+
 [Early-child and resume coverage](integration/test_opencode_early_child_attestation.py)
 keeps three successful calls, current dispatch handles, authentic identity, stale-binding
 denial, and exact new-row binding unconditional. Its unmarked fixture runs before the
@@ -135,3 +140,4 @@ pip install pytest pytest-cov
 - [`agents/README.md`](../agents/README.md) — behavior under test in Layer 2
 - [`bin/cli/doctor.py`](../bin/cli/doctor.py) — `gaia doctor` health check, invoked during Layer 3
 - [`conftest.py`](./conftest.py) — shared pytest fixtures and markers
+- [`opencode/README.md`](./opencode/README.md) — adapter drivers and real-host smoke limitation

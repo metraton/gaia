@@ -418,6 +418,7 @@ class OpenCodeAdapter(HookAdapter):
         original_tool = str(payload.get("tool_name", "")).lower()
         rejection = self._identity_rejection(event, original_tool)
         if rejection is not None:
+            rejection = self._with_identity_gap(rejection, payload)
             self._record_identity_refusal(event, original_tool, rejection)
             return HookResponse(output={"action": "deny", "reason": rejection}, exit_code=2)
         backstop = self._child_binding_backstop_denial(event)
@@ -504,30 +505,62 @@ class OpenCodeAdapter(HookAdapter):
     def _record_retry_denial(
         cls, event: HookEvent, tool_name: str, reason: str,
     ) -> None:
-        """Leave a durable denial on the approval a refused retry belongs to.
+        """Leave a durable trace of a refused retry proof, and why.
 
         Never raises and never affects the verdict: the caller has already
-        decided the denial. A command matching no live plan-first grant has no
-        approval row to write on and is skipped.
+        decided the denial. The ``harness_events`` record is written for every
+        refusal, naming the grant the call should have matched against what
+        the call actually presented; the ``approval_events`` denial needs an
+        approval row to hang off, so it is written only when a live plan-first
+        grant matches the command.
         """
         try:
-            from gaia.approvals.store import record_execution_denial
+            from gaia.approvals.decision_audit import (
+                LANE_OPENCODE_POLICY_GATE,
+                RETRY_REFUSED_PROOF_REJECTED,
+                record_consent_retry_refused,
+            )
+            from gaia.approvals.store import get_by_id, record_execution_denial
             from gaia.store.writer import find_pending_plan_command
 
+            proof = event.payload.get("consentRetry")
+            claimed_id = proof.get("approval_id") if isinstance(proof, dict) else None
             command = cls._bash_command(event, tool_name)
-            if command is None:
+            match = find_pending_plan_command(command) if command is not None else None
+            observed_fingerprint = (
+                hashlib.sha256(command.encode("utf-8")).hexdigest()
+                if command is not None else None
+            )
+            received = (
+                f"{event.session_id}/{event.call_id} as {cls._policy_agent_type(event)}"
+                + (f" fingerprint {observed_fingerprint}" if observed_fingerprint else f" tool {tool_name}")
+            )
+            record_consent_retry_refused(
+                approval_id=match["approval_id"] if match else str(claimed_id or ""),
+                session_id=event.session_id or "",
+                call_id=event.call_id or "",
+                reason=RETRY_REFUSED_PROOF_REJECTED,
+                expected=(
+                    f"grant {match['approval_id']}[{match['index']}] fingerprint {match['fingerprint']}"
+                    if match else "the active typed grant named by this proof"
+                ),
+                received=received,
+                lane=LANE_OPENCODE_POLICY_GATE,
+                detail=reason,
+            )
+            denial_approval_id = match["approval_id"] if match else claimed_id
+            if not isinstance(denial_approval_id, str):
                 return
-            match = find_pending_plan_command(command)
-            if match is None:
+            if match is None and get_by_id(denial_approval_id) is None:
                 return
             record_execution_denial(
-                match["approval_id"],
+                denial_approval_id,
                 "consent_retry_proof_rejected",
                 host="opencode",
                 session_id=event.session_id,
                 call_id=event.call_id,
-                index=match["index"],
-                command_fingerprint=match["fingerprint"],
+                index=match["index"] if match else None,
+                command_fingerprint=match["fingerprint"] if match else observed_fingerprint,
                 agent_id=cls._policy_agent_type(event),
                 detail=reason,
             )
@@ -543,28 +576,22 @@ class OpenCodeAdapter(HookAdapter):
         A call carrying no proof is left to the host-neutral policy: the
         question lane cannot produce one, and requiring it here gated that lane
         on evidence only the plugin's native lane can mint.
+
+        ``agent_id`` in the proof is the approval's own ``agent_id`` -- the Gaia
+        contract identity the requester passed to ``request-set`` (a hash such
+        as ``a69d869dc02031f54``), which ``opencode-present`` bound and minted
+        the correlation from. It lives in a different namespace from the host
+        role ``_policy_agent_type`` yields (``gaia-operator``), so it is checked
+        against the grant it names and the correlation it minted, never against
+        the role. The executing role is bound by the attestation and the
+        grant's session instead (measured 2026-09-16: a byte-identical retry
+        was refused because the two namespaces were compared as one).
         """
-        command = cls._bash_command(event, tool_name)
-        if command is None:
-            return None
-
-        try:
-            from gaia.store.writer import (
-                find_pending_plan_command,
-                list_approval_grants,
-            )
-
-            pending = find_pending_plan_command(command) is not None
-        except Exception as exc:
-            return f"OpenCode consent retry lookup failed closed: {exc}"
-
         proof = event.payload.get("consentRetry")
         if proof is None:
             return None
         if not isinstance(proof, dict):
             return "OpenCode consent retry proof is malformed"
-        if not pending:
-            return "OpenCode consent retry proof names no executable command"
         try:
             attestation = cls._resolved_attestation(event)
         except Exception:
@@ -576,26 +603,26 @@ class OpenCodeAdapter(HookAdapter):
         agent_id = proof.get("agent_id")
         original_call_id = proof.get("original_call_id")
         retry_call_id = proof.get("retry_call_id")
-        fingerprint = proof.get("command_fingerprint")
-        index = proof.get("expected_index")
         if (
-            not isinstance(approval_id, str)
+            proof.get("version") != 1
+            or proof.get("kind") not in {
+                "COMMAND_SET", "SCOPE_SEMANTIC_SIGNATURE", "SCOPE_FILE_PATH",
+            }
+            or not isinstance(approval_id, str)
             or re.fullmatch(r"P-[0-9a-f]{32}", approval_id) is None
-            or agent_id != cls._policy_agent_type(event)
+            or not isinstance(agent_id, str)
+            or not agent_id
             or proof.get("session_id") != event.session_id
             or retry_call_id != event.call_id
             or not isinstance(original_call_id, str)
             or not original_call_id
             or original_call_id == retry_call_id
-            or proof.get("command") != command
-            or fingerprint != hashlib.sha256(command.encode("utf-8")).hexdigest()
-            or isinstance(index, bool)
-            or not isinstance(index, int)
-            or index < 0
+            or proof.get("role") != cls._policy_agent_type(event)
         ):
             return "OpenCode consent retry proof does not match this fresh tool call"
 
         try:
+            from gaia.store.writer import list_approval_grants
             from .consent_events import mint_correlation_id
 
             expected_correlation = mint_correlation_id(
@@ -611,50 +638,90 @@ class OpenCodeAdapter(HookAdapter):
                 (row for row in grants if row.get("approval_id") == approval_id),
                 None,
             )
-            items = json.loads(grant.get("command_set_json") or "[]") if grant else []
-            grant_index = int(grant.get("next_index") or 0) if grant else -1
-            matching_ids = []
-            for candidate in grants:
-                candidate_items = json.loads(candidate.get("command_set_json") or "[]")
-                candidate_index = int(candidate.get("next_index") or 0)
-                if (
-                    candidate.get("scope") == "COMMAND_SET"
-                    and candidate.get("source") == "plan-first"
-                    and not candidate.get("reservation_tool_use_id")
-                    and candidate_index >= 0
-                    and candidate_index < len(candidate_items)
-                    and isinstance(candidate_items[candidate_index], dict)
-                    and candidate_items[candidate_index].get("command") == command
-                    and candidate_items[candidate_index].get("fingerprint") == fingerprint
-                ):
-                    matching_ids.append(candidate.get("approval_id"))
+            grant_payload = json.loads(grant.get("command_set_json") or "null") if grant else None
         except Exception:
             return "OpenCode consent retry proof could not be verified"
 
         if (
             proof.get("correlation_id") != expected_correlation
             or grant is None
-            or grant.get("scope") != "COMMAND_SET"
-            or grant.get("source") != "plan-first"
-            or grant.get("reservation_tool_use_id")
             or grant.get("agent_id") != agent_id
             or grant.get("session_id") != event.session_id
-            or grant_index != index
-            or index >= len(items)
-            or not isinstance(items[index], dict)
-            or items[index].get("command") != command
-            or items[index].get("fingerprint") != fingerprint
-            or matching_ids != [approval_id]
         ):
             return "OpenCode consent retry proof drifted from its bound grant"
+
+        kind = proof["kind"]
+        if kind in {"COMMAND_SET", "SCOPE_SEMANTIC_SIGNATURE"}:
+            command = cls._bash_command(event, tool_name)
+            fingerprint = proof.get("command_fingerprint")
+            if (
+                command is None
+                or proof.get("command") != command
+                or fingerprint != hashlib.sha256(command.encode("utf-8")).hexdigest()
+            ):
+                return "OpenCode consent retry proof command drifted from this call"
+            if kind == "SCOPE_SEMANTIC_SIGNATURE":
+                if (
+                    grant.get("scope") != kind
+                    or not isinstance(grant_payload, dict)
+                    or grant_payload.get("command") != command
+                ):
+                    return "OpenCode semantic retry proof drifted from its active grant"
+                return None
+
+            index = proof.get("expected_index")
+            grant_index = int(grant.get("next_index") or 0)
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or grant.get("scope") != "COMMAND_SET"
+                or grant.get("source") != "plan-first"
+                or grant.get("reservation_tool_use_id")
+                or not isinstance(grant_payload, list)
+                or grant_index != index
+                or index >= len(grant_payload)
+                or not isinstance(grant_payload[index], dict)
+                or grant_payload[index].get("command") != command
+                or grant_payload[index].get("fingerprint") != fingerprint
+                or grant.get("request_fingerprint") != proof.get("request_fingerprint")
+            ):
+                return "OpenCode COMMAND_SET retry proof drifted from its bound grant"
+            return None
+
+        tool_input = event.payload.get("tool_input") or event.payload.get("args") or {}
+        policy_tool = cls._policy_tool_name(tool_name)
+        if policy_tool not in {"Write", "Edit"} or not isinstance(tool_input, dict):
+            return "OpenCode file retry proof names the wrong tool family"
+        if str(tool_name).lower() == "apply_patch":
+            paths = tool_input.get("file_paths")
+            actual_paths = paths if isinstance(paths, list) else []
+        else:
+            actual_path = tool_input.get("file_path")
+            actual_paths = [actual_path] if isinstance(actual_path, str) else []
+        canonical_path = proof.get("canonical_path")
+        if (
+            proof.get("tool_family") != policy_tool
+            or not isinstance(canonical_path, str)
+            or actual_paths != [canonical_path]
+            or proof.get("path_fingerprint")
+            != hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()
+        ):
+            return "OpenCode file retry proof path or tool family drifted from this call"
+        if (
+            grant.get("scope") != "SCOPE_FILE_PATH"
+            or not isinstance(grant_payload, dict)
+            or grant_payload.get("file_path") != canonical_path
+        ):
+            return "OpenCode file retry proof drifted from its active grant"
         return None
 
     def _adapt_task_with_kernel(
         self, policy_adapter: "ClaudeCodeAdapter", policy_event: HookEvent,
     ) -> HookResponse:
         """Run the Task dispatch through the shared policy path, then --
-        on allow -- prepend the just-born row's rendered kernel to the
-        child's own prompt, in place (plan 65, task 9).
+        on allow -- replace the host prompt with the just-born row's rendered
+        kernel, in place (plan 65, task 9).
 
         Claude Code receives its kernel through a SEPARATE start event
         (SubagentStart) that fires before the subagent's first turn.
@@ -663,11 +730,12 @@ class OpenCodeAdapter(HookAdapter):
         session binding, sometimes after the child has already acted. The
         one point this host reliably controls before the child's first
         action is THIS call -- the Task dispatch itself -- so the kernel
-        is embedded directly into the dispatched prompt via
-        ``updated_input``, applied field-by-field by the plugin's
-        ``applyUpdatedInput`` (T6): only ``prompt`` changes, every other
-        Task argument (``description``, ``subagent_type``, ...) passes
-        through untouched.
+        is embedded directly into the dispatched prompt via ``updated_input``.
+        The kernel's ``goal`` already contains the born row's original Task
+        prompt, so appending that prompt here would duplicate the assignment.
+        The plugin's field-by-field ``applyUpdatedInput`` (T6) changes only
+        ``prompt``; every other Task argument (``description``,
+        ``subagent_type``, ``task_id``, ...) passes through untouched.
 
         The delegated call already births the row with
         ``dispatch_tool_use_id=callID`` (``build_policy_payload`` forwards
@@ -713,15 +781,9 @@ class OpenCodeAdapter(HookAdapter):
         if not kernel:
             return translated
 
-        tool_input = policy_event.payload.get("tool_input") or {}
-        original_prompt = str(tool_input.get("prompt") or "")
         kernel_with_rules = f"{kernel}\n\n{CLOSING_RULES_KERNEL}"
-        merged_prompt = (
-            f"{kernel_with_rules}\n\n{original_prompt}"
-            if original_prompt else kernel_with_rules
-        )
         updated_input = dict(output.get("updated_input") or {})
-        updated_input["prompt"] = merged_prompt
+        updated_input["prompt"] = kernel_with_rules
         output["updated_input"] = updated_input
         return translated
 
@@ -795,6 +857,22 @@ class OpenCodeAdapter(HookAdapter):
             return "ordinary OpenCode agents cannot issue control-plane dispatches"
         return None
 
+    @staticmethod
+    def _identity_gap(payload: dict) -> str:
+        """The plugin's account of why the session presents no claim, or empty."""
+        return str(payload.get("identityGap") or "").strip()
+
+    @classmethod
+    def _with_identity_gap(cls, reason: str, payload: dict) -> str:
+        """Name the plugin's gap after the verdict so a refused root and a refused child read differently.
+
+        The gap is a diagnosis the plugin composed and is never trusted for
+        the verdict itself; it only makes the refusal the user sees, and the
+        row it leaves, say which session state produced it.
+        """
+        gap = cls._identity_gap(payload)
+        return f"{reason} ({gap})" if gap else reason
+
     @classmethod
     def _record_identity_refusal(
         cls, event: HookEvent, tool_name: str, reason: str,
@@ -844,6 +922,7 @@ class OpenCodeAdapter(HookAdapter):
                     getattr(context, "attestation", "") or ""
                 ),
                 "attestation_resolved": resolved,
+                "identity_gap": cls._identity_gap(payload),
             }
             EventWriter().write_event(
                 _IDENTITY_REFUSAL_EVENT,
@@ -1037,6 +1116,15 @@ class OpenCodeAdapter(HookAdapter):
         run, so a denial would gate nothing while discarding the audit record,
         and the resolver reads an absent ``answers`` as no decision at all,
         which is fail-closed.
+
+        The consent control plane never reaches this method. For a session the
+        plugin registered as a control (``controlBySession``), its
+        ``tool.execute.after`` returns before ``send``, so the question's
+        answers never cross the bridge and the only route by which a reply
+        becomes a decision is ``gaia approvals opencode-decide``, invoked by the
+        plugin from ``question.replied``. The attested branch below is kept for
+        the case where an attested control-plane session does forward a
+        result; it is not the path a live decision takes.
         """
         if not isinstance(container, dict) or "answers" not in container:
             return container
