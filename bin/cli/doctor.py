@@ -11,6 +11,7 @@ Checks (in order):
   40. plugin-mode        - ops vs security, registry valid
   45. schema-version     - gaia.db schema_version matches CLI expectation
   47. schema-ddl         - live CHECK constraints match schema.sql (ledger-vs-DDL)
+  49. workspace-roots    - active workspaces have the root `gaia worktree create` needs
   50. symlinks           - .claude/ symlinks resolve
   52. component-naming   - skill/agent frontmatter name matches dir/file name
   53. skill-cross-refs   - agent `skills:` refs resolve to skills/<name>/SKILL.md
@@ -59,6 +60,7 @@ References:
 import argparse
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -752,6 +754,44 @@ def check_episodes_growth() -> dict:
         "info",
         f"{file_part}; episodes table {tbl_str}, rows={count} "
         f"(retention: 90d, auto-pruned)",
+    )
+
+
+@register_check("Workspace roots", order=49)
+def check_workspace_roots() -> dict:
+    """Warn about active workspaces whose root is unrecorded, naming the scan that records it.
+
+    ``gaia worktree create`` refuses every repository of such a workspace, and
+    install never scans, so the root stays empty until the user runs the scan.
+    """
+    from gaia.paths import db_path  # noqa: PLC0415
+
+    database = db_path()
+    if not database.is_file():
+        return _result("Workspace roots", "info", f"no DB at {database}")
+    try:
+        con = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT name FROM workspaces WHERE status = 'active' "
+                "AND (root_path IS NULL OR root_path = '') ORDER BY name"
+            ).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        return _result("Workspace roots", "info", f"could not read workspace roots: {exc}")
+
+    missing = [name for (name,) in rows]
+    if not missing:
+        return _result("Workspace roots", "pass", "every active workspace has a recorded root")
+    return _result(
+        "Workspace roots",
+        "warning",
+        f"no recorded root for {', '.join(missing)}; "
+        "`gaia worktree create` refuses their repositories",
+        "; ".join(
+            f"gaia scan <workspace root> --workspace {shlex.quote(name)}" for name in missing
+        ),
     )
 
 
