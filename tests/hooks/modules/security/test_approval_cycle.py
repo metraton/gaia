@@ -40,7 +40,7 @@ from modules.security.approval_grants import (
     get_pending_approvals_for_session,
 )
 from modules.tools.bash_validator import BashValidator, validate_bash_command
-from tests.fixtures.db_helpers import apply_approvals_schema, seed_db_pending
+from tests.fixtures.db_helpers import seed_db_pending
 
 
 # ---------------------------------------------------------------------------

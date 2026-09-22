@@ -1284,7 +1284,7 @@ class TestScenario8FullApprovalCycle:
             generate_nonce, activate_db_pending_by_prefix,
             ACTIVATION_ACTIVATED, ACTIVATION_NOT_FOUND,
         )
-        from tests.fixtures.db_helpers import seed_db_pending, apply_approvals_schema
+        from tests.fixtures.db_helpers import seed_db_pending
 
         # Set up isolated environment
         claude_dir = tmp_path / ".claude"
