@@ -13,6 +13,12 @@ if str(_BIN_DIR) not in sys.path:
 from cli import _install_helpers  # noqa: E402
 
 
+def _write_packaged_inventory(package: Path, *names: str) -> None:
+    target = package / "opencode" / "agent-inventory.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"version": 1, "agents": [f"agents/{name}.md" for name in names]}))
+
+
 def test_registers_the_packaged_plugin_without_creating_claude_config(tmp_path):
     package = tmp_path / "package"
     plugin = package / "opencode" / "plugin.ts"
@@ -27,6 +33,9 @@ def test_registers_the_packaged_plugin_without_creating_claude_config(tmp_path):
     agent = package / "agents" / "gaia-orchestrator.md"
     agent.parent.mkdir()
     agent.write_text("---\nname: gaia-orchestrator\ndescription: Routes work\n---\nPrompt\n")
+    specialist = package / "agents" / "developer.md"
+    specialist.write_text("---\nname: developer\ndescription: Builds apps\n---\nPrompt\n")
+    _write_packaged_inventory(package, "gaia-orchestrator", "developer")
     skill = package / "skills" / "sample" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("---\nname: sample\ndescription: Sample\n---\n")
@@ -39,6 +48,10 @@ def test_registers_the_packaged_plugin_without_creating_claude_config(tmp_path):
     assert str(plugin.resolve()) in config["plugin"]
     assert config["default_agent"] == "gaia-orchestrator"
     assert config["agent"]["gaia-orchestrator"]["mode"] == "primary"
+    assert config["agent"]["gaia-orchestrator"]["permission"]["task"] == {
+        "*": "deny",
+        "developer": "allow",
+    }
     assert (tmp_path / ".opencode" / "skills" / "sample").is_symlink()
 
 
@@ -166,6 +179,7 @@ def test_translates_agent_tools_disallowed_tools_and_skills(tmp_path):
         "  - code-standards\n"
         "---\nPrompt\n"
     )
+    _write_packaged_inventory(package, "developer")
 
     generated = _install_helpers._opencode_agents(
         package, {"default": {"mode": "subagent"}}, None
@@ -212,13 +226,114 @@ def test_host_policy_overrides_frontmatter_permissions(tmp_path):
     }
 
 
-def test_orchestrator_task_policy_is_closed_and_nominal():
+def test_orchestrator_task_policy_matches_the_complete_shipped_inventory():
     policy = json.loads((_install_helpers._PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text())
-    task = policy["gaia-orchestrator"]["permission"]["task"]
+    generated = _install_helpers._opencode_agents(
+        _install_helpers._PACKAGE_ROOT, policy, None
+    )
+    task = generated["gaia-orchestrator"]["permission"]["task"]
+    manifest = json.loads(
+        (_install_helpers._PACKAGE_ROOT / "build" / "gaia.manifest.json").read_text()
+    )
+    shipped = {
+        _install_helpers._agent_frontmatter(_install_helpers._PACKAGE_ROOT / entry)["name"]
+        for entry in manifest["agents"]
+    }
+
     assert task["*"] == "deny"
-    assert task["gaia-system"] == "allow"
-    assert task["developer"] == "allow"
+    assert {name for name, decision in task.items() if decision == "allow"} == (
+        shipped - {"gaia-orchestrator"}
+    )
+    assert set(generated) == shipped
     assert "gaia-orchestrator" not in task
+    assert policy["gaia-orchestrator"]["permission"]["task"] == {"*": "deny"}
+
+
+def test_slim_package_derives_task_policy_from_generated_inventory(tmp_path):
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    for name in ("gaia-orchestrator", "developer", "gaia-system"):
+        (agents / f"{name}.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\nPrompt\n"
+        )
+    policy = {
+        "default": {"mode": "subagent"},
+        "gaia-orchestrator": {"mode": "primary", "permission": {"task": {"*": "deny"}}},
+    }
+    _write_packaged_inventory(tmp_path, "gaia-orchestrator", "developer", "gaia-system")
+
+    task = _install_helpers._opencode_agents(
+        tmp_path, policy, None
+    )["gaia-orchestrator"]["permission"]["task"]
+
+    assert task == {"*": "deny", "developer": "allow", "gaia-system": "allow"}
+
+
+def test_manifest_inventory_ignores_an_unmanifested_agent_file(tmp_path):
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    for name in ("gaia-orchestrator", "developer", "rogue"):
+        (agents / f"{name}.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\n"
+        )
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "gaia.manifest.json").write_text(json.dumps({
+        "agents": ["agents/gaia-orchestrator.md", "agents/developer.md"]
+    }))
+
+    generated = _install_helpers._opencode_agents(
+        tmp_path, {"default": {"mode": "subagent"}}, None
+    )
+
+    assert set(generated) == {"gaia-orchestrator", "developer"}
+    assert generated["gaia-orchestrator"]["permission"]["task"] == {
+        "*": "deny", "developer": "allow",
+    }
+
+
+def test_missing_or_malformed_inventory_fails_closed(tmp_path):
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    for name in ("gaia-orchestrator", "rogue"):
+        (agents / f"{name}.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\n"
+        )
+    policy = {"default": {"mode": "subagent"}}
+
+    missing = _install_helpers._opencode_agents(tmp_path, policy, None)
+    _write_packaged_inventory(tmp_path, "../rogue")
+    malformed = _install_helpers._opencode_agents(tmp_path, policy, None)
+
+    assert set(missing) == {"gaia-orchestrator"}
+    assert set(malformed) == {"gaia-orchestrator"}
+    assert missing["gaia-orchestrator"]["permission"]["task"] == {"*": "deny"}
+    assert malformed["gaia-orchestrator"]["permission"]["task"] == {"*": "deny"}
+
+
+def test_removed_or_renamed_manifest_specialist_disappears(tmp_path):
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    for name in ("gaia-orchestrator", "developer"):
+        (agents / f"{name}.md").write_text(
+            f"---\nname: {name}\ndescription: {name} description\n---\n"
+        )
+    build = tmp_path / "build"
+    build.mkdir()
+    manifest = build / "gaia.manifest.json"
+    policy = {"default": {"mode": "subagent"}}
+
+    manifest.write_text(json.dumps({"agents": ["agents/gaia-orchestrator.md"]}))
+    removed = _install_helpers._opencode_agents(tmp_path, policy, None)
+    manifest.write_text(json.dumps({
+        "agents": ["agents/gaia-orchestrator.md", "agents/renamed.md"]
+    }))
+    renamed = _install_helpers._opencode_agents(tmp_path, policy, None)
+
+    assert set(removed) == {"gaia-orchestrator"}
+    assert set(renamed) == {"gaia-orchestrator"}
+    assert removed["gaia-orchestrator"]["permission"]["task"] == {"*": "deny"}
+    assert renamed["gaia-orchestrator"]["permission"]["task"] == {"*": "deny"}
 
 
 def test_native_question_is_exposed_only_to_the_root_orchestrator():
@@ -257,16 +372,14 @@ def test_contract_scratch_is_the_only_external_directory_for_subagents():
         if agent["mode"] == "subagent"
     }
 
-    assert set(specialists) == {
-        "cloud-troubleshooter",
-        "developer",
-        "gaia-operator",
-        "gaia-planner",
-        "gaia-system",
-        "gaia-verifier",
-        "gitops-operator",
-        "platform-architect",
-    }
+    manifest = json.loads(
+        (_install_helpers._PACKAGE_ROOT / "build" / "gaia.manifest.json").read_text()
+    )
+    shipped_specialists = {
+        _install_helpers._agent_frontmatter(_install_helpers._PACKAGE_ROOT / entry)["name"]
+        for entry in manifest["agents"]
+    } - {"gaia-orchestrator"}
+    assert set(specialists) == shipped_specialists
     assert all(
         agent["permission"]["external_directory"] == expected
         for agent in specialists.values()
@@ -319,6 +432,7 @@ def test_only_portable_provider_model_is_emitted(tmp_path):
     (agents / "alias.md").write_text(
         "---\nname: alias\ndescription: A\nmodel: sonnet\neffort: high\npermissionMode: acceptEdits\n---\n"
     )
+    _write_packaged_inventory(package, "portable", "alias")
     generated = _install_helpers._opencode_agents(package, {"default": {"mode": "subagent"}}, None)
     assert generated["portable"]["model"] == "openai/gpt-5"
     assert "model" not in generated["alias"]
