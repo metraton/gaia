@@ -200,11 +200,13 @@ def test_updated_input_applies_field_by_field_for_task_and_bash_never_reassigns(
       const {{ applyUpdatedInput }} = await import({json.dumps(str(plugin))})
       const results = {{}}
 
-      const taskOutput = {{ args: {{ subagent_type: "developer", description: "d" }} }}
+      const taskOutput = {{ args: {{ subagent_type: "developer", description: "d", task_id: "ses-child" }} }}
       applyUpdatedInput(taskOutput, {{ prompt: "MUTATED PROMPT" }})
       results.task = {{
         prompt: taskOutput.args.prompt,
         subagent_type_preserved: taskOutput.args.subagent_type === "developer",
+        description_preserved: taskOutput.args.description === "d",
+        task_id_preserved: taskOutput.args.task_id === "ses-child",
       }}
 
       const bashOutput = {{ args: {{ command: "rm -rf /", timeout: 5000 }} }}
@@ -221,6 +223,8 @@ def test_updated_input_applies_field_by_field_for_task_and_bash_never_reassigns(
 
     assert payload["task"]["prompt"] == "MUTATED PROMPT"
     assert payload["task"]["subagent_type_preserved"] is True
+    assert payload["task"]["description_preserved"] is True
+    assert payload["task"]["task_id_preserved"] is True
     assert payload["bash"]["command"] == "echo cleaned"
     assert payload["bash"]["timeout_preserved"] is True
 

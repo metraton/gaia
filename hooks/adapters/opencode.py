@@ -720,8 +720,8 @@ class OpenCodeAdapter(HookAdapter):
         self, policy_adapter: "ClaudeCodeAdapter", policy_event: HookEvent,
     ) -> HookResponse:
         """Run the Task dispatch through the shared policy path, then --
-        on allow -- prepend the just-born row's rendered kernel to the
-        child's own prompt, in place (plan 65, task 9).
+        on allow -- replace the host prompt with the just-born row's rendered
+        kernel, in place (plan 65, task 9).
 
         Claude Code receives its kernel through a SEPARATE start event
         (SubagentStart) that fires before the subagent's first turn.
@@ -730,11 +730,12 @@ class OpenCodeAdapter(HookAdapter):
         session binding, sometimes after the child has already acted. The
         one point this host reliably controls before the child's first
         action is THIS call -- the Task dispatch itself -- so the kernel
-        is embedded directly into the dispatched prompt via
-        ``updated_input``, applied field-by-field by the plugin's
-        ``applyUpdatedInput`` (T6): only ``prompt`` changes, every other
-        Task argument (``description``, ``subagent_type``, ...) passes
-        through untouched.
+        is embedded directly into the dispatched prompt via ``updated_input``.
+        The kernel's ``goal`` already contains the born row's original Task
+        prompt, so appending that prompt here would duplicate the assignment.
+        The plugin's field-by-field ``applyUpdatedInput`` (T6) changes only
+        ``prompt``; every other Task argument (``description``,
+        ``subagent_type``, ``task_id``, ...) passes through untouched.
 
         The delegated call already births the row with
         ``dispatch_tool_use_id=callID`` (``build_policy_payload`` forwards
@@ -780,15 +781,9 @@ class OpenCodeAdapter(HookAdapter):
         if not kernel:
             return translated
 
-        tool_input = policy_event.payload.get("tool_input") or {}
-        original_prompt = str(tool_input.get("prompt") or "")
         kernel_with_rules = f"{kernel}\n\n{CLOSING_RULES_KERNEL}"
-        merged_prompt = (
-            f"{kernel_with_rules}\n\n{original_prompt}"
-            if original_prompt else kernel_with_rules
-        )
         updated_input = dict(output.get("updated_input") or {})
-        updated_input["prompt"] = merged_prompt
+        updated_input["prompt"] = kernel_with_rules
         output["updated_input"] = updated_input
         return translated
 

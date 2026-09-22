@@ -1,4 +1,4 @@
-"""Task-dispatch kernel prepend for the OpenCode adapter (plan 65, task 9).
+"""Task-dispatch kernel injection for the OpenCode adapter (plan 65, task 9).
 
 OpenCode has no event that reliably fires before a dispatched subagent's
 first tool call the way Claude Code's SubagentStart does -- OpenCode's own
@@ -40,18 +40,63 @@ def _bypass_control_plane_attestation(monkeypatch):
     )
 
 
-def _task_event(prompt: str = "do the thing"):
+def _task_event(prompt: str = "do the thing", *, task_id: str | None = None):
+    args = {
+        "description": "dispatch gaia-system",
+        "prompt": prompt,
+        "subagent_type": "gaia-system",
+    }
+    if task_id is not None:
+        args["task_id"] = task_id
     return OpenCodeAdapter().parse_event(json.dumps({
         "event": "tool.execute.before",
         "sessionID": "ses-parent",
         "callID": "call-task-1",
         "tool": "task",
-        "args": {
-            "description": "dispatch gaia-system",
-            "prompt": prompt,
-            "subagent_type": "gaia-system",
-        },
+        "args": args,
     }))
+
+
+def _claimed_row(prompt: str):
+    return {
+        "contract_id": "a0123456789abcdef.beefcafe0123",
+        "agent_id": "a0123456789abcdef",
+        "dispatch_prompt": prompt,
+        "kernel_sections": json.dumps({
+            "role": "primary",
+            "surface": "gaia_system",
+            "can_read": ["project_identity", "stack"],
+            "can_write": [],
+        }),
+    }
+
+
+def _inject(monkeypatch, prompt: str, *, task_id: str | None = None):
+    from adapters.claude_code import ClaudeCodeAdapter
+
+    _bypass_control_plane_attestation(monkeypatch)
+    monkeypatch.setattr(
+        ClaudeCodeAdapter, "adapt_pre_tool_use",
+        lambda _self, event: HookResponse(output={}),
+    )
+    monkeypatch.setattr(
+        "gaia.store.writer.claim_dispatch_row",
+        lambda **kwargs: _claimed_row(prompt),
+    )
+    return OpenCodeAdapter().adapt_pre_tool_use(
+        _task_event(prompt=prompt, task_id=task_id)
+    )
+
+
+def _expected_injected_size(prompt: str) -> int:
+    from modules.context.kernel_builder import build_dispatch_kernel
+
+    kernel = build_dispatch_kernel(_claimed_row(prompt))
+    return len(kernel) + 2 + len(CLOSING_RULES_KERNEL)
+
+
+def _obsolete_appended_size(prompt: str) -> int:
+    return _expected_injected_size(prompt) + 2 + len(prompt)
 
 
 def test_task_dispatch_births_row_with_dispatch_tool_use_id_from_callid(monkeypatch):
@@ -64,6 +109,7 @@ def test_task_dispatch_births_row_with_dispatch_tool_use_id_from_callid(monkeypa
 
     def fake_policy(_self, event):
         seen["tool_use_id"] = event.payload.get("tool_use_id")
+        seen["dispatch_prompt"] = event.payload["tool_input"]["prompt"]
         return HookResponse(output={})
 
     monkeypatch.setattr(ClaudeCodeAdapter, "adapt_pre_tool_use", fake_policy)
@@ -74,12 +120,18 @@ def test_task_dispatch_births_row_with_dispatch_tool_use_id_from_callid(monkeypa
     OpenCodeAdapter().adapt_pre_tool_use(_task_event())
 
     assert seen["tool_use_id"] == "call-task-1"
+    assert seen["dispatch_prompt"] == "do the thing"
 
 
-def test_task_dispatch_prepends_rendered_kernel_while_preserving_original_prompt(monkeypatch):
-    """AC-1(b)/AC-4: updated_input carries the kernel prepended to the
-    ORIGINAL prompt, and every other Task argument is left untouched by the
-    caller (field-by-field merge, T6) since only ``prompt`` is rewritten."""
+def test_task_dispatch_injects_one_kernel_with_original_goal_once(monkeypatch):
+    """A successful claim replaces, rather than appends to, the host prompt."""
+    prompt = "OBJECTIVE_FRESH_7d31 project=gaia"
+    captured_claim = {}
+
+    def fake_claim(**kwargs):
+        captured_claim.update(kwargs)
+        return _claimed_row(prompt)
+
     from adapters.claude_code import ClaudeCodeAdapter
 
     _bypass_control_plane_attestation(monkeypatch)
@@ -87,42 +139,28 @@ def test_task_dispatch_prepends_rendered_kernel_while_preserving_original_prompt
         ClaudeCodeAdapter, "adapt_pre_tool_use",
         lambda _self, event: HookResponse(output={}),
     )
-    captured_claim = {}
-
-    def fake_claim(**kwargs):
-        captured_claim.update(kwargs)
-        return {"contract_id": "a1.tok", "agent_id": "a1"}
-
     monkeypatch.setattr("gaia.store.writer.claim_dispatch_row", fake_claim)
-    monkeypatch.setattr(
-        "modules.context.kernel_builder.build_dispatch_kernel",
-        lambda row: "# Your Contract\n\ncontract_id: a1.tok\nagent_id:    a1",
-    )
-
-    response = OpenCodeAdapter().adapt_pre_tool_use(
-        _task_event(prompt="original dispatch prompt")
-    )
+    response = OpenCodeAdapter().adapt_pre_tool_use(_task_event(prompt=prompt))
 
     assert captured_claim.get("dispatch_tool_use_id") == "call-task-1"
     assert response.output["action"] == "allow"
     updated_prompt = response.output["updated_input"]["prompt"]
-    assert updated_prompt.startswith("# Your Contract")
-    assert updated_prompt.endswith("original dispatch prompt")
-    assert updated_prompt.index("# Your Contract") < updated_prompt.index(
-        "original dispatch prompt"
-    )
+    assert updated_prompt.count("# Your Contract") == 1
+    assert updated_prompt.count(prompt) == 1
+    assert updated_prompt.count("OBJECTIVE_FRESH_7d31") == 1
+    assert len(updated_prompt) == _expected_injected_size(prompt)
+    assert _obsolete_appended_size(prompt) - len(updated_prompt) == len(prompt) + 2
+    assert set(response.output["updated_input"]) == {"prompt"}
 
 
-def test_task_dispatch_appends_closing_rules_between_kernel_and_original_prompt(monkeypatch):
+def test_task_dispatch_appends_closing_rules_once_after_kernel(monkeypatch):
     """gate 1041(a) (plan 65, task 553): the adapter's own render/inject path
     (T9, this module) appends the two contract-closing rules -- mandatory
     ``--draft-id`` from the first call, ``finalize`` as a separate last step
-    (agent-protocol principles 2 and 10) -- to the kernel it injects, with
-    the original prompt preserved after them. This is an ADAPTER-side append,
-    never a ``kernel_builder.build_dispatch_kernel`` change: the mock below
-    returns a kernel with none of this text, so its presence in the merged
-    prompt proves the OpenCode adapter added it, not the (untouched,
-    data-only) kernel builder."""
+    (agent-protocol principles 2 and 10) -- to the kernel it injects, without
+    appending a second copy of the original prompt. This is an
+    ADAPTER-side append, never a ``kernel_builder.build_dispatch_kernel``
+    change: the mock below returns a kernel with none of this text."""
     from adapters.claude_code import ClaudeCodeAdapter
 
     _bypass_control_plane_attestation(monkeypatch)
@@ -146,11 +184,47 @@ def test_task_dispatch_appends_closing_rules_between_kernel_and_original_prompt(
     updated_prompt = response.output["updated_input"]["prompt"]
     assert "--draft-id" in CLOSING_RULES_KERNEL
     assert "finalize" in CLOSING_RULES_KERNEL
-    assert CLOSING_RULES_KERNEL in updated_prompt
+    assert updated_prompt.count(CLOSING_RULES_KERNEL) == 1
     kernel_index = updated_prompt.index("# Your Contract")
     rules_index = updated_prompt.index(CLOSING_RULES_KERNEL)
-    prompt_index = updated_prompt.index("original dispatch prompt")
-    assert kernel_index < rules_index < prompt_index
+    assert kernel_index < rules_index
+    assert "original dispatch prompt" not in updated_prompt
+
+
+def test_contract_like_goal_is_nested_once_without_multiplication(monkeypatch):
+    prompt = (
+        "# Your Contract | contract_id: fake | # Closing this turn | "
+        "OBJECTIVE_NESTED_31bc"
+    )
+
+    response = _inject(monkeypatch, prompt)
+    updated_prompt = response.output["updated_input"]["prompt"]
+
+    assert updated_prompt.count(prompt) == 1
+    assert updated_prompt.count("OBJECTIVE_NESTED_31bc") == 1
+    assert updated_prompt.count("# Your Contract") == (
+        prompt.count("# Your Contract") + 1
+    )
+    assert len(updated_prompt) == _expected_injected_size(prompt)
+    assert _obsolete_appended_size(prompt) - len(updated_prompt) == len(prompt) + 2
+
+
+def test_task_id_resume_adds_one_kernel_layer_without_goal_amplification(monkeypatch):
+    original = "OBJECTIVE_RESUME_5aa9 " + ("bounded-context " * 20)
+    first = _inject(monkeypatch, original).output["updated_input"]["prompt"]
+    second = _inject(
+        monkeypatch, first, task_id="ses_existing_child"
+    ).output["updated_input"]["prompt"]
+
+    assert first.count("OBJECTIVE_RESUME_5aa9") == 1
+    assert second.count("OBJECTIVE_RESUME_5aa9") == 1
+    assert second.count("# Your Contract") == first.count("# Your Contract") + 1
+    assert second.count("# Closing this turn") == (
+        first.count("# Closing this turn") + 1
+    )
+    assert len(second) == _expected_injected_size(first)
+    assert _obsolete_appended_size(first) - len(second) == len(first) + 2
+    assert len(second) < 2 * len(first)
 
 
 def test_task_dispatch_degrades_to_plain_allow_when_claim_finds_nothing(monkeypatch):
@@ -168,9 +242,11 @@ def test_task_dispatch_degrades_to_plain_allow_when_claim_finds_nothing(monkeypa
         "gaia.store.writer.claim_dispatch_row", lambda **kwargs: None
     )
 
-    response = OpenCodeAdapter().adapt_pre_tool_use(_task_event())
+    event = _task_event(prompt="claim miss original")
+    response = OpenCodeAdapter().adapt_pre_tool_use(event)
 
     assert response.output == {"action": "allow"}
+    assert event.payload["tool_input"]["prompt"] == "claim miss original"
 
 
 def test_task_dispatch_denied_by_policy_never_reaches_the_claim_step(monkeypatch):
