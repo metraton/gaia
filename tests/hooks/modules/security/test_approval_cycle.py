@@ -343,23 +343,23 @@ class TestNegativeResponseDoesNotActivate:
     """Test 5: Negative response does NOT activate grant.
 
     On the live carril the ONLY predicate that decides activation is
-    ``extract_nonce_from_label``: a label yields a grant exactly when it
+    ``extract_approval_id_from_label``: a label yields a grant exactly when it
     returns a prefix. That is what makes a reject label unable to
     manufacture a signature, so it is the predicate asserted here.
     """
 
     def test_reject_label_yields_no_nonce(self):
         """A label the user did not approve carries no activatable prefix."""
-        from modules.security.approval_grants import extract_nonce_from_label
+        from modules.security.approval_grants import extract_approval_id_from_label
 
         for label in ("no", "nope", "cancel", "Reject", "Modify"):
-            assert extract_nonce_from_label(label) is None, (
+            assert extract_approval_id_from_label(label) is None, (
                 f"'{label}' must not yield an activatable nonce prefix"
             )
 
     def test_negative_response_leaves_pending_intact(self, monkeypatch, tmp_path):
         """A negative response should not activate pending approvals."""
-        from modules.security.approval_grants import extract_nonce_from_label
+        from modules.security.approval_grants import extract_approval_id_from_label
 
         _isolate_writer_db(monkeypatch, tmp_path)
 
@@ -373,7 +373,7 @@ class TestNegativeResponseDoesNotActivate:
         )
 
         # Simulate a negative response -- should NOT activate
-        assert extract_nonce_from_label("Reject") is None
+        assert extract_approval_id_from_label("Reject") is None
 
         # Pending should still be there
         pending = get_pending_approvals_for_session("test-cycle-session")

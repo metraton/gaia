@@ -62,9 +62,7 @@ captured the real content, which is exactly the property wanted. That
 binding is real (a fresh ``capture_worktree_diff``-equivalent recomputation,
 hashed and compared against the durably stored blob's bytes, scoped only to
 ``git worktree remove --force`` inside the managed root, fail-closed on any
-mismatch, timeout, or ambiguity -- mirroring the bounded-subprocess pattern
-``hooks/modules/security/approval_grants.py::_run_git_query`` already uses
-for its own environment-snapshot capture at block time).
+mismatch, timeout, or ambiguity).
 
 **That predicate is NOT implemented here.** Building it safely needs three
 things this task does not have the budget to do responsibly in one pass: a

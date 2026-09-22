@@ -20,7 +20,6 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.approval_grants import (
     ApprovalGrant,
     activate_db_pending_by_prefix,
-    capture_environment_snapshot,
     check_approval_grant,
     cleanup_expired_grants,
     confirm_grant,
@@ -29,9 +28,8 @@ from modules.security.approval_grants import (
 
 from modules.security.approval_grants import (
     DEFAULT_PENDING_TTL_MINUTES,
-    extract_nonce_from_label,
+    extract_approval_id_from_label,
     get_pending_approvals_for_session,
-    load_pending_by_nonce_prefix,
 )
 from tests.fixtures.db_helpers import seed_db_pending
 from modules.security.approval_scopes import (
@@ -577,26 +575,26 @@ class TestCrossSessionNonceTargeted:
     """
 
     # ------------------------------------------------------------------ #
-    # 1. extract_nonce_from_label
+    # 1. extract_approval_id_from_label
     # ------------------------------------------------------------------ #
 
     def test_extract_exact_id_from_approve_label(self):
         """Only a complete canonical id is extracted from an approve label."""
         approval_id = f"P-e68be5b8{'0' * 24}"
         label = f"Approve -- git push origin main [{approval_id}]"
-        assert extract_nonce_from_label(label) == approval_id
-        assert extract_nonce_from_label(
+        assert extract_approval_id_from_label(label) == approval_id
+        assert extract_approval_id_from_label(
             "Approve -- git push origin main [P-e68be5b8]"
         ) is None
 
     def test_extract_nonce_from_label_without_nonce_returns_none(self):
         """Labels without a [P-...] tag return None."""
-        assert extract_nonce_from_label("Approve -- git push origin main") is None
+        assert extract_approval_id_from_label("Approve -- git push origin main") is None
 
     def test_extract_nonce_from_reject_label_returns_none(self):
         """Reject labels never contain a nonce."""
-        assert extract_nonce_from_label("Reject") is None
-        assert extract_nonce_from_label("Reject [P-e68be5b8]") is None
+        assert extract_approval_id_from_label("Reject") is None
+        assert extract_approval_id_from_label("Reject [P-e68be5b8]") is None
 
     # ------------------------------------------------------------------ #
     # 2. Targeted activation creates grant under current session
@@ -785,121 +783,6 @@ class TestCrossSessionNonceTargeted:
 # ====================================================================== #
 # TestNonceTargetedHookActivation -- hook-level nonce-targeted activation
 # ====================================================================== #
-
-
-class TestNonceTargetedHookActivation:
-    """Tests for the nonce-targeted activation flow used by
-    _handle_ask_user_question_result in the PostToolUse hook.
-
-    This class tests the building blocks: load_pending_by_nonce_prefix,
-    same-session activation via prefix, cross-session activation via
-    prefix, and the session-wide fallback path.
-    """
-
-    # ------------------------------------------------------------------ #
-    # 1. load_pending_by_nonce_prefix
-    # ------------------------------------------------------------------ #
-
-    def test_load_pending_by_nonce_prefix_finds_matching_file(
-        self, clean_grants_dir,
-    ):
-        """A DB pending can be found by the first 8 chars of its nonce."""
-        nonce = generate_nonce()
-        prefix = nonce[:8]
-
-        seed_db_pending(
-            command="git push origin main",
-            session_id="session-prefix-test",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            nonce=nonce,
-        )
-
-        result = load_pending_by_nonce_prefix(prefix)
-        assert result is not None
-        assert result["nonce"] == nonce
-        assert result["command"] == "git push origin main"
-        assert result["session_id"] == "session-prefix-test"
-
-    def test_load_pending_by_nonce_prefix_returns_none_for_no_match(
-        self, clean_grants_dir,
-    ):
-        """When no pending row matches the prefix, None is returned."""
-        result = load_pending_by_nonce_prefix("deadbeef")
-        assert result is None
-
-    # NOTE: the nonce-targeted ACTIVATION flow (same-session, cross-session,
-    # and session-wide fallback) is now driven entirely by the DB bridge
-    # (activate_db_pending_by_prefix) and is covered by
-    # test_activation_db_bridge.py. The former filesystem activation helpers
-    # (activate_pending_approval / activate_cross_session_pending /
-    # activate_grants_for_session) were retired with the FS pending plane.
-
-
-class TestCaptureEnvironmentSnapshot:
-    """Environment snapshot capture for pending approvals."""
-
-    # ------------------------------------------------------------------ #
-    # 1. Git command: captures HEAD, branch, remote HEAD
-    # ------------------------------------------------------------------ #
-
-    @patch("modules.security.approval_grants.subprocess.run")
-    def test_capture_env_snapshot_for_git_command(self, mock_run):
-        """For git commands, capture local HEAD, branch, and remote HEAD."""
-        def _fake_run(args, **kwargs):
-            result = MagicMock()
-            result.returncode = 0
-            cmd = " ".join(args)
-            if "rev-parse HEAD" in cmd and "--abbrev-ref" not in cmd:
-                result.stdout = "abc123def456\n"
-            elif "--abbrev-ref HEAD" in cmd:
-                result.stdout = "main\n"
-            elif "origin/main" in cmd:
-                result.stdout = "789xyz000111\n"
-            else:
-                result.returncode = 1
-                result.stdout = ""
-            return result
-
-        mock_run.side_effect = _fake_run
-
-        snapshot = capture_environment_snapshot("git push origin main")
-
-        assert snapshot["command_class"] == "git"
-        assert snapshot["local_head"] == "abc123def456"
-        assert snapshot["branch"] == "main"
-        assert snapshot["remote_head"] == "789xyz000111"
-
-    # ------------------------------------------------------------------ #
-    # 2. Non-git command: returns empty dict
-    # ------------------------------------------------------------------ #
-
-    def test_capture_env_snapshot_for_non_git_command(self):
-        """Non-git commands return an empty dict (extensible later)."""
-        snapshot = capture_environment_snapshot("kubectl apply -f deploy.yaml")
-        assert snapshot == {}
-
-        snapshot = capture_environment_snapshot("terraform apply")
-        assert snapshot == {}
-
-    # ------------------------------------------------------------------ #
-    # 3. Subprocess failure: returns empty dict gracefully
-    # ------------------------------------------------------------------ #
-
-    @patch("modules.security.approval_grants.subprocess.run")
-    def test_capture_env_snapshot_handles_failure(self, mock_run):
-        """When subprocess calls fail, return empty dict without raising."""
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="git", timeout=2)
-
-        snapshot = capture_environment_snapshot("git push origin main")
-
-        # Should return a dict with command_class but no git details
-        # (all individual queries failed gracefully)
-        assert isinstance(snapshot, dict)
-        assert snapshot.get("command_class") == "git"
-        assert "local_head" not in snapshot
-        assert "branch" not in snapshot
-        assert "remote_head" not in snapshot
 
 
 # ====================================================================== #

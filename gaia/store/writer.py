@@ -7295,12 +7295,12 @@ def list_command_set_grants_agnostic(
 # ---------------------------------------------------------------------------
 #
 # These three functions implement the DB-primary path for SCOPE_SEMANTIC_SIGNATURE
-# grants created by activate_db_pending_by_prefix().  They use the same
+# grants created on approval activation.  They use the same
 # approval_grants table (scope='SCOPE_SEMANTIC_SIGNATURE') so all grant lifecycle
 # is visible in one place.
 #
 # Lifecycle:
-#   insert_semantic_grant()     -- called by activate_db_pending_by_prefix(); writes
+#   insert_semantic_grant()     -- called on approval activation; writes
 #                                  row with status=PENDING.
 #   check_db_semantic_grant()   -- called by check_approval_grant(); returns the
 #                                  matching row dict when a valid grant exists.
@@ -7322,8 +7322,7 @@ def insert_semantic_grant(
 ) -> dict:
     """Insert a SCOPE_SEMANTIC_SIGNATURE row into approval_grants (status=PENDING).
 
-    Called by activate_db_pending_by_prefix() after the user approves via
-    AskUserQuestion.  The row represents a grant valid for one execution of
+    Called on approval activation, after the user approves.  The row represents a grant valid for one execution of
     the approved command within the TTL window.
 
     Args:
