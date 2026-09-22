@@ -237,8 +237,20 @@ def _record_consent_retry_refused(raw: dict[str, object]) -> dict[str, object]:
 
 
 def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict[str, object]:
-    """Evaluate one OpenCode event and return a plugin-safe response."""
+    """Evaluate one OpenCode event with GAIA_HOST=opencode scoped to this call only."""
+    previous_host = os.environ.get("GAIA_HOST")
     os.environ["GAIA_HOST"] = "opencode"
+    try:
+        return _handle(raw, shell_env_transport=shell_env_transport)
+    finally:
+        if previous_host is None:
+            os.environ.pop("GAIA_HOST", None)
+        else:
+            os.environ["GAIA_HOST"] = previous_host
+
+
+def _handle(raw: dict[str, object], *, shell_env_transport: bool) -> dict[str, object]:
+    """Evaluate one OpenCode event and return a plugin-safe response."""
     if raw.get("event") == _ATTEST_EVENT:
         return _attest(raw)
     if raw.get("event") == _UNCORRELATED_PERMISSION_EVENT:

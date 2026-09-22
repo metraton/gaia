@@ -45,72 +45,12 @@ def _sha256(value: str | None) -> str:
 
 
 def _make_schema(con: sqlite3.Connection) -> None:
-    """Apply the minimal combined schema needed by these tests.
+    """Apply the schema a fresh production database gets, so fixtures track its columns."""
+    from gaia.store import writer
 
-    Includes:
-    - approvals + approval_events (for insert_requested / record_event / approve)
-    - approval_grants (for insert_semantic_grant / check_db_semantic_grant /
-      consume_db_semantic_grant)
-    """
     con.execute("PRAGMA foreign_keys = ON")
     con.create_function("gaia_sha256", 1, lambda v: _sha256(v), deterministic=True)
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS approvals (
-            id           TEXT PRIMARY KEY,
-            agent_id     TEXT,
-            session_id   TEXT,
-            status       TEXT NOT NULL DEFAULT 'pending'
-                         CHECK (status IN ('pending','approved','rejected','revoked','expired')),
-            fingerprint  TEXT,
-            payload_json TEXT,
-            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            decided_at   TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS approval_events (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            approval_id   TEXT NOT NULL,
-            event_type    TEXT NOT NULL CHECK (event_type IN (
-                              'REQUESTED','SHOWN','APPROVED','REJECTED',
-                              'EXECUTED','FAILED','NOOP','REVOKED','REVERTED'
-                          )),
-            agent_id      TEXT,
-            session_id    TEXT,
-            payload_json  TEXT,
-            fingerprint   TEXT,
-            prev_hash     TEXT,
-            this_hash     TEXT,
-            metadata_json TEXT,
-            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            FOREIGN KEY (approval_id) REFERENCES approvals(id)
-        );
-
-        CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
-        BEFORE UPDATE ON approval_events
-        BEGIN
-            SELECT RAISE(ABORT, 'approval_events is append-only');
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
-        BEFORE DELETE ON approval_events
-        BEGIN
-            SELECT RAISE(ABORT, 'approval_events is append-only');
-        END;
-
-        CREATE TABLE IF NOT EXISTS approval_grants (
-            approval_id          TEXT PRIMARY KEY,
-            agent_id             TEXT,
-            session_id           TEXT,
-            command_set_json     TEXT NOT NULL,
-            scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
-            created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            expires_at           TEXT,
-            status               TEXT NOT NULL DEFAULT 'PENDING',
-            consumed_indexes_json TEXT,
-            consumed_at          TEXT,
-            revoked_at           TEXT
-        );
-    """)
+    con.executescript(writer._SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:

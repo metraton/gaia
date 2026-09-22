@@ -90,6 +90,30 @@ def test_the_bridge_records_a_refused_retry_with_the_comparison_that_refused_it(
         assert payload["lane"] == "opencode.plugin_gate"
 
 
+@pytest.mark.parametrize("host_before", [None, "claude_code"])
+def test_the_bridge_leaves_the_host_selection_it_found(db_env, monkeypatch, host_before):
+    """A leaked GAIA_HOST=opencode makes every later in-process hook parse Claude Code payloads as OpenCode."""
+    import bridge as opencode_bridge
+
+    if host_before is None:
+        monkeypatch.delenv("GAIA_HOST", raising=False)
+    else:
+        monkeypatch.setenv("GAIA_HOST", host_before)
+
+    response = opencode_bridge.handle({
+        "event": "retry.refused",
+        "sessionID": SESSION_ID,
+        "callID": RETRY_CALL_ID,
+        "approvalID": APPROVAL_ID,
+        "reason": "role_mismatch",
+        "expected": ROLE,
+        "received": "developer",
+    })
+
+    assert response["action"] == "allow", response
+    assert os.environ.get("GAIA_HOST") == host_before
+
+
 def _retry_event(proof: dict):
     raw = {
         "event": "tool.execute.before",
