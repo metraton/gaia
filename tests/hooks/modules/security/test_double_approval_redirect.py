@@ -61,35 +61,9 @@ def db_and_store(tmp_path, monkeypatch):
     con = sqlite3.connect(str(db_path))
     con.execute("PRAGMA foreign_keys = ON")
     con.create_function("gaia_sha256", 1, lambda v: _sha256(v), deterministic=True)
-    con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS approvals (
-            id           TEXT PRIMARY KEY,
-            agent_id     TEXT,
-            session_id   TEXT,
-            status       TEXT NOT NULL DEFAULT 'pending'
-                         CHECK (status IN ('pending','approved','rejected','revoked','expired')),
-            fingerprint  TEXT,
-            payload_json TEXT,
-            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            decided_at   TEXT
-        );
-        CREATE TABLE IF NOT EXISTS approval_events (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            approval_id   TEXT NOT NULL,
-            event_type    TEXT NOT NULL,
-            agent_id      TEXT,
-            session_id    TEXT,
-            payload_json  TEXT,
-            fingerprint   TEXT,
-            prev_hash     TEXT,
-            this_hash     TEXT,
-            metadata_json TEXT,
-            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            FOREIGN KEY (approval_id) REFERENCES approvals(id)
-        );
-        """
-    )
+    from gaia.store import writer
+
+    con.executescript(writer._SCHEMA_PATH.read_text(encoding="utf-8"))
     con.commit()
 
     monkeypatch.setattr(
@@ -126,60 +100,23 @@ def isolated_grants_and_writer(tmp_path, monkeypatch):
     ag._last_cleanup_time = 0.0
     ag._grants_dir_created = False
 
-    writer_db_path = tmp_path / "writer_isolation.db"
+    # Same file as db_and_store: atomic activation writes the grant through the
+    # approvals connection, so the grant plane cannot live in a separate file.
+    writer_db_path = tmp_path / "test_dbl.db"
 
     def _make_writer_db() -> sqlite3.Connection:
+        import gaia.store.writer as writer
+
+        is_new = not writer_db_path.exists()
         con = sqlite3.connect(str(writer_db_path))
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
         con.create_function(
             "gaia_sha256", 1, lambda v: _sha256(v), deterministic=True,
         )
-        con.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS approvals (
-                id           TEXT PRIMARY KEY,
-                agent_id     TEXT,
-                session_id   TEXT,
-                status       TEXT NOT NULL DEFAULT 'pending',
-                fingerprint  TEXT,
-                payload_json TEXT,
-                created_at   TEXT NOT NULL
-                    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                decided_at   TEXT
-            );
-            CREATE TABLE IF NOT EXISTS approval_events (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                approval_id   TEXT NOT NULL,
-                event_type    TEXT NOT NULL,
-                agent_id      TEXT,
-                session_id    TEXT,
-                payload_json  TEXT,
-                fingerprint   TEXT,
-                prev_hash     TEXT,
-                this_hash     TEXT,
-                metadata_json TEXT,
-                created_at    TEXT NOT NULL
-                    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                FOREIGN KEY (approval_id) REFERENCES approvals(id)
-            );
-            CREATE TABLE IF NOT EXISTS approval_grants (
-                approval_id          TEXT PRIMARY KEY,
-                agent_id             TEXT,
-                session_id           TEXT,
-                command_set_json     TEXT NOT NULL,
-                scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
-                created_at           TEXT NOT NULL
-                    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                expires_at           TEXT,
-                status               TEXT NOT NULL DEFAULT 'PENDING',
-                consumed_indexes_json TEXT,
-                consumed_at          TEXT,
-                revoked_at           TEXT
-            );
-            """
-        )
-        con.commit()
+        if is_new:
+            con.executescript(writer._SCHEMA_PATH.read_text(encoding="utf-8"))
+            con.commit()
         return con
 
     import gaia.store.writer as _swriter
