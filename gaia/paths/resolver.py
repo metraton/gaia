@@ -243,12 +243,10 @@ def evidence_dir() -> Path:
 
 
 def worktrees_dir() -> Path:
-    """Return the path to Gaia's central root for agentic git worktrees.
+    """Return the legacy central root for agentic git worktrees.
 
-    A worktree an agent creates for isolated repo work lives under here,
-    outside every repository, keyed by repo identity and contract_id -- never
-    inside the repo's own working tree, where it could be seen as untracked
-    changes or (worse) committed by mistake.
+    ``gaia worktree create`` now creates under the workspace's
+    ``.project-worktrees``; worktrees already living here stay managed.
 
     Returns:
         ``data_dir() / "worktrees"``

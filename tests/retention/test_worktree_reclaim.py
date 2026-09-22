@@ -82,7 +82,10 @@ def _snapshot(worktree: Path) -> dict:
 
 
 @pytest.fixture()
-def repo(tmp_path):
+def repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "gaia.worktree.workspace_worktrees_root", lambda _repo: tmp_path / ".project-worktrees"
+    )
     return _init_repo(tmp_path)
 
 
@@ -331,14 +334,11 @@ def test_reclaiming_captured_worktree_is_idempotent(repo):
 # ---------------------------------------------------------------------------
 
 def test_untouched_canonical_worktree_releases_clean_with_no_brief_or_ac(repo):
-    """The defect this task closes: `.gaia-worktree.json` is untracked by
-    construction, so an unused canonical worktree used to look dirty from the
-    moment it was created. workspace/brief_slug/ac_id are not even required
-    on this path."""
+    """An unused canonical worktree is clean and recycles with no brief or AC."""
     from gaia.worktree import create_canonical_worktree
     import gaia.retention.worktree_reclaim as wr
 
-    metadata = create_canonical_worktree(repo, "gaia", "cX.untouched", "aXuntouched", branch="wt-untouched")
+    metadata = create_canonical_worktree(repo, "gaia", "cX.untouched", "aXuntouched", base="HEAD", branch="wt-untouched")
     worktree = Path(metadata.path)
 
     assert wr.worktree_needs_capture(worktree) is False
@@ -359,7 +359,7 @@ def test_forged_metadata_file_counts_as_dirty_and_is_not_ignored(repo):
     from gaia.worktree import create_canonical_worktree
     import gaia.retention.worktree_reclaim as wr
 
-    metadata = create_canonical_worktree(repo, "gaia", "cX.forged", "aXforged", branch="wt-forged")
+    metadata = create_canonical_worktree(repo, "gaia", "cX.forged", "aXforged", base="HEAD", branch="wt-forged")
     worktree = Path(metadata.path)
     (worktree / ".gaia-worktree.json").write_text('{"not": "valid metadata"}\n', encoding="utf-8")
 
@@ -382,7 +382,7 @@ def test_real_work_alongside_valid_metadata_is_captured_and_metadata_excluded(re
     import gaia.retention.worktree_reclaim as wr
     from gaia.evidence.store import get_evidence
 
-    metadata = create_canonical_worktree(repo, "gaia", "cX.realwork", "aXrealwork", branch="wt-realwork")
+    metadata = create_canonical_worktree(repo, "gaia", "cX.realwork", "aXrealwork", base="HEAD", branch="wt-realwork")
     worktree = Path(metadata.path)
     (worktree / "README.md").write_text("hello\nreal agent work\n", encoding="utf-8")
 
@@ -406,7 +406,7 @@ def test_dirty_worktree_missing_capture_args_leaves_worktree_untouched(repo):
     from gaia.worktree import create_canonical_worktree
     import gaia.retention.worktree_reclaim as wr
 
-    metadata = create_canonical_worktree(repo, "gaia", "cX.missingargs", "aXmissingargs", branch="wt-missingargs")
+    metadata = create_canonical_worktree(repo, "gaia", "cX.missingargs", "aXmissingargs", base="HEAD", branch="wt-missingargs")
     worktree = Path(metadata.path)
     (worktree / "README.md").write_text("hello\nedited\n", encoding="utf-8")
     before = _snapshot(worktree)
@@ -445,7 +445,7 @@ def test_dirty_worktree_with_no_brief_captures_onto_contract_row_and_is_recovera
     contract_id = "cXnobrief.deadbeef"
     _seed_dispatched_contract(contract_id, "aXnobriefdeadbeefdead")
 
-    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXnobriefdeadbeefdead", branch="wt-nobrief")
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXnobriefdeadbeefdead", base="HEAD", branch="wt-nobrief")
     worktree = Path(metadata.path)
     (worktree / "README.md").write_text("hello\nad-hoc turn's real work\n", encoding="utf-8")
 
@@ -481,7 +481,7 @@ def test_contract_capture_is_idempotent(repo):
     contract_id = "cXidempotent.deadbeef"
     _seed_dispatched_contract(contract_id, "aXidempotentdeadbeefde")
 
-    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXidempotentdeadbeefde", branch="wt-nobrief-idem")
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXidempotentdeadbeefde", base="HEAD", branch="wt-nobrief-idem")
     worktree = Path(metadata.path)
     (worktree / "README.md").write_text("hello\nidempotent capture\n", encoding="utf-8")
 
@@ -505,7 +505,7 @@ def test_contract_capture_deposit_failure_leaves_worktree_untouched(repo, monkey
     contract_id = "cXfails.deadbeef"
     _seed_dispatched_contract(contract_id, "aXfailsdeadbeefdeadbee")
 
-    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXfailsdeadbeefdeadbee", branch="wt-nobrief-fail")
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXfailsdeadbeefdeadbee", base="HEAD", branch="wt-nobrief-fail")
     worktree = Path(metadata.path)
     (worktree / "README.md").write_text("hello\nshould never be lost\n", encoding="utf-8")
     before = _snapshot(worktree)
@@ -541,7 +541,7 @@ def test_contract_capture_attach_failure_leaves_worktree_and_blob_untouched(repo
     contract_id = "cXattachfails.deadbeef"
     _seed_dispatched_contract(contract_id, "aXattachfailsdeadbeefd")
 
-    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXattachfailsdeadbeefd", branch="wt-nobrief-attachfail")
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXattachfailsdeadbeefd", base="HEAD", branch="wt-nobrief-attachfail")
     worktree = Path(metadata.path)
     (worktree / "README.md").write_text("hello\nattach should fail cleanly\n", encoding="utf-8")
     before = _snapshot(worktree)
@@ -564,7 +564,7 @@ def test_no_attribution_at_all_is_still_capture_args_missing(repo):
     from gaia.worktree import create_canonical_worktree
     import gaia.retention.worktree_reclaim as wr
 
-    metadata = create_canonical_worktree(repo, "gaia", "cX.neither", "aXneither", branch="wt-neither")
+    metadata = create_canonical_worktree(repo, "gaia", "cX.neither", "aXneither", base="HEAD", branch="wt-neither")
     worktree = Path(metadata.path)
     (worktree / "README.md").write_text("hello\nedited\n", encoding="utf-8")
     before = _snapshot(worktree)

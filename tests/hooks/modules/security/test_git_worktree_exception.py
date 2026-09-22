@@ -212,7 +212,7 @@ def test_remove_of_a_real_repo_predicate_declines(worktrees):
 # ---------------------------------------------------------------------------
 
 def test_root_honours_the_data_dir_override(worktrees):
-    assert _gaia_worktrees_root() == worktrees["root"]
+    assert _gaia_worktrees_root(worktrees["wt"]) == worktrees["root"]
     assert str(Path(worktrees["root"]).parent).endswith("gaia-data")
 
 
@@ -284,7 +284,7 @@ def test_one_outside_target_disqualifies_the_whole_command(worktrees):
 def test_unresolvable_root_declines(worktrees, monkeypatch):
     """Fail-closed: no root, no exception."""
     import modules.security.mutative_verbs as mv
-    monkeypatch.setattr(mv, "_gaia_worktrees_root", lambda: None)
+    monkeypatch.setattr(mv, "_gaia_worktrees_root", lambda _target: None)
     assert mv._git_worktree_recycles_only_managed_root(
         ("git", "worktree", "remove", worktrees["wt"])
     ) is False

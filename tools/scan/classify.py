@@ -165,6 +165,7 @@ class RepoClassification:
     project: Optional[str] = None
     container: Optional[str] = None
     project_identity: Optional[str] = None
+    workspace_path: Optional[str] = None
     error: Optional[dict] = None
     ambiguity: Optional[dict] = None
 
@@ -242,6 +243,7 @@ def classify_repo(repo: Path, W: str) -> RepoClassification:
             }
 
     identity = resolve_project_identity(repo)
+    workspace_dir = Path(repo).resolve().parents[len(segs) - 2 - idx]
     return RepoClassification(
         repo=repo_name,
         path=str(repo),
@@ -249,6 +251,7 @@ def classify_repo(repo: Path, W: str) -> RepoClassification:
         project=project,
         container=container,
         project_identity=identity,
+        workspace_path=str(workspace_dir),
         ambiguity=ambiguity,
     )
 
@@ -767,6 +770,10 @@ def scan(
     # simulate the same sequential-commit visibility without touching the DB.
     claimed_by_ws: dict[str, dict[str, str]] = {}
 
+    # The workspace directory each matched repo's W segment names; recorded as
+    # the workspace root only when every repo agrees on one directory.
+    workspace_paths: set[str] = set()
+
     # SV2 diff counters (create vs update, both dry-run and apply).
     create_count = 0
     update_count = 0
@@ -778,6 +785,7 @@ def scan(
             continue
 
         report.resolved_workspace = c.workspace
+        workspace_paths.add(c.workspace_path)
         if c.ambiguity:
             report.ambiguities.append(c.ambiguity)
 
@@ -1075,7 +1083,9 @@ def scan(
         if report.resolved_workspace:
             try:
                 set_workspace_last_scan_at(
-                    report.resolved_workspace, db_path=db_path
+                    report.resolved_workspace,
+                    db_path=db_path,
+                    root_path=next(iter(workspace_paths)) if len(workspace_paths) == 1 else None,
                 )
             except Exception:  # pragma: no cover -- non-fatal
                 pass

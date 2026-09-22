@@ -48,19 +48,11 @@ HARNESS_HOOKS_REAL = Path(os.path.realpath(HARNESS_HOOKS_LITERAL))
 WORKSPACE_HOOKS_LITERAL = REPO_ROOT.parent / ".claude" / "hooks"
 WORKSPACE_HOOKS_REAL = Path(os.path.realpath(WORKSPACE_HOOKS_LITERAL))
 
-# Protection now follows the installation, not the repository (decision
-# decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo). On a machine
-# where the user-level `.claude` install is a live symlink straight into THIS
-# checkout (a `gaia dev --mode link`-style global install), HARNESS_HOOKS_REAL
-# resolves to the very tree IN_PLACE_HOOKS names -- at that point a write
-# addressed by its resolved form IS a write to the checkout, not to a
-# materialisation distinct from it, so the checkout's ungated status applies.
-# On a machine where the user-level install is its own copy (package store,
-# not a symlink to this checkout), the two trees are genuinely different and
-# the install stays protected. Computed, not asserted, so this test measures
-# whichever layout the machine running it actually has.
-HARNESS_REAL_IS_THIS_CHECKOUT = HARNESS_HOOKS_REAL == IN_PLACE_HOOKS.resolve()
-HARNESS_REAL_EXPECTED = "unprotected" if HARNESS_REAL_IS_THIS_CHECKOUT else "protected"
+# Protection follows the installation, not the repository: a link-mode install
+# resolves into a source checkout, which stays ungated even when the tests run
+# from a different checkout of the same repo, such as an agent's worktree.
+HARNESS_REAL_IS_A_CHECKOUT = (HARNESS_HOOKS_REAL.parent / ".git").exists()
+HARNESS_REAL_EXPECTED = "unprotected" if HARNESS_REAL_IS_A_CHECKOUT else "protected"
 
 # A package-store shape with no filesystem dependency, so the store layout is
 # exercised even on a machine where the local install is a symlink-back.
@@ -352,7 +344,7 @@ class TestFailsClosed:
         # source_checkout_py and harness_real_py are deliberately absent:
         # source_checkout_py is never protected, with or without a resolvable
         # identity, and harness_real_py's verdict is conditional on whether it
-        # resolves into this checkout (HARNESS_REAL_EXPECTED) -- neither
+        # resolves into a checkout (HARNESS_REAL_EXPECTED) -- neither
         # proves anything about the structural lane's independence from
         # identity resolution, which is what this test isolates.
         for layout, verdicts in verdicts_identity_unresolvable.items():

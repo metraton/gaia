@@ -207,7 +207,8 @@ because a reader who catches one has no way to bound how many others there are.
 The read half of the rule is the one that is easy to skip, because staying on
 the live tree feels like the path of least resistance. It is not a shortcut:
 `gaia worktree create` checks out one branch at one commit, frozen at creation
-time. Investigate inside it and every file read, every grep, every git status
+time -- the remote's default branch as just fetched, or the `--base` given,
+never the live tree's HEAD. Investigate inside it and every file read, every grep, every git status
 reflects that frozen commit -- not the edits another turn has sitting
 uncommitted in the main tree right now. A finding built on that view is a
 finding about a repository state nobody currently occupies, and it is wrong in

@@ -82,7 +82,7 @@ It is auto-recycled (unlocked and removed) ONLY when it is already clean --
 by AGENT content -- by the time this function inspects it: the existing,
 unconditionally safe task-11 exemption, which needs nothing new, EXTENDED
 by one later addition (see ``_exempt_metadata_filename``) to also ignore
-Gaia's own untracked ``.gaia-worktree.json`` accounting file when its
+the untracked in-tree ``.gaia-worktree.json`` of an older worktree when its
 content independently re-parses as this exact worktree's own metadata.
 That extension is what makes the removal call FORCED in exactly that one
 case -- overriding only the sidecar git itself would otherwise refuse to
@@ -177,25 +177,18 @@ def _has_unpushed_commits(worktree_path: Path) -> bool:
 
 
 def _exempt_metadata_filename(worktree_path: Path) -> Optional[str]:
-    """The ``.gaia-worktree.json`` sidecar's name, when exempt from dirtiness -- else None.
+    """The legacy in-tree sidecar's name, when exempt from dirtiness -- else None.
 
-    Gaia's own accounting file is born UNTRACKED inside every canonical
-    worktree (task 12's ``create_canonical_worktree`` writes it directly, with
-    no ``git add``), so an unused worktree's own identity record made every
-    such worktree look dirty from the moment it was created -- the defect this
-    module exists to close. The exemption is bound to CONTENT, never to the
-    filename: ``gaia.worktree.is_valid_own_metadata_sidecar`` re-parses the
-    file and confirms it carries exactly this worktree's own required key set
-    with a matching ``path``. A file named ``.gaia-worktree.json`` that does
-    not parse that way -- forged, truncated, or pointed at a different
-    worktree -- is NOT exempt and counts as ordinary untracked work, which is
-    what keeps this exemption unforgeable: an agent cannot hide real work
-    behind the same filename to buy a capture-free release.
+    Worktrees created before the sidecar moved into the private git directory
+    carry it untracked in their working tree, which would make an unused one
+    look dirty. The exemption is bound to content, never to the filename: a
+    forged, truncated or foreign ``.gaia-worktree.json`` counts as ordinary
+    untracked work, so an agent cannot buy a capture-free release with it.
     """
-    from gaia.worktree import is_valid_own_metadata_sidecar, worktree_metadata_path
+    from gaia.worktree import is_valid_own_metadata_sidecar, legacy_metadata_path
 
     if is_valid_own_metadata_sidecar(worktree_path):
-        return worktree_metadata_path(worktree_path).name
+        return legacy_metadata_path(worktree_path).name
     return None
 
 

@@ -679,6 +679,52 @@ class TestCheckEpisodesGrowth:
         assert "no DB at" in r["detail"]
 
 
+class TestCheckWorkspaceRoots:
+    """An active workspace with no recorded root blocks `gaia worktree create` for its repos."""
+
+    def _db_with_workspaces(self, tmp_path, monkeypatch, bootstrapped_db_template, rows):
+        import sqlite3
+
+        from tests.conftest import copy_bootstrapped_db
+
+        db_path = tmp_path / "gaia.db"
+        copy_bootstrapped_db(bootstrapped_db_template, db_path)
+        con = sqlite3.connect(str(db_path))
+        con.execute("DELETE FROM workspaces")
+        con.executemany(
+            "INSERT INTO workspaces (name, status, root_path) VALUES (?, ?, ?)", rows
+        )
+        con.commit()
+        con.close()
+        monkeypatch.setenv("GAIA_DB", str(db_path))
+
+    def test_unrooted_workspace_warns_with_the_scan_that_fills_it(
+        self, tmp_path, monkeypatch, bootstrapped_db_template,
+    ):
+        self._db_with_workspaces(tmp_path, monkeypatch, bootstrapped_db_template, [
+            ("scanned", "active", str(tmp_path / "scanned")),
+            ("never-scanned", "active", None),
+        ])
+
+        r = doctor_mod.check_workspace_roots()
+
+        assert r["severity"] == "warning"
+        assert "never-scanned" in r["detail"]
+        assert r["fix"] == "gaia scan <workspace root> --workspace never-scanned"
+
+    def test_rooted_and_missing_workspaces_do_not_warn(
+        self, tmp_path, monkeypatch, bootstrapped_db_template,
+    ):
+        self._db_with_workspaces(tmp_path, monkeypatch, bootstrapped_db_template, [
+            ("rooted", "active", str(tmp_path / "rooted")),
+            ("gone", "missing", None),
+        ])
+
+        r = doctor_mod.check_workspace_roots()
+
+        assert r["severity"] == "pass"
+
+
 # ---------------------------------------------------------------------------
 # Tests: Pass 4 -- check_package_integrity
 # ---------------------------------------------------------------------------
@@ -1007,8 +1053,10 @@ class TestCmdDoctorJson:
         #   over a dev symlink, silently and without a version bump) +
         # 1 opencode-host-liveness (order 61 -- reads the identity.attest
         #   ledger for the CURRENT host run; pass only with a recorded
-        #   attestation, explicit absence -- never a false ok -- without one).
-        assert len(data["checks"]) == 32
+        #   attestation, explicit absence -- never a false ok -- without one) +
+        # 1 workspace-roots (order 49 -- active workspaces without the recorded
+        #   root that `gaia worktree create` requires).
+        assert len(data["checks"]) == 33
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1043,7 +1091,11 @@ class TestCmdDoctorJson:
 
         con = sqlite3.connect(str(db_path))
         try:
-            con.execute("INSERT OR IGNORE INTO workspaces (name) VALUES (?)", (ws,))
+            con.execute("DELETE FROM workspaces")
+            con.execute(
+                "INSERT INTO workspaces (name, root_path) VALUES (?, ?)",
+                (ws, str(healthy_project)),
+            )
             for contract in ("stack", "git", "infrastructure", "services"):
                 con.execute(
                     "INSERT OR REPLACE INTO project_context_contracts "

@@ -1744,21 +1744,20 @@ def _resolve_finalize_workspace(explicit: Optional[str]) -> str:
 
 
 def _finalize_worktree_scope() -> str:
-    """"managed" when this process's cwd is inside Gaia's worktrees root, else "shared".
+    """"managed" when this process's cwd is inside a Gaia-managed worktree, else "shared".
 
     Read by ``cmd_finalize`` and stamped onto every closing envelope as
     ``worktree_scope`` -- see that call site for why this is detection-only,
-    never a gate. "unknown" is returned, never raised, when the worktrees
-    root cannot be resolved (e.g. an unavailable ``GAIA_DATA_DIR``).
+    never a gate. "unknown" is returned, never raised, when the managed
+    roots cannot be resolved.
     """
     try:
-        from gaia.paths import worktrees_dir
+        from gaia.worktree import managed_root_containing
 
-        cwd = Path.cwd().resolve()
-        root = worktrees_dir().resolve()
+        root = managed_root_containing(Path.cwd())
     except Exception:
         return "unknown"
-    return "managed" if root == cwd or root in cwd.parents else "shared"
+    return "managed" if root is not None else "shared"
 
 
 def cmd_finalize(args) -> int:

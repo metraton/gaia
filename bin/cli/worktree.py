@@ -17,7 +17,7 @@ worktree this verb created as its own.
 Subcommands:
     gaia worktree create  --repo <path> --project <name>
                           --contract-id <id> --agent-id <id> [--branch <name>]
-                          [--json]
+                          [--base <commit-ish>] [--json]
 
     gaia worktree list    [--repo <path>] [--json]
 
@@ -85,6 +85,7 @@ def _cmd_create(args) -> int:
             args.contract_id,
             args.agent_id,
             branch=args.branch,
+            base=args.base,
         )
     except WorktreePathError as exc:
         return _err(f"worktree path error: {exc}", as_json)
@@ -268,11 +269,13 @@ def register(subparsers) -> None:
     # -- create ------------------------------------------------------------
     create_p = actions.add_parser(
         "create",
-        help="Create and identity-lock a worktree under Gaia's central root",
+        help="Create and identity-lock a worktree under <workspace>/.project-worktrees/<project>",
         description=(
-            "Create a worktree under ~/.gaia/worktrees (never inside the "
-            "checkout), lock it with contract_id/agent_id in the git lock "
-            "reason, and write the .gaia-worktree.json sidecar."
+            "Create a worktree at <workspace>/.project-worktrees/<project>/<id>, "
+            "branched from --base or else from the freshly fetched default "
+            "branch of the remote, lock it with contract_id/agent_id in the git "
+            "lock reason, and write its identity sidecar into the worktree's "
+            "private git directory."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -290,7 +293,11 @@ def register(subparsers) -> None:
     create_p.add_argument("--agent-id", required=True, dest="agent_id", metavar="ID",
                           help="Owning agent id, stamped into the git lock reason.")
     create_p.add_argument("--branch", default=None, metavar="NAME",
-                          help="Create and check out a new branch in the worktree.")
+                          help="Create and check out a new branch in the worktree. "
+                               "Default: a branch named after the worktree id.")
+    create_p.add_argument("--base", default=None, metavar="COMMIT-ISH",
+                          help="Commit the branch starts from. Default: the remote's "
+                               "default branch, fetched first -- never the checkout's HEAD.")
     create_p.add_argument("--json", action="store_true", default=False,
                           help="Emit JSON output.")
 
@@ -314,9 +321,9 @@ def register(subparsers) -> None:
     show_p = actions.add_parser(
         "show",
         help="Show one worktree's canonical identity",
-        description="Read the .gaia-worktree.json sidecar, or fall back to the git lock reason.",
+        description="Read the identity sidecar, or fall back to the git lock reason.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  gaia worktree show ~/.gaia/worktrees/<id>\n",
+        epilog="Examples:\n  gaia worktree show <workspace>/.project-worktrees/<project>/<id>\n",
     )
     show_p.add_argument("path", metavar="PATH", help="Worktree directory.")
     show_p.add_argument("--json", action="store_true", default=False,
@@ -337,9 +344,9 @@ def register(subparsers) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  gaia worktree release ~/.gaia/worktrees/<id> "
+            "  gaia worktree release <workspace>/.project-worktrees/<project>/<id> "
             "--workspace me --brief my-brief --ac AC-1\n"
-            "  gaia worktree release ~/.gaia/worktrees/<id> "
+            "  gaia worktree release <workspace>/.project-worktrees/<project>/<id> "
             "--contract-id c1.abc\n"
         ),
     )
