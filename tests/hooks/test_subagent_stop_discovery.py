@@ -4,7 +4,7 @@ Integration tests for subagent_stop hook after extract_and_store_discoveries rem
 
 Validates:
 1. _extract_exit_code_from_output correctly parses AGENT_STATUS
-2. _build_task_info_from_hook_data passes exit_code through
+2. build_task_info_from_hook_data passes exit_code through
 3. subagent_stop_hook no longer returns 'discoveries' key
 """
 
@@ -24,7 +24,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 from subagent_stop import (
     _extract_exit_code_from_output,
     _extract_commands_from_evidence,
-    _build_task_info_from_hook_data,
+    build_task_info_from_hook_data,
     subagent_stop_hook,
 )
 from modules.agents.response_contract import clear_contract_dir_cache
@@ -94,27 +94,27 @@ class TestExtractExitCode:
 
 
 # ============================================================================
-# Test _build_task_info_from_hook_data
+# Test build_task_info_from_hook_data
 # ============================================================================
 
 class TestBuildTaskInfoExitCode:
-    """Test that _build_task_info_from_hook_data includes exit_code."""
+    """Test that build_task_info_from_hook_data includes exit_code."""
 
     def test_exit_code_from_complete_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a1230f1e2d3c4b5a6"}
         output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a1230f1e2d3c4b5a6"}}\n```'
-        task_info = _build_task_info_from_hook_data(hook_data, output)
+        task_info = build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 0
 
     def test_exit_code_from_blocked_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a1230f1e2d3c4b5a6"}
         output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a1230f1e2d3c4b5a6"}}\n```'
-        task_info = _build_task_info_from_hook_data(hook_data, output)
+        task_info = build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1
 
     def test_exit_code_default_without_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a1230f1e2d3c4b5a6"}
-        task_info = _build_task_info_from_hook_data(hook_data)
+        task_info = build_task_info_from_hook_data(hook_data)
         assert task_info["exit_code"] == 0
 
 

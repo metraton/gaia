@@ -694,11 +694,11 @@ class TestReadTranscript:
 
 
 # ============================================================================
-# Test Suite 5: _build_task_info_from_hook_data
+# Test Suite 5: build_task_info_from_hook_data
 # ============================================================================
 
 class TestBuildTaskInfoFromHookData:
-    """Unit tests for the _build_task_info_from_hook_data helper."""
+    """Unit tests for the build_task_info_from_hook_data helper."""
 
     def test_maps_fields_correctly(self):
         mod = _import_subagent_stop()
@@ -710,7 +710,7 @@ class TestBuildTaskInfoFromHookData:
             "cwd": "/tmp/test",
         }
 
-        task_info = mod._build_task_info_from_hook_data(hook_data)
+        task_info = mod.build_task_info_from_hook_data(hook_data)
 
         assert task_info["task_id"] == "agent-456"
         assert task_info["agent"] == "cloud-troubleshooter"
@@ -720,7 +720,7 @@ class TestBuildTaskInfoFromHookData:
 
     def test_handles_missing_fields(self):
         mod = _import_subagent_stop()
-        task_info = mod._build_task_info_from_hook_data({})
+        task_info = mod.build_task_info_from_hook_data({})
 
         assert task_info["task_id"] == "unknown"
         assert task_info["agent"] == "unknown"
@@ -730,5 +730,5 @@ class TestBuildTaskInfoFromHookData:
         mod = _import_subagent_stop()
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a7890f1e2d3c4b5a6"}
         output = 'Checking...\n```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a7890f1e2d3c4b5a6"}}\n```\nCannot reach cluster'
-        task_info = mod._build_task_info_from_hook_data(hook_data, output)
+        task_info = mod.build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1

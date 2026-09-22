@@ -52,9 +52,9 @@ def test_documented_tier_table_matches_runtime_approval_and_examples():
     """Each table row's approval marker and example verbs match runtime."""
     for tier_name, _, approval, examples in _tier_rows():
         runtime_tier = _EXPECTED_TIERS[tier_name]
-        assert (approval == "Yes") is runtime_tier.requires_approval, (
+        assert (approval == "Yes") is (runtime_tier is SecurityTier.T3_BLOCKED), (
             f"{tier_name} approval marker {approval!r} disagrees with "
-            f"SecurityTier.requires_approval"
+            f"the runtime rule that only T3 requires approval"
         )
         for verb in [item.strip() for item in examples.split(",")]:
             command = f"tool {verb}"

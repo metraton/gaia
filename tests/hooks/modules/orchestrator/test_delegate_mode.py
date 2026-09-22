@@ -17,47 +17,12 @@ from modules.orchestrator.delegate_mode import (
     SessionRole,
     check_delegate_mode,
     classify_session_role,
-    is_orchestrator_context,
     normalize_tool_name,
 )
 
 
-class TestIsOrchestratorContext(unittest.TestCase):
-    """Tests for is_orchestrator_context()."""
-
-    def test_main_session_no_agent_id(self):
-        """Main session: agent_id absent from payload."""
-        payload = {
-            "session_id": "abc123",
-            "tool_name": "Bash",
-            "tool_input": {"command": "ls"},
-        }
-        self.assertTrue(is_orchestrator_context(payload))
-
-    def test_main_session_empty_agent_id(self):
-        """Main session: agent_id present but empty string."""
-        payload = {
-            "session_id": "abc123",
-            "tool_name": "Bash",
-            "tool_input": {"command": "ls"},
-            "agent_id": "",
-        }
-        self.assertTrue(is_orchestrator_context(payload))
-
-    def test_subagent_has_agent_id(self):
-        """Subagent: agent_id is present and non-empty."""
-        payload = {
-            "session_id": "abc123",
-            "tool_name": "Bash",
-            "tool_input": {"command": "ls"},
-            "agent_id": "a12345f0f1e2d3c4b",
-            "agent_type": "platform-architect",
-        }
-        self.assertFalse(is_orchestrator_context(payload))
-
-
 class TestClassifySessionRole(unittest.TestCase):
-    """The (agent_id, agent_type) taxonomy behind is_orchestrator_context().
+    """The (agent_id, agent_type) taxonomy behind classify_session_role().
 
     The harness documents that agent_id is "absent for the main thread, even in
     --agent sessions", so its absence alone cannot mean "orchestrator". These

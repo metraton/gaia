@@ -39,13 +39,6 @@ class TestSecurityTierEnum:
         assert str(SecurityTier.T0_READ_ONLY) == "T0"
         assert str(SecurityTier.T3_BLOCKED) == "T3"
 
-    def test_requires_approval_property(self):
-        """Test requires_approval property."""
-        assert SecurityTier.T0_READ_ONLY.requires_approval is False
-        assert SecurityTier.T1_VALIDATION.requires_approval is False
-        assert SecurityTier.T2_DRY_RUN.requires_approval is False
-        assert SecurityTier.T3_BLOCKED.requires_approval is True
-
     def test_description_property(self):
         """Test description property."""
         assert "Read-only" in SecurityTier.T0_READ_ONLY.description
