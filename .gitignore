@@ -110,3 +110,6 @@ mutants/
 
 # Skills validation scratch report (regenerated on-demand, not shipped)
 tools/validation/skills_report.md
+
+# Gaia worktree accounting sidecar, written into every managed worktree
+.gaia-worktree.json
