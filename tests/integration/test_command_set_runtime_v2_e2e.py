@@ -1,17 +1,8 @@
 """One non-destructive lifecycle proof for plan-first COMMAND_SET governance.
 
-The activation step below drives the REAL AskUserQuestion path -- the label
-text through ``extract_nonce_from_label`` into ``activate_db_pending_by_prefix``
--- rather than calling ``insert_plan_command_set`` + ``store.approve`` by hand.
-That distinction is the whole point of this file: a prior version of this test
-minted the plan-first grant directly, so it kept passing even while
-``activate_db_pending_by_prefix`` routed every command_set payload through the
-legacy ``create_command_set_grant`` (a grant ``reserve_plan_command`` can never
-find, since it requires ``source='plan-first'``) -- a real, live gap that the
-hand-minted version could not have caught. See
-``tests/hooks/modules/security/test_activation_db_bridge.py`` ->
-``TestActivateDbPendingCommandSet`` for the create-side unit coverage of both
-the plan-first and legacy branches individually.
+Activation runs through the label parser and id activation the AskUserQuestion
+handler uses, never a hand-minted grant: only that path shows whether the grant
+it creates is one ``reserve_plan_command`` can find.
 """
 
 from __future__ import annotations

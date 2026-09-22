@@ -738,9 +738,8 @@ class TestCrossSessionNonceTargeted:
     def test_nonce_targeted_activation_works_regardless_of_session(
         self, clean_grants_dir,
     ):
-        """Nonce-targeted (cross-session) activation does NOT care which session
-        created the pending. It looks the pending up by nonce prefix across all
-        sessions and creates the grant under the specified current session."""
+        """Activation by approval_id ignores which session created the pending
+        and creates the grant under the activating session."""
         import gaia.store.writer as _sw
         from modules.security.approval_grants import ACTIVATION_ACTIVATED
 

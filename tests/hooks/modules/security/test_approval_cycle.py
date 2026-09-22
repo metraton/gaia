@@ -6,7 +6,7 @@ status and approval_id mechanism:
 
 1. Subagent mutative command gets denied with approval_id
 2. Orchestrator mutative command gets "ask" (no approval_id)
-3. Nonce-prefix activation turns a pending approval into a grant
+3. Activation by approval_id turns a pending approval into a grant
 4. Full cycle: deny -> approve -> retry succeeds
 5. Negative response does NOT activate grant
 6. Expired pending is not activated
@@ -230,11 +230,11 @@ def _isolate_writer_db(monkeypatch, tmp_path):
     return writer_db_path
 
 
-class TestNoncePrefixActivationCreatesGrant:
-    """Test 3: nonce-prefix activation turns a pending approval into a grant."""
+class TestApprovalIdActivationCreatesGrant:
+    """Test 3: activation by approval_id turns a pending approval into a grant."""
 
     def test_activate_db_pending_creates_grant(self, monkeypatch, tmp_path):
-        """Seeding a DB pending then activating it by nonce prefix creates a usable grant."""
+        """Seeding a DB pending then activating it by approval_id creates a usable grant."""
         _isolate_writer_db(monkeypatch, tmp_path)
 
         nonce = generate_nonce()
@@ -343,17 +343,17 @@ class TestNegativeResponseDoesNotActivate:
 
     On the live carril the ONLY predicate that decides activation is
     ``extract_approval_id_from_label``: a label yields a grant exactly when it
-    returns a prefix. That is what makes a reject label unable to
+    returns an approval_id. That is what makes a reject label unable to
     manufacture a signature, so it is the predicate asserted here.
     """
 
     def test_reject_label_yields_no_nonce(self):
-        """A label the user did not approve carries no activatable prefix."""
+        """A label the user did not approve carries no activatable approval_id."""
         from modules.security.approval_grants import extract_approval_id_from_label
 
         for label in ("no", "nope", "cancel", "Reject", "Modify"):
             assert extract_approval_id_from_label(label) is None, (
-                f"'{label}' must not yield an activatable nonce prefix"
+                f"'{label}' must not yield an activatable approval_id"
             )
 
     def test_negative_response_leaves_pending_intact(self, monkeypatch, tmp_path):
@@ -492,7 +492,7 @@ class TestConsumeGrant:
         command = "terraform apply"
         session_id = "test-cycle-session"
 
-        # Seed a DB pending approval and activate it by nonce prefix.
+        # Seed a DB pending approval and activate it by approval_id.
         seed_db_pending(
             command=command,
             session_id=session_id,

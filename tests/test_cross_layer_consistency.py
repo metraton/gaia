@@ -456,10 +456,8 @@ class TestTaskValidatorConsistency:
             SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
         ).read_text()
 
-        # 97c8197 renamed the resolver: extract_nonce_from_label ->
-        # extract_approval_id_from_label, activate_db_pending_by_prefix ->
-        # activate_db_pending_by_id. Resolution is by exact canonical id;
-        # the retired prefix-scan symbol must NOT be the one anchored here.
+        # Approval resolution is by exact canonical id, so the anchored symbols
+        # are the id resolvers; no prefix scan exists to anchor.
         for symbol in ("extract_approval_id_from_label", "activate_db_pending_by_id"):
             assert symbol in content, (
                 f"orchestrator-present-approval must anchor the resolver "

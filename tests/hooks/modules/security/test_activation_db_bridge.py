@@ -1177,7 +1177,8 @@ class TestFingerprintEnforcementOnActivation:
             payload,
             agent_id="test-agent",
             session_id=session_id,
-        )        # No tampering -- payload_json matches the REQUESTED fingerprint.
+        )
+        # No tampering -- payload_json matches the REQUESTED fingerprint.
 
         from modules.security.approval_grants import (
             activate_db_pending_by_id,

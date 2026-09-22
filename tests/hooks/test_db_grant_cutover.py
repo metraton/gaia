@@ -674,7 +674,7 @@ class TestGrantReuse:
 
         payload = _sealed_payload(command)
         approval_id = astore.insert_requested(payload, session_id=session_id)
-        act =activate_db_pending_by_id(approval_id, current_session_id=session_id)
+        act = activate_db_pending_by_id(approval_id, current_session_id=session_id)
         assert act.success, f"activation must succeed: {act.reason}"
 
         # The subagent never presented the command to validate(): the grant is

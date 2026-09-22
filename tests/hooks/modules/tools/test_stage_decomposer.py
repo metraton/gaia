@@ -49,8 +49,8 @@ class TestSimpleCommands:
         assert result.stages[0].command == "pwd"
         assert result.stages[0].operator is None
 
-    def test_is_compound_false(self, decomposer):
-        """Test stage countis False for simple commands."""
+    def test_simple_command_has_one_stage(self, decomposer):
+        """A simple command decomposes into a single stage."""
         result = decomposer.decompose("ls -la")
         assert len(result.stages) == 1
 
@@ -94,8 +94,8 @@ class TestPipeDecomposition:
         assert result.stages[1].operator == "|"
         assert result.stages[2].operator is None
 
-    def test_is_compound_true(self, decomposer):
-        """Test stage countis True for piped commands."""
+    def test_piped_command_has_several_stages(self, decomposer):
+        """A piped command decomposes into more than one stage."""
         result = decomposer.decompose("ls | grep foo")
         assert len(result.stages) > 1
 
@@ -280,13 +280,13 @@ class TestStageDataclass:
 class TestDecomposedCommand:
     """Test DecomposedCommand dataclass behavior."""
 
-    def test_is_compound_single(self):
-        """Test stage countwith single stage."""
+    def test_single_stage(self):
+        """A command with one stage holds exactly one stage."""
         dc = DecomposedCommand(raw="ls", stages=[Stage(command="ls", args=["ls"])])
         assert len(dc.stages) == 1
 
-    def test_is_compound_multi(self):
-        """Test stage countwith multiple stages."""
+    def test_multiple_stages(self):
+        """A piped command holds more than one stage."""
         dc = DecomposedCommand(
             raw="ls | cat",
             stages=[

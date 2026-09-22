@@ -166,8 +166,6 @@ class TestNonceApprovalRelayE2E:
         approval_id = pending[-1]["id"]
         assert approval_id.startswith("P-")
 
-        # Activation is keyed by the nonce prefix AFTER the 'P-' marker
-        # (activate_db_pending_by_id matches id LIKE 'P-<prefix>%').
         activation = approval_grants.activate_db_pending_by_id(
             approval_id, current_session_id=self.SESSION,
         )

@@ -165,6 +165,20 @@ def _isolate_dispatch_identity(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_claude_session_id(monkeypatch):
+    """Start every test without CLAUDE_SESSION_ID and restore it afterwards.
+
+    The hook adapter writes a generated session id straight into os.environ,
+    outside monkeypatch, so without this a later test inherits it.
+    """
+    # delenv records nothing for an absent variable, so a write during the test
+    # would survive teardown; the setenv first guarantees an undo entry.
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "")
+    monkeypatch.delenv("CLAUDE_SESSION_ID")
+    yield
+
+
 def pytest_collection_modifyitems(config, items):
     """Auto-skip llm and e2e tests unless explicitly requested via -m flag."""
     # If user explicitly passed -m, respect that

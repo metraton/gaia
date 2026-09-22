@@ -593,12 +593,8 @@ def dispatch(
             ``"gaia-orchestrator"``).
         task: Natural-language prompt to send to the agent.
         timeout: Wall-clock timeout in seconds.
-        capture_session: When true, callers expect a populated
-            ``session_path``. This flag is advisory -- the
-            ``SubprocessBackend`` always captures the transcript
-            because CC writes it unconditionally. Kept for API
-            symmetry with v1 callers and future backends that might
-            need to explicitly opt in.
+        capture_session: Accepted for caller compatibility and ignored:
+            no backend reads it.
         backend: Backend implementation. Required, and keyword-only:
             there is no default. The former default shelled out to
             ``claude --print --agent <specialist>``, a dispatch shape Gaia
@@ -615,7 +611,7 @@ def dispatch(
             other terminal backend failure.
     """
 
-    _ = capture_session  # reserved for future use; see docstring
+    _ = capture_session
     return backend.dispatch(agent_type=agent_type, task=task, timeout=timeout)
 
 
