@@ -12,12 +12,14 @@ runtime returns.
 ## Identity and placement
 
 - Contract `agent_id`: `^a[0-9a-f]{16,}$`.
-- Approval id: **three spellings circulate and only one resolves.** The
+- Approval id: **legacy spellings circulate, but only one is current.** The
   canonical `P-` plus 32 lowercase hexadecimal characters is the fully-qualified
-  id the runtime seals, and the only form to relay. A BARE 32 hex with no `P-`
-  is what a refusal surface emits (`NONCE_APPROVAL_PATTERN`, `APPROVE:<32 hex>`
-  in `approval_constants.py`). `P-` plus the FIRST 8 hex is what the CLI
-  *displays* for readability (`nonce[:8]`) -- a label, never an address. Relay
+  id the runtime seals, current refusal surfaces emit, and the only form to
+  relay. Bare 32-hex nonces and `APPROVE:<32 hex>` belong only to the legacy
+  compatibility parser in
+  `hooks/modules/security/approval_constants.py::NONCE_APPROVAL_PATTERN`.
+  `P-` plus the first 8 hex may be displayed for readability -- a label, never
+  an address. Relay
   the canonical form exactly as received; agents never mint one, never pad a
   displayed truncation back to full length, and never reconstruct one from a
   prefix.
@@ -31,8 +33,8 @@ runtime returns.
   absorbed as a failure of yours.
 - All consent data belongs inside top-level `approval_request`, not beside it or
   duplicated in `evidence_report`.
-- The fenced contract remains compatibility output; the DB is the durable
-  source for lookup and reconciliation.
+- The persisted contract row is the delivery and the DB is the durable source
+  for lookup and reconciliation; no response fence is emitted.
 
 ## Single command
 
@@ -45,7 +47,7 @@ The runtime-sealed request carries `operation`, verbatim `exact_content`,
 
 `gaia approvals request-set` accepts one or more ordered exact T3 commands --
 including a single command requested proactively, before any attempt reaches
-PreToolUse. Its `approval_request` carries:
+the pre-execution policy gate. Its `approval_request` carries:
 
 ```json
 {
@@ -67,11 +69,11 @@ PreToolUse. Its `approval_request` carries:
 }
 ```
 
-Commands are atomic strings, never compound shell. The runtime validates that
-each is exact T3, non-interactive, not permanently blocked, and outside
-protected paths. Fingerprints bind exact bytes and order; activation verifies
-the stored REQUESTED fingerprint before forming the grant. Presentation is not
-the integrity boundary.
+The request's stored schema includes the order-sensitive fingerprint shown
+above. The request CLI directly returns only `status`, canonical `approval_id`,
+and `command_set` with per-command fingerprints; use the producer skill's
+trusted read-back when the aggregate fingerprint is needed. Activation verifies
+the stored REQUESTED fingerprint before forming the grant.
 
 ## Progress and status
 

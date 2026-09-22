@@ -10,17 +10,10 @@ description: Use when classifying any operation before executing it, or deciding
 Classification applies to each exact atomic command. After read-only
 investigation, one or more predictable T3 commands may be requested plan-first
 with `gaia approvals request-set` -- a single predictable T3 command uses the
-same verb proactively, not only the reactive path that begins after
-PreToolUse returns `[T3_BLOCKED]`. Never discover a set by attempting a
-compound shell command. Group only one bounded goal with exact known order
-and coherent risk, rollback, and verification. Those last two are supplied on
-the request itself -- `--rollback` and `--verification`, alongside `--rationale`
-and one `--command` per item -- and are sealed at mint, then rendered verbatim
-as the `ROLLBACK` and `VERIFICATION` fields of the surface the user consents
-against; requesting without them asks for consent while the surface states they
-are absent. Do not group speculative or output-dependent steps. Consent grouping
-is not execution atomicity: execution remains one command per call, ordered and
-fail-fast.
+same verb proactively, not only after the pre-execution policy gate returns
+`[T3_BLOCKED]`. Never discover a set by attempting a compound shell command.
+`subagent-request-approval` owns request construction and grouping; this skill
+owns the classification and no-elusion decision that routes work there.
 
 security-tiers classifies every operation into four tiers so an agent knows whether it can run freely or must request the user's consent.
 

@@ -347,25 +347,15 @@ Harness R2: the producer believes the increment is done and MAY propose `evidenc
 }
 ```
 
-## Notes on multi-command APPROVAL_REQUEST sweeps
+## Notes on multi-command APPROVAL_REQUEST work
 
 **Per-command (default):** when T3 commands appear one at a time as the agent
 works, each blocked command produces its own `APPROVAL_REQUEST` with an
 `approval_id` (shape identical to example 4 above). Do not write `batch_scope`
 -- it is ignored.
 
-**Compound-command batch (hook-minted, not agent-declared):** there is no
-plan-first step and no `gaia approvals derive-id` call -- you never construct
-or request a batch id yourself. When the agent runs a single Bash call that
-chains >= 2 T3 sub-commands it already knows belong together (e.g. `git add
--A && git commit -m 'v1.2.0' && git push origin main`), and the hook's
-compound-command classifier (`bash_validator._validate_compound_command`)
-finds >= 2 of those sub-commands ungranted, it blocks the whole call and mints
-ONE `COMMAND_SET` pending covering the chain (`decide_t3_outcome(command_set=
-...)`), with a single content-derived `approval_id`
-(`derive_command_set_id`). The block's denial message ends in that
-`approval_id`, exactly like a singular block -- relay it verbatim into
-`approval_request` the same way as example 4; you do not author the
-`command_set` field. TTL is 5 minutes, same as the singular grant. Each
-sub-command is then consumed byte-for-byte on its own retry, before it
-executes, until the whole set is `CONSUMED`.
+**Plan-first COMMAND_SET:** when two or more predictable exact T3 commands form
+one bounded operation, request them before execution through
+`subagent-request-approval`. The pre-execution policy gate refuses compound T3
+shell calls (`hooks/modules/tools/bash_validator.py::BashValidator::_validate_compound_command`),
+so execution always issues one approved atomic command per tool call, in order.

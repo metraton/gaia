@@ -8,13 +8,15 @@ there, and both the reconstructed audit record and the completeness tripwire
 read the same table. Present the produced text; do not compose it, summarise it,
 reorder it, or translate a label.
 
-## A presentation is two pieces: a MESSAGE, then a QUESTION
+## Transport depends on the host
 
-The surface does not travel inside the decision. It is printed as text -- the
-MESSAGE -- and the decision is asked separately as a minimal QUESTION. Both
-pieces are specified below, and neither is optional: a question without its
-message asks for a signature over nothing, and a message without its question
-states a surface nobody was asked about.
+The renderer below is single-source on every host. Claude Code prints it as a
+MESSAGE and asks a separate minimal QUESTION. OpenCode may carry the same
+rendered `visible_text` inside the native question presented in the already-bound
+specialist child; it never creates a second control child. Its prompt preserves
+the specialist's agent and tool permissions. That is a host transport, not a
+second renderer. The MESSAGE/QUESTION split and adjacency rules below are
+therefore Claude Code rules, not universal transport claims.
 
 ## Piece 1 -- the MESSAGE
 
@@ -31,11 +33,13 @@ IMPACT:       <what changes outside this session>
 RISK:         <level> -- <the rationale that produced it>
 ROLLBACK:     <how the effect is reversed>
 VERIFICATION: <the desired-state check to run after execution>
+WINDOW:       <how long the grant remains usable after the decision>
 CONSENT:      protocol <version>  correlation <correlation_id>
 ```
 
-Seven fields, one render order, one label set: `OPERATION`, the indexed
-`COMMANDS` block, `SCOPE`, `IMPACT`, `RISK`, `ROLLBACK`, `VERIFICATION`. The
+Eight visible fields, one render order, one label set: `OPERATION`, the indexed
+`COMMANDS` block, `SCOPE`, `IMPACT`, `RISK`, `ROLLBACK`, `VERIFICATION`, and
+`WINDOW`. The
 `CONSENT` line closes the surface with the protocol version and the correlation
 identity of this consent attempt. The header line carries the `approval_id`;
 that is not decoration, it is one of the two ends Rule 1 makes the reader check.
@@ -83,7 +87,7 @@ are given the same identifier twice and can compare it. **If the two do not
 match, do not sign.** That instruction is the rule -- an id printed twice that
 nobody is told to compare buys nothing.
 
-### Rule 2 -- adjacency is a requirement, not an accident
+### Rule 2 -- Claude Code adjacency is a requirement, not an accident
 
 The message must sit immediately above the question, in the same exchange. If
 anything intervened -- other output, another turn, an intervening tool result --
@@ -104,8 +108,8 @@ makes a violation of it visible to the person being asked.
 
 ### Rule 3 -- the question carries what makes the decision identifiable, not a summary of the content
 
-One line of operation, the command COUNT, and the id. The question does not
-restate the seven fields -- restating them is what the split removed, and a
+One line of operation, the command COUNT, and the id. The Claude Code question
+does not restate the eight fields -- restating them is what the split removed, and a
 second rendering of a field is a second thing to drift from the first.
 
 The count is not optional. It is not content of the commands; it is how many of
@@ -124,6 +128,15 @@ grants. Offering it would present a door that does not exist -- the user would
 answer for a standing grant and receive, at best, something narrower than what
 they answered for.
 
+On OpenCode, the plugin emits `custom: false` as part of the signed question
+shape. The host may omit that optional field from its normalized pre-execution
+input and question event; only that omission is equivalent to emitted `false`.
+The plugin accepts exactly one returned approve or reject label for the matching request
+and session, then admits one decision lane for that correlation. Chat, prose,
+and free text never activate consent. Concurrent approvals wait in a guarded
+FIFO: one native question is active, and the next cannot appear while the first
+decision awaits session idle or its typed retry remains unsettled.
+
 ## Absence is stated, never filled
 
 A field the sealed payload does not declare renders the statement that nothing
@@ -141,8 +154,8 @@ the same words about the same missing field wherever they meet it.
 - Do not shorten, wrap-away, or elide a command or its fingerprint.
 - Do not reorder the commands: consent to an ordered set presented in another
   order is consent to something else.
-- Do not move any part of the surface into the question, and do not move
-  presenter prose into the surface.
+- On Claude Code, do not move any part of the surface into the question. On
+  OpenCode, carry only the canonical rendered `visible_text`; never recompose it.
 - Do not call the set atomic. Consent is grouped; execution stays one command
   per call, ordered and fail-fast.
 - Do not claim verification has happened. This is the pre-execution consent

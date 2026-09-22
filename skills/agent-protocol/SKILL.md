@@ -25,7 +25,17 @@ violates it; use `code-standards` for that distinction when producing or judging
 
 ## 4. Local and reversible work just happens; what goes out into the world is asked once
 
-Commits, files and branches need no signature; pushes, PRs, applies and every other exit into the world go into one ordered COMMAND_SET under a single signature, written out exactly in advance -- `security-tiers` owns what may be grouped. A failed COMMAND_SET is terminal/frozen, remainder and all.
+Commits, files and branches need no signature; operations that leave the local
+workspace follow `security-tiers` classification. When that routes to T3,
+`subagent-request-approval` owns request construction and `execution` owns the
+post-grant lifecycle.
+
+Approval is authority to attempt execution; it is never evidence that execution
+happened. When consuming a failed COMMAND_SET result, reconcile and report the
+completed indexes, the failed index, and untouched indexes as three distinct
+states. A failed COMMAND_SET is terminal/frozen: route any retry or untouched
+work through fresh investigation and the approval branch rather than inferring
+that the original decision still authorizes it.
 
 ## 5. The record is written in flight, at the cadence of what would hurt to lose
 

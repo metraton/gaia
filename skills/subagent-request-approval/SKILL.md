@@ -31,15 +31,18 @@ shell -- so omitting the flag is the normal case there. A wrong value is worse
 than none: an approval owned by a session that will never present it cannot be
 presented by anyone, and dies pending with a single REQUESTED event.
 
-The CLI validates T3 eligibility, persists REQUESTED, and returns the
-`approval_id`, ordered set, and fingerprints. Relay those returned values inside
-`approval_request`; do not calculate an id or fingerprint yourself.
+The CLI validates T3 eligibility, persists REQUESTED, and returns `status`, the
+canonical `approval_id`, and `command_set` with each command fingerprint. Relay
+those values inside `approval_request`; do not calculate an id or fingerprint.
+The order-sensitive `request_fingerprint` is persisted but not returned by this
+command; when it is needed, read the pending back with `gaia approvals list
+--json` and match the full canonical id.
 
 ## Blocked single command
 
-When PreToolUse returns `[T3_BLOCKED]`, stop. Copy the returned `approval_id`
-and sealed payload verbatim into `approval_request`. Do not retry, reword, split,
-wrap, or seek the same effect through another tool.
+When the pre-execution policy gate returns `[T3_BLOCKED]`, stop. Copy the
+returned `approval_id` and sealed payload verbatim into `approval_request`. Do
+not retry, reword, split, wrap, or seek the same effect through another tool.
 
 ## Checkpoint and stop
 
@@ -49,11 +52,11 @@ wrap, or seek the same effect through another tool.
 3. Add only the block/request outcome to evidence; do not duplicate payloads.
 4. Set `pending_steps` to execution after consent and `next_action` to relay the
    request to the user.
-5. Finalize the non-terminal contract, emit its compatibility fence, and stop.
+5. Finalize the non-terminal contract and stop; the persisted row is the delivery.
 
 The producer does not present an approval as already granted and does not verify
-execution before it happens. `orchestrator-present-approval` presents consent;
-after grant, a fresh specialist dispatch loads `execution`.
+execution before it happens. `orchestrator-present-approval` selects the host
+modality and presents consent; `execution` owns post-grant execution.
 
 ## Grouping boundary
 
@@ -62,6 +65,6 @@ one risk/rollback/verification narrative. Do not group unrelated effects,
 alternatives, speculative cleanup, or commands derived from earlier outputs.
 Consent grouping is not atomic execution.
 
-A previous COMMAND_SET in `FAILED` cannot be resumed. After investigating its
-partial state, request a new exact set (or singular approval) containing every
-retry and still-needed remainder command.
+For continuation after a failed set, follow `command-execution` for the
+execution-time stop and `agent-protocol` for consumer reconciliation. This
+skill constructs the new exact request that reconciliation identifies.

@@ -15,8 +15,8 @@ One command, one result, one exit code. This skill owns invocation discipline;
 3. Run one atomic command. Never chain with `&&`, `||`, `;`, pipes, redirects,
    background execution, substitutions, `bash -c`, `sh -c`, or `eval`.
 4. Classify the exact string with `security-tiers`. T0/T1 reads and validation
-   proceed. Bounded local T2 follows its policy. T3 routes to the approval branch
-   in `agent-protocol`; do not duplicate a sealed payload here.
+   proceed. Bounded local T2 follows its policy. T3 routes to
+   `subagent-request-approval`; do not duplicate a sealed payload here.
 5. Never write under `.claude/`. Gaia components are edited in the `gaia/`
    source tree and propagated by install.
 6. **A file mutation travels through `Write`/`Edit`, never through a shell
@@ -77,9 +77,8 @@ One command, one result, one exit code. This skill owns invocation discipline;
    populated file proves a bootstrap ran; only a resolved-path or row-count read
    proves where your writes go.
 
-For a plan-first COMMAND_SET, each tool call contains only the next exact item
-in the approved order. Consent to a set is not permission to combine its items
-into one shell call.
+For approved-set progress and failure semantics, load `execution`; this skill
+continues to enforce one atomic invocation per call.
 
 ## After the call
 
@@ -89,11 +88,11 @@ exact exit status, stderr/stdout excerpt, affected component, and remaining
 uncertainty. Do not paraphrase away the failure and do not run a differently
 spelled equivalent.
 
-In an approved COMMAND_SET, fail fast: stop on the first non-zero or mismatched
-result, checkpoint the failed index/evidence, and leave later items unexecuted.
-The grant is now terminal/frozen `FAILED`; it cannot authorize a retry or any
-remaining index. Continuing requires fresh investigation followed by a new
-request-set and new approval for every retry/remainder command still needed.
+For a COMMAND_SET, the first non-zero or mismatched result ends execution:
+checkpoint that item and stop. The grant is terminal/frozen `FAILED`.
+It cannot authorize a retry or any remaining index. Later indexes stay untouched.
+Continuing starts with fresh investigation of the partial state, followed by a
+new request and new approval for every retry or still-needed command.
 
 For git, choose the canonical form once:
 `git -C /absolute/repository <verb> <fixed arguments>`. A post-grant retry must

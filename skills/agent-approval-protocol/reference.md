@@ -5,7 +5,10 @@
 `gaia/approvals/chain.py` canonicalizes sealed JSON and records its SHA-256 on
 the REQUESTED event. Activation re-reads that event and runs
 `verify_fingerprint`; mismatch or missing provenance fails closed before a
-grant forms. Agents relay the returned id/fingerprint and never recompute them.
+grant forms. Agents relay returned per-command fingerprints and never recompute
+them. The aggregate `request_fingerprint` is persisted rather than returned by
+`bin/cli/approvals.py::cmd_request_set`; read it back through the pending machine
+surface as taught by `subagent-request-approval`.
 
 COMMAND_SET additionally stores a SHA-256 fingerprint for every exact command
 and an order-sensitive `request_fingerprint` for the whole list. Reservation

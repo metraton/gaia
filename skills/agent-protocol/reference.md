@@ -344,17 +344,26 @@ session can. `subagent-request-approval` states the same rule from the
 producer's side.
 
 **Approval on OpenCode ends the turn.** There a blocked T3 attempt is a tool
-error, not a prompt the specialist can wait behind: the attempt raises the
-consent question in a control session the plugin opens, and the specialist's
-own turn is over the moment the error returns. Close `APPROVAL_REQUEST` and
-finalize; do not plan to stay in the turn for the answer, because no OpenCode
-specialist can. When the user activates the approval, the plugin prompts the
-orchestrator's root session with a fixed notice naming the specialist session
-and the command index (`opencode/plugin.ts::activationNotice`), and the
-orchestrator re-dispatches with `task_id` = that session so the retry lands on
-the session the grant is bound to (`orchestrator-present-approval`, "Two ways
-consent reaches Gaia"). A resumed specialist retries the byte-identical command
-at the index the notice names and nothing else.
+error, not a prompt the specialist can wait behind. The plugin reuses that
+already-bound specialist child for the exact native binary question; it never
+creates a separate control child and does not replace the specialist's agent or
+tool permissions. The original operation remains blocked and the specialist's
+own turn is over when the error returns. Close `APPROVAL_REQUEST` and finalize;
+do not plan to stay in the turn for the answer.
+
+Controls for the same child enter one guarded FIFO. Only the head is presented,
+and an accepted decision remains deferred until `session.idle` before its typed
+retry is armed; later approvals stay queued through idle and retry settlement.
+Exact approval/session/call/token/question correlation and one admitted decision
+lane bind the answer. Chat or free text is not consent.
+
+After safe idle, the plugin prompts the orchestrator's root session with a fixed
+notice naming the already-known specialist session and command index
+(`opencode/plugin.ts::activationNotice`). The orchestrator consumes that
+internal coordinate and re-dispatches with `task_id` = that session; the user is
+never asked to find or open it. A resumed specialist retries the byte-identical
+command at the named index and nothing else (`orchestrator-present-approval`,
+"Two ways consent reaches Gaia").
 
 **The gate at the wall.** `_resolve_subagent_stop_gate_full` in
 `hooks/adapters/claude_code.py` resolves this turn's own dispatch row and
