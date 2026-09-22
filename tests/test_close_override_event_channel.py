@@ -728,7 +728,8 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
     # memory_deliberate_capture_v50 table, scripts/migrations/v49_to_v50.sql)
     # and v51 (drops memory_deliberate_capture_v50 again, scripts/migrations/
     # v50_to_v51.sql) touch only memory. v52 adds current override provenance to
-    # tasks and deliberately leaves harness_events unchanged.
+    # tasks and deliberately leaves harness_events unchanged. v53 and v54 only
+    # add columns to agent_contract_handoffs and approval_grants.
     # Reviewed 2026-08-14: `grep -i harness_events` against both
     # v49_to_v50.sql and v50_to_v51.sql returned zero matches in either file.
     # v41-v51 are the actual current floor -- tracked dynamically by
@@ -743,7 +744,7 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 52
+    assert int(match.group(1)) == 54
 
 
 def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
@@ -762,4 +763,4 @@ def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     )
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 52
+    assert max(migrations) == 54

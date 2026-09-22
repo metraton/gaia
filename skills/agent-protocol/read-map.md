@@ -84,6 +84,7 @@ is pulled with exactly one verb.
 | `gaia evidence list --brief <b>` / `gaia evidence show <id>` | -- | Recorded per-AC evidence. |
 | `gaia worktree list` | `--repo`, `--json` | Every Gaia-managed worktree for a repo (default: cwd): identity (contract_id, agent_id), branch, commit, lifecycle. |
 | `gaia worktree show <path>` | `--json` | One worktree's identity. `create`/`release` are the specialist's own writes, not a read -- see `gaia-patterns`. |
+| `gaia worktree show-capture <contract_id>` | `--diff`, `--json` | The artifact (path, sha256, size) a dirty brief-less worktree's diff was captured to at release; `--diff` prints the diff itself. |
 
 ## Across surfaces, and the operational record
 

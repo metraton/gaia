@@ -1069,8 +1069,8 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
         self.assertIn("Access is denied", res["details"])
 
     def test_cmd_install_invokes_persist_on_windows(self):
-        """cmd_install (Windows branch) calls _persist_workspace_env with the
-        resolved workspace after configuring the workspace."""
+        """cmd_install (Windows branch, without --no-path) calls
+        _persist_workspace_env with the resolved workspace."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -1078,7 +1078,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
 
             ns = argparse.Namespace(
                 postinstall=False, quiet=True, verbose=False, db_path=None,
-                workspace=str(workspace), skip_workspace=False, no_path=True,
+                workspace=str(workspace), skip_workspace=False, no_path=False,
             )
 
             noop = {"action": "noop", "path": "x", "details": ""}
@@ -1095,6 +1095,9 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
                 patch("cli.install._install_helpers.manage_symlinks", return_value=noop),
                 patch("cli.install._install_helpers.register_plugin", return_value=noop),
                 patch("cli.install._persist_workspace_env", side_effect=spy),
+                patch("cli.install._install_path_launcher", return_value=noop),
+                patch("cli.install._warn_launcher_shadowed", return_value=None),
+                patch("cli.install._warn_launcher_dir_absent", return_value=None),
                 patch.object(install_mod.sys, "platform", "win32"),
             ]
             for p in patches:

@@ -3160,6 +3160,7 @@ class ClaudeCodeAdapter(HookAdapter):
         from gaia.approvals.decision_audit import (
             LANE_CLAUDE_CODE_QUESTION,
             REASON_ACTIVATION_FAILED,
+            REASON_DUPLICATE_DECISION,
             REASON_NO_NONCE_IN_LABELS,
             REASON_NO_SESSION_BINDING,
             record_decision_not_activated,
@@ -3236,7 +3237,18 @@ class ClaudeCodeAdapter(HookAdapter):
                     getattr(result.status, "value", str(result.status)),
                     result.reason,
                 )
-                if not result.success:
+                # A replayed answer finds its grant already in place and succeeds
+                # idempotently; it still granted nothing new, so it is recorded.
+                if result.success and result.idempotent:
+                    record_decision_not_activated(
+                        reason=REASON_DUPLICATE_DECISION,
+                        lane=LANE_CLAUDE_CODE_QUESTION,
+                        session_id=session_id,
+                        approval_id=approval_id,
+                        decision_values=labels,
+                        detail=result.reason,
+                    )
+                elif not result.success:
                     record_decision_not_activated(
                         reason=REASON_ACTIVATION_FAILED,
                         lane=LANE_CLAUDE_CODE_QUESTION,

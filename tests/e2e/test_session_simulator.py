@@ -1284,7 +1284,7 @@ class TestScenario8FullApprovalCycle:
             generate_nonce, activate_db_pending_by_prefix,
             ACTIVATION_ACTIVATED, ACTIVATION_NOT_FOUND,
         )
-        from tests.fixtures.db_helpers import seed_db_pending, apply_approvals_schema
+        from tests.fixtures.db_helpers import seed_db_pending
 
         # Set up isolated environment
         claude_dir = tmp_path / ".claude"
@@ -1307,6 +1307,7 @@ class TestScenario8FullApprovalCycle:
         writer_db_path = tmp_path / "writer_isolation.db"
 
         def _make_writer_db():
+            is_new = not writer_db_path.exists()
             con = sqlite3.connect(str(writer_db_path))
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA foreign_keys = ON")
@@ -1315,28 +1316,9 @@ class TestScenario8FullApprovalCycle:
                 lambda v: hashlib.sha256((v or "").encode()).hexdigest(),
                 deterministic=True,
             )
-            con.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS approval_grants (
-                    approval_id           TEXT PRIMARY KEY,
-                    agent_id              TEXT,
-                    session_id            TEXT,
-                    command_set_json      TEXT NOT NULL,
-                    scope                 TEXT NOT NULL DEFAULT 'COMMAND_SET',
-                    created_at            TEXT NOT NULL
-                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    expires_at            TEXT,
-                    status                TEXT NOT NULL DEFAULT 'PENDING',
-                    consumed_indexes_json TEXT,
-                    consumed_at           TEXT,
-                    revoked_at            TEXT,
-                    multi_use             INTEGER NOT NULL DEFAULT 0,
-                    confirmed             INTEGER NOT NULL DEFAULT 0
-                );
-                """
-            )
-            apply_approvals_schema(con)
-            con.commit()
+            if is_new:
+                con.executescript(_swriter._SCHEMA_PATH.read_text(encoding="utf-8"))
+                con.commit()
             return con
 
         original_connect = _swriter._connect

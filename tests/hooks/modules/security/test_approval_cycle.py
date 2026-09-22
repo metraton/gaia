@@ -40,7 +40,7 @@ from modules.security.approval_grants import (
     get_pending_approvals_for_session,
 )
 from modules.tools.bash_validator import BashValidator, validate_bash_command
-from tests.fixtures.db_helpers import apply_approvals_schema, seed_db_pending
+from tests.fixtures.db_helpers import seed_db_pending
 
 
 # ---------------------------------------------------------------------------
@@ -52,62 +52,12 @@ def _sha256(value: str | None) -> str:
 
 
 def _make_v12_schema_on(con: sqlite3.Connection) -> None:
-    """Apply the v12 approval schema to an existing SQLite connection.
+    """Apply the schema a fresh production database gets, so fixtures track its columns."""
+    from gaia.store import writer
 
-    Mirrors the helper in tests/hooks/test_approval_events.py.
-    Kept local here to avoid cross-module import coupling.
-    """
     con.execute("PRAGMA foreign_keys = ON")
     con.create_function("gaia_sha256", 1, lambda v: _sha256(v), deterministic=True)
-    con.executescript("""
-        CREATE TABLE IF NOT EXISTS approvals (
-            id           TEXT PRIMARY KEY,
-            agent_id     TEXT,
-            session_id   TEXT,
-            status       TEXT NOT NULL DEFAULT 'pending'
-                         CHECK (status IN ('pending','approved','rejected','revoked','expired')),
-            fingerprint  TEXT,
-            payload_json TEXT,
-            created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            decided_at   TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS approval_events (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            approval_id   TEXT NOT NULL,
-            event_type    TEXT NOT NULL CHECK (event_type IN (
-                              'REQUESTED','SHOWN','APPROVED','REJECTED',
-                              'EXECUTED','FAILED','NOOP','REVOKED','REVERTED'
-                          )),
-            agent_id      TEXT,
-            session_id    TEXT,
-            payload_json  TEXT,
-            fingerprint   TEXT,
-            prev_hash     TEXT,
-            this_hash     TEXT,
-            metadata_json TEXT,
-            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            FOREIGN KEY (approval_id) REFERENCES approvals(id)
-        );
-
-        CREATE TRIGGER IF NOT EXISTS ai_approval_events_hash
-        AFTER INSERT ON approval_events
-        BEGIN
-            SELECT 1;
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS bu_approval_events_immutable
-        BEFORE UPDATE ON approval_events
-        BEGIN
-            SELECT RAISE(ABORT, 'approval_events is append-only');
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS bd_approval_events_immutable
-        BEFORE DELETE ON approval_events
-        BEGIN
-            SELECT RAISE(ABORT, 'approval_events is append-only');
-        END;
-    """)
+    con.executescript(writer._SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
 @pytest.fixture()
@@ -251,16 +201,21 @@ class TestOrchestratorMutativeAsk:
 
 
 def _isolate_writer_db(monkeypatch, tmp_path):
-    """Redirect gaia.store.writer._connect to an isolated SQLite file that
-    carries both the approvals plane (approvals/approval_events) and the
-    grant plane (approval_grants), so DB-backed seeding/activation/grant
-    checks never touch ~/.gaia/gaia.db.
+    """Redirect gaia.store.writer._connect to the approvals file of this test,
+    so seeding, activation and grant checks share one database and never touch
+    ~/.gaia/gaia.db. Atomic activation writes the grant through the approvals
+    connection, so a separate grant file would never see it.
 
     Returns the db path.
     """
     import gaia.store.writer as gwriter
 
-    writer_db_path = tmp_path / "cycle_writer.db"
+    writer_db_path = tmp_path / "approvals_v12_test.db"
+    if not writer_db_path.exists():
+        schema_con = sqlite3.connect(str(writer_db_path))
+        _make_v12_schema_on(schema_con)
+        schema_con.commit()
+        schema_con.close()
 
     def _make_writer_db():
         con = sqlite3.connect(str(writer_db_path))
@@ -269,28 +224,6 @@ def _isolate_writer_db(monkeypatch, tmp_path):
         con.create_function(
             "gaia_sha256", 1, lambda v: _sha256(v), deterministic=True,
         )
-        con.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS approval_grants (
-                approval_id          TEXT PRIMARY KEY,
-                agent_id             TEXT,
-                session_id           TEXT,
-                command_set_json     TEXT NOT NULL,
-                scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
-                created_at           TEXT NOT NULL
-                    DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                expires_at           TEXT,
-                status               TEXT NOT NULL DEFAULT 'PENDING',
-                consumed_indexes_json TEXT,
-                consumed_at          TEXT,
-                revoked_at           TEXT,
-                multi_use            INTEGER NOT NULL DEFAULT 0,
-                confirmed            INTEGER NOT NULL DEFAULT 0
-            );
-            """
-        )
-        apply_approvals_schema(con)
-        con.commit()
         return con
 
     monkeypatch.setattr(gwriter, "_connect", lambda db_path=None: _make_writer_db())
@@ -688,36 +621,13 @@ class TestConditionalActivation:
 
         monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
 
-        writer_db_path = tmp_path / "writer_grants.db"
-
         def _make_writer_db():
-            con = sqlite3.connect(str(writer_db_path))
+            con = sqlite3.connect(str(db_path))
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA foreign_keys = ON")
             con.create_function(
                 "gaia_sha256", 1, lambda v: _sha256(v), deterministic=True,
             )
-            con.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS approval_grants (
-                    approval_id          TEXT PRIMARY KEY,
-                    agent_id             TEXT,
-                    session_id           TEXT,
-                    command_set_json     TEXT NOT NULL,
-                    scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
-                    created_at           TEXT NOT NULL
-                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    expires_at           TEXT,
-                    status               TEXT NOT NULL DEFAULT 'PENDING',
-                    consumed_indexes_json TEXT,
-                    consumed_at          TEXT,
-                    revoked_at           TEXT,
-                    multi_use            INTEGER NOT NULL DEFAULT 0,
-                    confirmed            INTEGER NOT NULL DEFAULT 0
-                );
-                """
-            )
-            con.commit()
             return con
 
         monkeypatch.setattr(
@@ -901,41 +811,15 @@ class TestConsumeGrantAtSubagentStop:
 
         monkeypatch.setattr("gaia.approvals.store.get_pending", _patched_get_pending)
 
-        # Build an isolated writer DB carrying the full v20 approval_grants
-        # shape (confirmed + multi_use columns) so the grant lifecycle never
-        # touches ~/.gaia/gaia.db.  Every gaia.store.writer DB access is
-        # redirected here (insert_semantic_grant / check_db_semantic_grant /
-        # consume_db_semantic_grant).
-        writer_db_path = tmp_path / "writer_grants.db"
-
+        # The grant plane must be the approvals file: atomic activation writes
+        # the grant through the approvals connection.
         def _make_writer_db():
-            con = sqlite3.connect(str(writer_db_path))
+            con = sqlite3.connect(str(db_path))
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA foreign_keys = ON")
             con.create_function(
                 "gaia_sha256", 1, lambda v: _sha256(v), deterministic=True,
             )
-            con.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS approval_grants (
-                    approval_id          TEXT PRIMARY KEY,
-                    agent_id             TEXT,
-                    session_id           TEXT,
-                    command_set_json     TEXT NOT NULL,
-                    scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',
-                    created_at           TEXT NOT NULL
-                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-                    expires_at           TEXT,
-                    status               TEXT NOT NULL DEFAULT 'PENDING',
-                    consumed_indexes_json TEXT,
-                    consumed_at          TEXT,
-                    revoked_at           TEXT,
-                    multi_use            INTEGER NOT NULL DEFAULT 0,
-                    confirmed            INTEGER NOT NULL DEFAULT 0
-                );
-                """
-            )
-            con.commit()
             return con
 
         monkeypatch.setattr(
