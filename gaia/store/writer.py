@@ -524,6 +524,7 @@ def set_workspace_last_scan_at(
     ts: str | None = None,
     *,
     db_path: Path | None = None,
+    root_path: str | None = None,
 ) -> None:
     """Record the ISO8601 timestamp of the most recent successful gaia scan.
 
@@ -535,6 +536,8 @@ def set_workspace_last_scan_at(
         workspace: Workspace name (workspaces.name PK).
         ts:        ISO8601 UTC timestamp string. Defaults to _now_iso().
         db_path:   Optional explicit DB path (used by tests).
+        root_path: Absolute workspace directory the scan resolved; None keeps
+                   the recorded one.
     """
     if ts is None:
         ts = _now_iso()
@@ -549,8 +552,8 @@ def set_workspace_last_scan_at(
         # demoted but is installed again on re-scan recovers cleanly.
         con.execute(
             "UPDATE workspaces SET last_scan_at = ?, status = 'active', "
-            "missing_since = NULL WHERE name = ?",
-            (ts, workspace),
+            "missing_since = NULL, root_path = COALESCE(?, root_path) WHERE name = ?",
+            (ts, root_path, workspace),
         )
         con.commit()
     finally:

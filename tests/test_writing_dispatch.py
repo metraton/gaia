@@ -29,8 +29,14 @@ def _repo(path: Path) -> Path:
     return path
 
 
+def _root_at(monkeypatch, root: Path) -> Path:
+    monkeypatch.setattr("gaia.worktree.workspace_worktrees_root", lambda _repo: root)
+    return root
+
+
 def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+    _root_at(monkeypatch, tmp_path / ".project-worktrees")
     repo = _repo(tmp_path / "project-checkout")
     main_before = {
         "pwd": str(repo), "status": _git(repo, "status", "--porcelain"),
@@ -70,9 +76,8 @@ def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsy
 
 
 def test_failed_writing_dispatch_does_not_leave_worktree(tmp_path, monkeypatch):
-    from gaia.worktree import workspace_worktrees_root
-
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+    root = _root_at(monkeypatch, tmp_path / ".project-worktrees")
     repo = _repo(tmp_path / "project-checkout")
     with pytest.raises(subprocess.CalledProcessError):
         dispatch_writing_agent(
@@ -81,4 +86,4 @@ def test_failed_writing_dispatch_does_not_leave_worktree(tmp_path, monkeypatch):
             base="HEAD",
         )
     assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
-    assert not list(workspace_worktrees_root(repo).rglob("half-owned.txt"))
+    assert not list(root.rglob("half-owned.txt"))

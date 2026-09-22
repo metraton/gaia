@@ -82,7 +82,10 @@ def _snapshot(worktree: Path) -> dict:
 
 
 @pytest.fixture()
-def repo(tmp_path):
+def repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "gaia.worktree.workspace_worktrees_root", lambda _repo: tmp_path / ".project-worktrees"
+    )
     return _init_repo(tmp_path)
 
 

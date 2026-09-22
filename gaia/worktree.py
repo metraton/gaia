@@ -2,8 +2,9 @@
 gaia.worktree -- creation, identity and managed roots of agentic git worktrees.
 
 A worktree is born at ``<workspace>/.project-worktrees/<project>/<id>``: the
-workspace is the directory of the Gaia workspace that owns the repository, so
-the user can open the isolated work and its diff from their own explorer. The
+workspace is the root directory ``gaia scan`` recorded for the workspace that
+registered the repository as a project, never a directory guessed from a name,
+so the user can open the isolated work and its diff from their own explorer. The
 root carries a ``.gitignore`` of ``*`` because a workspace may itself be a git
 repository, or be the very repository the worktree branches from, and a
 worktree must never surface there as untracked changes -- at least one client
@@ -36,13 +37,14 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
-from gaia.paths import worktrees_dir
-from gaia.project import containing_workspace, git_common_dir
+from gaia.paths import db_path, worktrees_dir
+from gaia.project import git_common_dir
 
 _REASON_TAG = "gaia-agentic-worktree"
 _REASON_RE = re.compile(
@@ -120,21 +122,61 @@ def _main_checkout(path: Path) -> Path:
     return Path(common).parent
 
 
+def _registered_workspace_root(checkout: Path) -> Path:
+    """Return the recorded root of the one workspace that registered *checkout* as a project.
+
+    Raises ``WorktreePathError`` when the registry cannot be read, the checkout
+    is not a registered project, or its workspace root is unrecorded or does
+    not contain it.
+    """
+    scan_hint = "run `gaia scan <workspace root> --workspace <name>` for its workspace"
+    database = db_path()
+    if not database.is_file():
+        raise WorktreePathError(f"no Gaia registry at {database}; {scan_hint}")
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            rows = connection.execute(
+                "SELECT p.workspace, p.path, w.root_path FROM projects p "
+                "JOIN workspaces w ON w.name = p.workspace WHERE p.path IS NOT NULL"
+            ).fetchall()
+        finally:
+            connection.close()
+    except sqlite3.Error as exc:
+        raise WorktreePathError(f"cannot read the workspace registry: {exc}") from exc
+
+    matches = {
+        (workspace, root_path)
+        for workspace, project_path, root_path in rows
+        if Path(project_path).resolve() == checkout
+    }
+    if not matches:
+        raise WorktreePathError(
+            f"{checkout} is not a project of any registered workspace; {scan_hint}"
+        )
+    if len(matches) > 1:
+        names = ", ".join(sorted(workspace for workspace, _ in matches))
+        raise WorktreePathError(f"{checkout} is registered in several workspaces: {names}")
+    workspace, root_path = matches.pop()
+    if not root_path:
+        raise WorktreePathError(f"workspace {workspace!r} has no recorded root; {scan_hint}")
+    root = Path(root_path).resolve()
+    if root != checkout and root not in checkout.parents:
+        raise WorktreePathError(
+            f"workspace {workspace!r} root {root} does not contain {checkout}; {scan_hint}"
+        )
+    return root
+
+
 def workspace_worktrees_root(repo_path: Path | str) -> Path:
-    """Return ``<workspace>/.project-worktrees`` for the Gaia workspace owning *repo_path*.
+    """Return ``<workspace root>/.project-worktrees`` for the workspace that registered *repo_path*.
 
     Resolved from the repository's main checkout, so a linked worktree of the
-    same repository answers the same root. Raises ``WorktreePathError`` when
-    the workspace name matches no directory at or above that checkout.
+    same repository answers the same root. Raises ``WorktreePathError``
+    instead of guessing when the repository is not registered.
     """
     checkout = _main_checkout(Path(repo_path).resolve())
-    workspace = containing_workspace(checkout).lower()
-    for directory in (checkout, *checkout.parents):
-        if directory.name.lower() == workspace:
-            return directory / _WORKSPACE_ROOT_DIRNAME
-    raise WorktreePathError(
-        f"workspace {workspace!r} names no directory at or above {checkout}"
-    )
+    return _registered_workspace_root(checkout) / _WORKSPACE_ROOT_DIRNAME
 
 
 def managed_root_containing(path: Path | str) -> Optional[Path]:
