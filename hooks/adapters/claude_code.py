@@ -407,11 +407,8 @@ def _gate_anomaly(agent_type: str, code: str, field: str, detail: str) -> Dict[s
 #     COMPLETE even when the agents/ tree ships a seeded verifier -- the old
 #     registry-armed role gate would have wrongly blocked it.
 #
-# The former verifier-registry coupling (verifier_fleet / is_verifier) is gone
-# from this gate on purpose: keying on role made every non-verifier COMPLETE a
-# violation the moment the registry armed, which contradicts "an unbound turn
-# self-completes". The registry infrastructure still exists (skill injection,
-# dispatch-side role detection); the FINALIZE gate simply no longer consults it.
+# The gate keys on binding, never on the agent's role: a role gate made every
+# non-verifier COMPLETE a violation, contradicting "an unbound turn self-completes".
 #
 # PROPOSE, NOT COMPLETE: this function only gates COMPLETE. A producer
 # transitioning to NEEDS_VERIFICATION is never touched here -- it is not a

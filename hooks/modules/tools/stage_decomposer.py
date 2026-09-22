@@ -59,11 +59,6 @@ class DecomposedCommand:
     substitutions: List[str] = field(default_factory=list)
 
     @property
-    def is_compound(self) -> bool:
-        """Return True if the command has more than one stage."""
-        return len(self.stages) > 1
-
-    @property
     def executables(self) -> List[str]:
         """Return the list of executables across all stages."""
         return [s.executable for s in self.stages if s.executable]

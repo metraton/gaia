@@ -1,27 +1,7 @@
-"""Registry tests for the gaia-verifier agent definition (staged fixture +
-live-tree confirmation).
+"""Registry and frontmatter-shape tests for the gaia-verifier agent definition.
 
-Brief: B3 (plan_id=33), Task T4/T6, AC-4.
-
-M1 authored the gaia-verifier agent DEFINITION at the staging path
-``tests/fixtures/agents_staging/gaia-verifier.md`` -- a path
-``gaia.state.permissions._agents_dir()`` never scans (that function resolves
-only ``<repo_root>/agents``, see ``permissions.py``) -- and proved it
-well-formed and recognized by the registry mechanism WITHOUT arming the live
-verifier registry.
-
-M2 (ARMING) landed the identical content at the live path
-``agents/gaia-verifier.md``. ``TestLiveRegistryIsArmed`` below reflects that:
-the live ``agents/`` directory now yields a non-empty ``verifier_fleet()``
-containing ``gaia-verifier`` -- this is the intended, deliberate effect of
-arming, not drift.
-
-Coverage mirrors ``tests/test_verifier_registry.py``'s
-``TestSyntheticSeededFleet`` precedent in MECHANISM (an isolated, monkeypatched
-``agents/`` fixture directory, never the real tree) but exercises the REAL
-staged file content instead of an inline literal, plus asserts the specific
-frontmatter shape this brief requires (tools, disallowedTools, no routing:
-block) and confirms the live registry is now armed.
+The staged copy under ``tests/fixtures/agents_staging/`` is exercised through
+an isolated ``agents/`` directory, never the live tree.
 """
 
 from __future__ import annotations
@@ -40,8 +20,6 @@ from gaia.state import permissions as _permissions  # noqa: E402
 from gaia.state.permissions import (  # noqa: E402
     handoff_writer_fleet,
     is_handoff_writer,
-    is_verifier,
-    verifier_fleet,
 )
 
 _STAGED_AGENT = _REPO_ROOT / "tests" / "fixtures" / "agents_staging" / "gaia-verifier.md"
@@ -50,22 +28,15 @@ _LIVE_AGENTS_DIR = _REPO_ROOT / "agents"
 
 @pytest.fixture(autouse=True)
 def _clean_caches():
-    """Both fleets are lru_cache'd; each test starts from a clean slate."""
-    verifier_fleet.cache_clear()
+    """The handoff-writer fleet is lru_cache'd; each test starts clean."""
     handoff_writer_fleet.cache_clear()
     yield
-    verifier_fleet.cache_clear()
     handoff_writer_fleet.cache_clear()
 
 
 @pytest.fixture()
 def isolated_agents_dir(tmp_path, monkeypatch):
-    """Build a synthetic ``agents/`` dir from the STAGED gaia-verifier.md
-    content plus one decoy agent, and point ``permissions._agents_dir()`` at
-    it -- never the live ``agents/`` directory. This is the isolated-fixture
-    pattern ``TestSyntheticSeededFleet`` established, applied to the real
-    staged file instead of an inline literal.
-    """
+    """A synthetic ``agents/`` dir holding the staged gaia-verifier.md plus a decoy."""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()
     staged_text = _STAGED_AGENT.read_text(encoding="utf-8")
@@ -78,24 +49,14 @@ def isolated_agents_dir(tmp_path, monkeypatch):
     return agents_dir
 
 
-# ---------------------------------------------------------------------------
-# Registry recognition -- against the ISOLATED fixture, never the live tree
-# ---------------------------------------------------------------------------
-
 class TestVerifierAgentRegistryIsolatedFixture:
     def test_staged_file_exists(self):
         assert _STAGED_AGENT.is_file(), (
             f"expected staged agent definition at {_STAGED_AGENT}"
         )
 
-    def test_isolated_verifier_fleet_recognizes_staged_gaia_verifier(
-        self, isolated_agents_dir
-    ):
-        fleet = verifier_fleet()
-        assert fleet == frozenset({"gaia-verifier"})
-        assert is_verifier("gaia-verifier") is True
-        assert is_verifier("developer") is False
-        assert is_verifier("rogue-agent") is False
+    def test_live_agent_file_exists(self):
+        assert (_LIVE_AGENTS_DIR / "gaia-verifier.md").exists()
 
     def test_isolated_handoff_writer_fleet_includes_gaia_verifier(
         self, isolated_agents_dir
@@ -105,21 +66,13 @@ class TestVerifierAgentRegistryIsolatedFixture:
         assert is_handoff_writer("gaia-verifier") is True
 
 
-# ---------------------------------------------------------------------------
-# Semantic self-check of the staged frontmatter shape (AC-4, point 2)
-# ---------------------------------------------------------------------------
-
 class TestStagedFrontmatterShape:
     def _frontmatter(self) -> str:
         text = _STAGED_AGENT.read_text(encoding="utf-8")
-        # Frontmatter is the block between the first two '---' delimiters.
         return text.split("---", 2)[1]
 
     def test_declares_name_gaia_verifier(self):
         assert re.search(r"^name:\s*gaia-verifier\s*$", self._frontmatter(), re.MULTILINE)
-
-    def test_declares_verifier_true_marker(self):
-        assert re.search(r"^verifier:\s*true\s*$", self._frontmatter(), re.MULTILINE)
 
     def test_declares_contract_handoff_writer_true_marker(self):
         assert re.search(
@@ -145,18 +98,3 @@ class TestStagedFrontmatterShape:
             "gaia-verifier must NOT carry a routing: block -- it is dispatched "
             "on NEEDS_VERIFICATION, not by the surface router"
         )
-
-
-# ---------------------------------------------------------------------------
-# Arming confirmation -- the LIVE agents/ dir now carries gaia-verifier.md
-# (B3 M2). Strengthened from the pre-arming dormancy guard: this is the
-# correct armed reality, not a weakening of the check.
-# ---------------------------------------------------------------------------
-
-class TestLiveRegistryIsArmed:
-    def test_live_agents_dir_yields_fleet_with_gaia_verifier(self):
-        # No monkeypatch active here: this resolves the REAL agents/ dir.
-        assert verifier_fleet() == frozenset({"gaia-verifier"})
-
-    def test_live_agents_dir_has_gaia_verifier_file(self):
-        assert (_LIVE_AGENTS_DIR / "gaia-verifier.md").exists()

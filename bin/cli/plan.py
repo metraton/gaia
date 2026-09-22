@@ -3,9 +3,7 @@ gaia plan -- Manage plans (one per brief) in the Gaia DB substrate.
 
 Architecture: Opción B (DB canónica). All mutating operations write only to
 ``~/.gaia/gaia.db``; nothing under ``.claude/project-context/briefs/`` is
-touched. The legacy filesystem-based ``gaia plans`` subcommand (plural) is
-retained for read-only display of legacy ``plan.md`` artifacts; this
-subcommand (singular) is the canonical writer.
+touched.
 
 Subcommands:
     gaia plan save --brief=<name> (--content="..." | --content-file=<path>)

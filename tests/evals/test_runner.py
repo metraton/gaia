@@ -8,9 +8,7 @@ Four scenarios per the plan:
 4. ``session_path`` points at readable JSONL.
 
 All tests use :class:`FakeBackend` -- no subprocess, no network, no real
-``claude`` CLI. Coverage of :class:`SubprocessBackend` happens in the
-live-dispatch suite (T7) marked ``@pytest.mark.llm`` and skipped by
-default.
+``claude`` CLI.
 """
 
 from __future__ import annotations

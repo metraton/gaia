@@ -18,13 +18,6 @@ from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Glyphs
-#
-# Hoisted to module-level constants so they are never written as escape
-# sequences *inside* an f-string replacement field. A backslash within an
-# f-string expression (e.g. f"{self._green('◇')}") is a SyntaxError on
-# Python 3.11 (our declared minimum); it is only permitted on 3.12+ via PEP
-# 701. Referencing a bare name inside the braces keeps the same rendered
-# output while staying 3.11-compatible.
 # ---------------------------------------------------------------------------
 
 _GLYPH_DIAMOND_OUTLINE = "◇"  # ◇

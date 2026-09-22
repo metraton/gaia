@@ -12,7 +12,7 @@ on the gate shape, ``command`` on the envelope shape (both TEXT; see
 RE-EXECUTES that spec and returns an objective, evidence-carrying verdict --
 it is the machinery a verifier-role agent calls when operating in oracle mode
 (see ``skills/verification-oracle``); this module does not itself decide who
-may call it (see ``gaia.state.permissions.verifier_fleet``/``is_verifier``).
+may call it.
 
 Unlike ``gate_validation.validate_gate`` (pure, DB-free, LLM-free, no I/O),
 this module DELIBERATELY performs real I/O: a subprocess execution of the

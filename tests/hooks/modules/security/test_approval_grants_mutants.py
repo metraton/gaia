@@ -20,8 +20,6 @@ Survivor groups closed here (function -> mutant kinds):
   ApprovalGrant (defaults)   -- granted_at NumberReplacer, multi_use False->True
   ApprovalGrant.get_signature-- ExceptionReplacer on the deserialize guard
   _grant_ttl_minutes         -- NumberReplacer on the 60 fallback, Exception guard
-  _run_git_query             -- returncode == 0 comparison, True/False capture flags
-  capture_environment_snapshot -- ExceptionReplacer on the try-body
   _db_row_to_pending_dict    -- or-chain precedence, ": " split, slice/index, AddNot
   find_pending_for_command   -- empty-list guard, None-sig guard, loop, match return
   create_command_set_grant   -- missing-args guard, success/failure return values
@@ -49,16 +47,13 @@ import modules.security.approval_grants as ag
 from modules.security.approval_grants import (
     ApprovalGrant,
     _is_ttl_expired,
-    _run_git_query,
     _db_row_to_pending_dict,
     _grant_ttl_minutes,
-    capture_environment_snapshot,
     create_command_set_grant,
     match_command_set_grant,
     find_pending_for_command,
     find_pending_for_file,
     get_pending_approvals_for_session,
-    activate_db_pending_by_prefix,
     activate_db_pending_by_id,
     ACTIVATION_NOT_FOUND,
     DEFAULT_COMMAND_SET_TTL_MINUTES,
@@ -309,72 +304,6 @@ class TestGrantTtlMinutesMutants:
 
         monkeypatch.setattr(builtins, "__import__", _boom)
         assert _grant_ttl_minutes() == 5
-
-
-# ===========================================================================
-# _run_git_query -- returncode comparison + capture flags (4 survivors)
-# ===========================================================================
-class TestRunGitQueryMutants:
-    @patch("modules.security.approval_grants.subprocess.run")
-    def test_returns_stdout_on_success(self, mock_run):
-        """returncode == 0 => stripped stdout. Pins the Eq comparison
-        (line 387 Eq->LtE/GtE): a flip would change which return codes pass."""
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = "  abc123\n"
-        mock_run.return_value = result
-        assert _run_git_query(["rev-parse", "HEAD"]) == "abc123"
-
-    @patch("modules.security.approval_grants.subprocess.run")
-    def test_returns_none_on_nonzero_returncode(self, mock_run):
-        """A non-zero returncode => None (NOT the stdout). With Eq->GtE a
-        returncode of 1 would wrongly be treated as success and return stdout."""
-        result = MagicMock()
-        result.returncode = 1
-        result.stdout = "fatal: not a git repo\n"
-        mock_run.return_value = result
-        assert _run_git_query(["rev-parse", "HEAD"]) is None
-
-    @patch("modules.security.approval_grants.subprocess.run")
-    def test_capture_output_and_text_flags_are_true(self, mock_run):
-        """subprocess.run is called with capture_output=True and text=True
-        (lines 382-383 True->False flips). If either were False, the call kwargs
-        would differ -- assert them explicitly."""
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = "x\n"
-        mock_run.return_value = result
-        _run_git_query(["rev-parse", "HEAD"])
-        _, kwargs = mock_run.call_args
-        assert kwargs["capture_output"] is True
-        assert kwargs["text"] is True
-
-
-# ===========================================================================
-# capture_environment_snapshot -- ExceptionReplacer on try body (line 439)
-# ===========================================================================
-class TestCaptureEnvSnapshotMutants:
-    @patch("modules.security.approval_grants._run_git_query")
-    def test_git_snapshot_collects_all_three_fields(self, mock_q):
-        """For a git command, all three queries land in the snapshot. Kills the
-        line-439 ExceptionReplacer (the except clause that would swallow the
-        whole try body): with the real path, command_class + the three fields
-        are present and correct."""
-        mock_q.side_effect = ["head-sha", "feature-branch", "remote-sha"]
-        snap = capture_environment_snapshot("git push origin main")
-        assert snap["command_class"] == "git"
-        assert snap["local_head"] == "head-sha"
-        assert snap["branch"] == "feature-branch"
-        assert snap["remote_head"] == "remote-sha"
-
-    @patch("modules.security.approval_grants._run_git_query")
-    def test_git_snapshot_omits_fields_when_query_returns_none(self, mock_q):
-        """When a query returns None the field is omitted (the `if head:` guards).
-        Pins that only successful queries contribute -- a swallowed try body or a
-        flipped guard would either add empty keys or drop command_class."""
-        mock_q.return_value = None
-        snap = capture_environment_snapshot("git push origin main")
-        assert snap == {"command_class": "git"}
 
 
 # ===========================================================================
@@ -1067,66 +996,6 @@ class TestConfirmGrantMutants:
 
 
 # ===========================================================================
-# load_pending_by_nonce_prefix -- prefix match + newest-wins (10 survivors)
-# ===========================================================================
-class TestLoadPendingByNoncePrefixMutants:
-    """load_pending_by_nonce_prefix(prefix) -- matches DB rows by nonce prefix."""
-
-    def _row(self, *, approval_id, ts_created):
-        return {
-            "id": approval_id,
-            "session_id": "s",
-            "created_at": ts_created,
-            "payload_json": json.dumps({
-                "operation": "MUTATIVE command intercepted: push",
-                "exact_content": "git push origin main",
-            }),
-        }
-
-    def test_returns_none_when_no_prefix_match(self, monkeypatch):
-        """No row whose nonce starts with the prefix => None (lines 350-351).
-        Kills the AddNot on `if not nonce.startswith(prefix)` (an inverted guard
-        would match everything)."""
-        monkeypatch.setattr(
-            "gaia.approvals.store.get_pending",
-            lambda **k: [self._row(approval_id="P-ffffffff", ts_created="2026-01-01T00:00:00Z")],
-        )
-        assert ag.load_pending_by_nonce_prefix("deadbeef") is None
-
-    def test_matches_prefix_and_returns_pending_dict(self, monkeypatch):
-        """A row whose nonce starts with the prefix is returned as a pending dict
-        with the stripped nonce. Pins the prefix match and the mapping."""
-        monkeypatch.setattr(
-            "gaia.approvals.store.get_pending",
-            lambda **k: [self._row(approval_id="P-deadbeefcafe", ts_created="2026-01-01T00:00:00Z")],
-        )
-        out = ag.load_pending_by_nonce_prefix("deadbeef")
-        assert out is not None
-        assert out["nonce"] == "deadbeefcafe"
-
-    def test_newest_candidate_wins_on_multiple_matches(self, monkeypatch):
-        """When several rows match, the newest by timestamp is returned (line 355
-        `reverse=True`). Kills the ReplaceTrueWithFalse on the reverse sort: with
-        reverse=False the OLDEST would be returned."""
-        rows = [
-            self._row(approval_id="P-deadbeef1111", ts_created="2026-01-01T00:00:00Z"),
-            self._row(approval_id="P-deadbeef2222", ts_created="2026-06-01T00:00:00Z"),
-        ]
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **k: rows)
-        out = ag.load_pending_by_nonce_prefix("deadbeef")
-        # The 2026-06 row is newest -> its nonce must win.
-        assert out["nonce"] == "deadbeef2222"
-
-    def test_db_exception_returns_none(self, monkeypatch):
-        """A raising get_pending => None (lines 362-364 except). Kills the
-        ExceptionReplacer on that except."""
-        def _boom(**k):
-            raise RuntimeError("db down")
-        monkeypatch.setattr("gaia.approvals.store.get_pending", _boom)
-        assert ag.load_pending_by_nonce_prefix("deadbeef") is None
-
-
-# ===========================================================================
 # Batch 2: behavioral survivors across the DB-wrapper / FS helper functions.
 # These pin guards, path construction, default-session resolution, and grant
 # reconstruction details that the first batch left alive. NumberReplacer
@@ -1598,34 +1467,6 @@ class TestSmallBehavioralSurvivorsBatch3:
         )
         assert ag.consume_grant("git push") is True
 
-    # ----- load_pending_by_nonce_prefix all_sessions + continue + sort -----
-    def test_load_pending_queries_all_sessions(self, monkeypatch):
-        """get_pending is called with all_sessions=True (line 338). Kills the
-        ReplaceTrueWithFalse: with all_sessions=False a cross-session pending
-        would be missed. Observed via the call kwargs."""
-        captured = {}
-        def _gp(**kw):
-            captured.update(kw)
-            return []
-        monkeypatch.setattr("gaia.approvals.store.get_pending", _gp)
-        ag.load_pending_by_nonce_prefix("deadbeef")
-        assert captured.get("all_sessions") is True
-
-    def test_load_pending_skips_nonmatching_then_matches(self, monkeypatch):
-        """A non-matching pending followed by a matching one is still resolved --
-        pins the `continue` advances (kills ReplaceContinueWithBreak on line 345)
-        rather than breaking out before the match."""
-        rows = [
-            {"id": "P-ffffffff", "session_id": "s", "created_at": "2026-01-01T00:00:00Z",
-             "payload_json": json.dumps({"operation": "x: y", "exact_content": "c"})},
-            {"id": "P-deadbeefcafe", "session_id": "s", "created_at": "2026-01-01T00:00:00Z",
-             "payload_json": json.dumps({"operation": "x: y", "exact_content": "c"})},
-        ]
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **k: rows)
-        out = ag.load_pending_by_nonce_prefix("deadbeef")
-        assert out is not None
-        assert out["nonce"] == "deadbeefcafe"
-
     # ----- find_pending_for_command continue + except -----
     def test_find_pending_for_command_skips_bad_sig_via_except(self, monkeypatch):
         """A pending whose scope_signature cannot be deserialized hits the
@@ -1697,18 +1538,6 @@ class TestSmallBehavioralSurvivorsBatch3:
         ag._last_cleanup_time = 0.0
         assert ag.cleanup_expired_grants(force=True) == 4
 
-    # ----- _run_git_query returncode boundary -----
-    @patch("modules.security.approval_grants.subprocess.run")
-    def test_git_query_negative_returncode_is_none(self, mock_run):
-        """A returncode of -1 (signal) => None, not stdout (line 387 Eq vs LtE:
-        with `<= 0`, a negative returncode would wrongly be treated as success).
-        Pins the strict `== 0`."""
-        result = MagicMock()
-        result.returncode = -1
-        result.stdout = "partial\n"
-        mock_run.return_value = result
-        assert _run_git_query(["rev-parse", "HEAD"]) is None
-
     # ----- get_pending sort reverse (NumberReplacer on the sort key default) -----
     def test_get_pending_orders_by_timestamp_desc(self, monkeypatch):
         """Two pendings with different timestamps come back newest-first (line
@@ -1721,19 +1550,6 @@ class TestSmallBehavioralSurvivorsBatch3:
         ])
         out = ag.get_pending_approvals_for_session(session_id="s")
         assert out[0]["timestamp"] >= out[1]["timestamp"]
-
-    # ----- capture_environment_snapshot except (non-git returns {}) -----
-    @patch("modules.security.approval_grants._run_git_query")
-    def test_capture_snapshot_try_body_runs(self, mock_q):
-        """For a git command the try body executes and builds the snapshot dict
-        (line 439 ExceptionReplacer guards the whole body). With a real value for
-        the first query and None for the rest, command_class + local_head are
-        present -- pins the try body is not swallowed."""
-        mock_q.side_effect = ["sha1", None, None]
-        snap = capture_environment_snapshot("git commit -am x")
-        assert snap["command_class"] == "git"
-        assert snap["local_head"] == "sha1"
-        assert "branch" not in snap
 
     # ----- ApprovalGrant confirmed default -----
     def test_approval_grant_confirmed_defaults_false(self):
@@ -1769,31 +1585,6 @@ class TestSmallBehavioralSurvivorsBatch3:
 # logging-only slice NumberReplacers are NOT targeted -- they are equivalent
 # mutants no honest assertion can distinguish.
 # ===========================================================================
-class TestActivateDbPendingBatch4:
-    """activate_db_pending_by_prefix compatibility-shim branches."""
-
-    def test_get_pending_queried_all_sessions(self, monkeypatch):
-        """The retired ``activate_db_pending_by_prefix`` compatibility helper
-        (kept for legacy direct callers, never for consent -- see its own
-        docstring) still calls get_pending with all_sessions=True internally
-        before delegating to activate_db_pending_by_id. Kills the
-        ReplaceTrueWithFalse on THAT call: a session-scoped query would miss
-        the subagent's pending row. This exercises the compat shim itself,
-        not the canonical activation path -- deliberately out of the 97c8197
-        migration scope, since the shim's own contract is what is under test
-        here."""
-        captured = {}
-        def _gp(**kw):
-            captured.update(kw)
-            return []
-        monkeypatch.setattr("gaia.approvals.store.get_pending", _gp)
-        monkeypatch.setattr(
-            "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
-        )
-        activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
-        assert captured.get("all_sessions") is True
-
-
 class TestDbRowToPendingDictBatch4:
     """_db_row_to_pending_dict -- or-chain end + verb [-1] index."""
 

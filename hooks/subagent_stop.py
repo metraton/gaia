@@ -25,7 +25,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
 _hooks_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_hooks_dir))
@@ -83,14 +83,6 @@ from modules.agents.handoff_persister import persist_handoff as _persist_handoff
 _extract_exit_code_from_output = extract_exit_code_from_output
 _read_transcript = read_transcript
 _process_update_contracts = process_update_contracts
-
-
-def _build_task_info_from_hook_data(
-    hook_data: Dict[str, Any],
-    agent_output: str = "",
-) -> Dict[str, Any]:
-    """Backward-compatible wrapper for build_task_info_from_hook_data."""
-    return build_task_info_from_hook_data(hook_data, agent_output)
 
 
 # ============================================================================

@@ -110,16 +110,8 @@ class CompositionResult:
     stage_types: List[StageType] = field(default_factory=list)
 
     @property
-    def is_allowed(self) -> bool:
-        return self.decision == CompositionDecision.ALLOW
-
-    @property
     def is_blocked(self) -> bool:
         return self.decision == CompositionDecision.BLOCK
-
-    @property
-    def is_escalated(self) -> bool:
-        return self.decision == CompositionDecision.ESCALATE
 
 
 # ---------------------------------------------------------------------------

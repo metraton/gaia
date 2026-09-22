@@ -363,18 +363,6 @@ def classify_session_role(hook_payload: Dict[str, Any]) -> SessionRole:
     return SessionRole.NAMED_SPECIALIST
 
 
-def is_orchestrator_context(hook_payload: Dict[str, Any]) -> bool:
-    """Whether this call comes from the orchestrator itself.
-
-    Args:
-        hook_payload: The full stdin JSON dict from Claude Code.
-
-    Returns:
-        True only for :attr:`SessionRole.ORCHESTRATOR`. A dispatched subagent
-        and a ``--agent <specialist>`` main thread both return False.
-    """
-    return classify_session_role(hook_payload) is SessionRole.ORCHESTRATOR
-
 
 def check_delegate_mode(
     tool_name: str, hook_payload: Dict[str, Any]

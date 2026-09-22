@@ -76,3 +76,31 @@ def test_python_ci_fetches_exact_baseline_before_tests(tmp_path):
     assert git("tag", "--list").stdout == ""
     print(f"SHALLOW_BASELINE missing_exit={missing.returncode} "
           f"HEAD_before={before} HEAD_after={after} baseline_readable=true shallow=true tags=0")
+
+
+_EXHAUSTIVE_OPENCODE_MATRIX = (
+    "tests/integration/test_opencode_protected_edit_bootstrap.py::"
+    "test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge"
+)
+
+
+def test_exhaustive_opencode_matrix_leaves_per_pr_ci_but_keeps_a_scheduled_run():
+    """The per-PR suite deselects the exhaustive matrix and a scheduled workflow runs it."""
+    workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
+    ci_runs = [step.get("run", "") for step in ci["jobs"]["test-python"]["steps"]]
+    assert any(f"--deselect {_EXHAUSTIVE_OPENCODE_MATRIX}" in run for run in ci_runs)
+
+    nightly = yaml.safe_load((workflows / "nightly.yml").read_text(encoding="utf-8"))
+    # PyYAML reads the bare workflow key ``on`` as the boolean True.
+    assert nightly[True]["schedule"]
+    nightly_runs = [
+        step.get("run", "")
+        for job in nightly["jobs"].values()
+        for step in job["steps"]
+    ]
+    assert any(
+        "-m pytest" in run and _EXHAUSTIVE_OPENCODE_MATRIX in run
+        and "--deselect" not in run
+        for run in nightly_runs
+    )

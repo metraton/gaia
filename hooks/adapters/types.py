@@ -234,19 +234,6 @@ class ConsentDecisionReceived:
 
 
 @dataclass(frozen=True)
-class ConsentResult:
-    """Neutral outcome of decision handling; grant activation is explicit."""
-
-    correlation_id: str
-    status: str
-    grant_activated: bool = False
-    reserved_index: int | None = None
-    frozen: bool = False
-    reason: str = ""
-    protocol_version: str = CONSENT_PROTOCOL_VERSION
-
-
-@dataclass(frozen=True)
 class HostDistribution:
     """How a host distributes and invokes gaia -- declared by the adapter.
 

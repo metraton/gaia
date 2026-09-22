@@ -38,11 +38,6 @@ class SecurityTier(str, Enum):
         return self.value
 
     @property
-    def requires_approval(self) -> bool:
-        """Check if this tier requires user approval."""
-        return self == SecurityTier.T3_BLOCKED
-
-    @property
     def description(self) -> str:
         """Human-readable description of the tier."""
         descriptions = {

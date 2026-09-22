@@ -11,14 +11,11 @@ Two defects in the consent surface are covered here, both observed live:
      incomplete, and no proper subset of the commands may pass.
   2. The ``SHOWN`` event was written with an empty payload, so afterwards there
      was no way to establish what text the user was shown. The guard is that
-     activation now persists the full question text and that a SHOWN event
-     WITHOUT that text is detectable (``audit_consent_surface``) -- which is
-     also what makes the change additive: legacy rows report not-auditable
-     rather than needing migration.
+     activation now persists the full question text.
 
 Nonce activation is asserted end-to-end against the NEW label form, since a
-label change that broke ``extract_nonce_from_label`` would silently disable
-every approval.
+label change that broke ``extract_approval_id_from_label`` would silently
+disable every approval.
 """
 
 from __future__ import annotations
@@ -396,16 +393,14 @@ class TestShownEventPersistsTheSurface:
         db_path, assert_con, store = approvals_db
         from modules.security.approval_grants import (
             CONSENT_SURFACE_RECONSTRUCTED,
-            activate_db_pending_by_prefix,
-            audit_consent_surface,
+            activate_db_pending_by_id,
         )
 
         payload = _command_set_payload(BATCH_COMMANDS)
         approval_id = _insert_pending(store, payload)
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
 
-        assert activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=SESSION_ID
+        assert activate_db_pending_by_id(
+            approval_id, current_session_id=SESSION_ID
         ).success
 
         event = _shown_event(store, approval_id, assert_con)
@@ -421,17 +416,12 @@ class TestShownEventPersistsTheSurface:
                 f"{command!r} missing from the persisted consent surface"
             )
 
-        audit = audit_consent_surface(approval_id)
-        assert audit.auditable is True
-        assert audit.command_count == 3
-        assert audit.complete is True
-
     def test_captured_question_is_stored_verbatim(self, approvals_db):
         """A supplied question text is the probative record, stored unaltered."""
         db_path, assert_con, store = approvals_db
         from modules.security.approval_grants import (
             CONSENT_SURFACE_CAPTURED,
-            activate_db_pending_by_prefix,
+            activate_db_pending_by_id,
             render_consent_surface,
         )
 
@@ -439,8 +429,8 @@ class TestShownEventPersistsTheSurface:
         approval_id = _insert_pending(store, payload)
         presented = render_consent_surface(payload, approval_id)
 
-        assert activate_db_pending_by_prefix(
-            approval_id[len("P-"):len("P-") + 8],
+        assert activate_db_pending_by_id(
+            approval_id,
             current_session_id=SESSION_ID,
             presented_question=presented,
         ).success
@@ -457,13 +447,13 @@ class TestShownEventPersistsTheSurface:
         omission provable afterwards.
         """
         db_path, assert_con, store = approvals_db
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
         payload = _command_set_payload(BATCH_COMMANDS)
         approval_id = _insert_pending(store, payload)
 
-        result = activate_db_pending_by_prefix(
-            approval_id[len("P-"):len("P-") + 8],
+        result = activate_db_pending_by_id(
+            approval_id,
             current_session_id=SESSION_ID,
             presented_question=_legacy_singular_surface(payload),
         )
@@ -472,51 +462,6 @@ class TestShownEventPersistsTheSurface:
         record = json.loads(_shown_event(store, approval_id, assert_con)["payload_json"])
         assert record["complete"] is False
         assert record["missing_commands"] == BATCH_COMMANDS[1:]
-
-    def test_shown_event_without_text_is_detectable(self, approvals_db):
-        """A legacy SHOWN event (no payload) reports as not auditable.
-
-        This is the additive-migration proof: rows written before this layer
-        are readable and simply report that the surface was never recorded --
-        nothing needs rewriting for the audit to work.
-        """
-        db_path, assert_con, store = approvals_db
-        from modules.security.approval_grants import audit_consent_surface
-
-        approval_id = _insert_pending(store, _singular_payload("git push origin main"))
-        store.record_event(
-            approval_id, "SHOWN", agent_id="test-agent", session_id=SESSION_ID
-        )
-
-        audit = audit_consent_surface(approval_id)
-        assert audit.auditable is False, (
-            "A SHOWN event with no persisted text must be detectable"
-        )
-        assert "consent_surface" in audit.reason
-        assert audit.consent_surface is None
-
-    def test_missing_shown_event_is_detectable(self, approvals_db):
-        db_path, assert_con, store = approvals_db
-        from modules.security.approval_grants import audit_consent_surface
-
-        approval_id = _insert_pending(store, _singular_payload("terraform apply"))
-
-        audit = audit_consent_surface(approval_id)
-        assert audit.auditable is False
-        assert "no SHOWN event" in audit.reason
-
-    def test_consent_surface_reader_ignores_non_shown_events(self):
-        from modules.security.approval_grants import consent_surface_from_shown_event
-
-        assert consent_surface_from_shown_event(
-            {"event_type": "APPROVED", "payload_json": '{"consent_surface": "x"}'}
-        ) is None
-        assert consent_surface_from_shown_event(
-            {"event_type": "SHOWN", "payload_json": "not json"}
-        ) is None
-        assert consent_surface_from_shown_event(
-            {"event_type": "SHOWN", "payload_json": '{"consent_surface": "   "}'}
-        ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -528,14 +473,14 @@ class TestChainUnaffected:
 
     def test_chain_valid_and_shown_fingerprint_still_null(self, approvals_db):
         db_path, assert_con, store = approvals_db
-        from modules.security.approval_grants import activate_db_pending_by_prefix
+        from modules.security.approval_grants import activate_db_pending_by_id
 
         from gaia.approvals.chain import validate_chain
 
         payload = _command_set_payload(BATCH_COMMANDS)
         approval_id = _insert_pending(store, payload)
-        assert activate_db_pending_by_prefix(
-            approval_id[len("P-"):len("P-") + 8], current_session_id=SESSION_ID
+        assert activate_db_pending_by_id(
+            approval_id, current_session_id=SESSION_ID
         ).success
 
         con = sqlite3.connect(str(db_path))

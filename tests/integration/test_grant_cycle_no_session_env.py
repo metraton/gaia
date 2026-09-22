@@ -74,16 +74,14 @@ def _pending_rows() -> list[dict]:
 
 
 def _activate_first_pending(current_session_id: str) -> "ApprovalActivationResult":
-    """Activate the first (and expected only) pending row by its nonce prefix."""
-    from modules.security.approval_grants import activate_db_pending_by_prefix
+    """Activate the first (and expected only) pending row by its approval_id."""
+    from modules.security.approval_grants import activate_db_pending_by_id
 
     rows = _pending_rows()
     assert rows, "Expected at least one pending row in the DB before activation"
-    # approval_id format: P-{hex} → nonce_prefix is the first 8 chars after "P-"
     approval_id: str = rows[0]["id"]
     assert approval_id.startswith("P-"), f"Unexpected approval_id format: {approval_id!r}"
-    nonce_prefix = approval_id[2:10]  # 8-char prefix used by activate_db_pending_by_prefix
-    return activate_db_pending_by_prefix(nonce_prefix, current_session_id=current_session_id)
+    return activate_db_pending_by_id(approval_id, current_session_id=current_session_id)
 
 
 # ---------------------------------------------------------------------------

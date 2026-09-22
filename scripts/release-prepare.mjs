@@ -218,7 +218,7 @@ function main() {
   }
 
   log(`release:prepare complete -- all sources at ${version}, root manifests regenerated, validation green.`, 'success');
-  log('Next (driven by the gaia-release "release" flow, not by hand): pre-flight (Python 3.11/3.12 + tests), commit, tag, push, gh release.', 'info');
+  log('Next (driven by the gaia-release "release" flow, not by hand): pre-flight (Python 3.12 + tests), commit, tag, push, gh release.', 'info');
 }
 
 main();

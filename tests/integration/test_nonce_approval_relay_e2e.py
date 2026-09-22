@@ -4,7 +4,7 @@
 These tests exercise the real PreToolUse path (adapt_pre_tool_use, subagent
 context) across:
   1. Bash T3 block -> deny with approval_id, pending approval persisted
-  2. Grant activation (activate_db_pending_by_prefix) -> pending becomes grant
+  2. Grant activation (activate_db_pending_by_id) -> pending becomes grant
   3. Bash retry -> allowed only for the same approved command scope
 
 They read the DB pending plane (gaia.approvals.store.get_pending) as the
@@ -12,7 +12,7 @@ deterministic source of nonce state instead of relying only on parsing
 agent text. The filesystem pending plane (write_pending_approval /
 activate_pending_approval / get_latest_pending_approval) was retired; these
 tests now seed via tests.fixtures.db_helpers.seed_db_pending and activate
-via approval_grants.activate_db_pending_by_prefix.
+via approval_grants.activate_db_pending_by_id.
 """
 
 import hashlib
@@ -36,7 +36,7 @@ def isolated_nonce_env(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     # No CLAUDE_SESSION_ID env: the grant cycle is session-agnostic (Brief 71).
     # Every call below passes session_id explicitly, and the grant-match path
-    # (activate_db_pending_by_prefix / list_command_set_grants_agnostic) never
+    # (activate_db_pending_by_id / list_command_set_grants_agnostic) never
     # filters on session, so a session env var would be dead weight here.
 
     if str(REPO_ROOT) not in sys.path:
@@ -54,7 +54,7 @@ def isolated_nonce_env(tmp_path, monkeypatch):
     monkeypatch.setattr(approval_grants, "get_plugin_data_dir", lambda: claude_dir)
 
     # Isolate the DB pending plane. The DB-backed pending functions
-    # (insert_requested / get_pending / activate_db_pending_by_prefix) delegate
+    # (insert_requested / get_pending / activate_db_pending_by_id) delegate
     # to gaia.store.writer._connect(); patch it to a per-test SQLite file so the
     # approvals + approval_grants tables are empty and isolated.
     writer_db_path = tmp_path / "writer_isolation.db"
@@ -135,7 +135,7 @@ class TestNonceApprovalRelayE2E:
 
     A subagent's blocked T3 produces 'deny' carrying an approval_id, and the
     hook itself persists the pending approval; activation
-    (activate_db_pending_by_prefix, as the PostToolUse
+    (activate_db_pending_by_id, as the PostToolUse
     ask-user-question-result flow does) turns it into a grant the
     byte-identical retry consumes.
     """
@@ -166,10 +166,8 @@ class TestNonceApprovalRelayE2E:
         approval_id = pending[-1]["id"]
         assert approval_id.startswith("P-")
 
-        # Activation is keyed by the nonce prefix AFTER the 'P-' marker
-        # (activate_db_pending_by_prefix matches id LIKE 'P-<prefix>%').
-        activation = approval_grants.activate_db_pending_by_prefix(
-            approval_id[2:10], current_session_id=self.SESSION,
+        activation = approval_grants.activate_db_pending_by_id(
+            approval_id, current_session_id=self.SESSION,
         )
         assert activation.success, f"Activation should succeed: {activation.reason}"
         assert not _has_pending()
@@ -208,8 +206,8 @@ class TestNonceApprovalRelayE2E:
         pending = get_pending(all_sessions=True)
         assert pending
         approval_id = pending[-1]["id"]
-        activation = approval_grants.activate_db_pending_by_prefix(
-            approval_id[2:10], current_session_id=self.SESSION,
+        activation = approval_grants.activate_db_pending_by_id(
+            approval_id, current_session_id=self.SESSION,
         )
         assert activation.success
 

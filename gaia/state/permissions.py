@@ -335,154 +335,16 @@ __all__ = [
     "_assert_dispatch_can_write_content",
     "handoff_writer_fleet",
     "is_handoff_writer",
-    "verifier_fleet",
-    "is_verifier",
     "agent_fleet",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Verifier fleet seed (harness R2 -- NEEDS_VERIFICATION / verifier-gated
-# COMPLETE)
-# ---------------------------------------------------------------------------
-#
-# Mirrors ``handoff_writer_fleet()`` / ``is_handoff_writer()`` above byte-for-
-# byte in MECHANISM: a frontmatter marker on ``agents/*.md`` (``verifier:
-# true``), the same top-level-key-only parser, the same ``lru_cache``
-# discipline, and the same fallback-floor idiom (an unresolvable ``agents/``
-# directory falls back to a hardcoded constant rather than failing open).
-#
-# The ONE deliberate difference from the handoff-writer precedent: the
-# fallback floor here is EMPTY (``_FALLBACK_VERIFIER_FLEET = frozenset()``),
-# not a known non-empty set -- it is reached only when ``agents/`` itself is
-# unresolvable, never as a description of the live fleet. The fleet IS
-# populated today: ``agents/gaia-verifier.md`` ships ``verifier: true`` (Gaia
-# harness B3), so ``verifier_fleet()`` resolves to a non-empty set
-# (``{"gaia-verifier"}``) on any installed tree.
-#
-# DECOUPLED FROM THE FINALIZE GATE (plan 34 task 7): this fleet no longer gates
-# COMPLETE. The SubagentStop finalize gate is keyed on the dispatch binding's
-# ``plan_task_id`` (hooks/adapters/claude_code.py,
-# ``_blind_verification_required`` / ``BLIND_VERIFICATION_REQUIRED``), NOT on
-# the emitting agent's role: a plan-task-bound producer turn (its binding
-# carries a ``plan_task_id``) is forced to ``NEEDS_VERIFICATION`` so an
-# independent verifier confirms the increment, while a turn with NO
-# ``plan_task_id`` (investigation / memory / a free-standing verifier turn) may
-# self-``COMPLETE``. The former role coupling was removed on purpose: keying on
-# role made every non-verifier COMPLETE a violation the moment the registry
-# armed, which contradicts "an unbound turn self-completes". This fleet
-# (marker + loader + cached fleet + is_X predicate) remains as ROLE
-# INFRASTRUCTURE -- dispatch-side role detection, skill injection, and
-# authorization for oracle-mode verification (see ``gaia.state.gate_oracle``) --
-# but the finalize gate does not consult it.
-#
-# Never-fails-open, exactly like the handoff-writer fleet: an identity absent
-# from the resolved fleet (empty or not) is always rejected by ``is_verifier``
-# -- there is no "fall back to allow everyone" path anywhere in this module.
-
-# Frontmatter marker that opts an agent .md into the verifier fleet.
-_VERIFIER_MARKER = "verifier"
-
-# Fallback floor when ``agents/`` is unresolvable. Deliberately EMPTY -- see
-# module comment above; this is the unresolvable-path floor, not a
-# description of the populated, ARMED fleet that ships today
-# (``agents/gaia-verifier.md``, ``verifier: true``). Mirrors
-# ``_FALLBACK_HANDOFF_WRITER_FLEET``'s role for the handoff-writer fleet.
-_FALLBACK_VERIFIER_FLEET: frozenset[str] = frozenset()
-
-
-def _parse_agent_verifier_frontmatter(md_text: str) -> tuple[str | None, bool]:
-    """Extract ``(name, is_verifier)`` from an agent .md frontmatter block.
-
-    Identical parsing discipline to ``_parse_agent_frontmatter``: only
-    top-level (non-indented) ``key: value`` lines are read, so a nested
-    ``routing:`` or ``project_context_contracts:`` block can never shadow the
-    ``verifier`` marker. Kept as a separate function (rather than teaching
-    ``_parse_agent_frontmatter`` a second marker) so the two fleets stay
-    independently auditable and neither loader's behavior can be perturbed by
-    a change aimed at the other.
-    """
-    lines = md_text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return (None, False)
-    name: str | None = None
-    is_verifier = False
-    for raw_line in lines[1:]:
-        if raw_line.strip() == "---":
-            break
-        if raw_line[:1].isspace():
-            continue
-        m = _FRONTMATTER_KEY_RE.match(raw_line)
-        if not m:
-            continue
-        key, value = m.group(1), m.group(2).strip()
-        if key == "name":
-            name = value or None
-        elif key == _VERIFIER_MARKER:
-            is_verifier = value.lower() in ("true", "yes", "1")
-    return (name, is_verifier)
-
-
-@functools.lru_cache(maxsize=1)
-def verifier_fleet() -> frozenset[str]:
-    """Return the set of agent identities carrying the verifier role.
-
-    Seeded from ``agents/*.md`` frontmatter (marker ``verifier: true``).
-    Falls back to ``_FALLBACK_VERIFIER_FLEET`` (empty) only when ``agents/``
-    is unresolvable. Cached exactly like ``handoff_writer_fleet``: the fleet
-    is a static property of the installed tree, not per-call state. Call
-    ``verifier_fleet.cache_clear()`` in a test that mutates the agent set.
-
-    Populated today: ``agents/gaia-verifier.md`` ships ``verifier: true``, so
-    this resolves to a non-empty set (``{"gaia-verifier"}``) on any installed
-    tree.
-
-    NOTE: this fleet does NOT gate ``COMPLETE`` (plan 34 task 7). The
-    SubagentStop finalize gate is keyed on the dispatch binding's
-    ``plan_task_id`` (hooks/adapters/claude_code.py,
-    ``_blind_verification_required``), not on membership here. This fleet is
-    role infrastructure -- dispatch-side role detection, skill injection, and
-    oracle-mode authorization (``gaia.state.gate_oracle``).
-    """
-    agents_dir = _agents_dir()
-    if agents_dir is None:
-        return _FALLBACK_VERIFIER_FLEET
-    fleet: set[str] = set()
-    for md in sorted(agents_dir.glob("*.md")):
-        if md.name.lower() == "readme.md":
-            continue
-        try:
-            text = md.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        name, is_verifier_agent = _parse_agent_verifier_frontmatter(text)
-        if name and is_verifier_agent:
-            fleet.add(name)
-    if not fleet:
-        return _FALLBACK_VERIFIER_FLEET
-    return frozenset(fleet)
-
-
-def is_verifier(agent: str) -> bool:
-    """True iff ``agent`` is a seeded fleet identity carrying the verifier role.
-
-    Never fails open: an identity absent from the (possibly empty) fleet
-    always returns False. This function only answers "is this named identity
-    in the fleet?", exactly mirroring ``is_handoff_writer`` -- it does NOT gate
-    ``COMPLETE`` (the finalize gate keys on ``plan_task_id`` via
-    ``_blind_verification_required``, see the module comment above).
-    """
-    if not agent:
-        return False
-    return agent.strip() in verifier_fleet()
 
 
 # ---------------------------------------------------------------------------
 # Whole-fleet seed (marker-free)
 # ---------------------------------------------------------------------------
 #
-# ``handoff_writer_fleet`` and ``verifier_fleet`` above each answer "which
-# agents opted into ROLE X?" via a frontmatter marker. This one answers the
+# ``handoff_writer_fleet`` above answers "which agents opted into ROLE X?"
+# via a frontmatter marker. This one answers the
 # prior question -- "which agent identities exist at all?" -- and therefore
 # carries NO marker: an agent .md is a fleet member by existing.
 #
@@ -493,7 +355,7 @@ def is_verifier(agent: str) -> bool:
 # maintained enumeration such a caller exists to avoid. Adding an agent .md
 # enrolls it here with no edit anywhere.
 #
-# Same never-fails-open discipline as its two siblings: an identity absent
+# Same never-fails-open discipline as its sibling: an identity absent
 # from the resolved fleet is absent, and an unresolvable ``agents/`` directory
 # substitutes a known non-empty floor rather than an empty set that would make
 # every membership question answer False.
@@ -522,7 +384,7 @@ def agent_fleet() -> frozenset[str]:
     Seeded from the ``name:`` of each ``agents/*.md`` frontmatter block (README
     skipped), with no role marker required. Falls back to
     ``_FALLBACK_AGENT_FLEET`` when ``agents/`` is unresolvable or yields no
-    name. Cached exactly like ``handoff_writer_fleet`` / ``verifier_fleet``:
+    name. Cached exactly like ``handoff_writer_fleet``:
     the fleet is a static property of the installed tree, not per-call state.
     Call ``agent_fleet.cache_clear()`` in a test that mutates the agent set.
     """

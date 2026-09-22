@@ -1271,8 +1271,8 @@ class TestScenario8FullApprovalCycle:
             f"Expected approval_id in deny reason, got: {reason}"
         )
 
-    def test_nonce_cannot_be_reused(self, tmp_path):
-        """A nonce (approval_id) can only be activated once.
+    def test_nonce_cannot_be_reused(self, tmp_path, monkeypatch):
+        """A nonce (approval_id) mints its grant once; re-activation is idempotent.
 
         This test uses the approval_grants module directly to verify the
         one-time activation invariant. The resume_agent path no longer
@@ -1281,16 +1281,15 @@ class TestScenario8FullApprovalCycle:
         import sys
         sys.path.insert(0, str(HOOKS_DIR))
         from modules.security.approval_grants import (
-            generate_nonce, activate_db_pending_by_prefix,
-            ACTIVATION_ACTIVATED, ACTIVATION_NOT_FOUND,
+            generate_nonce, activate_db_pending_by_id,
+            ACTIVATION_ACTIVATED,
         )
         from tests.fixtures.db_helpers import seed_db_pending
 
         # Set up isolated environment
         claude_dir = tmp_path / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
-        import os
-        os.environ["CLAUDE_SESSION_ID"] = "e2e-nonce-reuse-test"
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "e2e-nonce-reuse-test")
         import modules.security.approval_grants as ag
         import modules.core.paths as cp
         cp.clear_path_cache()
@@ -1298,7 +1297,7 @@ class TestScenario8FullApprovalCycle:
         original_get_plugin = ag.get_plugin_data_dir
         ag.get_plugin_data_dir = lambda: claude_dir
 
-        # Isolate the DB pending plane: seed_db_pending / activate_db_pending_by_prefix
+        # Isolate the DB pending plane: seed_db_pending / activate_db_pending_by_id
         # delegate to gaia.store.writer._connect(); patch it to a per-test SQLite file
         # so the one-time activation invariant is verified against an empty DB.
         import sqlite3
@@ -1335,18 +1334,19 @@ class TestScenario8FullApprovalCycle:
             )
 
             # First activation should succeed (pending -> approved)
-            result1 = activate_db_pending_by_prefix(
-                nonce[:8], current_session_id="e2e-nonce-reuse-test",
+            result1 = activate_db_pending_by_id(
+                f"P-{nonce}", current_session_id="e2e-nonce-reuse-test",
             )
             assert result1.success, f"First activation should succeed: {result1.reason}"
             assert result1.status == ACTIVATION_ACTIVATED
+            assert not result1.idempotent
 
-            # Second activation should fail (no pending row remains)
-            result2 = activate_db_pending_by_prefix(
-                nonce[:8], current_session_id="e2e-nonce-reuse-test",
+            # Second activation finds the grant the first one minted instead of minting another.
+            result2 = activate_db_pending_by_id(
+                f"P-{nonce}", current_session_id="e2e-nonce-reuse-test",
             )
-            assert not result2.success, "Second activation should fail"
-            assert result2.status == ACTIVATION_NOT_FOUND
+            assert result2.status == ACTIVATION_ACTIVATED
+            assert result2.idempotent, "Second activation must not mint a new grant"
         finally:
             ag.get_plugin_data_dir = original_get_plugin
             _swriter._connect = original_connect

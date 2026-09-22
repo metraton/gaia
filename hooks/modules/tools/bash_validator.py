@@ -70,7 +70,6 @@ from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
     last_check_found_expired,
-    match_command_set_grant,
     # DEPRECATED (T2.1 cutover): generate_nonce, write_pending_approval,
     # find_pending_for_command are no longer used in the T3 subagent intercept
     # path. They remain in approval_grants.py for M3/M4 consumers (e.g.,
@@ -1370,59 +1369,6 @@ class BashValidator:
             tier=SecurityTier.T0_READ_ONLY,
             reason="Safe by elimination (not blocked, not mutative)",
         )
-
-    def _is_ungranted_t3_component(
-        self, component: str, session_id: str, cwd: Optional[str] = None
-    ) -> bool:
-        """Classify a chain component as ungranted-T3 WITHOUT minting or consuming.
-
-        Returns True when the component is a T3 (mutative-verb or
-        flag-dependent) operation for which NO active grant exists -- i.e. the
-        component would, on its own, be blocked pending approval. This is a
-        read-only probe used by the chain COMMAND_SET intake (AC-8) to decide
-        whether >= 2 sub-commands need grouping under ONE consent, BEFORE any
-        per-component minting happens.
-
-        It deliberately does NOT call decide_t3_outcome (no pending minted) and
-        does NOT consume any grant (match_command_set_grant /
-        check_approval_grant are pure lookups; consumption happens later in the
-        real _validate_single_command pass at retry). A component that already
-        matches a COMMAND_SET or semantic grant is treated as NOT ungranted, so
-        it is excluded from a fresh batch.
-        """
-        component = component.strip()
-        if not component:
-            return False
-
-        # Is this T3 (mutative verb or flag-dependent mutation)?  Honor the
-        # folded cwd so a clean relative script behind a `cd` is not mis-counted
-        # as ungranted-T3 (which would wrongly pull it into a COMMAND_SET batch).
-        detect = detect_mutative_command(component, cwd=cwd)
-        is_t3 = detect.is_mutative
-        if not is_t3:
-            flag_result = classify_by_flags(component)
-            if (
-                flag_result is not None
-                and flag_result.outcome == FLAG_MUTATIVE
-                and not flag_result.command_family.startswith("git_")
-            ):
-                is_t3 = True
-        if not is_t3:
-            return False
-
-        # Already covered by an active grant? Then it is NOT ungranted -- exclude
-        # it from a fresh batch (pure lookups, no consumption).
-        try:
-            if match_command_set_grant(component) is not None:
-                return False
-        except Exception:
-            pass
-        try:
-            if check_approval_grant(component, session_id=session_id) is not None:
-                return False
-        except Exception:
-            pass
-        return True
 
     def _validate_compound_command(
         self,

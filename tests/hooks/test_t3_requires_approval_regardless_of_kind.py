@@ -74,7 +74,6 @@ class TestTierClassificationIsBindingBlind:
     def test_mutative_command_is_t3_requires_approval(self, command):
         tier = classify_command_tier(command)
         assert tier == SecurityTier.T3_BLOCKED, f"{command!r} must be T3"
-        assert tier.requires_approval is True
 
     @pytest.mark.parametrize("command", [
         "kubectl get pods",
@@ -84,7 +83,7 @@ class TestTierClassificationIsBindingBlind:
     ])
     def test_read_or_dryrun_command_does_not_require_approval(self, command):
         tier = classify_command_tier(command)
-        assert tier.requires_approval is False, (
+        assert tier != SecurityTier.T3_BLOCKED, (
             f"{command!r} is not a mutation and must not require approval"
         )
 
