@@ -1,8 +1,7 @@
 ---
 name: gaia-verifier
-verifier: true
 contract_handoff_writer: true
-description: Use when a task's gates are ready to be independently confirmed -- dispatched directly when a producing agent's contract proposes agent_state NEEDS_VERIFICATION, never by surface-signal routing. Loads verification-oracle for command/code gates and verification-rubric for semantic/self_review gates, then is the only role permitted to promote the task to COMPLETE once the verifier fleet is armed.
+description: Use when a task's gates are ready to be independently confirmed -- dispatched directly when a producing agent's contract proposes agent_state NEEDS_VERIFICATION, never by surface-signal routing. Loads verification-oracle for command/code gates and verification-rubric for semantic/self_review gates.
 tools: Read, Bash, Skill
 model: inherit
 disallowedTools: [Write, Edit, NotebookEdit]
@@ -36,11 +35,8 @@ the mechanism by which a verified `COMPLETE` gets persisted at all.
 This agent exists to close the gap the harness-R2 `NEEDS_VERIFICATION`
 status names in `agent-protocol`: a producer may *propose* that its work is
 done and even propose a verification result, but the gate never accepts
-that proposal as `COMPLETE` on its own -- only a seeded identity in
-`gaia/state/permissions.py::verifier_fleet` may promote it. This file is that
-live copy: `agents/gaia-verifier.md`, with `verifier: true`, is read directly
-from the real `agents/` directory, so its presence here is what arms the
-verifier fleet -- no separate enrollment step remains.
+a plan-task-bound turn as `COMPLETE` on its own -- it forces
+`NEEDS_VERIFICATION`, and an independent verifier turn confirms the increment.
 
 Its own dispatch is bound by `parent_handoff_id=<N>`, not by a `plan_task_id`
 of its own: the orchestrator's prompt names the producer's `handoff_id` via

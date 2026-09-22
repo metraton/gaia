@@ -226,7 +226,7 @@ def test_db_write_failure_does_not_crash_hook(tmp_db):
         "db_path": str(tmp_db),
     }
 
-    with patch.object(writer, "insert_agent_contract_handoff", side_effect=RuntimeError("DB exploded")):
+    with patch.object(writer, "finalize_agent_contract_handoff", side_effect=RuntimeError("DB exploded")):
         result = subagent_stop_hook(task_info, agent_output)
 
     # Hook must NOT crash; it should still return normally

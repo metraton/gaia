@@ -8036,85 +8036,6 @@ def _assert_dispatch_can_write_handoff() -> None:
     )
 
 
-def insert_agent_contract_handoff(
-    agent_id: str,
-    workspace: str,
-    agent_state: str,
-    raw_handoff_json: str,
-    *,
-    session_id: str | None = None,
-    brief_id: int | None = None,
-    db_path: "Path | None" = None,
-) -> int:
-    """Insert a row into agent_contract_handoffs.
-
-    Called by the SubagentStop hook after parsing and resolving the contract
-    envelope.  Returns the new row's id (handoff_id).
-
-    Args:
-        agent_id:         Agent identity string, "a" + 16+ hex (see
-                          gaia.contract.validator.AGENT_ID_PATTERN_TEXT).
-        workspace:        Workspace name (FK -> workspaces.name).
-        agent_state:      Resolved agent_state (turn status) from the contract
-                          envelope; maps to the agent_contract_handoffs.agent_state
-                          column.
-        raw_handoff_json: Full contract envelope serialized as JSON string.
-        session_id:       CLAUDE_SESSION_ID at SubagentStop time (optional).
-        brief_id:         briefs.id FK (optional -- EXTENSION_POINT for
-                          state-machine-completion downstream briefs).
-        db_path:          Optional explicit DB path (used by tests).
-
-    Returns:
-        Integer primary key of the inserted row.
-
-    Raises:
-        HandoffWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
-    """
-    _assert_dispatch_can_write_handoff()
-
-    def _work() -> int:
-        con = _connect(db_path)
-        try:
-            # BEGIN IMMEDIATE: write-lock-first, so this SELECT-then-INSERT body
-            # (_ensure_workspace_row's SELECT, then the INSERT) cannot deadlock
-            # against a concurrent writer upgrading a SHARED lock to RESERVED.
-            con.execute("BEGIN IMMEDIATE")
-            try:
-                _ensure_workspace_row(con, workspace)
-                cur = con.execute(
-                    """
-                    -- v37: the persisted column is `agent_state` (renamed from
-                    -- task_status; born-at-dispatch redesign, plan 34). The
-                    -- Python parameter is now also `agent_state` (plan 34 task 4
-                    -- completed the envelope-field rename plan_status ->
-                    -- agent_state); it maps directly to the agent_state column.
-                    INSERT INTO agent_contract_handoffs
-                        (agent_id, session_id, workspace, brief_id,
-                         agent_state, raw_handoff_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        agent_id,
-                        session_id,
-                        workspace,
-                        brief_id,
-                        agent_state,
-                        raw_handoff_json,
-                        _now_iso(),
-                    ),
-                )
-                handoff_id = cur.lastrowid
-                con.commit()
-                return handoff_id
-            except Exception:
-                con.rollback()
-                raise
-        finally:
-            con.close()
-
-    return _retry_on_locked(_work)
-
-
 # ---------------------------------------------------------------------------
 # Public API: finalize_agent_contract_handoff (v28 / T7 -- sole idempotent
 # writer of the terminal agent_contract_handoffs row)
@@ -8213,9 +8134,7 @@ def insert_agent_contract_handoff(
 #   CLI, T9's backstop) tells "I just wrote this" apart from "this was
 #   already finalized" without a second round trip.
 #
-#   Same permission gate as insert_agent_contract_handoff
-#   (`_assert_dispatch_can_write_handoff`) -- T8 owns evolving that gate to
-#   the fleet-seed model; T7 deliberately reuses it unchanged.
+#   Permission gate: `_assert_dispatch_can_write_handoff`.
 # ---------------------------------------------------------------------------
 
 def finalize_agent_contract_handoff(
@@ -11588,9 +11507,8 @@ def _maybe_prune_harness_events(db_path: Path | None = None) -> None:
 # the cutoff is built with the same strftime format via _retention_cutoff_iso.
 #
 # Trigger point: inside finalize_agent_contract_handoff -- the SOLE runtime
-# write path (bin/cli/contract.py + hooks/modules/agents/handoff_persister.py);
-# insert_agent_contract_handoff is legacy and has no non-test caller -- on the
-# winner (created) branch after commit, behind the shared 1/N gate.
+# write path (bin/cli/contract.py + hooks/modules/agents/handoff_persister.py)
+# -- on the winner (created) branch after commit, behind the shared 1/N gate.
 
 HANDOFF_RETENTION_DAYS = 90
 _HANDOFF_PRUNE_ENV = "GAIA_HANDOFF_PRUNE_SAMPLE_RATE"

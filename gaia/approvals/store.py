@@ -340,8 +340,7 @@ def insert_requested(
     Concurrency: when this opens its own connection (``con=None`` -- the T3
     hook-block path), the pending INSERT and the REQUESTED chain event run as a
     single atomic unit inside a ``BEGIN IMMEDIATE`` transaction and the whole
-    unit is retried on a transient "database is locked", mirroring the sibling
-    writer ``gaia.store.writer.insert_agent_contract_handoff``. A retry re-runs
+    unit is retried on a transient "database is locked". A retry re-runs
     the entire unit after a full rollback, so a contended write retries instead
     of failing the record and never leaves a half-written pending/event pair.
     When a ``con`` is supplied the caller owns the transaction, so this path is
