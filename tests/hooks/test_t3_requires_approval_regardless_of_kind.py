@@ -191,7 +191,7 @@ def test_t3_in_unbound_turn_still_blocked_pending_approval(v12_file_db, monkeypa
     session_id = "unbound-turn-session"
     # A state-mutating command, issued in a turn with no plan_task_id binding.
     result = validate_bash_command(
-        "git push origin main", is_subagent=True, session_id=session_id,
+        "git push origin main", is_subagent=True, session_id=session_id, agent_type="gaia-system",
     )
 
     assert not result.allowed, "a T3 command must be blocked even in an unbound turn"

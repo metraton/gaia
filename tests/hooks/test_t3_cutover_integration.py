@@ -174,7 +174,9 @@ class TestT3InterceptWritesToDB:
         command = "git push origin main"
 
         # --- WHEN ---
-        result = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        result = validate_bash_command(
+            command, is_subagent=True, session_id=session_id, agent_type="gaia-system",
+        )
 
         # --- THEN: response is deny ---
         assert not result.allowed, "T3 subagent command must be blocked"

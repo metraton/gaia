@@ -107,7 +107,7 @@ class TestSubagentMutativeDeny:
         """Subagent context (is_subagent=True) returns deny with approval_id."""
         result = validate_bash_command(
             "terraform apply",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
 
@@ -154,7 +154,7 @@ class TestSubagentMutativeDeny:
 
         result = validate_bash_command(
             "git push origin main",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
 
@@ -305,7 +305,7 @@ class TestFullApprovalCycle:
 
         # Step 1: Subagent command is denied with approval_id (written to DB).
         result1 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result1.allowed
         hook_output = result1.block_response["hookSpecificOutput"]
@@ -332,7 +332,7 @@ class TestFullApprovalCycle:
 
         # Step 3: Retry the same command -- passthrough (DB grant exists).
         result2 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert result2.allowed, "Active grant should passthrough (allowed=True)"
         assert "Grant active" in result2.reason or "Grant confirmed" in result2.reason
@@ -393,7 +393,7 @@ class TestSubagentRetryReusesPendingNonce:
 
         # First attempt: generates a new nonce
         result1 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result1.allowed
         reason1 = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -404,7 +404,7 @@ class TestSubagentRetryReusesPendingNonce:
 
         # Second attempt (retry): should reuse the same nonce
         result2 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result2.allowed
         reason2 = result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -435,7 +435,7 @@ class TestSubagentRetryReusesPendingNonce:
 
         # First attempt: command includes a Co-Authored-By footer
         result1 = validate_bash_command(
-            command_with_footer, is_subagent=True, session_id=session_id,
+            command_with_footer, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result1.allowed
         reason1 = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -451,7 +451,7 @@ class TestSubagentRetryReusesPendingNonce:
 
         # Second attempt: same command without footer (agent stopped adding it)
         result2 = validate_bash_command(
-            command_without_footer, is_subagent=True, session_id=session_id,
+            command_without_footer, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result2.allowed
         reason2 = result2.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -468,7 +468,7 @@ class TestSubagentRetryReusesPendingNonce:
         """The T3_BLOCKED deny message must tell the subagent not to retry."""
         result = validate_bash_command(
             "terraform apply",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
         assert not result.allowed
@@ -635,7 +635,7 @@ class TestConditionalActivation:
         import re
 
         result = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result.allowed, f"{command} should be blocked"
         reason = result.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -824,7 +824,7 @@ class TestConsumeGrantAtSubagentStop:
 
         # Step 1: Subagent command denied -> DB pending row + approval_id.
         result1 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result1.allowed
         reason = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -843,7 +843,7 @@ class TestConsumeGrantAtSubagentStop:
 
         # Step 3: Retry -> ALLOWED via the active grant, and CONSUMED in-step.
         result2 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert result2.allowed, f"active grant should allow the retry, got: {result2.reason}"
 
@@ -855,7 +855,7 @@ class TestConsumeGrantAtSubagentStop:
 
         # Step 5: A second retry re-blocks (no live grant remains).
         result3 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result3.allowed, "command must re-block after its grant is consumed"
 

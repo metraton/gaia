@@ -92,7 +92,7 @@ class TestBashSemanticGrantCycleNoSessionEnv:
             "session_id": self.BLOCK_SESSION,
             "tool_name": "Bash",
             "tool_input": {"command": self.COMMAND},
-            "agent_id": "a12345670f1e2d3c4",          # marks subagent context
+            "agent_id": "a12345670f1e2d3c4", "agent_type": "developer",          # marks subagent context
         }
         block_result = run_pre_tool_use_event(block_event, cwd=cwd)
 
@@ -127,7 +127,7 @@ class TestBashSemanticGrantCycleNoSessionEnv:
             "session_id": self.FOREIGN_SESSION,
             "tool_name": "Bash",
             "tool_input": {"command": self.COMMAND},
-            "agent_id": "a12345670f1e2d3c4",
+            "agent_id": "a12345670f1e2d3c4", "agent_type": "developer",
         }
         foreign_result = run_pre_tool_use_event(retry_event, cwd=cwd)
         assert foreign_result.permission_decision == "deny", foreign_result.output
@@ -179,7 +179,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             "session_id": self.BLOCK_SESSION,
             "tool_name": "Write",
             "tool_input": {"file_path": protected_file, "content": ""},
-            "agent_id": "a76543210f1e2d3c4",          # subagent context
+            "agent_id": "a76543210f1e2d3c4", "agent_type": "developer",          # subagent context
         }
         block_result = run_pre_tool_use_event(block_event, cwd=cwd)
 
@@ -212,7 +212,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             "session_id": self.FOREIGN_SESSION,
             "tool_name": "Write",
             "tool_input": {"file_path": protected_file, "content": ""},
-            "agent_id": "a76543210f1e2d3c4",
+            "agent_id": "a76543210f1e2d3c4", "agent_type": "developer",
         }
         foreign_result = run_pre_tool_use_event(retry_event, cwd=cwd)
         assert foreign_result.permission_decision == "deny", foreign_result.output
@@ -257,7 +257,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             "session_id": self.BLOCK_SESSION,
             "tool_name": "Write",
             "tool_input": {"file_path": protected_file, "content": ""},
-            "agent_id": "a76543210f1e2d3c4",
+            "agent_id": "a76543210f1e2d3c4", "agent_type": "developer",
         }
         block_result = run_pre_tool_use_event(block_event, cwd=cwd)
         assert block_result.permission_decision == "deny", (
@@ -277,7 +277,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
                 "session_id": self.RETRY_SESSION,
                 "tool_name": "Write",
                 "tool_input": {"file_path": protected_file, "content": ""},
-                "agent_id": "a76543210f1e2d3c4",
+                "agent_id": "a76543210f1e2d3c4", "agent_type": "developer",
             },
             cwd=cwd,
         )
@@ -292,7 +292,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             "session_id": self.RETRY_SESSION,
             "tool_name": "Bash",
             "tool_input": {"command": f"cp /tmp/payload.py {protected_file}"},
-            "agent_id": "a76543210f1e2d3c4",
+            "agent_id": "a76543210f1e2d3c4", "agent_type": "developer",
         }
         bash_result = run_pre_tool_use_event(bash_event, cwd=cwd)
 
@@ -330,7 +330,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
                 "session_id": self.BLOCK_SESSION,
                 "tool_name": "Write",
                 "tool_input": {"file_path": protected_file, "content": ""},
-                "agent_id": "a76543210f1e2d3c4",
+                "agent_id": "a76543210f1e2d3c4", "agent_type": "developer",
             },
             cwd=cwd,
         )

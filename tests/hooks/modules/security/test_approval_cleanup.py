@@ -337,6 +337,10 @@ class TestSubagentStopHygiene:
                     consumed_at           TEXT,
                     revoked_at            TEXT
                 );
+                CREATE TABLE IF NOT EXISTS approvals (
+                    id           TEXT PRIMARY KEY,
+                    payload_json TEXT
+                );
                 """
             )
             con.commit()

@@ -144,7 +144,7 @@ class TestLegacyCompoundCommandSetDisabled:
 
     def test_two_t3_chain_denies_with_single_approval_id(self, chain_db):
         result = validate_bash_command(
-            self.CHAIN, is_subagent=True, session_id=SESSION,
+            self.CHAIN, is_subagent=True, agent_type="gaia-system", session_id=SESSION,
         )
         assert not result.allowed
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -152,7 +152,7 @@ class TestLegacyCompoundCommandSetDisabled:
 
     def test_two_t3_chain_persists_exactly_one_command_set_pending(self, chain_db):
         result = validate_bash_command(
-            self.CHAIN, is_subagent=True, session_id=SESSION,
+            self.CHAIN, is_subagent=True, agent_type="gaia-system", session_id=SESSION,
         )
         assert not result.allowed
 
@@ -161,7 +161,7 @@ class TestLegacyCompoundCommandSetDisabled:
     def test_semicolon_chain_also_groups_into_command_set(self, chain_db):
         result = validate_bash_command(
             "git push origin main ; docker push registry/app:2.0",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id=SESSION,
         )
         assert not result.allowed
@@ -177,9 +177,9 @@ class TestCompoundCannotEnterApprovalLifecycle:
 
     def test_one_approval_then_both_subcommands_allowed(self, chain_db):
         chain = "git push origin main && docker push registry/app:1.0"
-        result = validate_bash_command(chain, is_subagent=True, session_id=SESSION)
+        result = validate_bash_command(chain, is_subagent=True, agent_type="gaia-system", session_id=SESSION)
         assert not result.allowed
-        retry = validate_bash_command(chain, is_subagent=True, session_id=SESSION)
+        retry = validate_bash_command(chain, is_subagent=True, agent_type="gaia-system", session_id=SESSION)
         assert not retry.allowed
         assert _pending_rows(chain_db) == []
 
@@ -193,7 +193,7 @@ class TestControlsUnchanged:
         # Only the second component is T3 (echo is safe).
         result = validate_bash_command(
             "echo starting && git push origin main",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id=SESSION,
         )
         assert not result.allowed
@@ -203,7 +203,7 @@ class TestControlsUnchanged:
     def test_chain_with_no_t3_is_allowed_and_mints_no_pending(self, chain_db):
         result = validate_bash_command(
             "echo hello && ls -la",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id=SESSION,
         )
         assert result.allowed, f"safe chain must be allowed: {result.reason}"
@@ -212,7 +212,7 @@ class TestControlsUnchanged:
     def test_single_standalone_t3_unchanged(self, chain_db):
         # Not a chain: the plain single-command path is untouched.
         result = validate_bash_command(
-            "git push origin main", is_subagent=True, session_id=SESSION,
+            "git push origin main", is_subagent=True, agent_type="gaia-system", session_id=SESSION,
         )
         assert not result.allowed
         rows = _pending_rows(chain_db)

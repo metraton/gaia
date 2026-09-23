@@ -1160,7 +1160,7 @@ class TestCmdRequestFileWrite:
         """D6: a request is bound to its requester, so an unknown agent cannot seal one."""
         rc = approvals_mod.cmd_request_file_write(self._args(agent_id=None))
         assert rc == 1
-        assert "agent_id is required" in capsys.readouterr().err
+        assert "carries no agent" in capsys.readouterr().err
 
     def test_rejects_a_relative_path(self, capsys, db_store):
         rc = approvals_mod.cmd_request_file_write(

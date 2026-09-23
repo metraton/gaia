@@ -516,11 +516,11 @@ class HookLogReplayBackend:
     ) -> DispatchResult:
         """Replay ``task`` (a Bash command) through the PreToolUse hook.
 
-        ``agent_type`` is accepted for protocol symmetry and stamped into
-        the payload as the ``agent_id`` so delegate-mode classification
-        sees subagent context (matching how the HookRunner primes
-        ``agent_id`` for replayed tool calls). ``timeout`` is forwarded to
-        the HookRunner subprocess.
+        The payload has the shape of a Claude Code subagent event: the
+        harness instance as ``agent_id`` and ``agent_type`` as the agent's
+        name. A T3 request binds to that session and agent, and an event
+        missing either is refused before consent. ``timeout`` is
+        forwarded to the HookRunner subprocess.
         """
 
         _ = timeout  # HookRunner owns its own subprocess timeout
@@ -542,7 +542,8 @@ class HookLogReplayBackend:
                 "tool_name": "Bash",
                 "tool_input": {"command": task},
                 "session_id": "eval-hook-replay",
-                "agent_id": agent_type,
+                "agent_id": "eval-hook-replay-agent",
+                "agent_type": agent_type,
             },
             expected_decision="",  # we grade against the catalog oracle, not this
             expected_exit_code=0,

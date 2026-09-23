@@ -133,6 +133,7 @@ def _seed_presented_semantic_approval() -> str:
         verb="push",
         category="MUTATIVE",
         agent_type=_AGENT,
+        session_id=_SESSION,
     )
     approval_id = store.insert_requested(payload, agent_id=_AGENT, session_id=_SESSION)
     assert cmd_opencode_present(_present_args(approval_id)) == 0

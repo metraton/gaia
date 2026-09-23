@@ -55,6 +55,8 @@ PRETOOL_BASH_MUTATIVE_KUBECTL_APPLY = {
     "tool_input": {"command": "kubectl apply -f manifest.yaml"},
     "hook_event_name": "PreToolUse",
     "session_id": "e2e-test-mutative-002",
+    "agent_id": "test-e2e-agent",
+    "agent_type": "developer",
 }
 
 # Single-module destroy: permanently blocked until the destroy floor was
@@ -85,6 +87,8 @@ PRETOOL_BASH_BLOCKED_GIT_RESET_HARD = {
     "tool_input": {"command": "git reset --hard"},
     "hook_event_name": "PreToolUse",
     "session_id": "e2e-test-blocked-003",
+    "agent_id": "test-e2e-agent",
+    "agent_type": "developer",
 }
 
 

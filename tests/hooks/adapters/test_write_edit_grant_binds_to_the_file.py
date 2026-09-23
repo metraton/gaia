@@ -30,6 +30,7 @@ from adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
 
 SESSION = "sess-write-edit-resolve"
 AGENT_ID = "a" + "c" * 16
+AGENT_TYPE = "gaia-system"
 
 
 @pytest.fixture(autouse=True)
@@ -67,6 +68,7 @@ def _attempt(path: Path):
         session_id=SESSION,
         is_subagent=True,
         agent_id=AGENT_ID,
+        agent_type=AGENT_TYPE,
     )
 
 
@@ -141,13 +143,12 @@ def test_the_persistence_fallback_consents_against_the_resolved_file(
     """
     real, _second, through_link = _tree(tmp_path)
 
-    from modules.security import approval_grants
+    from gaia.approvals import core
 
-    monkeypatch.setattr(
-        approval_grants,
-        "write_pending_approval_for_file",
-        lambda **_kwargs: None,
-    )
+    def _unpersistable(*_args, **_kwargs):
+        raise OSError("approvals store unavailable")
+
+    monkeypatch.setattr(core, "request_file_write", _unpersistable)
 
     adapter = ClaudeCodeAdapter()
     seen = {}
@@ -164,6 +165,7 @@ def test_the_persistence_fallback_consents_against_the_resolved_file(
         session_id=SESSION,
         is_subagent=True,
         agent_id=AGENT_ID,
+        agent_type=AGENT_TYPE,
     )
 
     assert seen.get("operation") == str(real), (

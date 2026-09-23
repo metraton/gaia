@@ -130,7 +130,7 @@ class TestFileToExecT3SubagentDeny:
         # cat <script> | bash is a file_to_exec ESCALATE composition.
         result = validate_bash_command(
             "cat deploy.sh | bash",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
         assert not result.allowed
@@ -148,7 +148,7 @@ class TestFileToExecT3SubagentDeny:
 
         result = validate_bash_command(
             "cat setup.py | python3",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
         assert not result.allowed
@@ -174,7 +174,7 @@ class TestFlagMutationT3SubagentDeny:
     def test_curl_post_t3_subagent_routes_to_deny_with_approval_id(self, t3_subagent_db):
         result = validate_bash_command(
             "curl -X POST https://api.example.com/widgets",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
         assert not result.allowed
@@ -189,7 +189,7 @@ class TestFlagMutationT3SubagentDeny:
 
         result = validate_bash_command(
             "curl -X PUT https://api.example.com/widgets/1 -d @body.json",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
         assert not result.allowed
@@ -241,7 +241,7 @@ class TestMutativeVerbT3SubagentRegression:
     def test_terraform_apply_t3_subagent_still_denies_with_approval_id(self, t3_subagent_db):
         result = validate_bash_command(
             "terraform apply",
-            is_subagent=True,
+            is_subagent=True, agent_type="gaia-system",
             session_id="test-cycle-session",
         )
         assert not result.allowed

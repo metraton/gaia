@@ -159,10 +159,10 @@ class SessionSimulator:
         if env_extras:
             env.update(env_extras)
 
-        # Inject agent_id so delegate mode treats this as a subagent
-        # (allows all tools, letting the security layer be tested directly).
+        # A Claude Code subagent event: delegate mode lets the security layer
+        # be tested directly, and a T3 request binds to this agent_type.
         if "agent_id" not in stdin_payload:
-            stdin_payload = {**stdin_payload, "agent_id": "test-sim-agent"}
+            stdin_payload = {**stdin_payload, "agent_id": "test-sim-agent", "agent_type": "developer"}
 
         result = subprocess.run(
             [sys.executable, str(script_path)],

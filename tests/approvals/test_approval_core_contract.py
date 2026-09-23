@@ -412,6 +412,24 @@ def test_approval_core_contract_reactive_seal_without_event_session_is_refused(d
     assert _row(db, "SELECT COUNT(*) AS n FROM approvals")["n"] == 0
 
 
+def test_approval_core_contract_subagent_event_without_agent_is_refused_before_consent(db):
+    """A subagent event naming no agent_type is refused; the same event with one reaches consent."""
+    from adapters.claude_code import ClaudeCodeAdapter
+
+    adapter = ClaudeCodeAdapter()
+    anonymous = {**_subagent_event(), "tool_name": "Bash", "tool_input": {"command": COMMANDS[0]}}
+    del anonymous["agent_type"]
+    refused = adapter._adapt_bash("Bash", {"command": COMMANDS[0]}, hook_data=anonymous)
+    assert "carries no agent" in json.dumps(refused.output)
+    assert _row(db, "SELECT COUNT(*) AS n FROM approvals")["n"] == 0
+
+    identified = {**anonymous, "agent_type": AGENT}
+    adapter._adapt_bash("Bash", {"command": COMMANDS[0]}, hook_data=identified)
+    pending = _row(db, "SELECT id FROM approvals")
+    assert pending is not None
+    assert _payload(db, pending["id"])["requested_by"] == {"session_id": SESSION, "agent_id": AGENT}
+
+
 def test_approval_core_contract_primary_session_binds_to_the_adapter_primary_identity(db, monkeypatch):
     """A main-session command carries no agent: the adapter names the primary explicitly.
 
