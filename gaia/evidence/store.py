@@ -154,10 +154,16 @@ def insert_evidence(
     size_bytes: int | None = None,
     task_id: str | None = None,
     created_by_agent: str | None = None,
+    gate_id: int | None = None,
+    polarity: str = "positive",
     db_path: Path | None = None,
     bypass_dispatch_guard: bool = False,
 ) -> dict:
     """Insert an evidence row. Returns the new row as a dict.
+
+    ``gate_id`` names the task gate the evidence came from and must belong to a
+    task of this brief's plan. ``polarity='negative'`` records evidence that
+    refutes; only positive evidence can accept an AC.
 
     Args:
         workspace:        Workspace slug (used for FK lookup; not stored in
@@ -203,18 +209,38 @@ def insert_evidence(
         )
     if not ac_id or not ac_id.strip():
         raise ValueError("ac_id cannot be empty")
+    from gaia.state import VALID_EVIDENCE_POLARITIES
+
+    if polarity not in VALID_EVIDENCE_POLARITIES:
+        raise ValueError(
+            f"polarity must be one of {list(VALID_EVIDENCE_POLARITIES)}, got {polarity!r}"
+        )
 
     con = _connect(db_path)
     try:
+        if gate_id is not None and con.execute(
+            "SELECT 1 FROM task_gates g JOIN tasks t ON t.id = g.task_id "
+            "JOIN plans p ON p.id = t.plan_id WHERE g.id = ? AND p.brief_id = ?",
+            (gate_id, brief_id),
+        ).fetchone() is None:
+            raise ValueError(
+                f"gate id={gate_id} is not a gate of a task in this brief's plan"
+            )
+        # The v56 columns are named only when set, so a row that uses neither
+        # still inserts into an evidence table predating them.
+        values = {
+            "brief_id": brief_id, "ac_id": ac_id, "task_id": task_id,
+            "type": type, "text": text, "artifact_path": artifact_path,
+            "size_bytes": size_bytes, "created_by_agent": created_by_agent,
+        }
+        if gate_id is not None:
+            values["gate_id"] = gate_id
+        if polarity != "positive":
+            values["polarity"] = polarity
         con.execute(
-            """
-            INSERT INTO evidence
-                (brief_id, ac_id, task_id, type, text, artifact_path,
-                 size_bytes, created_by_agent)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (brief_id, ac_id, task_id, type, text, artifact_path,
-             size_bytes, created_by_agent),
+            f"INSERT INTO evidence ({', '.join(values)}) "
+            f"VALUES ({', '.join('?' for _ in values)})",
+            tuple(values.values()),
         )
         con.commit()
         evidence_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]

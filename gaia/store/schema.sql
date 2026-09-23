@@ -560,10 +560,59 @@ CREATE TABLE IF NOT EXISTS task_gates (
     artifact_path     TEXT,
     status            TEXT NOT NULL DEFAULT 'pending'
                      CHECK (status IN ('pending', 'pass', 'fail')),
+    stale_at          TEXT,            -- v56: set when the gate, its task goal or a covered AC changed after the verdict; the verdict itself is kept
+    stale_reason      TEXT,            -- v56: what changed
+    fail_cause        TEXT             -- v56: why a 'fail' failed; NULL for any other status
+                      CHECK (fail_cause IN ('product', 'environment', 'broken_test', 'requirement_changed')),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_gates_task ON task_gates(task_id);
+
+-- ---------------------------------------------------------------------------
+-- task structure (v56): coverage and dependencies as rows, not goal prose
+-- ---------------------------------------------------------------------------
+-- The AC is keyed by its text id (AC-1), not acceptance_criteria.id:
+-- upsert_brief deletes and re-inserts every AC row on each brief rewrite, so an
+-- id foreign key would cascade the coverage away. A link to an AC that no longer
+-- exists is reported by verify_brief.
+CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
+    task_id INTEGER NOT NULL,
+    ac_id   TEXT NOT NULL,
+    PRIMARY KEY (task_id, ac_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id            INTEGER NOT NULL,
+    depends_on_task_id INTEGER NOT NULL,
+    PRIMARY KEY (task_id, depends_on_task_id),
+    CHECK (task_id <> depends_on_task_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_acceptance_criteria_ac ON task_acceptance_criteria(ac_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_on ON task_dependencies(depends_on_task_id);
+
+-- ---------------------------------------------------------------------------
+-- brief_decisions (v56): a decision replaces at most one earlier decision, and
+-- is replaced at most once; current = not replaced by any row.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS brief_decisions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    brief_id      INTEGER NOT NULL,
+    decision      TEXT NOT NULL,
+    rationale     TEXT,
+    supersedes_id INTEGER,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE,
+    FOREIGN KEY (supersedes_id) REFERENCES brief_decisions(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_brief_decisions_brief ON brief_decisions(brief_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_brief_decisions_supersedes
+    ON brief_decisions(supersedes_id) WHERE supersedes_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- evidence (three-tier storage model)
@@ -584,11 +633,15 @@ CREATE TABLE IF NOT EXISTS evidence (
     size_bytes       INTEGER,
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     created_by_agent TEXT,
+    gate_id          INTEGER REFERENCES task_gates(id) ON DELETE SET NULL,  -- v56: the gate this evidence came from
+    polarity         TEXT NOT NULL DEFAULT 'positive'                        -- v56: 'negative' records evidence that refutes
+                     CHECK (polarity IN ('positive', 'negative')),
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_evidence_brief ON evidence(brief_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_ac ON evidence(brief_id, ac_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_gate ON evidence(gate_id);
 
 -- ---------------------------------------------------------------------------
 -- FTS5 mirror for briefs (objective / context / approach)

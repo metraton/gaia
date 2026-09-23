@@ -488,10 +488,15 @@ def _cmd_gate_set_status(args) -> int:
 
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     as_json = getattr(args, "json", False)
+    if args.status == "fail" and getattr(args, "cause", None) is None:
+        return _err("a failed gate needs --cause "
+                    "(product|environment|broken_test|requirement_changed)",
+                    as_json=as_json)
 
     try:
         res = set_gate_status(workspace, args.brief, args.order_num,
-                              args.gate_id, args.status, db_path=None)
+                              args.gate_id, args.status,
+                              cause=getattr(args, "cause", None), db_path=None)
     except StateTransitionForbidden as exc:
         return _err(f"forbidden: {exc}", as_json=as_json)
     except ValueError as exc:
@@ -827,6 +832,35 @@ def register(subparsers) -> None:
                            help="Emit JSON.")
 
     # -- gate (add|list|remove|set-status|edit) --------------------------------
+    # -- cover / depend ----------------------------------------------------------
+    for verb, target_help, target_type, example in (
+        ("cover", "AC id(s) the task covers.", str, "gaia task cover my-brief 2 AC-1 AC-3"),
+        ("depend", "Order number(s) of the tasks it waits for.", int,
+         "gaia task depend my-brief 3 1 2"),
+    ):
+        link_p = actions.add_parser(
+            verb,
+            help=("Declare which ACs a task covers" if verb == "cover"
+                  else "Declare which tasks a task depends on"),
+            description=(
+                "Record task structure as data. Coverage feeds `gaia brief verify` "
+                "(an AC with no covering task is reported) and the derived AC state; "
+                "dependencies derive whether a task is blocked. --remove withdraws."
+            ),
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=f"Examples:\n  {example}\n  {example} --remove\n",
+        )
+        link_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+        link_p.add_argument("order_num", type=int, metavar="ORDER_NUM",
+                            help="Order number of the task being described.")
+        link_p.add_argument("targets", nargs="+", type=target_type, metavar="TARGET",
+                            help=target_help)
+        link_p.add_argument("--remove", action="store_true", default=False,
+                            help="Withdraw the given links instead of adding them.")
+        link_p.add_argument("--workspace", default=None, metavar="W")
+        link_p.add_argument("--json", action="store_true", default=False,
+                            help="Emit JSON.")
+
     gate_p = actions.add_parser(
         "gate",
         help="Add / list / remove / edit a verification gate on a task",
@@ -903,6 +937,7 @@ def register(subparsers) -> None:
         epilog=(
             "Examples:\n"
             "  gaia task gate set-status my-brief 1 3 pass\n"
+            "  gaia task gate set-status my-brief 1 3 fail --cause=environment\n"
         ),
     )
     gate_setstatus_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
@@ -914,6 +949,11 @@ def register(subparsers) -> None:
         "status",
         choices=("pending", "pass", "fail"),
         help="Target gate status (VALID_GATE_STATUSES).",
+    )
+    gate_setstatus_p.add_argument(
+        "--cause", default=None,
+        choices=("product", "environment", "broken_test", "requirement_changed"),
+        help="Why the gate failed. Required with 'fail', refused otherwise.",
     )
     gate_setstatus_p.add_argument("--workspace", default=None, metavar="W")
     gate_setstatus_p.add_argument("--json", action="store_true", default=False,
@@ -971,6 +1011,35 @@ def register(subparsers) -> None:
                              help="Emit JSON.")
 
 
+def _cmd_link(args) -> int:
+    """`gaia task cover` / `gaia task depend`: declare task structure as rows."""
+    from gaia.state.permissions import StateTransitionForbidden
+    from gaia.store.writer import link_task_criteria, link_task_dependencies
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    try:
+        if args.task_action == "cover":
+            res = link_task_criteria(workspace, args.brief, args.order_num,
+                                     args.targets, remove=args.remove)
+            summary = f"covers {', '.join(res['covers']) or 'no AC'}"
+        else:
+            res = link_task_dependencies(workspace, args.brief, args.order_num,
+                                         args.targets, remove=args.remove)
+            summary = ("depends on "
+                       f"{', '.join(map(str, res['depends_on'])) or 'no task'}")
+    except StateTransitionForbidden as exc:
+        return _err(f"forbidden: {exc}", as_json=as_json)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"Task order_num={args.order_num} in '{args.brief}' {summary}")
+    return 0
+
+
 def cmd_task(args) -> int:
     """Dispatch handler for `gaia task`."""
     action = getattr(args, "task_action", None)
@@ -982,11 +1051,14 @@ def cmd_task(args) -> int:
         "remove":     _cmd_remove,
         "edit":       _cmd_edit,
         "reorder":    _cmd_reorder,
+        "cover":      _cmd_link,
+        "depend":     _cmd_link,
         "gate":       _cmd_gate,
     }
     if action in handlers:
         return handlers[action](args)
 
-    print("Usage: gaia task <set-status|add|list|show|remove|edit|reorder|gate>",
+    print("Usage: gaia task "
+          "<set-status|add|list|show|remove|edit|reorder|cover|depend|gate>",
           file=sys.stderr)
     return 0

@@ -216,6 +216,8 @@ def _cmd_add(args) -> int:
             size_bytes=final_size_bytes,
             task_id=task_id,
             created_by_agent=created_by,
+            gate_id=getattr(args, "gate", None),
+            polarity="negative" if getattr(args, "negative", False) else "positive",
         )
     except EvidenceWriteForbidden as exc:
         _cleanup_orphan_blob(final_artifact_path)
@@ -386,6 +388,10 @@ def register(subparsers) -> None:
     add_p.add_argument("--created-by", dest="created_by", default=None,
                        metavar="AGENT",
                        help="Agent slug that produced this evidence.")
+    add_p.add_argument("--gate", type=int, default=None, metavar="GATE_ID",
+                       help="task_gates.id this evidence came from (a gate of this brief's plan).")
+    add_p.add_argument("--negative", action="store_true", default=False,
+                       help="Record evidence that refutes; it never accepts the AC.")
     add_p.add_argument("--workspace", default=None, metavar="W",
                        help="Workspace identity. Default: gaia.project.current() or 'me'.")
     add_p.add_argument("--json", action="store_true", default=False,

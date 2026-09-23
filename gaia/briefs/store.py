@@ -126,6 +126,7 @@ def upsert_brief(
     from gaia.state.permissions import _assert_dispatch_can_write_content
     _assert_dispatch_can_write_content("briefs")
 
+    changed_ac_ids: list[str] = []
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
@@ -189,13 +190,13 @@ def upsert_brief(
             # match is genuinely new and starts 'pending' as the schema
             # intends, and a row dropped from `fields` is simply not
             # reinserted (removed, not resurrected).
-            existing_ac_status = {
-                row["ac_id"]: row["status"]
-                for row in con.execute(
-                    "SELECT ac_id, status FROM acceptance_criteria WHERE brief_id = ?",
-                    (brief_id,),
-                ).fetchall()
-            }
+            prior_acs = con.execute(
+                "SELECT ac_id, status, description FROM acceptance_criteria "
+                "WHERE brief_id = ?",
+                (brief_id,),
+            ).fetchall()
+            existing_ac_status = {row["ac_id"]: row["status"] for row in prior_acs}
+            existing_ac_description = {row["ac_id"]: row["description"] for row in prior_acs}
             con.execute("DELETE FROM acceptance_criteria WHERE brief_id = ?", (brief_id,))
             ac_count = 0
             for ac in fields.get("acceptance_criteria") or []:
@@ -203,6 +204,11 @@ def upsert_brief(
                 if isinstance(shape, (dict, list)):
                     shape = json.dumps(shape, sort_keys=True)
                 ac_id = ac.get("ac_id", "")
+                if (
+                    ac_id in existing_ac_description
+                    and existing_ac_description[ac_id] != ac.get("description", "")
+                ):
+                    changed_ac_ids.append(ac_id)
                 con.execute(
                     """
                     INSERT INTO acceptance_criteria
@@ -273,15 +279,22 @@ def upsert_brief(
         except Exception:
             con.rollback()
             raise
-
-        return {
-            "status": "applied",
-            "brief_id": brief_id,
-            "acs": ac_count,
-            "milestones": ms_count,
-        }
     finally:
         con.close()
+
+    result = {
+        "status": "applied",
+        "brief_id": brief_id,
+        "acs": ac_count,
+        "milestones": ms_count,
+    }
+    if changed_ac_ids:
+        from gaia.store.writer import mark_criterion_verdicts_stale
+
+        result["stale_tasks"] = mark_criterion_verdicts_stale(
+            workspace, name, changed_ac_ids, db_path=db_path
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +396,7 @@ def get_brief_by_id(
             (brief["id"],),
         ).fetchall()
         brief["dependencies"] = [r["name"] for r in dep_rows]
+        brief["decisions"] = _read_decisions(con, brief["id"])
 
         return brief
     finally:
@@ -472,6 +486,7 @@ def get_brief(
             (brief["id"],),
         ).fetchall()
         brief["dependencies"] = [r["name"] for r in dep_rows]
+        brief["decisions"] = _read_decisions(con, brief["id"])
 
         return brief
     finally:
@@ -913,7 +928,8 @@ def update_ac(
     try:
         brief_id = _resolve_brief_id_local(con, workspace, brief_name)
         existing = con.execute(
-            "SELECT id FROM acceptance_criteria WHERE brief_id = ? AND ac_id = ?",
+            "SELECT id, description FROM acceptance_criteria "
+            "WHERE brief_id = ? AND ac_id = ?",
             (brief_id, ac_id),
         ).fetchone()
         if existing is None:
@@ -928,15 +944,23 @@ def update_ac(
             values,
         )
         con.commit()
-        return {
-            "status": "applied",
-            "action": "updated",
-            "brief_name": brief_name,
-            "ac_id": ac_id,
-            "fields": list(updates.keys()),
-        }
     finally:
         con.close()
+
+    result = {
+        "status": "applied",
+        "action": "updated",
+        "brief_name": brief_name,
+        "ac_id": ac_id,
+        "fields": list(updates.keys()),
+    }
+    if description is not None and description != existing["description"]:
+        from gaia.store.writer import mark_criterion_verdicts_stale
+
+        result["stale_tasks"] = mark_criterion_verdicts_stale(
+            workspace, brief_name, [ac_id], db_path=db_path
+        )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1113,6 +1137,201 @@ def update_milestone(
 # ---------------------------------------------------------------------------
 # Brief invariant verification (v5 -- T5.6)
 # ---------------------------------------------------------------------------
+
+
+def _read_decisions(con: sqlite3.Connection, brief_id: int) -> dict[str, list[dict]]:
+    """Split a brief's decisions into current and superseded, oldest first."""
+    rows = [
+        dict(r) for r in con.execute(
+            "SELECT id, decision, rationale, supersedes_id, created_at "
+            "FROM brief_decisions WHERE brief_id = ? ORDER BY id",
+            (brief_id,),
+        )
+    ]
+    superseded_by = {r["supersedes_id"]: r["id"] for r in rows if r["supersedes_id"]}
+    current, superseded = [], []
+    for row in rows:
+        if row["id"] in superseded_by:
+            superseded.append({**row, "superseded_by": superseded_by[row["id"]]})
+        else:
+            current.append(row)
+    return {"current": current, "superseded": superseded}
+
+
+def add_decision(
+    workspace: str,
+    brief_name: str,
+    decision: str,
+    *,
+    rationale: str | None = None,
+    supersedes: int | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Record a decision on the brief, optionally replacing an earlier one.
+
+    ``supersedes`` must name a current decision of the same brief: a decision
+    is replaced at most once, so the current set never holds two answers to
+    the same question. Decisions are brief content, authored under the same
+    permission as the brief itself. Returns the new row.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_write_content
+    _assert_dispatch_can_write_content("briefs")
+
+    if not decision or not decision.strip():
+        raise ValueError("decision text cannot be empty")
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, brief_name)
+        if supersedes is not None:
+            target = con.execute(
+                "SELECT d.id, (SELECT id FROM brief_decisions r WHERE r.supersedes_id = d.id) "
+                "AS replaced_by FROM brief_decisions d WHERE d.id = ? AND d.brief_id = ?",
+                (supersedes, brief_id),
+            ).fetchone()
+            if target is None:
+                raise ValueError(
+                    f"decision id={supersedes} not found in brief '{brief_name}'"
+                )
+            if target["replaced_by"] is not None:
+                raise ValueError(
+                    f"decision id={supersedes} was already superseded by "
+                    f"id={target['replaced_by']}; supersede that one instead"
+                )
+        cur = con.execute(
+            "INSERT INTO brief_decisions (brief_id, decision, rationale, supersedes_id) "
+            "VALUES (?, ?, ?, ?)",
+            (brief_id, decision, rationale, supersedes),
+        )
+        con.commit()
+        return dict(con.execute(
+            "SELECT id, decision, rationale, supersedes_id, created_at "
+            "FROM brief_decisions WHERE id = ?",
+            (cur.lastrowid,),
+        ).fetchone())
+    finally:
+        con.close()
+
+
+def derive_brief_state(
+    workspace: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Derive the computed states of a brief's tasks and ACs, and its readiness.
+
+    Nothing here is stored; every value follows from the rows:
+
+    * task ``done``: closed (``tasks.status = 'done'``) AND either every gate
+      passes with none stale, or the closure carries a current override. The
+      closure itself is gate-derived and withheld from the task's producer, so
+      a producer-recorded pass does not make its task done.
+    * task ``blocked``: open and waiting on a task that is neither done nor
+      skipped (a skipped task was deliberately set aside and does not hold
+      others back).
+    * AC ``done``: not descoped, covered by at least one task, every covering
+      task done, and at least one positive evidence row.
+    * ``ready_to_close``: every AC done or descoped (a brief with no AC is not).
+    """
+    from gaia.state.task_closure import derive_gate_verdict
+
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id_local(con, workspace, name)
+        plan = con.execute(
+            "SELECT id FROM plans WHERE brief_id = ?", (brief_id,)
+        ).fetchone()
+        task_rows = [] if plan is None else [
+            dict(r) for r in con.execute(
+                "SELECT id, order_num, status, close_override_event_id "
+                "FROM tasks WHERE plan_id = ? ORDER BY order_num",
+                (plan["id"],),
+            )
+        ]
+        by_id = {t["id"]: t for t in task_rows}
+        for task in task_rows:
+            gates = [
+                dict(g) for g in con.execute(
+                    "SELECT id, status, stale_at, stale_reason FROM task_gates "
+                    "WHERE task_id = ? ORDER BY id",
+                    (task["id"],),
+                )
+            ]
+            task["stale_gate_ids"] = [g["id"] for g in gates if g["stale_at"]]
+            task["done"] = task["status"] == "done" and (
+                derive_gate_verdict(gates).approving
+                or task["close_override_event_id"] is not None
+            )
+            task["covers"] = [
+                r["ac_id"] for r in con.execute(
+                    "SELECT ac_id FROM task_acceptance_criteria WHERE task_id = ? "
+                    "ORDER BY ac_id",
+                    (task["id"],),
+                )
+            ]
+            task["depends_on_ids"] = [
+                r["depends_on_task_id"] for r in con.execute(
+                    "SELECT depends_on_task_id FROM task_dependencies WHERE task_id = ?",
+                    (task["id"],),
+                )
+            ]
+        for task in task_rows:
+            waiting = [
+                by_id[d]["order_num"] for d in task["depends_on_ids"]
+                if not by_id[d]["done"] and by_id[d]["status"] != "skipped"
+            ]
+            task["blocked_by"] = sorted(waiting)
+            task["blocked"] = (
+                bool(waiting) and not task["done"] and task["status"] != "skipped"
+            )
+
+        positive = {
+            r["ac_id"] for r in con.execute(
+                "SELECT DISTINCT ac_id FROM evidence "
+                "WHERE brief_id = ? AND polarity = 'positive'",
+                (brief_id,),
+            )
+        }
+        acs = []
+        for ac in con.execute(
+            "SELECT ac_id, status FROM acceptance_criteria WHERE brief_id = ? ORDER BY id",
+            (brief_id,),
+        ):
+            covering = [t for t in task_rows if ac["ac_id"] in t["covers"]]
+            acs.append({
+                "ac_id": ac["ac_id"],
+                "status": ac["status"],
+                "done": (
+                    ac["status"] != "descoped"
+                    and bool(covering)
+                    and all(t["done"] for t in covering)
+                    and ac["ac_id"] in positive
+                ),
+                "covered_by": [t["order_num"] for t in covering],
+                "has_positive_evidence": ac["ac_id"] in positive,
+            })
+    finally:
+        con.close()
+
+    return {
+        "brief_name": name,
+        "tasks": [
+            {
+                "order_num": t["order_num"],
+                "status": t["status"],
+                "done": t["done"],
+                "blocked": t["blocked"],
+                "blocked_by": t["blocked_by"],
+                "covers": t["covers"],
+                "stale_gate_ids": t["stale_gate_ids"],
+            }
+            for t in task_rows
+        ],
+        "acceptance_criteria": acs,
+        "ready_to_close": bool(acs) and all(
+            a["done"] or a["status"] == "descoped" for a in acs
+        ),
+    }
 
 
 def verify_brief(
@@ -1382,6 +1601,62 @@ def verify_brief(
                                 f"{'; '.join(result.errors)}"
                             ),
                         })
+
+        # Invariant 10: coverage from the structured task->AC links (v56). Once
+        # a plan has tasks, every live AC needs at least one covering task, and
+        # a link must name an AC the brief still has (AC rows are rewritten by
+        # brief edits, so a link can outlive its AC).
+        if plan_id is not None and task_count > 0:
+            links = con.execute(
+                "SELECT t.order_num, c.ac_id FROM task_acceptance_criteria c "
+                "JOIN tasks t ON t.id = c.task_id WHERE t.plan_id = ? "
+                "ORDER BY t.order_num, c.ac_id",
+                (plan_id,),
+            ).fetchall()
+            covered = {r["ac_id"] for r in links}
+            for ac_row in con.execute(
+                "SELECT ac_id FROM acceptance_criteria "
+                "WHERE brief_id = ? AND status != 'descoped' ORDER BY id",
+                (brief_id,),
+            ):
+                if ac_row["ac_id"] not in covered:
+                    inconsistencies.append({
+                        "kind": "uncovered_ac",
+                        "detail": (
+                            f"AC '{ac_row['ac_id']}' is covered by no task -- "
+                            f"declare one with `gaia task cover {name} <order> "
+                            f"{ac_row['ac_id']}`"
+                        ),
+                    })
+            for link in links:
+                if link["ac_id"] not in known_acs:
+                    inconsistencies.append({
+                        "kind": "orphan_task_ac_ref",
+                        "detail": (
+                            f"task order_num={link['order_num']} covers unknown "
+                            f"AC '{link['ac_id']}'"
+                        ),
+                    })
+
+        # Invariant 11: a gate verdict recorded before its gate, task goal or
+        # covered AC changed (v56). The verdict is kept but proves nothing
+        # until the gate is verified again.
+        if plan_id is not None:
+            for stale in con.execute(
+                "SELECT g.id, g.status, g.stale_reason, t.order_num "
+                "FROM task_gates g JOIN tasks t ON t.id = g.task_id "
+                "WHERE t.plan_id = ? AND g.stale_at IS NOT NULL "
+                "ORDER BY t.order_num, g.id",
+                (plan_id,),
+            ):
+                inconsistencies.append({
+                    "kind": "stale_gate_verdict",
+                    "detail": (
+                        f"gate id={stale['id']} on task order_num="
+                        f"{stale['order_num']} keeps a stale '{stale['status']}' "
+                        f"verdict ({stale['stale_reason']}); it must be verified again"
+                    ),
+                })
 
         return {
             "brief_name": name,

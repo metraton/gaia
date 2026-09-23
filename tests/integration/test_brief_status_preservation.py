@@ -67,6 +67,11 @@ def _seed_brief_with_two_acs_and_milestones(tmp_db):
         ],
     }, db_path=tmp_db)
 
+    from gaia.briefs import get_brief
+    from gaia.evidence.store import insert_evidence
+
+    insert_evidence("me", get_brief("me", "status-brief", db_path=tmp_db)["id"], "AC-1",
+                    type="text", text="seeded proof", db_path=tmp_db)
     set_ac_status("me", "status-brief", "AC-1", "done", db_path=tmp_db)
     set_milestone_status("me", "status-brief", "M1: bootstrap", "blocked",
                           db_path=tmp_db)

@@ -25,8 +25,10 @@ interchangeable, because the primitive cannot tell which one did.
 FAIL CLOSED is the governing rule; every branch below resolves toward
 "not approving" unless the evidence is positive and complete:
 
-  * Every gate exactly 'pass' (and at least one gate) -> approving.
+  * Every gate exactly 'pass' and none stale (and at least one gate) -> approving.
   * Any gate 'pending' or 'fail' -> not approving.
+  * Any gate carrying ``stale_at`` -> not approving: its verdict was recorded
+    against a gate, goal or AC that has since changed.
   * ZERO gates -> NOT approving. This is decided explicitly, ahead of the
     aggregate, and the explicitness is load-bearing: ``all()`` over an empty
     collection is True in Python, so a naive aggregate would report a task with
@@ -123,7 +125,7 @@ def derive_gate_verdict(gates: object) -> GateVerdict:
     ``gates`` is a sequence of gate mappings in the ``task_gates`` shape -- the
     exact shape ``gaia.store.writer.list_task_gates`` returns, so no
     translation is needed between the read path and this derivation. Only
-    ``status`` is consulted; ``verification_type``, ``evidence_shape`` and the
+    ``status`` and ``stale_at`` are consulted; ``verification_type``, ``evidence_shape`` and the
     rest are irrelevant to the question of whether a verdict was reached (WHAT
     the check was is ``gate_validation``'s and ``gate_oracle``'s business, not
     this module's).
@@ -165,6 +167,12 @@ def derive_gate_verdict(gates: object) -> GateVerdict:
             )
             continue
 
+        if gate.get("stale_at"):
+            reasons.append(
+                f"gate {_gate_label(gate, index)} carries a stale verdict "
+                f"({gate.get('stale_reason') or 'its subject changed'}); it must "
+                "be verified again"
+            )
         status = gate.get("status")
         if isinstance(status, str) and status in VALID_GATE_STATUSES:
             status_counts[status] = status_counts.get(status, 0) + 1
