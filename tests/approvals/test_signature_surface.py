@@ -106,6 +106,30 @@ def test_signature_surface_golden_d12_example():
     ])
 
 
+def test_signature_surface_opencode_string_is_text_blank_line_question():
+    """OpenCode asks one string: the visible text, a blank line, then the short question."""
+    from gaia.approvals import surface
+
+    rendered = surface.render(_d12_payload(), APPROVAL_ID)
+
+    assert rendered.opencode == rendered.text + "\n\n¿Reinstalo Gaia?"
+    assert rendered.opencode.startswith("Solicitud de aprobación · gaia-system\n")
+
+
+def test_signature_surface_opencode_string_is_not_held_to_the_question_limit():
+    from gaia.approvals import surface
+
+    payload = _seal(
+        [{"command": f"git push origin feat/{index}"} for index in range(3)],
+        what="x" * 120, question="x" * 60,
+    )
+
+    rendered = surface.render(payload, APPROVAL_ID)
+
+    assert len(rendered.opencode) > 60
+    assert rendered.opencode.endswith("\n\n" + "x" * 60)
+
+
 def test_signature_surface_options_carry_no_approval_id():
     from gaia.approvals import surface
 
@@ -198,6 +222,23 @@ def test_signature_surface_batch_of_four_keeps_each_signature_apart():
     assert [item.question["question"] for item in batch] == [
         f"¿Publico la rama {index}?" for index in range(1, 5)
     ]
+
+
+@pytest.mark.parametrize(
+    "count, headers",
+    [
+        (1, ["Aprobación"]),
+        (2, ["Aprob. 1/2", "Aprob. 2/2"]),
+        (4, ["Aprob. 1/4", "Aprob. 2/4", "Aprob. 3/4", "Aprob. 4/4"]),
+    ],
+)
+def test_signature_surface_batch_header_names_each_position(count, headers):
+    from gaia.approvals import surface
+
+    batch = surface.render_batch([_batch_entry(index) for index in range(1, count + 1)])
+
+    assert [item.question["header"] for item in batch] == headers
+    assert all(len(header) <= surface.HEADER_MAX for header in headers)
 
 
 @pytest.mark.parametrize("count", [0, 5])
@@ -341,4 +382,5 @@ def test_signature_surface_cli_presents_the_d12_surface(db):
         "text": expected.text,
         "question": expected.question,
         "details": expected.details,
+        "opencode": expected.opencode,
     }

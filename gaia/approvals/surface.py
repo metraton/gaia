@@ -55,12 +55,18 @@ class SurfaceLimitError(SealError):
 
 @dataclass(frozen=True)
 class Surface:
-    """One signature as a host shows it: text printed first, then its question."""
+    """One signature as a host shows it.
+
+    Claude Code shows ``text`` and then asks ``question``; OpenCode asks the
+    single string ``opencode`` (the text, a blank line, the short question).
+    ``details`` answers the Details option on either host.
+    """
 
     approval_id: str
     text: str
     question: dict
     details: str
+    opencode: str
 
 
 # --------------------------------------------------------------------------- #
@@ -217,10 +223,10 @@ def _details(
     return "\n".join(lines)
 
 
-def _question(payload: Mapping[str, Any]) -> dict:
+def _question(payload: Mapping[str, Any], header: str) -> dict:
     question = {
         "question": payload.get("question") or DEFAULT_QUESTION,
-        "header": HEADER,
+        "header": header,
         "options": [{"label": label, "description": text} for label, text in OPTIONS],
         "multiSelect": False,
     }
@@ -228,17 +234,24 @@ def _question(payload: Mapping[str, Any]) -> dict:
     return question
 
 
-def render(payload: Mapping[str, Any], approval_id: str) -> Surface:
-    """Render one sealed request; a phrase the payload does not declare is stated as absent."""
+def _render(payload: Mapping[str, Any], approval_id: str, header: str) -> Surface:
     items = _items(payload)
     if not items:
         raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
+    text = _text(payload, items)
+    question = _question(payload, header)
     return Surface(
         approval_id=approval_id,
-        text=_text(payload, items),
-        question=_question(payload),
+        text=text,
+        question=question,
         details=_details(payload, items, approval_id),
+        opencode=f"{text}\n\n{question['question']}",
     )
+
+
+def render(payload: Mapping[str, Any], approval_id: str) -> Surface:
+    """Render one sealed request; a phrase the payload does not declare is stated as absent."""
+    return _render(payload, approval_id, HEADER)
 
 
 def render_batch(
@@ -246,14 +259,20 @@ def render_batch(
 ) -> list[Surface]:
     """Render 1 to 4 requests asked in one question call, one question per signature.
 
-    Question texts must differ: the host indexes each answer by its question
-    text, so a repeated text could not be tied back to its own signature.
+    A lone signature keeps the header ``Aprobación``; in a batch each header
+    names its position, ``Aprob. N/M``. Question texts must differ: the host
+    indexes each answer by its question text, so a repeated text could not be
+    tied back to its own signature.
     """
-    if not 1 <= len(requests) <= BATCH_MAX:
+    total = len(requests)
+    if not 1 <= total <= BATCH_MAX:
         raise SurfaceLimitError(
-            f"a question call presents 1 to {BATCH_MAX} signatures, not {len(requests)}"
+            f"a question call presents 1 to {BATCH_MAX} signatures, not {total}"
         )
-    surfaces = [render(payload, approval_id) for payload, approval_id in requests]
+    surfaces = [
+        _render(payload, approval_id, HEADER if total == 1 else f"Aprob. {position}/{total}")
+        for position, (payload, approval_id) in enumerate(requests, start=1)
+    ]
     texts = [surface.question["question"] for surface in surfaces]
     if len(set(texts)) != len(texts):
         raise SurfaceLimitError(

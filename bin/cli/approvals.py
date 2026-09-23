@@ -1273,7 +1273,7 @@ def cmd_show_v2(args) -> int:
 
 
 def _signature_surface(payload: dict, approval_id: str) -> dict:
-    """Return the signature a host shows: the text to print, then its question and Details."""
+    """Return the signature a host shows: text, question, Details and OpenCode's single string."""
     from gaia.approvals import surface
 
     rendered = surface.render(payload, approval_id)
@@ -1282,6 +1282,7 @@ def _signature_surface(payload: dict, approval_id: str) -> dict:
         "text": rendered.text,
         "question": rendered.question,
         "details": rendered.details,
+        "opencode": rendered.opencode,
     }
 
 
@@ -2193,7 +2194,7 @@ def register(subparsers) -> None:
         action="store_true",
         help=(
             "JSON signature surface: the text to print, the question to ask "
-            "(Approve / Reject / Details) and its Details"
+            "(Approve / Reject / Details), its Details and OpenCode's single string"
         ),
     )
     p_show.set_defaults(func=cmd_show_v2)
