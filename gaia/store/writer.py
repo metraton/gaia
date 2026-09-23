@@ -64,64 +64,27 @@ _KNOWN_TABLES = {
 
 
 # ---------------------------------------------------------------------------
-# Semantic-grant lifetime (approvals redesign, M1)
+# Approval window (brief aprobaciones-agnosticas-al-host, D4)
 # ---------------------------------------------------------------------------
 #
-# APPROVAL_GRANT_TTL_MINUTES is the default lifetime of an ACTIVE semantic grant
-# -- the window in which an already-approved command may be retried and consumed.
-# It is consumed by insert_semantic_grant() here and by the hooks-layer grant
-# default (DEFAULT_GRANT_TTL_MINUTES in modules/security/approval_grants.py).
+# APPROVAL_WINDOW_MINUTES is the single lifetime of every grant a user signs --
+# reactive Bash, plan-first COMMAND_SET and protected-path write alike. It is
+# counted from the DECISION (the grant row is born at activation) and sealed into
+# every request by gaia.approvals.core.seal_request, so the user sees the window
+# being signed. Consuming an item never extends it: what is bounded is the
+# grant's total authority, not the idle gap between items.
 #
-# It is DELIBERATELY a distinct concept from DEFAULT_PENDING_TTL_MINUTES (1440 /
-# 24h), which is how long an UNANSWERED approval waits for the user. The two must
-# not be conflated: a 24h pending window lets a human come back the next day,
-# while the grant window is the short, post-approval execution horizon. Collapsing
-# them would either shrink the approval wait to 5m (a regression) or stretch the
-# grant lifetime to 24h (a security weakening). See the regression guards in
+# It is DELIBERATELY distinct from DEFAULT_PENDING_TTL_MINUTES (1440), how long
+# an UNANSWERED request waits for the human; see
 # tests/hooks/test_pending_scanner_cleanup.py::TestTTLConstants.
 #
-# The value is 5 minutes (approvals redesign, M1). The grant is consumed AT THE
-# MATCH (bash_validator flips the row PENDING->CONSUMED when it authorizes the
-# command in PreToolUse, before execution), so this short window only needs to
-# cover the block -> approve -> retry round trip; a grant that is never presented
-# to a matching retry simply expires. Replay protection comes from consume-at-
-# match plus this short TTL, not from a long-lived grant.
-#
-# It lives HERE, in gaia.store.writer, because writer is the dependency leaf of
-# the approval planes: gaia.approvals.store already imports from this module
-# (_connect) and the hooks approval_grants module already imports
-# insert_semantic_grant from here, while writer imports neither -- so any consumer
-# can read this constant without a circular import.
-APPROVAL_GRANT_TTL_MINUTES = 5
+# It lives here because writer is the dependency leaf of the approval planes:
+# gaia.approvals and the hooks approval_grants module import from writer, while
+# writer imports neither.
+APPROVAL_WINDOW_MINUTES = 30
 
-
-# ---------------------------------------------------------------------------
-# Plan-first COMMAND_SET grant lifetime
-# ---------------------------------------------------------------------------
-#
-# PLAN_COMMAND_SET_TTL_MINUTES bounds a plan-first COMMAND_SET grant: the window
-# in which an approved, ordered batch may still reserve its remaining commands.
-#
-# It is a THIRD window, distinct from both constants above, because a plan-first
-# set is consumed differently from either. APPROVAL_GRANT_TTL_MINUTES (5) is
-# calibrated for a SINGLE command consumed at the match -- it only has to cover
-# block -> approve -> retry. A set is N commands executed one per tool call with
-# real work between them (a build, an apply, a verification read), so a 5-minute
-# window would expire a legitimately-running set mid-batch.
-# DEFAULT_PENDING_TTL_MINUTES (1440) is the opposite error: it is how long an
-# UNANSWERED approval waits for a human, and reusing it here would let an
-# approved-but-never-used key stay armed for a full day.
-#
-# 60 minutes is the point where both pressures are satisfied: it is longer than
-# any batch a user watches through in one sitting, and short enough that a key
-# nobody presented to a matching command is dead while the person who approved it
-# is still at the same desk.
-#
-# The window is measured from grant creation and is NOT extended by consuming an
-# item. What must be bounded is the grant's total authority, not the idle gap
-# between items; a sliding window would let a long enough set carry a live key
-# indefinitely, which is the property this constant exists to deny.
-PLAN_COMMAND_SET_TTL_MINUTES = 60
+APPROVAL_GRANT_TTL_MINUTES = APPROVAL_WINDOW_MINUTES
+PLAN_COMMAND_SET_TTL_MINUTES = APPROVAL_WINDOW_MINUTES
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +109,7 @@ PLAN_COMMAND_SET_TTL_MINUTES = 60
 # The window must exceed the longest a single reserved command can legitimately
 # still be executing, since reclaiming a slot whose command is mid-flight would
 # authorize the same index twice. It must also stay well inside
-# PLAN_COMMAND_SET_TTL_MINUTES (60), or one abandoned index would consume the
+# PLAN_COMMAND_SET_TTL_MINUTES (30), or one abandoned index would consume the
 # whole grant. 10 minutes sits between the two: longer than any single item a
 # validated set may hold (each is one atomic non-interactive invocation, never a
 # chain), and short enough that a grant survives several abandoned attempts.
@@ -168,38 +131,10 @@ RESERVATION_ABANDONED_REASON_CODE = "reservation_abandoned_unexecuted"
 # SCOPE_FILE_PATH grant lifetime
 # ---------------------------------------------------------------------------
 #
-# FILE_PATH_GRANT_TTL_MINUTES bounds a protected-path Write/Edit grant: the
-# window in which an approved path may still be written.
-#
-# It is a FOURTH window because this lane's round trip is not the one
-# APPROVAL_GRANT_TTL_MINUTES (5) was calibrated for. That window covers a Bash
-# retry: the blocked subagent is still alive and re-presents the same command on
-# its next tool call. A protected-path write cannot do that -- the orchestrator
-# closes its turn to present the approval, then RE-DISPATCHES a fresh subagent,
-# which must ground itself (skills, files, investigation) before it reaches the
-# file. The clock starts at the user's DECISION, so the whole re-dispatch plus
-# grounding is spent inside the window, and 5 minutes measured 0% consumption on
-# this lane: every SCOPE_FILE_PATH grant a user ever signed expired unused.
-# DEFAULT_PENDING_TTL_MINUTES (1440) is the opposite error, for the reason
-# recorded above it: that is how long an UNANSWERED approval waits for a human,
-# and reusing it here would leave a signed key to a protected path armed for a
-# day.
-#
-# 30 minutes is sized to one re-dispatch cycle plus the multi-edit pass that
-# follows it: a real fix to a protected file is several Edit calls to the same
-# path with reads and test runs between them, all of which this one consent must
-# cover. It is half of PLAN_COMMAND_SET_TTL_MINUTES because the authority is
-# narrower -- one exact path, and only through Write/Edit, which produce inert
-# bytes rather than executing anything -- and it stays inside the sitting in
-# which the person approved it.
-#
-# Unlike the two windows above, this one is the lane's ONLY bound. The grant is
-# NOT consumed at the match: a path grant is deliberately reusable inside its
-# window, because consuming it on the first Edit would demand a fresh user
-# approval for every subsequent Edit to the same file. So the TTL here carries
-# the replay bound alone, which is why it must be short enough to matter and is
-# measured from creation, never extended by a write.
-FILE_PATH_GRANT_TTL_MINUTES = 30
+# The same approval window. Unlike the command lanes it is this lane's ONLY
+# bound: a path grant is reusable inside its window (one fix is several Edits to
+# the same file), so the window alone carries the replay bound.
+FILE_PATH_GRANT_TTL_MINUTES = APPROVAL_WINDOW_MINUTES
 
 
 # ---------------------------------------------------------------------------
@@ -7542,14 +7477,31 @@ def _record_abandoned_reservation(
         return
 
 
+def _sealed_item_binds(
+    item: dict, grant: dict, cwd: str | None, session_id: str, agent_id: str | None
+) -> bool:
+    """Return whether a core-sealed item may run here: its directory and its requester."""
+    return (
+        item.get("cwd") == cwd
+        and grant.get("session_id") == session_id
+        and grant.get("agent_id") == agent_id
+    )
+
+
 def reserve_plan_command(
     command: str,
     *,
     session_id: str,
     tool_use_id: str,
+    cwd: str | None = None,
+    agent_id: str | None = None,
     db_path: Path | None = None,
 ) -> dict | None:
     """Reserve the exact next command for one correlated Bash tool call.
+
+    An item sealed by gaia.approvals.core (it carries ``position``) matches only
+    in its sealed ``cwd`` and only for the session and agent the grant is bound
+    to; an item sealed before that carries neither and keeps its old reach.
 
     A ``tool_use_id`` that already reserved under this grant is refused: a retry
     must be a different host tool call than the one that was blocked, and both
@@ -7591,6 +7543,8 @@ def reserve_plan_command(
                 continue
             item = items[index]
             if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
+                continue
+            if "position" in item and not _sealed_item_binds(item, grant, cwd, session_id, agent_id):
                 continue
             reserved_ids = _json.loads(grant.get("reserved_tool_use_ids_json") or "[]")
             if tool_use_id in reserved_ids:

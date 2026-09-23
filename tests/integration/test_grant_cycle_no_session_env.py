@@ -1,38 +1,17 @@
-"""Characterization tests: grant cycle is session-agnostic (Brief 71 invariant).
+"""Grant cycle with no session env: the grant belongs to its requester (D6).
 
-CONTEXT — why these tests exist
-================================
-Brief 71 / Task E migrated the T3 approval grant plane from filesystem files
-(which were session-locked via ``AND session_id=?``) to a DB-backed model whose
-``check_db_semantic_grant`` and ``check_db_file_path_grant`` intentionally omit
-any session_id filter.  The migration proved empirically that the block-approve-
-retry flow crosses sessions legitimately:
+The block-approve-retry flow crosses sessions legitimately:
 
-  block     : happens under the subagent session
-  approve   : happens under the orchestrator session (AskUserQuestion answer)
-  retry     : happens under the subagent session (resumed after grant activated)
+  block     : happens under the requesting (subagent) session
+  approve   : happens under the approver's session (the orchestrator's answer)
+  retry     : happens under the requesting session again
 
-If ``session_id`` were a match criterion the retry would NEVER find the grant,
-because the orchestrator-side activation uses a different session_id than the
-one recorded in the DB row.
-
-WHAT THESE TESTS DO
-===================
-They are **characterization** tests: the invariant is already correct.  The
-tests SHIELD it against future regressions -- any refactor that re-introduces
-a session_id filter into the grant-match path will turn these green tests red.
-
-The tests deliberately run the retry under a DIFFERENT ``session_id`` than the
-block, confirming that the grant survives the session boundary.  ``CLAUDE_SESSION_ID``
-is stripped from the subprocess environment (by the harness); the only source of
-the session is the event JSON -- exactly the production path.
-
-PLANES COVERED
-==============
-- bash_semantic : T3 command blocked as subagent → grant activated → allowed on
-                  retry with a different session_id
-- write_edit_file_path : protected-path Write blocked as subagent → grant
-                         activated → allowed on retry with a different session_id
+Brief aprobaciones-agnosticas-al-host, D6, binds every grant to the session and
+agent that REQUESTED it, never to the one that answered. So the activation runs
+under a different session than the block, the requester's retry is allowed, and
+a retry from any other session is not. ``CLAUDE_SESSION_ID`` is stripped from the
+subprocess environment (by the harness); the only source of the session is the
+event JSON -- exactly the production path.
 """
 
 from __future__ import annotations
@@ -89,18 +68,20 @@ def _activate_first_pending(current_session_id: str) -> "ApprovalActivationResul
 # ---------------------------------------------------------------------------
 
 class TestBashSemanticGrantCycleNoSessionEnv:
-    """Grant cycle for Bash T3 commands is session-agnostic (no CLAUDE_SESSION_ID env)."""
+    """Grant cycle for Bash T3 commands, bound to the requester (no CLAUDE_SESSION_ID env)."""
 
     COMMAND = "git push origin feat/brief-71"
     BLOCK_SESSION = "session-subagent-A"
-    RETRY_SESSION = "session-subagent-B"   # deliberately different from BLOCK_SESSION
+    APPROVER_SESSION = "session-orchestrator-B"
+    FOREIGN_SESSION = "session-other-C"
 
-    def test_block_activates_grant_consumed_by_cross_session_retry(self, tmp_path, monkeypatch):
-        """Full bash grant cycle: block → activate → retry under a different session.
+    def test_approver_session_activates_grant_consumed_only_by_the_requester(
+        self, tmp_path, monkeypatch
+    ):
+        """Full bash grant cycle: block → activate from another session → retry.
 
-        Invariant: the retry finds the grant WITHOUT a session_id match constraint.
-        The test uses a DIFFERENT session for the retry than was used for the block;
-        if session_id were a filter criterion, the retry would be blocked again.
+        The grant is bound to the requesting session, not the approver's: a retry
+        from a foreign session is blocked, the requester's retry is allowed.
         """
         cwd = _make_cwd(tmp_path)
 
@@ -133,22 +114,26 @@ class TestBashSemanticGrantCycleNoSessionEnv:
         )
 
         # ── Phase 2: activate (orchestrator side, different session) ────────
-        activation = _activate_first_pending(current_session_id=self.RETRY_SESSION)
+        activation = _activate_first_pending(current_session_id=self.APPROVER_SESSION)
         assert activation.success, (
             f"Activation failed: status={activation.status!r}, reason={activation.reason!r}"
         )
         # Pending row must be gone after activation.
         assert not _pending_rows(), "Pending row should be consumed after activation"
 
-        # ── Phase 3: retry (subagent, different session) ─────────────────────
-        # The retry uses RETRY_SESSION (≠ BLOCK_SESSION) to prove session-agnosticism.
+        # ── Phase 3: a foreign session cannot use the grant ──────────────────
         retry_event = {
             "hook_event_name": "PreToolUse",
-            "session_id": self.RETRY_SESSION,
+            "session_id": self.FOREIGN_SESSION,
             "tool_name": "Bash",
             "tool_input": {"command": self.COMMAND},
             "agent_id": "a12345670f1e2d3c4",
         }
+        foreign_result = run_pre_tool_use_event(retry_event, cwd=cwd)
+        assert foreign_result.permission_decision == "deny", foreign_result.output
+
+        # ── Phase 4: the requesting session's retry is allowed ───────────────
+        retry_event["session_id"] = self.BLOCK_SESSION
         retry_result = run_pre_tool_use_event(retry_event, cwd=cwd)
 
         assert retry_result.exit_code == 0, (
@@ -168,19 +153,20 @@ class TestBashSemanticGrantCycleNoSessionEnv:
 # ---------------------------------------------------------------------------
 
 class TestWriteEditFilePathGrantCycleNoSessionEnv:
-    """Grant cycle for protected Write/Edit paths is session-agnostic."""
+    """Grant cycle for protected Write/Edit paths, bound to the requester."""
 
     BLOCK_SESSION = "session-write-X"
-    RETRY_SESSION = "session-write-Y"   # deliberately different
+    RETRY_SESSION = BLOCK_SESSION
+    APPROVER_SESSION = "session-write-Y"
+    FOREIGN_SESSION = "session-write-Z"
 
     def test_protected_path_write_allowed_after_cross_session_activation(
         self, tmp_path, monkeypatch
     ):
-        """Write to a protected hooks path: block → activate → retry under a different session.
+        """Write to a protected hooks path: block → activate from another session → retry.
 
-        Invariant: the retry finds the SCOPE_FILE_PATH grant without a session_id
-        constraint.  Using a different session_id for the retry exercises the
-        cross-session boundary that Brief 71 Task E fixed.
+        The SCOPE_FILE_PATH grant is bound to the requesting session: a foreign
+        session is blocked, the requester's retry is allowed.
         """
         cwd = _make_cwd(tmp_path)
 
@@ -213,21 +199,26 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             f"Expected exactly 1 pending row after block; got {len(pending)}."
         )
 
-        # ── Phase 2: activate (different session) ───────────────────────────
-        activation = _activate_first_pending(current_session_id=self.RETRY_SESSION)
+        # ── Phase 2: activate (approver's session) ──────────────────────────
+        activation = _activate_first_pending(current_session_id=self.APPROVER_SESSION)
         assert activation.success, (
             f"Activation failed: status={activation.status!r}, reason={activation.reason!r}"
         )
         assert not _pending_rows(), "Pending row should be consumed after activation"
 
-        # ── Phase 3: retry (different session) ──────────────────────────────
+        # ── Phase 3: a foreign session cannot use the grant ──────────────────
         retry_event = {
             "hook_event_name": "PreToolUse",
-            "session_id": self.RETRY_SESSION,
+            "session_id": self.FOREIGN_SESSION,
             "tool_name": "Write",
             "tool_input": {"file_path": protected_file, "content": ""},
             "agent_id": "a76543210f1e2d3c4",
         }
+        foreign_result = run_pre_tool_use_event(retry_event, cwd=cwd)
+        assert foreign_result.permission_decision == "deny", foreign_result.output
+
+        # ── Phase 4: the requesting session's retry is allowed ───────────────
+        retry_event["session_id"] = self.RETRY_SESSION
         retry_result = run_pre_tool_use_event(retry_event, cwd=cwd)
 
         assert retry_result.exit_code == 0, (
@@ -274,7 +265,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             f"got {block_result.permission_decision!r}.\noutput: {block_result.output}"
         )
 
-        activation = _activate_first_pending(current_session_id=self.RETRY_SESSION)
+        activation = _activate_first_pending(current_session_id=self.APPROVER_SESSION)
         assert activation.success, (
             f"Activation failed: status={activation.status!r}, reason={activation.reason!r}"
         )
@@ -314,25 +305,21 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
         assert "PROTECTED_PATH" in bash_result.stdout
         assert "approval_id" not in bash_result.stdout
 
-    def test_activation_gives_the_grant_the_file_path_lane_window(
+    def test_activation_gives_the_grant_the_approval_window(
         self, tmp_path, monkeypatch
     ):
-        """A grant born through activation carries the 30-minute file-path window.
+        """A grant born through activation carries the 30-minute approval window.
 
         The activation call site used to forward its own ``ttl_minutes``
-        parameter -- the Bash lane's 5 minutes -- into insert_file_path_grant,
-        overriding that function's FILE_PATH_GRANT_TTL_MINUTES default. The
-        window is therefore only correct end-to-end if the BORN row is
-        measured; asserting the writer's default alone passes either way.
+        parameter into insert_file_path_grant, overriding that function's
+        default. The window is therefore only correct end-to-end if the BORN
+        row is measured; asserting the writer's default alone passes either way.
         """
         import sqlite3
         from datetime import datetime, timedelta
 
         from gaia.paths import db_path
-        from gaia.store.writer import (
-            APPROVAL_GRANT_TTL_MINUTES,
-            FILE_PATH_GRANT_TTL_MINUTES,
-        )
+        from gaia.store.writer import APPROVAL_WINDOW_MINUTES
 
         cwd = _make_cwd(tmp_path)
         protected_file = str(INSTALL_HOOKS_DIR / "pre_tool_use.py")
@@ -365,8 +352,6 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
         span = datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(
             row[0], "%Y-%m-%dT%H:%M:%SZ"
         )
-        assert span == timedelta(minutes=FILE_PATH_GRANT_TTL_MINUTES), (
-            f"Expected the {FILE_PATH_GRANT_TTL_MINUTES}-minute file-path window, "
-            f"got {span}."
+        assert span == timedelta(minutes=APPROVAL_WINDOW_MINUTES), (
+            f"Expected the {APPROVAL_WINDOW_MINUTES}-minute approval window, got {span}."
         )
-        assert span != timedelta(minutes=APPROVAL_GRANT_TTL_MINUTES)

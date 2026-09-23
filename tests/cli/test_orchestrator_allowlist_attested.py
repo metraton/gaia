@@ -127,6 +127,8 @@ def test_attested_reads_pass_the_existing_allowlist(attested_payload, argline):
         "memory add --content=note",
         "memory append --content=more",
         "notifications ack 12",
+        "approvals revoke P-xyz",
+        "approvals reject P-xyz",
     ],
 )
 def test_attested_management_writes_pass_the_existing_allowlist(
@@ -142,8 +144,6 @@ def test_attested_management_writes_pass_the_existing_allowlist(
     [
         "approvals approve P-xyz",
         "approvals replay P-xyz",
-        "approvals revoke P-xyz",
-        "approvals reject P-xyz",
         "approvals reject-all",
         "approvals clean",
         "contract set foo bar",

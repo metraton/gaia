@@ -382,14 +382,14 @@ def test_find_pending_in_db_cross_session(iso_db):
 
 
 # ---------------------------------------------------------------------------
-# 7. insert_semantic_grant default TTL is 60 minutes
+# 7. insert_semantic_grant default TTL is the 30-minute approval window
 # ---------------------------------------------------------------------------
 
-def test_grant_ttl_default_is_5_minutes(iso_db):
+def test_grant_ttl_default_is_the_approval_window(iso_db):
     from gaia.store.writer import insert_semantic_grant, APPROVAL_GRANT_TTL_MINUTES
     import gaia.store.writer as swriter
 
-    assert APPROVAL_GRANT_TTL_MINUTES == 5
+    assert APPROVAL_GRANT_TTL_MINUTES == 30
 
     command = "terraform apply"
     approval_id = "P-ttl-default-test"
@@ -417,9 +417,9 @@ def test_grant_ttl_default_is_5_minutes(iso_db):
     expires = datetime.strptime(row["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
         tzinfo=timezone.utc
     )
-    # expires_at should be ~5 min after the call instant (allow 2-min slack).
-    lower = before + timedelta(minutes=5) - timedelta(minutes=2)
-    upper = after + timedelta(minutes=5) + timedelta(minutes=2)
+    # expires_at should be ~30 min after the call instant (allow 2-min slack).
+    lower = before + timedelta(minutes=30) - timedelta(minutes=2)
+    upper = after + timedelta(minutes=30) + timedelta(minutes=2)
     assert lower <= expires <= upper, (
         f"expires_at {expires} not ~5min from now ({before}..{after})"
     )

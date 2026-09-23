@@ -854,11 +854,7 @@ def activate_command_set_atomically(
             if fingerprint != expected:
                 raise ValueError(f"COMMAND_SET fingerprint mismatch at index {index}")
             commands.append(command)
-            normalized.append({
-                "command": command,
-                "fingerprint": expected,
-                "rationale": item.get("rationale", ""),
-            })
+            normalized.append({**item, "fingerprint": expected, "rationale": item.get("rationale", "")})
         expected_request_fingerprint = compute_request_fingerprint(commands)
         if request_fingerprint != expected_request_fingerprint:
             raise ValueError("COMMAND_SET request fingerprint mismatch")
@@ -925,9 +921,12 @@ def activate_command_set_atomically(
             "UPDATE approvals SET status='approved', decided_at=? WHERE id=?",
             (_now_iso(), approval_id),
         )
+        # The grant belongs to whoever REQUESTED it (D6), never to the session
+        # that answered; a row sealed before requesters were recorded has none.
         result = insert_plan_command_set(
-            approval_id, command_set, request_fingerprint=request_fingerprint,
-            agent_id=agent_id, session_id=approver_session, con=connection,
+            approval_id, normalized, request_fingerprint=request_fingerprint,
+            agent_id=agent_id or stored_agent, session_id=stored_session or approver_session,
+            con=connection,
         )
         if result.get("status") != "applied":
             raise ValueError(result.get("reason", "COMMAND_SET grant creation failed"))
@@ -955,7 +954,7 @@ def activate_approval_atomically(
     agent_id: Optional[str] = None,
     binding: Optional[dict] = None,
     shown_payload: Optional[dict | str] = None,
-    ttl_minutes: int = 5,
+    ttl_minutes: Optional[int] = None,
     con: Optional[sqlite3.Connection] = None,
 ) -> ApprovalActivationResult:
     """Atomically turn one supported sealed approval into executable authority."""
@@ -1092,7 +1091,7 @@ def activate_approval_atomically(
                 command = item["command"]
                 normalized_set.append(
                     {
-                        "command": command,
+                        **item,
                         "fingerprint": command_fingerprint(command),
                         "rationale": item.get("rationale", ""),
                     }
@@ -1300,7 +1299,7 @@ def activate_approval_atomically(
                 file_path=file_path,
                 scope_signature=signature.to_dict(),
                 agent_id=effective_agent,
-                session_id=approver_session,
+                session_id=stored_session or approver_session,
                 con=connection,
             )
         else:
@@ -1309,8 +1308,8 @@ def activate_approval_atomically(
                 command=command,
                 scope_signature=signature.to_dict(),
                 agent_id=effective_agent,
-                session_id=approver_session,
-                ttl_minutes=ttl_minutes,
+                session_id=stored_session or approver_session,
+                ttl_minutes=writer.APPROVAL_WINDOW_MINUTES if ttl_minutes is None else ttl_minutes,
                 con=connection,
             )
         if grant_result.get("status") != "applied":

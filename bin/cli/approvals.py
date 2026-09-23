@@ -1513,8 +1513,53 @@ def cmd_approve(args) -> int:
     return 0
 
 
+def _requester_identity(args) -> tuple[str, str]:
+    """Resolve the requesting session and agent: explicit flags, else the dispatch env.
+
+    Claude Code exports ``CLAUDE_CODE_SESSION_ID`` to a subagent's Bash and the
+    Claude adapter injects ``GAIA_DISPATCH_AGENT`` into it; neither is guessed.
+    """
+    session_id = (
+        getattr(args, "session_id", None)
+        or os.environ.get("CLAUDE_CODE_SESSION_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
+        or ""
+    )
+    agent_id = getattr(args, "agent_id", None) or os.environ.get("GAIA_DISPATCH_AGENT") or ""
+    return session_id, agent_id
+
+
+def _request_set_items(args) -> list[dict]:
+    """Pair each --command with its --cwd and --expect-exit declarations.
+
+    One --cwd applies to every command; N --cwd flags align with N commands.
+    --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions.
+    """
+    commands = list(args.command)
+    cwds = list(getattr(args, "cwd", None) or [os.getcwd()])
+    if len(cwds) == 1:
+        cwds = cwds * len(commands)
+    if len(cwds) != len(commands):
+        raise ValueError("pass one --cwd for all commands or one per --command")
+    expected: dict[int, list[int]] = {}
+    for spec in getattr(args, "expect_exit", None) or []:
+        position, _, codes = spec.partition("=")
+        if not position.isdigit() or not 1 <= int(position) <= len(commands) or not codes:
+            raise ValueError(f"--expect-exit {spec!r} must be POSITION=CODE[,CODE] for a listed command")
+        expected[int(position) - 1] = [int(code) for code in codes.split(",")]
+    return [
+        {"command": command, "cwd": os.path.abspath(cwd), "expect_exit": expected.get(index, [])}
+        for index, (command, cwd) in enumerate(zip(commands, cwds))
+    ]
+
+
 def cmd_request_set(args) -> int:
     """Validate and persist a plan-first COMMAND_SET approval request.
+
+    Sealed by gaia.approvals.core.request_command_set: ``--what`` (falling back
+    to ``--rationale``) is the what-it-does phrase, each command carries its
+    ``--cwd`` and ``--expect-exit`` declarations, and the requester is the
+    explicit ``--session-id``/``--agent-id`` or the dispatch environment.
 
     ``--verification`` and ``--rollback`` are sealed into the payload rather
     than left for the consent surface to fill in: the requesting agent already
@@ -1526,31 +1571,23 @@ def cmd_request_set(args) -> int:
     declared; it never invents one.
     """
     try:
-        from gaia.approvals.command_set import request_fingerprint, validate_request_set
-        store = _import_approval_store()
-        items = validate_request_set(list(args.command))
-        fingerprint = request_fingerprint(item["command"] for item in items)
-        payload = {
-            "request_type": "COMMAND_SET",
-            "operation": "Execute an ordered T3 command set",
-            "exact_content": "\n".join(item["command"] for item in items),
-            "commands": [item["command"] for item in items],
-            "command_set": items,
-            "request_fingerprint": fingerprint,
-            "scope": "COMMAND_SET",
-            "risk_level": "high",
-            "rollback_hint": (getattr(args, "rollback", None) or "").strip() or None,
-            "verification": (getattr(args, "verification", None) or "").strip() or None,
-            "rationale": args.rationale or "Plan-first ordered execution",
-        }
-        approval_id = store.insert_requested(
-            payload,
-            agent_id=args.agent_id,
-            session_id=args.session_id,
+        from gaia.approvals import core
+        session_id, agent_id = _requester_identity(args)
+        items = _request_set_items(args)
+        approval_id = core.request_command_set(
+            items,
+            what=getattr(args, "what", None) or args.rationale,
+            session_id=session_id,
+            agent_id=agent_id,
+            rollback=getattr(args, "rollback", None),
+            verification=getattr(args, "verification", None),
+            rationale=args.rationale,
         )
+        sealed = json.loads(_import_approval_store().get_by_id(approval_id)["payload_json"])
     except Exception as exc:
         _print_error(f"COMMAND_SET request rejected: {exc}", args)
         return 1
+    items = sealed["command_set"]
     result = {"status": "pending", "approval_id": approval_id, "command_set": items}
     if args.json:
         print(json.dumps(result))
@@ -1560,53 +1597,34 @@ def cmd_request_set(args) -> int:
 
 
 def cmd_request_file_write(args) -> int:
-    """Proactively seal rollback/verification/impact for a protected-path write.
+    """Proactively seal what/rollback/verification/impact for a protected-path write.
 
-    The reactive PreToolUse block for a protected-path Write/Edit mints a
-    SCOPE_FILE_PATH pending through write_pending_approval_for_file() with no
-    way for the requesting agent to declare rollback/verification/impact --
-    its one call site (hooks/adapters/claude_code.py) never passes a
-    ``context`` dict. This verb is the producer that DOES: it mints the SAME
-    kind of pending, through the SAME function, up front. When the write is
-    then actually attempted, the PreToolUse handler's existing pending-reuse
-    step (already there for retry dedup, matched by file-path signature
-    across all sessions via find_pending_for_file(), within
-    PENDING_REUSE_WINDOW_MINUTES) finds THIS pending and reuses its nonce --
-    surfacing the fields declared here instead of minting a fresh, field-
-    empty one. No PreToolUse code change was needed for this to work: the
-    reuse path already existed for a different reason (retry dedup) and
-    serves this one for free.
+    Mints through gaia.approvals.core.request_file_write, the same producer the
+    reactive Write/Edit block reaches via core.protected_write_verdict, so the
+    later attempt by the same session and agent reuses THIS pending and the
+    user sees the fields declared here.
     """
     path = (args.path or "").strip()
     if not path or not os.path.isabs(path):
         _print_error("--path must be an absolute file path", args)
         return 1
     try:
-        from modules.security.approval_grants import (
-            generate_nonce,
-            write_pending_approval_for_file,
+        from gaia.approvals import core
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
+        from modules.security.protected_paths import resolved_write_target
+        session_id, agent_id = _requester_identity(args)
+        approval_id = core.request_file_write(
+            resolved_write_target(path),
+            session_id=session_id,
+            agent_id=agent_id,
+            what=getattr(args, "what", None) or args.rationale,
+            rollback=args.rollback,
+            verification=args.verification,
+            impact=args.impact,
         )
-        nonce = generate_nonce()
-        context = {
-            "risk": "medium",
-            "rollback": (args.rollback or "").strip() or None,
-            "verification": (args.verification or "").strip() or None,
-            "impact": (args.impact or "").strip() or None,
-            "description": (args.rationale or "").strip() or None,
-        }
-        pending = write_pending_approval_for_file(
-            nonce=nonce,
-            file_path=path,
-            session_id=args.session_id,
-            context=context,
-        )
-        if pending is None:
-            _print_error("Failed to persist pending file-write approval", args)
-            return 1
     except Exception as exc:
         _print_error(f"File-write request rejected: {exc}", args)
         return 1
-    approval_id = f"P-{nonce}"
     result = {"status": "pending", "approval_id": approval_id, "path": path}
     if args.json:
         print(json.dumps(result))
@@ -2209,6 +2227,17 @@ def register(subparsers) -> None:
         "request-set", help="Create a governed plan-first COMMAND_SET request"
     )
     p_request_set.add_argument("--command", action="append", required=True)
+    p_request_set.add_argument(
+        "--what", help="What the set does, in one human sentence; sealed and shown"
+    )
+    p_request_set.add_argument(
+        "--cwd", action="append",
+        help="Directory each command runs in: once for all, or once per --command",
+    )
+    p_request_set.add_argument(
+        "--expect-exit", action="append", dest="expect_exit", metavar="POSITION=CODES",
+        help="Non-zero exits a command may end with and still advance the set, e.g. 2=1",
+    )
     p_request_set.add_argument("--rationale")
     p_request_set.add_argument(
         "--verification",
@@ -2231,6 +2260,9 @@ def register(subparsers) -> None:
         ),
     )
     p_request_file_write.add_argument("--path", required=True)
+    p_request_file_write.add_argument(
+        "--what", help="What the edit does, in one human sentence; sealed and shown"
+    )
     p_request_file_write.add_argument("--rationale")
     p_request_file_write.add_argument(
         "--verification",

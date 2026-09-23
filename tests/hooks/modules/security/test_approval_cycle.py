@@ -548,16 +548,13 @@ class TestConsumeGrant:
 
 
 class TestDefaultTTL:
-    """Test 10: DEFAULT_GRANT_TTL_MINUTES is 5 (approvals redesign, M1).
+    """Test 10: DEFAULT_GRANT_TTL_MINUTES is the single 30-minute approval
+    window (brief aprobaciones-agnosticas-al-host, D4)."""
 
-    The grant is consumed at the match, so the active-grant retry window only
-    needs to cover the block -> approve -> retry round trip.
-    """
-
-    def test_default_ttl_is_five_minutes(self):
-        """DEFAULT_GRANT_TTL_MINUTES should be 5."""
-        assert DEFAULT_GRANT_TTL_MINUTES == 5, (
-            f"Expected grant TTL=5 (M1), got {DEFAULT_GRANT_TTL_MINUTES}"
+    def test_default_ttl_is_the_approval_window(self):
+        """DEFAULT_GRANT_TTL_MINUTES should be 30."""
+        assert DEFAULT_GRANT_TTL_MINUTES == 30, (
+            f"Expected grant TTL=30 (D4), got {DEFAULT_GRANT_TTL_MINUTES}"
         )
 
 

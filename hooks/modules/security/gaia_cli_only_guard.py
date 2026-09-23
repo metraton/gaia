@@ -591,6 +591,11 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("memory", "reclassify"),
     ("memory", "link"),
     ("memory", "checkpoint"),
+    # Withdrawal (D5 of brief aprobaciones-agnosticas-al-host): the coordinator
+    # may reject or revoke an approval it can see going stale, because both only
+    # take back consent Gaia issued. Granting stays out: `approve` is denied below.
+    ("approvals", "reject"),
+    ("approvals", "revoke"),
 })
 
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
@@ -606,22 +611,11 @@ ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRI
 # consent-governed paths. Coordinator-owned brief and lifecycle writes are
 # separately allowlisted and shape-checked below.
 #
-# The approvals six split cleanly along the read/write line this guard
-# enforces, and that line is NOT the same line security-tiers draws for T3:
-# per security-tiers, ``revoke``/``reject``/``reject-all``/``clean`` are
-# themselves NOT T3 (they only revoke or discard a grant Gaia itself issued,
-# never reaching outside the local approval store -- see
-# CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS), while ``approve`` stays T3 because
-# it grants capability without the AskUserQuestion flow. But this guard is
-# narrower than the T3 gate: it allows the orchestrator's bare CLI lane only
-# the verbs that read an approval's state back, never one that writes a row
-# in the approvals store -- and all six of these write a row (a grant, a
-# replay-of-execution, or a discard), whether or not that write also happens
-# to need the user's consent. So all six stay denied here, deliberately, for
-# a reason narrower than "is this T3": approving/replaying GRANT capability,
-# revoking/rejecting/reject-all/clean DISCARD or clear it, and every one of
-# those six is still a write to state this guard's allowlist does not open,
-# even the ones security-tiers itself does not gate behind approval.
+# Of the approvals writes, only single reject/revoke are admitted (above):
+# ``approve`` and ``replay`` GRANT capability without the user's consent
+# surface, so they stay denied for the coordinator whatever their tier;
+# ``reject-all`` and ``clean`` sweep many rows at once and stay with a
+# specialist or the user.
 EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("task", "add"),
     ("task", "remove"),
@@ -642,8 +636,6 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("plan", "delete"),
     ("approvals", "approve"),
     ("approvals", "replay"),
-    ("approvals", "revoke"),
-    ("approvals", "reject"),
     ("approvals", "reject-all"),
     ("approvals", "clean"),
     ("memory", "edit"),

@@ -1756,6 +1756,7 @@ class ClaudeCodeAdapter(HookAdapter):
                     session_id=session_id,
                     is_subagent=is_subagent,
                     agent_id=agent_id,
+                    agent_type=(hook_data or {}).get("agent_type", ""),
                 )
             else:
                 # Other tools pass through
@@ -2466,9 +2467,14 @@ class ClaudeCodeAdapter(HookAdapter):
         session_id: str = "",
         is_subagent: bool = False,
         agent_id: str = "",
+        agent_type: str = "",
     ) -> HookResponse:
         """Handle Write and Edit tool path protection, plus an advisory
         artifact-skill reminder.
+
+        A protected-path write by a subagent is decided by the host-neutral
+        ``gaia.approvals.core.protected_write_verdict``, bound to the session
+        and the agent type (falling back to ``agent_id``) that attempts it.
 
         Blocks modifications to Gaia hooks, settings, and security config
         by requiring user approval for any path that matches protected path
@@ -2513,12 +2519,6 @@ class ClaudeCodeAdapter(HookAdapter):
         itself, so the foreground path is unaffected and existing foreground
         callers keep the exact-passthrough contract.
         """
-        from modules.security.approval_grants import (
-            check_approval_grant_for_file,
-            find_pending_for_file,
-            generate_nonce,
-            write_pending_approval_for_file,
-        )
         from modules.agents.artifact_skill_map import expected_skill_for_path
         from modules.agents.artifact_skill_reminder import (
             build_reminder_context,
@@ -2583,71 +2583,41 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
             )
 
-        # Subagent context: nonce-based pending approval flow.
-
-        # 1. Check if a grant has already been activated for this path (retry
-        #    after user approved).
-        existing_grant = check_approval_grant_for_file(consent_path, session_id or None)
-        if existing_grant:
-            logger.info(
-                "File-path grant active, allowing %s through: %s",
-                tool_name, consent_path,
-            )
-            return HookResponse(output={}, exit_code=0)
-
-        # 2. Check if a pending approval already exists (guard against infinite
-        #    approval_id generation while the user is still reviewing).
-        existing_nonce = find_pending_for_file(session_id or "", consent_path)
-        if existing_nonce:
-            approval_id = existing_nonce
-            logger.info(
-                "Reusing pending approval_id=%s for retry: %s",
-                approval_id, consent_path,
-            )
-        else:
-            # 3. No existing pending -- generate a new nonce.
-            approval_id = generate_nonce()
-            pending_path = write_pending_approval_for_file(
-                nonce=approval_id,
-                file_path=consent_path,
-                session_id=session_id or None,
-            )
-            if pending_path is None:
-                # Persistence failure -- fall back to native ask dialog.
-                logger.warning(
-                    "Failed to persist pending file-path approval for subagent; "
-                    "falling back to ask: %s",
-                    consent_path,
-                )
-                reason = (
-                    "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
-                    "require approval. (Pending approval persistence failed; "
-                    "native dialog fallback.)"
-                )
-                return self.request_consent(
-                    ConsentRequest(
-                        operation=consent_path,
-                        kind="file",
-                        reason=reason,
-                        tier="T3_BLOCKED",
-                    )
-                )
-
-            # insert_requested deduplicates by fingerprint, so the row it kept
-            # may carry an earlier request's id rather than the nonce just
-            # minted. The banner must name the id the DB actually holds; the
-            # local nonce would send the user to an approval that does not exist.
-            persisted_id = pending_path.name
-            if persisted_id.startswith("P-"):
-                approval_id = persisted_id[2:]
-
-        # The window the grant will carry once it is activated -- the same
-        # constant insert_file_path_grant defaults to. Imported lazily because
-        # gaia.store is not importable while the hook package loads.
+        # Subagent context: the neutral core decides (grant bound to this
+        # session and agent -> allow; otherwise name the requester's pending).
+        # The identity fallbacks mirror the reactive Bash seal
+        # (bash_validator._build_sealed_payload) so both lanes bind alike.
         try:
-            from gaia.store.writer import FILE_PATH_GRANT_TTL_MINUTES as window_minutes
-        except Exception:  # pragma: no cover - store unavailable at hook load
-            window_minutes = 30
+            from gaia.approvals import core
+            from modules.core.state import get_session_id
+            verdict = core.protected_write_verdict(
+                file_path,
+                session_id=session_id or get_session_id(),
+                agent_id=agent_type or agent_id or "unattributed",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist pending file-path approval for subagent; "
+                "falling back to ask: %s (%s)", consent_path, exc,
+            )
+            reason = (
+                "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
+                "require approval. (Pending approval persistence failed; "
+                "native dialog fallback.)"
+            )
+            return self.request_consent(
+                ConsentRequest(
+                    operation=consent_path,
+                    kind="file",
+                    reason=reason,
+                    tier="T3_BLOCKED",
+                )
+            )
+        if verdict["decision"] == "allow":
+            logger.info("File-path grant active, allowing %s through: %s", tool_name, consent_path)
+            return HookResponse(output={}, exit_code=0)
+        approval_id = verdict["approval_id"][2:]
+        window_minutes = verdict["window_minutes"]
 
         reason = (
             f"[T3_BLOCKED] This file modification requires user approval.\n"

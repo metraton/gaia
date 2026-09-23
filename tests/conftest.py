@@ -167,15 +167,18 @@ def _isolate_dispatch_identity(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_claude_session_id(monkeypatch):
-    """Start every test without CLAUDE_SESSION_ID and restore it afterwards.
+    """Start every test without a Claude session id and restore it afterwards.
 
     The hook adapter writes a generated session id straight into os.environ,
-    outside monkeypatch, so without this a later test inherits it.
+    outside monkeypatch, so without this a later test inherits it. A suite run
+    from inside Claude Code also inherits CLAUDE_CODE_SESSION_ID, which the
+    approvals CLI reads as the requesting session.
     """
     # delenv records nothing for an absent variable, so a write during the test
     # would survive teardown; the setenv first guarantees an undo entry.
-    monkeypatch.setenv("CLAUDE_SESSION_ID", "")
-    monkeypatch.delenv("CLAUDE_SESSION_ID")
+    for name in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
     yield
 
 

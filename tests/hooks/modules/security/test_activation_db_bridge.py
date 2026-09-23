@@ -729,7 +729,7 @@ class TestActivateDbPendingCommandSet:
         from gaia.store.writer import PLAN_COMMAND_SET_TTL_MINUTES
         from datetime import datetime, timezone
 
-        assert PLAN_COMMAND_SET_TTL_MINUTES == 60
+        assert PLAN_COMMAND_SET_TTL_MINUTES == 30
 
         before = datetime.now(timezone.utc)
         result = activate_db_pending_by_id(
@@ -744,9 +744,9 @@ class TestActivateDbPendingCommandSet:
             row["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
         ).replace(tzinfo=timezone.utc)
         ttl_minutes = (expires_at - before).total_seconds() / 60
-        # Allow a small execution-time window around the canonical plan-first TTL.
-        assert 59 <= ttl_minutes <= 61, (
-            f"COMMAND_SET TTL must be ~60 min, got {ttl_minutes:.2f}"
+        # Allow a small execution-time window around the single approval window.
+        assert 29 <= ttl_minutes <= 31, (
+            f"COMMAND_SET TTL must be ~30 min, got {ttl_minutes:.2f}"
         )
 
     def test_command_set_consumable_by_bash_validator(self, db_and_store):
@@ -963,8 +963,16 @@ class TestSealedPayloadCommandSet:
             category="MUTATIVE",
             agent_type="developer",
             command_set=cset,
+            cwd="/work/repo",
         )
-        assert payload["command_set"] == cset
+        assert [
+            {"command": item["command"], "rationale": item["rationale"]}
+            for item in payload["command_set"]
+        ] == cset
+        assert [(item["position"], item["cwd"]) for item in payload["command_set"]] == [
+            (0, "/work/repo"),
+            (1, "/work/repo"),
+        ]
         assert payload["commands"] == ["git add -A", "git push origin main"]
 
     def test_single_command_payload_omits_command_set_key(self):

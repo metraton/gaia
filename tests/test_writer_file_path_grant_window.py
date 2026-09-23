@@ -5,8 +5,8 @@ grant is: the orchestrator closes its turn to present the approval and dispatche
 a FRESH subagent, which grounds itself before it reaches the file. The clock runs
 from the user's decision, so that whole cycle is spent inside the window. Under
 the Bash lane's 5-minute window every SCOPE_FILE_PATH grant ever signed expired
-unused (13 rows, 0 consumed); these tests pin the separate window that covers the
-cycle and pin that it still ends.
+unused (13 rows, 0 consumed); these tests pin that the single approval window
+(brief aprobaciones-agnosticas-al-host, D4) covers the cycle and still ends.
 """
 
 from __future__ import annotations
@@ -88,9 +88,10 @@ def _age_by(db_path: Path, approval_id: str, minutes: int) -> None:
         con.close()
 
 
-def test_default_window_is_the_file_path_lane_window(grant_db):
+def test_default_window_is_the_single_approval_window(grant_db):
     from gaia.store.writer import (
         APPROVAL_GRANT_TTL_MINUTES,
+        APPROVAL_WINDOW_MINUTES,
         FILE_PATH_GRANT_TTL_MINUTES,
     )
 
@@ -108,8 +109,8 @@ def test_default_window_is_the_file_path_lane_window(grant_db):
     span = datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(
         created_at, "%Y-%m-%dT%H:%M:%SZ"
     )
-    assert span == timedelta(minutes=FILE_PATH_GRANT_TTL_MINUTES)
-    assert span != timedelta(minutes=APPROVAL_GRANT_TTL_MINUTES)
+    assert span == timedelta(minutes=APPROVAL_WINDOW_MINUTES)
+    assert FILE_PATH_GRANT_TTL_MINUTES == APPROVAL_GRANT_TTL_MINUTES == APPROVAL_WINDOW_MINUTES
 
 
 def test_grant_survives_a_realistic_redispatch_cycle(grant_db):
@@ -125,16 +126,13 @@ def test_grant_survives_a_realistic_redispatch_cycle(grant_db):
     assert row["status"] == "PENDING"
 
 
-def test_the_bash_lane_window_would_have_expired_the_same_grant(grant_db):
-    """The defect, reproduced: the inherited 5-minute window rejects the grant
-    at the same age the lane's own window accepts it."""
-    from gaia.store.writer import (
-        APPROVAL_GRANT_TTL_MINUTES,
-        check_db_file_path_grant,
-    )
+def test_the_retired_five_minute_window_would_have_expired_the_same_grant(grant_db):
+    """The defect, reproduced: the retired 5-minute Bash window rejects the
+    grant at the same age the approval window accepts it."""
+    from gaia.store.writer import check_db_file_path_grant
 
     approval_id = "P-" + "c" * 32
-    _insert(grant_db, approval_id, ttl_minutes=APPROVAL_GRANT_TTL_MINUTES)
+    _insert(grant_db, approval_id, ttl_minutes=5)
     _age_by(grant_db, approval_id, REDISPATCH_MINUTES)
 
     assert check_db_file_path_grant(APPROVED_FILE, db_path=grant_db) is None

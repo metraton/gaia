@@ -289,11 +289,11 @@ class TestApprovalGrantMutants:
 # _grant_ttl_minutes -- 5 fallback (M1)
 # ===========================================================================
 class TestGrantTtlMinutesMutants:
-    def test_fallback_is_five_when_import_fails(self, monkeypatch):
-        """When the gaia.store.writer import is unavailable, the fallback is 5
-        (the M1 value). Force the import to raise and assert 5. Also kills the
-        ExceptionReplacer on the try: if the except body were replaced, a 5
-        would not be returned on import failure."""
+    def test_fallback_is_the_approval_window_when_import_fails(self, monkeypatch):
+        """When the gaia.store.writer import is unavailable, the fallback is the
+        30-minute approval window. Force the import to raise and assert 30. Also
+        kills the ExceptionReplacer on the try: if the except body were
+        replaced, 30 would not be returned on import failure."""
         import builtins
         real_import = builtins.__import__
 
@@ -303,7 +303,7 @@ class TestGrantTtlMinutesMutants:
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", _boom)
-        assert _grant_ttl_minutes() == 5
+        assert _grant_ttl_minutes() == 30
 
 
 # ===========================================================================
@@ -1207,8 +1207,8 @@ class TestWritePendingApprovalForFileMutants:
             return "P-nonce"
         monkeypatch.setattr("gaia.approvals.store.insert_requested", _insert)
         ag.write_pending_approval_for_file("nonce", "/etc/hosts", session_id="s")
-        assert "/etc/hosts" in captured["payload"]["rationale"]
-        assert "requires user approval" in captured["payload"]["rationale"]
+        assert captured["payload"]["rationale"] == "Modify the protected file /etc/hosts"
+        assert captured["payload"]["what"] == "Modify the protected file /etc/hosts"
 
 
 class TestCleanupExpiredGrantsMutants:
@@ -2028,12 +2028,12 @@ class TestModuleConstantsAndFlagsAC5:
     """Module-level constants and process-global flags whose mutated value is
     observable through the public API."""
 
-    def test_command_set_ttl_is_five_minutes(self, writer_db):
-        """`DEFAULT_COMMAND_SET_TTL_MINUTES = 5` (NumberReplacer 5->N).
+    def test_command_set_ttl_is_the_approval_window(self, writer_db):
+        """`DEFAULT_COMMAND_SET_TTL_MINUTES` is the 30-minute approval window.
         create_command_set_grant stamps expires_at = now + ttl. With the default
-        ttl the persisted expiry must be ~5 min ahead; a mutated constant (4 or
-        6) shifts the stored expires_at by a full minute, which the row assertion
-        below detects to the second."""
+        ttl the persisted expiry must be ~30 min ahead; a window off by one
+        minute shifts the stored expires_at by a full minute, which the row
+        assertion below detects to the second."""
         before = datetime.now(timezone.utc)
         ok = create_command_set_grant(
             command_set=[{"command": "git push", "rationale": "r"}],
@@ -2055,12 +2055,10 @@ class TestModuleConstantsAndFlagsAC5:
             tzinfo=timezone.utc
         )
         delta_min = (expires - before).total_seconds() / 60.0
-        # The true TTL is exactly 5; allow a few seconds of execution slack but
-        # reject the 4 / 6 mutants (which land ~1 min off).
-        assert 4.5 < delta_min < 5.5
-        # And confirm the imported constant value itself is 5 (kills both
-        # NumberReplacer directions directly).
-        assert DEFAULT_COMMAND_SET_TTL_MINUTES == 5
+        # The true TTL is exactly 30; allow a few seconds of execution slack but
+        # reject a window one minute off.
+        assert 29.5 < delta_min < 30.5
+        assert DEFAULT_COMMAND_SET_TTL_MINUTES == 30
 
     def test_check_grant_resets_found_expired_flag_to_false(self, monkeypatch):
         """`_last_check_found_expired = False` (line 464, ReplaceFalseWithTrue).

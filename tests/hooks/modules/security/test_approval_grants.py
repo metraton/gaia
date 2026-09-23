@@ -620,15 +620,14 @@ class TestCrossSessionNonceTargeted:
             nonce=nonce,
         )
 
-        # Activate under session_B: the pending belongs to session_A, the grant
-        # is created under the activating session.
+        # Activate under session_B: the pending belongs to session_A, and the
+        # grant stays bound to the requesting session (D6), not the approver's.
         result = activate_db_pending_by_id(
             f"P-{nonce}", current_session_id=session_b,
         )
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
-        # DB row is recorded under session_B
         con = _sw._connect()
         try:
             row = con.execute(
@@ -637,7 +636,7 @@ class TestCrossSessionNonceTargeted:
         finally:
             con.close()
         assert row is not None
-        assert row[0] == session_b
+        assert row[0] == session_a
 
         # Grant IS findable via check_approval_grant (DB lookup is session-agnostic)
         grant = check_approval_grant("git push origin main", session_id=session_b)
@@ -767,7 +766,7 @@ class TestCrossSessionNonceTargeted:
         assert grant is not None
         assert grant.confirmed is True  # cross-session grants are pre-confirmed
 
-        # DB row is stored under session_B
+        # The row is bound to the requesting session_A (D6)
         con = _sw._connect()
         try:
             row = con.execute(
@@ -776,7 +775,7 @@ class TestCrossSessionNonceTargeted:
         finally:
             con.close()
         assert row is not None
-        assert row[0] == session_b
+        assert row[0] == session_a
 
 
 # ====================================================================== #

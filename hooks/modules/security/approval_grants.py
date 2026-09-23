@@ -16,12 +16,9 @@ Two-phase nonce-based approval flow:
     grant and allows it.
 
 Grants are:
-- Time-limited, and the window is per LANE, not global: a Bash/semantic grant
-  lives APPROVAL_GRANT_TTL_MINUTES (5), mirrored here as
-  DEFAULT_GRANT_TTL_MINUTES, because it is consumed at the first matching
-  retry; a protected-path Write/Edit grant lives FILE_PATH_GRANT_TTL_MINUTES
-  (30), because it stays reusable across the several Edits one file-level fix
-  takes
+- Time-limited by one window for every lane, gaia.store.writer's
+  APPROVAL_WINDOW_MINUTES (30), counted from the decision and mirrored here as
+  DEFAULT_GRANT_TTL_MINUTES
 - Cleaned up after use or expiry
 - Stored AUTHORITATIVELY in the DB (``approval_grants`` in gaia.db) since the
   Brief 71 cutover. The filesystem plane (.claude/cache/approvals/) is the
@@ -52,8 +49,8 @@ The current model is:
     pending approval via AskUserQuestion. It carries a semantic signature
     (base command + semantic tokens + normalized flags), is **session-agnostic**
     (see check_db_semantic_grant in gaia.store.writer), and lives for
-    ``APPROVAL_GRANT_TTL_MINUTES`` (5 minutes, the value reflected by
-    DEFAULT_GRANT_TTL_MINUTES above).
+    ``APPROVAL_GRANT_TTL_MINUTES`` (the 30-minute approval window, reflected
+    by DEFAULT_GRANT_TTL_MINUTES above).
 
 2.  The grant is **consumed on the matching retry**, NOT at SubagentStop and
     NOT when a sub-agent ends. The first time a command whose signature matches
@@ -120,7 +117,7 @@ def _grant_ttl_minutes() -> int:
     without a circular import (writer never imports this module back). We resolve
     it lazily here, mirroring every other gaia.store import in this file, because
     the hooks package can be imported before the `gaia` package is on sys.path;
-    a module-level import would crash hook load in that window. The 5-minute
+    a module-level import would crash hook load in that window. The 30-minute
     fallback equals the canonical value, so the two never disagree even if the
     lazy import is briefly unavailable.
     """
@@ -128,13 +125,9 @@ def _grant_ttl_minutes() -> int:
         from gaia.store.writer import APPROVAL_GRANT_TTL_MINUTES as _ttl
         return _ttl
     except Exception:
-        return 5
+        return 30
 
 
-# Default GRANT TTL in minutes -- the active-grant retry window (approvals
-# redesign, M1). The grant is consumed AT THE MATCH, so a short 5-minute window
-# is enough to cover the block -> approve -> retry round trip; sourced from
-# APPROVAL_GRANT_TTL_MINUTES in writer (the single point of truth).
 DEFAULT_GRANT_TTL_MINUTES = _grant_ttl_minutes()
 
 # Default PENDING TTL in minutes (24 hours). DELIBERATELY distinct from the grant
@@ -818,8 +811,12 @@ def write_pending_approval_for_file(
     session_id: Optional[str] = None,
     ttl_minutes: int = DEFAULT_PENDING_TTL_MINUTES,
     context: Optional[Dict[str, Any]] = None,
+    agent_id: Optional[str] = None,
 ) -> Optional[Path]:
     """Write a pending approval record when a Write/Edit to a protected path is blocked.
+
+    The payload is sealed by gaia.approvals.core.seal_request; ``agent_id``
+    names the requester and is recorded as ``unattributed`` when absent.
 
     DB-primary since Task E of the approval redesign: persists to
     gaia.approvals.store (gaia.db) first using insert_requested() with
@@ -865,28 +862,21 @@ def write_pending_approval_for_file(
         return None
 
     ctx = context or {}
-    sealed_payload: Dict[str, Any] = {
-        "operation": "FILE_WRITE command intercepted: write",
-        "exact_content": file_path,
-        "scope": SCOPE_FILE_PATH,
-        "scope_signature": signature.to_dict(),
-        "risk_level": ctx.get("risk", "medium") or "medium",
-        "rollback_hint": ctx.get("rollback"),
-        "verification": ctx.get("verification"),
-        "impact": ctx.get("impact"),
-        "rationale": (
-            ctx.get("description")
-            or f"Protected-path write to {file_path!r} requires user approval."
-        ),
-        "commands": [file_path],
-    }
-
+    requester = agent_id or "unattributed"
     db_approval_id = f"P-{nonce}"
     try:
+        from gaia.approvals.core import seal_request
         from gaia.approvals.store import insert_requested
+        sealed_payload = seal_request(
+            "file_write", [{"path": file_path}],
+            what=ctx.get("description") or f"Modify the protected file {file_path}",
+            session_id=session_id, agent_id=requester,
+            rollback=ctx.get("rollback"), verification=ctx.get("verification"),
+            impact=ctx.get("impact"), risk_level=ctx.get("risk", "medium") or "medium",
+        )
         stored_id = insert_requested(
             sealed_payload,
-            agent_id=None,
+            agent_id=requester,
             session_id=session_id,
             approval_id=db_approval_id,
         )
@@ -1059,13 +1049,7 @@ def activate_db_pending_by_id(
 # approved command (adding cd, redirect, pipe, flag) produces a different
 # string and requires fresh approval. Each item in the set is single-use.
 
-# COMMAND_SET grant TTL in minutes. Aligned to the singular active-grant TTL
-# (DEFAULT_GRANT_TTL_MINUTES / APPROVAL_GRANT_TTL_MINUTES = 5) so a batch of
-# commands approved under one consent gets the same short retry window as a
-# single approved command -- the block-approve-retry flow is same-session and
-# single-use, so 5 minutes is enough to consume every item while keeping the
-# grant's live window tight.
-DEFAULT_COMMAND_SET_TTL_MINUTES = 5
+DEFAULT_COMMAND_SET_TTL_MINUTES = DEFAULT_GRANT_TTL_MINUTES
 
 
 def create_command_set_grant(
