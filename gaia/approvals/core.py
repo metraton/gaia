@@ -43,6 +43,10 @@ class SealError(ValueError):
     """Raised when a request cannot be sealed as it stands."""
 
 
+class RequesterError(SealError):
+    """Raised when the host event does not name the session or agent a request binds to."""
+
+
 class WithdrawError(ValueError):
     """Raised when a withdrawal asks for anything other than reject or revoke."""
 
@@ -75,6 +79,26 @@ def _required_text(value: object, name: str) -> str:
 
 def _optional_text(value: object) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def resolve_requester(session_id: object, agent_id: object) -> dict:
+    """Name the requester of a request, or of a grant lookup, from the host event alone.
+
+    The one resolver sealing and grant lookup share. Nothing is borrowed from
+    the environment and nothing is defaulted: a main-session call arrives with
+    the explicit primary identity its adapter names as ``agent_id``.
+    """
+    session = _optional_text(session_id)
+    if session is None:
+        raise RequesterError(
+            "the host event carries no session, so the request cannot be bound to its requester"
+        )
+    agent = _optional_text(agent_id)
+    if agent is None:
+        raise RequesterError(
+            "the host event carries no agent, so the request cannot be bound to its requester"
+        )
+    return {"session_id": session, "agent_id": agent}
 
 
 def _expected_exits(raw: object, position: int) -> list[int]:
@@ -145,10 +169,7 @@ def seal_request(
     if kind not in _COMMAND_KINDS and kind != _FILE_KIND:
         raise SealError(f"unknown request kind {kind!r}")
     what_text = _required_text(what, "what")
-    requester = {
-        "session_id": _required_text(session_id, "session_id"),
-        "agent_id": _required_text(agent_id, "agent_id"),
-    }
+    requester = resolve_requester(session_id, agent_id)
     sealed = _seal_items(kind, items)
     targets = [item.get("command") or item["path"] for item in sealed]
     request_key = request_fingerprint(targets)
@@ -449,25 +470,18 @@ def close_command(approval_id: str, *, session_id: str, tool_use_id: str, exit_c
     return "executed" if advances else "failed"
 
 
-def sealed_request_applies(approval_id: str, *, cwd: str, session_id: str, agent_id: str) -> bool:
-    """Return whether a single-command request covers this directory and requester.
+def grant_lookup_filter(*, cwd: str, session_id: object, agent_id: object) -> dict:
+    """Return the ``requester`` filter a single-command grant lookup applies.
 
-    A request sealed before items and requesters were recorded keeps its old reach.
+    Resolved like the seal, so a retry names the directory and requester its
+    request was sealed with. An unresolved requester carries ``None`` values,
+    which match only grants sealed before requesters were recorded.
     """
-    from gaia.approvals import store
-
-    row = store.get_by_id(approval_id)
     try:
-        payload = json.loads((row or {}).get("payload_json") or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return False
-    items = payload.get("items")
-    if not items:
-        return True
-    return items[0].get("cwd") == cwd and payload.get("requested_by") == {
-        "session_id": session_id,
-        "agent_id": agent_id,
-    }
+        requester = resolve_requester(session_id, agent_id)
+    except RequesterError:
+        requester = {"session_id": None, "agent_id": None}
+    return {**requester, "cwd": cwd}
 
 
 # --------------------------------------------------------------------------- #

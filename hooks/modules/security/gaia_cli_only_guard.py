@@ -681,6 +681,23 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
 })
 
 
+# Flags each admitted withdrawal verb accepts besides its one APPROVAL_ID.
+_WITHDRAW_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    ("approvals", "reject"): frozenset({"--reason", "--json"}),
+    ("approvals", "revoke"): frozenset({"--yes"}),
+}
+
+
+def _explicitly_denied_reason(phrase: Tuple[str, ...]) -> str:
+    """Return the categorical denial for a phrase excluded from the orchestrator."""
+    return (
+        f"GAIA CLI ONLY: 'gaia {' '.join(phrase)}' is explicitly excluded "
+        f"from the orchestrator's allowlist (a mutation that belongs to a "
+        f"specialist's own governed path, not a bare CLI call). Denied "
+        f"outright, not approvable."
+    )
+
+
 def match_allowed_phrase(
     candidate: Tuple[str, ...],
     phrases: FrozenSet[Tuple[str, ...]] = ALLOWED_PHRASES,
@@ -937,12 +954,7 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
 
     denied = match_allowed_phrase(candidate, EXPLICITLY_DENIED_PHRASES)
     if denied is not None:
-        return False, (
-            f"GAIA CLI ONLY: 'gaia {' '.join(denied)}' is explicitly excluded "
-            f"from the orchestrator's allowlist (a mutation that belongs to a "
-            f"specialist's own governed path, not a bare CLI call). Denied "
-            f"outright, not approvable."
-        )
+        return False, _explicitly_denied_reason(denied)
 
     shown = " ".join(candidate) if candidate else "<no subcommand>"
     return False, (
@@ -1150,6 +1162,17 @@ def _validate_orchestrator_write(
         valid = bool(args) and not args[0].startswith("-")
     elif phrase == ("plan", "change", "approve"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1].isdigit()
+    elif phrase in _WITHDRAW_FLAGS:
+        # One approval by id. `reject --all` (or any abbreviation argparse
+        # expands to it) is the reject-all sweep and gets that verdict.
+        flag_names = [arg.split("=", 1)[0] for arg in args if arg.startswith("-")]
+        if any(len(name) > 2 and "--all".startswith(name) for name in flag_names):
+            return _explicitly_denied_reason(("approvals", "reject-all"))
+        positional = [
+            arg for i, arg in enumerate(args)
+            if not arg.startswith("-") and (i == 0 or args[i - 1] != "--reason")
+        ]
+        valid = len(positional) == 1 and set(flag_names) <= _WITHDRAW_FLAGS[phrase]
     elif phrase == ("task", "gate", "reverify"):
         valid = (
             len(args) >= 3 and not args[0].startswith("-")

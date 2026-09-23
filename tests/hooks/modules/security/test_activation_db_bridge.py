@@ -122,7 +122,9 @@ def _make_v12_schema(con: sqlite3.Connection) -> None:
     """)
 
 
-def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
+def _sealed_payload(
+    command: str, *, agent_type: str = "test-agent", session_id: str = "test-bridge-session",
+) -> dict:
     """Seal ``command`` with the REAL producer, fed the classifier's own verdict.
 
     The verdict is asserted mutative before it is used: a payload built from a
@@ -139,11 +141,13 @@ def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
         verb=verdict.verb,
         category=verdict.category,
         agent_type=agent_type,
+        session_id=session_id,
     )
 
 
 def _sealed_command_set_payload(
-    command_set: list[dict], *, agent_type: str = "test-agent"
+    command_set: list[dict], *, agent_type: str = "test-agent",
+    session_id: str = "test-bridge-session",
 ) -> dict:
     """Seal a multi-command (COMMAND_SET) envelope with the REAL producer.
 
@@ -172,6 +176,7 @@ def _sealed_command_set_payload(
         category=sealed_under.category,
         agent_type=agent_type,
         command_set=command_set,
+        session_id=session_id,
     )
     if len(command_set) > 1:
         from gaia.approvals.command_set import request_fingerprint
@@ -497,7 +502,7 @@ class TestCheckWriteAlignment:
         from modules.tools.bash_validator import validate_bash_command
 
         result1 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, session_id=session_id, agent_type="test-agent",
         )
         assert not result1.allowed, "T3 command should be blocked"
 
@@ -528,7 +533,7 @@ class TestCheckWriteAlignment:
 
         # Step 3: Retry the command -- should pass through.
         result2 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, session_id=session_id, agent_type="test-agent",
         )
         assert result2.allowed, (
             f"Retry should be allowed after DB-bridge activation, got: {result2.reason}"
@@ -964,6 +969,7 @@ class TestSealedPayloadCommandSet:
             agent_type="developer",
             command_set=cset,
             cwd="/work/repo",
+            session_id="test-bridge-session",
         )
         assert [
             {"command": item["command"], "rationale": item["rationale"]}
@@ -983,6 +989,7 @@ class TestSealedPayloadCommandSet:
             verb="push",
             category="MUTATIVE",
             agent_type="developer",
+            session_id="test-bridge-session",
         )
         assert "command_set" not in payload
         assert payload["commands"] == ["git push origin main"]
@@ -995,6 +1002,8 @@ class TestSealedPayloadCommandSet:
             verb="apply",
             category="MUTATIVE",
             command_set=[{"command": "terraform apply", "rationale": "one"}],
+            agent_type="developer",
+            session_id="test-bridge-session",
         )
         # A set of length 1 is not a batch -- no command_set key.
         assert "command_set" not in payload

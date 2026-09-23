@@ -1207,7 +1207,7 @@ class BashValidator:
             try:
                 from gaia.approvals.core import match_command
                 cs_match = match_command(
-                    command, cwd=cwd, session_id=session_id,
+                    command, cwd=cwd or os.getcwd(), session_id=session_id,
                     agent_id=agent_type or None, tool_use_id=tool_use_id,
                 )
             except Exception as exc:
@@ -1227,9 +1227,13 @@ class BashValidator:
             # DB-primary + filesystem-fallback grant check.
             # check_approval_grant() now returns a DB row first (Brief 71 CHECK-
             # side cutover), falling back to filesystem when no DB row exists.
-            grant = check_approval_grant(command, session_id=session_id)
-            if grant is not None and not _grant_request_applies(grant, cwd, session_id, agent_type):
-                grant = None
+            from gaia.approvals.core import grant_lookup_filter
+            grant = check_approval_grant(
+                command, session_id=session_id,
+                requester=grant_lookup_filter(
+                    cwd=cwd or os.getcwd(), session_id=session_id, agent_id=agent_type,
+                ),
+            )
             if grant is not None:
                 # Consume the DB semantic grant immediately (replay protection,
                 # Gap B fix).  Single-use: a consumed grant will not match on a
@@ -1254,16 +1258,6 @@ class BashValidator:
                     except Exception as _cg_err:
                         logger.warning(
                             "DB semantic grant consume failed (non-fatal): %s", _cg_err
-                        )
-                    # Also mark the companion filesystem grant as used so the
-                    # filesystem fallback path cannot replay the same command.
-                    try:
-                        from ..security.approval_grants import consume_grant as _consume_fs_grant
-                        _consume_fs_grant(command, session_id=session_id)
-                    except Exception as _fs_cg_err:
-                        logger.debug(
-                            "Filesystem grant consume (companion cleanup) failed "
-                            "(non-fatal): %s", _fs_cg_err
                         )
 
                 if grant.confirmed:
@@ -1356,7 +1350,7 @@ class BashValidator:
                     try:
                         from gaia.approvals.core import match_command
                         cs_match = match_command(
-                            command, cwd=cwd, session_id=session_id,
+                            command, cwd=cwd or os.getcwd(), session_id=session_id,
                             agent_id=agent_type or None, tool_use_id=tool_use_id,
                         )
                     except Exception as exc:
@@ -1373,7 +1367,14 @@ class BashValidator:
                             command_set_reservation=cs_match,
                         )
 
-                    grant = check_approval_grant(command, session_id=session_id)
+                    from gaia.approvals.core import grant_lookup_filter
+                    grant = check_approval_grant(
+                        command, session_id=session_id,
+                        requester=grant_lookup_filter(
+                            cwd=cwd or os.getcwd(), session_id=session_id,
+                            agent_id=agent_type,
+                        ),
+                    )
                     if grant is not None:
                         # Consume the DB semantic grant immediately (replay
                         # protection) -- identical to the verb branch.
@@ -1398,18 +1399,6 @@ class BashValidator:
                                 logger.warning(
                                     "DB semantic grant consume failed (non-fatal): %s",
                                     _cg_err,
-                                )
-                            # Also mark the companion filesystem grant as used so
-                            # the filesystem fallback path cannot replay it.
-                            try:
-                                from ..security.approval_grants import (
-                                    consume_grant as _consume_fs_grant,
-                                )
-                                _consume_fs_grant(command, session_id=session_id)
-                            except Exception as _fs_cg_err:
-                                logger.debug(
-                                    "Filesystem grant consume (companion cleanup) "
-                                    "failed (non-fatal): %s", _fs_cg_err
                                 )
 
                         if grant.confirmed:
@@ -2118,26 +2107,6 @@ def _authored_statements(verb: str, category: str) -> dict:
     return _STATEMENTS_BY_CATEGORY.get(str(category or "").strip().upper(), {})
 
 
-def _grant_request_applies(grant, cwd: str | None, session_id: str, agent_type: str) -> bool:
-    """Return whether a semantic grant's sealed request covers this directory and requester.
-
-    The fallbacks mirror ``_build_sealed_payload`` so a retry resolves to the
-    same directory, session and agent the request was sealed with.
-    """
-    approval_id = getattr(grant, "_db_approval_id", None)
-    if not approval_id:
-        return True
-    from gaia.approvals.core import sealed_request_applies
-    from ..core.state import get_session_id
-
-    return sealed_request_applies(
-        approval_id,
-        cwd=cwd or os.getcwd(),
-        session_id=session_id or get_session_id(),
-        agent_id=agent_type or "unattributed",
-    )
-
-
 def _build_sealed_payload(
     command: str,
     verb: str,
@@ -2153,7 +2122,8 @@ def _build_sealed_payload(
     Sealed through gaia.approvals.core.seal_request like every other request:
     each item carries the directory it was attempted in (``cwd``, else this
     process's), no declared non-zero exit, its position and fingerprint, and
-    the payload names the requesting session and agent.
+    the payload names the requesting session and agent exactly as the host
+    event gave them (``core.RequesterError`` when either is missing).
 
     Used by the T2.1 cutover path when bash_validator detects a T3 command
     and calls store.insert_requested(). The 7 D13 fields are populated from
@@ -2221,7 +2191,6 @@ def _build_sealed_payload(
     # statements cannot move what a post-grant retry must keep byte-identical.
     authored = _authored_statements(verb, category)
     from gaia.approvals.core import seal_request
-    from ..core.state import get_session_id
 
     directory = cwd or os.getcwd()
     items = normalized_set if is_command_set else [{"command": command, "rationale": ""}]
@@ -2230,8 +2199,8 @@ def _build_sealed_payload(
         "command",
         [{**item, "cwd": directory, "expect_exit": []} for item in items],
         what=f"Run {base} {verb} ({category.lower()})",
-        session_id=session_id or get_session_id(),
-        agent_id=agent_type or "unattributed",
+        session_id=session_id,
+        agent_id=agent_type,
         rollback=authored.get("rollback"),
         verification=authored.get("verification"),
         impact=authored.get("impact"),
@@ -2334,6 +2303,21 @@ def decide_t3_outcome(
     is_chain_command_set = len(_normalized_set) > 1
 
     if has_orchestrator_above:
+        # No requester in the host event: nothing is sealed and no approval_id
+        # is named, because a request bound to a guessed identity could be
+        # consumed by whoever shares the guess.
+        from gaia.approvals.core import RequesterError, resolve_requester
+        try:
+            resolve_requester(session_id, agent_type)
+        except RequesterError as exc:
+            reason = f"T3 {category.lower()} command denied without a signature: {exc}"
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=reason,
+                block_response=build_hook_permission_response("deny", reason),
+            )
+
         # Subagent-under-orchestrator: deny + persisted approval_id so the
         # orchestrator can run the approval cycle.  Reuse an existing pending
         # approval on retry to avoid generating duplicates while the user reviews.

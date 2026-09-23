@@ -172,21 +172,21 @@ class TestProactiveDeclarationReachesTheReactiveBlock:
         target.parent.mkdir(parents=True)
         target.write_text("{}", encoding="utf-8")
 
+        import gaia.approvals.store as astore
+        from gaia.approvals import core
+        from modules.security.protected_paths import resolved_write_target
+
         # 1. Proactive declaration -- what `gaia approvals request-file-write`
-        #    does under the hood.
-        nonce = generate_nonce()
-        declared = write_pending_approval_for_file(
-            nonce=nonce,
-            file_path=str(target),
+        #    does under the hood, by the same session and agent that will write.
+        declared_approval_id = core.request_file_write(
+            resolved_write_target(str(target)),
             session_id=SESSION,
-            context={
-                "rollback": "git checkout HEAD -- .claude/settings.json",
-                "verification": "gaia doctor --json shows no settings drift",
-                "impact": "settings.json gains a new hook matcher",
-            },
+            agent_id="gaia-system",
+            rollback="git checkout HEAD -- .claude/settings.json",
+            verification="gaia doctor --json shows no settings drift",
+            impact="settings.json gains a new hook matcher",
         )
-        assert declared is not None
-        declared_approval_id = f"P-{nonce}"
+        nonce = declared_approval_id[2:]
 
         # 2. The REAL reactive path, exactly as a real Edit attempt drives it.
         adapter = ClaudeCodeAdapter()
@@ -196,12 +196,12 @@ class TestProactiveDeclarationReachesTheReactiveBlock:
             session_id=SESSION,
             is_subagent=True,
             agent_id=AGENT_ID,
+            agent_type="gaia-system",
         )
 
         # 3. It must have found and reused the SAME pending -- not minted a
         #    fresh, field-empty one.
-        reused_nonce = find_pending_for_file(SESSION, str(target))
-        assert reused_nonce == nonce, (
+        assert len(astore.list_pending(all_sessions=True)) == 1, (
             "the reactive block must reuse the proactively-declared pending "
             "by file-path signature, not mint a new field-empty one"
         )

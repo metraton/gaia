@@ -138,6 +138,7 @@ def test_both_hosts_render_the_values_the_producer_sealed(command, expected_verb
         verb=verdict.verb,
         category=verdict.category,
         agent_type="gitops-operator",
+        session_id="ses-parity",
     )
     host_surface = _host_bound_surface(payload)
     reconstructed = render_consent_surface(payload, APPROVAL_ID)
@@ -185,6 +186,7 @@ def test_the_two_surfaces_differ_only_where_the_consent_attempt_differs():
         verb=verdict.verb,
         category=verdict.category,
         agent_type="gitops-operator",
+        session_id="ses-parity",
     )
 
     host_surface = _host_bound_surface(payload)
@@ -204,6 +206,7 @@ def test_cli_consent_surface_is_the_reconstructed_surface_with_canonical_label()
         verb=verdict.verb,
         category=verdict.category,
         agent_type="gitops-operator",
+        session_id="ses-parity",
     )
 
     presentation = _native_consent_presentation(payload, APPROVAL_ID)
@@ -270,6 +273,7 @@ def test_a_declared_field_renders_its_value_and_no_sentinel():
         verb=verdict.verb,
         category=verdict.category,
         agent_type="gitops-operator",
+        session_id="ses-parity",
     )
     for field in AUTHORED_FIELDS:
         key = "rollback_hint" if field == "rollback" else field

@@ -126,6 +126,7 @@ def test_covered_verdict_seals_all_three_fields(command, expected_verb, expected
         verb=verdict.verb,
         category=verdict.category,
         agent_type="developer",
+        session_id="ses-authored",
     )
     assert payload["exact_content"] == command
     assert payload["scope"] == expected_scope
@@ -171,6 +172,7 @@ def test_category_fallback_is_forward_compatibility_and_not_evidence():
         verb="a-verb-no-table-covers",
         category="DESTRUCTIVE",
         agent_type="platform-architect",
+        session_id="ses-authored",
     )
     assert payload["risk_level"] == "high"
     for field in AUTHORED_FIELDS:
@@ -183,6 +185,7 @@ def test_covered_verdict_surface_shows_the_authored_text_and_no_absence_text():
         verb="push",
         category="MUTATIVE",
         agent_type="developer",
+        session_id="ses-authored",
     )
     surface = _surface(payload)
     for field in AUTHORED_FIELDS:
@@ -204,6 +207,7 @@ def test_uncovered_verdict_seals_nothing_and_keeps_the_absence_text():
         verb="chmod",
         category="MUTATIVE",
         agent_type="developer",
+        session_id="ses-authored",
     )
     assert payload["impact"] is None
     assert payload["rollback_hint"] is None
@@ -220,10 +224,12 @@ def test_uncovered_verdict_seals_nothing_and_keeps_the_absence_text():
 
 def test_command_fingerprint_matches_the_literal_digest_for_both_verdicts():
     covered = _build_sealed_payload(
-        command=SINGLE_COMMAND, verb="push", category="MUTATIVE"
+        command=SINGLE_COMMAND, verb="push", category="MUTATIVE",
+        agent_type="developer", session_id="ses-authored",
     )
     uncovered = _build_sealed_payload(
-        command=SINGLE_COMMAND, verb="a-verb-no-table-covers", category="MUTATIVE"
+        command=SINGLE_COMMAND, verb="a-verb-no-table-covers", category="MUTATIVE",
+        agent_type="developer", session_id="ses-authored",
     )
     assert covered["exact_content"] == SINGLE_COMMAND
     assert uncovered["exact_content"] == SINGLE_COMMAND
@@ -237,6 +243,7 @@ def test_request_fingerprint_over_the_ordered_set_matches_the_literal_digest():
         verb="push",
         category="MUTATIVE",
         agent_type="developer",
+        session_id="ses-authored",
         command_set=[{"command": c, "rationale": ""} for c in ORDERED_COMMANDS],
     )
     assert payload["commands"] == ORDERED_COMMANDS
@@ -246,7 +253,8 @@ def test_request_fingerprint_over_the_ordered_set_matches_the_literal_digest():
 
 def test_altered_command_text_is_still_rejected_by_the_fingerprint_match():
     payload = _build_sealed_payload(
-        command=SINGLE_COMMAND, verb="push", category="MUTATIVE"
+        command=SINGLE_COMMAND, verb="push", category="MUTATIVE",
+        agent_type="developer", session_id="ses-authored",
     )
     sealed = envelope_from_sealed_payload(
         payload, approval_id="P-test", binding=BINDING
@@ -278,7 +286,8 @@ def test_pending_dedup_fingerprint_moves_because_it_is_derived_from_the_payload(
     the value is written at mint and never recomputed against a later payload.
     """
     covered = _build_sealed_payload(
-        command=SINGLE_COMMAND, verb="push", category="MUTATIVE"
+        command=SINGLE_COMMAND, verb="push", category="MUTATIVE",
+        agent_type="developer", session_id="ses-authored",
     )
     without_statements = {
         key: value

@@ -54,6 +54,10 @@ logger = logging.getLogger(__name__)
 # gaia.briefs.store). Defined here as the single injection-side constant.
 GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
 
+# Requester identity of a main-session call, whose event carries no agent. The
+# approval core never defaults an identity, so the adapter names it explicitly.
+PRIMARY_AGENT = "claude-code-primary"
+
 
 def dispatch_tmpdir(agent_id: str) -> str:
     """Create and return the subagent's own TMPDIR, or "" when it cannot exist.
@@ -1833,7 +1837,9 @@ class ClaudeCodeAdapter(HookAdapter):
         # the command is running inside a subagent (not the orchestrator).
         is_subagent = bool(hook_data and hook_data.get("agent_id"))
         session_id = (hook_data or {}).get("session_id", "")
-        agent_type = (hook_data or {}).get("agent_type", "")
+        agent_type = (hook_data or {}).get("agent_type", "") or (
+            "" if is_subagent else PRIMARY_AGENT
+        )
         # Host stdin carries a top-level snake_case tool_use_id in BOTH
         # PreToolUse and PostToolUse, and it MATCHES for the same call. Keying
         # hook state by (session_id, tool_use_id) is what ends the concurrent-
@@ -2611,15 +2617,27 @@ class ClaudeCodeAdapter(HookAdapter):
 
         # Subagent context: the neutral core decides (grant bound to this
         # session and agent -> allow; otherwise name the requester's pending).
-        # The identity fallbacks mirror the reactive Bash seal
-        # (bash_validator._build_sealed_payload) so both lanes bind alike.
+        # The requester comes from the host event only, like the reactive Bash
+        # seal: without it nothing is sealed and the write is denied.
+        from gaia.approvals import core
         try:
-            from gaia.approvals import core
-            from modules.core.state import get_session_id
+            core.resolve_requester(session_id, agent_type)
+        except core.RequesterError as exc:
+            return HookResponse(
+                output={
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            f"[PROTECTED_PATH] Write denied without a signature: {exc}"
+                        ),
+                    }
+                },
+                exit_code=0,
+            )
+        try:
             verdict = core.protected_write_verdict(
-                file_path,
-                session_id=session_id or get_session_id(),
-                agent_id=agent_type or agent_id or "unattributed",
+                file_path, session_id=session_id, agent_id=agent_type,
             )
         except Exception as exc:
             logger.warning(

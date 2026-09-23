@@ -455,8 +455,14 @@ def build_shown_event_payload(
 
 
 
-def check_approval_grant(command: str, session_id: str = None) -> Optional[ApprovalGrant]:
+def check_approval_grant(
+    command: str, session_id: str = None, *, requester: Optional[Dict[str, Any]] = None,
+) -> Optional[ApprovalGrant]:
     """Check if there is an active approval grant for a command.
+
+    ``requester`` (``cwd``, ``session_id``, ``agent_id``) is forwarded to
+    ``check_db_semantic_grant`` so only grants sealed for that directory and
+    requester match.
 
     Called by the bash_validator before blocking a dangerous command.
     If a valid grant exists that matches the command, the command should
@@ -482,7 +488,7 @@ def check_approval_grant(command: str, session_id: str = None) -> Optional[Appro
 
     try:
         from gaia.store.writer import check_db_semantic_grant
-        db_row = check_db_semantic_grant(command, session_id=session_id)
+        db_row = check_db_semantic_grant(command, session_id=session_id, requester=requester)
         if db_row is not None:
             # Reconstruct an ApprovalGrant from DB row so callers see the
             # same interface.  The row stores the scope_signature in

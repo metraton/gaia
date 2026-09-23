@@ -735,9 +735,9 @@ def test_a_real_producer_seals_the_fields_the_delivered_surface_shows(db_env):
     assert metadata["verification"] == stored["verification"]
     assert not consent_presentation.missing_visible_fields(visible, stored)
 
-    # No Gaia producer authors `impact`, so the surface states the absence
-    # instead of composing a consequence nobody assessed.
-    assert "impact" not in stored
+    # request-set authors no `impact` (the core seals it as None), so the
+    # surface states the absence instead of composing a consequence nobody assessed.
+    assert stored.get("impact") is None
     assert metadata["impact"] == consent_presentation._IMPACT_ABSENT
 
     delivered = _drive_plugin(

@@ -8099,9 +8099,15 @@ def check_db_semantic_grant(
     command: str,
     session_id: str | None = None,
     *,
+    requester: dict | None = None,
     db_path: Path | None = None,
 ) -> dict | None:
     """Find an active SCOPE_SEMANTIC_SIGNATURE grant for command in the DB.
+
+    ``requester`` (``cwd``, ``session_id``, ``agent_id``) restricts the match to
+    grants whose sealed request names that directory and requester; a ``None``
+    value in it matches only grants sealed without one. Omitted, no requester
+    filter applies.
 
     Called by check_approval_grant() as the primary (DB) check path.
 
@@ -8114,18 +8120,13 @@ def check_db_semantic_grant(
     - Have status='PENDING'
     - Not be past its expires_at timestamp
 
-    session_id is audit metadata only, NOT a match constraint (cross-session
-    per Brief 71). The block-approve-retry flow legitimately spans sessions: a
-    command is blocked under the subagent session, the user approves under the
-    orchestrator session, and the subagent retries under its own session. If
-    session_id constrained the match, the retry would never find the grant the
-    approval created.
+    session_id is audit metadata only, NOT a match constraint: the approver's
+    session differs from the requester's, and the requester binding is carried
+    by ``requester`` against the sealed request, not by this argument.
 
     Args:
         command: The command string to check.
-        session_id: CLAUDE_SESSION_ID. Accepted for signature compatibility and
-            passed through by callers, but IGNORED for matching -- the lookup is
-            session-agnostic (see security-boundary note below).
+        session_id: Accepted for signature compatibility, IGNORED for matching.
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
@@ -8155,26 +8156,30 @@ def check_db_semantic_grant(
 
     con = _connect(db_path)
     try:
-        # Security boundary is preserved WITHOUT a session_id constraint. The
-        # grant is authorized by the conjunction of three session-agnostic
-        # facts, each closing one attack surface:
-        #   * the semantic signature match (below) binds the grant to THIS
-        #     command's byte-level intent (Brief 71 signature binding);
-        #   * status='PENDING' is the single-use replay guard -- once consumed
-        #     the row flips to CONSUMED and no longer matches;
-        #   * expires_at is the TTL -- a stale grant past its window is skipped.
-        # None of these depend on which session is asking, so dropping the
-        # session_id filter widens nothing the three checks above do not already
-        # gate. It only lets the legitimate cross-session retry succeed.
+        # The signature match binds the command bytes, status='PENDING' is the
+        # single-use replay guard, expires_at the window, and ``requester`` the
+        # sealed directory and requesting session and agent.
         clauses = [
-            "scope = 'SCOPE_SEMANTIC_SIGNATURE'",
-            "status = 'PENDING'",
+            "g.scope = 'SCOPE_SEMANTIC_SIGNATURE'",
+            "g.status = 'PENDING'",
         ]
         params: list = []
+        if requester is not None:
+            # Filtered inside the query so a foreign first candidate cannot
+            # hide the requester's own grant. A request sealed before items
+            # and requesters were recorded keeps its old reach.
+            clauses.append(
+                "(json_extract(a.payload_json, '$.items') IS NULL OR ("
+                "json_extract(a.payload_json, '$.items[0].cwd') = ? AND "
+                "json_extract(a.payload_json, '$.requested_by.session_id') = ? AND "
+                "json_extract(a.payload_json, '$.requested_by.agent_id') = ?))"
+            )
+            params += [requester.get("cwd"), requester.get("session_id"), requester.get("agent_id")]
 
         where = " AND ".join(clauses)
         rows = con.execute(
-            f"SELECT * FROM approval_grants WHERE {where} ORDER BY created_at DESC",
+            "SELECT g.* FROM approval_grants g LEFT JOIN approvals a ON a.id = g.approval_id "
+            f"WHERE {where} ORDER BY g.created_at DESC",
             params,
         ).fetchall()
 

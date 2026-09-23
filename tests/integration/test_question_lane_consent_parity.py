@@ -212,7 +212,8 @@ def test_question_lane_grant_executes_under_opencode_without_a_proof(
 
     assert response.output.get("action") == "allow", response.output
     row = _grant_row(substrate, approval_id)
-    assert row["session_id"] == ORCHESTRATOR_SESSION
+    # D6: the grant binds to the requesting session, not the approver's.
+    assert row["session_id"] == SUBAGENT_SESSION
     assert row["reservation_session_id"] == SUBAGENT_SESSION
     assert row["reservation_tool_use_id"] == SUBAGENT_CALL
     assert row["reservation_index"] == 0

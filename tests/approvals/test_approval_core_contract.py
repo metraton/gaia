@@ -313,6 +313,138 @@ def test_approval_core_contract_protected_write_lives_in_the_core(db, tmp_path):
     assert core.protected_write_verdict(target, session_id=SESSION, agent_id="developer")["decision"] == "block"
 
 
+def test_approval_core_contract_request_set_under_opencode_seals_the_exported_session(tmp_path, monkeypatch, bootstrapped_db_template):
+    """PD6: the OpenCode plugin exports the session to the shell; request-set reads it."""
+    import os
+    import subprocess
+    import sys
+
+    from tests.integration import test_opencode_consent_retry_e2e as e2e
+
+    env, db_path = e2e._isolated_env(tmp_path / "state", bootstrapped_db_template)
+    monkeypatch.chdir(env["WORKSPACE"])
+    driven = e2e._drive(env, [
+        e2e._before("read", "git status"),
+        {"kind": "shell-env", "label": "identity", "sessionID": e2e.SESSION_ID, "callID": e2e.CALL_ID},
+    ])
+    exported = next(step for step in driven["steps"] if step["label"] == "identity")["env"]
+
+    shell = {k: v for k, v in {**env, **exported}.items() if not k.startswith("CLAUDE")}
+    result = subprocess.run(
+        [sys.executable, str(e2e.GAIA_CLI), "approvals", "request-set", "--command", COMMANDS[0],
+         "--cwd", env["WORKSPACE"], "--what", "Publish the branch", "--json"],
+        cwd=env["WORKSPACE"], env=shell, capture_output=True, text=True, timeout=180,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    approval_id = json.loads(result.stdout.strip().splitlines()[-1])["approval_id"]
+    assert _payload(db_path, approval_id)["requested_by"] == {
+        "session_id": e2e.SESSION_ID, "agent_id": exported["GAIA_DISPATCH_AGENT"],
+    }
+    assert os.environ.get("CLAUDE_CODE_SESSION_ID") is None
+
+
+def test_approval_core_contract_orchestrator_reject_all_flag_is_denied_like_reject_all(monkeypatch):
+    from modules.security import gaia_cli_only_guard as guard
+
+    gaia = "/abs/path/bin/gaia"
+    monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda token: token == gaia)
+    sweep = guard.check(f"{gaia} approvals reject-all", {})
+    assert sweep[0] is False
+    for command in (
+        f"{gaia} approvals reject --all",
+        f"{gaia} approvals reject --all --reason stale",
+        f"{gaia} approvals reject --al",
+        f"{gaia} approvals reject P-{'a' * 32} --all",
+    ):
+        assert guard.check(command, {}) == sweep, command
+    assert guard.check(f"{gaia} approvals reject P-{'a' * 32} --reason stale", {}) == (True, None)
+    assert guard.check(f"{gaia} approvals revoke P-{'a' * 32}", {}) == (True, None)
+
+
+def _approve_reactive(session_id, agent_id, *, native_ref):
+    from gaia.approvals import core, store
+    from modules.tools.bash_validator import _build_sealed_payload
+
+    payload = _build_sealed_payload(
+        COMMANDS[0], "push", "MUTATIVE", agent_type=agent_id, cwd=REPO, session_id=session_id,
+    )
+    approval_id = store.insert_requested(payload, agent_id=agent_id, session_id=session_id)
+    core.record_presentation(approval_id, native_ref=native_ref, session_id="ses-orch", agent_id="orchestrator")
+    assert core.decide(native_ref=native_ref, option_key="approve", session_id="ses-orch").status == "activated"
+    return approval_id
+
+
+def _subagent_event(session_id=SESSION, agent_type=AGENT):
+    return {"session_id": session_id, "agent_id": "a1b2c3", "agent_type": agent_type,
+            "cwd": REPO, "tool_use_id": "toolu_retry"}
+
+
+def test_approval_core_contract_foreign_first_grant_does_not_hide_the_own_grant(db):
+    from modules.tools.bash_validator import BashValidator
+
+    own = _approve_reactive(SESSION, AGENT, native_ref="toolu_own")
+    foreign = _approve_reactive("ses-foreign", "developer", native_ref="toolu_foreign")
+    con = sqlite3.connect(db)
+    con.execute("UPDATE approval_grants SET created_at='2999-01-01T00:00:00Z' WHERE approval_id=?", (foreign,))
+    con.commit()
+    con.close()
+
+    result = BashValidator().validate(
+        COMMANDS[0], is_subagent=True, session_id=SESSION, agent_type=AGENT,
+        hook_payload=_subagent_event(),
+    )
+    assert result.allowed, result.reason
+    assert _row(db, "SELECT status FROM approval_grants WHERE approval_id=?", own)["status"] == "CONSUMED"
+    assert _row(db, "SELECT status FROM approval_grants WHERE approval_id=?", foreign)["status"] == "PENDING"
+
+
+def test_approval_core_contract_reactive_seal_without_event_session_is_refused(db, monkeypatch):
+    from modules.tools.bash_validator import BashValidator
+
+    monkeypatch.setenv("CLAUDE_SESSION_ID", "default")
+    result = BashValidator().validate(
+        COMMANDS[0], is_subagent=True, session_id="", agent_type=AGENT,
+        hook_payload=_subagent_event(session_id=""),
+    )
+    assert not result.allowed
+    assert "session" in (result.reason or "").lower()
+    assert "P-" not in json.dumps(result.block_response or {})
+    assert _row(db, "SELECT COUNT(*) AS n FROM approvals")["n"] == 0
+
+
+def test_approval_core_contract_primary_session_binds_to_the_adapter_primary_identity(db, monkeypatch):
+    """A main-session command carries no agent: the adapter names the primary explicitly.
+
+    The orchestrator-only CLI guard is a separate layer keyed on the raw event
+    and would deny ``git`` first; it is neutralized so the identity is observed.
+    """
+    from adapters.claude_code import ClaudeCodeAdapter
+    from modules.security import gaia_cli_only_guard
+    from modules.tools import bash_validator
+
+    monkeypatch.setattr(gaia_cli_only_guard, "check", lambda command, payload: (True, None))
+    seen = []
+    real_validate = bash_validator.BashValidator.validate
+
+    def spy(self, command, **kwargs):
+        seen.append(kwargs.get("agent_type"))
+        return real_validate(self, command, **kwargs)
+
+    monkeypatch.setattr(bash_validator.BashValidator, "validate", spy)
+    primary_event = {"session_id": SESSION, "cwd": REPO, "tool_use_id": "toolu_main",
+                     "tool_name": "Bash", "tool_input": {"command": COMMANDS[0]}}
+    adapter = ClaudeCodeAdapter()
+    adapter._adapt_bash("Bash", {"command": COMMANDS[0]}, hook_data=primary_event)
+    primary = seen[-1]
+    assert primary and primary != "unattributed"
+
+    approval_id = _approve_reactive(SESSION, primary, native_ref="toolu_primary")
+    assert _payload(db, approval_id)["requested_by"] == {"session_id": SESSION, "agent_id": primary}
+    retry = adapter._adapt_bash("Bash", {"command": COMMANDS[0]}, hook_data={**primary_event, "tool_use_id": "toolu_main2"})
+    assert retry.exit_code == 0
+    assert _row(db, "SELECT status FROM approval_grants WHERE approval_id=?", approval_id)["status"] == "CONSUMED"
+
+
 def test_approval_core_contract_claude_adapter_delegates_protected_write(monkeypatch, tmp_path):
     from gaia.approvals import core
     from adapters.claude_code import ClaudeCodeAdapter

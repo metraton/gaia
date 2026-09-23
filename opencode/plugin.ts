@@ -2263,6 +2263,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       // carry it (measured: a specialist fell back to ./bin/gaia).
       output.env.PATH = [gaiaBinDirectory, output.env.PATH ?? process.env.PATH]
         .filter(Boolean).join(delimiter)
+      // `gaia approvals request-set` seals the requesting session from here,
+      // under a host-neutral name read ahead of Claude Code's variables.
+      output.env.GAIA_HOST_SESSION_ID = call.sessionID
       const context = roleContext(call.sessionID)
       if (!call.callID && isPrimarySession(call.sessionID)
         && context?.attestation && context.role === "gaia-orchestrator") return

@@ -1516,11 +1516,13 @@ def cmd_approve(args) -> int:
 def _requester_identity(args) -> tuple[str, str]:
     """Resolve the requesting session and agent: explicit flags, else the dispatch env.
 
-    Claude Code exports ``CLAUDE_CODE_SESSION_ID`` to a subagent's Bash and the
-    Claude adapter injects ``GAIA_DISPATCH_AGENT`` into it; neither is guessed.
+    The OpenCode plugin exports ``GAIA_HOST_SESSION_ID`` to a dispatched
+    shell, Claude Code exports ``CLAUDE_CODE_SESSION_ID``, and both hosts
+    inject ``GAIA_DISPATCH_AGENT``; neither is guessed.
     """
     session_id = (
         getattr(args, "session_id", None)
+        or os.environ.get("GAIA_HOST_SESSION_ID")
         or os.environ.get("CLAUDE_CODE_SESSION_ID")
         or os.environ.get("CLAUDE_SESSION_ID")
         or ""

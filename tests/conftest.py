@@ -172,14 +172,32 @@ def _isolate_claude_session_id(monkeypatch):
     The hook adapter writes a generated session id straight into os.environ,
     outside monkeypatch, so without this a later test inherits it. A suite run
     from inside Claude Code also inherits CLAUDE_CODE_SESSION_ID, which the
-    approvals CLI reads as the requesting session.
+    approvals CLI reads as the requesting session, as it reads the
+    GAIA_HOST_SESSION_ID an OpenCode dispatch exports.
     """
     # delenv records nothing for an absent variable, so a write during the test
     # would survive teardown; the setenv first guarantees an undo entry.
-    for name in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"):
+    for name in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "GAIA_HOST_SESSION_ID"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_mutative_classification_cache():
+    """Drop the classifier's verdict cache after each test.
+
+    The cache is keyed on command and cwd, not on file content, and
+    tmp_path_retention_policy deletes a passed test's directory so the next
+    test with the same name prefix reuses the path: a script rewritten there
+    would otherwise get the previous test's verdict.
+    """
+    yield
+    try:
+        from modules.security.mutative_verbs import _detect_mutative_command
+        _detect_mutative_command.cache_clear()
+    except ImportError:
+        pass
 
 
 def pytest_collection_modifyitems(config, items):

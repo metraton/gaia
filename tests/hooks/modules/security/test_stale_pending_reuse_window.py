@@ -363,11 +363,8 @@ def test_stale_pending_does_not_deadlock_a_protected_path_write(iso_db):
     live session, with no manual intervention on the forensic row.
     """
     import gaia.approvals.store as astore
-    from modules.security.approval_grants import (
-        find_pending_for_file,
-        generate_nonce,
-        write_pending_approval_for_file,
-    )
+    from gaia.approvals import core
+    from modules.security.approval_grants import find_pending_for_file
 
     stale = astore.insert_requested(
         _file_write_payload(TARGET_PATH), agent_id="a", session_id=DEAD_SESSION
@@ -376,19 +373,14 @@ def test_stale_pending_does_not_deadlock_a_protected_path_write(iso_db):
 
     assert find_pending_for_file(LIVE_SESSION, TARGET_PATH) is None
 
-    nonce = generate_nonce()
-    sentinel = write_pending_approval_for_file(
-        nonce=nonce, file_path=TARGET_PATH, session_id=LIVE_SESSION
+    verdict = core.protected_write_verdict(
+        TARGET_PATH, session_id=LIVE_SESSION, agent_id="gaia-system",
     )
-    assert sentinel is not None, "the fresh mint must persist"
-
-    persisted_id = sentinel.name
-    assert persisted_id == f"P-{nonce}", (
-        "with the stale row out of the way the mint keeps the caller's nonce"
-    )
-    assert persisted_id != stale
+    assert verdict["decision"] == "block"
+    persisted_id = verdict["approval_id"]
+    assert persisted_id != stale, "the stale row is never handed back"
     assert _row(iso_db, persisted_id)["session_id"] == LIVE_SESSION
-    assert _row(iso_db, stale)["status"] == "expired"
+    assert _row(iso_db, persisted_id)["status"] == "pending"
 
 
 def test_write_pending_returns_the_id_the_db_actually_used(iso_db):
@@ -428,15 +420,12 @@ def test_write_pending_returns_the_id_the_db_actually_used(iso_db):
 def test_the_block_banner_names_the_persisted_id_not_the_local_nonce(monkeypatch, tmp_path):
     """A user handed the local nonce would look up an approval that does not exist.
 
-    Drives the real PreToolUse entrypoint on its SUBAGENT branch with the mint
-    forced to deduplicate: the store keeps an earlier row, so the id it returns
-    is deliberately NOT the nonce this call generated. The banner must carry the
-    persisted one. No approval row is written -- the producer is stubbed.
+    Drives the real PreToolUse entrypoint on its SUBAGENT branch with the core
+    verdict stubbed to name an earlier persisted row. The banner must carry
+    that id. No approval row is written -- the producer is stubbed.
     """
-    from pathlib import Path as _Path
-
     import adapters.claude_code as cc
-    import modules.security.approval_grants as ag
+    from gaia.approvals import core
     from modules.security.protected_paths import is_protected_hook_path
 
     assert is_protected_hook_path(TARGET_PATH) is True
@@ -446,15 +435,13 @@ def test_the_block_banner_names_the_persisted_id_not_the_local_nonce(monkeypatch
     local_nonce = "aaaaaaaabbbbbbbbccccccccdddddddd"
     persisted_id = "P-99999999888888887777777766666666"
 
-    # _adapt_write_edit imports these lazily from approval_grants, so the source
-    # module is what the call actually resolves.
-    monkeypatch.setattr(ag, "check_approval_grant_for_file", lambda *a, **k: None)
-    monkeypatch.setattr(ag, "find_pending_for_file", lambda *a, **k: None)
-    monkeypatch.setattr(ag, "generate_nonce", lambda *a, **k: local_nonce)
     monkeypatch.setattr(
-        ag,
-        "write_pending_approval_for_file",
-        lambda **kwargs: _Path(persisted_id),
+        core,
+        "protected_write_verdict",
+        lambda path, **kwargs: {
+            "decision": "block", "path": path, "protected": True,
+            "approval_id": persisted_id, "window_minutes": 30,
+        },
     )
 
     response = cc.ClaudeCodeAdapter()._adapt_write_edit(
@@ -462,6 +449,8 @@ def test_the_block_banner_names_the_persisted_id_not_the_local_nonce(monkeypatch
         {"file_path": TARGET_PATH},
         session_id=LIVE_SESSION,
         is_subagent=True,
+        agent_id="a" + "1" * 16,
+        agent_type="gaia-system",
     )
 
     rendered = json.dumps(response.output or {})

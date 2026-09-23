@@ -135,6 +135,7 @@ def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
         verb=verdict.verb,
         category=verdict.category,
         agent_type=agent_type,
+        session_id=SESSION,
     )
 
 
