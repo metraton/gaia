@@ -439,6 +439,19 @@ class TestVerifyBrief:
 
     def test_clean_brief_passes(self, seeded_db):
         from gaia.briefs.store import verify_brief
+        # A clean brief declares which task covers each AC (v56).
+        con = sqlite3.connect(str(seeded_db))
+        try:
+            con.execute(
+                "INSERT INTO task_acceptance_criteria (task_id, ac_id) "
+                "SELECT (SELECT MIN(t.id) FROM tasks t JOIN plans p ON p.id = t.plan_id "
+                "        WHERE p.brief_id = ac.brief_id), ac.ac_id "
+                "FROM acceptance_criteria ac JOIN briefs b ON b.id = ac.brief_id "
+                "WHERE b.name = 'test-brief'"
+            )
+            con.commit()
+        finally:
+            con.close()
         res = verify_brief("me", "test-brief", db_path=seeded_db)
         assert res["pass"] is True
         assert res["inconsistencies"] == []

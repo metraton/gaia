@@ -76,11 +76,14 @@ is pulled with exactly one verb.
 
 | Verb | Addressing | What comes back |
 |---|---|---|
-| `gaia brief show\|list\|search\|deps\|verify` | brief slug (`search` takes a term) | The brief as markdown with its ACs; the index; FTS hits; the dependency graph; invariant violations one per line, each naming the command that fixes it. |
-| `gaia plan show\|list` | brief slug | The plan attached to that brief, with plan_id and status; or every plan in the workspace. |
+| `gaia brief show\|list\|search\|deps\|verify` | brief slug (`search` takes a term) | The brief as markdown with its ACs; the index; FTS hits; the dependency graph; invariant violations one per line (`--json` for the structured report). |
+| `gaia brief decision list <brief>` | `--json` | The brief's current decisions, apart from the ones they superseded. |
+| `gaia plan show\|list` | brief slug | The plan attached to that brief, with plan_id, status, version and pause reason; or every plan in the workspace. |
+| `gaia plan history <brief>` | `--content` | Every replaced version of the plan with the reason it was replaced. |
+| `gaia plan change list <brief>` | `--json` | The plan's managed changes: justification, status, and the proposed tasks with their reasons. |
 | `gaia task list <brief>` | `--status`, `--format table\|json\|count` | One row per task: ORDER (plan position) and TASK_ID (`tasks.id`) -- they are different numbers and dispatch wants the second. |
 | `gaia task show <brief> <order>` | `--json` | One task, printing both numbers with that distinction stated. |
-| `gaia task gate list <brief> <order>` | `--json` | The task's verification gates: id, type, status. |
+| `gaia task gate list <brief> <order>` | `--json` | The task's verification gates: id, type, status; `--json` adds the shape, the stale mark and the fail cause. |
 | `gaia evidence list --brief <b>` / `gaia evidence show <id>` | -- | Recorded per-AC evidence. |
 | `gaia worktree list` | `--repo`, `--json` | Every Gaia-managed worktree for a repo (default: cwd), under `<workspace>/.project-worktrees` or the legacy `~/.gaia/worktrees`: identity (contract_id, agent_id), branch, commit, lifecycle. |
 | `gaia worktree show <path>` | `--json` | One worktree's identity. `create`/`release` are the specialist's own writes, not a read -- see `gaia-patterns`. |

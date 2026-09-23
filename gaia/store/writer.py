@@ -3918,9 +3918,14 @@ def upsert_plan(
     *,
     content: str | None = None,
     status: str = "draft",
+    reason: str | None = None,
     db_path: Path | None = None,
 ) -> dict:
     """Upsert the plan attached to ``brief_name``.
+
+    Rewriting an existing plan's content first keeps the version it replaces,
+    with ``reason``, in ``plan_versions`` (see :func:`get_plan_history`); a
+    save that leaves the content unchanged records no version.
 
     Canonical persistence path for plans
     ------------------------------------
@@ -4019,6 +4024,8 @@ def upsert_plan(
             plan_id = existing["id"]
             new_status = status
             new_content = content if content is not None else existing["content"]
+            if new_content != existing["content"]:
+                _snapshot_plan_version(con, plan_id, reason)
             con.execute(
                 "UPDATE plans SET status = ?, content = ?, updated_at = ? "
                 "WHERE id = ?",
@@ -4051,7 +4058,8 @@ def get_plan(
         if brief_id is None:
             return None
         row = con.execute(
-            "SELECT id, brief_id, status, content, created_at, updated_at "
+            "SELECT id, brief_id, status, content, created_at, updated_at, "
+            "       paused_at, pause_reason "
             "FROM plans WHERE brief_id = ?",
             (brief_id,),
         ).fetchone()
@@ -4059,6 +4067,7 @@ def get_plan(
             return None
         out = {k: row[k] for k in row.keys()}
         out["brief_name"] = brief_name
+        out["version"] = _current_plan_version(con, row["id"])
         return out
     finally:
         con.close()
@@ -4138,13 +4147,18 @@ def set_plan_status(
                 f"brief '{brief_name}' not found in workspace '{workspace}'"
             )
         row = con.execute(
-            "SELECT id, status FROM plans WHERE brief_id = ?",
+            "SELECT id, status, pause_reason FROM plans WHERE brief_id = ?",
             (brief_id,),
         ).fetchone()
         if row is None:
             raise ValueError(
                 f"no plan attached to brief '{brief_name}' in workspace "
                 f"'{workspace}'"
+            )
+        if row["pause_reason"] is not None:
+            raise ValueError(
+                f"plan for brief '{brief_name}' is paused "
+                f"({row['pause_reason']}); resume it before changing its status"
             )
 
         old_status = row["status"] or "draft"
@@ -4188,6 +4202,341 @@ def set_plan_status(
             "action": "updated",
             "warnings": warnings,
         }
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: plan pause, history and managed change (v57)
+# ---------------------------------------------------------------------------
+
+def _plan_row(con: sqlite3.Connection, workspace: str, brief_name: str):
+    row = con.execute(
+        "SELECT p.* FROM plans p JOIN briefs b ON b.id = p.brief_id "
+        "WHERE b.workspace = ? AND b.name = ?",
+        (workspace, brief_name),
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"no plan attached to brief '{brief_name}' in workspace '{workspace}'"
+        )
+    return row
+
+
+def _required_text(value: str | None, what: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        raise ValueError(f"a {what} is required")
+    return text
+
+
+def _current_plan_version(con: sqlite3.Connection, plan_id: int) -> int:
+    kept = con.execute(
+        "SELECT MAX(version) FROM plan_versions WHERE plan_id = ?", (plan_id,)
+    ).fetchone()[0]
+    return (kept or 0) + 1
+
+
+def _snapshot_plan_version(
+    con: sqlite3.Connection,
+    plan_id: int,
+    reason: str | None,
+    change_id: int | None = None,
+) -> int:
+    """Keep the plan's current version before it is replaced; return the new
+    current version number. The caller commits."""
+    version = _current_plan_version(con, plan_id)
+    con.execute(
+        "INSERT INTO plan_versions (plan_id, version, status, content, reason, "
+        "                           change_id, saved_at) "
+        "SELECT id, ?, status, content, ?, ?, ? FROM plans WHERE id = ?",
+        (version, reason, change_id, _now_iso(), plan_id),
+    )
+    return version + 1
+
+
+def pause_plan(
+    workspace: str, brief_name: str, reason: str, *, db_path: Path | None = None,
+) -> dict:
+    """Stop an active plan without un-approving it; its tasks are not
+    dispatched until :func:`resume_plan`. The reason is required."""
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("plans")
+    reason = _required_text(reason, "pause reason")
+
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        if plan["status"] != "active":
+            raise ValueError(
+                f"only an active plan can be paused; plan for '{brief_name}' "
+                f"is '{plan['status']}'"
+            )
+        if plan["pause_reason"] is not None:
+            raise ValueError(
+                f"plan for '{brief_name}' is already paused ({plan['pause_reason']})"
+            )
+        now = _now_iso()
+        con.execute(
+            "UPDATE plans SET paused_at = ?, pause_reason = ?, updated_at = ? "
+            "WHERE id = ?",
+            (now, reason, now, plan["id"]),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {"brief_name": brief_name, "action": "paused", "reason": reason,
+            "paused_at": now}
+
+
+def resume_plan(
+    workspace: str, brief_name: str, *, db_path: Path | None = None,
+) -> dict:
+    """Lift a pause; tasks, gates and verdicts are exactly as they were."""
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("plans")
+
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        if plan["pause_reason"] is None:
+            raise ValueError(f"plan for '{brief_name}' is not paused")
+        con.execute(
+            "UPDATE plans SET paused_at = NULL, pause_reason = NULL, "
+            "updated_at = ? WHERE id = ?",
+            (_now_iso(), plan["id"]),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {"brief_name": brief_name, "action": "resumed",
+            "was_paused_for": plan["pause_reason"]}
+
+
+def get_plan_history(
+    workspace: str, brief_name: str, *, db_path: Path | None = None,
+) -> list[dict]:
+    """Every replaced version of the plan, oldest first, each with the reason
+    it was replaced."""
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        return [dict(r) for r in con.execute(
+            "SELECT version, status, content, reason, change_id, saved_at "
+            "FROM plan_versions WHERE plan_id = ? ORDER BY version",
+            (plan["id"],),
+        )]
+    finally:
+        con.close()
+
+
+_OPEN_CHANGE_STATUSES = ("requested", "proposed", "approved")
+
+
+def _change_row(con: sqlite3.Connection, plan_id: int, change_id: int, expected: str):
+    row = con.execute(
+        "SELECT * FROM plan_changes WHERE id = ? AND plan_id = ?",
+        (change_id, plan_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"plan change #{change_id} not found on this plan")
+    if row["status"] != expected:
+        raise ValueError(
+            f"plan change #{change_id} is '{row['status']}'; this step needs it "
+            f"'{expected}'"
+        )
+    return row
+
+
+def request_plan_change(
+    workspace: str, brief_name: str, justification: str, *,
+    db_path: Path | None = None,
+) -> dict:
+    """Record the orchestrator's justified request to change an active plan.
+
+    Only an active (approved) plan goes through the change flow; a draft is
+    still edited directly. One change is open per plan at a time, so each
+    application versions the plan against the proposal that was approved.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("plans")
+    justification = _required_text(justification, "change justification")
+
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        if plan["status"] != "active":
+            raise ValueError(
+                f"plan for '{brief_name}' is '{plan['status']}'; a change is "
+                f"requested only on an active plan"
+            )
+        open_change = con.execute(
+            "SELECT id, status FROM plan_changes WHERE plan_id = ? AND status IN "
+            f"({', '.join('?' for _ in _OPEN_CHANGE_STATUSES)})",
+            (plan["id"], *_OPEN_CHANGE_STATUSES),
+        ).fetchone()
+        if open_change is not None:
+            raise ValueError(
+                f"plan for '{brief_name}' already has an open change "
+                f"#{open_change['id']} ({open_change['status']})"
+            )
+        cur = con.execute(
+            "INSERT INTO plan_changes (plan_id, justification, requested_at) "
+            "VALUES (?, ?, ?)",
+            (plan["id"], justification, _now_iso()),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {"brief_name": brief_name, "change_id": cur.lastrowid,
+            "status": "requested"}
+
+
+def propose_plan_change(
+    workspace: str, brief_name: str, change_id: int, summary: str,
+    affected: list[tuple[int, str]], *, db_path: Path | None = None,
+) -> dict:
+    """The planner's delta for a requested change: a summary and, per
+    affected task (by order_num), why it is affected. Only those tasks'
+    verdicts go stale when the change is applied."""
+    from gaia.state.permissions import _assert_dispatch_can_write_content
+    _assert_dispatch_can_write_content("plans")
+    summary = _required_text(summary, "proposal summary")
+
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        _change_row(con, plan["id"], change_id, "requested")
+        rows = []
+        for order_num, why in affected:
+            rows.append((
+                change_id,
+                _resolve_task_id_by_order(con, workspace, brief_name, order_num),
+                _required_text(why, f"reason for affecting task {order_num}"),
+            ))
+        con.executemany(
+            "INSERT INTO plan_change_tasks (change_id, task_id, reason) "
+            "VALUES (?, ?, ?)",
+            rows,
+        )
+        con.execute(
+            "UPDATE plan_changes SET status = 'proposed', proposal = ?, "
+            "proposed_at = ? WHERE id = ?",
+            (summary, _now_iso(), change_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {"brief_name": brief_name, "change_id": change_id,
+            "status": "proposed", "affected_tasks": [o for o, _ in affected]}
+
+
+def approve_plan_change(
+    workspace: str, brief_name: str, change_id: int, *,
+    db_path: Path | None = None,
+) -> dict:
+    """The orchestrator accepts the planner's proposal as it stands."""
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("plans")
+
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        _change_row(con, plan["id"], change_id, "proposed")
+        con.execute(
+            "UPDATE plan_changes SET status = 'approved', approved_at = ? "
+            "WHERE id = ?",
+            (_now_iso(), change_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {"brief_name": brief_name, "change_id": change_id,
+            "status": "approved"}
+
+
+def apply_plan_change(
+    workspace: str, brief_name: str, change_id: int, *,
+    content: str | None = None, db_path: Path | None = None,
+) -> dict:
+    """Apply an approved change: keep the current plan version with the
+    change's justification, install ``content`` (if given) as the new version,
+    and mark stale the verdicts of the proposed tasks only. Each of those
+    tasks then follows from its gates through the derived closure."""
+    from gaia.state.permissions import _assert_dispatch_can_write_content
+    _assert_dispatch_can_write_content("plans")
+
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        change = _change_row(con, plan["id"], change_id, "approved")
+        version = _snapshot_plan_version(
+            con, plan["id"],
+            f"change #{change_id}: {change['justification']}", change_id,
+        )
+        now = _now_iso()
+        if content is not None:
+            con.execute(
+                "UPDATE plans SET content = ?, updated_at = ? WHERE id = ?",
+                (content, now, plan["id"]),
+            )
+        affected = con.execute(
+            "SELECT ct.task_id, ct.reason, t.order_num FROM plan_change_tasks ct "
+            "JOIN tasks t ON t.id = ct.task_id WHERE ct.change_id = ? "
+            "ORDER BY t.order_num",
+            (change_id,),
+        ).fetchall()
+        staled = []
+        for row in affected:
+            if _mark_verdicts_stale(
+                con, [row["task_id"]],
+                f"plan change #{change_id}: {row['reason']}",
+            ):
+                staled.append((row["task_id"], row["order_num"]))
+        con.execute(
+            "UPDATE plan_changes SET status = 'applied', applied_at = ? "
+            "WHERE id = ?",
+            (now, change_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {
+        "brief_name": brief_name,
+        "change_id": change_id,
+        "status": "applied",
+        "version": version,
+        "stale_tasks": [
+            {
+                "order_num": order_num,
+                DERIVED_CLOSURE_RESULT_KEY: _rederive_task_closure(
+                    workspace, brief_name, order_num, task_id, db_path=db_path
+                ),
+            }
+            for task_id, order_num in staled
+        ],
+    }
+
+
+def list_plan_changes(
+    workspace: str, brief_name: str, *, db_path: Path | None = None,
+) -> list[dict]:
+    """Every change recorded on the plan, oldest first, with its tasks."""
+    con = _connect(db_path)
+    try:
+        plan = _plan_row(con, workspace, brief_name)
+        changes = [dict(r) for r in con.execute(
+            "SELECT * FROM plan_changes WHERE plan_id = ? ORDER BY id",
+            (plan["id"],),
+        )]
+        for change in changes:
+            change["tasks"] = [dict(r) for r in con.execute(
+                "SELECT t.order_num, ct.reason FROM plan_change_tasks ct "
+                "JOIN tasks t ON t.id = ct.task_id WHERE ct.change_id = ? "
+                "ORDER BY t.order_num",
+                (change["id"],),
+            )]
+        return changes
     finally:
         con.close()
 
@@ -4416,7 +4765,8 @@ def set_ac_status(
     Returns a dict with keys: status, action, brief_name, entity_id,
     old_status, new_status, updated_at.
 
-    Raises ValueError on illegal transition or missing entity.
+    Raises ValueError on illegal transition, missing entity, or a move to
+    'done' with no positive evidence row for the AC.
     """
     from gaia.state.permissions import _assert_dispatch_can_advance_state
     _assert_dispatch_can_advance_state("acceptance_criteria")
@@ -4460,6 +4810,16 @@ def set_ac_status(
             }
 
         assert_legal_ac_lifecycle(old_status, new_status)
+
+        if new_status == "done" and con.execute(
+            "SELECT 1 FROM evidence WHERE brief_id = ? AND ac_id = ? "
+            "AND polarity = 'positive' LIMIT 1",
+            (brief_id, ac_id),
+        ).fetchone() is None:
+            raise ValueError(
+                f"AC '{ac_id}' cannot be done without positive evidence; record it "
+                f"with `gaia evidence add --brief {brief_name} --ac {ac_id} ...`"
+            )
 
         now = _now_iso()
         con.execute(
@@ -4700,9 +5060,11 @@ def update_task(
     operation as replacing the task, and this writer is what lets a caller do
     the former without paying for the latter.
 
-    ``status`` is untouched here; the state machine stays the exclusive
-    province of :func:`set_task_status`. ``order_num`` and ``id`` are the
-    resolution keys, never rewritten by this call.
+    ``status`` is not written here. A goal that actually changes marks the
+    task's recorded gate verdicts stale -- they proved the old goal -- and the
+    task status then follows from its gates through the derived closure, which
+    preserves a current override. ``order_num`` and ``id`` are the resolution
+    keys, never rewritten by this call.
 
     Raises ValueError on missing brief/plan/task or an empty ``goal``.
     """
@@ -4717,21 +5079,34 @@ def update_task(
         task_id = _resolve_task_id_by_order(
             con, workspace, brief_name, order_num
         )
+        old_goal = con.execute(
+            "SELECT goal FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()["goal"]
         con.execute(
             "UPDATE tasks SET goal = ? WHERE id = ?",
             (goal, task_id),
         )
+        stale = old_goal != goal and _mark_verdicts_stale(
+            con, [task_id], "task goal changed"
+        )
         con.commit()
-        return {
-            "status": "applied",
-            "action": "updated",
-            "brief_name": brief_name,
-            "order_num": order_num,
-            "task_id": task_id,
-            "fields": ["goal"],
-        }
     finally:
         con.close()
+
+    result = {
+        "status": "applied",
+        "action": "updated",
+        "brief_name": brief_name,
+        "order_num": order_num,
+        "task_id": task_id,
+        "fields": ["goal"],
+        "stale": bool(stale),
+    }
+    if stale:
+        result[DERIVED_CLOSURE_RESULT_KEY] = _rederive_task_closure(
+            workspace, brief_name, order_num, task_id, db_path=db_path
+        )
+    return result
 
 
 def reorder_tasks(
@@ -4878,7 +5253,179 @@ def list_plan_tasks(
                 "FROM tasks WHERE plan_id = ? AND status = ? ORDER BY order_num",
                 (plan_id, status),
             ).fetchall()
-        return [dict(r) for r in rows]
+        tasks = [dict(r) for r in rows]
+        for task in tasks:
+            task["covers"], task["depends_on"] = _read_task_structure(con, task["id"])
+        return tasks
+    finally:
+        con.close()
+
+
+def _read_task_structure(
+    con: sqlite3.Connection, task_id: int
+) -> tuple[list[str], list[int]]:
+    """Return (covered AC ids, order_nums of the tasks it depends on) for one task."""
+    covers = [
+        r["ac_id"] for r in con.execute(
+            "SELECT ac_id FROM task_acceptance_criteria WHERE task_id = ? ORDER BY ac_id",
+            (task_id,),
+        )
+    ]
+    depends_on = [
+        r["order_num"] for r in con.execute(
+            "SELECT t.order_num FROM task_dependencies d "
+            "JOIN tasks t ON t.id = d.depends_on_task_id "
+            "WHERE d.task_id = ? ORDER BY t.order_num",
+            (task_id,),
+        )
+    ]
+    return covers, depends_on
+
+
+def _resolve_task_and_brief(
+    con: sqlite3.Connection, workspace: str, brief_name: str, order_num: int
+) -> tuple[int, int, int]:
+    """Return (task_id, plan_id, brief_id) for a task addressed by order_num."""
+    task_id = _resolve_task_id_by_order(con, workspace, brief_name, order_num)
+    row = con.execute(
+        "SELECT t.plan_id, p.brief_id FROM tasks t JOIN plans p ON p.id = t.plan_id "
+        "WHERE t.id = ?",
+        (task_id,),
+    ).fetchone()
+    return task_id, row["plan_id"], row["brief_id"]
+
+
+def link_task_criteria(
+    workspace: str,
+    brief_name: str,
+    order_num: int,
+    ac_ids: list[str],
+    *,
+    remove: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Declare (or with ``remove`` withdraw) the ACs the task at ``order_num`` covers.
+
+    Adding requires every AC to exist on the brief; linking one already linked
+    is a no-op. Returns the task's resulting coverage under ``covers``.
+    Raises ValueError on a missing brief/plan/task or an unknown AC.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("tasks")
+
+    if not ac_ids:
+        raise ValueError("at least one AC id is required")
+    con = _connect(db_path)
+    try:
+        task_id, _, brief_id = _resolve_task_and_brief(con, workspace, brief_name, order_num)
+        if remove:
+            con.executemany(
+                "DELETE FROM task_acceptance_criteria WHERE task_id = ? AND ac_id = ?",
+                [(task_id, ac) for ac in ac_ids],
+            )
+        else:
+            known = {
+                r["ac_id"] for r in con.execute(
+                    "SELECT ac_id FROM acceptance_criteria WHERE brief_id = ?", (brief_id,)
+                )
+            }
+            unknown = [ac for ac in ac_ids if ac not in known]
+            if unknown:
+                raise ValueError(
+                    f"AC(s) {', '.join(unknown)} not found in brief '{brief_name}'"
+                )
+            con.executemany(
+                "INSERT OR IGNORE INTO task_acceptance_criteria (task_id, ac_id) VALUES (?, ?)",
+                [(task_id, ac) for ac in ac_ids],
+            )
+        con.commit()
+        covers, _ = _read_task_structure(con, task_id)
+        return {
+            "status": "applied",
+            "action": "unlinked" if remove else "linked",
+            "brief_name": brief_name,
+            "order_num": order_num,
+            "covers": covers,
+        }
+    finally:
+        con.close()
+
+
+def link_task_dependencies(
+    workspace: str,
+    brief_name: str,
+    order_num: int,
+    depends_on: list[int],
+    *,
+    remove: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Declare (or with ``remove`` withdraw) the tasks the task at ``order_num`` waits for.
+
+    Dependencies are other tasks of the same plan, addressed by order_num. A
+    task cannot depend on itself, and a link that would close a cycle is
+    refused, because every task on a cycle would stay blocked forever.
+    Returns the resulting dependency order_nums under ``depends_on``.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("tasks")
+
+    if not depends_on:
+        raise ValueError("at least one dependency order_num is required")
+    con = _connect(db_path)
+    try:
+        task_id, plan_id, _ = _resolve_task_and_brief(con, workspace, brief_name, order_num)
+        by_order = {
+            r["order_num"]: r["id"] for r in con.execute(
+                "SELECT id, order_num FROM tasks WHERE plan_id = ?", (plan_id,)
+            )
+        }
+        missing = [o for o in depends_on if o not in by_order]
+        if missing:
+            raise ValueError(
+                f"task order_num(s) {missing} not found in plan for brief '{brief_name}'"
+            )
+        dep_ids = [by_order[o] for o in depends_on]
+        if remove:
+            con.executemany(
+                "DELETE FROM task_dependencies WHERE task_id = ? AND depends_on_task_id = ?",
+                [(task_id, d) for d in dep_ids],
+            )
+        else:
+            if task_id in dep_ids:
+                raise ValueError(f"task order_num={order_num} cannot depend on itself")
+            edges: dict[int, set[int]] = {}
+            for r in con.execute(
+                "SELECT d.task_id, d.depends_on_task_id FROM task_dependencies d "
+                "JOIN tasks t ON t.id = d.task_id WHERE t.plan_id = ?",
+                (plan_id,),
+            ):
+                edges.setdefault(r["task_id"], set()).add(r["depends_on_task_id"])
+            pending, seen = list(dep_ids), set()
+            while pending:
+                current = pending.pop()
+                if current == task_id:
+                    raise ValueError(
+                        f"depending on {depends_on} would make task "
+                        f"order_num={order_num} wait for itself (cycle)"
+                    )
+                if current not in seen:
+                    seen.add(current)
+                    pending.extend(edges.get(current, ()))
+            con.executemany(
+                "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id) "
+                "VALUES (?, ?)",
+                [(task_id, d) for d in dep_ids],
+            )
+        con.commit()
+        _, current_deps = _read_task_structure(con, task_id)
+        return {
+            "status": "applied",
+            "action": "unlinked" if remove else "linked",
+            "brief_name": brief_name,
+            "order_num": order_num,
+            "depends_on": current_deps,
+        }
     finally:
         con.close()
 
@@ -5084,7 +5631,8 @@ def _read_task_gate_rows(con: sqlite3.Connection, task_id: int) -> list[dict]:
     """
     rows = con.execute(
         "SELECT id, task_id, verification_type, evidence_type, "
-        "       evidence_shape, artifact_path, status "
+        "       evidence_shape, artifact_path, status, "
+        "       stale_at, stale_reason, fail_cause "
         "FROM task_gates WHERE task_id = ? ORDER BY id",
         (task_id,),
     ).fetchall()
@@ -5368,6 +5916,12 @@ def update_gate(
     stay the exclusive job of :func:`set_gate_status` (and, through it, the
     verifier-only closure path), never a side effect of a content edit.
 
+    Editing a gate that already carries a verdict keeps that verdict and marks
+    it stale: it answered a different question. The task then follows from its
+    gates through the derived closure (reported under
+    :data:`DERIVED_CLOSURE_RESULT_KEY`), so a closed task reopens unless a
+    current override preserves it.
+
     Persists the edited fields AS GIVEN: like :func:`add_gate_to_task`, this
     writer does NOT invoke ``gaia.state.gate_validation.validate_gate`` --
     structural validation is a separate, independently-invokable pure
@@ -5420,17 +5974,166 @@ def update_gate(
             raise ValueError(
                 f"could not update gate id={gate_id}: {exc}"
             ) from exc
+        stale = _mark_verdicts_stale(
+            con, [task_id], f"gate edited ({', '.join(updates)})", gate_id=gate_id
+        )
         con.commit()
-        return {
-            "status": "applied",
-            "action": "updated",
-            "brief_name": brief_name,
-            "task_order_num": task_order_num,
-            "gate_id": gate_id,
-            "fields": list(updates.keys()),
-        }
     finally:
         con.close()
+
+    result = {
+        "status": "applied",
+        "action": "updated",
+        "brief_name": brief_name,
+        "task_order_num": task_order_num,
+        "gate_id": gate_id,
+        "fields": list(updates.keys()),
+        "stale": bool(stale),
+    }
+    if stale:
+        result[DERIVED_CLOSURE_RESULT_KEY] = _rederive_task_closure(
+            workspace, brief_name, task_order_num, task_id, db_path=db_path
+        )
+    return result
+
+
+def _mark_verdicts_stale(
+    con: sqlite3.Connection,
+    task_ids: list[int],
+    reason: str,
+    *,
+    gate_id: int | None = None,
+) -> list[int]:
+    """Mark the recorded verdicts on ``task_ids`` (or only ``gate_id``) stale.
+
+    A pending gate carries no verdict and is left alone; an already stale gate
+    keeps the moment and reason it first went stale. The verdict itself is not
+    touched. Returns the task ids that gained a stale gate. The caller commits.
+    """
+    if not task_ids:
+        return []
+    marks = ", ".join("?" for _ in task_ids)
+    where = (
+        f"task_id IN ({marks}) AND status != 'pending' AND stale_at IS NULL"
+        + (" AND id = ?" if gate_id is not None else "")
+    )
+    params = [*task_ids, *([gate_id] if gate_id is not None else [])]
+    touched = [
+        r["task_id"] for r in con.execute(
+            f"SELECT DISTINCT task_id FROM task_gates WHERE {where}", params
+        )
+    ]
+    con.execute(
+        f"UPDATE task_gates SET stale_at = ?, stale_reason = ? WHERE {where}",
+        [_now_iso(), reason, *params],
+    )
+    return touched
+
+
+def mark_criterion_verdicts_stale(
+    workspace: str,
+    brief_name: str,
+    ac_ids: list[str],
+    *,
+    reason: str | None = None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Mark stale the verdicts of every task covering one of ``ac_ids``.
+
+    Called when an AC's description changes: the gates of the tasks that cover
+    it proved the old criterion. Each touched task then follows from its gates
+    through the derived closure. Returns one ``{order_num, derived_closure}``
+    per touched task.
+    """
+    if not ac_ids:
+        return []
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id(con, workspace, brief_name)
+        marks = ", ".join("?" for _ in ac_ids)
+        rows = con.execute(
+            "SELECT DISTINCT t.id, t.order_num FROM tasks t "
+            "JOIN plans p ON p.id = t.plan_id "
+            "JOIN task_acceptance_criteria c ON c.task_id = t.id "
+            f"WHERE p.brief_id = ? AND c.ac_id IN ({marks})",
+            (brief_id, *ac_ids),
+        ).fetchall()
+        orders = {r["id"]: r["order_num"] for r in rows}
+        touched = _mark_verdicts_stale(
+            con, list(orders),
+            reason or f"acceptance criterion {', '.join(ac_ids)} changed",
+        )
+        con.commit()
+    finally:
+        con.close()
+    return [
+        {
+            "order_num": orders[task_id],
+            DERIVED_CLOSURE_RESULT_KEY: _rederive_task_closure(
+                workspace, brief_name, orders[task_id], task_id, db_path=db_path
+            ),
+        }
+        for task_id in touched
+    ]
+
+
+def request_gate_reverification(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    gate_id: int,
+    reason: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Ask for a passed gate to be verified again.
+
+    The pass verdict is kept and marked stale with ``reason``, so the task
+    stops counting as done through the derived closure until a verifier
+    records a new verdict (which clears the mark). Only a current pass can be
+    re-verified: a pending or failed gate already does not approve.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("plans")
+    reason = _required_text(reason, "re-verification reason")
+
+    con = _connect(db_path)
+    try:
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, task_order_num
+        )
+        gate = con.execute(
+            "SELECT status, stale_at FROM task_gates WHERE id = ? AND task_id = ?",
+            (gate_id, task_id),
+        ).fetchone()
+        if gate is None:
+            raise ValueError(
+                f"gate id={gate_id} not found on task order_num={task_order_num} "
+                f"in plan for brief '{brief_name}'"
+            )
+        if gate["status"] != "pass" or gate["stale_at"] is not None:
+            raise ValueError(
+                f"gate id={gate_id} is not a current pass (status="
+                f"{gate['status']!r}, stale={gate['stale_at'] is not None}); "
+                f"only an approved verdict can be sent back for re-verification"
+            )
+        _mark_verdicts_stale(
+            con, [task_id], f"re-verification requested: {reason}",
+            gate_id=gate_id,
+        )
+        con.commit()
+    finally:
+        con.close()
+    return {
+        "status": "applied",
+        "action": "reverification_requested",
+        "brief_name": brief_name,
+        "task_order_num": task_order_num,
+        "gate_id": gate_id,
+        DERIVED_CLOSURE_RESULT_KEY: _rederive_task_closure(
+            workspace, brief_name, task_order_num, task_id, db_path=db_path
+        ),
+    }
 
 
 # Key under which :func:`set_gate_status` reports what the recorded verdict
@@ -5619,10 +6322,17 @@ def set_gate_status(
     gate_id: int,
     status: str,
     *,
+    cause: str | None = None,
     db_path: Path | None = None,
 ) -> dict:
     """Set the ``status`` of the task_gates row ``gate_id`` on the task at
     ``task_order_num``, then apply whatever that verdict implies for the task.
+
+    ``cause`` (from ``gaia.state.VALID_GATE_FAIL_CAUSES``) is accepted only
+    with 'fail'. It is required at the agent surface, `gaia task gate
+    set-status ... fail --cause`; this writer still accepts a causeless fail
+    so internal callers written before v56 keep working. Every call records a fresh verdict, so it
+    clears the gate's stale mark.
 
     Write surface for `gaia task gate set-status` (harness B3/T3): the only
     way to move task_gates.status off its pending INSERT-time value. ``status``
@@ -5664,6 +6374,15 @@ def set_gate_status(
     from gaia.state.permissions import _assert_dispatch_can_advance_state
     _assert_dispatch_can_advance_state("tasks")
     _assert_valid_gate_status(status)
+    from gaia.state import VALID_GATE_FAIL_CAUSES
+
+    if cause is not None and cause not in VALID_GATE_FAIL_CAUSES:
+        raise ValueError(
+            f"a gate failure cause must be one of {list(VALID_GATE_FAIL_CAUSES)}; "
+            f"got {cause!r}"
+        )
+    if status != "fail" and cause is not None:
+        raise ValueError(f"a cause is recorded only with 'fail', not with {status!r}")
 
     con = _connect(db_path)
     try:
@@ -5682,23 +6401,47 @@ def set_gate_status(
         old_status = gate_row["status"]
 
         con.execute(
-            "UPDATE task_gates SET status = ? WHERE id = ? AND task_id = ?",
-            (status, gate_id, task_id),
+            "UPDATE task_gates SET status = ?, fail_cause = ?, "
+            "stale_at = NULL, stale_reason = NULL WHERE id = ? AND task_id = ?",
+            (status, cause, gate_id, task_id),
         )
         con.commit()
+    finally:
+        con.close()
 
-        result = {
-            "status": "applied",
-            "action": "status_updated",
-            "brief_name": brief_name,
-            "task_order_num": task_order_num,
-            "gate_id": gate_id,
-            "old_status": old_status,
-            "new_status": status,
-        }
-        # Read the derivation's three inputs while the connection is open, so the
-        # transition below opens the only other one -- rather than nesting a
-        # writer's connection inside this function's still-open read.
+    result = {
+        "status": "applied",
+        "action": "status_updated",
+        "brief_name": brief_name,
+        "task_order_num": task_order_num,
+        "gate_id": gate_id,
+        "old_status": old_status,
+        "new_status": status,
+        "fail_cause": cause,
+    }
+    result[DERIVED_CLOSURE_RESULT_KEY] = _rederive_task_closure(
+        workspace, brief_name, task_order_num, task_id, db_path=db_path
+    )
+    return result
+
+
+def _rederive_task_closure(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    task_id: int,
+    *,
+    db_path: Path | None,
+) -> dict:
+    """Read the derivation's inputs for one task and apply the derived closure.
+
+    The inputs are read on a connection closed before the transition opens its
+    own, rather than nesting a writer's connection inside a still-open read.
+    Best effort like :func:`_apply_derived_task_closure`: the change that
+    prompted it is already committed.
+    """
+    con = _connect(db_path)
+    try:
         gate_rows = _read_task_gate_rows(con, task_id)
         binding_rows = _read_task_binding_rows(con, task_id)
         task_status = _read_task_status(con, task_id)
@@ -5709,7 +6452,7 @@ def set_gate_status(
     finally:
         con.close()
 
-    result[DERIVED_CLOSURE_RESULT_KEY] = _apply_derived_task_closure(
+    return _apply_derived_task_closure(
         workspace,
         brief_name,
         task_order_num,
@@ -5720,7 +6463,6 @@ def set_gate_status(
         close_override_divergence_event_id=close_override_divergence_event_id,
         db_path=db_path,
     )
-    return result
 
 
 # ---------------------------------------------------------------------------

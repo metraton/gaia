@@ -5,94 +5,66 @@ description: Use when re-running a task_gates entry (or a proposed contract veri
 
 # Verification Oracle
 
-Deterministic re-execution of a command/code task gate: run the declared
-check again, compare the actual result to what the gate expects, and return
-an objective pass/fail with the evidence that produced it. This is the mode
-a verifier loads when a gate's `verification_type` is one of the two
-DETERMINISTIC types in `gaia.state.VALID_VERIFICATION_TYPES` -- `command` and
-`code` -- as opposed to `semantic` (needs human/rubric judgment) or
-`self_review` (trusts the producing agent's own statement).
+Deterministic re-execution of a `command` or `code` gate: run the declared check
+again, observe whether it passes now, and return a verdict carrying the
+evidence that produced it. `command` and `code` are one mechanism with two
+labels -- both carry a runnable string, `evidence_shape` on a persisted gate or
+`command` on a contract's `evidence_report.verification` -- so the label changes
+what a reader expects (a suite versus a linter), not how the oracle runs it.
+For `semantic` and `self_review` gates, use `verification-rubric`.
 
 ## Position in the flow
 
-This mode runs mid-verification, not standalone. Upstream, a planner already
-authored the gate (`gaia task gate add ... --type=command|code
---evidence-shape='<check>'`, persisted in `task_gates`) or a producing agent
-already proposed `evidence_report.verification` on its contract
-(`gaia.contract.validator`) -- either way the check spec exists as text
-before this skill runs; the oracle never invents what to check, only whether
-it currently holds. Downstream, the pass/fail verdict feeds whatever decides
-the gate's/AC's status next -- so a wrong verdict here propagates as a false
-pass or a false block one layer up, not just a local mistake.
-
-## Why command and code are ONE mechanism, not two
-
-Read `gaia.state.gate_validation` and `gaia.contract.validator` before
-assuming `code` needs different execution machinery than `command`: both
-types resolve to the SAME shape, a runnable string -- `evidence_shape` on the
-persisted gate, or `command` on the contract envelope (e.g. `{"type": "code",
-"command": "ruff check ."}`). `gaia.state.__init__` calls the two "synonyms
-for the two shapes of a deterministic check" -- `command` typically names a
-broader run (a test suite, a script); `code` typically names a narrower
-code-level check (a linter, a type-checker, an assertion). The label changes
-what a human reads in a report; it does not change how the oracle runs it.
+Upstream, the planner authored the gate: its claim in `evidence_type`, its
+check in `evidence_shape`. Upstream of that, the executor ran the check red
+before its change and green after, recording both as evidence tied to the gate.
+The oracle never invents what to check, only whether it holds. Downstream, its
+verdict decides whether the task derives as done and, through the evidence it
+leaves, whether an AC can close -- so a false pass here counts unfinished work
+as done one layer up.
 
 ## Process
 
-1. **Confirm the type is deterministic.** Read `verification_type` (gate) or
-   `type` (envelope). If it is not `command` or `code`, this mode does not
-   apply -- `semantic` needs a rubric/human, `self_review` needs to trust the
-   agent's own statement. Re-running either of those as if it were a shell
-   command is a category error: there is nothing to exec.
-2. **Extract the check spec.** Pull the runnable string off `evidence_shape`
-   (gate shape) or `command` (envelope shape), whichever is present. An
-   absent or blank spec on a declared deterministic type is a hard rejection
-   -- mirrors `gate_validation.validate_gate`'s own required-field check --
-   never fall back to "assume pass."
-3. **Re-execute, do not re-read.** Run the exact string as a subprocess --
-   tokenized, never `shell=True` (see `command-execution`) -- and capture
-   stdout, stderr, and the exit code. This is the one point in the flow that
-   performs real I/O: the entire point of an oracle is that it re-observes
-   the world instead of trusting a prior claim about it.
-4. **Compare against the gate's expected value, not against zero by
-   convention.** Default expectation is exit code `0`, but a gate MAY declare
-   a different `expected_exit_code` (e.g. a linter that exits `2` on findings
-   by design) -- read it when present, default to `0` when absent. Pass is
-   `actual_exit_code == expected_exit_code`, nothing softer than that.
-5. **Return the full verdict, not a bare boolean.** Carry `ok`,
-   `verification_type`, the resolved `command`, `exit_code`,
-   `expected_exit_code`, `stdout`/`stderr`, and `errors` (unresolvable type,
-   empty spec, un-tokenizable string, command not found, timeout). Whatever
-   consumes this needs the evidence to report `verbatim_outputs`, not just
-   the pass/fail bit.
-6. **Never launder a failure into a pass.** A non-zero unexpected exit code,
-   a timeout, or a missing binary are all `ok=False` with a distinct
-   `errors` entry -- collapsing any of them into a silent pass defeats the
-   purpose of an oracle mode (see `agent-protocol`'s verification honesty
-   rule: a clean exit is not the same as the change working, and here the
-   exit code itself IS the thing under test).
+1. **Confirm the type.** Only `command` and `code` apply. Re-running a
+   `semantic` rubric or a `self_review` statement as a shell command is a
+   category error: there is nothing to execute.
+2. **Extract the check.** Take `evidence_shape` (gate) or `command` (envelope).
+   A blank check on a deterministic type is a failure of the gate itself,
+   never an assumed pass.
+3. **Treat a stale verdict as pending.** A gate whose `stale_at` is set keeps
+   its old verdict for the record, but something it depended on changed since.
+   Re-run it exactly as if no verdict existed.
+4. **Re-execute; do not re-read.** Run the exact string tokenized, never
+   through a shell (`command-execution`), and capture stdout, stderr and the
+   exit code. Exit 0 is pass. Re-observing is the whole point: an oracle that
+   accepts a prior claim is a `self_review` with extra steps.
+5. **Check that the gate could fail.** For a gate on a change, look for its red
+   run (`gaia evidence list`, negative evidence tied to this gate). A check that
+   was never shown failing, or that passes whether or not the change is there,
+   cannot distinguish done from not done.
+6. **Return the full verdict and record it.** Pass, or fail with the cause that
+   says what has to move: `product` (the change does not do it),
+   `environment` (the runner, a dependency, the network), `broken_test` (the
+   check is wrong or cannot fail), `requirement_changed` (the claim no longer
+   matches the brief). Keep the command, exit code, stdout and stderr for
+   `verbatim_outputs` and as the gate's evidence. A timeout or a missing
+   binary is a failure with its own error, never a silent pass.
 
 ## Reference implementation
 
-`gaia.state.gate_oracle.run_oracle_check(gate, timeout=60.0)` is the
-importable, tested mechanism this mode describes -- read it alongside this
-skill rather than re-deriving the subprocess handling from scratch. It
-returns an `OracleVerdict` (`ok`, `verification_type`, `command`,
-`exit_code`, `expected_exit_code`, `stdout`, `stderr`, `errors`) and accepts
-either the gate shape or the envelope shape directly, so a caller does not
-have to translate between them first.
+`gaia.state.gate_oracle.run_oracle_check(gate, timeout=60.0)` runs step 4: it
+accepts either the gate or the envelope shape and returns an `OracleVerdict`
+with `ok`, the resolved command, the exit code, stdout, stderr and `errors`.
+Steps 3, 5 and the failure cause are the verifier's judgment on top of it.
 
 ## Anti-patterns
 
-- **Treating `code` as needing a different execution path than `command`.**
-  Both resolve to the same runnable-string shape; inventing a second
-  mechanism (e.g. `exec()` on a Python snippet) diverges from what
-  `gate_validation`/`validator` already settled and doubles the surface to
-  maintain for no real distinction.
-- **Assuming exit-code-0 always means expected.** A gate's
-  `expected_exit_code` is data, not a universal constant -- checking only for
-  `0` silently fails every gate that legitimately expects otherwise.
-- **Skipping re-execution because "the agent already said it passed."** That
-  is exactly what `self_review` is for, not this mode. If the gate is typed
-  `command`/`code`, the whole point is that the oracle re-runs it instead of
-  trusting the claim.
+- **A second execution path for `code`** -- both types resolve to the same
+  runnable string; an `exec()` of a snippet diverges from what
+  `gaia.state.gate_validation` settled and doubles what must be maintained.
+- **Passing a gate that never went red** -- a check that cannot fail proves
+  nothing about the change; that is `broken_test`, not `pass`.
+- **Trusting a stale pass** -- the verdict predates the change that marked it;
+  only a fresh run clears it.
+- **Skipping re-execution because the producer said it passed** -- that is what
+  `self_review` is for; a `command`/`code` gate exists so someone re-runs it.

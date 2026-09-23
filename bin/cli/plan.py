@@ -7,11 +7,17 @@ touched.
 
 Subcommands:
     gaia plan save --brief=<name> (--content="..." | --content-file=<path>)
-                   [--status=...] [--json]
+                   [--status=...] [--reason=...] [--json]
     gaia plan show <brief-name> [--json]
     gaia plan list [--brief=<name>] [--status=...] [--format=table|json|count]
     gaia plan delete <brief-name> [--yes] [--json]
     gaia plan set-status <brief-name> <new-status> [--json]
+    gaia plan pause <brief-name> --reason=... | resume <brief-name>
+    gaia plan history <brief-name> [--content]
+    gaia plan change request <brief-name> --reason=...
+    gaia plan change propose <brief-name> <id> --summary=... [--affects=N:WHY ...]
+    gaia plan change approve|apply <brief-name> <id> [--content-file=PATH]
+    gaia plan change list <brief-name>
 """
 
 from __future__ import annotations
@@ -150,17 +156,26 @@ def _cmd_save(args) -> int:
     if content is None or content == "":
         return _err("--content or --content-file is required", as_json=as_json)
 
+    existing = get_plan(workspace, brief_name)
+    reason = (getattr(args, "reason", None) or "").strip() or None
+    if existing is not None and existing.get("content") != content and reason is None:
+        return _err(
+            "rewriting an existing plan needs --reason: the version it replaces "
+            "is kept with that reason (see `gaia plan history`)",
+            as_json=as_json,
+        )
+
     if not status:
         # 'draft' is the default for a NEW plan only. On an update, the live
         # status is preserved: applying the insert default to both paths made
         # every content save silently demote an 'active' plan back to 'draft',
         # and the repair verb (`gaia plan set-status`) is curator-only -- the
         # planner broke a state it had no permission to restore.
-        existing = get_plan(workspace, brief_name)
         status = (existing or {}).get("status") or "draft"
 
     try:
-        res = upsert_plan(workspace, brief_name, content=content, status=status)
+        res = upsert_plan(workspace, brief_name, content=content, status=status,
+                          reason=reason)
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
 
@@ -195,9 +210,15 @@ def _cmd_show(args) -> int:
         return 0
 
     print(f"Plan for brief '{brief_name}' "
-          f"(plan_id={plan['id']}, status={plan['status']})")
+          f"(plan_id={plan['id']}, status={plan['status']}, "
+          f"version={plan['version']})")
+    if plan.get("pause_reason"):
+        print(f"  PAUSED since {plan['paused_at']}: {plan['pause_reason']}")
     print(f"  created_at: {plan['created_at']}")
     print(f"  updated_at: {plan['updated_at']}")
+    if plan["version"] > 1:
+        print(f"  earlier versions: {plan['version'] - 1} "
+              f"(`gaia plan history {brief_name}`)")
     if plan.get("content"):
         print()
         print(plan["content"])
@@ -318,6 +339,137 @@ def _cmd_set_status(args) -> int:
     return 0
 
 
+def _run(args, call) -> "tuple[int, dict | None]":
+    """Run a writer call, turning a refusal into the CLI's error exit."""
+    from gaia.state.permissions import StateTransitionForbidden
+
+    try:
+        return 0, call(_resolve_workspace(getattr(args, "workspace", None)))
+    except (ValueError, StateTransitionForbidden) as exc:
+        return _err(str(exc), as_json=getattr(args, "json", False)), None
+
+
+def _emit(args, res: dict, line: str) -> int:
+    if getattr(args, "json", False):
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(line)
+    return 0
+
+
+def _cmd_pause(args) -> int:
+    from gaia.store.writer import pause_plan
+
+    rc, res = _run(args, lambda ws: pause_plan(ws, args.brief_name, args.reason))
+    if rc:
+        return rc
+    return _emit(args, res, f"Plan for '{args.brief_name}' paused: {res['reason']}")
+
+
+def _cmd_resume(args) -> int:
+    from gaia.store.writer import resume_plan
+
+    rc, res = _run(args, lambda ws: resume_plan(ws, args.brief_name))
+    if rc:
+        return rc
+    return _emit(args, res, f"Plan for '{args.brief_name}' resumed "
+                            f"(was paused: {res['was_paused_for']})")
+
+
+def _cmd_history(args) -> int:
+    from gaia.store.writer import get_plan, get_plan_history
+
+    rc, history = _run(args, lambda ws: get_plan_history(ws, args.brief_name))
+    if rc:
+        return rc
+    plan = get_plan(_resolve_workspace(getattr(args, "workspace", None)),
+                    args.brief_name)
+    if getattr(args, "json", False):
+        print(json.dumps({"current_version": plan["version"],
+                          "versions": history}, indent=2, default=str))
+        return 0
+    for v in history:
+        change = f" [change #{v['change_id']}]" if v["change_id"] else ""
+        print(f"v{v['version']} ({v['status']}) replaced {v['saved_at']}{change}: "
+              f"{v['reason'] or '(no reason recorded)'}")
+        if getattr(args, "content", False) and v["content"]:
+            print(v["content"])
+            print()
+    print(f"v{plan['version']} (current)")
+    return 0
+
+
+def _parse_affects(values: list[str]) -> list[tuple[int, str]]:
+    affected = []
+    for value in values or []:
+        order, sep, why = value.partition(":")
+        if not sep or not order.strip().isdigit():
+            raise ValueError(f"--affects expects ORDER:REASON, got {value!r}")
+        affected.append((int(order), why))
+    return affected
+
+
+def _cmd_change(args) -> int:
+    from gaia.store import writer
+
+    action = getattr(args, "change_action", None)
+    brief = args.brief_name
+    if action == "list":
+        rc, changes = _run(args, lambda ws: writer.list_plan_changes(ws, brief))
+        if rc:
+            return rc
+        if getattr(args, "json", False):
+            print(json.dumps(changes, indent=2, default=str))
+            return 0
+        if not changes:
+            print("No plan changes recorded.")
+        for c in changes:
+            print(f"#{c['id']} {c['status']}: {c['justification']}")
+            if c["proposal"]:
+                print(f"    proposal: {c['proposal']}")
+            for t in c["tasks"]:
+                print(f"    task {t['order_num']}: {t['reason']}")
+        return 0
+
+    if action == "request":
+        call = lambda ws: writer.request_plan_change(ws, brief, args.reason)
+    elif action == "propose":
+        try:
+            affected = _parse_affects(args.affects)
+        except ValueError as exc:
+            return _err(str(exc), as_json=getattr(args, "json", False))
+        call = lambda ws: writer.propose_plan_change(
+            ws, brief, args.change_id, args.summary, affected)
+    elif action == "approve":
+        call = lambda ws: writer.approve_plan_change(ws, brief, args.change_id)
+    elif action == "apply":
+        content = None
+        if args.content_file is not None:
+            try:
+                content = _read_content_file(args.content_file)
+            except OSError as exc:
+                return _err(f"--content-file: {exc}",
+                            as_json=getattr(args, "json", False))
+        call = lambda ws: writer.apply_plan_change(
+            ws, brief, args.change_id, content=content)
+    else:
+        print("Usage: gaia plan change <request|propose|approve|apply|list>",
+              file=sys.stderr)
+        return 0
+
+    rc, res = _run(args, call)
+    if rc:
+        return rc
+    line = f"Plan change #{res['change_id']} for '{brief}': {res['status']}"
+    if action == "apply":
+        line += f" -> plan version {res['version']}"
+        for t in res["stale_tasks"]:
+            derived = t.get("derived_closure") or {}
+            line += (f"\n  task {t['order_num']}: verdicts stale"
+                     f" ({derived.get('action') or 'no transition'})")
+    return _emit(args, res, line)
+
+
 # ---------------------------------------------------------------------------
 # Plugin registration
 # ---------------------------------------------------------------------------
@@ -365,17 +517,22 @@ def register(subparsers) -> None:
         help=(
             "Read the plan markdown from PATH instead of a shell argument "
             "('-' reads stdin). This is the channel for a multi-kilobyte body, "
-            "and for any body carrying quotes, backticks or '$' -- write the "
-            "file first (with the Write tool) and pass the path, rather than "
-            "re-emitting the whole plan through one shell-quoted --content "
-            "value, where a single unescaped character silently corrupts the "
-            "plan of record."
+            "and for any body carrying quotes, backticks or '$' -- pipe it on "
+            "stdin with a quoted heredoc (--content-file=- <<'PLAN'), which "
+            "needs no file and no Write tool, rather than re-emitting the "
+            "whole plan through one shell-quoted --content value, where a "
+            "single unescaped character silently corrupts the plan of record."
         ),
     )
     save_p.add_argument(
         "--status", default=None,
         choices=("draft", "active", "closed"),
         help="Plan status. Default: draft (insert) / preserved (update).",
+    )
+    save_p.add_argument(
+        "--reason", default=None,
+        help=("Why the plan changes. Required when it rewrites an existing "
+              "plan's content: the replaced version is kept with this reason."),
     )
     save_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
@@ -450,6 +607,86 @@ def register(subparsers) -> None:
     setstatus_p.add_argument("--json", action="store_true", default=False,
                              help="Emit JSON. bool.")
 
+    def _common(p):
+        p.add_argument("--workspace", default=None, metavar="W",
+                       help="Workspace identity.")
+        p.add_argument("--json", action="store_true", default=False,
+                       help="Emit JSON.")
+
+    # -- pause / resume -------------------------------------------------------
+    pause_p = actions.add_parser(
+        "pause", help="Stop an active plan; its tasks are not dispatched",
+        description=("Pause an active plan with a required reason. The plan "
+                     "stays approved (status active); task_execution dispatches "
+                     "on it are refused at contract birth until it is resumed."),
+    )
+    pause_p.add_argument("brief_name", help="Parent brief slug.")
+    pause_p.add_argument("--reason", required=True, help="Why the plan stops.")
+    _common(pause_p)
+
+    resume_p = actions.add_parser(
+        "resume", help="Resume a paused plan where it stopped")
+    resume_p.add_argument("brief_name", help="Parent brief slug.")
+    _common(resume_p)
+
+    # -- history ----------------------------------------------------------------
+    history_p = actions.add_parser(
+        "history", help="List the plan's replaced versions and why",
+        description="Every earlier version of the plan with its replacement reason.",
+    )
+    history_p.add_argument("brief_name", help="Parent brief slug.")
+    history_p.add_argument("--content", action="store_true", default=False,
+                           help="Also print each earlier version's content.")
+    _common(history_p)
+
+    # -- change <request|propose|approve|apply|list> ---------------------------
+    change_p = actions.add_parser(
+        "change", help="Managed plan change: request, propose, approve, apply",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "The orchestrator requests a change with its justification; the "
+            "planner proposes which tasks it affects and why; the orchestrator "
+            "approves; the planner applies it as a new plan version, which "
+            "marks stale only the affected tasks' verdicts."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  gaia plan change request my-brief --reason='the API moved to v2'\n"
+            "  gaia plan change propose my-brief 4 --summary='re-point task 2' "
+            "--affects='2:calls the old endpoint'\n"
+            "  gaia plan change approve my-brief 4\n"
+            "  gaia plan change apply my-brief 4 --content-file=- <<'PLAN'\n"
+        ),
+    )
+    c_actions = change_p.add_subparsers(dest="change_action", metavar="<action>")
+    c_request = c_actions.add_parser("request", help="Request a change (orchestrator)")
+    c_request.add_argument("brief_name", help="Parent brief slug.")
+    c_request.add_argument("--reason", required=True,
+                           help="Justification for the change.")
+    _common(c_request)
+    c_propose = c_actions.add_parser("propose", help="Propose the delta (planner)")
+    c_propose.add_argument("brief_name", help="Parent brief slug.")
+    c_propose.add_argument("change_id", type=int, help="Plan change id.")
+    c_propose.add_argument("--summary", required=True, help="What changes.")
+    c_propose.add_argument("--affects", action="append", default=[],
+                           metavar="ORDER:REASON",
+                           help="An affected task and why. Repeatable.")
+    _common(c_propose)
+    c_approve = c_actions.add_parser("approve", help="Approve the proposal (orchestrator)")
+    c_approve.add_argument("brief_name", help="Parent brief slug.")
+    c_approve.add_argument("change_id", type=int, help="Plan change id.")
+    _common(c_approve)
+    c_apply = c_actions.add_parser("apply", help="Apply an approved change (planner)")
+    c_apply.add_argument("brief_name", help="Parent brief slug.")
+    c_apply.add_argument("change_id", type=int, help="Plan change id.")
+    c_apply.add_argument("--content-file", dest="content_file", default=None,
+                         metavar="PATH",
+                         help="New plan content ('-' reads stdin). Omit to keep it.")
+    _common(c_apply)
+    c_list = c_actions.add_parser("list", help="List the plan's changes")
+    c_list.add_argument("brief_name", help="Parent brief slug.")
+    _common(c_list)
+
 
 def cmd_plan(args) -> int:
     """Dispatch handler for `gaia plan`."""
@@ -460,12 +697,17 @@ def cmd_plan(args) -> int:
         "list": _cmd_list,
         "delete": _cmd_delete,
         "set-status": _cmd_set_status,
+        "pause": _cmd_pause,
+        "resume": _cmd_resume,
+        "history": _cmd_history,
+        "change": _cmd_change,
     }
     if action in handlers:
         return handlers[action](args)
 
     print(
-        "Usage: gaia plan <save|show|list|delete|set-status>",
+        "Usage: gaia plan <save|show|list|delete|set-status|pause|resume|"
+        "history|change>",
         file=sys.stderr,
     )
     return 0

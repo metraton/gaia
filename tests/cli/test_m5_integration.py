@@ -53,6 +53,7 @@ def test_m5_end_to_end(bootstrapped_db):
         upsert_plan,
         add_task_to_plan,
         add_gate_to_task,
+        link_task_criteria,
         update_brief_field,
     )
 
@@ -96,6 +97,10 @@ def test_m5_end_to_end(bootstrapped_db):
     add_gate_to_task("me", "m5-test-brief", 1, "command",
                      evidence_shape="pytest tests/ -q",
                      db_path=bootstrapped_db)
+    # The planner links the covering task (`gaia task cover`, whose writer
+    # this is); without the link the AC is uncovered and verify is not clean.
+    link_task_criteria("me", "m5-test-brief", 1, ["AC-1"],
+                       db_path=bootstrapped_db)
 
     # Step 5: Patch the surface_type metadata field
     res = update_brief_field("me", "m5-test-brief", "surface_type",

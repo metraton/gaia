@@ -441,14 +441,104 @@ def _cmd_show(args) -> int:
             msg = f"brief '{name}' not found in workspace '{workspace}'"
         return _err(msg, as_json=as_json)
 
+    from gaia.briefs.store import derive_brief_state
+
+    derived = derive_brief_state(workspace, name)
     if as_json:
         # Drop internal SQL columns for cleanliness
         out = {k: v for k, v in brief.items() if k != "id"}
+        out["derived"] = derived
         print(json.dumps(out, indent=2, default=str))
         return 0
 
-    print(serialize_brief_to_markdown(brief))
+    print(serialize_brief_to_markdown(brief, derived), end="")
+    print(_render_task_states(derived["tasks"]), end="")
+    print(_render_decisions(brief.get("decisions") or {}), end="")
+    print(f"\nReady to close: {'yes' if derived['ready_to_close'] else 'no'}")
     return 0
+
+
+def _render_task_states(tasks: list[dict]) -> str:
+    """Render each task's computed state: done, skipped, blocked, stale verdicts."""
+    if not tasks:
+        return ""
+    parts = ["## Tasks", ""]
+    for t in tasks:
+        if t["done"]:
+            label = "done"
+        elif t["status"] == "skipped":
+            label = "skipped"
+        elif t["blocked"]:
+            label = "blocked by " + ", ".join(f"T{o}" for o in t["blocked_by"])
+        else:
+            label = "not done"
+        if t["stale_gate_ids"]:
+            gates = ", ".join(str(g) for g in t["stale_gate_ids"])
+            label += f", stale verdict on gate {gates}"
+        parts.append(f"- T{t['order_num']}: {label}")
+    return "\n".join(parts) + "\n\n"
+
+
+def _render_decisions(decisions: dict) -> str:
+    """Render current decisions apart from the superseded ones they replaced."""
+    current = decisions.get("current") or []
+    superseded = decisions.get("superseded") or []
+    if not current and not superseded:
+        return ""
+
+    def line(d: dict) -> str:
+        text = f"- D{d['id']}: {d['decision']}"
+        if d.get("rationale"):
+            text += f" -- {d['rationale']}"
+        if d.get("supersedes_id"):
+            text += f" (replaces D{d['supersedes_id']})"
+        if d.get("superseded_by"):
+            text += f" (replaced by D{d['superseded_by']})"
+        return text
+
+    parts = ["", "## Decisions", "", "### Current", ""]
+    parts += [line(d) for d in current] or ["(none)"]
+    if superseded:
+        parts += ["", "### Superseded", ""] + [line(d) for d in superseded]
+    return "\n".join(parts) + "\n"
+
+
+def _cmd_decision(args) -> int:
+    """`gaia brief decision <add|list>` -- the brief's own decisions field."""
+    from gaia.briefs import get_brief
+    from gaia.briefs.store import add_decision
+    from gaia.state.permissions import ContentWriteForbidden
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    sub = getattr(args, "decision_action", None)
+    try:
+        if sub == "add":
+            row = add_decision(workspace, args.brief, args.text,
+                               rationale=args.rationale, supersedes=args.supersedes)
+            if as_json:
+                print(json.dumps(row, indent=2, default=str))
+            else:
+                replaced = (f" (replaces D{row['supersedes_id']})"
+                            if row["supersedes_id"] else "")
+                print(f"Decision D{row['id']} recorded on '{args.brief}'{replaced}")
+            return 0
+        if sub == "list":
+            brief = get_brief(workspace, args.brief)
+            if brief is None:
+                return _err(f"brief '{args.brief}' not found in workspace "
+                            f"'{workspace}'", as_json=as_json)
+            if as_json:
+                print(json.dumps(brief["decisions"], indent=2, default=str))
+            else:
+                print(_render_decisions(brief["decisions"]).lstrip("\n")
+                      or "No decisions recorded.")
+            return 0
+    except ContentWriteForbidden as exc:
+        return _err(f"forbidden: {exc}", as_json=as_json)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+    return _err("usage: gaia brief decision <add|list>", as_json=as_json)
 
 
 def _cmd_list(args) -> int:
@@ -785,8 +875,9 @@ def register(subparsers) -> None:
         description=(
             "Set the brief's status to 'closed', then run verify_brief and "
             "print any inconsistencies as warnings. ADVISORY ONLY: it does NOT "
-            "change AC, milestone, or plan status, and performs no cascade. To "
-            "resolve a flagged AC, use 'gaia ac set-status' (done / descoped)."
+            "change AC, milestone, or plan status, and performs no cascade. A "
+            "flagged AC is settled by its owning agent: done on positive "
+            "evidence, or descoped."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia brief close <name>\n  gaia brief close my-feature --workspace=me\n",
@@ -911,6 +1002,42 @@ def register(subparsers) -> None:
                       help="Workspace identity.")
     m_rm.add_argument("--json", action="store_true", default=False,
                       help="Emit JSON.")
+
+    # -- decision <add|list> ----------------------------------------------------
+    decision_p = actions.add_parser(
+        "decision",
+        help="Record or list the brief's decisions (DB-only)",
+        description=(
+            "The brief's own decisions field. A new decision may name the one it "
+            "replaces (--supersedes); `gaia brief show` lists current decisions "
+            "apart from the superseded ones."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia brief decision add my-brief --text='store verdicts per gate'\n"
+            "  gaia brief decision add my-brief --text='...' --supersedes=3 "
+            "--rationale='the user chose staleness'\n"
+            "  gaia brief decision list my-brief\n"
+        ),
+    )
+    d_actions = decision_p.add_subparsers(dest="decision_action", metavar="<action>")
+    d_add = d_actions.add_parser("add", help="Record a decision")
+    d_add.add_argument("brief", help="Brief slug.")
+    d_add.add_argument("--text", required=True, help="The decision.")
+    d_add.add_argument("--rationale", default=None, help="Why it was taken.")
+    d_add.add_argument("--supersedes", type=int, default=None, metavar="ID",
+                       help="Id of the current decision this one replaces.")
+    d_add.add_argument("--workspace", default=None, metavar="W",
+                       help="Workspace identity.")
+    d_add.add_argument("--json", action="store_true", default=False,
+                       help="Emit JSON.")
+    d_list = d_actions.add_parser("list", help="List current and superseded decisions")
+    d_list.add_argument("brief", help="Brief slug.")
+    d_list.add_argument("--workspace", default=None, metavar="W",
+                        help="Workspace identity.")
+    d_list.add_argument("--json", action="store_true", default=False,
+                        help="Emit JSON.")
 
     # -- ac <add|edit|remove> -------------------------------------------------
     ac_p = actions.add_parser(
@@ -1196,6 +1323,7 @@ def cmd_brief(args) -> int:
         "delete": _cmd_delete,
         "verify": _cmd_verify,
         "milestone": _cmd_milestone,
+        "decision": _cmd_decision,
         "ac": _cmd_ac,
     }
     if action in handlers:
@@ -1204,7 +1332,7 @@ def cmd_brief(args) -> int:
     print(
         "Usage: gaia brief "
         "<new|edit|show|list|close|set-status|deps|search|delete|verify|"
-        "milestone|ac>",
+        "milestone|decision|ac>",
         file=sys.stderr,
     )
     return 0

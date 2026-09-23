@@ -107,7 +107,10 @@ four binding coordinates (`plan_task_id`, `plan_id`, `parent_handoff_id`,
   parent), `parent_handoff_id=`, and `turn_role`/`kind` inferred from the
   target agent name.
 - `validate_dispatch_binding(...)` — a `task_execution` kind requires a
-  resolvable, dispatchable (`status='pending'`) `plan_task_id`; a verifier turn
+  resolvable, dispatchable (`status='pending'`) `plan_task_id` whose plan is
+  `active` (a draft or closed plan refuses it with
+  `plan_task_id_plan_not_active`) and not paused (`gaia plan pause` refuses it
+  with `plan_task_id_plan_paused` until `gaia plan resume`); a verifier turn
   (`turn_role='verifier'`) requires a resolvable `parent_handoff_id` (the
   producer handoff it verifies). `kind` is a pure label — never rejected for its
   value. Raises `DispatchBindingError` (with a machine-readable `reason`) when a

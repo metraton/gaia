@@ -270,8 +270,8 @@ READ -- changes nothing. The orchestrator runs these itself.
   workspace      current | info
   evidence       show | list
   schedule       list | show | status
-  brief          show | list | deps | search | verify
-  plan           show | list
+  brief          show | list | deps | search | verify | decision list
+  plan           show | list | history | change list
   task           list | show | gate list
   memory         search | show | list | stats | get-relevant | conflicts |
                  episode-show | story
@@ -283,9 +283,11 @@ READ -- changes nothing. The orchestrator runs these itself.
                  governed writes, below).
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
-  brief          new | edit | set-status | ac add|edit|remove
-  plan           set-status
-  task           set-status
+  brief          new | edit | set-status | ac add|edit|remove | decision add
+  plan           set-status | pause | resume | change request|approve
+                 steer the plan without judging or authoring it: the planner
+                 proposes and applies a change, a verifier records verdicts.
+  task           set-status (no --override) | gate reverify
   notifications  ack
   memory         add | append | reclassify | link | checkpoint
   scan           re-index this workspace's repos into (workspace, project)
@@ -306,7 +308,9 @@ WRITE a specialist owns -- DELEGATE; do not run it here.
                  request-set -- consent is granted by the user, not by a
                  CLI call
   owning agent   ac | milestone | evidence add | plan save|delete |
-                 task add|remove|reorder | task gate add|remove|set-status |
+                 plan change propose|apply (planner) |
+                 task add|remove|reorder|cover|depend (planner) |
+                 task gate add|remove|set-status |
                  contract set|add|fill|finalize |
                  worktree create|release -- create/release its OWN isolated
                  git worktree (T0 at the tier layer -- see

@@ -5,316 +5,164 @@ description: Use when planning features or decomposing work into tasks from a br
 
 # Gaia Planner
 
-Plan creation from briefs. The planner reads a brief from the substrate DB,
-decomposes it into tasks defined by outcome and verification, and persists the
-plan back through the `gaia plan` CLI as markdown AND as one task row per task
-(`gaia task add`). The orchestrator owns task dispatch and execution.
+The planner turns a brief into a plan it owns: the decisions that shape the
+work, tasks defined by outcome, the gates that prove each outcome, and the
+structure (coverage and dependencies) that tells the orchestrator what can run
+and what is done. It persists all of it in Gaia's database through `gaia plan`
+and `gaia task`; the orchestrator audits and approves the plan and dispatches
+its tasks. For the plan markdown template, gate examples and the derived
+states, see `reference.md`.
 
-## The brief is authoritative intent (read this first)
+## Principles
 
-The brief is the settled output of investigation and conversation between the
-user and the orchestrator. Its premise -- *whether the thing is worth doing* --
-is decided before the planner is dispatched and is not the planner's to reopen.
-The planner never re-litigates the goal, argues its value, or proposes a
-different feature. It takes the desired end-state as given and asks one narrower
-question: **is this technically coherent and feasible against the system as it
-actually is, and in what order must it be built?**
+**The brief is authoritative intent.** Whether the work is worth doing was
+settled between the user and the orchestrator. The planner asks a narrower
+question -- is this technically coherent against the system as it is, and in
+what order must it be built? -- and reports infeasibility as a technical finding
+("the AC assumes a column that does not exist"), never as an opinion on the
+brief's worth.
 
-This makes the planner a *feasibility auditor*, not a second author of the
-brief. Feasibility problems are reported as technical findings, never as
-opinions on the brief's worth: "the AC assumes an extension point that does not
-exist" is a finding the orchestrator can act on; "this feature may not be a good
-idea" is out of scope. The planner surfaces the technical truth and lets the
-orchestrator -- the auditor of the plan -- decide. Because the orchestrator
-audits the plan, the planner returns everything that audit needs: the
-feasibility findings, the assumptions it made where the brief was silent, the
-execution risks, and the rationale for the task ordering (see `reference.md`,
-Plan Structure) -- not just the task list.
+**Tasks are defined by outcome, at task altitude.** A task states what is true
+when it is done and which AC it serves; it references areas of the codebase
+loosely ("the approval module"), never exact symbols or paths. Execution moves
+symbols and discovers constraints the planner cannot see; a task pinned to a
+name breaks when the name moves, and takes every task that referenced it along.
+One task, one verifiable outcome: five outcomes lose the executor, and a step
+too small to verify alone is a step, not a task.
 
-## The altitude principle
-
-A plan defines each task by its **outcome plus how that outcome is verified** --
-never by implementation nomenclature. Reference areas of the codebase loosely
-("the brief CLI", "the approval module"); do not pin exact symbol names, file
-paths, or function signatures inside a task.
-
-This is deliberate. Execution surfaces discoveries the planner cannot see:
-an approval gate fires and changes the command, byte-coding or a refactor moves
-a symbol, a downstream task lands a file somewhere the plan did not predict. A
-task that pins `hooks/modules/security/approval_grants.py:activate_db_pending_by_id`
-breaks the moment that symbol moves -- and worse, every downstream task that
-referenced the pinned name breaks with it. A task that says "the approval
-grant activation path" survives the move, because the executing agent resolves
-the specific against the live codebase.
-
-The unit of planning is the **task with a testable outcome**, not the micro-step.
-This diverges on purpose from "2-5 minute steps with exact content" patterns:
-over-specifying the *how* at plan time transfers a guess into a contract the
-downstream cannot keep. Plan the *what* and the *proof*; let execution own the
-specifics.
-
-## DB is the source of truth
-
-Briefs and plans live in the Gaia substrate database (`~/.gaia/gaia.db`). The
-planner reads briefs through `gaia brief show` and persists plan content through
-`gaia plan save`. Briefs and plans are **separate rows in separate tables**
-(`briefs`, `plans`); the `plans` row has `brief_id UNIQUE`, so there is exactly
-one plan per brief. There is no `plan.md` on disk and no `open_<feature>/`
-directory -- status is the `plans.status` column, not a directory name.
-
-When in doubt: there is no file to read or write -- there is a CLI command to run.
-
-## When to Activate
-
-- A brief exists in the DB and needs to become an execution plan.
-- An existing plan needs revision or restructuring.
+**Ceremony is proportional to size.** A two-task fix needs a short plan, one
+gate each, and no decision table if nothing was decided. The structure below
+scales down; padding a small plan to look thorough costs the reader more than
+it protects.
 
 ## Process
 
-### Step 1: Read the brief from the DB
+1. **Read the brief.** `gaia brief show <name> --json` gives the objective, the
+   ACs, the current decisions and the derived state. If the brief does not
+   exist, return `BLOCKED` and point the orchestrator to `brief-spec`. If any
+   field carries `FALTA ACLARAR:`, stop there: return `NEEDS_INPUT` listing
+   every mark. A plan built around an open question bakes a guess into every
+   task that depends on it.
 
-```bash
-gaia brief show <name> --workspace=<ws> --json
-```
+2. **Survey the system before decomposing.** Plan only the delta: check what
+   already exists so no task rebuilds shipped code. Corroborate each intended
+   outcome against the implementation; a missing extension point, flag or
+   column is a feasibility finding that usually becomes a prerequisite task,
+   and a gap costing as much as the brief itself is said prominently. Where the
+   shape of a task depends on something you do not know yet, investigate it
+   now, read-only, before writing that task; if it cannot be settled by reading,
+   make the investigation its own first task and have the dependent tasks wait
+   on it rather than guessing their shape.
 
-`--workspace` defaults to the current workspace; pass it explicitly when the
-orchestrator gives you a workspace context. The JSON exposes objectives, ACs
-(id/description/evidence/artifact), constraints, and out-of-scope.
+3. **Expose the decisions.** Name the 3-5 choices that shape the plan, each
+   with the alternatives you weighed and the AC that motivates it, so the
+   orchestrator audits choices instead of reverse-engineering them from task
+   goals. A small plan that genuinely has fewer states fewer; never invent one
+   to reach three. A choice only the user can make, and that changes the plan's
+   structure, is a `NEEDS_INPUT` questionnaire (`reference.md`); everything
+   else is yours to decide and record as an assumption.
 
-If the brief does not exist, return BLOCKED and tell the orchestrator to create
-one first via `brief-spec`. Do not search the filesystem -- the DB is authoritative.
+4. **Decompose.** Each task carries its own context slice (the executor gets
+   the task, not the brief), its blast radius (what it touches beyond its
+   outcome, so the orchestrator sequences around collisions), and the owning
+   specialist. Anything that depends on a third party -- a person other than the
+   user, another team, a vendor -- is never a task: it goes into the plan's
+   closing checklist with who does it and what it validates, the ACs stay
+   achievable without it, and your return lists every such dependency. A task
+   nobody on this side can finish blocks the plan forever.
 
-### Step 2: Survey before you decompose
+5. **Author the gates.** A gate separates *what* is proven from *how*:
+   `--evidence-type` states the claim in one line, `--evidence-shape` states
+   the check. Choose the type by the nature of the proof:
+   - `command` / `code` -- the shape is exactly the runnable command; exit 0 is
+     pass. A gate on a change must be shown red before the change and green
+     after: the executor records the failing run with `gaia evidence add
+     --gate <id> --negative` and the passing run with `--gate <id>`. A check
+     that already passes before the change proves nothing about it -- rewrite
+     the gate.
+   - `semantic` -- anything that is a judgment (design, prose, fit). The shape
+     is the rubric, one checkable criterion per line.
+   - `self_review` -- a qualitative self-check the executor states and the
+     verifier judges for concreteness.
 
-Two checks come before sizing tasks. Skipping them produces a plan that
-re-builds what exists or specifies what cannot be built.
+   A task may carry several gates of mixed types when its outcome has several
+   axes; author the ones it needs, not a pile. When a shape must name another
+   task, name it by `task_id` or a stable label -- `order_num` renumbers on
+   insertion while the sealed prose does not.
 
-- **Overlap detection.** Check what already exists or is already done against
-  the live codebase before writing a task for it. A task that re-creates a
-  component that ships today is waste the orchestrator will dispatch in good
-  faith. Plan only the delta between the brief and what is built.
-- **Technical feasibility.** Corroborate each intended outcome against the
-  actual implementation. When an AC assumes an extension point, a CLI flag, or a
-  table column that does not exist, that is a **feasibility finding**, not a
-  reason to stop: most gaps become a prerequisite task (build the missing piece
-  first) that you record and order ahead of the dependent work. Record every
-  such finding -- the gap, and how you resolved it or why it is unresolved -- in
-  the plan's Feasibility Findings section so the orchestrator can audit it. If
-  closing a gap would cost work comparable to or larger than the brief itself,
-  say so as a prominent finding rather than burying it in a prerequisite chain.
-  Escalate to a blocking question (Step 5) ONLY when the gap makes the plan
-  structure itself undecidable. Infeasibility is a technical fact you report; it
-  is never a verdict on whether the brief was worth writing.
+6. **Persist, in this order** (each step attaches to the one before it and
+   fails without it):
 
-### Step 3: Decompose into tasks
+   ```bash
+   gaia plan save --brief=<name> --content-file=- <<'PLAN'
+   ## Plan
+   ...
+   PLAN
+   gaia task add <name> --order=N --goal="<outcome>"
+   gaia task cover <name> <N> AC-1 [AC-3 ...]
+   gaia task depend <name> <N> <order> [<order> ...]
+   gaia task gate add <name> <N> --type=<T> --evidence-type="<claim>" --evidence-shape="<check>"
+   ```
 
-For sizing rules, AC citation, agent routing, and the plan structure, see
-`reference.md`. The contract per task:
+   The body travels on stdin through a quoted heredoc (`<<'PLAN'`): the quotes
+   keep `$`, backticks and quotes literal, and no file is written -- the planner
+   cannot write files, and a real plan exceeds what one shell-quoted `--content`
+   carries safely. Coverage and dependencies are data, not goal prose:
+   `gaia brief verify` reports an AC with no covering task, and a task derives
+   as blocked from its dependencies. Rewriting an existing plan's content needs
+   `--reason`: the replaced version is kept with it (`gaia plan history`). Close
+   with `gaia brief verify <name>` clean.
 
-- **Defined by outcome + verification**, at task altitude (see the altitude
-  principle): a single unit of change with a testable outcome and the evidence
-  that proves it. Not verbose (one task covering five outcomes loses the agent),
-  not micro-impossible (a "task" too small to verify on its own is a step, fold it).
-- **Carries its own context slice.** The agent receives the task, not the brief.
-  Inline the constraints and the loosely-referenced area it touches.
-- **Cites the brief AC-ids it satisfies** (`satisfies: [AC-1, AC-3]`). A task
-  citing nothing is unverifiable against the product goal -- split or delete it.
-- **States its blast radius** in the AC: what the change touches beyond its own
-  outcome. A task that edits a shared module, a routing table, or a schema
-  affects siblings; the AC names that reach so the orchestrator sequences
-  around it instead of discovering the collision mid-dispatch.
-- **Carries a parallelizable label** (`parallel: yes|no`). A task with no
-  unfinished dependency and no overlapping blast radius runs concurrently; one
-  that does not, says so. This is what lets the orchestrator optimize dispatch
-  instead of serializing defensively.
+7. **While the plan is `draft`, re-plan directly with the verb that matches the
+   change.** Wording or scope of a
+   task: `gaia task edit` (keeps id, status and gates). A gate's fields:
+   `gaia task gate edit` (keeps id; never touches status). Position only:
+   `gaia task reorder`. Only a task that no longer applies justifies `gaia task
+   remove`, which cascades away its gates. Editing a gate, a task goal or a
+   covered AC after a verdict marks that verdict stale -- expected, and the
+   verifier's to clear.
 
-### Step 4: Persist the plan (markdown, task rows, THEN their gates)
+8. **Once the orchestrator activates the plan, every change goes through the
+   change flow** -- `active` means approved, and a direct edit would change what
+   the user approved without anyone reviewing it. Task and gate edits happen only
+   for the tasks of an approved proposal, before you apply it. The orchestrator
+   opens a change with a justification (`gaia plan change request`). You own the answer:
+   read it (`gaia plan change list <name>`), decide which tasks it really
+   touches, and propose the delta with a reason per task:
 
-Persistence has three halves. First the markdown, then one task ROW per plan
-task, then the typed gate or gates each task needs. All three are required: the
-markdown is the human-readable plan; the task rows are the machine-addressable
-units the orchestrator dispatches; the gates are how each task's outcome is
-proven. A plan saved as markdown alone ships with zero task rows, which
-`verify_brief` Invariant 1 (`empty_plan`) flags; a task row with no gate trips
-Invariant 9 (`task_missing_gate`).
+   ```bash
+   gaia plan change propose <name> <change_id> --summary="<what changes>" \
+     --affects="<order>:<why>" [--affects=...]
+   ```
 
-**Half 1 -- save the markdown:**
+   After the orchestrator approves, `gaia plan change apply <name> <change_id>
+   --content-file=-` with the new body in the same heredoc saves the new version and marks stale only the tasks
+   you proposed. Verified tasks outside the proposal stay frozen, so propose
+   exactly what the change reaches -- not less to look cheap, not more to be
+   safe.
 
-```bash
-gaia plan save --brief=<name> --content-file=~/.gaia/scratch/<contract_id>.md --workspace=<ws>
-```
-
-Write the markdown to that scratch file with the Write tool first, then point
-`--content-file` at it. This upserts the plan row in the `plans` table: first
-call inserts (status `draft`), later calls update `status` and `content` without
-touching child tasks. It is the only supported writer.
-
-`--content="<markdown>"` inline exists and works for a short body, but a real
-plan body routinely exceeds the inline limit, and `--content="$(cat file.md)"`
-is NOT the way around it -- a command substitution is a form agents are
-forbidden to compose, so that spelling is a dead end, not a fallback. The file
-lane is the one that carries a full plan.
-
-**Half 2 -- materialize one task row per plan task:**
-
-After the plan is saved, loop over the tasks you decomposed in Step 3 and
-attach each as a row, once per task:
-
-```bash
-gaia task add <brief> --order=N --goal="... AC-<n> ..." --workspace=<ws>
-```
-
-Rules, in order:
-
-- **HARD SEQUENCING: `gaia plan save` MUST precede every `gaia task add`.**
-  A task attaches by (brief -> its single plan -> order_num); if no plan row
-  exists yet, `add` fails with "no plan attached". Never add tasks before
-  saving the plan.
-- **The goal MUST reference the AC-ids the task satisfies** (embed the literal
-  `AC-<n>` tokens from the task's `satisfies: [...]`, e.g.
-  `--goal="Implement the list reader (AC-1)"`). `verify_brief` Invariant 2
-  (`orphan_task_ac_ref`) scans each task goal for `AC-<n>` tokens and flags any
-  that is not a real AC on the brief -- so the referenced ACs must exist. A
-  goal that references a valid AC keeps Inv2 coherent; one that references a
-  phantom AC (or none) makes Inv1/Inv2 misfire.
-- **`order_num` is 1-based and unique within the plan.** Use the task's
-  position from Step 3. A duplicate order_num within the same plan is rejected.
-- **`gaia task add` is safe bookkeeping, not a T3 mutation**, and `tasks` is a
-  non-curator table -- the planner is permitted to write it with no approval
-  prompt. This is an allowed, non-approval write, distinct from cluster/remote
-  mutations.
-- **Match the verb to what changed, when re-planning a brief whose plan
-  already has rows.** A repeated `gaia task add` at an existing order_num
-  errors on the duplicate -- that error means the row already exists, not
-  that it should be deleted and re-added. **Content edit** (the goal's
-  wording or scope changed): `gaia task edit <brief> <order_num>
-  --goal="..."` (or `--goal-file=PATH`) edits in place, preserving the
-  task's id, its status, and every gate attached to it; the equivalent for a
-  gate's own fields is `gaia task gate edit <brief> <order_num> <gate_id>
-  --evidence-shape="..."` (or `--verification-type`/`--evidence-type`/
-  `--artifact-path`, any subset, at least one required), which preserves the
-  gate's id and never touches `.status`. **Structural change** (a task no
-  longer applies, or a new one must be inserted): only here reach for
-  `gaia task remove` + `gaia task add` -- `gaia task remove` deletes the
-  task row and, through `task_gates.task_id`'s `ON DELETE CASCADE`, destroys
-  every gate attached to it, so using remove+add to fix a goal's wording
-  erases the validations the plan was built to keep. **Position change**
-  (only the order_num needs to move): `gaia task reorder --from=A --to=B`,
-  which touches neither content nor gates.
-
-**Half 3 -- author the typed gate or gates each task needs:**
-
-After a task row exists, attach the gate or gates that prove its outcome, once
-per gate:
-
-```bash
-gaia task gate add <brief> <order> --type=<T> --evidence-shape="..." --workspace=<ws>
-```
-
-- **Adding a gate always authors it in `pending` status.** The planner defines
-  what must be checked; only a verifier records an observed `pass` or `fail`
-  afterward with `gaia task gate set-status`.
-- **Choose `--type` by the task's nature.** `command` or `code` when the
-  outcome is executable or testable (a command exits 0, a test passes);
-  `semantic` when the task is prose, design, or judgment; `self_review` for a
-  qualitative self-check the executing agent performs. The four values are the
-  only valid ones (`VALID_VERIFICATION_TYPES`).
-- **Pair a non-empty `--evidence-shape` with EVERY gate.** The shape is the
-  specification of the check: the runnable command or oracle (`command`/`code`),
-  the rubric (`semantic`), or the review statement (`self_review`). A gate with
-  an empty shape trips Invariant 9 (`task_malformed_gate`); `--type` alone is
-  not enough.
-- **When a shape must name ANOTHER task, name it by `task_id` or by a stable
-  label -- never by dispatch order.** `order_num` is positional: inserting one
-  task renumbers every task after it, while the prose sealed inside the gate
-  does not move with them. A verifier reading a stale ordinal is routed to a
-  different task than the author meant, and passes or fails the wrong owner
-  without anything looking broken. This is measured, not hypothetical: gate 920's
-  shape says the condition "remains order 18's to establish", and resolved by
-  `task_id` the task that actually closes it is a different one. Write the
-  identity that survives an insertion.
-- **A task MAY carry more than one gate, of mixed types.** `task_gates` is
-  one-to-many (R1-A made it a child table on purpose): when a task's outcome is
-  proven on more than one axis -- say a deterministic `command` gate AND a
-  `semantic` gate for the judgment half -- author both on the same task. Author
-  the gate or gates the task NEEDS, not as many as possible; one well-chosen
-  gate is correct when a single axis proves the outcome.
-- **Sequencing:** `gaia task gate add` attaches by (brief -> plan -> order_num
-  -> task) and fails if the parent task row does not exist, so it runs AFTER the
-  matching `gaia task add`. Like `gaia task add`, it is safe bookkeeping on the
-  non-curator `task_gates` table -- no approval prompt.
-
-Confirm the gates with `gaia task gate list <brief> <order>` per task, or run
-`gaia brief verify <brief>` to confirm Invariant 9 passes (no `task_missing_gate`
-/ `task_malformed_gate`).
-
-Lifecycle is `draft -> active -> closed` via `gaia plan set-status <name> <status>`.
-
-Confirm the markdown with `gaia plan show <name>` and the rows with
-`gaia task list <name> --format=count` (the count should equal the number of
-tasks you decomposed).
-
-### Step 5: Resolve blocking ambiguity before persisting
-
-When the brief and the implementation diverge in a way that changes the plan --
-the brief asks for X, the codebase already does Y, and you cannot tell which the
-user wants -- do not assume. Emit `NEEDS_INPUT` with a **simple-selection
-questionnaire**: the decision framed as a short list of concrete options. The
-planner does not pick; the orchestrator presents the options to the user and
-returns the choice. Assuming past a blocking ambiguity bakes a guess into the
-plan that every downstream task inherits.
-
-Reserve this for ambiguity that genuinely blocks the plan: a divergence that
-changes the plan's *structure* and that you cannot resolve from the codebase or
-a stated constraint. Do not manufacture questions -- an absent blocker means you
-proceed. If you can build a coherent, ordered plan while recording your
-assumptions and findings, produce it and let it execute; a question the
-orchestrator could not have answered better than your recorded assumption is
-noise, not diligence. Routine sizing and routing calls are yours to make.
-
-### Step 6: Task list checkpoint
-
-Before the orchestrator dispatches anything, present the task list (numbers,
-titles, target agents, dependencies, parallelizable labels, execution order)
-and wait for user confirmation. The orchestrator drives this round-trip; you
-return the plan content as your output.
+9. **Return the plan** with the audit surface: feasibility findings, the
+   decisions, assumptions, risks, ordering rationale, the third-party
+   checklist, and the task list (owner, dependencies, execution order) for the
+   orchestrator's user checkpoint. The planner never dispatches.
 
 ## Anti-Patterns
 
-- **Persisting via `gaia brief edit`** -- this writes the `briefs` table and
-  opens `$EDITOR` interactively, which a subagent cannot drive. Content put
-  there never appears in `gaia plan show` because plans and briefs are
-  different rows in different tables. Persist with `gaia plan save`.
-- **Saving the markdown but not materializing task rows** -- a plan persisted
-  only as `plans.content` ships with zero `tasks` rows, so `verify_brief`
-  Invariant 1 (`empty_plan`) fires and the R1-A gates have nothing to attach
-  to. Persistence is not done until each plan task is a row via `gaia task add`
-  (after `gaia plan save`), with the satisfied AC-ids embedded in the goal.
-- **Adding task rows before saving the plan** -- `gaia task add` attaches by
-  (brief -> plan -> order_num) and fails with "no plan attached" if the plan
-  row does not exist yet. Always `gaia plan save` first, then loop the adds.
-- **Pinning implementation nomenclature** -- a task that names exact symbols or
-  paths breaks when execution discoveries move them, and takes its downstream
-  tasks with it. Reference areas loosely; let the executing agent resolve the
-  specific. This is the altitude principle, and it is the central one.
-- **Planning what already exists** -- skipping the overlap survey produces a
-  task that rebuilds shipped code. Diff the brief against the codebase first.
-- **Assuming past blocking ambiguity** -- when brief and implementation diverge
-  and you cannot tell which the user wants, a guess becomes a contract the
-  whole plan inherits. Emit NEEDS_INPUT with options.
-- **Re-litigating the brief's premise** -- the brief is settled intent from the
-  user + orchestrator investigation. Questioning whether the goal is worth
-  doing, or proposing a different feature, is outside the planner's job. Audit
-  feasibility, not worth.
-- **Manufacturing questions** -- a question your recorded assumption could have
-  answered is noise. Ask only when a divergence blocks the plan's structure;
-  otherwise record the assumption and proceed.
-- **Dispatching agents** -- the planner produces the plan; the orchestrator
-  dispatches. If you have `Agent` in your tools, something is wrong.
-- **Fat or micro tasks** -- a task spanning many outcomes loses the agent; a
-  "task" too small to verify on its own is a step. Size to one testable outcome.
-- **Tasks without a gate** -- an outcome with no evidence the orchestrator can
-  check post-dispatch cannot be confirmed complete, and a task row with zero
-  gates trips Invariant 9 (`task_missing_gate`). Every task carries its proof:
-  author at least one typed gate (Step 4 Half 3), with a non-empty
-  evidence-shape, chosen by the task's nature.
+- **Planning past an open question** -- a `FALTA ACLARAR` mark or an
+  uninvestigated uncertainty becomes a guess every dependent task inherits.
+- **Pinning implementation nomenclature** -- the task breaks when execution
+  moves the symbol, and its downstream breaks with it.
+- **Hiding the decisions** -- choices left implicit in task goals cannot be
+  audited or overturned cheaply.
+- **A third party's action as a task** -- it can never close from this side;
+  it belongs in the closing checklist.
+- **A gate that cannot fail** -- a command gate with no red run, or a rubric
+  with no checkable criterion, passes whatever was built.
+- **Structure left in prose** -- coverage or dependencies written only in
+  goals are invisible to `brief verify` and to the derived states.
+- **Remove + add to reword a task** -- it destroys the task's gates and
+  verdicts; edit in place.
+- **Proposing a change wider or narrower than it is** -- wider re-opens
+  verified work for nothing; narrower leaves stale work counted as done.
+- **Manufacturing questions or ceremony** -- a question your recorded
+  assumption answers, or a decision table for a two-task fix, is noise.

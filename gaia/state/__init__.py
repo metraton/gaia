@@ -340,6 +340,24 @@ VALID_GATE_STATUSES: tuple[str, ...] = (
 )
 
 
+# Why a gate failed (v56, task_gates.fail_cause): required with 'fail', absent
+# otherwise, so a failure says whether the product, the environment, the check
+# itself, or the requirement is what has to move.
+VALID_GATE_FAIL_CAUSES: tuple[str, ...] = (
+    "product",
+    "environment",
+    "broken_test",
+    "requirement_changed",
+)
+
+# Direction of an evidence row (v56, evidence.polarity). Only 'positive'
+# evidence can accept an AC; 'negative' is recorded so a refutation is kept.
+VALID_EVIDENCE_POLARITIES: tuple[str, ...] = (
+    "positive",
+    "negative",
+)
+
+
 # ---------------------------------------------------------------------------
 # Convenience: a registry mapping (table, column) -> tuple, used by the
 # migration script and the diff tool so neither has to hard-code names.
@@ -381,5 +399,7 @@ __all__ = [
     "VALID_MILESTONE_STATUSES",
     "VALID_VERIFICATION_TYPES",
     "VALID_GATE_STATUSES",
+    "VALID_GATE_FAIL_CAUSES",
+    "VALID_EVIDENCE_POLARITIES",
     "STATE_MACHINE_REGISTRY",
 ]

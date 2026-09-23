@@ -510,7 +510,52 @@ CREATE TABLE IF NOT EXISTS plans (
     content    TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    -- v57: a paused plan stays 'active' (approved) but its tasks are not
+    -- dispatched; the pause always carries its reason.
+    paused_at    TEXT,
+    pause_reason TEXT,
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
+);
+
+-- v57: every replaced version of a plan, with why it was replaced. The current
+-- version is plans.content; its number is one past the highest kept here.
+CREATE TABLE IF NOT EXISTS plan_versions (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id   INTEGER NOT NULL,
+    version   INTEGER NOT NULL,
+    status    TEXT,
+    content   TEXT,
+    reason    TEXT,
+    change_id INTEGER REFERENCES plan_changes(id) ON DELETE SET NULL,
+    saved_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE (plan_id, version),
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+);
+
+-- v57: a managed plan change. The orchestrator requests it with a
+-- justification, the planner proposes which tasks it affects and why, the
+-- orchestrator approves, the planner applies it as a new plan version.
+CREATE TABLE IF NOT EXISTS plan_changes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id       INTEGER NOT NULL,
+    justification TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'requested'
+                  CHECK (status IN ('requested', 'proposed', 'approved', 'applied')),
+    proposal      TEXT,
+    requested_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    proposed_at   TEXT,
+    approved_at   TEXT,
+    applied_at    TEXT,
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS plan_change_tasks (
+    change_id INTEGER NOT NULL,
+    task_id   INTEGER NOT NULL,
+    reason    TEXT NOT NULL,
+    PRIMARY KEY (change_id, task_id),
+    FOREIGN KEY (change_id) REFERENCES plan_changes(id) ON DELETE CASCADE,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -560,10 +605,59 @@ CREATE TABLE IF NOT EXISTS task_gates (
     artifact_path     TEXT,
     status            TEXT NOT NULL DEFAULT 'pending'
                      CHECK (status IN ('pending', 'pass', 'fail')),
+    stale_at          TEXT,            -- v56: set when the gate, its task goal or a covered AC changed after the verdict; the verdict itself is kept
+    stale_reason      TEXT,            -- v56: what changed
+    fail_cause        TEXT             -- v56: why a 'fail' failed; NULL for any other status
+                      CHECK (fail_cause IN ('product', 'environment', 'broken_test', 'requirement_changed')),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_gates_task ON task_gates(task_id);
+
+-- ---------------------------------------------------------------------------
+-- task structure (v56): coverage and dependencies as rows, not goal prose
+-- ---------------------------------------------------------------------------
+-- The AC is keyed by its text id (AC-1), not acceptance_criteria.id:
+-- upsert_brief deletes and re-inserts every AC row on each brief rewrite, so an
+-- id foreign key would cascade the coverage away. A link to an AC that no longer
+-- exists is reported by verify_brief.
+CREATE TABLE IF NOT EXISTS task_acceptance_criteria (
+    task_id INTEGER NOT NULL,
+    ac_id   TEXT NOT NULL,
+    PRIMARY KEY (task_id, ac_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+    task_id            INTEGER NOT NULL,
+    depends_on_task_id INTEGER NOT NULL,
+    PRIMARY KEY (task_id, depends_on_task_id),
+    CHECK (task_id <> depends_on_task_id),
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (depends_on_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_acceptance_criteria_ac ON task_acceptance_criteria(ac_id);
+CREATE INDEX IF NOT EXISTS idx_task_dependencies_on ON task_dependencies(depends_on_task_id);
+
+-- ---------------------------------------------------------------------------
+-- brief_decisions (v56): a decision replaces at most one earlier decision, and
+-- is replaced at most once; current = not replaced by any row.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS brief_decisions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    brief_id      INTEGER NOT NULL,
+    decision      TEXT NOT NULL,
+    rationale     TEXT,
+    supersedes_id INTEGER,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE,
+    FOREIGN KEY (supersedes_id) REFERENCES brief_decisions(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_brief_decisions_brief ON brief_decisions(brief_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_brief_decisions_supersedes
+    ON brief_decisions(supersedes_id) WHERE supersedes_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- evidence (three-tier storage model)
@@ -584,11 +678,15 @@ CREATE TABLE IF NOT EXISTS evidence (
     size_bytes       INTEGER,
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     created_by_agent TEXT,
+    gate_id          INTEGER REFERENCES task_gates(id) ON DELETE SET NULL,  -- v56: the gate this evidence came from
+    polarity         TEXT NOT NULL DEFAULT 'positive'                        -- v56: 'negative' records evidence that refutes
+                     CHECK (polarity IN ('positive', 'negative')),
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_evidence_brief ON evidence(brief_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_ac ON evidence(brief_id, ac_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_gate ON evidence(gate_id);
 
 -- ---------------------------------------------------------------------------
 -- FTS5 mirror for briefs (objective / context / approach)

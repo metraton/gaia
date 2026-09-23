@@ -83,6 +83,12 @@ def _seed_brief_with_plan_task_ac_ms(db_path: Path, brief_name: str = "test-brie
             "VALUES (?, 'AC-1', 'First AC', 'pending')",
             (brief_id,),
         )
+        # An AC reaches 'done' only with positive evidence (v56).
+        con.execute(
+            "INSERT INTO evidence (brief_id, ac_id, type, text) "
+            "VALUES (?, 'AC-1', 'text', 'seeded proof')",
+            (brief_id,),
+        )
         # Milestone
         con.execute(
             "INSERT INTO milestones (brief_id, order_num, name, status) VALUES (?, 1, 'M1', 'pending')",
