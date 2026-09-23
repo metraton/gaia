@@ -37,7 +37,9 @@ One command, one result, one exit code. This skill owns invocation discipline;
    deterministic backstop -- `hooks/modules/security/shell_write_guard.py::check`
    refuses the write CATEGORICALLY, with no `approval_id`, because the same edit
    through `Write`/`Edit` is already permitted and so there is nothing a consent
-   prompt could buy; only the channel is refused. Read that as a net beneath the
+   prompt could buy; only the channel is refused. The body of a quoted heredoc
+   fed to a `gaia --<name>-file -` flag is data: the write guards read only that
+   command line, and a redirect on the command line itself is still checked. Read that as a net beneath the
    norm, never as the norm's replacement: the guard fires on a resolved
    destination under a git tree, so a shell writer aimed anywhere else -- and
    every mutation whose destination it cannot resolve -- still passes, and it

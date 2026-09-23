@@ -83,6 +83,7 @@ from ..security.approval_messages import (
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
 from ..security.shell_unwrapper import ShellUnwrapper
+from ..security.data_heredoc import data_heredoc_header
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
@@ -718,6 +719,11 @@ class BashValidator:
                 reason=attribution_reason,
             )
 
+        # A data heredoc's body is stdin the shell never runs, so the write
+        # guards below read only its command line; a command line carrying a
+        # redirect is not a data heredoc at all and is read whole.
+        write_guard_scope = data_heredoc_header(command) or command
+
         # ================================================================
         # GAIA DB WRITE GUARD
         # Reject direct sqlite3 writes to ~/.gaia/gaia.db that bypass the
@@ -726,7 +732,7 @@ class BashValidator:
         # and bash -c wrappers are inspected intact -- decomposition would
         # otherwise split the sqlite3 invocation from its write verb.
         # ================================================================
-        db_write_allowed, db_write_reason = check_gaia_db_write(command)
+        db_write_allowed, db_write_reason = check_gaia_db_write(write_guard_scope)
         if not db_write_allowed:
             logger.warning("BLOCKED gaia.db direct write: %s", command[:100])
             return BashValidationResult(
@@ -781,7 +787,9 @@ class BashValidator:
         # (footer-normalized) command BEFORE unwrap/decompose so compound
         # chains and quoted forms are inspected intact.
         # ================================================================
-        pp_write_allowed, pp_write_reason = check_protected_path_write(command)
+        pp_write_allowed, pp_write_reason = check_protected_path_write(
+            write_guard_scope
+        )
         if not pp_write_allowed:
             logger.warning(
                 "BLOCKED protected-path write via Bash: %s", command[:120]
@@ -810,7 +818,7 @@ class BashValidator:
         # the destination before this guard could see it.
         # ================================================================
         shell_write_allowed, shell_write_reason = check_shell_write(
-            command, cwd=(hook_payload or {}).get("cwd") or None,
+            write_guard_scope, cwd=(hook_payload or {}).get("cwd") or None,
         )
         if not shell_write_allowed:
             logger.warning(
@@ -835,7 +843,7 @@ class BashValidator:
         # on, and before the cloud-pipe phase, which refuses a redirect as a
         # CHANNEL and would leave this write with no way to consent to it.
         # ================================================================
-        account_write_target = account_path_redirect_target(command)
+        account_write_target = account_path_redirect_target(write_guard_scope)
         if account_write_target:
             return decide_t3_outcome(
                 command,
@@ -850,6 +858,25 @@ class BashValidator:
                 session_id=session_id,
                 agent_type=agent_type,
             )
+
+        # ================================================================
+        # DATA HEREDOC
+        # A quoted heredoc a Gaia CLI call reads through `--<name>-file -` is
+        # stdin data, which the operator splitter below would otherwise cut
+        # into prose "components". Runs AFTER the write guards so a refusal
+        # there still wins; see _validate_data_heredoc for why the
+        # exemption can only ever return an allowed, non-T3 verdict.
+        # ================================================================
+        data_heredoc_result = self._validate_data_heredoc(
+            command,
+            command_was_modified=command_was_modified,
+            is_subagent=is_subagent,
+            session_id=session_id,
+            agent_type=agent_type,
+            hook_payload=hook_payload,
+        )
+        if data_heredoc_result is not None:
+            return data_heredoc_result
 
         # ================================================================
         # EARLY NORMALIZATION (cont'd): SMART SANITIZATION
@@ -1070,6 +1097,49 @@ class BashValidator:
             ):
                 inject_updated_input(result.block_response, {"command": command})
 
+        return result
+
+    def _validate_data_heredoc(
+        self,
+        command: str,
+        command_was_modified: bool,
+        is_subagent: bool,
+        session_id: str,
+        agent_type: str,
+        hook_payload: Optional[Dict[str, Any]],
+    ) -> Optional[BashValidationResult]:
+        """Classify a data-heredoc command by its header alone, or return None.
+
+        None hands the command back to the ordinary pipeline unchanged. Only an
+        allowed verdict with nothing to rewrite is adopted: a T3 header must
+        be consented over bytes that include its body, so it is refused before
+        the header is classified (classifying it would mint a pending approval
+        for the body-less string), and a sanitizer rewrite of the header would
+        otherwise become updatedInput and drop the body from what runs. The
+        permanent-deny floor keeps reading the body; it is categorical.
+        """
+        header = data_heredoc_header(command)
+        if header is None or is_blocked_command(command).is_blocked:
+            return None
+        cwd = (hook_payload or {}).get("cwd") or None
+        if detect_mutative_command(header, cwd=cwd).is_mutative:
+            return None
+        result = self.validate(
+            header,
+            is_subagent=is_subagent,
+            session_id=session_id,
+            agent_type=agent_type,
+            hook_payload=hook_payload,
+        )
+        if (
+            not result.allowed
+            or result.tier == SecurityTier.T3_BLOCKED
+            or result.modified_input is not None
+            or result.block_response is not None
+        ):
+            return None
+        if command_was_modified:
+            result.modified_input = {"command": command}
         return result
 
     def _validate_single_command(
