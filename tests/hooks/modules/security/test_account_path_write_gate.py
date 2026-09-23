@@ -133,12 +133,7 @@ def without_the_account_path_set(monkeypatch):
     counterfactual a measurement of the ENTRY: every code path stays live and
     only the membership it consults goes away.
     """
-    monkeypatch.setattr(
-        sensitive_paths_module, "ACCOUNT_SENSITIVE_HOME_PREFIXES", frozenset()
-    )
-    monkeypatch.setattr(
-        sensitive_paths_module, "ACCOUNT_SENSITIVE_HOME_FILES", frozenset()
-    )
+    monkeypatch.setattr(sensitive_paths_module, "HOME_ENTRIES", {})
     _clear_classifier_caches()
     yield
     _clear_classifier_caches()

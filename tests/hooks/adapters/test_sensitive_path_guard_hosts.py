@@ -180,7 +180,68 @@ def test_sensitive_path_guard_ordinary_reads_outside_the_project_pass_on_both_ho
         assert _opencode(tool, args)["decision"] == "allow", (tool, args)
 
 
+def test_sensitive_path_guard_every_secret_place_is_refused_on_both_hosts(home):
+    for name in (
+        ".aws/credentials", ".gnupg/secring.gpg", ".kube/config", ".docker/config.json",
+        ".config/gcloud/credentials.db", ".config/gh/hosts.yml", ".netrc",
+        ".git-credentials", ".npmrc", ".pgpass", ".azure/config", "project/.env.local",
+    ):
+        path = str(home / name)
+        claude = _claude("Read", {"file_path": path})
+        opencode = _opencode("read", {"filePath": path})
+        assert claude["decision"] == opencode["decision"] == "deny", name
+        assert claude["reason"] == opencode["reason"], name
+        assert claude["reason"].startswith("[SENSITIVE_PATH]"), name
+        assert _claude("Bash", {"command": f"cat {path}"})["decision"] == "deny", name
+
+
+def test_sensitive_path_guard_account_config_without_secrets_reads_freely_on_both_hosts(home):
+    """Shell start-up files and git config are read for diagnosis (D22)."""
+    for name in (".bashrc", ".profile", ".zshrc", ".gitconfig"):
+        (home / name).write_text("# stand-in\n", encoding="utf-8")
+    (home / ".config" / "git").mkdir(parents=True)
+    (home / ".config" / "git" / "config").write_text("# stand-in\n", encoding="utf-8")
+    files = [str(home / name) for name in (".bashrc", ".profile", ".zshrc", ".gitconfig")]
+    files.append(str(home / ".config" / "git" / "config"))
+    git_dir = str(home / ".config" / "git")
+    for path in files:
+        for tool, tool_input in [
+            ("Read", {"file_path": path}),
+            ("Grep", {"pattern": "stand-in", "path": path}),
+            ("Bash", {"command": f"cat {path}"}),
+        ]:
+            assert _claude(tool, tool_input)["decision"] != "deny", (tool, tool_input)
+        for tool, args in [
+            ("read", {"filePath": path}),
+            ("grep", {"pattern": "stand-in", "path": path}),
+        ]:
+            assert _opencode(tool, args)["decision"] == "allow", (tool, args)
+    assert _claude("Glob", {"pattern": "*", "path": git_dir})["decision"] != "deny"
+    assert _claude("Bash", {"command": f"ls {git_dir}"})["decision"] != "deny"
+    assert _opencode("list", {"path": git_dir})["decision"] == "allow"
+    assert _opencode("bash", {"command": f"head {files[0]}"})["decision"] == "allow"
+
+
 # --------------------------------------------------------------- account writes
+
+
+def test_sensitive_path_guard_writing_readable_account_config_is_still_signed_on_both_hosts(home):
+    for name in (".bashrc", ".gitconfig", ".config/git/config"):
+        target = str(home / name)
+        assert _signature_request(_claude("Bash", {"command": f"echo standin >> {target}"})), name
+        assert _signature_request(_opencode("bash", {"command": f"echo standin >> {target}"})), name
+        for tool, tool_input in [
+            ("Write", {"file_path": target, "content": "standin"}),
+            ("Edit", {"file_path": target, "old_string": "a", "new_string": "b"}),
+        ]:
+            assert _signature_request(_claude(tool, tool_input)), (tool, name)
+        patch = f"*** Begin Patch\n*** Add File: {target}\n+standin\n*** End Patch"
+        for tool, args in [
+            ("write", {"file_path": target, "content": "standin"}),
+            ("edit", {"file_path": target, "oldString": "a", "newString": "b"}),
+            ("apply_patch", {"patchText": patch}),
+        ]:
+            assert _signature_request(_opencode(tool, args)), (tool, name)
 
 
 def _signature_request(verdict: dict) -> bool:

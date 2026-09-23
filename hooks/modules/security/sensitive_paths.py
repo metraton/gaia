@@ -1,9 +1,10 @@
 """The one list of sensitive paths every lane of both hosts consults.
 
 A path is sensitive when its CONTENTS are credentials or hand out access to
-the user's accounts. Reading or listing one is refused with the same reason
-through Bash, Read, Glob, Grep and OpenCode's list; writing an ACCOUNT path
-asks for a signature through Bash, Write, Edit and apply_patch alike. The
+the user's accounts, and each entry says which of the two it is. Reading or
+listing where secrets live is refused with the same reason through Bash, Read,
+Glob, Grep and OpenCode's list; writing any ACCOUNT path, readable ones
+included, asks for a signature through Bash, Write, Edit and apply_patch. The
 exfiltration pipe rule in ``composition_rules`` reads this list too, so no lane
 keeps a private copy that can drift from the others.
 
@@ -40,19 +41,28 @@ READABLE_ENV_TEMPLATES = frozenset({".env.example", ".env.sample"})
 SYSTEM_SECRET_FILES = frozenset({"/etc/shadow", "/etc/passwd"})
 SYSTEM_SECRET_DIRS = frozenset({"/etc/ssl/private"})
 
-# Under $HOME: what configures the user's accounts. These are both read- and
-# write-sensitive -- they decide who may log in, run on the next shell or git
-# invocation, name the program that hands out credentials, or are the
-# credentials themselves.
-ACCOUNT_SENSITIVE_HOME_PREFIXES = frozenset({
-    ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker",
-    ".config/gcloud", ".config/gh", ".config/git",
-})
-ACCOUNT_SENSITIVE_HOME_FILES = frozenset({
-    ".bashrc", ".bash_profile", ".bash_login", ".profile",
-    ".zshrc", ".zprofile", ".zshenv",
-    ".netrc", ".git-credentials", ".gitconfig", ".npmrc", ".pgpass",
-})
+READ = "read"
+WRITE = "write"
+_BOTH = frozenset({READ, WRITE})
+_WRITE_ONLY = frozenset({WRITE})
+
+# Under $HOME, each entry marked by use (D22). READ: reading or listing it is
+# refused, because secrets live there. WRITE: writing it asks a signature,
+# because it decides who may log in, runs on the next shell or git invocation,
+# or names the program that hands out credentials. Shell start-up files and git
+# config carry no secrets and stay readable for diagnosis; ~/.docker is
+# write-guarded as a whole but only its config.json holds registry tokens. An
+# entry matches itself and everything below it.
+HOME_ENTRIES = {
+    ".ssh": _BOTH, ".gnupg": _BOTH, ".aws": _BOTH, ".azure": _BOTH,
+    ".kube": _BOTH, ".config/gcloud": _BOTH, ".config/gh": _BOTH,
+    ".docker": _WRITE_ONLY, ".docker/config.json": _BOTH,
+    ".netrc": _BOTH, ".git-credentials": _BOTH, ".npmrc": _BOTH, ".pgpass": _BOTH,
+    ".config/git": _WRITE_ONLY, ".gitconfig": _WRITE_ONLY,
+    ".bashrc": _WRITE_ONLY, ".bash_profile": _WRITE_ONLY, ".bash_login": _WRITE_ONLY,
+    ".profile": _WRITE_ONLY, ".zshrc": _WRITE_ONLY, ".zprofile": _WRITE_ONLY,
+    ".zshenv": _WRITE_ONLY,
+}
 
 # Names a file-name glob is tested against: a glob that would select one of
 # them selects a sensitive file.
@@ -89,6 +99,18 @@ def _home_relative(path: str) -> str:
     return os.path.relpath(norm, home)
 
 
+def _home_entry_marks(path: str) -> frozenset:
+    """The uses the home entries covering *path* guard; empty outside them."""
+    relative = _home_relative(_expand_home(path))
+    if not relative or relative == ".":
+        return frozenset()
+    marks: frozenset = frozenset()
+    for entry, uses in HOME_ENTRIES.items():
+        if relative == entry or relative.startswith(entry + "/"):
+            marks = marks | uses
+    return marks
+
+
 def is_account_path(path: str) -> bool:
     """True when writing *path* hands out access to the user's own account.
 
@@ -96,15 +118,7 @@ def is_account_path(path: str) -> bool:
     free, which is the reasoning that once left ``~/.ssh/authorized_keys``
     open. Relative paths are never account paths.
     """
-    relative = _home_relative(_expand_home(path))
-    if not relative or relative == ".":
-        return False
-    if relative in ACCOUNT_SENSITIVE_HOME_FILES:
-        return True
-    return any(
-        relative == prefix or relative.startswith(prefix + "/")
-        for prefix in ACCOUNT_SENSITIVE_HOME_PREFIXES
-    )
+    return WRITE in _home_entry_marks(path)
 
 
 def _file_name_label(name: str) -> str:
@@ -141,8 +155,8 @@ def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
             return "system credentials file"
         if any(candidate == d or candidate.startswith(d + "/") for d in SYSTEM_SECRET_DIRS):
             return "system private keys"
-        if is_account_path(candidate):
-            return "account configuration"
+        if READ in _home_entry_marks(candidate):
+            return "account credentials"
     parts = [part for part in candidate.split("/") if part]
     if any(part in CREDENTIAL_DIR_NAMES for part in parts):
         return "credentials directory"
