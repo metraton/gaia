@@ -19,7 +19,7 @@ FINDING_MAP = (
     ),
     (
         3, "orchestrator-present-approval/template.md", "OpenCode may carry the same",
-        "opencode/plugin.ts", "visibleText",
+        "opencode/plugin.ts", "function signatureRequest",
     ),
     (
         4, "orchestrator-present-approval/template.md", "Eight visible fields",
