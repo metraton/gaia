@@ -808,10 +808,14 @@ class BashValidator:
         # -- the same edit via Write/Edit is permitted, so there is nothing to
         # approve; only the channel is refused. Runs BEFORE the smart sanitizer
         # below, which strips a trailing redirect and would otherwise delete
-        # the destination before this guard could see it.
+        # the destination before this guard could see it. A data heredoc's body
+        # is stdin the shell never runs, so only its command line is checked;
+        # a command line carrying a redirect is not a data heredoc at all and
+        # is checked whole.
         # ================================================================
+        shell_write_scope = data_heredoc_header(command) or command
         shell_write_allowed, shell_write_reason = check_shell_write(
-            command, cwd=(hook_payload or {}).get("cwd") or None,
+            shell_write_scope, cwd=(hook_payload or {}).get("cwd") or None,
         )
         if not shell_write_allowed:
             logger.warning(
@@ -856,8 +860,8 @@ class BashValidator:
         # DATA HEREDOC
         # A quoted heredoc a Gaia CLI call reads through `--<name>-file -` is
         # stdin data, which the operator splitter below would otherwise cut
-        # into prose "components". Runs AFTER the write guards so they still
-        # see the whole command; see _validate_data_heredoc for why the
+        # into prose "components". Runs AFTER the write guards so a refusal
+        # there still wins; see _validate_data_heredoc for why the
         # exemption can only ever return an allowed, non-T3 verdict.
         # ================================================================
         data_heredoc_result = self._validate_data_heredoc(

@@ -8,6 +8,7 @@ interpreter, an unquoted heredoc, or trailing commands after the terminator are
 still analysed exactly as before.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -25,11 +26,12 @@ METACHAR_BODY = (
 )
 
 
-def _validate(command):
+def _validate(command, hook_payload=None):
     from modules.tools.bash_validator import BashValidator
 
     return BashValidator().validate(
         command, is_subagent=True, session_id="t", agent_type="gaia-planner",
+        hook_payload=hook_payload,
     )
 
 
@@ -37,8 +39,27 @@ def _heredoc(header, delimiter_spelling, delimiter, body):
     return f"{header} <<{delimiter_spelling}\n{body.rstrip(chr(10))}\n{delimiter}"
 
 
+@pytest.fixture
+def checkout(tmp_path, monkeypatch):
+    """Run from inside a git checkout, the condition CI runs under.
+
+    The shell-write guard resolves a relative redirect target against the
+    working directory, so a body line such as ``> log`` is only refusable
+    when that directory is a working tree; from a non-git cwd the refusal
+    never fires and the test passes for the wrong reason.
+    """
+    from modules.security.shell_write_guard import check
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    monkeypatch.chdir(root)
+    assert check("echo x > log")[0] is False, "cwd is not a refusable working tree"
+    return root
+
+
 class TestQuotedHeredocToGaiaContentFlagIsData:
-    def test_real_plan_body_passes(self):
+    def test_real_plan_body_passes(self, checkout):
         command = _heredoc(
             "gaia plan save --brief=aprobaciones-agnosticas-al-host --content-file=-",
             "'PLAN'", "PLAN", REAL_PLAN_BODY,
@@ -49,13 +70,35 @@ class TestQuotedHeredocToGaiaContentFlagIsData:
 
     @pytest.mark.parametrize("spelling", ["'PLAN'", '"PLAN"'])
     @pytest.mark.parametrize("flag", ["--content-file=-", "--content-file -"])
-    def test_shell_metacharacters_in_body_pass(self, spelling, flag):
+    def test_shell_metacharacters_in_body_pass(self, checkout, spelling, flag):
         command = _heredoc(
             f"gaia plan save --brief=b {flag}", spelling, "PLAN", METACHAR_BODY,
         )
         result = _validate(command)
         assert result.allowed is True, result.reason
         assert result.modified_input is None
+
+    def test_prose_redirect_passes_when_the_hook_names_the_checkout(self, checkout):
+        command = _heredoc(
+            "gaia plan save --brief=b --content-file=-", "'PLAN'", "PLAN",
+            "Write the summary > notes.md and review it.\n",
+        )
+        payload = {
+            "cwd": str(checkout), "agent_id": "a1", "agent_type": "gaia-planner",
+        }
+        result = _validate(command, hook_payload=payload)
+        assert result.allowed is True, result.reason
+
+
+class TestRedirectOnTheCommandLineIsStillAWrite:
+    def test_redirect_in_the_header_into_the_checkout_is_refused(self, checkout):
+        command = _heredoc(
+            f"gaia plan save --content-file=- > {checkout}/x", "'P'", "P",
+            "prose only\n",
+        )
+        result = _validate(command)
+        assert result.allowed is False
+        assert "[SHELL_WRITE]" in (result.reason or ""), result.reason
 
 
 class TestHeredocFeedingAnInterpreterIsStillCommands:
