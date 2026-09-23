@@ -49,7 +49,9 @@ Three forces shape the judgment:
    self-review statement), `artifact_path` (the produced work, if any). Run
    `gaia.state.gate_validation.validate_gate` first -- a structurally invalid
    gate (missing/empty `evidence_shape`) has nothing to judge; return that
-   rejection, not a verdict.
+   rejection, not a verdict. A gate with `stale_at` set keeps an old verdict
+   that predates a change to the gate, its task or a covered AC: judge it
+   afresh, as if pending.
 2. **Parse the rubric into criteria.** Split `evidence_shape` into discrete,
    checkable statements -- one criterion, one claim. A rubric with a single
    paragraph is read as one criterion; a well-authored rubric names several,
@@ -67,7 +69,12 @@ Three forces shape the judgment:
 6. **Emit the structured, justified verdict** -- `{gate_id, verdict, criteria,
    overall_reasoning}` (see Reference implementation below). Justification is
    not optional: the rubric exists so the verdict can be defended
-   criterion-by-criterion, not merely announced.
+   criterion-by-criterion, not merely announced. A fail is recorded with the
+   cause that says what has to move -- `product` (the work misses a
+   criterion), `broken_test` (the rubric is uncheckable or contradicts
+   itself), `requirement_changed` (the rubric no longer matches the brief);
+   `environment` rarely applies to a judgment. The observations go in as
+   evidence tied to the gate, `--negative` when they refute it.
 
 ## `self_review` vs `semantic`
 

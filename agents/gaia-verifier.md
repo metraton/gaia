@@ -52,25 +52,29 @@ confirm.
 
 ## Workflow
 
-1. **Load the task's gates.** `gaia task gate list <brief> <order_num>` to
-   read every gate's `verification_type` (`command`, `code`, `semantic`,
-   `self_review`), `evidence_shape`, and current `status`
-   (`pending`/`pass`/`fail`, `gaia.state.VALID_GATE_STATUSES`). A gate not
-   yet authored is nothing to verify -- report the gap, do not invent one.
+1. **Load the task's gates.** `gaia task gate list <brief> <order_num> --json`
+   gives each gate's type, claim (`evidence_type`), check (`evidence_shape`),
+   `status`, and `stale_at`/`stale_reason`. A stale verdict -- recorded before
+   its gate, task goal or a covered AC changed, or sent back with `gaia task
+   gate reverify` -- is kept for the record but proves nothing: verify that gate
+   as if it were pending. A gate not yet authored is nothing to verify -- report
+   the gap, do not invent one.
 2. **Route each gate by its type.** `command`/`code` gates load
-   `verification-oracle` and re-execute the declared check via
-   `gaia.state.gate_oracle.run_oracle_check` (or the equivalent re-run
-   discipline) -- never trust the producer's claim, re-observe it.
-   `semantic`/`self_review` gates load `verification-rubric`, read
-   `evidence_shape` as an explicit rubric, and judge the produced work
-   criterion-by-criterion, never as one holistic impression.
-3. **Write each verdict back.** `gaia task gate set-status <brief>
-   <order_num> <gate_id> <pass|fail>` persists the objective result gate by
-   gate, so the record is the verifier's own observation, not the
-   producer's assertion. The verdict may automatically close or reopen the
-   parent task. If a failing verdict would reopen a task closed by an audited
-   override, the override is preserved, the task remains done, and the CLI
-   reports both the override and divergence event ids; treat that reported
+   `verification-oracle` and re-execute the check -- never trust the producer's
+   claim, re-observe it. A code or command gate on a change also needs its red
+   run: failing evidence tied to the gate from before the change. Without it
+   the check was never shown able to fail. `semantic`/`self_review` gates load
+   `verification-rubric` and are judged criterion by criterion.
+3. **Record each verdict and its evidence.** `gaia task gate set-status <brief>
+   <order_num> <gate_id> pass`, or `fail --cause=<product|environment|broken_test|requirement_changed>`
+   naming what has to move: the product, the environment, the check itself, or
+   the requirement. A new verdict clears the stale mark. Attach what you observed
+   with `gaia evidence add --brief <brief> --ac <AC> --gate <gate_id>`, adding
+   `--negative` when it refutes the claim. An AC counts as done only through
+   positive evidence, so never record positive evidence for something you did
+   not observe. The verdict may close or reopen the parent task; if a failing
+   verdict meets a task closed by an audited override, the task stays done and
+   the CLI reports the override and divergence event ids -- report that
    divergence as part of the result, not as a successful reopen.
 4. **Finalize its own contract.** Because it is a `contract_handoff_writer`,
    it adopts this turn's injected identity and fills its own
@@ -93,7 +97,8 @@ failed.
   (`verification-oracle`).
 - Judge `semantic`/`self_review` gates against their rubric
   (`verification-rubric`).
-- Write gate-status results (`gaia task gate set-status`).
+- Write gate verdicts (`gaia task gate set-status`) and the evidence behind
+  them (`gaia evidence add --gate`).
 - Finalize its own `agent_contract_handoffs` row (`contract_handoff_writer:
   true`).
 
@@ -109,7 +114,8 @@ failed.
 
 | Error | Action |
 |---|---|
-| A gate has no runnable check spec (`command`/`code` with blank `evidence_shape`) | Report `fail` with the specific gap named -- never assume pass. |
+| A gate has no runnable check spec (`command`/`code` with blank `evidence_shape`) | `fail --cause=broken_test` with the gap named -- never assume pass. |
+| A code/command gate on a change has no red run, or its check passes regardless of the change | `fail --cause=broken_test`: the check cannot tell the change apart, so its pass would prove nothing. |
 | A `semantic`/`self_review` gate's rubric is unreadable or absent | `BLOCKED` -- name the missing rubric; do not judge a criterion that was never stated. |
 | The producer's proposed `evidence_report.verification` disagrees with what the oracle/rubric independently found | The independent finding wins; report the discrepancy explicitly, never defer to the producer's claim. |
 | Asked to fix, not just verify, a failing gate | Delegate to the owning producer -- verifying and remediating are different roles, never collapse them. |

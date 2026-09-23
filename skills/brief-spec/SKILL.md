@@ -5,365 +5,167 @@ description: Use when the user wants to create a brief or spec for a feature bef
 
 # Brief Spec
 
-Conversational brief creation. The orchestrator loads this inline to
-co-create a brief with the user before dispatching to gaia-planner. The
-brief you write here is the contract you will audit the plan against: **you
-own the resulting plan -- its tasks and its acceptance criteria** -- and the
-planner produces it *for you to check*, not to approve on your behalf.
+Brief Spec is how the orchestrator turns what it agreed with the user into a
+brief: an objective, observable acceptance criteria, the decisions taken, and
+the boundaries, ready for gaia-planner. The brief is the contract the plan is
+audited against, so the orchestrator owns its content and owns checking the
+plan that comes back.
 
-## DB is the source of truth (read this first)
+## The database is the brief
 
-Briefs live in the Gaia substrate database (`~/.gaia/gaia.db`). They are
-created and mutated through the `gaia brief` CLI -- never by writing files
-on disk. The DB row IS the brief: there is no `brief.md`, no
-`<status>_<slug>/` directory, no frontmatter on disk. When in doubt, there
-is no file to write -- there is a CLI command to run.
+A brief is a row in `briefs` plus its child rows (`acceptance_criteria`,
+`brief_decisions`, `milestones`), written and read only through `gaia brief`.
+What `gaia brief show` prints is a rendering of those rows: nothing on disk is
+authoritative and there is no file to write. Code or docs that still describe
+`.claude/project-context/briefs/` are legacy -- flag them in
+`cross_layer_impacts` instead of editing them as a side effect.
 
 **Execution follows authority.** The orchestrator co-creates the brief and may
 use its trusted Gaia CLI lane for bounded reads and user-confirmed
-`new`/headless `edit`/`set-status`/AC writes. `gaia-operator` remains the
-alternative for batching or operational separation. Destructive deletion is
+`new`/headless `edit`/`set-status`/AC/decision writes. `gaia-operator` remains
+the alternative for batching or operational separation. Destructive deletion is
 outside the direct lane. The orchestrator owns the questions, confirmation,
 and content whichever executor carries the command.
 
-If you find code, docs, or skills that still describe a filesystem layout
-under `.claude/project-context/briefs/`, that is legacy: flag it in
-`cross_layer_impacts` -- do not edit it as a side effect of a brief task.
-
 ## Cuando llegas aquí
 
-El orquestador cargó esta skill porque la conversación entró en Cerrar:
-el usuario y él han acordado varias cosas y es momento de materializarlas.
-No estás aquí porque la petición superó un umbral de tamaño. Estás aquí
-porque hay acuerdos que capturar.
+El orquestador cargó esta skill porque la conversación entró en Cerrar: el
+usuario y él acordaron varias cosas y es momento de materializarlas. No estás
+aquí porque la petición superó un umbral de tamaño, sino porque hay acuerdos
+que capturar.
 
-Tu trabajo:
-1. Resumir los acuerdos que ya emergieron en la conversación previa --
-   no re-descubrirlos desde cero.
-2. Preguntar sólo lo que falte para convertir los acuerdos en AC
-   reproducibles (evidence types, surface type).
-3. Materializar el brief en la DB con `gaia brief new --headless`, y
-   presentarlo al usuario para validar.
+1. Resumir los acuerdos que ya emergieron -- no re-descubrirlos desde cero.
+2. Preguntar sólo lo que falte para que cada AC sea observable, o dejarlo
+   marcado como pendiente de aclarar.
+3. Materializar el brief con `gaia brief new --headless` y presentarlo al
+   usuario para validar.
 
 ## Process
 
-1. **Ask questions** -- Target gaps, not completeness:
-   - **Surface type** (always, before AC): Is this a UI a human uses, an API,
-     or a background job? Determines valid evidence types for the ACs.
-   - What problem does this solve?
-   - What constraints matter? (cloud, performance, security, timeline)
-   - How will you verify each AC yourself? (reproduce steps, not just "it works")
-   - What artifact do you want to review after execution?
-     (log file, screenshot, JSON snapshot, HTTP response, diff)
-   - If this failed silently, what symptom would you look for?
-   - What is explicitly NOT in scope?
+1. **Ask only for the gaps**, one question per round via AskUserQuestion:
+   surface type (ui, api, job, cli); the problem it solves; the constraints that
+   matter; for each AC, what the user would see when it holds and what symptom
+   would show it failing silently; what is explicitly out of scope. Stop when
+   every AC is observable or explicitly marked unresolved (step 4).
 
-   One question per round via AskUserQuestion. Stop when each AC has
-   a declared evidence type and every question above has an answer or
-   an explicit "N/A".
-
-2. **Create the brief in the DB (headless)** -- Run through the trusted Gaia CLI lane:
+2. **Create the brief:**
 
    ```bash
-   gaia brief new --headless \
-     --title="<human title>" \
-     --status=draft \
-     --surface-type=<ui|api|job|cli> \
-     --objective="<1-3 sentences>" \
-     --context="<project constraints>" \
-     --approach="<high-level strategy, 3-5 sentences>" \
+   gaia brief new --headless --title="<human title>" --status=draft \
+     --surface-type=<ui|api|job|cli> --objective="<1-3 sentences>" \
+     --context="<project constraints>" --approach="<high-level strategy>" \
      --out-of-scope="<explicit non-goals>"
    ```
 
-   The slug is derived from `--title` (kebab-case). The CLI writes a row to
-   the `briefs` table and prints the slug back. **Do not write any file in
-   `.claude/project-context/briefs/`.** No directory, no `brief.md`, no
-   frontmatter on disk. The DB row IS the brief.
+   The slug is derived from the title. `draft` is the review window; move it
+   to `open` only when the user is ready to plan against it.
 
-   `--status=draft` is the canonical entry point. Move it to `open` only when
-   the user is ready to plan against it.
-
-3. **Add Acceptance Criteria** -- ACs are rows in the `acceptance_criteria`
-   table, added one at a time with `gaia brief ac add` per AC:
+3. **Add each acceptance criterion as an observation:**
 
    ```bash
-   gaia brief ac add <slug> \
-     --id=AC-1 \
-     --description="<user observation>" \
-     --evidence-type=<command|url|playwright|artifact|metric> \
-     --evidence-shape='<free-form string or JSON>'
+   gaia brief ac add <slug> --id=AC-1 --description="<what the user observes>"
    ```
 
-   Do not predeclare a repository-relative artifact such as
-   `evidence/AC-1.txt`. During execution, persist the actual result with
-   `gaia evidence add`; Gaia stores small results inline and larger blobs below
-   `~/.gaia/evidence/`, then returns the canonical record/path.
+   An AC says what is true and visible when the work is done, precisely enough
+   to disagree with ("p95 under 200ms on /search", not "fast"). It does not
+   prescribe the proof: which test, command or rubric shows it is the planner's
+   proposal, authored as gates. Fixing a mechanism here, before anyone has read
+   the code, turns a guess into a requirement. Set `--evidence-type` /
+   `--evidence-shape` only when the user asked to see the result a particular
+   way ("a screenshot of the dashboard"). Evidence itself is recorded during
+   execution with `gaia evidence add`, never as a path declared in advance.
 
-   Remove one the same way, dispatching `gaia brief ac remove <slug>
-   --id=AC-1`. The shapes per evidence type are under "Evidence Types" below;
-   the `## Acceptance Criteria` section that `gaia brief show` renders is the
-   human summary of these rows.
+4. **Mark what is not settled.** Where the user has not decided something the
+   plan depends on, write `FALTA ACLARAR: <question>` into the field it affects
+   (the AC description, the objective, the approach). The planner does not plan
+   past such a mark: it returns `NEEDS_INPUT` with the list, and planning
+   resumes once the answer replaces the mark (`gaia brief ac edit` or
+   `gaia brief edit --headless`). No code reads the mark -- it holds only
+   because both sides look for that literal text, so spell it exactly.
 
-4. **Confirm with the user** -- run `gaia brief show <slug>`, which prints the
-   full row. Read it back and ask: "Does this
-   capture what you want?" When confirmed, suggest dispatching to
-   gaia-planner.
+5. **Record decisions in their own field:**
 
-## How to update a brief
+   ```bash
+   gaia brief decision add <slug> --text="<the decision>" --rationale="<why>" \
+     [--supersedes=<id>]
+   ```
 
-For a single field, run the headless patch --
-scriptable, no editor:
+   A decision that changes an earlier one names it with `--supersedes`, so
+   `gaia brief show` lists the current answer apart from the one it replaced.
+   Appending a new paragraph to `approach` instead leaves two answers to the
+   same question with nothing saying which one holds.
 
-```bash
-gaia brief edit <name> --headless \
-  --field=<objective|context|approach|out_of_scope|description|title|surface_type> \
-  --content="..."
-```
+6. **Confirm.** Run `gaia brief show <slug>`, read it back, ask "Does this
+   capture what you want?", and when confirmed dispatch gaia-planner.
 
-The interactive form, `gaia brief edit <name>` (no `--headless`), opens the
-full body in `$EDITOR` -- it needs a human at a terminal, so it is never the
-form to dispatch; use the headless form always in this flow.
-
-## How to change status
-
-Run `gaia brief set-status <name> <new-status>`.
-The CLI validates the state machine and rejects illegal transitions:
-
-```
-draft -> open -> in-progress -> closed -> {archived, open}
-```
-
-Examples:
-
-```bash
-gaia brief set-status my-feature open          # ready to plan against
-gaia brief set-status my-feature in-progress   # work has begun
-gaia brief set-status my-feature closed        # AC verified
-gaia brief set-status my-feature archived      # closed -> archived
-gaia brief set-status my-feature open          # closed -> reopened
-```
-
-There is no "rename the directory" step. Status is a column.
-
-## How to delete a brief
-
-Dispatch gaia-operator to run `gaia brief delete <name> --yes`. Hard delete
-with FK cascade across acceptance_criteria, milestones, dependencies, plans,
-and tasks tied to the brief. There is no undo today; soft-delete is on a
-separate future brief.
-
-Prefer dispatching `gaia brief set-status <name> archived` over delete for
-anything you might want to read later.
-
-## How to read briefs
-
-Run any of these directly through the trusted Gaia CLI lane.
+## Maintaining a brief
 
 | Need | Command |
 |------|---------|
-| List | `gaia brief list [--status=...] [--workspace=<ws>] [--format=table\|json\|count]` |
-| Show one | `gaia brief show <name> [--workspace=<ws>] [--json]` |
-| FTS5 search | `gaia brief search <query>` |
+| Patch one field | `gaia brief edit <name> --headless --field=<objective\|context\|approach\|out_of_scope\|description\|title\|surface_type> --content="..."` |
+| Edit an AC in place | `gaia brief ac edit <name> --id=AC-1 --description="..."` |
+| Change status | `gaia brief set-status <name> <status>` (`draft -> open -> in-progress -> closed -> {archived, open}`; illegal transitions are refused) |
+| Read | `gaia brief list`, `gaia brief show <name> [--json]`, `gaia brief search <query>`, `gaia brief decision list <name>` |
+| Delete | dispatch gaia-operator for `gaia brief delete <name> --yes` (cascades to ACs, plan, tasks; no undo) -- prefer `archived` |
 
-`--workspace` defaults to the current workspace. Pass it explicitly when
-reading from outside the workspace tree (e.g. cron, batch jobs).
+The interactive `gaia brief edit <name>` opens `$EDITOR` and needs a human at a
+terminal; dispatch only the headless form. Editing an AC's description marks
+stale the gate verdicts of the tasks that cover it: they stop counting until a
+verifier confirms them again.
 
-## Brief Body Structure
+## Evidence
 
-The brief body (rendered by `gaia brief show`) follows this shape. The
-frontmatter block is the executable source of truth (orchestrator parses
-it with `yaml.safe_load`). The body's `## Acceptance Criteria` section
-mirrors it as a human summary.
+The `evidence` table accepts exactly five types (`gaia evidence add --type`):
+`text`, `file`, `command_output`, `url`, `screenshot`. Evidence is positive by
+default; `--negative` records a refutation and never accepts an AC; `--gate
+<id>` ties it to the gate that produced it. An AC is done only when every task
+covering it is done and it has at least one positive evidence row
+(`gaia/briefs/store.py::derive_brief_state`), which is why an AC with no
+reachable observation cannot close.
 
-```markdown
----
-status: draft
-surface_type: ui | api | job | cli
-acceptance_criteria:
-  - id: AC-1
-    description: "Login button visible on /login"
-    evidence:
-      type: url
-      shape:
-        method: GET
-        url: http://localhost:3000/login
-        expect:
-          status: 200
-          body_contains: "Sign in"
-  - id: AC-2
-    description: "pytest auth suite green"
-    evidence:
-      type: command
-      shape:
-        run: "pytest tests/auth/ -q"
-        expect: "exit 0"
----
+## After the brief -- you own the plan
 
-# [Feature Name]
+The brief settles *whether* the work is worth doing; the planner does not
+re-open that. It owes you what you need to audit its plan: feasibility
+findings, assumptions, risks, the 3-5 decisions that shape the plan with their
+alternatives and the AC motivating each, the ordering rationale, each task's
+gates, and the checklist of what depends on third parties. Require those in the
+dispatch -- a plan you cannot audit is one you cannot own. Escalate to the user
+only what is genuinely new or blocking; never re-ask what the brief settled.
 
-## Objective
-[1-3 sentences: what problem, why now, who benefits]
+**Judge that each gate proves its task's intent.** Well-formedness is checked
+for you (`gaia brief verify`: a task without gates, an empty shape, an AC no
+task covers). What no check can judge is fit: a `command` gate on a design
+judgment, a `semantic` rubric on something a test could decide, a code gate
+with no failing run before the change. Flag a mismatch back to the planner
+rather than accept it.
 
-## Context
-[Project constraints relevant to this feature]
+**Before dispatching, run `gaia brief verify <slug>`.** It is the cheap
+coverage check: an `uncovered_ac` means some AC has no task that could ever
+make it done.
 
-## Approach
-[High-level strategy, not implementation details. 3-5 sentences max]
-
-## Acceptance Criteria
-Human-readable summary. Source of truth lives in frontmatter.
-- AC-1: Login button visible on /login (evidence: url)
-- AC-2: pytest auth suite green (evidence: command)
-
-## Milestones (M/L features only)
-- M1: [name] -- [what is shippable after this]
-- M2: [name] -- [what is shippable after this]
-
-## Out of Scope
-[Explicit boundaries -- what this feature does NOT include]
-```
-
-## Acceptance Criteria Rules
-
-- Every AC has a description (user observation) and an evidence block.
-- Evidence must be reproducible by the user -- not only by the agent.
-- Every completed AC has a structured row created by `gaia evidence add`.
-  Never invent a repository-relative output path. Small results live inline
-  in Gaia's DB; larger blobs live below `~/.gaia/evidence/`.
-- Vague ACs get pushed back: "Fast means what? Under 200ms p95?"
-- Surface type restricts valid evidence types (see table).
-
-### Evidence Types
-
-The shapes below are frontmatter fragments under `acceptance_criteria:`.
-The body's `## Acceptance Criteria` section mirrors them for human reading;
-the frontmatter is the executable source of truth.
-
-| type | shape | valid surface |
-|------|-------|---------------|
-| `command` | `run: "bash command"; expect: exit_code \| substring` | any |
-| `url` | `method: GET\|POST; url; expect: {status, body_contains}` | ui, api |
-| `playwright` | `url; steps: [...]; assert: "selector visible" \| screenshot` | ui |
-| `artifact` | `path; kind: json\|log\|screenshot; assert: schema \| contains` | any |
-| `metric` | `query; threshold: "p95 < 200ms"` | api, job |
-
-Shape examples (frontmatter fragments):
-
-```yaml
-# command
-evidence:
-  type: command
-  shape:
-    run: "pytest tests/auth/ -q"
-    expect: "exit 0"
-
-# url
-evidence:
-  type: url
-  shape:
-    method: GET
-    url: http://localhost:3000/health
-    expect:
-      status: 200
-      body_contains: '"status":"ok"'
-
-# playwright
-evidence:
-  type: playwright
-  shape:
-    url: http://localhost:3000/login
-    steps:
-      - fill: "#email with user@test.com"
-      - click: "button[type=submit]"
-    assert: "selector [data-testid=dashboard] visible"
-
-# artifact
-evidence:
-  type: artifact
-  shape:
-    path: dist/build-report.json
-    kind: json
-    assert: ".summary.errors == 0"
-
-# metric
-evidence:
-  type: metric
-  shape:
-    query: "curl -s http://localhost:3000/metrics | grep http_p95"
-    threshold: "< 200"
-```
-
-## Why the DB, not a directory tree
-
-The old `.claude/project-context/briefs/<status>_<slug>/` layout is gone
-because a directory tree cannot be the source of truth for a brief:
-
-- Status lived in the directory name -- renaming a directory was the
-  status transition. That made transitions unverifiable, racy across
-  agents, and impossible to query with anything other than `find`.
-- Two writers (filesystem + DB) drift apart silently; only one can be
-  authoritative.
-- Cascade deletes across ACs, milestones, plans, and tasks require FK
-  semantics, which a directory tree cannot provide.
-
-## After Brief -- you own the plan the planner returns
-
-Run `gaia brief show <slug>`, which prints the full
-brief. Present it. Ask: "Does this capture what
-you want?" When confirmed, dispatch to gaia-planner to create a plan.
-
-The brief settles *whether* the work is worth doing -- that was agreed
-here, with the user. The planner does not re-litigate that. What the
-planner owes you back is everything you need to **audit** the plan it
-produces, not just the task list:
-
-- the **feasibility findings** it corroborated against the codebase
-  (what already exists, what the brief assumed that does not),
-- the **assumptions** it had to make and the **risks** it sees,
-- the **rationale for task ordering** and parallelization,
-- the **gate or gates on each task** -- the typed verification the
-  planner authored to prove that task's outcome.
-
-Require those in the dispatch -- a plan you cannot audit is one you
-cannot own. When you review it, escalate to the user only what is
-**genuinely new or blocking** (a feasibility gap, a fork the planner
-could not resolve). Never re-ask what the brief already settled.
-
-### Judge that each task's gate captures its intent
-
-Part of owning the plan is judging its gates. The planner authors, per
-task, one or more typed gates (`command`, `code`, `semantic`,
-`self_review`) via `gaia task gate add`; the well-formedness of those
-gates is already checked deterministically (`verify_brief` Invariant 9:
-a task with no gate, or a gate with an empty evidence-shape). Your job is
-the half a check cannot do: judge that each gate actually captures the
-**intent** of its task. For each task ask -- does the chosen type and
-evidence-shape prove how *this* task's outcome should be shown, and where
-a task carries more than one gate, do they *together* cover its intent? A
-`semantic` rubric on a task whose outcome is a passing command, or a lone
-`command` gate on a task whose real deliverable is a design judgment, is a
-gate that passes well-formedness but misses intent. This is prompt
-discipline, not a deterministic check -- flag the mismatch back to the
-planner; do not silently accept a gate that does not fit its task.
+**Changing an approved plan goes through the planner.** Request it with the
+justification (`gaia plan change request <slug> --reason="..."`); the planner
+proposes which tasks the change touches and why; review the proposal
+(`gaia plan change list <slug>`) and approve it (`gaia plan change approve`),
+taking it to the user first when it changes *what* is delivered. Verified tasks
+the change does not touch stay as they are. To stop dispatch without changing
+the plan, `gaia plan pause <slug> --reason="..."`, then `gaia plan resume`.
 
 ## Anti-Patterns
 
-- **Writing `brief.md` to disk** -- the DB is the source of truth; any file
-  on disk is either build output or stale legacy that will be deleted.
-- **Renaming directories to change status** -- there are no directories;
-  status is a column. Run `gaia brief set-status`.
-- **Skipping `--status=draft` on creation** -- creating directly in `open`
-  bypasses the review window where the user confirms ACs.
-- **Hard-deleting a brief that has plan history** -- prefer
-  `set-status archived`. Delete is for genuinely abandoned drafts.
-- **Accepting a plan you cannot audit** -- dispatching the planner without
-  requiring its feasibility findings, assumptions, risks, ordering
-  rationale, and per-task gates leaves you owning a plan you cannot check.
-  Require the audit inputs in the dispatch.
-- **Accepting a gate that misses its task's intent** -- a gate can pass
-  well-formedness (Invariant 9) yet prove the wrong thing. Judging that
-  each task's gate captures its intent is yours; flag a mismatch back to
-  the planner rather than accept it.
-- **Re-asking the user what the brief settled** -- the brief is the agreed
-  contract. Escalate only genuinely new or blocking findings surfaced by
-  the plan; questions the brief already answered are noise.
+- **Prescribing the proof in the AC** -- the brief is written before anyone
+  reads the code; a mechanism fixed there binds the plan to a guess. State the
+  observation and let the planner propose the gate.
+- **Planning past a `FALTA ACLARAR` mark** -- the plan inherits the guess and
+  every task built on it. Resolve it with the user first.
+- **Burying a changed decision in `approach`** -- the old and new answers both
+  survive with nothing saying which holds. Use `brief decision add
+  --supersedes`.
+- **Skipping `--status=draft`** -- creating directly in `open` bypasses the
+  window where the user confirms the ACs.
+- **Accepting a plan you cannot audit, or a gate that misses its task's
+  intent** -- you own the result either way; require the audit inputs and
+  send mismatches back.
+- **Re-asking what the brief settled** -- escalate only what the plan surfaced
+  as new or blocking.
