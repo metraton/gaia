@@ -18,7 +18,7 @@ import os
 import re
 import shlex
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
@@ -1870,7 +1870,10 @@ class ClaudeCodeAdapter(HookAdapter):
             # the native ask dialog. Either way the block_response carries the
             # correct outcome.
             if result.block_response is not None:
-                return HookResponse(output=result.block_response, exit_code=0)
+                return HookResponse(
+                    output=result.block_response, exit_code=0,
+                    approval_id=result.approval_id,
+                )
             return HookResponse(
                 output=self._format_blocked_message(result),
                 exit_code=2,
@@ -2734,7 +2737,7 @@ class ClaudeCodeAdapter(HookAdapter):
             request_line=verdict.get("request_line") or "",
         )
         # Out-of-band approval flow: consent is keyed to the persisted approval_id.
-        return self.request_consent(
+        response = self.request_consent(
             ConsentRequest(
                 operation=consent_path,
                 kind="file",
@@ -2743,6 +2746,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 approval_id=approval_id,
             )
         )
+        return replace(response, approval_id=verdict["approval_id"])
 
     @staticmethod
     def _format_blocked_message(result) -> str:
@@ -2992,89 +2996,6 @@ class ClaudeCodeAdapter(HookAdapter):
         """Return the first ``Exit code N`` in a host failure text, or 1 when it names none."""
         match = re.search(r"[Ee]xit code (\d+)", error)
         return int(match.group(1)) if match else 1
-
-    @staticmethod
-    def activate_labelled_answers(hook_data: Dict[str, Any]) -> None:
-        """OpenCode's question lane only: activate every ``[P-<32 hex>]`` an answered label carries.
-
-        Claude Code never calls this -- its answers bind by tool_use_id and
-        position (:meth:`_handle_ask_user_question_result`, D12). OpenCode still
-        reaches it through ``OpenCodeAdapter.adapt_post_tool_use``, which
-        strips any decision it did not attest, until plan 76 task 5 gives
-        OpenCode its own adapter bound by requestID and removes this method.
-        A failed activation is recorded, and one failure does not withhold
-        another signed label. Never raises.
-        """
-        from gaia.approvals.decision_audit import (
-            LANE_CLAUDE_CODE_QUESTION,
-            REASON_ACTIVATION_FAILED,
-            REASON_DUPLICATE_DECISION,
-            REASON_NO_NONCE_IN_LABELS,
-            REASON_NO_SESSION_BINDING,
-            record_decision_not_activated,
-        )
-        from modules.security.approval_grants import (
-            activate_db_pending_by_id,
-            extract_approval_id_from_label,
-        )
-
-        session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
-        tool_response = hook_data.get("tool_response", {})
-        answers = {}
-        if isinstance(tool_response, dict):
-            answers = tool_response.get("answers", {})
-        if not answers and isinstance(hook_data.get("tool_input", {}), dict):
-            answers = hook_data.get("tool_input", {}).get("answers", {})
-        # No answers is no decision at all, so nothing is recorded for it.
-        if not answers:
-            return
-
-        labels = [str(v) for v in answers.values()]
-        try:
-            if not session_id:
-                record_decision_not_activated(
-                    reason=REASON_NO_SESSION_BINDING,
-                    lane=LANE_CLAUDE_CODE_QUESTION,
-                    decision_values=labels,
-                )
-                return
-            approval_ids: List[str] = []
-            for label in labels:
-                approval_id = extract_approval_id_from_label(label)
-                if approval_id and approval_id not in approval_ids:
-                    approval_ids.append(approval_id)
-            if not approval_ids:
-                record_decision_not_activated(
-                    reason=REASON_NO_NONCE_IN_LABELS,
-                    lane=LANE_CLAUDE_CODE_QUESTION,
-                    session_id=session_id,
-                    decision_values=labels,
-                )
-                return
-            for approval_id in approval_ids:
-                result = activate_db_pending_by_id(
-                    approval_id, current_session_id=session_id,
-                )
-                if result.success and result.idempotent:
-                    record_decision_not_activated(
-                        reason=REASON_DUPLICATE_DECISION,
-                        lane=LANE_CLAUDE_CODE_QUESTION,
-                        session_id=session_id,
-                        approval_id=approval_id,
-                        decision_values=labels,
-                        detail=result.reason,
-                    )
-                elif not result.success:
-                    record_decision_not_activated(
-                        reason=REASON_ACTIVATION_FAILED,
-                        lane=LANE_CLAUDE_CODE_QUESTION,
-                        session_id=session_id,
-                        approval_id=approval_id,
-                        decision_values=labels,
-                        detail=result.reason or getattr(result.status, "value", ""),
-                    )
-        except Exception as e:
-            logger.error("Error in activate_labelled_answers: %s", e, exc_info=True)
 
     @staticmethod
     def _handle_ask_user_question_result(hook_data: Dict[str, Any]) -> HookResponse:

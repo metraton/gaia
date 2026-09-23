@@ -1093,9 +1093,8 @@ class OpenCodeAdapter(HookAdapter):
             }
             if isinstance(specific.get("updatedInput"), dict):
                 translated["updated_input"] = specific["updatedInput"]
-            approval = re.search(r"approval_id:\s*(P-[A-Za-z0-9-]+)", translated["reason"])
-            if approval:
-                translated["approval_id"] = approval.group(1)
+            if response.approval_id:
+                translated["approval_id"] = response.approval_id
             return _fail_closed(translated, response.exit_code)
 
         return HookResponse(output={"action": "allow"}, exit_code=response.exit_code)
@@ -1165,8 +1164,10 @@ class OpenCodeAdapter(HookAdapter):
             role_context=event.role_context,
         )
         if payload.get("tool_name") == "AskUserQuestion":
-            ClaudeCodeAdapter.activate_labelled_answers(payload)
-            return self._translate_policy_response(HookResponse(output={}, exit_code=0))
+            # A signature is decided only by `gaia approvals opencode-decide`,
+            # which the plugin runs from the question's own requestID reply; an
+            # answer in a tool result is never a decision here.
+            return HookResponse(output={"action": "allow"}, exit_code=0)
         response = ClaudeCodeAdapter().adapt_post_tool_use(policy_event)
         return self._translate_policy_response(response)
 

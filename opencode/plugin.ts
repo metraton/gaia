@@ -329,30 +329,6 @@ export function normalizeBridgeToolRequest(
   }
 }
 
-/** Host reply spellings mapped onto the protocol vocabulary Gaia accepts. */
-const PERMISSION_REPLIES: Record<string, PermissionReply> = {
-  once: "once",
-  allow: "once",
-  always: "always",
-  reject: "reject",
-  deny: "reject",
-}
-
-export function normalizePermissionReply(reply: unknown): PermissionReply | undefined {
-  if (typeof reply !== "string") return undefined
-  return PERMISSION_REPLIES[reply.trim().toLowerCase()]
-}
-
-/** The event OpenCode is expected to deliver a permission reply on. */
-export const PREFERRED_PERMISSION_EVENT = "permission.replied"
-
-/**
- * Compatibility only: an older OpenCode build spells the same reply with a
- * versioned event name. The name stops at this edge -- Gaia's neutral layer is
- * handed a lane token and never a host event name.
- */
-export const COMPATIBILITY_PERMISSION_EVENTS = ["permission.v2.replied"]
-
 export type DecisionLane = "control" | "preferred" | "compatibility"
 
 /** Ordered strongest-first: a lane's index is its precedence rank. */
@@ -417,21 +393,12 @@ export type ControlCloseReason =
   | "question_mismatch"
   | "question_rejected"
   | "reply_unreadable"
-  | "permission_reply_unusable"
   | "decision_duplicate"
   | "retry_conflict"
   | "prompt_rejected"
   | "session_ended"
   | "drifted_tool_call"
   | "drifted_tool_result"
-
-export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
-  if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
-  if (typeof eventType === "string" && COMPATIBILITY_PERMISSION_EVENTS.includes(eventType)) {
-    return "compatibility"
-  }
-  return undefined
-}
 
 export type LaneAdmission = {
   lane: DecisionLane
@@ -987,8 +954,7 @@ export function readConsentPresentation(stdout: string): NativeConsentPresentati
 }
 
 function approvalID(response: BridgeResponse): string | undefined {
-  if (response.approval_id) return response.approval_id
-  return response.reason?.match(/approval_id:\s*(P-[A-Za-z0-9-]+)/)?.[1]
+  return response.approval_id || undefined
 }
 
 export function toolResult(output: any): Record<string, unknown> {
@@ -1079,14 +1045,6 @@ async function announceLiveness(input: any): Promise<void> {
 
 export const GaiaOpenCodePlugin = async (input: any) => {
   await announceLiveness(input)
-  const pending = new Map<string, PendingApproval>()
-  const pendingByCall = new Map<string, PendingApproval>()
-  // `sessionID:callID` pairs Gaia ALLOWED in tool.execute.before. OpenCode runs
-  // its own permission gate AFTER that verdict, and a second gate that can deny
-  // what Gaia granted makes an approval mean something different here than on
-  // Claude Code, where PreToolUse is the last word. Consumed on use, so one
-  // verdict frees exactly the one call it ruled on.
-  const allowedByCall = new Set<string>()
   const controlsBySession = new Map<string, ControlDecision[]>()
   const controlByQuestion = new Map<string, ControlDecision>()
   const releasedControlCalls = new Set<string>()
@@ -1491,14 +1449,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return control && (control.presenting || control.presented) ? control : undefined
   }
 
-  function controlForApproval(approval: PendingApproval): ControlDecision | undefined {
-    return (controlsBySession.get(approval.sessionID) ?? []).find((control) => (
-      control.approval.approvalID === approval.approvalID
-      && control.approval.callID === approval.callID
-      && control.approval.token === approval.token
-    ))
-  }
-
   async function correlateQuestionEvent(
     control: ControlDecision,
     requestID: string,
@@ -1564,12 +1514,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     detail?: string,
     advance = true,
   ): Promise<void> {
-    for (const [key, approval] of pendingByCall) {
-      if (approval.token === control.approval.token) pendingByCall.delete(key)
-    }
-    for (const [key, approval] of pending) {
-      if (approval.token === control.approval.token) pending.delete(key)
-    }
     await releaseControl(control, reason, detail, advance)
   }
 
@@ -1813,6 +1757,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const presented = await gaia([
       "approvals", "opencode-present", id,
       "--session-id", sessionID,
+      "--agent-id", role,
       "--call-id", callID,
       "--token", approval.token,
       "--json",
@@ -1823,9 +1768,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       throw new Error(`Gaia could not present approval ${id}: ${cause}`)
     }
     const surface = readConsentPresentation(presented.stdout)
-    const pendingApproval = { ...approval, surface }
-    const control = await openBinaryDecision(pendingApproval)
-    if (!control.closed) pendingByCall.set(`${sessionID}:${callID}`, pendingApproval)
+    await openBinaryDecision({ ...approval, surface })
   }
 
   /** Leave a durable trace of a denial that otherwise only reached stderr.
@@ -1864,9 +1807,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   return {
     dispose: async () => {
       shellIdentities.clear()
-      pending.clear()
-      pendingByCall.clear()
-      allowedByCall.clear()
       controlByQuestion.clear()
       controlsBySession.clear()
       releasedControlCalls.clear()
@@ -1950,7 +1890,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         ) {
           const key = `${part.sessionID}:${part.callID}`
           const retried = retryByCall.get(key)
-          allowedByCall.delete(key)
           if (retried) {
             retryByCall.delete(key)
             if (retryBySession.get(part.sessionID) === retried) {
@@ -2015,69 +1954,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         }
         return
       }
-      const lane = permissionDecisionLane(event.type)
-      if (!lane) return
-      const requestID = event.properties.permissionID
-      const sessionID = event.properties.sessionID
-      if (typeof requestID !== "string" || typeof sessionID !== "string") return
-      const approval = pending.get(requestID)
-      if (!approval) return
-      if (approval.sessionID !== sessionID) return
-      const reply = normalizePermissionReply(event.properties.response ?? event.properties.reply)
-      const control = controlForApproval(approval)
-      if (!control || control.closed) {
-        pending.delete(requestID)
-        return
-      }
-      if (control !== activeControl(sessionID) || !control.presented) return
-      if (!reply) {
-        await clearControl(control, "permission_reply_unusable", `${event.type} on ${requestID}`)
-        return
-      }
-      await applyDecision(control, reply, lane)
     },
-    "permission.ask": async (permission: any, output: { status: "ask" | "deny" | "allow" }) => {
-      const sessionID = permission?.sessionID
-      const callID = permission?.callID
-      const key = typeof sessionID === "string" && typeof callID === "string"
-        ? `${sessionID}:${callID}`
-        : undefined
-      const approval = key ? pendingByCall.get(key) : undefined
-      if (!approval) {
-        // A pair Gaia already allowed carries its verdict through: deciding it
-        // again here would let the host's gate revoke consent Gaia granted.
-        // Deleting is the consume -- the allow is spent on this one request.
-        if (key && allowedByCall.delete(key)) {
-          output.status = "allow"
-          return
-        }
-        // This hook must never turn an uncorrelated or unsupported host request
-        // into consent. Keep the host's request denied and make the capability
-        // failure observable to the host log/stderr.
-        output.status = "deny"
-        console.error("[gaia-opencode:permission] denied uncorrelated permission request")
-        await reportUncorrelatedDenial(sessionID, callID)
-        return
-      }
-      if (permission.id === undefined || permission.sessionID !== approval.sessionID) {
-        output.status = "deny"
-        console.error("[gaia-opencode:permission] denied permission request with invalid correlation")
-        return
-      }
-      pendingByCall.delete(key!)
-      pending.set(permission.id, approval)
-      permission.title = "Gaia approval required"
-      permission.pattern = approval.surface.visibleLines
-      permission.metadata = {
-        ...(permission.metadata ?? {}),
-        gaiaApprovalID: approval.approvalID,
-        gaiaCallID: approval.callID,
-        gaiaConsent: approval.surface.metadata,
-      }
-      // The host owns the prompt and its reply. Do not auto-allow when a host
-      // lacks the old creation API; OpenCode will deliver permission.replied.
-      output.status = "ask"
-    },
+    // No "permission.ask" hook: the installed OpenCode (1.18.32) never
+    // triggers one -- its bundle calls no plugin hook named permission, so a
+    // host permission prompt is the host's alone and a signature is asked
+    // only through the question tool above.
     "tool.execute.before": async (call, output) => {
       const control = owningControl(call.sessionID)
       if (control) {
@@ -2178,10 +2059,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             cwd: resolve(directory), args: output.args,
           })
         }
-        // Recorded last, so every check this branch still owes has passed: a
-        // throw above aborts the call, and a call that never runs must not
-        // leave a verdict the host's permission gate could later honor.
-        allowedByCall.add(`${call.sessionID}:${call.callID}`)
         return
       }
       if (retry && retryProof && retryBySession.get(call.sessionID) === retry) {
@@ -2204,9 +2081,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         throw new Error("Gaia refused a drifted control-plane tool result")
       }
       shellIdentities.forget(call.sessionID, call.callID)
-      // The call is over, so an allow the host never submitted to its gate has
-      // no request left to answer and must not outlive the call that earned it.
-      allowedByCall.delete(`${call.sessionID}:${call.callID}`)
       const agent = agentBySession.get(call.sessionID)
       if (call.tool === "task") {
         const sessionID = output.metadata?.sessionId

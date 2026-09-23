@@ -138,6 +138,9 @@ class BashValidationResult:
     # EXECUTED or FAILED against it. None for non-T3 / no-grant paths.
     consumed_approval_id: Optional[str] = None
     command_set_reservation: Optional[Dict[str, Any]] = None
+    # The pending approval a T3 denial asks consent for, named structurally so
+    # no adapter reads it back out of the denial text.
+    approval_id: Optional[str] = None
 
     def __post_init__(self):
         if self.suggestions is None:
@@ -2369,6 +2372,7 @@ def decide_t3_outcome(
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"T3 {category.lower()} command: {command[:60]}",
                     block_response=hook_deny,
+                    approval_id=approval_id,
                 )
 
         # No existing pending -- insert via DB (D16: exclusive path).
@@ -2506,6 +2510,7 @@ def decide_t3_outcome(
             tier=SecurityTier.T3_BLOCKED,
             reason=f"T3 {category.lower()} command: {command[:60]}",
             block_response=hook_deny,
+            approval_id=approval_id,
         )
 
     # No orchestrator above (orchestrator itself, or security context): the

@@ -494,10 +494,16 @@ class VerificationResult:
 
 @dataclass(frozen=True)
 class HookResponse:
-    """CLI-specific hook response. Constructed by adapter, not business logic."""
+    """CLI-specific hook response. Constructed by adapter, not business logic.
+
+    ``approval_id`` names the pending approval a denial asks consent for. It
+    never reaches the host (``to_dict`` omits it): another adapter reads it
+    here instead of parsing it back out of the reason text.
+    """
 
     output: Dict[str, Any]
     exit_code: int = 0
+    approval_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a dictionary suitable for JSON output."""

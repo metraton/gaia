@@ -1679,9 +1679,8 @@ def _opencode_binding(
 ) -> tuple[dict | None, str | None]:
     """Require matching presentations to agree on the approval's owning session.
 
-    An approval whose row names no session has not been presented anywhere
-    yet -- cmd_opencode_present adopts the session in the same transaction as
-    the first SHOWN -- so a NULL owner passes here to reach the "no matching
+    An approval whose row names no session was never presented (presentation
+    refuses it), so a NULL owner passes here only to reach the "no matching
     presentation" outcome instead of being refused as foreign.
     """
     approval_id = _resolve_approval_id(args.approval_id)
@@ -1768,16 +1767,52 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
         return {"presentation_error": str(exc)}
 
 
+def _opencode_presentation_refusal(args) -> str | None:
+    """Why this presentation may not record SHOWN, or ``None`` when it may.
+
+    The requester is sealed when the request is made (PD6), so a question is
+    opened only by the call of that same session and agent: the plugin runs
+    this from the requester's own tool call, so the requester is live by
+    construction, and a session resumed after a host restart presents again on
+    its next attempt. A pending with no requester is never adopted -- it is
+    only shown by the readers -- and a request lacking its requester's phrases
+    is never shown at all.
+    """
+    approval_id = _resolve_approval_id(args.approval_id)
+    try:
+        approval = _import_approval_store().get_by_id(approval_id)
+    except Exception as exc:
+        return f"Failed to load approval: {exc}"
+    if approval is None or approval.get("status") != "pending":
+        return f"Approval {approval_id} is not pending"
+    if not approval.get("session_id"):
+        return (
+            f"Approval {approval_id} has no requesting session; it is shown by "
+            "the readers and never presented"
+        )
+    if approval["session_id"] != args.session_id.strip():
+        return "OpenCode presentation must come from the requesting session"
+    if approval.get("agent_id") != args.agent_id.strip():
+        return "OpenCode presentation must come from the requesting agent"
+    try:
+        from gaia.approvals.core import SealError, check_presentable
+
+        check_presentable(json.loads(approval.get("payload_json") or "{}"))
+    except SealError as exc:
+        return str(exc)
+    return None
+
+
 def cmd_opencode_present(args) -> int:
     """Record an OpenCode-native presentation before requesting user consent.
 
-    A pending approval minted without a session (``request-set`` and
-    ``request-file-write`` persist NULL when ``--session-id`` is omitted, and a
-    dispatched OpenCode agent has no way to learn its own session id) is adopted
-    by the first session that presents it, in the same transaction as the SHOWN
-    event. From then on the ownership check applies unchanged: any other
-    session is refused.
+    Refused, with no SHOWN recorded, whenever
+    :func:`_opencode_presentation_refusal` names a reason.
     """
+    refusal = _opencode_presentation_refusal(args)
+    if refusal is not None:
+        _print_error(refusal, args)
+        return 1
     approval, error = _opencode_binding(args)
     if approval is not None:
         # A matching event already exists. Presentation is idempotent so plugin
@@ -1807,12 +1842,8 @@ def cmd_opencode_present(args) -> int:
             approval = store.get_by_id(approval_id, con=con)
             if approval is None or approval.get("status") != "pending":
                 raise ValueError(f"Approval {approval_id} is not pending")
-            owner = approval.get("session_id")
-            if owner is None:
-                store.adopt_session(approval_id, session_id, con=con)
-                approval["session_id"] = session_id
-            elif owner != session_id:
-                raise ValueError("OpenCode session does not own this approval")
+            if approval.get("session_id") != session_id:
+                raise ValueError("OpenCode presentation must come from the requesting session")
             store.record_event(
                 approval_id,
                 "SHOWN",
@@ -2366,6 +2397,11 @@ def register(subparsers) -> None:
         p_opencode.add_argument("--call-id", required=True)
         p_opencode.add_argument("--token", required=True)
         p_opencode.add_argument("--json", action="store_true", help="JSON output")
+        if name == "opencode-present":
+            p_opencode.add_argument(
+                "--agent-id", required=True,
+                help="The agent of the calling session; must be the approval's requester",
+            )
         if name == "opencode-decide":
             p_opencode.add_argument("--reply", choices=("once", "always", "reject"), required=True)
             # A neutral lane token, never a host event name: the harness edge

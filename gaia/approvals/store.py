@@ -1461,35 +1461,6 @@ def transition(
             _con.close()
 
 
-def adopt_session(
-    approval_id: str,
-    session_id: str,
-    *,
-    con: Optional[sqlite3.Connection] = None,
-) -> None:
-    """Bind a pending approval minted without a session to ``session_id``.
-
-    Only a NULL owner is written, so an approval that already names a session
-    is never re-bound here; the caller's ownership check remains the sole judge
-    of that case. Raises ValueError when no unowned pending row was adopted, so
-    a caller never proceeds believing it owns a row it does not.
-    """
-    _con, owned = _get_con(con)
-    try:
-        cur = _con.execute(
-            "UPDATE approvals SET session_id = ? "
-            "WHERE id = ? AND session_id IS NULL AND status = 'pending'",
-            (session_id, approval_id),
-        )
-        if cur.rowcount != 1:
-            raise ValueError(f"Approval {approval_id} has no unowned pending row to adopt")
-        if owned:
-            _con.commit()
-    finally:
-        if owned:
-            _con.close()
-
-
 def get_by_id(
     approval_id: str,
     con: Optional[sqlite3.Connection] = None,
