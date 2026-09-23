@@ -1,6 +1,6 @@
 ---
 name: execution
-description: Use in a fresh specialist dispatch after the user has granted a T3 operation or COMMAND_SET
+description: Use when the specialist that requested a T3 operation or COMMAND_SET is resumed after the user granted it
 ---
 
 # Approved Execution

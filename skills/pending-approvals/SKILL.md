@@ -14,8 +14,9 @@ lookup and single-item decision takes the complete canonical
 
 - `gaia approvals pending` -- the undecided requests, all sessions by default
   (`--session <id>` narrows).
-- `gaia approvals list` -- grants plus the undecided requests beneath them,
-  with STATE and OUTCOME columns (`--session`, `--orphans-only`, `--json`).
+- `gaia approvals list` -- grants with STATUS, GRANT_STATE and OUTCOME
+  columns, and the undecided requests beneath them with their STATE
+  (`--session`, `--orphans-only` for the orphaned ones, `--json`).
 - `gaia approvals show <approval_id>` -- one approval: State, Outcome, Reason,
   Requester, Window, Directory, the grant and the sealed payload.
 - `gaia approvals history [<approval_id>]` -- recent approvals, or one
