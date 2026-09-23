@@ -257,6 +257,72 @@ def test_list_and_pending_name_orphaned_and_expired_requests(rows_db):
     assert "orphaned" in _run(cmd_pending, json=False, all_sessions=True, session=None)
 
 
+def test_list_orphans_only_keeps_exactly_the_rows_read_orphaned(rows_db):
+    from bin.cli.approvals import cmd_list
+
+    listed = json.loads(_run(cmd_list, json=True, session=None, orphans_only=True))
+    assert {item["approval_id"]: item["state"] for item in listed["pending"]} == {
+        OLD_ORPHAN: "orphaned", NEW_ORPHAN: "orphaned",
+    }
+
+
+def test_list_help_explains_every_state_column_the_table_prints(rows_db, capsys):
+    import re
+
+    from bin.cli.approvals import cmd_list, register
+
+    table = _run(cmd_list, json=False, session=None, orphans_only=False)
+    headers = [line for line in table.splitlines() if line.startswith(("APPROVAL_ID", "ID "))]
+    printed = {column for column in ("STATE", "STATUS", "GRANT_STATE", "OUTCOME")
+               if any(re.search(rf"\b{column}\b", header) for header in headers)}
+    assert printed == {"STATE", "STATUS", "GRANT_STATE", "OUTCOME"}
+
+    parser = argparse.ArgumentParser(prog="gaia")
+    register(parser.add_subparsers())
+    with pytest.raises(SystemExit):
+        parser.parse_args(["approvals", "list", "--help"])
+    help_text = capsys.readouterr().out
+    assert {column for column in printed if re.search(rf"\b{column}\b", help_text)} == printed
+
+
+def test_window_is_the_one_the_grant_runs_not_the_one_the_request_sealed(rows_db):
+    """An approval sealed at 30 minutes whose grant was minted at 60 reads 60 (P-432f3c8e...)."""
+    from bin.cli.approvals import cmd_show_v2
+
+    approval_id = _pid(17)
+    fresh = _new_payload("git rm -r -q skills/old", LIVE_SESSION)
+    con = sqlite3.connect(rows_db)
+    _row(con, approval_id, status="approved", session=LIVE_SESSION, agent=AGENT, payload=fresh,
+         created=_iso(timedelta(minutes=80)), decided=_iso(timedelta(minutes=79)), events=[
+             ("REQUESTED", LIVE_SESSION, None, fresh, _iso(timedelta(minutes=80))),
+             ("APPROVED", LIVE_SESSION, None, None, _iso(timedelta(minutes=79))),
+         ])
+    _grant(con, approval_id, session=LIVE_SESSION, status="PENDING",
+           created=_iso(timedelta(minutes=79)), expires=_iso(timedelta(minutes=19)))
+    con.commit()
+    con.close()
+
+    shown = json.loads(_run(cmd_show_v2, approval_id=approval_id, json=True, consent_surface=False))
+    assert shown["reading"]["window_minutes"] == 60
+    text = _run(cmd_show_v2, approval_id=approval_id, json=False, consent_surface=False)
+    assert "Window      : 60 min from the decision" in text
+    unsealed = _run(cmd_show_v2, approval_id=OLD_STOP_FAILED, json=False, consent_surface=False)
+    assert "Window      : not sealed" in unsealed
+
+
+def test_an_unregistered_host_requester_reads_alive_while_its_request_is_recent():
+    """OpenCode never heartbeats the registry: recent activity alone keeps its request pending."""
+    from gaia.approvals.reading import ORPHANED, PENDING, decision_state, sign_of_life
+
+    row = {"status": "pending", "session_id": "ses_opencode", "created_at": _iso(timedelta(minutes=2))}
+    shown_late = [{"event_type": "SHOWN", "created_at": _iso(timedelta(minutes=1))}]
+    assert decision_state(row, shown_late, live=set()) == PENDING
+
+    quiet_row = dict(row, created_at=_iso(sign_of_life() + timedelta(minutes=1)))
+    assert decision_state(quiet_row, [], live=set()) == ORPHANED
+    assert decision_state(quiet_row, [], live={"ses_opencode"}) == PENDING
+
+
 def test_history_reads_replaced_as_replaced_never_revoked(rows_db):
     from bin.cli.approvals import cmd_history
 

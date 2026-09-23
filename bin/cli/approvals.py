@@ -4,8 +4,8 @@ gaia approvals -- Approval System v2 Track 1 CLI subcommand.
 Subcommands:
   list [--json] [--session SESSION_ID] [--orphans-only]
                                          -- list pending approvals
-                                            (--orphans-only filters to
-                                             pendings from dead sessions)
+                                            (--orphans-only keeps the
+                                             pendings read as orphaned)
   show APPROVAL_ID [--json|--consent-surface]
                                          -- show detail or trusted consent data
   revoke APPROVAL_ID                     -- revoke an active command_set grant by approval_id
@@ -212,9 +212,10 @@ def _scan_pending_shared(exclude_live_sessions: bool = False) -> list:
     file-write blocks) are now written exclusively to the DB.
 
     When ``exclude_live_sessions=True``, only pendings whose owning session
-    is NOT currently alive (orphans) are returned -- this backs the
-    ``--orphans-only`` flag.  Session liveness is checked via
-    session_registry.get_live_sessions() when available.
+    the registry does not hold live are returned (session_registry.
+    get_live_sessions(), when available). ``--orphans-only`` does not use it:
+    it filters on the reading's ``orphaned`` state, which also weighs recent
+    activity and the pending TTL.
 
     Returns a list of dicts in the shape _pending_to_display() expects.
 
@@ -422,8 +423,9 @@ def cmd_list(args) -> int:
     Without ``--session``, all grants are shown.  With ``--session SESSION_ID``,
     only that session's grants are shown.
 
-    ``--orphans-only`` filters pending approvals to rows whose owning session
-    is no longer alive (orphaned pendings from dead sessions).
+    ``--orphans-only`` keeps the pending approvals whose reading is
+    ``orphaned`` -- the one rule every reader applies -- so a request past its
+    TTL reads expired here too, never orphaned.
 
     Each DB-grants row carries two independent statuses -- ``status``, the
     consent decision resolved from the approvals table (batched below via
@@ -452,7 +454,7 @@ def cmd_list(args) -> int:
     # implementation name as the primary API vocabulary.
     pending_rows = []
     try:
-        pending_rows = _scan_pending_shared(exclude_live_sessions=orphans_only)
+        pending_rows = _scan_pending_shared()
     except Exception:
         pass
 
@@ -482,6 +484,10 @@ def cmd_list(args) -> int:
         db_items.append(item)
     for p in pending_rows:
         p["state"] = readings.get(p.get("approval_id"), {}).get("state")
+    if orphans_only:
+        from gaia.approvals.reading import ORPHANED
+
+        pending_rows = [p for p in pending_rows if p["state"] == ORPHANED]
     pending_display_items = [_pending_to_display(p) for p in pending_rows]
 
     if getattr(args, "json", False):
@@ -632,19 +638,37 @@ def cmd_show(args) -> int:
 # Subcommand: revoke
 # ---------------------------------------------------------------------------
 
-def _revoke_grant(args, approval_id: str | None = None) -> int:
+def _record_grant_revoked(args, approval_id: str, verb: str) -> None:
+    """Append REVOKED to the approval's chain under the resolved identity; the decision row stays as signed.
+
+    A grant older than the ``approvals`` table has no chain to append to.
+    """
+    store = _import_approval_store()
+    if store.get_by_id(approval_id) is None:
+        return
+    session_id, agent_id = _withdrawer(args)
+    store.record_event(
+        approval_id, "REVOKED", agent_id=agent_id, session_id=session_id,
+        metadata_json=json.dumps(
+            {"reason": "grant revoked", "source": f"gaia approvals {verb}"}, sort_keys=True,
+        ),
+    )
+
+
+def _revoke_grant(args, approval_id: str | None = None, *, verb: str = "revoke") -> int:
     """Revoke an active command_set grant by its approval_id (legacy path).
 
     Calls ``writer.revoke_approval_grant(approval_id)`` to mark the grant
-    REVOKED in the DB.  After revocation, any unconsumed commands in the
-    command_set will require fresh approval.
+    REVOKED in the DB, then records who revoked it in the approval's event
+    chain.  After revocation, any unconsumed commands in the command_set will
+    require fresh approval.
 
     This is the legacy ``approval_grants``-table path. It is invoked as the
     fallback by the unified :func:`cmd_revoke` when an id is not found in the
     new ``approvals`` table.
 
     ``approval_id`` overrides the one carried by ``args`` for callers that
-    already hold the exact stored id.
+    already hold the exact stored id; ``verb`` names the command in the event.
 
     Exits 0 on success, 1 if the grant is not found or already in a terminal
     state.
@@ -660,6 +684,11 @@ def _revoke_grant(args, approval_id: str | None = None) -> int:
 
     status = result.get("status")
     if status == "applied":
+        try:
+            _record_grant_revoked(args, approval_id, verb)
+        except Exception as exc:
+            _print_error(f"Grant {approval_id} revoked, but its audit event was not written: {exc}", args)
+            return 1
         print(f"Revoked approval_id={approval_id}")
         return 0
     elif status == "not_found":
@@ -708,7 +737,7 @@ def _reject_live_grant(args, approval_id: str) -> int:
         _print_error(f"Cannot reject {approval_id}: no exact live grant exists", args)
         return 1
 
-    return _revoke_grant(args, live[0]["approval_id"])
+    return _revoke_grant(args, live[0]["approval_id"], verb="reject")
 
 
 def cmd_reject(args) -> int:
@@ -2221,15 +2250,20 @@ def register(subparsers) -> None:
         description=(
             "List DB-backed command_set/semantic-signature grants, then the\n"
             "genuinely undecided pending approvals below them.\n\n"
-            "The DB-grants table has two status columns, and they answer two\n"
-            "different questions:\n"
+            "The DB-grants table has three state columns, and they answer\n"
+            "three different questions:\n"
             "  STATUS       -- the consent decision (approved/rejected/revoked/\n"
             "                  expired), read from the approvals table. A row only\n"
             "                  ever appears in this table after a decision was\n"
             "                  made, so STATUS is APPROVED here in practice.\n"
             "  GRANT_STATE  -- whether this already-approved grant's commands\n"
             "                  are still usable: PENDING (unconsumed, can still\n"
-            "                  be replayed), CONSUMED, FAILED, REVOKED, EXPIRED.\n\n"
+            "                  be replayed), CONSUMED, FAILED, REVOKED, EXPIRED.\n"
+            "  OUTCOME      -- what became of the approved call: executed,\n"
+            "                  failed, no_result, in_flight, unused, or\n"
+            "                  legacy_executed/legacy_failed for old rows.\n\n"
+            "The pending section's STATE is the undecided request's reading:\n"
+            "pending, orphaned (no sign of life from its requester) or expired.\n"
             "GRANT_STATE=PENDING is never a decision awaiting your input --\n"
             "that only ever appears in the separate 'pending approval(s)'\n"
             "section beneath the DB-grants table, or via 'gaia approvals\n"
@@ -2242,7 +2276,7 @@ def register(subparsers) -> None:
         "--orphans-only",
         action="store_true",
         dest="orphans_only",
-        help="Show only pendings from sessions no longer alive (via session_registry)",
+        help="Show only the pendings whose STATE is orphaned",
     )
     p_list.set_defaults(func=cmd_list)
 
@@ -2632,7 +2666,7 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--session", metavar="SESSION_ID")
     p_list.add_argument(
         "--orphans-only", action="store_true", dest="orphans_only",
-        help="Show only pendings from sessions no longer alive",
+        help="Show only the pendings whose STATE is orphaned",
     )
     p_list.set_defaults(func=cmd_list)
 

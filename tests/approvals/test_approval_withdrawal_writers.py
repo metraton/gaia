@@ -1,10 +1,10 @@
 """The approvals CLI withdraws through the core (plan 76, task 6, PD8).
 
-reject, reject --all, reject-all and clean each go through the core's
+reject, reject --all, reject-all, revoke and clean each go through the core's
 withdrawal: a rejected pending records REJECTED -- never REVOKED -- under either
-host, a revoked grant records REVOKED, an expired pending records its expiry
-reason, and every event names the identity the requester resolver returns, not
-a ``cli-reject`` label.
+host, a revoked pending or grant records REVOKED, an expired pending records its
+expiry reason, and every event names the identity the requester resolver
+returns, not a ``cli-reject`` label.
 """
 
 from __future__ import annotations
@@ -115,13 +115,12 @@ def test_reject_all_subcommand_rejects_every_pending(host):
         _assert_rejected_by_resolver(approval_id, host["session"])
 
 
-def test_reject_on_a_live_grant_revokes_the_grant(host):
-    from bin.cli.approvals import cmd_reject
+def _live_grant(db, command: str) -> str:
     from gaia.approvals import store
 
-    approval_id = _pending("git push origin six")
+    approval_id = _pending(command)
     store.approve(approval_id, "ses-user")
-    con = sqlite3.connect(host["db"])
+    con = sqlite3.connect(db)
     con.execute(
         "INSERT INTO approval_grants (approval_id, agent_id, session_id, command_set_json, "
         "expires_at, status) VALUES (?, 'developer', 'ses-requester', '[]', ?, 'PENDING')",
@@ -129,9 +128,48 @@ def test_reject_on_a_live_grant_revokes_the_grant(host):
     )
     con.commit()
     con.close()
-    _run(cmd_reject, approval_id=approval_id, all=False, reason=None, json=True)
+    return approval_id
+
+
+def _assert_grant_closed_by_resolver(approval_id: str, session: str, source: str) -> None:
+    """The grant is closed, the decision stands, and the chain says who closed it."""
+    from gaia.approvals import store
+
     assert writer.list_approval_grants(status="REVOKED")[0]["approval_id"] == approval_id
     assert store.get_by_id(approval_id)["status"] == "approved"
+    event = _last_event(approval_id)
+    assert event["event_type"] == "REVOKED"
+    assert (event["session_id"], event["agent_id"]) == (session, AGENT)
+    assert json.loads(event["metadata_json"])["source"] == source
+
+
+def test_reject_on_a_live_grant_revokes_the_grant(host):
+    from bin.cli.approvals import cmd_reject
+
+    approval_id = _live_grant(host["db"], "git push origin six")
+    _run(cmd_reject, approval_id=approval_id, all=False, reason=None, json=True)
+    _assert_grant_closed_by_resolver(approval_id, host["session"], "gaia approvals reject")
+
+
+def test_revoke_on_a_live_grant_records_who_revoked_it(host):
+    from bin.cli.approvals import cmd_revoke
+
+    approval_id = _live_grant(host["db"], "git push origin nine")
+    _run(cmd_revoke, approval_id=approval_id, yes=True, json=False)
+    _assert_grant_closed_by_resolver(approval_id, host["session"], "gaia approvals revoke")
+
+
+def test_revoke_on_a_pending_records_revoked_under_the_resolved_identity(host):
+    from bin.cli.approvals import cmd_revoke
+    from gaia.approvals import store
+
+    approval_id = _pending("git push origin ten")
+    _run(cmd_revoke, approval_id=approval_id, yes=True, json=False)
+    assert store.get_by_id(approval_id)["status"] == "revoked"
+    event = _last_event(approval_id)
+    assert event["event_type"] == "REVOKED"
+    assert (event["session_id"], event["agent_id"]) == (host["session"], AGENT)
+    assert json.loads(event["metadata_json"])["source"] == "gaia approvals revoke"
 
 
 def test_clean_records_the_expiry_reason_under_the_resolved_identity(host):

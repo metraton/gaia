@@ -243,7 +243,13 @@ class TestCmdList:
     # ----- --orphans-only --------------------------------------------------
 
     def test_list_orphans_only_filters_live_sessions(self, capsys, db_store):
-        """With --orphans-only, pendings from live sessions are hidden."""
+        """With --orphans-only, pendings from live sessions are hidden.
+
+        The reading counts a request's own recent activity as a sign of life,
+        so the quiet period is patched to zero: only the registry decides here.
+        """
+        from datetime import timedelta
+
         _store, insert_pending = db_store
         insert_pending("live cmd", session_id="session-alive",
                        approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
@@ -253,7 +259,7 @@ class TestCmdList:
         with patch(
             "modules.session.session_registry.get_live_sessions",
             return_value={"session-alive"},
-        ):
+        ), patch("gaia.approvals.reading.sign_of_life", return_value=timedelta(0)):
             rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
 
         assert rc == 0

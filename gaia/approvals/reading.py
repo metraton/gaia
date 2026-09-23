@@ -186,6 +186,16 @@ def outcome(
     return None if _window_closed(grant, now) else UNUSED
 
 
+def _grant_window_minutes(grant: Optional[Mapping[str, Any]]) -> Optional[int]:
+    """The window the grant actually runs, from its creation to its expiry, in minutes."""
+    if not grant:
+        return None
+    created, expires = _parse_time(grant.get("created_at")), _parse_time(grant.get("expires_at"))
+    if created is None or expires is None or expires <= created:
+        return None
+    return round((expires - created).total_seconds() / 60)
+
+
 def _sealed(payload: Mapping[str, Any]) -> dict:
     requester = payload.get("requested_by")
     items = payload.get("items") if isinstance(payload.get("items"), list) else []
@@ -208,12 +218,15 @@ def read(
 
     ``bound`` is whether the row names a real requester; a row written before
     requesters were sealed, or under the ``default``/``unattributed``
-    placeholders, is unbound.
+    placeholders, is unbound. ``window_minutes`` is the grant's own window when
+    there is a grant: a runtime older than the seal minted grants longer than
+    the window its request sealed, and the grant is what bounds the use.
     """
     now = now or datetime.now(timezone.utc)
     chain = list(events)
     state = decision_state(approval, chain, live=live, now=now)
     sealed = _sealed(_json(approval.get("payload_json")))
+    sealed["window_minutes"] = _grant_window_minutes(grant) or sealed["window_minutes"]
     session = approval.get("session_id") or ""
     agent = approval.get("agent_id") or ""
     return {
