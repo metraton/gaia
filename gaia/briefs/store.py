@@ -1334,6 +1334,11 @@ def derive_brief_state(
     }
 
 
+# The literal brief-spec tells authors to write and the planner stops on;
+# changing its spelling here breaks that handshake unless both skills follow.
+_CLARIFICATION_MARK = "FALTA ACLARAR:"
+
+
 def verify_brief(
     workspace: str,
     name: str,
@@ -1655,6 +1660,30 @@ def verify_brief(
                         f"verdict ({stale['stale_reason']}); it must be verified again"
                     ),
                 })
+
+        # Invariant 12: an open question the brief author left for the user.
+        # The planner refuses to plan past it, so it holds until the answer
+        # replaces the literal mark.
+        fields = con.execute(
+            "SELECT objective, context, approach, out_of_scope FROM briefs "
+            "WHERE id = ?",
+            (brief_id,),
+        ).fetchone()
+        marked = [key for key in fields.keys()
+                  if _CLARIFICATION_MARK in (fields[key] or "")]
+        marked += [row["ac_id"] for row in con.execute(
+            "SELECT ac_id, description FROM acceptance_criteria "
+            "WHERE brief_id = ? ORDER BY id",
+            (brief_id,),
+        ) if _CLARIFICATION_MARK in (row["description"] or "")]
+        for where in marked:
+            inconsistencies.append({
+                "kind": "unresolved_clarification",
+                "detail": (
+                    f"{where} still carries '{_CLARIFICATION_MARK}' -- the "
+                    f"user's answer must replace it before planning past it"
+                ),
+            })
 
         return {
             "brief_name": name,

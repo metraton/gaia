@@ -6,8 +6,8 @@ routing.
 
 ## Plan markdown
 
-The body written to `~/.gaia/scratch/<contract_id>.md` and saved with
-`gaia plan save --content-file`. Sections scale with the plan: a small fix
+The body saved with `gaia plan save --content-file=-`, fed on stdin by a
+quoted heredoc. Sections scale with the plan: a small fix
 keeps Approach, Tasks and whatever of the rest actually has content.
 
 ```markdown

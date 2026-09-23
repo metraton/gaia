@@ -345,3 +345,73 @@ def test_brief_verify_recommends_only_verbs_in_the_orchestrators_lane(db, guard)
     for command in commands:
         tokens = tuple(command.split())
         assert guard.match_allowed_phrase(tokens, guard.ALLOWED_PHRASES), command
+
+
+# ---------------------------------------------------------------------------
+# 6. Final adjustments: open-question marks and the stdin plan body.
+# ---------------------------------------------------------------------------
+
+def test_brief_verify_reports_every_field_still_marked_falta_aclarar(db):
+    from gaia.briefs import upsert_brief
+    from gaia.briefs.store import verify_brief
+
+    _seed(db, acs=("AC-1", "AC-2"))
+    upsert_brief(_WS, _BRIEF, {
+        "title": _BRIEF,
+        "objective": "FALTA ACLARAR: which tenants?",
+        "context": "settled",
+        "approach": "FALTA ACLARAR: sync or async?",
+        "out_of_scope": "FALTA ACLARAR: the admin UI?",
+        "acceptance_criteria": [
+            {"ac_id": "AC-1", "description": "FALTA ACLARAR: what latency?"},
+            {"ac_id": "AC-2", "description": "export holds"},
+        ],
+    }, db_path=db)
+
+    result = verify_brief(_WS, _BRIEF, db_path=db)
+    marked = [i["detail"] for i in result["inconsistencies"]
+              if i["kind"] == "unresolved_clarification"]
+    assert len(marked) == 4, marked
+    for where in ("objective", "approach", "out_of_scope", "AC-1"):
+        assert any(where in d for d in marked), where
+    assert not any("context" in d or "AC-2" in d for d in marked)
+    assert result["pass"] is False
+
+    upsert_brief(_WS, _BRIEF, {
+        "title": _BRIEF, "objective": "all tenants", "context": "settled",
+        "approach": "async", "out_of_scope": "the admin UI",
+        "acceptance_criteria": [
+            {"ac_id": "AC-1", "description": "p95 under 200 ms"},
+            {"ac_id": "AC-2", "description": "export holds"},
+        ],
+    }, db_path=db)
+    kinds = {i["kind"] for i in
+             verify_brief(_WS, _BRIEF, db_path=db)["inconsistencies"]}
+    assert "unresolved_clarification" not in kinds
+
+
+def test_save_and_apply_read_the_plan_body_from_stdin(db, monkeypatch):
+    import io
+
+    from gaia.store.writer import (
+        approve_plan_change,
+        get_plan,
+        propose_plan_change,
+        request_plan_change,
+    )
+
+    _seed(db)
+    body = "## Plan\n\nquotes ' \" backticks ` and $HOME stay literal\n"
+    monkeypatch.setattr("sys.stdin", io.StringIO(body))
+    assert _cli("plan", ["plan", "save", "--brief", _BRIEF, "--content-file", "-",
+                         "--reason", "full plan body"]) == 0
+    assert get_plan(_WS, _BRIEF, db_path=db)["content"] == body
+
+    change_id = request_plan_change(_WS, _BRIEF, "scope moved", db_path=db)["change_id"]
+    propose_plan_change(_WS, _BRIEF, change_id, "re-point task 1",
+                        [(1, "scope moved")], db_path=db)
+    approve_plan_change(_WS, _BRIEF, change_id, db_path=db)
+    monkeypatch.setattr("sys.stdin", io.StringIO(body + "v2\n"))
+    assert _cli("plan", ["plan", "change", "apply", _BRIEF, str(change_id),
+                         "--content-file", "-"]) == 0
+    assert get_plan(_WS, _BRIEF, db_path=db)["content"] == body + "v2\n"

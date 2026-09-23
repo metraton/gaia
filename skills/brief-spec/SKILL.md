@@ -80,8 +80,9 @@ que capturar.
    (the AC description, the objective, the approach). The planner does not plan
    past such a mark: it returns `NEEDS_INPUT` with the list, and planning
    resumes once the answer replaces the mark (`gaia brief ac edit` or
-   `gaia brief edit --headless`). No code reads the mark -- it holds only
-   because both sides look for that literal text, so spell it exactly.
+   `gaia brief edit --headless`). `gaia brief verify` reports every field
+   and AC still carrying the mark (`unresolved_clarification`, advisory like
+   its other checks); it matches the literal text, so spell it exactly.
 
 5. **Record decisions in their own field:**
 

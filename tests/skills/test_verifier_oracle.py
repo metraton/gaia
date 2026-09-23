@@ -16,7 +16,7 @@ Coverage, per AC-1:
   * a FAILING oracle re-run for a ``code``-type gate;
   * both the persisted gate shape (``evidence_shape``) and the contract
     envelope shape (``command``) are accepted;
-  * a gate-declared ``expected_exit_code`` overrides the exit-0 default;
+  * the expected exit code is always 0 -- no gate shape declares another;
   * non-deterministic types (``semantic``/``self_review``) are rejected
     without any execution attempt -- this mode does not apply to them.
 
@@ -139,20 +139,21 @@ def test_verifier_oracle_evidence_shape_wins_over_command_field():
 
 
 # ---------------------------------------------------------------------------
-# expected_exit_code overrides the exit-0 default -- the comparison is
-# against the gate's declared expectation, not a hardcoded convention.
+# No gate shape declares an expected exit code (task_gates has no such column,
+# the envelope no such key), so a stray ``expected_exit_code`` key must not
+# turn a non-zero exit into a pass.
 # ---------------------------------------------------------------------------
 
-def test_verifier_oracle_respects_declared_expected_exit_code():
+def test_verifier_oracle_ignores_an_undeclared_expected_exit_code_key():
     gate = {
         "verification_type": "command",
         "evidence_shape": f'{_PY} -c "import sys; sys.exit(2)"',
         "expected_exit_code": 2,
     }
     verdict = run_oracle_check(gate)
-    assert verdict.ok is True
+    assert verdict.ok is False
     assert verdict.exit_code == 2
-    assert verdict.expected_exit_code == 2
+    assert verdict.expected_exit_code == 0
 
 
 # ---------------------------------------------------------------------------

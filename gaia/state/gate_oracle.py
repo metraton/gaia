@@ -97,27 +97,16 @@ def _extract_command(gate: dict) -> str | None:
     return None
 
 
-def _resolve_expected_exit_code(gate: dict) -> int:
-    """Read a gate-declared ``expected_exit_code``; default to 0.
-
-    Exit-code-0 is the common case (tests, most CLIs), NOT a universal
-    constant -- a gate may legitimately expect a different code (e.g. a
-    linter that exits non-zero on findings by design). A missing or
-    non-integer value falls back to 0 rather than rejecting the gate: the
-    expectation field is optional, unlike the check spec itself.
-    """
-    raw = gate.get("expected_exit_code", 0)
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return 0
+# Neither gate shape can declare another expectation: task_gates has no
+# expected-exit-code column and the envelope verification block no such key.
+_EXPECTED_EXIT_CODE = 0
 
 
 def run_oracle_check(gate: dict, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> OracleVerdict:
     """Re-execute a command/code gate and return an objective verdict.
 
     Accepts a mapping in EITHER the task_gates shape (``verification_type``,
-    ``evidence_shape``, optional ``expected_exit_code``) or the
+    ``evidence_shape``) or the
     contract-envelope shape (``type``, ``command``). Rejects (``ok=False``,
     no execution attempted) when:
 
@@ -127,8 +116,7 @@ def run_oracle_check(gate: dict, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -
 
     Otherwise runs the tokenized command as a subprocess (``shell=False`` --
     no shell injection surface, mirrors the ``command-execution`` discipline),
-    with a bounded ``timeout``, and compares the actual exit code against the
-    gate's ``expected_exit_code`` (default 0). A command that cannot be found,
+    with a bounded ``timeout``, and passes only on exit code 0. A command that cannot be found,
     or that times out, is ``ok=False`` with a distinct ``errors`` entry -- it
     is never silently treated as a pass.
     """
@@ -149,7 +137,7 @@ def run_oracle_check(gate: dict, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -
             ],
         )
 
-    expected_exit_code = _resolve_expected_exit_code(gate)
+    expected_exit_code = _EXPECTED_EXIT_CODE
     command = _extract_command(gate)
 
     if not command:

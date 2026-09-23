@@ -517,11 +517,11 @@ def register(subparsers) -> None:
         help=(
             "Read the plan markdown from PATH instead of a shell argument "
             "('-' reads stdin). This is the channel for a multi-kilobyte body, "
-            "and for any body carrying quotes, backticks or '$' -- write the "
-            "file first (with the Write tool) and pass the path, rather than "
-            "re-emitting the whole plan through one shell-quoted --content "
-            "value, where a single unescaped character silently corrupts the "
-            "plan of record."
+            "and for any body carrying quotes, backticks or '$' -- pipe it on "
+            "stdin with a quoted heredoc (--content-file=- <<'PLAN'), which "
+            "needs no file and no Write tool, rather than re-emitting the "
+            "whole plan through one shell-quoted --content value, where a "
+            "single unescaped character silently corrupts the plan of record."
         ),
     )
     save_p.add_argument(
@@ -655,7 +655,7 @@ def register(subparsers) -> None:
             "  gaia plan change propose my-brief 4 --summary='re-point task 2' "
             "--affects='2:calls the old endpoint'\n"
             "  gaia plan change approve my-brief 4\n"
-            "  gaia plan change apply my-brief 4 --content-file=plan.md\n"
+            "  gaia plan change apply my-brief 4 --content-file=- <<'PLAN'\n"
         ),
     )
     c_actions = change_p.add_subparsers(dest="change_action", metavar="<action>")

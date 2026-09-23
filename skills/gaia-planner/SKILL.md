@@ -94,16 +94,20 @@ it protects.
    fails without it):
 
    ```bash
-   gaia plan save --brief=<name> --content-file=~/.gaia/scratch/<contract_id>.md
+   gaia plan save --brief=<name> --content-file=- <<'PLAN'
+   ## Plan
+   ...
+   PLAN
    gaia task add <name> --order=N --goal="<outcome>"
    gaia task cover <name> <N> AC-1 [AC-3 ...]
    gaia task depend <name> <N> <order> [<order> ...]
    gaia task gate add <name> <N> --type=<T> --evidence-type="<claim>" --evidence-shape="<check>"
    ```
 
-   Write the markdown with the Write tool first; a real plan exceeds the inline
-   `--content` limit, and `--content="$(cat ...)"` is a command substitution
-   agents may not compose. Coverage and dependencies are data, not goal prose:
+   The body travels on stdin through a quoted heredoc (`<<'PLAN'`): the quotes
+   keep `$`, backticks and quotes literal, and no file is written -- the planner
+   cannot write files, and a real plan exceeds what one shell-quoted `--content`
+   carries safely. Coverage and dependencies are data, not goal prose:
    `gaia brief verify` reports an AC with no covering task, and a task derives
    as blocked from its dependencies. Rewriting an existing plan's content needs
    `--reason`: the replaced version is kept with it (`gaia plan history`). Close
@@ -128,7 +132,7 @@ it protects.
    ```
 
    After the orchestrator approves, `gaia plan change apply <name> <change_id>
-   --content-file=<path>` saves the new version and marks stale only the tasks
+   --content-file=-` with the new body in the same heredoc saves the new version and marks stale only the tasks
    you proposed. Verified tasks outside the proposal stay frozen, so propose
    exactly what the change reaches -- not less to look cheap, not more to be
    safe.
