@@ -4,6 +4,8 @@ import json
 import sqlite3
 import subprocess
 
+from pathlib import Path
+
 import pytest
 
 from tests.integration.test_opencode_consent_retry_e2e import (
@@ -69,6 +71,22 @@ def test_exact_command_env_child_and_single_settlement(db_env):
     assert grant["status"] == "CONSUMED"
     assert json.loads(grant["consumed_indexes_json"]) == [0]
     assert grant["reservation_tool_use_id"] is None
+
+
+def test_dispatch_tmpdir_opencode_shell_env_uses_gaia_tmp(db_env):
+    env, _db = db_env
+    driven = _drive(env, [_before("read", "git status"), _step("shell-env", "identity")])
+    assert _result(driven, "read")["allowed"], driven
+    observed = _result(driven, "identity")
+    assert Path(observed.get("childTmpdir", "")).parent == Path(env["GAIA_DATA_DIR"]).resolve() / "tmp", observed
+    # The plugin derives the path in TypeScript; the Python resolver owns the
+    # rule, and db_env gives both the same GAIA_DATA_DIR, so they must agree.
+    from gaia.paths import dispatch_tmp_dir
+    expected = str(dispatch_tmp_dir(SESSION_ID))
+    assert observed["childTmpdir"] == expected, observed
+    # tempfile falls back to /tmp when TMPDIR does not exist; equality proves
+    # the plugin created it before the shell ran.
+    assert observed["childTempdir"] == expected, observed
 
 
 @pytest.mark.parametrize("other_call", [CALL_ID, "different-call"])
@@ -178,7 +196,9 @@ def test_legacy_bridge_keeps_prefix_despite_raw_env_claims(db_env):
     exchange = next(item for item in driven["exchanges"]
                     if item["sent"].get("event") == "tool.execute.before" and item["sent"].get("tool") == "bash")
     assert exchange["received"]["action"] == "allow"
-    assert exchange["received"]["updated_input"]["command"] == "export GAIA_DISPATCH_AGENT=gaia-system; " + command
+    prefixed = exchange["received"]["updated_input"]["command"]
+    assert prefixed.startswith("export GAIA_DISPATCH_AGENT=gaia-system TMPDIR=")
+    assert prefixed.endswith("; " + command)
     assert "shell_env" not in exchange["received"]
     # The new plugin refuses a mismatched legacy backend instead of silently losing identity.
     assert not _result(driven, "legacy")["allowed"]

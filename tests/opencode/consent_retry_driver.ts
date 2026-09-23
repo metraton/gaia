@@ -306,16 +306,22 @@ async function runStep(step: any): Promise<void> {
       await plugin["shell.env"]({ sessionID: step.sessionID, callID: step.callID, cwd: directory }, output)
       record.env = output.env
       // Never execute the signed publication text: only observe the delivered
-      // child environment -- the identity it carries and which `gaia` it resolves.
+      // child environment -- the identity it carries, which `gaia` it resolves,
+      // and where its temporary files go.
       const child = Bun.spawn([
         "python3", "-B", "-c",
-        "import os, shutil; print(os.environ.get('GAIA_DISPATCH_AGENT', '<unset>')); print(shutil.which('gaia') or '<none>')",
+        "import os, shutil, tempfile; print(os.environ.get('GAIA_DISPATCH_AGENT', '<unset>')); "
+          + "print(shutil.which('gaia') or '<none>'); print(os.environ.get('TMPDIR', '<unset>')); "
+          + "print(tempfile.gettempdir())",
       ], {
-        env: { ...process.env, ...output.env }, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, TMPDIR: "/tmp", ...output.env }, stdout: "pipe", stderr: "pipe",
       })
-      const [childIdentity, gaiaOnPath] = (await new Response(child.stdout).text()).trim().split("\n")
+      const [childIdentity, gaiaOnPath, childTmpdir, childTempdir] =
+        (await new Response(child.stdout).text()).trim().split("\n")
       record.childIdentity = childIdentity
       record.gaiaOnPath = gaiaOnPath
+      record.childTmpdir = childTmpdir
+      record.childTempdir = childTempdir
       if (await child.exited !== 0) throw new Error("identity observation child failed")
       record.allowed = true
     } else if (step.kind === "after") {

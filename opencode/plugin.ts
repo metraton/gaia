@@ -1,7 +1,8 @@
 import { fileURLToPath } from "node:url"
-import { lstatSync, realpathSync, statSync } from "node:fs"
+import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { delimiter, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
+import { homedir } from "node:os"
+import { delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 import { ShellEnvDelivery } from "./shell-env"
 
 type BridgeResponse = {
@@ -470,6 +471,24 @@ export class PermissionDecisionRouter {
 const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
 const gaiaBinDirectory = dirname(gaiaPath)
+
+/**
+ * Create and return a dispatched child's own TMPDIR, or undefined when it
+ * cannot exist. Mirrors gaia/paths/resolver.py::dispatch_tmp_dir, which owns
+ * the rule; tests/integration/test_opencode_shell_env.py compares the two.
+ */
+function dispatchTmpDir(owner: string): string | undefined {
+  const override = process.env.GAIA_DATA_DIR
+  const dataDir = override ? resolve(override) : join(homedir(), ".gaia")
+  const name = createHash("sha256").update(owner).digest("hex").slice(0, 12)
+  try {
+    mkdirSync(join(dataDir, "tmp", name), { recursive: true })
+    // Python resolves symlinks in an overridden data dir, never in ~/.gaia.
+    return join(override ? realpathSync(dataDir) : dataDir, "tmp", name)
+  } catch {
+    return undefined
+  }
+}
 
 function traceableBridgeRequest(event: Record<string, unknown>): Record<string, unknown> {
   const traceableArgs = (value: unknown) => {
@@ -2253,6 +2272,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         agent: agentBySession.get(call.sessionID),
         attestation: context?.attestation,
       })
+      // Tool temporaries (pytest's tmp_path above all) otherwise fill the
+      // host's /tmp, a small tmpfs where this runs.
+      const tmpdir = dispatchTmpDir(call.sessionID)
+      if (tmpdir) output.env.TMPDIR = tmpdir
     },
     // The installed OpenCode host fires this hook mid-compaction, before the
     // summary completes, with a mutable {context, prompt} output -- unlike

@@ -40,6 +40,10 @@ testpaths = ["tests", "tools/scan/tests"]
 # no conflicting `-n` of their own -- their own `-m llm` / `-m e2e` selector
 # flags are unaffected.
 addopts = "-n auto"
+# A full run writes thousands of tmp_path directories; keeping only the failed
+# ones of the latest run stops them from filling the temp filesystem.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = "1"
 markers = [
     "parity: JS-Python CLI parity comparison tests",
     "ci_subset: budget-bounded subset of L2/L3 (LLM) tests run in CI under a controlled token budget (brief #89 AC-6)",

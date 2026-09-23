@@ -55,8 +55,30 @@ logger = logging.getLogger(__name__)
 GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
 
 
-def build_dispatch_identity_command(command: str, agent_type: str) -> str:
+def dispatch_tmpdir(agent_id: str) -> str:
+    """Create and return the subagent's own TMPDIR, or "" when it cannot exist.
+
+    Without it, pytest and every other tool in the agent's shell write to the
+    host's ``/tmp`` (a small tmpfs on the hosts this runs on), which a full
+    suite run fills. The directory must exist before the command runs: Python's
+    ``tempfile`` silently falls back to ``/tmp`` for a missing TMPDIR.
+    """
+    from gaia.paths import dispatch_tmp_dir
+
+    path = dispatch_tmp_dir(agent_id)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.debug("dispatch TMPDIR %s unavailable: %s", path, exc)
+        return ""
+    return str(path)
+
+
+def build_dispatch_identity_command(command: str, agent_type: str, tmpdir: str = "") -> str:
     """Prefix a subagent Bash command so ``GAIA_DISPATCH_AGENT`` reaches the CLI.
+
+    ``tmpdir``, when given, is exported as ``TMPDIR`` in the same statement, so
+    the agent's tool temporaries follow the same scope as its identity.
 
     The DB guards fail OPEN when ``GAIA_DISPATCH_AGENT`` is unset (that is the
     human-CLI / orchestrator-main-session path). To make them fail CLOSED for a
@@ -89,7 +111,10 @@ def build_dispatch_identity_command(command: str, agent_type: str) -> str:
     agent = (agent_type or "").strip()
     if not agent:
         return command
-    return f"export {GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}; {command}"
+    exports = f"{GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}"
+    if tmpdir:
+        exports += f" TMPDIR={shlex.quote(tmpdir)}"
+    return f"export {exports}; {command}"
 
 # Claude Code's PreToolUse responses nest their permission fields under this
 # top-level key. The literal shape is OWNED by this adapter layer: business
@@ -1895,7 +1920,8 @@ class ClaudeCodeAdapter(HookAdapter):
         final_command = effective_command
         if is_subagent and not _dispatch_identity_in_env:
             final_command = build_dispatch_identity_command(
-                effective_command, agent_type
+                effective_command, agent_type,
+                tmpdir=dispatch_tmpdir(hook_data["agent_id"]),
             )
 
         if final_command != command:
