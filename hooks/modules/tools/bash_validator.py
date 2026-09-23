@@ -91,6 +91,7 @@ from ..security.protected_path_guard import (
     check as check_protected_path_write,
 )
 from ..security.shell_write_guard import check as check_shell_write
+from ..security.publish_attribution_guard import check as check_publish_attribution
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
 # `..tools.stage_decomposer`, which (via this package's own __init__.py
 # eagerly importing bash_validator) closes a circular-import loop back to
@@ -697,6 +698,25 @@ class BashValidator:
             command = self._strip_claude_footers(command)
             command_was_modified = True
             logger.info("Auto-stripped Claude Code footer from commit command")
+
+        # ================================================================
+        # PUBLISH ATTRIBUTION GUARD
+        # Refuse a publishing command (gh/ghx pr|issue|release|api, git
+        # commit) whose text still carries Claude attribution after the strip
+        # above -- in the command string or in a body file it names. Runs
+        # before tier classification so a refused command never mints an
+        # approval; a granted retry re-reads its body files.
+        # ================================================================
+        attribution_allowed, attribution_reason = check_publish_attribution(
+            command, (hook_payload or {}).get("cwd") or None,
+        )
+        if not attribution_allowed:
+            logger.warning("BLOCKED Claude attribution in published text: %s", command[:100])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=attribution_reason,
+            )
 
         # ================================================================
         # GAIA DB WRITE GUARD
@@ -1584,23 +1604,14 @@ class BashValidator:
         Both newline-anchored footer LINES and footers carried in a SECOND
         ``-m "..."`` argument (no preceding newline) are handled.
 
-        RESIDUAL GAP (accepted, no longer covered by a second layer) --
-        this in-Bash command-string stripper is the ONLY remaining footer
-        suppression path. It sees only footers present as literal text in the
-        Bash ``command`` string it receives, so footers still leak on any path
-        whose body is NOT in that string:
-          - ``git commit -F <file>`` / ``--file=<file>``: the message body lives
-            in a file; the footer is not in the command string. This stripper
-            deliberately does NOT read the referenced file (reading arbitrary
-            paths from a hook would be an unbounded side effect and a new attack
-            surface).
-          - a commit made outside Claude Code's Bash tool entirely -- a plain
-            terminal ``git commit``, or an IDE / editor commit.
-        A ``commit-msg`` git hook previously backstopped these paths at the git
-        level, but it was removed (commit 4dd88f2, ``git-hooks/commit-msg``), so
-        there is now no layer that catches them. Closing this gap would require
-        reintroducing a git-level hook; it is out of scope for the command-string
-        stripper here.
+        This stripper sees only footers present as literal text in the Bash
+        ``command`` string and never rewrites files. What it leaves behind in
+        a publishing command -- a footer shape it does not remove, or a body
+        file such as ``git commit -F <file>`` / ``gh pr create --body-file`` --
+        is refused by ``security.publish_attribution_guard``, which runs right
+        after it. A commit made outside the Bash tool entirely (a terminal or
+        IDE commit) is reached by neither; the ``commit-msg`` git hook that once
+        backstopped it was removed in commit 4dd88f2.
 
         Args:
             command: Raw command string

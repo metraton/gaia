@@ -101,6 +101,13 @@ except Exception:  # noqa: BLE001
 # protected-path guard is handed a command string instead of the target path.
 _DEFAULT_PERMISSION_MODE = "acceptEdits"
 
+# Claude Code's `attribution` setting with every part hidden: an empty string
+# drops the commit trailer and the PR footer, sessionUrl=false the claude.ai
+# session link (code.claude.com/docs/en/settings-reference, "Git and
+# attribution"). includeGitInstructions is left alone: turning it off also
+# removes the git status snapshot, which has nothing to do with attribution.
+_HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
+
 
 # ---------------------------------------------------------------------------
 # Result helper
@@ -498,7 +505,7 @@ def merge_local_permissions(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Merge gaia permissions, env vars, and agent identity into settings.local.json.
+    """Merge gaia permissions, env vars, agent identity, and hidden attribution into settings.local.json.
 
     Authoritative merge -- Gaia owns its tool entries (Bash, Edit, Write,
     etc.) and replaces stale scoped variants. User-added entries for tools
@@ -558,6 +565,18 @@ def merge_local_permissions(
     if "defaultMode" not in existing["permissions"]:
         existing["permissions"]["defaultMode"] = _DEFAULT_PERMISSION_MODE
         changed_fields.append("permissions.defaultMode")
+
+    # Enforced rather than supplied-when-absent: nothing Gaia publishes may
+    # carry Claude attribution, and the Bash guard refuses it downstream, so a
+    # user value re-enabling it is reset. Other attribution sub-keys survive.
+    attribution = existing.get("attribution")
+    if not isinstance(attribution, dict):
+        attribution = {}
+    for key, value in _HIDDEN_ATTRIBUTION.items():
+        if attribution.get(key) != value:
+            attribution[key] = value
+            changed_fields.append(f"attribution.{key}")
+    existing["attribution"] = attribution
 
     if not changed_fields:
         return _result("noop", local_path, "settings.local.json already up to date")
