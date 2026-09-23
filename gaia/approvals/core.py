@@ -505,7 +505,8 @@ def _reactive_file_request(path: str, *, session_id: str, agent_id: str) -> tupl
 def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -> dict:
     """Decide a Write/Edit on ``file_path``: ``allow`` or ``block`` with the approval to decide.
 
-    A protected path is allowed only by a live file grant bound to this same
+    Gaia's hook tree and the user's account paths are protected. A protected
+    path is allowed only by a live file grant bound to this same
     session and agent; otherwise the requester's pending request is named
     (minted on first sight). A block on a request without phrases carries the
     ``request_line`` that replaces it; a phrased one carries ``None``. Raises
@@ -514,10 +515,11 @@ def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -
     """
     _ensure_hooks_importable()
     from modules.security.protected_paths import is_protected_hook_path, resolved_write_target
+    from modules.security.sensitive_paths import is_account_path
     from gaia.store.writer import check_db_file_path_grant
 
     consent_path = resolved_write_target(file_path)
-    if not is_protected_hook_path(file_path):
+    if not is_protected_hook_path(file_path) and not is_account_path(file_path):
         return {"decision": "allow", "path": consent_path, "protected": False}
     grant = check_db_file_path_grant(consent_path)
     if grant is not None and _grant_bound_to(grant, session_id, agent_id):

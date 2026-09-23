@@ -92,6 +92,7 @@ from ..security.protected_path_guard import (
     check as check_protected_path_write,
 )
 from ..security.shell_write_guard import check as check_shell_write
+from ..security.sensitive_read_guard import check as check_sensitive_read
 from ..security.publish_attribution_guard import check as check_publish_attribution
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
 # `..tools.stage_decomposer`, which (via this package's own __init__.py
@@ -1043,6 +1044,24 @@ class BashValidator:
         )
         if _composition_result is not None:
             return _composition_result
+
+        # ================================================================
+        # SENSITIVE READ GUARD
+        # Reading or listing a path on the shared sensitive list is refused
+        # with the same reason Read/Glob/Grep get, and no approval. Runs after
+        # composition so the exfiltration pipe keeps its own verdict, and
+        # after the account-path write above so a write keeps its signature.
+        # ================================================================
+        sensitive_allowed, sensitive_reason = check_sensitive_read(
+            command, (hook_payload or {}).get("cwd") or None,
+        )
+        if not sensitive_allowed:
+            logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=sensitive_reason,
+            )
 
         # ================================================================
         # PHASE 5: AGGREGATE

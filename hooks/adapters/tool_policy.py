@@ -299,6 +299,14 @@ class ToolPolicy:
                     agent_id=agent_id,
                     agent_type=hook_data.get("agent_type", ""),
                 )
+            if lowered in ("read", "glob", "grep", "ls"):
+                from modules.security.sensitive_read_guard import check_file_tool
+
+                refusal = check_file_tool(
+                    tool_name, tool_input, cwd=hook_data.get("cwd") or None,
+                )
+                if refusal:
+                    return PolicyVerdict(decision="deny", reason=refusal)
             return PolicyVerdict()
         except Exception as e:
             return failure_verdict(e)
@@ -734,12 +742,14 @@ class ToolPolicy:
         agent_id: str = "",
         agent_type: str = "",
     ) -> PolicyVerdict:
-        """Protect Gaia's hook tree from Write/Edit, and remind a subagent of its skill.
+        """Ask a signature for Write/Edit on Gaia's hook tree or an account path; remind a subagent of its skill.
 
         The protected set comes from
         ``modules.security.protected_paths.is_protected_hook_path``, the one
         predicate the Bash command-string guard consumes too, so widening this
-        surface cannot leave the shell route open against the same tree.
+        surface cannot leave the shell route open against the same tree. An
+        account path (``sensitive_paths.is_account_path``) gets the signature a
+        Bash write onto it gets.
 
         - Main session: consent is asked inline through the host's own
           mechanism (``consent`` without an approval id).
@@ -763,12 +773,14 @@ class ToolPolicy:
             is_protected_hook_path,
             resolved_write_target,
         )
+        from modules.security.sensitive_paths import is_account_path
 
         file_path = parameters.get("file_path", "")
         if not file_path:
             return PolicyVerdict()
 
-        if not is_protected_hook_path(file_path):
+        account_path = is_account_path(file_path)
+        if not account_path and not is_protected_hook_path(file_path):
             if is_subagent and agent_id:
                 expected_skill = expected_skill_for_path(file_path)
                 if expected_skill and should_remind(session_id, agent_id, expected_skill):
@@ -790,15 +802,19 @@ class ToolPolicy:
         # literal form carries the `.claude` component a symlinked install
         # destroys on resolution.
         consent_path = resolved_write_target(file_path)
+        ask_reason = (
+            f"[T3_APPROVAL_REQUIRED] This {tool_name} writes '{file_path}', which "
+            f"grants access to your own account."
+            if account_path else
+            "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
+            "require approval."
+        )
 
         if not is_subagent:
             return PolicyVerdict(consent=ConsentRequest(
                 operation=consent_path,
                 kind="file",
-                reason=(
-                    "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
-                    "require approval."
-                ),
+                reason=ask_reason,
                 tier="T3_BLOCKED",
             ))
 
@@ -823,8 +839,7 @@ class ToolPolicy:
                 operation=consent_path,
                 kind="file",
                 reason=(
-                    "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
-                    "require approval. (Pending approval persistence failed; "
+                    f"{ask_reason} (Pending approval persistence failed; "
                     "native dialog fallback.)"
                 ),
                 tier="T3_BLOCKED",

@@ -983,7 +983,9 @@ class OpenCodeAdapter(HookAdapter):
         payload.update(
             {
                 "tool_name": self._policy_tool_name(payload.get("tool_name", "")),
-                "tool_input": payload.get("tool_input", {}),
+                "tool_input": self._policy_tool_input(
+                    payload.get("tool_name", ""), payload.get("tool_input", {}),
+                ),
                 "session_id": event.session_id,
                 "tool_use_id": event.call_id or "",
                 "agent_id": event.host_agent_id or "",
@@ -1062,9 +1064,27 @@ class OpenCodeAdapter(HookAdapter):
         """Map OpenCode's lowercase built-ins to Gaia's policy tool names."""
         names = {
             "bash": "Bash", "task": "Task", "write": "Write", "edit": "Edit",
-            "apply_patch": "Edit",
+            "apply_patch": "Edit", "read": "Read", "glob": "Glob", "grep": "Grep",
+            "list": "LS",
         }
         return names.get(str(tool_name).lower(), str(tool_name))
+
+    @staticmethod
+    def _policy_tool_input(tool_name: object, tool_input: object) -> object:
+        """Rename OpenCode's read and grep arguments to the names Gaia's policy reads.
+
+        OpenCode's read takes ``filePath`` and its grep ``include``; the shared
+        policy reads ``file_path`` and ``glob``, as Claude Code sends them.
+        """
+        if not isinstance(tool_input, dict):
+            return tool_input
+        renames = {"read": {"filePath": "file_path"}, "grep": {"include": "glob"}}
+        mapping = renames.get(str(tool_name).lower(), {})
+        normalized = dict(tool_input)
+        for source, target in mapping.items():
+            if source in normalized and target not in normalized:
+                normalized[target] = normalized[source]
+        return normalized
 
     @staticmethod
     def _format_policy_verdict(verdict: PolicyVerdict) -> HookResponse:

@@ -37,7 +37,6 @@ Dependencies: Python stdlib only.
 
 from __future__ import annotations
 
-import re
 import shlex
 from dataclasses import dataclass, field
 from enum import Enum
@@ -114,38 +113,11 @@ class CompositionResult:
         return self.decision == CompositionDecision.BLOCK
 
 
-# ---------------------------------------------------------------------------
-# Sensitive path patterns
-# ---------------------------------------------------------------------------
-
-_SENSITIVE_PATH_PATTERNS: List[re.Pattern] = [
-    re.compile(r'~/\.ssh/'),
-    re.compile(r'/\.ssh/'),
-    re.compile(r'~/\.aws/'),
-    re.compile(r'/\.aws/'),
-    re.compile(r'~/\.gnupg/'),
-    re.compile(r'/\.gnupg/'),
-    re.compile(r'/etc/shadow\b'),
-    re.compile(r'/etc/passwd\b'),
-    re.compile(r'\bid_rsa\b'),
-    re.compile(r'\bid_ed25519\b'),
-    re.compile(r'\bid_ecdsa\b'),
-    re.compile(r'\bid_dsa\b'),
-    re.compile(r'\.pem\b'),
-    re.compile(r'\.key\b'),
-    re.compile(r'\bcredentials\b'),
-    re.compile(r'\.netrc\b'),
-    re.compile(r'\.pgpass\b'),
-    re.compile(r'/etc/ssl/private/'),
-]
-
-
 def _is_sensitive_path(command: str) -> bool:
     """Return True if the command references a known sensitive file path."""
-    for pattern in _SENSITIVE_PATH_PATTERNS:
-        if pattern.search(command):
-            return True
-    return False
+    from .sensitive_paths import command_names_sensitive_path
+
+    return command_names_sensitive_path(command)
 
 
 # ---------------------------------------------------------------------------
