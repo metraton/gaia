@@ -2526,6 +2526,8 @@ class ClaudeCodeAdapter(HookAdapter):
           new approval_id so the orchestrator can ask the user and activate
           the grant via _handle_ask_user_question_result on PostToolUse.
         - On retry, if an active grant exists for this path, allows through.
+        - A pending sealed without phrases is denied naming the path and the
+          ``request-file-write`` line that replaces it.
 
         The protected set is not decided here: it comes from
         ``modules.security.protected_paths.is_protected_hook_path``, the one
@@ -2664,23 +2666,12 @@ class ClaudeCodeAdapter(HookAdapter):
         if verdict["decision"] == "allow":
             logger.info("File-path grant active, allowing %s through: %s", tool_name, consent_path)
             return HookResponse(output={}, exit_code=0)
-        approval_id = verdict["approval_id"][2:]
-        window_minutes = verdict["window_minutes"]
+        from modules.security.approval_messages import build_protected_write_denial_message
 
-        reason = (
-            f"[T3_BLOCKED] This file modification requires user approval.\n"
-            f"Do NOT retry this operation. Report APPROVAL_REQUEST with this approval_id "
-            f"in your contract row.\n"
-            f"The approval expires. Once the user decides, the grant for this path stays "
-            f"usable for {window_minutes} minutes and then lapses on its own. The clock "
-            f"starts at their DECISION, not at this request, so the wait for an answer "
-            f"costs nothing -- but everything after it (your re-dispatch, grounding, the "
-            f"edits and the tests between them) is spent inside that one window, and "
-            f"nothing you do extends it. A write attempted after it lapses is blocked "
-            f"again under a NEW approval_id; this one will not work twice.\n"
-            f"File: {consent_path}\n"
-            f"Tool: {tool_name}\n"
-            f"approval_id: P-{approval_id}"
+        approval_id = verdict["approval_id"][2:]
+        reason = build_protected_write_denial_message(
+            verdict["approval_id"], consent_path, tool_name, verdict["window_minutes"],
+            request_line=verdict.get("request_line") or "",
         )
         # Out-of-band approval flow: consent is keyed to the persisted approval_id.
         return self.request_consent(

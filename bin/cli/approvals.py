@@ -1568,10 +1568,12 @@ def _request_set_items(args) -> list[dict]:
 def cmd_request_set(args) -> int:
     """Validate and persist a plan-first COMMAND_SET approval request.
 
-    Sealed by gaia.approvals.core.request_command_set: ``--what`` (falling back
-    to ``--rationale``) is the what-it-does phrase, each command carries its
-    ``--cwd`` and ``--expect-exit`` declarations, and the requester is the
-    explicit ``--session-id``/``--agent-id`` or the dispatch environment.
+    Sealed by gaia.approvals.core.request_command_set, which refuses the
+    request when a phrase is missing and names it: ``--what`` (the title),
+    ``--question``, and one ``--does`` and ``--impact`` per command. Each
+    command carries its ``--cwd`` and ``--expect-exit`` declarations, and the
+    requester is the explicit ``--session-id``/``--agent-id`` or the dispatch
+    environment.
 
     ``--verification`` and ``--rollback`` are sealed into the payload rather
     than left for the consent surface to fill in: the requesting agent already
@@ -1588,7 +1590,7 @@ def cmd_request_set(args) -> int:
         items = _request_set_items(args)
         approval_id = core.request_command_set(
             items,
-            what=getattr(args, "what", None) or args.rationale,
+            what=getattr(args, "what", None),
             session_id=session_id,
             agent_id=agent_id,
             question=getattr(args, "question", None),
@@ -1610,12 +1612,13 @@ def cmd_request_set(args) -> int:
 
 
 def cmd_request_file_write(args) -> int:
-    """Proactively seal what/rollback/verification/impact for a protected-path write.
+    """Proactively seal the phrases, rollback and verification for a protected-path write.
 
-    Mints through gaia.approvals.core.request_file_write, the same producer the
-    reactive Write/Edit block reaches via core.protected_write_verdict, so the
-    later attempt by the same session and agent reuses THIS pending and the
-    user sees the fields declared here.
+    Mints through gaia.approvals.core.request_file_write, which refuses the
+    request when ``--what``, ``--question``, ``--does`` or ``--impact`` is
+    missing and names it. The later attempt by the same session and agent
+    reuses THIS pending, and it replaces the phraseless request a reactive
+    Write/Edit block sealed for the same path.
     """
     path = (args.path or "").strip()
     if not path or not os.path.isabs(path):
@@ -1630,11 +1633,12 @@ def cmd_request_file_write(args) -> int:
             resolved_write_target(path),
             session_id=session_id,
             agent_id=agent_id,
-            what=getattr(args, "what", None) or args.rationale,
+            what=getattr(args, "what", None),
             question=getattr(args, "question", None),
+            does=getattr(args, "does", None),
+            impact=args.impact,
             rollback=args.rollback,
             verification=args.verification,
-            impact=args.impact,
         )
     except Exception as exc:
         _print_error(f"File-write request rejected: {exc}", args)
@@ -2242,18 +2246,19 @@ def register(subparsers) -> None:
     )
     p_request_set.add_argument("--command", action="append", required=True)
     p_request_set.add_argument(
-        "--what", help="What the set does, in one human sentence; sealed and shown"
+        "--what",
+        help="Required title: what the set does, in one human sentence (120 characters at most)",
     )
     p_request_set.add_argument(
-        "--question", help="The short question the user answers (60 characters at most)"
+        "--question", help="Required: the short question the user answers (60 characters at most)"
     )
     p_request_set.add_argument(
         "--does", action="append",
-        help="What each command does, once per --command (100 characters at most)",
+        help="Required: what each command does, once per --command (100 characters at most)",
     )
     p_request_set.add_argument(
         "--impact", action="append",
-        help="The impact of each command, once per --command (100 characters at most)",
+        help="Required: the impact of each command, once per --command (100 characters at most)",
     )
     p_request_set.add_argument(
         "--cwd", action="append",
@@ -2280,16 +2285,20 @@ def register(subparsers) -> None:
     p_request_file_write = sub.add_parser(
         "request-file-write",
         help=(
-            "Proactively seal rollback/verification/impact for an upcoming "
-            "protected-path Write/Edit"
+            "Proactively seal the phrases, rollback and verification for an "
+            "upcoming protected-path Write/Edit"
         ),
     )
     p_request_file_write.add_argument("--path", required=True)
     p_request_file_write.add_argument(
-        "--what", help="What the edit does, in one human sentence; sealed and shown"
+        "--what",
+        help="Required title: what the edit does, in one human sentence (120 characters at most)",
     )
     p_request_file_write.add_argument(
-        "--question", help="The short question the user answers (60 characters at most)"
+        "--question", help="Required: the short question the user answers (60 characters at most)"
+    )
+    p_request_file_write.add_argument(
+        "--does", help="Required: what the edit does to the file (100 characters at most)"
     )
     p_request_file_write.add_argument("--rationale")
     p_request_file_write.add_argument(
@@ -2302,7 +2311,7 @@ def register(subparsers) -> None:
     )
     p_request_file_write.add_argument(
         "--impact",
-        help="What changes for whoever runs it, in one line; sealed and shown verbatim",
+        help="Required: what changes for whoever runs it (100 characters at most)",
     )
     p_request_file_write.add_argument("--agent-id")
     p_request_file_write.add_argument("--session-id")

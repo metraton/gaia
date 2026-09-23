@@ -298,10 +298,10 @@ def test_signature_surface_protected_write_on_a_deep_path_still_seals(db):
     from gaia.approvals.store import get_by_id
     from modules.security.approval_grants import generate_nonce, write_pending_approval_for_file
 
-    deep = "/" + "/".join(["directorio-profundo"] * 8) + "/settings.json"
+    deep = "/" + "/".join(["directorio-profundo"] * 8) + "/.claude/settings.json"
     title = "Modificar el archivo protegido settings.json."
 
-    requested = core.request_file_write(deep, session_id=SESSION, agent_id=AGENT)
+    requested = core.protected_write_verdict(deep, session_id=SESSION, agent_id=AGENT)["approval_id"]
     nonce = generate_nonce()
     assert write_pending_approval_for_file(nonce=nonce, file_path=deep, session_id=SESSION) is not None
 

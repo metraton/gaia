@@ -66,11 +66,13 @@ def _approved_set(repo: str, expect_exit: dict | None = None) -> str:
     from gaia.approvals import core
 
     items = [
-        {"command": command, "cwd": repo, "expect_exit": (expect_exit or {}).get(i, [])}
+        {"command": command, "cwd": repo, "expect_exit": (expect_exit or {}).get(i, []),
+         "does": "Publica un paso del cambio.", "impact": "Queda visible en el remoto."}
         for i, command in enumerate(COMMANDS)
     ]
     approval_id = core.request_command_set(
-        items, what="Publicar la rama y abrir el PR", session_id=SESSION, agent_id=AGENT_TYPE,
+        items, what="Publicar la rama y abrir el PR", question="¿Publico la rama?",
+        session_id=SESSION, agent_id=AGENT_TYPE,
     )
     core.record_presentation(
         approval_id, native_ref="toolu_question", session_id=SESSION, agent_id="gaia-orchestrator",

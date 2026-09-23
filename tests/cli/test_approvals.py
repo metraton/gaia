@@ -1127,21 +1127,20 @@ class TestCmdStats:
 # ---------------------------------------------------------------------------
 
 class TestCmdRequestFileWrite:
-    """cmd_request_file_write mints a SCOPE_FILE_PATH pending up front, through
-    the same write_pending_approval_for_file() the reactive PreToolUse block
-    uses -- so what this handler wires from argparse into `context` is what
-    ends up sealed. tests/hooks/modules/security/test_file_write_context_sealing.py
-    covers the sealing and reuse properties directly against that function;
-    this covers the CLI layer this handler itself adds (argument wiring,
-    validation, printed/returned shape)."""
+    """cmd_request_file_write mints a phrased SCOPE_FILE_PATH pending up front
+    through gaia.approvals.core.request_file_write; this covers the CLI layer
+    the handler adds (argument wiring, validation, printed/returned shape)."""
 
     def _args(self, **kwargs):
         defaults = {
             "path": "/tmp/does-not-need-to-exist/protected.py",
+            "what": "Ajustar el archivo protegido.",
+            "question": "¿Edito el archivo?",
+            "does": "Cambia la validación del archivo.",
+            "impact": "Afecta a quien lo ejecute.",
             "rationale": None,
             "verification": None,
             "rollback": None,
-            "impact": None,
             "agent_id": "developer",
             "session_id": "test-session-aaa",
             "json": False,

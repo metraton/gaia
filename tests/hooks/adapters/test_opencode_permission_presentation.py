@@ -119,8 +119,10 @@ def _request_set(env, *, verification, rollback, commands=PRODUCED_COMMANDS):
     """Seal a payload with the real plan-first producer: `gaia approvals request-set`."""
     argv = [sys.executable, str(GAIA_CLI), "approvals", "request-set"]
     for command in commands:
-        argv += ["--command", command]
+        argv += ["--command", command, "--does", "Publica una parte.", "--impact", "Queda visible."]
     argv += [
+        "--what", PRODUCED_RATIONALE,
+        "--question", "¿Publico la rama?",
         "--rationale", PRODUCED_RATIONALE,
         "--verification", verification,
         "--rollback", rollback,

@@ -9,6 +9,11 @@ consent cycle through this module, so the invariants below have one owner:
   requesting session and agent, and per item its directory, declared non-zero
   exits, position and fingerprint;
 * one key per request (``request_key``) and one per item (:func:`command_key`);
+* nothing is shown without its requester's phrases: a title, a question, and
+  per item what it does and its impact (:func:`check_presentable`, which every
+  host runs before showing). The requesting verbs demand them; a reactive block
+  seals without them and points its requester to :func:`request_line`, and the
+  phrased request that follows replaces it (withdrawn as ``reemplazada``);
 * a decision counts only when it is a structured option answering a recorded
   presentation (:func:`record_presentation` then :func:`decide`), and the
   resulting grant is bound to the requesting session and agent;
@@ -28,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +44,11 @@ from gaia.store.writer import APPROVAL_WINDOW_MINUTES as WINDOW_MINUTES
 DECISION_OPTIONS = frozenset({"approve", "reject", "details"})
 _COMMAND_KINDS = frozenset({"command", "command_set"})
 _FILE_KIND = "file_write"
+_FILE_OPERATION = "FILE_WRITE command intercepted: write"
 _MAX_EXIT_CODE = 255
+#: The withdrawal reason of a phraseless request its requester's phrased one
+#: replaced; readers tell it from a user's rejection and from an expiry by it.
+REPLACED_REASON = "reemplazada"
 
 
 class SealError(ValueError):
@@ -47,6 +57,16 @@ class SealError(ValueError):
 
 class RequesterError(SealError):
     """Raised when the host event does not name the session or agent a request binds to."""
+
+
+class NotPresentableError(SealError):
+    """Raised when a request lacks a phrase its requester owes; ``missing`` names each flag."""
+
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(
+            "a signature is shown only with its requester's phrases; missing: " + ", ".join(missing)
+        )
 
 
 class WithdrawError(ValueError):
@@ -236,6 +256,151 @@ def seal_request(
 
 
 # --------------------------------------------------------------------------- #
+# Phrases (PD10)
+# --------------------------------------------------------------------------- #
+
+def _payload_items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The sealed items; a row sealed before items existed is read from its command list."""
+    items = payload.get("items")
+    if isinstance(items, list) and items:
+        return items
+    targets = payload.get("commands") or [payload.get("exact_content")]
+    return [{"command": target} for target in targets if target]
+
+
+def _targets(payload: Mapping[str, Any]) -> list[str]:
+    return [item.get("command") or item.get("path") for item in _payload_items(payload)]
+
+
+def _missing(what: object, question: object, items: Iterable[Mapping[str, Any]]) -> list[str]:
+    missing = [
+        flag for flag, value in (("--what (title)", what), ("--question", question))
+        if _optional_text(value) is None
+    ]
+    for position, item in enumerate(items, start=1):
+        missing.extend(
+            f"--{phrase} for item {position}"
+            for phrase in ("does", "impact")
+            if _optional_text(item.get(phrase)) is None
+        )
+    return missing
+
+
+def missing_phrases(payload: Mapping[str, Any]) -> list[str]:
+    """Name, by the flag that supplies it, each phrase ``payload`` lacks; empty when presentable."""
+    return _missing(payload.get("what"), payload.get("question"), _payload_items(payload))
+
+
+def check_presentable(payload: Mapping[str, Any]) -> None:
+    """The one check every host runs before showing a request: raise when a phrase is missing."""
+    missing = missing_phrases(payload)
+    if missing:
+        raise NotPresentableError(missing)
+
+
+def request_line(payload: Mapping[str, Any]) -> str:
+    """The request that replaces phraseless ``payload`` with a phrased one; each ``<...>`` is the requester's."""
+    items = _payload_items(payload)
+    if payload.get("operation") == _FILE_OPERATION:
+        words = ["gaia approvals request-file-write", "--path", shlex.quote(_targets(payload)[0])]
+    else:
+        words = ["gaia approvals request-set"]
+        for target in _targets(payload):
+            words += ["--command", shlex.quote(target)]
+        cwds = [item.get("cwd") for item in items]
+        if all(cwds):
+            for cwd in cwds[:1] if len(set(cwds)) == 1 else cwds:
+                words += ["--cwd", shlex.quote(cwd)]
+    words += [
+        "--what", shlex.quote("<title, in the user's language, 120 max>"),
+        "--question", shlex.quote("<short question, 60 max>"),
+    ]
+    for position in range(1, len(items) + 1):
+        words += [
+            "--does", shlex.quote(f"<what item {position} does, 100 max>"),
+            "--impact", shlex.quote(f"<impact of item {position}, 100 max>"),
+        ]
+    return " ".join(words)
+
+
+def _require_phrases(what: object, question: object, items: list[Mapping[str, Any]]) -> None:
+    missing = _missing(what, question, items)
+    if missing:
+        raise NotPresentableError(missing)
+
+
+def _own_pendings(requester: Mapping[str, str]) -> list[tuple[dict, dict]]:
+    """The pending rows, oldest first, whose sealed requester is ``requester``, with their payloads."""
+    from gaia.approvals.store import list_pending
+
+    own = []
+    for row in list_pending(all_sessions=True):
+        try:
+            payload = json.loads(row.get("payload_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload.get("requested_by") == dict(requester):
+            own.append((row, payload))
+    return own
+
+
+def _replaceable(payload: Mapping[str, Any]) -> list[str]:
+    """The requester's phraseless pending requests of the same kind whose every target ``payload`` carries."""
+    is_file = payload.get("operation") == _FILE_OPERATION
+    targets = set(_targets(payload))
+    return [
+        row["id"]
+        for row, old in _own_pendings(payload["requested_by"])
+        if (old.get("operation") == _FILE_OPERATION) == is_file
+        and set(_targets(old)) <= targets
+        and missing_phrases(old)
+    ]
+
+
+def _persist_replacing(payload: dict) -> str:
+    """Insert a phrased request and, in the same transaction, withdraw the phraseless ones it replaces.
+
+    Withdrawn as revoked with the reason :data:`REPLACED_REASON`: the user
+    never saw them, so it is neither a rejection nor an expiry. One decided or
+    withdrawn since it was listed is left as it is.
+    """
+    from gaia.approvals import store
+    from gaia.store.writer import _retry_on_locked
+
+    session_id = payload["requested_by"]["session_id"]
+    agent_id = payload["requested_by"]["agent_id"]
+    replaced = _replaceable(payload)
+
+    def work() -> str:
+        con = store._open_db()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                approval_id = store.insert_requested(
+                    payload, agent_id=agent_id, session_id=session_id, con=con,
+                )
+                reason = json.dumps(
+                    {"reason": REPLACED_REASON, "replaced_by": approval_id,
+                     "source": "gaia.approvals.core"},
+                    sort_keys=True,
+                )
+                for old in replaced:
+                    try:
+                        store.revoke(old, session_id, agent_id=agent_id, metadata_json=reason, con=con)
+                    except ValueError:
+                        continue
+                con.commit()
+                return approval_id
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(work)
+
+
+# --------------------------------------------------------------------------- #
 # Request
 # --------------------------------------------------------------------------- #
 
@@ -250,8 +415,12 @@ def request_command_set(
     verification: Optional[str] = None,
     rationale: Optional[str] = None,
 ) -> str:
-    """Validate a plan-first set, seal it and persist the pending request; return its approval_id."""
-    from gaia.approvals import store
+    """Validate a plan-first set, seal it and persist the pending request; return its approval_id.
+
+    Every phrase is required (:class:`NotPresentableError` names each one
+    missing), and the requester's phraseless reactive requests the set covers
+    are replaced.
+    """
     from gaia.approvals.command_set import CommandSetValidationError, validate_request_set
 
     commands = [item.get("command") for item in items]
@@ -259,29 +428,25 @@ def request_command_set(
         validate_request_set(commands)
     except CommandSetValidationError as exc:
         raise SealError(str(exc)) from exc
+    _require_phrases(what, question, items)
     payload = seal_request(
         "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, rationale=rationale,
     )
-    return store.insert_requested(payload, agent_id=agent_id, session_id=session_id)
+    return _persist_replacing(payload)
 
 
-def _pending_file_request(path: str, requester: Mapping[str, str]) -> Optional[str]:
-    """Return the requester's own pending write request for ``path`` inside the reuse bound."""
-    from gaia.approvals.store import PENDING_REUSE_WINDOW_MINUTES, list_pending
+def _pending_file_request(path: str, requester: Mapping[str, str]) -> Optional[tuple[str, dict]]:
+    """Return the requester's own pending write request for ``path`` inside the reuse bound, with its payload."""
+    from gaia.approvals.store import PENDING_REUSE_WINDOW_MINUTES
 
-    for row in list_pending(all_sessions=True):
-        try:
-            payload = json.loads(row.get("payload_json") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            continue
+    for row, payload in _own_pendings(requester):
         if (
-            payload.get("operation") == "FILE_WRITE command intercepted: write"
+            payload.get("operation") == _FILE_OPERATION
             and payload.get("exact_content") == path
-            and payload.get("requested_by") == dict(requester)
             and float(row.get("age_seconds") or 0.0) <= PENDING_REUSE_WINDOW_MINUTES * 60
         ):
-            return row["id"]
+            return row["id"], payload
     return None
 
 
@@ -299,26 +464,42 @@ def request_file_write(
     *,
     session_id: str,
     agent_id: str,
-    what: Optional[str] = None,
-    question: Optional[str] = None,
+    what: Optional[str],
+    question: Optional[str],
+    does: Optional[str],
+    impact: Optional[str],
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
-    impact: Optional[str] = None,
 ) -> str:
-    """Seal and persist a protected-path write request, reusing the requester's open one."""
+    """Seal and persist a phrased protected-path write request; return its approval_id.
+
+    Every phrase is required. The requester's open phrased request for the
+    path is reused; a phraseless reactive one is replaced.
+    """
+    item = {"path": path, "does": does, "impact": impact}
+    _require_phrases(what, question, [item])
+    payload = seal_request(
+        _FILE_KIND, [item], what=what, session_id=session_id, agent_id=agent_id,
+        question=question, rollback=rollback, verification=verification, impact=impact,
+    )
+    existing = _pending_file_request(path, payload["requested_by"])
+    if existing and not missing_phrases(existing[1]):
+        return existing[0]
+    return _persist_replacing(payload)
+
+
+def _reactive_file_request(path: str, *, session_id: str, agent_id: str) -> tuple[str, dict]:
+    """Name the requester's open write request for ``path``, else seal one without phrases."""
     from gaia.approvals import store
 
-    requester = {"session_id": session_id, "agent_id": agent_id}
-    existing = _pending_file_request(path, requester)
+    existing = _pending_file_request(path, resolve_requester(session_id, agent_id))
     if existing:
         return existing
     payload = seal_request(
-        _FILE_KIND, [{"path": path, "impact": impact}],
-        what=what or file_write_title(path),
-        session_id=session_id, agent_id=agent_id, question=question,
-        rollback=rollback, verification=verification, impact=impact,
+        _FILE_KIND, [{"path": path}], what=file_write_title(path),
+        session_id=session_id, agent_id=agent_id,
     )
-    return store.insert_requested(payload, agent_id=agent_id, session_id=session_id)
+    return store.insert_requested(payload, agent_id=agent_id, session_id=session_id), payload
 
 
 def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -> dict:
@@ -326,8 +507,10 @@ def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -
 
     A protected path is allowed only by a live file grant bound to this same
     session and agent; otherwise the requester's pending request is named
-    (minted on first sight). Raises when the request cannot be persisted, so the
-    host can fall back to its own consent dialog.
+    (minted on first sight). A block on a request without phrases carries the
+    ``request_line`` that replaces it; a phrased one carries ``None``. Raises
+    when the request cannot be persisted, so the host can fall back to its own
+    consent dialog.
     """
     _ensure_hooks_importable()
     from modules.security.protected_paths import is_protected_hook_path, resolved_write_target
@@ -340,9 +523,12 @@ def protected_write_verdict(file_path: str, *, session_id: str, agent_id: str) -
     if grant is not None and _grant_bound_to(grant, session_id, agent_id):
         return {"decision": "allow", "path": consent_path, "protected": True,
                 "approval_id": grant.get("approval_id")}
-    approval_id = request_file_write(consent_path, session_id=session_id, agent_id=agent_id)
+    approval_id, payload = _reactive_file_request(
+        consent_path, session_id=session_id, agent_id=agent_id,
+    )
     return {"decision": "block", "path": consent_path, "protected": True,
-            "approval_id": approval_id, "window_minutes": WINDOW_MINUTES}
+            "approval_id": approval_id, "window_minutes": WINDOW_MINUTES,
+            "request_line": request_line(payload) if missing_phrases(payload) else None}
 
 
 def _grant_bound_to(grant: Mapping[str, Any], session_id: str, agent_id: str) -> bool:

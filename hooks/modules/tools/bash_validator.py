@@ -1962,6 +1962,20 @@ def _find_pending_plan_set_in_db(command: str, session_id: str, agent_id: str) -
     return None
 
 
+def _phrases_request_line(approval_id: str, payload: Optional[dict] = None) -> str:
+    """The request line the denial asks for when the named pending has no phrases; else empty.
+
+    No host shows a request without its requester's phrases (PD10), so naming
+    such a pending as the approval to report would strand the requester.
+    """
+    from gaia.approvals import core
+    from gaia.approvals.store import get_by_id
+
+    if payload is None:
+        payload = json.loads((get_by_id(approval_id) or {}).get("payload_json") or "{}")
+    return core.request_line(payload) if core.missing_phrases(payload) else ""
+
+
 #: What the sealed payload may state for impact, rollback and verification,
 #: selected only by a named input of the classifier verdict: the mutative verb,
 #: and failing that the verb category. Each statement is written out whole and
@@ -2347,6 +2361,7 @@ def decide_t3_outcome(
                     verb=verb,
                     category=category,
                     guidance=guidance,
+                    request_line=_phrases_request_line(approval_id),
                 )
                 hook_deny = build_hook_permission_response("deny", reason)
                 return BashValidationResult(
@@ -2483,6 +2498,7 @@ def decide_t3_outcome(
             verb=verb,
             category=category,
             guidance=guidance,
+            request_line=_phrases_request_line(approval_id, sealed_payload),
         )
         hook_deny = build_hook_permission_response("deny", reason)
         return BashValidationResult(

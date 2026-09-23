@@ -95,8 +95,10 @@ def _request_set(tmp_path, commands=(FIRST_COMMAND, SECOND_COMMAND)):
     """Seal the set with the real plan-first producer, never by hand."""
     argv = [sys.executable, str(GAIA_CLI), "approvals", "request-set"]
     for command in commands:
-        argv += ["--command", command]
+        argv += ["--command", command, "--does", "Publica una parte.", "--impact", "Queda visible."]
     argv += [
+        "--what", "Publicar la rama y la imagen.",
+        "--question", "¿Publico la rama y la imagen?",
         "--rationale", "Publish the branch and the image under one consent",
         "--verification", "git -C . log --oneline -1",
         "--rollback", "revert the published revision",

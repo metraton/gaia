@@ -148,7 +148,7 @@ def test_the_persistence_fallback_consents_against_the_resolved_file(
     def _unpersistable(*_args, **_kwargs):
         raise OSError("approvals store unavailable")
 
-    monkeypatch.setattr(core, "request_file_write", _unpersistable)
+    monkeypatch.setattr(core, "_reactive_file_request", _unpersistable)
 
     adapter = ClaudeCodeAdapter()
     seen = {}
