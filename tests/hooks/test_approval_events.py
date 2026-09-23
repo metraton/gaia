@@ -591,19 +591,20 @@ class TestPostToolUseDiscriminatorRecordsFailed:
         return ClaudeCodeAdapter()
 
     def _drive(self, adapter, approval_id, payload):
-        """Reproduce the adapter's own discriminator wiring (claude_code.py).
-
-        parse_post_tool_use -> success = exit_code == 0 -> _record_t3_outcome_event,
-        matching adapt_post_tool_use lines 1468 and 1468-1474.
+        """Reproduce adapt_post_tool_use's wiring for a single-command grant:
+        parse_post_tool_use's exit code closes the call through core.close_call.
         """
+        from gaia.approvals.core import close_call
+
         tr = adapter.parse_post_tool_use(payload)
-        success = tr.exit_code == 0
-        adapter._record_t3_outcome_event(
+        close_call(
             approval_id,
             command=tr.command,
-            success=success,
-            exit_code=tr.exit_code,
             session_id=tr.session_id,
+            tool_use_id="toolu_drive",
+            exit_code=tr.exit_code,
+            reserved=False,
+            terminal_event="PostToolUse",
         )
         return tr
 

@@ -14,12 +14,11 @@ overwrites it before A's PostToolUse reads it, and A's terminal
 EXECUTED-under-recording (261 executed vs 778 approved).
 
 The fix keys each entry by ``(session_id, tool_use_id)`` -- the host stdin
-carries a top-level snake_case ``tool_use_id`` in BOTH PreToolUse and
-PostToolUse, and it MATCHES for the same tool call, so a keyed entry written at
-PreToolUse is retrieved unambiguously at PostToolUse regardless of how many
-other tool calls are in flight. Keyed entries live as individual files under
-``.hooks_state/`` so the Stop-hook reconciliation can enumerate every dangling
-entry for a session.
+carries the same top-level ``tool_use_id`` in PreToolUse and in the call's
+terminal event (PostToolUse or PostToolUseFailure), so a keyed entry written at
+PreToolUse is retrieved unambiguously at the terminal event regardless of how
+many other tool calls are in flight. Keyed entries live as individual files
+under ``.hooks_state/``.
 
 Safe fallback: when either id is absent the code degrades to the prior global
 single-file behavior (never crashes), preserving back-compat for callers that
@@ -32,7 +31,7 @@ import re
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Iterator, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
 
 from adapters.host_session import read_host_session_id
@@ -45,9 +44,8 @@ logger = logging.getLogger(__name__)
 # (session_id + tool_use_id) is not available.
 STATE_FILE_NAME = ".hooks_state.json"
 
-# Directory holding per-(session_id, tool_use_id) keyed state files. Each tool
-# call gets its own file so concurrent subagents never clobber one another and
-# the Stop-hook reconciliation can list every dangling entry for a session.
+# Directory holding per-(session_id, tool_use_id) keyed state files, one per
+# tool call so concurrent subagents never clobber one another.
 STATE_DIR_NAME = ".hooks_state"
 
 
@@ -273,41 +271,6 @@ def clear_hook_state(
     except Exception as e:
         logger.warning(f"Could not clear hook state: {e}")
         return False
-
-
-def iter_dangling_states(session_id: str) -> Iterator[Tuple[str, HookState]]:
-    """Yield ``(tool_use_id, HookState)`` for every keyed entry of a session.
-
-    A keyed entry is "dangling" simply because it still exists: PostToolUse
-    deletes its own entry on completion, so anything still present when the
-    session's Stop hook fires never received a PostToolUse -- which, for a Bash
-    command, means the command FAILED (PostToolUse does not fire on a non-zero
-    Bash exit in the current host). The Stop-hook reconciliation uses this to
-    close the audit cycle for those failed T3 commands.
-
-    Best-effort: returns nothing if the state directory is absent or unreadable.
-    """
-    if not session_id:
-        return
-    try:
-        state_dir = _get_state_dir()
-        if not state_dir.is_dir():
-            return
-        prefix = f"{_sanitize_key_component(session_id)}__"
-        for entry_file in sorted(state_dir.glob(f"{prefix}*.json")):
-            try:
-                with open(entry_file, "r") as f:
-                    data = json.load(f)
-            except Exception:
-                continue
-            state = HookState.from_dict(data)
-            # Prefer the id stored inside the state; fall back to parsing it
-            # out of the filename so a malformed entry is still cleanable.
-            tuid = state.tool_use_id or entry_file.name[len(prefix):-len(".json")]
-            yield tuid, state
-    except Exception as e:
-        logger.debug("Could not enumerate dangling hook states: %s", e)
-        return
 
 
 def create_pre_hook_state(

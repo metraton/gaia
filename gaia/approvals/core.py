@@ -15,6 +15,8 @@ consent cycle through this module, so the invariants below have one owner:
 * an item matches only in its sealed directory, byte for byte, at the expected
   index (:func:`match_command`), and a declared non-zero exit advances the set
   (:func:`close_command`);
+* a call closes only from its own terminal event, correlated by tool_use_id
+  (:func:`close_call`); a call with no terminal event has no result;
 * withdrawal rejects or revokes and never approves (:func:`withdraw`).
 
 The window, the reuse bound and the persisted states stay expressed through the
@@ -492,6 +494,53 @@ def close_command(approval_id: str, *, session_id: str, tool_use_id: str, exit_c
     if not settled:
         return "unmatched"
     return "executed" if advances else "failed"
+
+
+def close_call(
+    approval_id: str,
+    *,
+    command: str,
+    session_id: str,
+    tool_use_id: str,
+    exit_code: int,
+    reserved: bool,
+    terminal_event: str,
+    error: str = "",
+) -> str:
+    """Close one authorized call from its own terminal event; return ``executed``, ``failed`` or ``unmatched``.
+
+    Only the host event that reports this ``tool_use_id``'s outcome may call
+    this; a turn or session ending is never one. A ``reserved`` set item settles
+    through :func:`close_command`; a single-command grant was already spent at
+    its match, so its outcome is exit 0 or not. ``command`` is the sealed bytes
+    the call matched, which the EXECUTED or FAILED event records.
+    """
+    from gaia.approvals import store
+
+    if reserved:
+        outcome = close_command(
+            approval_id, session_id=session_id, tool_use_id=tool_use_id, exit_code=exit_code,
+        )
+        if outcome == "unmatched":
+            return outcome
+    else:
+        outcome = "executed" if exit_code == 0 else "failed"
+    payload = {
+        "command": command,
+        "exit_code": exit_code,
+        "outcome": "success" if outcome == "executed" else "failure",
+    }
+    if error:
+        payload["error"] = error
+    store.record_event(
+        approval_id, "EXECUTED" if outcome == "executed" else "FAILED",
+        session_id=session_id or None,
+        payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        metadata_json=json.dumps(
+            {"source": terminal_event, "tool_use_id": tool_use_id}, sort_keys=True,
+        ),
+    )
+    return outcome
 
 
 def grant_lookup_filter(*, cwd: str, session_id: object, agent_id: object) -> dict:

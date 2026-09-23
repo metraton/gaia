@@ -264,7 +264,7 @@ class TestHooksJson:
         hooks_events = set(hooks_data["hooks"].keys())
 
         required_events = {
-            "PreToolUse", "PostToolUse", "SubagentStop",
+            "PreToolUse", "PostToolUse", "PostToolUseFailure", "SubagentStop",
             "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop",
             "TaskCompleted", "SubagentStart", "PostCompact",
             "PreCompact",

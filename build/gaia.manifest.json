@@ -29,6 +29,7 @@
         {"matcher": "Task"},
         {"matcher": "AskUserQuestion"}
       ],
+      "PostToolUseFailure": [{"matcher": "Bash"}],
       "SubagentStop": [{"matcher": "*"}],
       "SessionStart": [{"matcher": "startup|resume|compact"}],
       "SessionEnd": [{}],

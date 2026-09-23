@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def _handle_post_tool_use(event) -> None:
-    """Process a PostToolUse event.
+    """Process a tool call's terminal event: PostToolUse or PostToolUseFailure.
 
     Delegates all business logic to the adapter.
 

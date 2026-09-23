@@ -224,6 +224,7 @@ def _get_entry_point(event_name: str, entries: list[str]) -> str:
     event_to_file = {
         "PreToolUse": "hooks/pre_tool_use.py",
         "PostToolUse": "hooks/post_tool_use.py",
+        "PostToolUseFailure": "hooks/post_tool_use.py",
         "Stop": "hooks/stop_hook.py",
         "UserPromptSubmit": "hooks/user_prompt_submit.py",
         "SubagentStart": "hooks/subagent_start.py",
