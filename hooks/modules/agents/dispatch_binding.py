@@ -15,7 +15,9 @@ gating by ``kind``):
   * ``kind == 'task_execution'`` REQUIRES a ``plan_task_id`` that RESOLVES to a
     DISPATCHABLE ``tasks.id`` row (the row exists AND its status is 'pending').
     A dispatch whose plan_task_id is missing, unknown, or already-terminal
-    ('done' / 'skipped') is REJECTED -- the row is not born.
+    ('done' / 'skipped') is REJECTED -- the row is not born. So is one whose
+    plan is paused (``plans.pause_reason`` set): pausing withholds dispatch,
+    and the degraded birth below leaves the turn unbound to the task.
   * ``turn_role == 'verifier'`` REQUIRES a ``parent_handoff_id`` that RESOLVES to
     an existing ``agent_contract_handoffs.id`` row (a verifier turn binds to the
     producer turn it verifies). A verifier dispatch with a missing / unknown
@@ -111,6 +113,7 @@ DEGRADABLE_BINDING_REASONS = frozenset({
     "task_execution_requires_plan_task_id",
     "plan_task_id_unresolved",
     "plan_task_id_not_dispatchable",
+    "plan_task_id_plan_paused",
     "verifier_requires_parent_handoff_id",
     "parent_handoff_id_unresolved",
 })
@@ -125,6 +128,7 @@ class DispatchBindingError(ValueError):
       * 'task_execution_requires_plan_task_id'
       * 'plan_task_id_unresolved'
       * 'plan_task_id_not_dispatchable'
+      * 'plan_task_id_plan_paused'
       * 'verifier_requires_parent_handoff_id'
       * 'parent_handoff_id_unresolved'
     """
@@ -214,6 +218,16 @@ def _task_dispatchability(
     return (True, row["status"])
 
 
+def _plan_pause_reason(con, plan_task_id: int) -> "Optional[str]":
+    """Return the pause reason of the task's plan, or None when not paused."""
+    row = con.execute(
+        "SELECT p.pause_reason FROM tasks t JOIN plans p ON p.id = t.plan_id "
+        "WHERE t.id = ? LIMIT 1",
+        (plan_task_id,),
+    ).fetchone()
+    return row["pause_reason"] if row else None
+
+
 def _handoff_exists(con, parent_handoff_id: int) -> bool:
     """Return True iff an ``agent_contract_handoffs.id`` row exists."""
     row = con.execute(
@@ -261,6 +275,14 @@ def validate_dispatch_binding(
                     f"status={status!r}, which is not dispatchable "
                     f"(expected one of {sorted(_DISPATCHABLE_TASK_STATUSES)}).",
                     reason="plan_task_id_not_dispatchable",
+                )
+            pause_reason = _plan_pause_reason(con, plan_task_id)
+            if pause_reason is not None:
+                raise DispatchBindingError(
+                    f"plan_task_id={plan_task_id} belongs to a paused plan "
+                    f"({pause_reason}); its tasks are not dispatched until "
+                    f"the plan is resumed.",
+                    reason="plan_task_id_plan_paused",
                 )
         elif plan_task_id is not None:
             # A non-task_execution kind MAY carry a plan_task_id (a verifier turn

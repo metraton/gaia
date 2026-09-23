@@ -1527,9 +1527,8 @@ def verify_brief(
                     "detail": (
                         f"brief '{name}' is 'closed' but AC '{ac_row['ac_id']}' "
                         f"is status='{ac_row['status']}' (not terminal; terminal "
-                        f"set is {{done, descoped}}) -- close it honestly with "
-                        f"`gaia ac set-status {name} {ac_row['ac_id']} "
-                        f"<done|descoped>`"
+                        f"set is {{done, descoped}}) -- the owning agent "
+                        f"settles it: done on positive evidence, or descoped"
                     ),
                 })
 
@@ -1624,8 +1623,7 @@ def verify_brief(
                         "kind": "uncovered_ac",
                         "detail": (
                             f"AC '{ac_row['ac_id']}' is covered by no task -- "
-                            f"declare one with `gaia task cover {name} <order> "
-                            f"{ac_row['ac_id']}`"
+                            f"the planner links a covering task"
                         ),
                     })
             for link in links:

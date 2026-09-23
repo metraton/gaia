@@ -510,7 +510,52 @@ CREATE TABLE IF NOT EXISTS plans (
     content    TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    -- v57: a paused plan stays 'active' (approved) but its tasks are not
+    -- dispatched; the pause always carries its reason.
+    paused_at    TEXT,
+    pause_reason TEXT,
     FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
+);
+
+-- v57: every replaced version of a plan, with why it was replaced. The current
+-- version is plans.content; its number is one past the highest kept here.
+CREATE TABLE IF NOT EXISTS plan_versions (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id   INTEGER NOT NULL,
+    version   INTEGER NOT NULL,
+    status    TEXT,
+    content   TEXT,
+    reason    TEXT,
+    change_id INTEGER REFERENCES plan_changes(id) ON DELETE SET NULL,
+    saved_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE (plan_id, version),
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+);
+
+-- v57: a managed plan change. The orchestrator requests it with a
+-- justification, the planner proposes which tasks it affects and why, the
+-- orchestrator approves, the planner applies it as a new plan version.
+CREATE TABLE IF NOT EXISTS plan_changes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id       INTEGER NOT NULL,
+    justification TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'requested'
+                  CHECK (status IN ('requested', 'proposed', 'approved', 'applied')),
+    proposal      TEXT,
+    requested_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    proposed_at   TEXT,
+    approved_at   TEXT,
+    applied_at    TEXT,
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS plan_change_tasks (
+    change_id INTEGER NOT NULL,
+    task_id   INTEGER NOT NULL,
+    reason    TEXT NOT NULL,
+    PRIMARY KEY (change_id, task_id),
+    FOREIGN KEY (change_id) REFERENCES plan_changes(id) ON DELETE CASCADE,
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS tasks (

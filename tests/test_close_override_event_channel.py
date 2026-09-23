@@ -732,7 +732,9 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
     # add columns to agent_contract_handoffs and approval_grants; v55 only adds
     # root_path to workspaces; v56 touches task_gates, evidence and three new
     # plan-structure tables, and `grep -i harness_events` on v55_to_v56.sql
-    # returns zero matches (reviewed 2026-09-22).
+    # returns zero matches (reviewed 2026-09-22); v57 touches plans and adds
+    # three plan-history tables, and the same grep on v56_to_v57.sql returns
+    # zero matches (reviewed 2026-09-23).
     # Reviewed 2026-08-14: `grep -i harness_events` against both
     # v49_to_v50.sql and v50_to_v51.sql returned zero matches in either file.
     # v41-v51 are the actual current floor -- tracked dynamically by
@@ -747,7 +749,7 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 56
+    assert int(match.group(1)) == 57
 
 
 def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
@@ -766,4 +768,4 @@ def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     )
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 56
+    assert max(migrations) == 57

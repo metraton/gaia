@@ -511,6 +511,27 @@ def _cmd_gate_set_status(args) -> int:
     return 0
 
 
+def _cmd_gate_reverify(args) -> int:
+    from gaia.store.writer import request_gate_reverification
+    from gaia.state.permissions import StateTransitionForbidden
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    try:
+        res = request_gate_reverification(workspace, args.brief, args.order_num,
+                                          args.gate_id, args.reason)
+    except (StateTransitionForbidden, ValueError) as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"Gate id={args.gate_id} on task order_num={args.order_num} in "
+              f"'{args.brief}': pass kept, marked stale for re-verification")
+        _print_derived_closure(res, args)
+    return 0
+
+
 def _print_derived_closure(res: dict, args) -> None:
     """Report what the recorded verdict implied for the task itself.
 
@@ -623,10 +644,12 @@ def _cmd_gate(args) -> int:
         "remove":     _cmd_gate_remove,
         "set-status": _cmd_gate_set_status,
         "edit":       _cmd_gate_edit,
+        "reverify":   _cmd_gate_reverify,
     }
     if action in handlers:
         return handlers[action](args)
-    print("Usage: gaia task gate <add|list|remove|set-status|edit>", file=sys.stderr)
+    print("Usage: gaia task gate <add|list|remove|set-status|edit|reverify>",
+          file=sys.stderr)
     return 0
 
 
@@ -958,6 +981,26 @@ def register(subparsers) -> None:
     gate_setstatus_p.add_argument("--workspace", default=None, metavar="W")
     gate_setstatus_p.add_argument("--json", action="store_true", default=False,
                                   help="Emit JSON.")
+
+    gate_reverify_p = gate_actions.add_parser(
+        "reverify", help="Send a passed gate back for re-verification",
+        description=(
+            "Keep a gate's pass verdict but mark it stale with a reason: the "
+            "task stops counting as done until a verifier records a new verdict."
+        ),
+        epilog="Examples:\n  gaia task gate reverify my-brief 1 3 --reason='flaky runner'\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    gate_reverify_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+    gate_reverify_p.add_argument("order_num", type=int, metavar="ORDER_NUM",
+                                 help="Parent task order_num.")
+    gate_reverify_p.add_argument("gate_id", type=int, metavar="GATE_ID",
+                                 help="task_gates.id to re-verify.")
+    gate_reverify_p.add_argument("--reason", required=True,
+                                 help="Why the verdict must be checked again.")
+    gate_reverify_p.add_argument("--workspace", default=None, metavar="W")
+    gate_reverify_p.add_argument("--json", action="store_true", default=False,
+                                 help="Emit JSON.")
 
     gate_edit_p = gate_actions.add_parser(
         "edit",

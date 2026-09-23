@@ -441,6 +441,9 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "deps"),
     ("brief", "search"),
     ("brief", "verify"),
+    ("brief", "decision", "list"),
+    ("plan", "history"),
+    ("plan", "change", "list"),
     ("notifications", "list"),
     ("notifications", "show"),
     ("memory", "search"),
@@ -569,7 +572,18 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "ac", "add"),
     ("brief", "ac", "edit"),
     ("brief", "ac", "remove"),
+    # The brief records the user's decisions, and the brief is the
+    # coordinator's artifact (new/edit above), so recording one is its write.
+    ("brief", "decision", "add"),
     ("plan", "set-status"),
+    # Managing the plan's course without judging or authoring it: pause and
+    # resume, ask a verifier to check a passed gate again, and request and
+    # approve a change whose delta the planner proposes and applies.
+    ("plan", "pause"),
+    ("plan", "resume"),
+    ("plan", "change", "request"),
+    ("plan", "change", "approve"),
+    ("task", "gate", "reverify"),
     ("task", "set-status"),
     ("notifications", "ack"),
     ("memory", "add"),
@@ -615,6 +629,14 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("task", "gate", "add"),
     ("task", "gate", "remove"),
     ("task", "gate", "set-status"),
+    # Plan structure is the planner's (it owns the plan): which ACs a task
+    # covers, which tasks it waits for, and the delta of a change.
+    ("task", "cover"),
+    ("task", "depend"),
+    ("plan", "change", "propose"),
+    ("plan", "change", "apply"),
+    # An AC reaches done only on positive evidence the owning agent recorded.
+    ("ac", "set-status"),
     ("brief", "delete"),
     ("plan", "save"),
     ("plan", "delete"),
@@ -1089,6 +1111,16 @@ _PLAN_STATUSES = frozenset({"draft", "active", "closed"})
 _TASK_STATUSES = frozenset({"pending", "done", "skipped"})
 
 
+def _has_value(args: Tuple[str, ...], flag: str) -> bool:
+    """True iff *flag* is given a non-empty value (``--f=v`` or ``--f v``)."""
+    for i, arg in enumerate(args):
+        if arg.startswith(flag + "=") and len(arg) > len(flag) + 1:
+            return True
+        if arg == flag and i + 1 < len(args) and not args[i + 1].startswith("-"):
+            return True
+    return False
+
+
 def _validate_orchestrator_write(
     candidate: Tuple[str, ...], phrase: Tuple[str, ...]
 ) -> Optional[str]:
@@ -1116,8 +1148,22 @@ def _validate_orchestrator_write(
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _BRIEF_STATUSES
     elif phrase[:2] == ("brief", "ac"):
         valid = bool(args) and not args[0].startswith("-") and any(a.startswith("--id=") for a in args[1:])
+    elif phrase == ("brief", "decision", "add"):
+        valid = bool(args) and not args[0].startswith("-") and _has_value(args, "--text")
     elif phrase == ("plan", "set-status"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _PLAN_STATUSES
+    elif phrase in (("plan", "pause"), ("plan", "change", "request")):
+        valid = bool(args) and not args[0].startswith("-") and _has_value(args, "--reason")
+    elif phrase == ("plan", "resume"):
+        valid = bool(args) and not args[0].startswith("-")
+    elif phrase == ("plan", "change", "approve"):
+        valid = len(args) >= 2 and not args[0].startswith("-") and args[1].isdigit()
+    elif phrase == ("task", "gate", "reverify"):
+        valid = (
+            len(args) >= 3 and not args[0].startswith("-")
+            and args[1].isdigit() and args[2].isdigit()
+            and _has_value(args, "--reason")
+        )
     elif phrase == ("task", "set-status"):
         positional = [arg for arg in args if not arg.startswith("-")]
         flags = [arg for arg in args if arg.startswith("-")]

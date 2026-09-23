@@ -92,7 +92,8 @@ def test_save_updates_existing_plan(tmp_db, tmp_path, monkeypatch, capsys):
     payload1 = json.loads(capsys.readouterr().out)
     assert payload1["action"] == "inserted"
 
-    rc2 = _cmd_save(argparse.Namespace(content="v2", status="active", **base))
+    rc2 = _cmd_save(argparse.Namespace(content="v2", status="active",
+                                       reason="second draft", **base))
     assert rc2 == 0
     payload2 = json.loads(capsys.readouterr().out)
     assert payload2["action"] == "updated"
@@ -128,7 +129,8 @@ def test_save_without_status_preserves_the_live_status(tmp_db, tmp_path,
     capsys.readouterr()
     assert _read_plan_row(tmp_db, "feature-x")["status"] == "active"
 
-    rc = _cmd_save(argparse.Namespace(content="v2", status=None, **base))
+    rc = _cmd_save(argparse.Namespace(content="v2", status=None,
+                                      reason="second draft", **base))
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["action"] == "updated"
@@ -170,7 +172,8 @@ def test_save_with_explicit_status_still_transitions(tmp_db, tmp_path,
 
     _cmd_save(argparse.Namespace(content="v1", status="active", **base))
     capsys.readouterr()
-    rc = _cmd_save(argparse.Namespace(content="v2", status="draft", **base))
+    rc = _cmd_save(argparse.Namespace(content="v2", status="draft",
+                                      reason="second draft", **base))
     assert rc == 0
     capsys.readouterr()
     assert _read_plan_row(tmp_db, "feature-y")["status"] == "draft"
