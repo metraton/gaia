@@ -1,16 +1,13 @@
-"""What OpenCode's native permission mechanism is actually handed for a T3 ask.
+"""What OpenCode is handed when a T3 call needs a signature.
 
 Every assertion here is made against a payload some real component PRODUCED:
-the Gaia CLI's own `approvals opencode-present --json` output, and the exact
-object the real GaiaOpenCodePlugin enriches in the host's permission.ask hook while
-driven by bun. Nothing in this file hand-writes the shape under test -- three
-earlier rounds of this plan passed while asserting over a payload no adapter
-emits, and the claim being made here ("the delivered payload carries the sealed
-envelope, visibly") is precisely the direction where that is fatal.
+the Gaia CLI's own `approvals opencode-present --json` output, and what the
+real GaiaOpenCodePlugin does under bun for one blocked call. Nothing in this
+file hand-writes the shape under test -- three earlier rounds of this plan
+passed while asserting over a payload no adapter emits.
 
-No OpenCode UI is observed: no OpenCode host runs in this suite. What is
-verified is the payload delivered TO the native mechanism, which is what the
-plugin controls and all it can be held to.
+No OpenCode UI is observed: no OpenCode host runs in this suite. The question
+Gaia writes into the host's question tool is asserted by test_own_adapter.
 """
 
 from __future__ import annotations
@@ -34,11 +31,11 @@ from adapters import consent_events, consent_presentation  # noqa: E402
 
 GAIA_CLI = REPO_ROOT / "bin" / "gaia"
 DRIVER = REPO_ROOT / "tests" / "opencode" / "presentation_driver.ts"
-PLUGIN = REPO_ROOT / "opencode" / "plugin.ts"
 
 SESSION_ID = "ses-t4-presentation"
 CALL_ID = "call-t4-presentation"
-AGENT_ID = "gitops-operator"
+# The role presentation_driver.ts dispatches; only the requesting agent presents.
+AGENT_ID = "gaia-system"
 TOKEN = "t4-presentation-token"
 
 COMMANDS = (
@@ -58,7 +55,15 @@ SEALED_PAYLOAD = {
     "verification": "git -C /home/jorge/ws/me/gaia log --oneline -1 origin/fix/consent-protocol",
 }
 
-REQUIRED_VISIBLE = ("operation", "scope", "impact", "risk", "rollback", "verification")
+PHRASES = {
+    "what": "Publicar la rama y reconciliar el cluster.",
+    "question": "¿Publico la rama?",
+    "items": [
+        {"command": command, "does": "Publica una parte.", "impact": "Queda visible."}
+        for command in COMMANDS
+    ],
+}
+PRESENTABLE_PAYLOAD = {**SEALED_PAYLOAD, **PHRASES}
 
 PRODUCED_COMMANDS = COMMANDS
 PRODUCED_RATIONALE = "Publishes the branch and reconciles the cluster from it"
@@ -88,22 +93,40 @@ def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
 def approval_id(db_env):
     from gaia.approvals.store import insert_requested
 
-    return insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id=SESSION_ID)
+    return insert_requested(PRESENTABLE_PAYLOAD, agent_id=AGENT_ID, session_id=SESSION_ID)
 
 
-def _present(env, approval_id, token=TOKEN, call_id=CALL_ID):
-    result = subprocess.run(
+def _run_present(env, approval_id, token=TOKEN, call_id=CALL_ID):
+    return subprocess.run(
         [
             sys.executable, str(GAIA_CLI), "approvals", "opencode-present", approval_id,
             "--session-id", SESSION_ID,
+            "--agent-id", AGENT_ID,
             "--call-id", call_id,
             "--token", token,
             "--json",
         ],
         env=env, capture_output=True, text=True, timeout=120,
     )
+
+
+def _present(env, approval_id, token=TOKEN, call_id=CALL_ID):
+    result = _run_present(env, approval_id, token=token, call_id=call_id)
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     return json.loads(result.stdout.strip().splitlines()[-1])
+
+
+def _renderer_signature(approval_id):
+    """The signature the shared renderer produces for the persisted payload."""
+    from gaia.approvals import surface
+
+    rendered = surface.render(_stored_payload(approval_id), approval_id)
+    return {
+        "question": rendered.opencode,
+        "details": rendered.opencode_details,
+        "header": rendered.question["header"],
+        "options": rendered.question["options"],
+    }
 
 
 def _expected_envelope(approval_id, call_id=CALL_ID):
@@ -190,21 +213,6 @@ def _drive_abort_outcome(env, approval_id, outcome):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def test_adapter_uses_the_real_permission_ask_boundary_not_the_nonexistent_creator():
-    source = PLUGIN.read_text()
-
-    assert "session.permission.create" not in source
-    assert '"permission.ask"' in source
-    assert "permissionID" in source
-    assert "event.properties.response" in source
-
-
-def test_host_permission_request_is_held_for_user_reply_when_correlation_is_exact(db_env, approval_id):
-    delivered = _drive_plugin(db_env, approval_id, call_id="call-presented")
-    # The driver models a host-created request with the exact session/call pair.
-    assert delivered["asked"][0]["status"] == "ask"
-
-
 @pytest.mark.parametrize("outcome", ["pending", "no-decision", "rejected", "malformed", "timeout"])
 def test_exported_before_hook_aborts_every_non_allow_outcome(db_env, approval_id, outcome):
     """Drive the exported hook OpenCode awaits and model execution only on return."""
@@ -214,151 +222,57 @@ def test_exported_before_hook_aborts_every_non_allow_outcome(db_env, approval_id
     assert delivered["originalInvocationExecuted"] is False, delivered
 
 
-def test_cli_presentation_seals_every_required_field_visibly(db_env, approval_id):
+def test_cli_presentation_emits_the_renderer_signature_and_the_sealed_metadata(db_env, approval_id):
+    """One renderer for every host: the CLI hands OpenCode exactly its signature."""
     emitted = _present(db_env, approval_id)
     envelope = _expected_envelope(approval_id)
-    visible = "\n".join(emitted["visible_lines"])
 
-    assert emitted["visible_text"] == visible
-    assert not consent_presentation.missing_visible_fields(visible, SEALED_PAYLOAD)
-    for name in REQUIRED_VISIBLE:
-        assert getattr(envelope, name) in visible, name
+    assert emitted["signature"] == _renderer_signature(approval_id)
+    assert PHRASES["what"] in emitted["signature"]["question"]
+    assert emitted["signature"]["question"].endswith(PHRASES["question"])
     assert emitted["metadata"] == consent_presentation.native_metadata(envelope)
     assert json.loads(emitted["metadata"]["canonical_payload"]) == json.loads(
         envelope.canonical_payload()
     )
 
 
-def test_delivered_permission_payload_carries_the_sealed_envelope(db_env, approval_id):
-    delivered = _drive_plugin(db_env, approval_id)
-    assert len(delivered["asked"]) == 1, delivered
-    payload = delivered["asked"][0]["permission"]
-    envelope = _expected_envelope(approval_id)
-    expected = consent_presentation.native_presentation(envelope, SEALED_PAYLOAD)
+def test_a_phraseless_request_is_never_presented(db_env):
+    """PD10: a request lacking its requester's phrases records no SHOWN and opens no question."""
+    from gaia.approvals.store import get_history, insert_requested
 
-    assert payload["sessionID"] == SESSION_ID
-    assert payload["title"] == "Gaia approval required"
-    assert payload["pattern"] == expected["visible_lines"]
-    assert payload["metadata"]["gaiaApprovalID"] == approval_id
-    assert payload["metadata"]["gaiaCallID"] == CALL_ID
-    assert payload["metadata"]["gaiaConsent"] == expected["metadata"]
+    phraseless_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id=SESSION_ID)
+    refused = _run_present(db_env, phraseless_id, token="phraseless-token", call_id="call-phraseless")
+    assert refused.returncode == 1, refused.stdout
+    assert "--question" in json.loads(refused.stdout.strip().splitlines()[-1])["error"]
 
-    metadata = payload["metadata"]["gaiaConsent"]
-    assert metadata["operation"] == SEALED_PAYLOAD["operation"]
-    assert metadata["commands"] == list(COMMANDS)
-    assert metadata["scope"] == SEALED_PAYLOAD["scope"]
-    assert metadata["impact"] == SEALED_PAYLOAD["impact"]
-    assert metadata["risk"] == "high -- " + SEALED_PAYLOAD["rationale"]
-    assert metadata["rollback"] == SEALED_PAYLOAD["rollback_hint"]
-    assert metadata["verification"] == SEALED_PAYLOAD["verification"]
-    assert metadata["protocol_version"] == "1"
-
-
-def test_delivered_visible_slot_alone_carries_every_field_in_order(db_env, approval_id):
-    """The user-visible slot is judged with the metadata discarded entirely."""
-    delivered = _drive_plugin(db_env, approval_id)
-    payload = delivered["asked"][0]["permission"]
-    visible = "\n".join(payload["pattern"])
-    envelope = _expected_envelope(approval_id)
-
-    assert not consent_presentation.missing_visible_fields(visible, SEALED_PAYLOAD)
-    positions = [visible.index(command) for command in COMMANDS]
-    assert positions == sorted(positions)
-    for name in REQUIRED_VISIBLE:
-        assert getattr(envelope, name) in visible, name
-    for fingerprint in envelope.fingerprints:
-        assert fingerprint in visible
-
-
-def test_delivered_visible_text_agrees_with_the_cli_sealed_surface(db_env, approval_id):
-    """One producer, two consumers: the CLI's surface is the delivered surface."""
-    emitted = _present(db_env, approval_id)
-    delivered = _drive_plugin(db_env, approval_id)
-
-    assert "\n".join(delivered["asked"][0]["permission"]["pattern"]) == emitted["visible_text"]
-    assert delivered["asked"][0]["permission"]["metadata"]["gaiaConsent"] == emitted["metadata"]
-
-
-def test_an_unsealable_payload_is_never_presented_as_a_permission(db_env):
-    """No command bytes to show means no native permission is raised at all."""
-    from gaia.approvals.store import insert_requested
-
-    empty_id = insert_requested(
-        {"operation": "FILE_WRITE command intercepted: write", "scope": "FILE_PATH"},
-        agent_id=AGENT_ID, session_id=SESSION_ID,
-    )
-    emitted = _present(db_env, empty_id, token="unsealable-token", call_id="call-unsealable")
-    assert "presentation_error" in emitted
-    assert "visible_lines" not in emitted
-
-    delivered = _drive_plugin(db_env, empty_id, call_id="call-unsealable-2")
-    assert delivered["asked"] == []
-    assert "could not seal a complete consent surface" in delivered["error"]
-
-
-def test_an_approval_minted_without_a_session_is_adopted_by_the_presenting_session(db_env):
-    """request-set without --session-id persists NULL; presentation binds it, once."""
-    from gaia.approvals.store import get_by_id, get_history, insert_requested
-
-    unowned_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id=None)
-    assert get_by_id(unowned_id)["session_id"] is None
-
-    emitted = _present(db_env, unowned_id, token="adopt-token", call_id="call-adopt")
-    assert emitted["status"] == "presented"
-    assert get_by_id(unowned_id)["session_id"] == SESSION_ID
-    assert [e["event_type"] for e in get_history(unowned_id)] == ["REQUESTED", "SHOWN"]
-
-    foreign = subprocess.run(
-        [
-            sys.executable, str(GAIA_CLI), "approvals", "opencode-present", unowned_id,
-            "--session-id", "ses-someone-else",
-            "--call-id", "call-foreign",
-            "--token", "foreign-token",
-            "--json",
-        ],
-        env=db_env, capture_output=True, text=True, timeout=120,
-    )
-    assert foreign.returncode == 1, foreign.stdout
-    assert json.loads(foreign.stdout.strip().splitlines()[-1]) == {
-        "error": "OpenCode session does not own this approval"
-    }
-    assert get_by_id(unowned_id)["session_id"] == SESSION_ID
-    assert len(get_history(unowned_id)) == 2
-
-
-def test_plugin_presents_an_approval_minted_without_a_session(db_env):
-    from gaia.approvals.store import get_by_id, insert_requested
-
-    unowned_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id=None)
-    delivered = _drive_plugin(db_env, unowned_id, call_id="call-adopt-plugin")
-
-    assert delivered["asked"][0]["status"] == "ask", delivered
-    assert get_by_id(unowned_id)["session_id"] == SESSION_ID
+    delivered = _drive_plugin(db_env, phraseless_id, call_id="call-phraseless-2")
+    assert delivered["originalInvocationExecuted"] is False
+    assert f"Gaia could not present approval {phraseless_id}" in delivered["error"]
+    assert delivered["controlPrompts"] == []
+    assert [e["event_type"] for e in get_history(phraseless_id)] == ["REQUESTED"]
 
 
 def test_a_refused_presentation_keeps_the_approval_id_and_gaia_cause(db_env):
     """The agent must see WHICH approval failed and WHY Gaia refused, not a generic line."""
     from gaia.approvals.store import get_history, insert_requested
 
-    foreign_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id="ses-other-owner")
+    cause = "OpenCode presentation must come from the requesting session"
+    foreign_id = insert_requested(PRESENTABLE_PAYLOAD, agent_id=AGENT_ID, session_id="ses-other-owner")
     delivered = _drive_plugin(db_env, foreign_id, call_id="call-refused")
 
-    assert delivered["asked"] == [], delivered
+    assert delivered["controlPrompts"] == [], delivered
     assert delivered["originalInvocationExecuted"] is False
     assert foreign_id in delivered["error"], delivered["error"]
-    assert "OpenCode session does not own this approval" in delivered["error"]
+    assert cause in delivered["error"]
     assert [e["event_type"] for e in get_history(foreign_id)] == ["REQUESTED"]
 
-    # The driver also models the host raising its own permission request after
-    # the abort, which is reported uncorrelated (no approvalID); the plugin's
-    # presentation-failure trace is the one naming the approval.
     traces = [
         e for e in delivered["bridgeEvents"]
         if e.get("event") == "permission.uncorrelated" and "approvalID" in e
     ]
     assert len(traces) == 1, delivered["bridgeEvents"]
     assert traces[0]["approvalID"] == foreign_id
-    assert traces[0]["cause"] == "OpenCode session does not own this approval"
+    assert traces[0]["cause"] == cause
     assert traces[0]["sessionID"] == SESSION_ID
     assert traces[0]["callID"] == "call-refused"
 
@@ -378,7 +292,7 @@ def test_gaia_runs_from_the_session_directory_not_the_serve_cwd(db_env, approval
         db_env, approval_id, call_id="call-cwd", directory=str(session_directory),
     )
 
-    assert delivered["asked"][0]["status"] == "ask"
+    assert len(delivered["controlPrompts"]) == 1, delivered
     assert delivered["gaiaSpawnCwds"] == [str(session_directory)], delivered["gaiaSpawnCwds"]
 
 
@@ -436,7 +350,6 @@ def test_a_rejected_control_prompt_fails_closed_with_the_host_cause(db_env, appr
     delivered = _drive_plugin(db_env, approval_id, call_id="call-rejected-prompt", control_prompt="rejected")
 
     assert delivered["originalInvocationExecuted"] is False
-    assert delivered["asked"] == [], delivered
     error = delivered["error"]
     assert error.startswith(
         f"Gaia could not open the consent control plane for {approval_id}: control-plane prompt rejected: HTTP 400"
@@ -657,6 +570,36 @@ def test_the_bridge_records_a_refused_presentation_under_its_own_reason(db_env, 
     assert payload[DETAILS_PAYLOAD_KEY]["call_id"] == "call-refused"
 
 
+def test_the_bridge_records_a_report_with_no_cause_on_the_same_channel(db_env):
+    """harness_events and decision_audit carry it: no new table, column or vocabulary."""
+    sys.path.insert(0, str(REPO_ROOT / "opencode"))
+    import bridge as opencode_bridge
+
+    from gaia.approvals.decision_audit import (
+        DECISION_NOT_ACTIVATED_EVENT,
+        DETAILS_PAYLOAD_KEY,
+    )
+    from gaia.store.reader import cross_surface_query
+
+    response = opencode_bridge.handle({
+        "event": "permission.uncorrelated",
+        "sessionID": SESSION_ID,
+        "callID": "call-no-cause",
+    })
+    assert response["action"] == "allow", response
+
+    rows = cross_surface_query(
+        surface="harness_events", type=DECISION_NOT_ACTIVATED_EVENT,
+        db_path=Path(db_env["GAIA_DB"]),
+    )
+    assert len(rows) == 1, rows
+    assert rows[0]["raw"]["severity"] == "warning"
+    payload = json.loads(rows[0]["raw"]["payload"])
+    assert payload["lane"] == opencode_bridge.PERMISSION_ASK_LANE
+    assert payload["session_id"] == SESSION_ID
+    assert payload[DETAILS_PAYLOAD_KEY]["call_id"] == "call-no-cause"
+
+
 def test_a_surface_that_hides_a_sealed_field_is_named_not_shown(monkeypatch):
     envelope = _expected_envelope("P-tripwire")
     complete = consent_presentation.render_native_text(envelope)
@@ -707,14 +650,14 @@ def test_a_surface_agreeing_with_its_envelope_but_not_the_seal_is_refused():
         consent_presentation.native_presentation(envelope, SEALED_PAYLOAD)
 
 
-def test_a_real_producer_seals_the_fields_the_delivered_surface_shows(db_env):
+def test_a_real_producer_seals_the_fields_the_presentation_carries(db_env):
     """The payload under test is the one `gaia approvals request-set` wrote.
 
-    Gate 895 asks that the delivered metadata equal the SEALED operation, command
-    bytes, scope, impact, risk, rollback and verification. A hand-authored
-    payload can satisfy that clause while no producer emits the shape, so here
-    the left-hand side is produced by the real plan-first CLI and read back out
-    of the database -- never written by this file.
+    Gate 895 asks that the metadata equal the SEALED operation, command bytes,
+    scope, impact, risk, rollback and verification. A hand-authored payload can
+    satisfy that clause while no producer emits the shape, so here the
+    left-hand side is produced by the real plan-first CLI and read back out of
+    the database -- never written by this file.
     """
     approval_id = _request_set(
         db_env, verification=PRODUCED_VERIFICATION, rollback=PRODUCED_ROLLBACK
@@ -726,7 +669,7 @@ def test_a_real_producer_seals_the_fields_the_delivered_surface_shows(db_env):
     emitted = _present(
         db_env, approval_id, token="produced-token", call_id="call-produced"
     )
-    visible = "\n".join(emitted["visible_lines"])
+    assert emitted["signature"] == _renderer_signature(approval_id)
     metadata = emitted["metadata"]
 
     assert metadata["operation"] == stored["operation"]
@@ -735,16 +678,8 @@ def test_a_real_producer_seals_the_fields_the_delivered_surface_shows(db_env):
     assert metadata["risk"] == stored["risk_level"] + " -- " + stored["rationale"]
     assert metadata["rollback"] == stored["rollback_hint"]
     assert metadata["verification"] == stored["verification"]
-    assert not consent_presentation.missing_visible_fields(visible, stored)
 
-    # request-set authors no `impact` (the core seals it as None), so the
-    # surface states the absence instead of composing a consequence nobody assessed.
+    # request-set authors no top-level `impact` (the core seals it as None), so
+    # the metadata states the absence instead of composing a consequence nobody assessed.
     assert stored.get("impact") is None
     assert metadata["impact"] == consent_presentation._IMPACT_ABSENT
-
-    delivered = _drive_plugin(
-        db_env, approval_id, call_id="call-produced", command=PRODUCED_COMMANDS[0]
-    )
-    payload = delivered["asked"][0]["permission"]
-    assert "\n".join(payload["pattern"]) == emitted["visible_text"]
-    assert payload["metadata"]["gaiaConsent"] == metadata

@@ -239,12 +239,15 @@ def test_literal_apply_patch_relative_target_reaches_guard_before_native_patch(
     result = driven["results"][0]
     assert result["allowed"] is False
     assert result["beforeReturned"] is False
-    assert "[T3_BLOCKED]" in result["error"]
     exchange = _exchange(driven, result["callID"])
     assert exchange["sent"]["tool"] == "apply_patch"
     assert exchange["sent"]["args"]["file_paths"] == [str(protected.resolve())]
     assert exchange["received"]["action"] == "deny"
-    assert re.fullmatch(r"P-[0-9a-f]{32}", exchange["received"].get("approval_id", ""))
+    approval_id = exchange["received"].get("approval_id", "")
+    assert re.fullmatch(r"P-[0-9a-f]{32}", approval_id)
+    # A reactive block carries no requester phrases, so it is never presented.
+    assert f"Gaia could not present approval {approval_id}" in result["error"]
+    assert "requester's phrases" in result["error"]
     assert driven["controlPrompts"] == []
     assert protected.read_text() == "ORIGINAL\n"
 

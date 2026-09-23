@@ -1,16 +1,14 @@
-"""One consent attempt, one neutral decision, whichever event delivered it.
+"""One consent attempt, one neutral decision, whichever lane delivered it.
 
-The preferred lane is ``permission.replied``. These tests pin the precedence
-between the lanes, the deduplication that keeps a single effect, and the
-correlated neutral decision that reaches the Gaia CLI.
+These tests pin the precedence between the neutral lanes, the deduplication
+that keeps a single effect, and the correlated neutral decision that reaches
+the Gaia CLI.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -33,7 +31,6 @@ from adapters.consent_events import (
 from adapters.types import ConsentBinding, ConsentDecision
 from cli.approvals import cmd_opencode_decide, cmd_opencode_present
 
-_PLUGIN = _REPO_ROOT / "opencode" / "plugin.ts"
 _BINDING = ConsentBinding(agent_id="agent-1", session_id="ses-1", call_id="call-1")
 
 
@@ -96,6 +93,7 @@ def _args(**overrides):
     values = {
         "approval_id": "P-00000000000000000000000000000001",
         "session_id": "ses-1",
+        "agent_id": "agent-1",
         "call_id": "call-1",
         "token": "secret-token",
         "reply": "once",
@@ -117,6 +115,13 @@ def _presented_store():
             "operation": "PUSH command intercepted: push",
             "exact_content": "git push origin main",
             "scope": "SINGULAR",
+            "what": "Publicar la rama principal.",
+            "question": "¿Publico la rama?",
+            "items": [{
+                "command": "git push origin main",
+                "does": "Publica la rama principal.",
+                "impact": "El remoto avanza.",
+            }],
         }),
     }
     events: list[dict[str, str]] = []
@@ -159,25 +164,3 @@ def test_the_cli_refuses_a_lane_it_does_not_know(capsys):
 
     assert "unknown consent decision lane" in capsys.readouterr().out
     store.approve.assert_not_called()
-
-
-@pytest.mark.skipif(shutil.which("bun") is None, reason="bun is required to run the plugin edge")
-def test_the_plugin_edge_routes_both_events_to_one_effect():
-    script = (
-        "import { PermissionDecisionRouter, permissionDecisionLane, normalizePermissionReply }"
-        f" from {json.dumps(str(_PLUGIN))};"
-        "const router = new PermissionDecisionRouter();"
-        'const compat = router.admit("req-1", permissionDecisionLane("permission.v2.replied"));'
-        'const preferred = router.admit("req-1", permissionDecisionLane("permission.replied"));'
-        "console.log(JSON.stringify({compat, preferred,"
-        ' effective: router.effectiveLane("req-1"),'
-        ' unknownReply: normalizePermissionReply("something-new")}));'
-    )
-    result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
-    observed = json.loads(result.stdout)
-
-    assert observed["compat"] == {"lane": "compatibility", "accepted": True, "duplicate": False}
-    assert observed["preferred"]["accepted"] is False
-    assert observed["preferred"]["supersededLane"] == "compatibility"
-    assert observed["effective"] == "preferred"
-    assert "unknownReply" not in observed

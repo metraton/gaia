@@ -1,14 +1,11 @@
 /**
- * Drives the real GaiaOpenCodePlugin and prints what it handed OpenCode's
- * native permission mechanism.
+ * Drives the real GaiaOpenCodePlugin through one blocked tool call and prints
+ * what it did about presenting the approval.
  *
- * The affirmative claim in this task's gate is about a DELIVERED payload, so it
- * may not be asserted over a shape written by hand: the plugin runs here, its
- * own requestApproval executes the real `gaia approvals opencode-present` CLI
- * against the database in GAIA_DB, and the object captured below is the exact
- * permission object the plugin enriches in permission.ask. The host creates the
- * request; this driver models that real hook boundary instead of fabricating a
- * session.permission.create API.
+ * The plugin runs here and executes the real `gaia approvals opencode-present`
+ * CLI against the database in GAIA_DB; what is captured is the control-plane
+ * prompt it sent, the bridge traces, the cwd of every Gaia process and the
+ * abort the original invocation received.
  *
  * Usage: bun presentation_driver.ts '<scenario json>'
  */
@@ -17,7 +14,6 @@ import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 import { assertPromptAsyncBody } from "./sdk_body_contract.ts"
 
 const scenario = JSON.parse(process.argv[2])
-const asked: Record<string, unknown>[] = []
 const controlPrompts: Record<string, unknown>[] = []
 const bridgeEvents: Record<string, unknown>[] = []
 const deletedSessions: string[] = []
@@ -126,23 +122,12 @@ try {
   error = String(thrown?.message ?? thrown)
 }
 
+// The blocked attempt ends the specialist's turn, so the host idles its session.
 if (scenario.outcome === undefined || scenario.outcome === "pending" || scenario.outcome === "no-decision") {
-  const permission = {
-    id: scenario.permissionID ?? "perm-1",
-    sessionID: scenario.sessionID,
-    callID: scenario.callID,
-    title: "host permission",
-    metadata: {},
-  }
-  const permissionOutput = { status: "ask" as const }
-  await plugin["permission.ask"](permission, permissionOutput)
-  if (permissionOutput.status !== "deny") {
-    try {
-      await plugin.event({ event: { type: "session.idle", properties: { sessionID: scenario.sessionID } } })
-      asked.push({ permission, status: permissionOutput.status })
-    } catch (thrown: any) {
-      error = String(thrown?.message ?? thrown)
-    }
+  try {
+    await plugin.event({ event: { type: "session.idle", properties: { sessionID: scenario.sessionID } } })
+  } catch (thrown: any) {
+    error = String(thrown?.message ?? thrown)
   }
 }
 
@@ -162,6 +147,6 @@ if (scenario.controlPrompt !== undefined) {
 }
 
 console.log(JSON.stringify({
-  asked, controlPrompts, bridgeEvents, deletedSessions, controlSessionLingered, error, originalInvocationExecuted,
+  controlPrompts, bridgeEvents, deletedSessions, controlSessionLingered, error, originalInvocationExecuted,
   gaiaSpawnCwds,
 }))

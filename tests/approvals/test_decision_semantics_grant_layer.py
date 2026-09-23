@@ -71,6 +71,8 @@ def _reply_from_the_real_plugin(label: str) -> tuple[str, str]:
 
     Deliberately unguarded: an absent bun must fail this test rather than let
     an affirmative capability claim pass on a reply the test wrote itself.
+    The lane is the one the plugin's ``decide`` hands the CLI for a question
+    answer: every plugin lane but compatibility reaches the CLI as preferred.
     """
     from gaia.approvals.surface import OPTIONS
 
@@ -82,7 +84,7 @@ def _reply_from_the_real_plugin(label: str) -> tuple[str, str]:
         f"console.log(JSON.stringify(readSignatureAnswer({json.dumps(request)}, [[{json.dumps(label)}]])));"
     )
     result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
-    return json.loads(result.stdout), "control"
+    return json.loads(result.stdout), "preferred"
 
 
 #: OpenCode's question channel yields no ``always``: its options are Approve,
@@ -328,7 +330,7 @@ def test_duplicate_opencode_once_decision_is_idempotent(isolated_db):
 def test_a_once_reply_grants_one_index_and_the_grant_refuses_the_second_attempt(isolated_db):
     approval_id = _seed_presented_command_set()
     reply, lane = _reply_from_the_real_plugin("Approve")
-    assert (reply, lane) == ("once", "control")
+    assert (reply, lane) == ("once", "preferred")
 
     assert cmd_opencode_decide(_decide_args(approval_id, reply=reply, lane=lane)) == 0
 
