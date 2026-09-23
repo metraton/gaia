@@ -1272,29 +1272,21 @@ def cmd_show_v2(args) -> int:
     return 0
 
 
-def _native_consent_presentation(payload: dict, approval_id: str) -> dict:
-    """Return trusted unbound surface data and its resolver-compatible label."""
-    from adapters.consent_presentation import (
-        UNBOUND_PRESENTATION,
-        envelope_from_sealed_payload,
-        native_presentation,
-    )
-    from modules.security.approval_grants import render_approve_label
+def _signature_surface(payload: dict, approval_id: str) -> dict:
+    """Return the signature a host shows: the text to print, then its question and Details."""
+    from gaia.approvals import surface
 
-    envelope = envelope_from_sealed_payload(
-        payload,
-        approval_id=approval_id,
-        binding=UNBOUND_PRESENTATION,
-    )
-    presentation = native_presentation(envelope, payload)
+    rendered = surface.render(payload, approval_id)
     return {
-        **presentation,
-        "approve_label": render_approve_label(payload, approval_id),
+        "approval_id": approval_id,
+        "text": rendered.text,
+        "question": rendered.question,
+        "details": rendered.details,
     }
 
 
 def _print_consent_presentation(approval: dict, args) -> int:
-    """Print read-only native consent data for one pending approval."""
+    """Print the signature surface of one pending approval as JSON."""
     approval_id = approval.get("id", "")
     status = approval.get("status")
     if status != "pending":
@@ -1308,12 +1300,12 @@ def _print_consent_presentation(approval: dict, args) -> int:
         payload = json.loads(approval.get("payload_json") or "")
         if not isinstance(payload, dict):
             raise ValueError("sealed payload is not a JSON object")
-        presentation = _native_consent_presentation(payload, approval_id)
+        presentation = _signature_surface(payload, approval_id)
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         _print_error(f"Cannot render consent surface for {approval_id}: {exc}", args)
         return 1
 
-    print(json.dumps(presentation, indent=2))
+    print(json.dumps(presentation, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -1531,11 +1523,22 @@ def _requester_identity(args) -> tuple[str, str]:
     return session_id, agent_id
 
 
+def _per_command(args, flag: str, commands: list) -> list:
+    """Align an optional per-command flag with the commands: one value per --command."""
+    values = list(getattr(args, flag, None) or [])
+    if not values:
+        return [None] * len(commands)
+    if len(values) != len(commands):
+        raise ValueError(f"pass one --{flag} per --command, in the same order")
+    return values
+
+
 def _request_set_items(args) -> list[dict]:
-    """Pair each --command with its --cwd and --expect-exit declarations.
+    """Pair each --command with its --cwd, --expect-exit, --does and --impact declarations.
 
     One --cwd applies to every command; N --cwd flags align with N commands.
     --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions.
+    --does and --impact, when given, come once per command.
     """
     commands = list(args.command)
     cwds = list(getattr(args, "cwd", None) or [os.getcwd()])
@@ -1543,6 +1546,8 @@ def _request_set_items(args) -> list[dict]:
         cwds = cwds * len(commands)
     if len(cwds) != len(commands):
         raise ValueError("pass one --cwd for all commands or one per --command")
+    does = _per_command(args, "does", commands)
+    impacts = _per_command(args, "impact", commands)
     expected: dict[int, list[int]] = {}
     for spec in getattr(args, "expect_exit", None) or []:
         position, _, codes = spec.partition("=")
@@ -1550,7 +1555,11 @@ def _request_set_items(args) -> list[dict]:
             raise ValueError(f"--expect-exit {spec!r} must be POSITION=CODE[,CODE] for a listed command")
         expected[int(position) - 1] = [int(code) for code in codes.split(",")]
     return [
-        {"command": command, "cwd": os.path.abspath(cwd), "expect_exit": expected.get(index, [])}
+        {
+            "command": command, "cwd": os.path.abspath(cwd),
+            "expect_exit": expected.get(index, []),
+            "does": does[index], "impact": impacts[index],
+        }
         for index, (command, cwd) in enumerate(zip(commands, cwds))
     ]
 
@@ -1581,6 +1590,7 @@ def cmd_request_set(args) -> int:
             what=getattr(args, "what", None) or args.rationale,
             session_id=session_id,
             agent_id=agent_id,
+            question=getattr(args, "question", None),
             rollback=getattr(args, "rollback", None),
             verification=getattr(args, "verification", None),
             rationale=args.rationale,
@@ -1620,6 +1630,7 @@ def cmd_request_file_write(args) -> int:
             session_id=session_id,
             agent_id=agent_id,
             what=getattr(args, "what", None) or args.rationale,
+            question=getattr(args, "question", None),
             rollback=args.rollback,
             verification=args.verification,
             impact=args.impact,
@@ -2181,8 +2192,8 @@ def register(subparsers) -> None:
         "--consent-surface",
         action="store_true",
         help=(
-            "JSON native consent data: byte-exact visible_text plus the exact "
-            "resolver-compatible approve_label"
+            "JSON signature surface: the text to print, the question to ask "
+            "(Approve / Reject / Details) and its Details"
         ),
     )
     p_show.set_defaults(func=cmd_show_v2)
@@ -2233,6 +2244,17 @@ def register(subparsers) -> None:
         "--what", help="What the set does, in one human sentence; sealed and shown"
     )
     p_request_set.add_argument(
+        "--question", help="The short question the user answers (60 characters at most)"
+    )
+    p_request_set.add_argument(
+        "--does", action="append",
+        help="What each command does, once per --command (100 characters at most)",
+    )
+    p_request_set.add_argument(
+        "--impact", action="append",
+        help="The impact of each command, once per --command (100 characters at most)",
+    )
+    p_request_set.add_argument(
         "--cwd", action="append",
         help="Directory each command runs in: once for all, or once per --command",
     )
@@ -2264,6 +2286,9 @@ def register(subparsers) -> None:
     p_request_file_write.add_argument("--path", required=True)
     p_request_file_write.add_argument(
         "--what", help="What the edit does, in one human sentence; sealed and shown"
+    )
+    p_request_file_write.add_argument(
+        "--question", help="The short question the user answers (60 characters at most)"
     )
     p_request_file_write.add_argument("--rationale")
     p_request_file_write.add_argument(

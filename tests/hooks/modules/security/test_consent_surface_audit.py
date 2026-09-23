@@ -12,10 +12,6 @@ Two defects in the consent surface are covered here, both observed live:
   2. The ``SHOWN`` event was written with an empty payload, so afterwards there
      was no way to establish what text the user was shown. The guard is that
      activation now persists the full question text.
-
-Nonce activation is asserted end-to-end against the NEW label form, since a
-label change that broke ``extract_approval_id_from_label`` would silently
-disable every approval.
 """
 
 from __future__ import annotations
@@ -319,66 +315,6 @@ class TestConsentSurfaceCompleteness:
         assert payload_commands(
             {"exact_content": "/etc/hosts", "scope": "SCOPE_FILE_PATH"}
         ) == ["/etc/hosts"]
-
-
-# ---------------------------------------------------------------------------
-# Nonce activation must survive the new label form
-# ---------------------------------------------------------------------------
-
-class TestCanonicalIdSurvivesTheBatchLabel:
-    """The complete canonical id is what activates the grant."""
-
-    @pytest.mark.parametrize("payload_factory", [
-        lambda: _singular_payload("git push origin main"),
-        lambda: _command_set_payload(BATCH_COMMANDS),
-    ])
-    def test_rendered_label_yields_the_exact_approval_id(self, payload_factory):
-        from modules.security.approval_grants import (
-            extract_approval_id_from_label,
-            render_approve_label,
-        )
-
-        approval_id = "P-" + "75a44b5cfb6ae198b0ad444ed442bc7a"
-        label = render_approve_label(payload_factory(), approval_id)
-
-        assert extract_approval_id_from_label(label) == approval_id, (
-            f"Canonical id must be extractable from the rendered label: {label!r}"
-        )
-
-    def test_batch_label_names_the_count(self):
-        from modules.security.approval_grants import render_approve_label
-
-        label = render_approve_label(
-            _command_set_payload(BATCH_COMMANDS), "P-" + "d" * 32
-        )
-        assert "(3 commands)" in label, label
-        assert label.startswith("Approve"), label
-
-    def test_activation_succeeds_through_the_rendered_batch_label(self, approvals_db):
-        """End-to-end: render label -> exact id -> activate the COMMAND_SET."""
-        db_path, assert_con, store = approvals_db
-        from modules.security.approval_grants import (
-            ACTIVATION_ACTIVATED,
-            activate_db_pending_by_id,
-            extract_approval_id_from_label,
-            render_approve_label,
-        )
-
-        payload = _command_set_payload(BATCH_COMMANDS)
-        approval_id = _insert_pending(store, payload)
-        label = render_approve_label(payload, approval_id)
-
-        extracted_id = extract_approval_id_from_label(label)
-        assert extracted_id == approval_id
-
-        result = activate_db_pending_by_id(
-            extracted_id,
-            current_session_id=SESSION_ID,
-            presented_label=label,
-        )
-
-        assert result.success, f"Activation must still succeed: {result.reason}"
-        assert result.status == ACTIVATION_ACTIVATED
 
 
 # ---------------------------------------------------------------------------

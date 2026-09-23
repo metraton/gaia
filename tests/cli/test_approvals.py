@@ -539,20 +539,13 @@ class TestCmdShow:
 
         assert rc == 0
         output = json.loads(capsys.readouterr().out)
-        expected = approvals_mod._native_consent_presentation(payload, self.canonical_id)
-        assert output == expected
-        assert output["visible_text"] == expected["visible_text"]
-        assert output["metadata"]["commands"] == commands
-        assert output["metadata"]["fingerprints"] == [
-            _sha256(command) for command in commands
-        ]
-        assert output["approve_label"] == (
-            f"Approve -- COMMAND_SET approval request (2 commands) [{self.canonical_id}]"
-        )
-        assert "No impact statement was declared" in output["visible_text"]
-        assert "No rollback was declared" in output["visible_text"]
-        assert "No verification step was declared" in output["visible_text"]
-        assert "No window was declared" in output["visible_text"]
+        assert output == approvals_mod._signature_surface(payload, self.canonical_id)
+        assert "Comandos (2)" in output["text"]
+        for index, command in enumerate(commands, start=1):
+            assert f"  {index}  {command}" in output["details"]
+            assert _sha256(command) in output["details"]
+        assert "Rollback: no declarado" in output["details"]
+        assert "approve_label" not in output
         assert store.get_by_id(self.canonical_id) == before_row
         assert store.get_history(self.canonical_id) == before_events
         assert [event["event_type"] for event in before_events] == ["REQUESTED"]

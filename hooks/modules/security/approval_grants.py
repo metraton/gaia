@@ -374,21 +374,6 @@ def render_consent_surface(
     return render_native_text(envelope)
 
 
-def render_approve_label(payload: Dict[str, Any], approval_id: str) -> str:
-    """Render the Approve option label with its complete machine identity.
-
-    Claude Code provides no separate approval metadata with the structured
-    answer, so the native label is the identity channel. It keeps a concise
-    human action while carrying the complete canonical id in brackets. A batch
-    label names the command count so the label does not imply a single command.
-    """
-    action = payload.get("operation", "") or "approve operation"
-    count = len(payload_commands(payload))
-    if count > 1:
-        action = f"{action} ({count} commands)"
-    return f"Approve -- {action} [{approval_id}]"
-
-
 def verify_consent_surface_completeness(
     surface: str,
     payload: Dict[str, Any],
@@ -437,7 +422,7 @@ def build_shown_event_payload(
 
     record: Dict[str, Any] = {
         "approval_id": approval_id,
-        "approve_label": presented_label or render_approve_label(payload, approval_id),
+        "approve_label": presented_label,
         "command_count": len(commands),
         "commands_shown": commands,
         "complete": complete,

@@ -2189,7 +2189,8 @@ def _build_sealed_payload(
 
     directory = cwd or os.getcwd()
     items = normalized_set if is_command_set else [{"command": command, "rationale": ""}]
-    base = command.split()[0] if command.strip() else "unknown"
+    # The program's name, not its path: the title is limited to 120 characters.
+    base = os.path.basename(command.split()[0]) if command.strip() else "unknown"
     return seal_request(
         "command",
         [{**item, "cwd": directory, "expect_exit": []} for item in items],

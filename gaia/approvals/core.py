@@ -128,6 +128,9 @@ def _seal_items(kind: str, items: Iterable[Mapping[str, Any]]) -> list[dict]:
             cwd = raw.get("cwd")
             expect_exit = _expected_exits(raw.get("expect_exit"), position)
             item = {"command": target, "rationale": raw.get("rationale") or ""}
+        for phrase in ("does", "impact"):
+            if _optional_text(raw.get(phrase)):
+                item[phrase] = raw[phrase].strip()
         if not isinstance(cwd, str) or not os.path.isabs(cwd):
             raise SealError(f"item {position}: cwd must be an absolute directory")
         fingerprint = command_fingerprint(target)
@@ -151,6 +154,7 @@ def seal_request(
     what: str,
     session_id: str,
     agent_id: str,
+    question: Optional[str] = None,
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
     impact: Optional[str] = None,
@@ -160,22 +164,31 @@ def seal_request(
 ) -> dict:
     """Build the sealed payload for any request kind: ``command``, ``command_set`` or ``file_write``.
 
+    ``what`` is the signature's title and ``question`` its question; each item
+    may carry ``does`` and ``impact``. All four are checked against the
+    signature surface limits here, when the request is made
+    (``surface.SurfaceLimitError``).
+
     ``operation`` is required for ``command`` (the reactive Bash block): it is
     the ``<CATEGORY> command intercepted: <verb>`` line activation reads to
     rebuild the semantic signature.
     """
     from gaia.approvals.command_set import request_fingerprint
+    from gaia.approvals.surface import check_phrases
 
     if kind not in _COMMAND_KINDS and kind != _FILE_KIND:
         raise SealError(f"unknown request kind {kind!r}")
     what_text = _required_text(what, "what")
+    question_text = _optional_text(question)
     requester = resolve_requester(session_id, agent_id)
     sealed = _seal_items(kind, items)
+    check_phrases(title=what_text, question=question_text, items=sealed)
     targets = [item.get("command") or item["path"] for item in sealed]
     request_key = request_fingerprint(targets)
 
     payload: dict[str, Any] = {
         "what": what_text,
+        "question": question_text,
         "window_minutes": WINDOW_MINUTES,
         "window_starts": "decision",
         "requested_by": requester,
@@ -230,6 +243,7 @@ def request_command_set(
     what: str,
     session_id: str,
     agent_id: str,
+    question: Optional[str] = None,
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
     rationale: Optional[str] = None,
@@ -245,7 +259,7 @@ def request_command_set(
         raise SealError(str(exc)) from exc
     payload = seal_request(
         "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
-        rollback=rollback, verification=verification, rationale=rationale,
+        question=question, rollback=rollback, verification=verification, rationale=rationale,
     )
     return store.insert_requested(payload, agent_id=agent_id, session_id=session_id)
 
@@ -275,11 +289,16 @@ def request_file_write(
     session_id: str,
     agent_id: str,
     what: Optional[str] = None,
+    question: Optional[str] = None,
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
     impact: Optional[str] = None,
 ) -> str:
-    """Seal and persist a protected-path write request, reusing the requester's open one."""
+    """Seal and persist a protected-path write request, reusing the requester's open one.
+
+    The default title names only the file: the full path is already listed
+    under the surface's files, and a deep path would not fit the title limit.
+    """
     from gaia.approvals import store
 
     requester = {"session_id": session_id, "agent_id": agent_id}
@@ -287,9 +306,9 @@ def request_file_write(
     if existing:
         return existing
     payload = seal_request(
-        _FILE_KIND, [{"path": path}],
-        what=what or f"Modify the protected file {path}",
-        session_id=session_id, agent_id=agent_id,
+        _FILE_KIND, [{"path": path, "impact": impact}],
+        what=what or f"Modificar el archivo protegido {os.path.basename(path)}.",
+        session_id=session_id, agent_id=agent_id, question=question,
         rollback=rollback, verification=verification, impact=impact,
     )
     return store.insert_requested(payload, agent_id=agent_id, session_id=session_id)

@@ -71,9 +71,8 @@ The full surface, with the exact bytes and their fingerprints, is in the message
 The prose lines are the presenter's, in the user's language. The control text is
 not: the approve control's leading word is the literal English `Approve`,
 because that literal is what the resolver matches
-(`hooks/modules/security/approval_grants.py::extract_approval_id_from_label`, and
-`hooks/modules/security/approval_grants.py::render_approve_label` for the label
-Gaia itself emits). Translating the control does not translate the surface; it
+(`hooks/modules/security/approval_grants.py::extract_approval_id_from_label`).
+Translating the control does not translate the surface; it
 silently unbinds the decision.
 
 ## The four rules that make the split safe
