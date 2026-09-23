@@ -4352,10 +4352,11 @@ def request_plan_change(
     workspace: str, brief_name: str, justification: str, *,
     db_path: Path | None = None,
 ) -> dict:
-    """Record the orchestrator's justified request to change the plan.
+    """Record the orchestrator's justified request to change an active plan.
 
-    One change is open per plan at a time, so each application versions the
-    plan against the proposal that was actually approved.
+    Only an active (approved) plan goes through the change flow; a draft is
+    still edited directly. One change is open per plan at a time, so each
+    application versions the plan against the proposal that was approved.
     """
     from gaia.state.permissions import _assert_dispatch_can_advance_state
     _assert_dispatch_can_advance_state("plans")
@@ -4364,6 +4365,11 @@ def request_plan_change(
     con = _connect(db_path)
     try:
         plan = _plan_row(con, workspace, brief_name)
+        if plan["status"] != "active":
+            raise ValueError(
+                f"plan for '{brief_name}' is '{plan['status']}'; a change is "
+                f"requested only on an active plan"
+            )
         open_change = con.execute(
             "SELECT id, status FROM plan_changes WHERE plan_id = ? AND status IN "
             f"({', '.join('?' for _ in _OPEN_CHANGE_STATUSES)})",

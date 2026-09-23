@@ -122,6 +122,46 @@ def test_a_paused_plan_refuses_the_birth_of_a_task_execution(db):
                               db_path=db)
 
 
+def test_a_task_of_a_plan_that_is_not_active_is_not_dispatched(db):
+    from gaia.store.writer import set_plan_status
+    from modules.agents.dispatch_binding import (
+        DEGRADABLE_BINDING_REASONS,
+        DispatchBindingError,
+        validate_dispatch_binding,
+    )
+
+    _seed(db)
+    task_id = _task_id(db, 1)
+    set_plan_status(_WS, _BRIEF, "draft", db_path=db)
+
+    with pytest.raises(DispatchBindingError) as exc:
+        validate_dispatch_binding(kind="task_execution", plan_task_id=task_id,
+                                  db_path=db)
+    assert exc.value.reason == "plan_task_id_plan_not_active"
+    assert "'draft'" in str(exc.value)
+    assert exc.value.reason in DEGRADABLE_BINDING_REASONS
+
+    set_plan_status(_WS, _BRIEF, "active", db_path=db)
+    validate_dispatch_binding(kind="task_execution", plan_task_id=task_id,
+                              db_path=db)
+
+
+def test_a_change_is_requested_only_on_an_active_plan(db, capsys):
+    from gaia.store.writer import request_plan_change, set_plan_status
+
+    _seed(db)
+    set_plan_status(_WS, _BRIEF, "draft", db_path=db)
+    with pytest.raises(ValueError, match="active"):
+        request_plan_change(_WS, _BRIEF, "scope moved", db_path=db)
+    assert _cli("plan", ["plan", "change", "request", _BRIEF,
+                         "--reason", "scope moved"]) != 0
+    assert "active" in capsys.readouterr().err
+
+    set_plan_status(_WS, _BRIEF, "active", db_path=db)
+    assert request_plan_change(_WS, _BRIEF, "scope moved",
+                               db_path=db)["status"] == "requested"
+
+
 # ---------------------------------------------------------------------------
 # 2. Re-verification (AC-1, second trigger).
 # ---------------------------------------------------------------------------
