@@ -292,6 +292,23 @@ def test_signature_surface_request_rejects_a_phrase_on_two_lines(field):
         _seal_with(field, "primera linea\nsegunda linea")
 
 
+def test_signature_surface_protected_write_on_a_deep_path_still_seals(db):
+    """Gaia's own default title names the file, so a long path never trips the title limit."""
+    from gaia.approvals import core
+    from gaia.approvals.store import get_by_id
+    from modules.security.approval_grants import generate_nonce, write_pending_approval_for_file
+
+    deep = "/" + "/".join(["directorio-profundo"] * 8) + "/settings.json"
+    title = "Modificar el archivo protegido settings.json."
+
+    requested = core.request_file_write(deep, session_id=SESSION, agent_id=AGENT)
+    nonce = generate_nonce()
+    assert write_pending_approval_for_file(nonce=nonce, file_path=deep, session_id=SESSION) is not None
+
+    for approval_id in (requested, f"P-{nonce}"):
+        assert json.loads(get_by_id(approval_id)["payload_json"])["what"] == title
+
+
 def _question(**overrides):
     from gaia.approvals import surface
 

@@ -283,6 +283,15 @@ def _pending_file_request(path: str, requester: Mapping[str, str]) -> Optional[s
     return None
 
 
+def file_write_title(path: str) -> str:
+    """The default title of a protected write: the file's name, never its full path.
+
+    The full path is already listed under the surface's files, and a deep path
+    (a worktree, a test's temporary directory) would not fit the title limit.
+    """
+    return f"Modificar el archivo protegido {os.path.basename(path)}."
+
+
 def request_file_write(
     path: str,
     *,
@@ -294,11 +303,7 @@ def request_file_write(
     verification: Optional[str] = None,
     impact: Optional[str] = None,
 ) -> str:
-    """Seal and persist a protected-path write request, reusing the requester's open one.
-
-    The default title names only the file: the full path is already listed
-    under the surface's files, and a deep path would not fit the title limit.
-    """
+    """Seal and persist a protected-path write request, reusing the requester's open one."""
     from gaia.approvals import store
 
     requester = {"session_id": session_id, "agent_id": agent_id}
@@ -307,7 +312,7 @@ def request_file_write(
         return existing
     payload = seal_request(
         _FILE_KIND, [{"path": path, "impact": impact}],
-        what=what or f"Modificar el archivo protegido {os.path.basename(path)}.",
+        what=what or file_write_title(path),
         session_id=session_id, agent_id=agent_id, question=question,
         rollback=rollback, verification=verification, impact=impact,
     )

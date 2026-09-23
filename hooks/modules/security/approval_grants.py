@@ -856,11 +856,11 @@ def write_pending_approval_for_file(
     requester = agent_id or "unattributed"
     db_approval_id = f"P-{nonce}"
     try:
-        from gaia.approvals.core import seal_request
+        from gaia.approvals.core import file_write_title, seal_request
         from gaia.approvals.store import insert_requested
         sealed_payload = seal_request(
-            "file_write", [{"path": file_path}],
-            what=ctx.get("description") or f"Modify the protected file {file_path}",
+            "file_write", [{"path": file_path, "impact": ctx.get("impact")}],
+            what=ctx.get("description") or file_write_title(file_path),
             session_id=session_id, agent_id=requester,
             rollback=ctx.get("rollback"), verification=ctx.get("verification"),
             impact=ctx.get("impact"), risk_level=ctx.get("risk", "medium") or "medium",

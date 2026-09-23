@@ -1207,8 +1207,8 @@ class TestWritePendingApprovalForFileMutants:
             return "P-nonce"
         monkeypatch.setattr("gaia.approvals.store.insert_requested", _insert)
         ag.write_pending_approval_for_file("nonce", "/etc/hosts", session_id="s")
-        assert captured["payload"]["rationale"] == "Modify the protected file /etc/hosts"
-        assert captured["payload"]["what"] == "Modify the protected file /etc/hosts"
+        assert captured["payload"]["rationale"] == "Modificar el archivo protegido hosts."
+        assert captured["payload"]["what"] == "Modificar el archivo protegido hosts."
 
 
 class TestCleanupExpiredGrantsMutants:
