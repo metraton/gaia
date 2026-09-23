@@ -126,6 +126,7 @@ def _pending_to_display(p: dict) -> dict:
     return {
         "approval_id": _approval_id_label(nonce),
         "nonce_prefix": _nonce_short(nonce),
+        "state": p.get("state"),
         "command": p.get("command", ""),
         "verb": p.get("danger_verb", ""),
         "category": p.get("danger_category", ""),
@@ -174,6 +175,7 @@ def _pending_to_machine(p: dict) -> dict:
             approval_id[2:] if approval_id.startswith("P-") else approval_id
         ),
         "status": p.get("status"),
+        "state": p.get("state"),
         "operation": payload.get("operation"),
         "exact_content": payload.get("exact_content"),
         "commands": list(payload_commands(payload)),
@@ -468,12 +470,18 @@ def cmd_list(args) -> int:
         except Exception:
             decision_statuses = {}
 
-    db_items = [
-        _grant_to_display(
+    readings = _read(
+        [p.get("approval_id") for p in pending_rows] + [g.get("approval_id") for g in db_grants]
+    )
+    db_items = []
+    for g in db_grants:
+        item = _grant_to_display(
             g, decision_statuses.get(g.get("approval_id", ""), _GRANT_DECISION_FALLBACK)
         )
-        for g in db_grants
-    ]
+        item["outcome"] = readings.get(item["approval_id"], {}).get("outcome")
+        db_items.append(item)
+    for p in pending_rows:
+        p["state"] = readings.get(p.get("approval_id"), {}).get("state")
     pending_display_items = [_pending_to_display(p) for p in pending_rows]
 
     if getattr(args, "json", False):
@@ -500,16 +508,17 @@ def cmd_list(args) -> int:
         # an approved grant with unconsumed commands must never print
         # "PENDING" as if it were still awaiting a decision.
         print(
-            f"\n{'APPROVAL_ID':<34}  {'STATUS':<10}  {'GRANT_STATE':<12}  "
+            f"\n{'APPROVAL_ID':<34}  {'STATUS':<10}  {'GRANT_STATE':<12}  {'OUTCOME':<15}  "
             f"{'AGE':<6}  {'CMD_COUNT':<10}  FIRST_COMMAND"
         )
-        print("-" * 92)
+        print("-" * 109)
         for item in db_items:
             cmd_preview = item["first_command"][:30]
             print(
                 f"{item['approval_id']:<34}  "
                 f"{item['status'].upper():<10}  "
                 f"{item['grant_state']:<12}  "
+                f"{item['outcome'] or '-':<15}  "
                 f"{item['age']:<6}  "
                 f"{str(item['command_count']):<10}  "
                 f"{cmd_preview}"
@@ -517,13 +526,14 @@ def cmd_list(args) -> int:
         print(f"\n{len(db_items)} DB grant(s).")
 
     if pending_display_items:
-        print(f"\n{'ID':<12}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
-        print("-" * 70)
+        print(f"\n{'ID':<12}  {'STATE':<9}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
+        print("-" * 81)
         for item in pending_display_items:
             cmd_preview = item["command"][:40]
             source = item["source"][:14] if item["source"] else "-"
             print(
                 f"{item['approval_id']:<12}  "
+                f"{item['state'] or '-':<9}  "
                 f"{item['age']:<6}  "
                 f"{item['verb']:<10}  "
                 f"{source:<16}  "
@@ -1025,21 +1035,25 @@ def cmd_stats(args) -> int:
     """Show approval system statistics from the DB.
 
     DB-only since FS retirement: all pending approvals and grants live in
-    gaia.db.  Counts are derived from the approvals table (all statuses) and
-    the approval_grants table (active grants).
+    gaia.db.  ``states`` and ``outcomes`` count each approval's reading
+    (gaia.approvals.reading): a replaced or expired request is not counted
+    revoked, and a call with no result or an old Stop-sweep failure is not
+    counted failed. ``revoked`` and ``rejected`` are those derived counts;
+    ``pending_all_sessions`` and the verb breakdown still count every row
+    stored as pending.
     """
-    # DB counts.
     db_pending = 0
-    db_approved = 0
-    db_rejected = 0
-    db_revoked = 0
     verb_counts: dict = {}
+    states: dict = {}
+    outcomes: dict = {}
     try:
         store = _import_approval_store()
-        all_rows = store.list_all(limit=1000)
+        all_rows = _with_reading(store.list_all(limit=1000))
         for row in all_rows:
-            status = row.get("status", "")
-            if status == "pending":
+            states[row["state"]] = states.get(row["state"], 0) + 1
+            if row["outcome"]:
+                outcomes[row["outcome"]] = outcomes.get(row["outcome"], 0) + 1
+            if row.get("status") == "pending":
                 db_pending += 1
                 # Extract verb from payload for breakdown.
                 payload_json = row.get("payload_json") or "{}"
@@ -1052,12 +1066,6 @@ def cmd_stats(args) -> int:
                     verb_counts[verb] = verb_counts.get(verb, 0) + 1
                 except Exception:
                     pass
-            elif status == "approved":
-                db_approved += 1
-            elif status == "rejected":
-                db_rejected += 1
-            elif status == "revoked":
-                db_revoked += 1
     except Exception as exc:
         _print_error(f"Failed to query DB statistics: {exc}", args)
         return 1
@@ -1073,11 +1081,13 @@ def cmd_stats(args) -> int:
 
     stats = {
         "pending_all_sessions": db_pending,
-        "approved": db_approved,
-        "rejected": db_rejected,
-        "revoked": db_revoked,
+        "approved": states.get("approved", 0),
+        "rejected": states.get("rejected", 0),
+        "revoked": states.get("revoked", 0),
         "active_db_grants": db_active_grants,
         "verb_breakdown": verb_counts,
+        "states": dict(sorted(states.items())),
+        "outcomes": dict(sorted(outcomes.items())),
     }
 
     if getattr(args, "json", False):
@@ -1087,9 +1097,14 @@ def cmd_stats(args) -> int:
     print("Approval System Stats")
     print("---------------------")
     print(f"  Pending (all sessions) : {stats['pending_all_sessions']}")
-    print(f"  Approved               : {stats['approved']}")
-    print(f"  Rejected               : {stats['rejected']}")
-    print(f"  Revoked                : {stats['revoked']}")
+    for state in ("pending", "orphaned", "expired", "approved", "rejected", "revoked", "replaced"):
+        print(f"  {state.capitalize():<23}: {states.get(state, 0)}")
+    for outcome, title in (
+        ("executed", "Executed"), ("failed", "Failed"), ("no_result", "No result"),
+        ("in_flight", "In flight"), ("legacy_executed", "Executed (legacy)"),
+        ("legacy_failed", "Failed (legacy)"),
+    ):
+        print(f"  {title:<23}: {outcomes.get(outcome, 0)}")
     print(f"  Active DB grants       : {stats['active_db_grants']}")
     if verb_counts:
         print("  Verb breakdown (pending):")
@@ -1126,6 +1141,30 @@ def _import_approval_display():
     return display
 
 
+def _read(approval_ids) -> dict:
+    """Each approval's reading (gaia.approvals.reading), keyed by id, with the registry's live sessions."""
+    from gaia.approvals import reading
+
+    return reading.read_ids(approval_ids, live=reading.live_sessions())
+
+
+def _with_reading(rows: list) -> list:
+    """Attach each ``approvals`` row's derived ``state`` and ``outcome`` to it, in place."""
+    readings = _read(row.get("id") for row in rows)
+    for row in rows:
+        reading = readings.get(row.get("id"), {})
+        row["state"] = reading.get("state")
+        row["outcome"] = reading.get("outcome")
+    return rows
+
+
+def _not_pending(approval: dict) -> str:
+    """Why a non-pending approval cannot be presented or decided, naming its derived state."""
+    approval_id = approval.get("id", "")
+    state = _read([approval_id]).get(approval_id, {}).get("state") or approval.get("status")
+    return f"Approval {approval_id} is {state}, not pending"
+
+
 # ---------------------------------------------------------------------------
 # T3.1: gaia approvals pending -- shortcut for list --status=pending
 # ---------------------------------------------------------------------------
@@ -1160,10 +1199,10 @@ def cmd_pending(args) -> int:
 
     try:
         store = _import_approval_store()
-        rows = store.list_pending(
+        rows = _with_reading(store.list_pending(
             all_sessions=all_sessions,
             session_id=session_id,
-        )
+        ))
     except Exception as exc:
         _print_error(f"Failed to query pending approvals: {exc}", args)
         return 1
@@ -1257,17 +1296,18 @@ def cmd_show_v2(args) -> int:
             return 1
 
     grant = _grant_row_for(raw_id)
+    reading = _read([raw_id]).get(raw_id)
 
     if output_json:
         print(json.dumps(
-            {"approval": approval, "events": events, "grant": grant},
+            {"approval": approval, "events": events, "grant": grant, "reading": reading},
             indent=2,
             default=str,
         ))
         return 0
 
     display = _import_approval_display()
-    display.print_approval_detail(approval, events, grant=grant)
+    display.print_approval_detail(approval, events, grant=grant, reading=reading)
     return 0
 
 
@@ -1702,7 +1742,7 @@ def _opencode_binding(
         return None, f"No approval found for id: {approval_id}"
     accepted_statuses = {"pending", "approved"} if allow_approved else {"pending"}
     if approval.get("status") not in accepted_statuses:
-        return None, f"Approval {approval_id} is not pending"
+        return None, _not_pending(approval)
     owner = approval.get("session_id")
     if owner is not None and owner != session_id:
         return None, "OpenCode session does not own this approval"
@@ -1791,8 +1831,10 @@ def _opencode_presentation_refusal(args) -> str | None:
         approval = _import_approval_store().get_by_id(approval_id)
     except Exception as exc:
         return f"Failed to load approval: {exc}"
-    if approval is None or approval.get("status") != "pending":
+    if approval is None:
         return f"Approval {approval_id} is not pending"
+    if approval.get("status") != "pending":
+        return _not_pending(approval)
     if not approval.get("session_id"):
         return (
             f"Approval {approval_id} has no requesting session; it is shown by "
@@ -2035,7 +2077,7 @@ def cmd_history(args) -> int:
 
     try:
         store = _import_approval_store()
-        rows = store.list_all(status=status_filter, limit=limit)
+        rows = _with_reading(store.list_all(status=status_filter, limit=limit))
     except Exception as exc:
         _print_error(f"Failed to query history: {exc}", args)
         return 1
