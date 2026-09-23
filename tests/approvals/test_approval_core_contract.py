@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import re
 import sqlite3
 from contextlib import redirect_stdout
 
@@ -428,6 +429,44 @@ def test_approval_core_contract_subagent_event_without_agent_is_refused_before_c
     pending = _row(db, "SELECT id FROM approvals")
     assert pending is not None
     assert _payload(db, pending["id"])["requested_by"] == {"session_id": SESSION, "agent_id": AGENT}
+
+
+def _blocked_approval_id(session_id, agent_type):
+    from modules.tools.bash_validator import BashValidator
+
+    result = BashValidator().validate(
+        COMMANDS[0], is_subagent=True, session_id=session_id, agent_type=agent_type,
+        hook_payload=_subagent_event(session_id=session_id, agent_type=agent_type),
+    )
+    assert not result.allowed
+    match = re.search(r"approval_id:\s*(P-[\w-]+)", json.dumps(result.block_response))
+    assert match, result.block_response
+    return match.group(1)
+
+
+def test_approval_core_contract_blocked_command_reuses_only_its_requesters_pending(db):
+    """D6: a retry names its own pending; another session or agent gets a request of its own."""
+    own = _blocked_approval_id(SESSION, AGENT)
+    assert _blocked_approval_id(SESSION, AGENT) == own
+
+    other_agent = _blocked_approval_id(SESSION, "developer")
+    other_session = _blocked_approval_id("ses-foreign", AGENT)
+    assert len({own, other_agent, other_session}) == 3
+    assert _payload(db, other_agent)["requested_by"] == {"session_id": SESSION, "agent_id": "developer"}
+    assert _payload(db, other_session)["requested_by"] == {"session_id": "ses-foreign", "agent_id": AGENT}
+
+
+def test_approval_core_contract_blocked_command_is_not_named_under_a_foreign_pending_set(db):
+    from gaia.approvals import core
+
+    foreign_set = core.request_command_set(
+        _set_items(), what="Publish the branch and open the PR", session_id="ses-foreign", agent_id=AGENT,
+    )
+    own_set = core.request_command_set(
+        _set_items(), what="Publish the branch and open the PR", session_id=SESSION, agent_id="developer",
+    )
+    assert _blocked_approval_id(SESSION, AGENT) not in {foreign_set, own_set}
+    assert _blocked_approval_id(SESSION, "developer") == own_set
 
 
 def test_approval_core_contract_primary_session_binds_to_the_adapter_primary_identity(db, monkeypatch):

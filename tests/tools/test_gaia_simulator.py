@@ -422,6 +422,28 @@ class TestHookRunner:
         assert result.actual_decision == "BLOCK"
         assert result.matched is True
 
+    def test_replayed_t3_reaches_consent_as_a_subagent_would(self, hooks_dir: Path, tmp_path: Path):
+        """A replayed tool call carries agent_id AND agent_type, so a T3 is sealed, not refused."""
+        runner = HookRunner(hooks_dir=hooks_dir, project_root=tmp_path)
+        event = ReplayEvent(
+            timestamp="2026-03-11 10:00:00,000",
+            hook_name="pre_tool_use",
+            tool_name="Bash",
+            stdin_payload={
+                "tool_name": "Bash",
+                "tool_input": {"command": "git push origin main"},
+                "hook_event_name": "PreToolUse",
+                "session_id": "replay-test",
+            },
+            expected_decision="DENY",
+            expected_exit_code=0,
+            expected_tier="",
+            source_file="test",
+        )
+        result = runner.run(event)
+        assert "carries no agent" not in result.actual_stdout
+        assert "approval_id: P-" in result.actual_stdout
+
     def test_run_batch(self, hooks_dir: Path, tmp_path: Path):
         runner = HookRunner(hooks_dir=hooks_dir, project_root=tmp_path)
         events = [

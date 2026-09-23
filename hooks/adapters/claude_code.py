@@ -2506,7 +2506,9 @@ class ClaudeCodeAdapter(HookAdapter):
 
         A protected-path write by a subagent is decided by the host-neutral
         ``gaia.approvals.core.protected_write_verdict``, bound to the session
-        and the agent type (falling back to ``agent_id``) that attempts it.
+        and the ``agent_type`` of the event that attempts it; an event missing
+        either is denied without sealing a request (``agent_id`` is never used
+        in its place).
 
         Blocks modifications to Gaia hooks, settings, and security config
         by requiring user approval for any path that matches protected path

@@ -277,15 +277,15 @@ class TestDoubleApprovalReproduction:
         approval_id = astore.insert_requested(payload, session_id=session_id)
 
         # The redirect-stripped form must find the SAME pending semantically.
-        found = _find_pending_in_db(session_id, "git push")
+        found = _find_pending_in_db(session_id, "git push", "t")
         assert found == approval_id, (
             f"semantic dedup must reuse pending {approval_id}, got {found}"
         )
         # A byte-exact match still works too.
-        assert _find_pending_in_db(session_id, "git push 2>&1") == approval_id
+        assert _find_pending_in_db(session_id, "git push 2>&1", "t") == approval_id
 
         # A genuinely different command must NOT match.
-        assert _find_pending_in_db(session_id, "git pull") is None
+        assert _find_pending_in_db(session_id, "git pull", "t") is None
 
 
 # ---------------------------------------------------------------------------
@@ -336,5 +336,5 @@ class TestChdirPathPolicy:
         approval_id = astore.insert_requested(payload, session_id=session_id)
 
         # Same path (with a redirect) reuses; different path does not.
-        assert _find_pending_in_db(session_id, "git -C /repo/a push 2>&1") == approval_id
-        assert _find_pending_in_db(session_id, "git -C /repo/b push") is None
+        assert _find_pending_in_db(session_id, "git -C /repo/a push 2>&1", "t") == approval_id
+        assert _find_pending_in_db(session_id, "git -C /repo/b push", "t") is None

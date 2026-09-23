@@ -13,7 +13,8 @@ keeping the real security boundaries (signature byte-binding, single-use
 PENDING->CONSUMED replay guard, expires_at TTL):
 
   * check_db_semantic_grant()      -- session_id is audit metadata, not a filter.
-  * _find_pending_in_db()          -- dedup queries all_sessions=True.
+  * _find_pending_in_db()          -- dedup reuses only the requester's own
+                                      pending (brief aprobaciones-agnosticas-al-host D6).
   * insert_requested()             -- fingerprint idempotency: identical payload
                                       reuses the existing pending id.
   * APPROVAL_GRANT_TTL_MINUTES = 5 -- grant-lifetime source (distinct from the
@@ -366,20 +367,22 @@ def test_insert_requested_fingerprint_idempotent(iso_db):
 
 
 # ---------------------------------------------------------------------------
-# 6. _find_pending_in_db finds a pending minted under another session
+# 6. _find_pending_in_db reuses only the requester's own pending (D6)
 # ---------------------------------------------------------------------------
 
-def test_find_pending_in_db_cross_session(iso_db):
+def test_find_pending_in_db_reuses_only_the_requesters_pending(iso_db):
     import gaia.approvals.store as astore
     from modules.tools.bash_validator import _find_pending_in_db
 
     command = "terraform apply"
     payload = _sealed_payload(command)
-    approval_id = astore.insert_requested(payload, agent_id="a", session_id="S1")
+    approval_id = astore.insert_requested(payload, agent_id="test-agent", session_id="S1")
 
-    # Look up from a different session -- must find the S1 pending.
-    found = _find_pending_in_db("S2", command)
-    assert found == approval_id, "_find_pending_in_db must be cross-session"
+    assert _find_pending_in_db("S1", command, "test-agent") == approval_id
+    assert _find_pending_in_db("S2", command, "test-agent") is None, (
+        "a pending approved for S1 seals a grant S2 cannot consume"
+    )
+    assert _find_pending_in_db("S1", command, "other-agent") is None
 
 
 # ---------------------------------------------------------------------------

@@ -1832,13 +1832,36 @@ class BashValidator:
 # T2.1 DB-backed helpers (cutover from filesystem approval cache)
 # ---------------------------------------------------------------------------
 
-def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
-    """Query the DB for an existing pending approval matching this command/session.
+def _pending_requests_of(session_id: str, agent_id: str) -> list:
+    """Return the pending requests, oldest first, whose sealed requester is this session and agent.
+
+    A pending is reused only by its own requester (D6): approving it seals a
+    grant bound to ``requested_by``, so naming it to anyone else yields a
+    grant that requester cannot consume and a second signature for the same
+    command. A payload that names no requester is never reused.
+    """
+    from gaia.approvals.store import get_pending
+    import json as _json
+
+    requester = {"session_id": session_id, "agent_id": agent_id}
+    own = []
+    for row in get_pending(all_sessions=True):
+        try:
+            payload = _json.loads(row.get("payload_json") or "")
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("requested_by") == requester:
+            own.append((row, payload))
+    return own
+
+
+def _find_pending_in_db(session_id: str, command: str, agent_id: str) -> Optional[str]:
+    """Return the requester's own pending approval matching this command, else None.
 
     Replaces find_pending_for_command() (filesystem) as part of the T2.1
-    cutover. Looks up approvals with status='pending' in the DB and matches
-    each pending's stored command against the incoming command using the SAME
-    semantic matcher the consumption path uses (check_db_semantic_grant /
+    cutover. Looks up the pending requests of this session and agent and
+    matches each one's stored command against the incoming command using the
+    SAME semantic matcher the consumption path uses (check_db_semantic_grant /
     matches_approval_signature), instead of a byte-exact comparison (Fix B).
 
     Why semantic, not byte-exact (double-approval fix, B):
@@ -1854,41 +1877,22 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
         keep-path policy), so distinct operations are NOT collapsed together.
 
     Args:
-        session_id: Current session identifier (empty string if unknown).
-            Retained for signature compatibility; NOT used to scope the query
-            (see cross-session note below).
+        session_id: Session of the host event that was blocked.
         command: The Bash command that was blocked.
+        agent_id: Agent of the host event that was blocked.
 
     Returns:
         The approval_id (P-{hex}) if a matching pending exists, else None.
     """
     try:
-        from gaia.approvals.store import get_pending
         from ..security.approval_scopes import (
             SCOPE_SEMANTIC_SIGNATURE,
             build_approval_signature,
             matches_approval_signature,
         )
-        import json as _json
-        # Dedup MUST be cross-session (all_sessions=True). A T3 command can be
-        # blocked under the subagent session and a pending row minted there;
-        # if this lookup were scoped to the current session it would miss that
-        # row on any cross-session retry, and insert_requested() would mint a
-        # fresh P- on every miss -- a new approval conjured "from thin air" each
-        # time. The semantic match below keeps the reuse pinned to THIS
-        # command's operation, so widening the session scope does not collapse
-        # distinct commands together.
-        rows = get_pending(all_sessions=True)
         # Newest-first so a retry reuses the most recent matching pending,
         # mirroring check_db_semantic_grant()'s ORDER BY created_at DESC.
-        for row in reversed(rows):
-            payload_str = row.get("payload_json")
-            if not payload_str:
-                continue
-            try:
-                payload = _json.loads(payload_str)
-            except Exception:
-                continue
+        for row, payload in reversed(_pending_requests_of(session_id, agent_id)):
             pending_command = payload.get("exact_content")
             if not pending_command:
                 continue
@@ -1914,11 +1918,11 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
     return None
 
 
-def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
-    """Return the id of a pending plan-first COMMAND_SET that carries ``command``.
+def _find_pending_plan_set_in_db(command: str, session_id: str, agent_id: str) -> Optional[str]:
+    """Return the id of this requester's pending plan-first COMMAND_SET that carries ``command``.
 
-    A blocked command that is an item of a set the user has not answered yet
-    must be refused under THAT approval's id. Only a payload whose
+    A blocked command that is an item of a set its requester has not had
+    answered yet must be refused under THAT approval's id. Only a payload whose
     ``request_type`` is ``COMMAND_SET`` and which carries a
     ``request_fingerprint`` activates into the reservation lane
     (``insert_plan_command_set``, reached from ``activate_db_pending_by_id``
@@ -1935,25 +1939,16 @@ def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
 
     Args:
         command: The Bash command that was classified T3.
+        session_id: Session of the host event that was blocked.
+        agent_id: Agent of the host event that was blocked.
 
     Returns:
         The approval_id (P-{hex}) of the pending set, else None.
     """
     try:
-        from gaia.approvals.store import get_pending
-        import json as _json
-
-        # Newest-first, mirroring _find_pending_in_db: get_pending returns
-        # oldest-first, and the most recently requested set is the one the user
-        # is being asked about.
-        for row in reversed(get_pending(all_sessions=True)):
-            payload_str = row.get("payload_json")
-            if not payload_str:
-                continue
-            try:
-                payload = _json.loads(payload_str)
-            except Exception:
-                continue
+        # Newest-first, mirroring _find_pending_in_db: the most recently
+        # requested set is the one the user is being asked about.
+        for row, payload in reversed(_pending_requests_of(session_id, agent_id)):
             if payload.get("request_type") != "COMMAND_SET":
                 continue
             request_fingerprint = payload.get("request_fingerprint")
@@ -2336,14 +2331,14 @@ def decide_t3_outcome(
             # reservation lane; a singular id named here -- freshly minted or
             # reused -- strands the set, because approving it never creates a
             # grant and the retry blocks again.
-            approval_id = _find_pending_plan_set_in_db(command)
+            approval_id = _find_pending_plan_set_in_db(command, session_id, agent_type)
             if approval_id:
                 logger.info(
                     "Naming pending plan-first COMMAND_SET approval_id=%s for: %s",
                     approval_id, command[:80],
                 )
             else:
-                approval_id = _find_pending_in_db(session_id or "", command)
+                approval_id = _find_pending_in_db(session_id, command, agent_type)
                 if approval_id:
                     logger.info(
                         "Reusing pending approval_id=%s for retry: %s",
