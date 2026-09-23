@@ -10,8 +10,8 @@ Package: `@jaguilar87/gaia` | Node >=18 | Python >=3.12
 
 | File | Event | Matchers |
 |------|-------|----------|
-| `hooks/pre_tool_use.py` | PreToolUse | `Bash`, `Task`, `Agent`, `SendMessage`, `Read\|Edit\|Write\|Glob\|Grep\|WebSearch\|WebFetch\|NotebookEdit` |
-| `hooks/post_tool_use.py` | PostToolUse | `Bash`, `AskUserQuestion` |
+| `hooks/pre_tool_use.py` | PreToolUse | `Bash`, `Task`, `Agent`, `SendMessage`, `AskUserQuestion`, `Read\|Edit\|Write\|Glob\|Grep\|WebSearch\|WebFetch\|NotebookEdit` |
+| `hooks/post_tool_use.py` | PostToolUse, PostToolUseFailure | PostToolUse: `Bash`, `Task`, `AskUserQuestion`; PostToolUseFailure: `Bash` |
 | `hooks/stop_hook.py` | Stop | (all) |
 | `hooks/user_prompt_submit.py` | UserPromptSubmit | (all) |
 | `hooks/subagent_start.py` | SubagentStart | `*` |

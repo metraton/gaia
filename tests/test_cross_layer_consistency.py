@@ -49,10 +49,6 @@ from modules.tools.task_validator import (
     T3_KEYWORDS,
 )
 from modules.security.approval_constants import NONCE_APPROVAL_PATTERN, NONCE_APPROVAL_PREFIX
-from modules.security.approval_messages import (
-    CANONICAL_APPROVAL_TOKEN,
-    LATEST_BLOCKED_COMMAND_PHRASE,
-)
 from modules.security.blocked_commands import is_blocked_command
 from modules.security.mutative_verbs import (
     detect_mutative_command,
@@ -74,9 +70,7 @@ def _agnosticism_mutation_tree(tmp_path, monkeypatch):
     skills_copy = tmp_path / "skills"
     shutil.copytree(SKILLS_DIR, skills_copy)
     monkeypatch.setitem(globals(), "SKILLS_DIR", skills_copy)
-    if mutation == "missing-adapter":
-        (skills_copy / "claude-code-consent-adapter" / "SKILL.md").unlink()
-    elif mutation == "nested-host-name":
+    if mutation == "nested-host-name":
         nested = skills_copy / "execution" / "nested" / "probe.md"
         nested.parent.mkdir()
         nested.write_text(registered_host_mechanism_names()[0])
@@ -441,37 +435,23 @@ class TestTaskValidatorConsistency:
             f"T3 operations from security-tiers skill missing in T3_KEYWORDS: {missing}"
         )
 
-    def test_identifier_rule_stated_in_neutral_skill(self):
-        """The neutral skill states the identifier rule in its own voice.
+    def test_presenter_passes_the_question_gaia_builds(self):
+        """The presenter opens the question Gaia printed and composes nothing.
 
-        This replaces an existence assertion on a per-host adapter skill.
-        Delegating the rule to an adapter was the wrong fix: four of the six
-        facts that adapter carried are Gaia's, not a host's, and an existence
-        test that SKIPS when the file is gone (the shape this test had) cannot
-        notice the rule going missing. So the property is asserted directly --
-        the neutral skill must state the resolver path and the form the
-        resolver actually parses -- and it holds whatever host is running.
+        An answer binds to its signature by the host's own correlation, so the
+        presenter must not teach an identifier in the answer label; the verb it
+        names must be one the orchestrator's CLI lane admits.
         """
+        from modules.security.gaia_cli_only_guard import ALLOWED_READ_PHRASES
+
         content = (
             SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
         ).read_text()
-
-        # Approval resolution is by exact canonical id, so the anchored symbols
-        # are the id resolvers; no prefix scan exists to anchor.
-        for symbol in ("extract_approval_id_from_label", "activate_db_pending_by_id"):
-            assert symbol in content, (
-                f"orchestrator-present-approval must anchor the resolver "
-                f"symbol {symbol}; without it the identifier rule is prose "
-                f"with nothing to invalidate it"
-            )
-        assert "`Approve`" in content and "[P-" in content, (
-            "orchestrator-present-approval must state the form the resolver "
-            "parses (a literal leading Approve plus a bracketed [P-<hex>] "
-            "prefix). Omit it and no grant is created while the user believes "
-            "they consented"
-        )
-        assert CANONICAL_APPROVAL_TOKEN.split(":")[0].lower() in content.lower(), (
-            "orchestrator-present-approval must name the activation channel"
+        assert "gaia approvals question" in content
+        assert ("approvals", "question") in ALLOWED_READ_PHRASES
+        assert "[P-" not in content, (
+            "orchestrator-present-approval must not teach an approval id in "
+            "the answer label; the host correlation binds the answer"
         )
 
     def test_registered_adapter_skill_documents_exist(self):
@@ -513,20 +493,26 @@ class TestSkillsCrossReferences:
         The scan is recursive because supporting documents carry the same
         agnosticism obligation as SKILL.md. The registered names remain an
         enumeration: a mechanism registered nowhere can still pass this test.
+        The presenter alone may name the tool the orchestrator itself calls
+        to open a question; every host event stays out.
         """
         agnostic = (
-            "agent-approval-protocol",
             "security-tiers",
             "subagent-request-approval",
             "orchestrator-present-approval",
             "execution",
             "pending-approvals",
         )
+        called_by_the_presenter = {"orchestrator-present-approval": {"askuserquestion"}}
         host_names = registered_host_mechanism_names()
         for skill in agnostic:
+            allowed = called_by_the_presenter.get(skill, set())
             for doc in sorted((SKILLS_DIR / skill).rglob("*.md")):
                 content = doc.read_text().lower()
-                found = [name for name in host_names if name in content]
+                found = [
+                    name for name in host_names
+                    if name in content and name not in allowed
+                ]
                 assert not found, (
                     f"{skill}/{doc.name} must stay host-agnostic; "
                     f"host mechanism names present: {found}"

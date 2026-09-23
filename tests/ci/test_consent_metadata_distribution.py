@@ -19,7 +19,7 @@ def test_registered_metadata_is_the_shipped_opencode_file():
     names = json.loads(METADATA.read_text(encoding="utf-8"))["mechanism_names"]
     assert names
     assert registered_host_mechanism_names() == (
-        "askuserquestion", "elicitationresult", *names,
+        "askuserquestion", *names,
     )
     assert isinstance(get_adapter("opencode"), OpenCodeAdapter)
     assert get_adapter("opencode") is get_adapter("opencode")
@@ -84,4 +84,4 @@ def test_copy_install_inventory_supplies_registry_metadata(tmp_path, monkeypatch
         capture_output=True, text=True, check=True, timeout=30,
     )
     expected = json.loads(METADATA.read_text(encoding="utf-8"))["mechanism_names"]
-    assert json.loads(result.stdout) == ["askuserquestion", "elicitationresult", *expected]
+    assert json.loads(result.stdout) == ["askuserquestion", *expected]

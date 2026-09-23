@@ -5,8 +5,9 @@ description: Use in a fresh specialist dispatch after the user has granted a T3 
 
 # Approved Execution
 
-Approval resumes work in a fresh dispatch owned by the relevant specialist. It
-does not turn the orchestrator into an executor and does not broaden scope.
+The approved work runs in the specialist that requested it, resumed by the
+orchestrator; the signature belongs to that agent and session. Approval does
+not turn the orchestrator into an executor and does not broaden scope.
 
 ## Source boundary
 
@@ -16,15 +17,20 @@ source changes. The same prohibition applies to fixtures and bulk operations.
 
 ## Ordered execution
 
-1. Read the granted request from the trusted handoff/DB and confirm its exact
-   id, scope, order, and next unconsumed index.
-2. Execute exactly one command per tool call using `command-execution`.
-3. For COMMAND_SET, run only the exact next index. Never join commands, skip an
+1. Read the approval with `gaia approvals show <approval_id>`: its state, its
+   commands in order, their directory, and how much of the grant's window is
+   left.
+2. Run exactly one command per tool call using `command-execution`, byte for
+   byte as requested, in its sealed directory. Never join commands, skip an
    index, substitute an equivalent spelling, or add an unapproved command.
-4. After every result, checkpoint the exact command, index, exit status, and
-   runtime progress fields when exposed.
-5. On failure, apply `command-execution`'s COMMAND_SET fail-fast rule, then use
-   `agent-protocol` to reconcile the result for its consumer.
+3. After every result, checkpoint the exact command, index and exit status.
+4. A command that exits with a code its request declared with `--expect-exit`
+   has succeeded for the set: continue with the next index. Any other failure
+   stops the set; apply `command-execution`'s COMMAND_SET fail-fast rule, then
+   use `agent-protocol` to reconcile the result for its consumer.
+5. A call that never reports back is recorded as no result, not as a failure,
+   and does not advance the set. Read its state before deciding anything, and
+   request anything still needed as a new request.
 6. After successful mutations, verify desired state with separate read-only
    checks. Success exit codes alone are insufficient.
 7. Checkpoint verification and emit `NEEDS_VERIFICATION` for a plan-task-bound

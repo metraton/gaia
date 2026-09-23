@@ -75,5 +75,5 @@ Declaring a workload that a developer's code will run is still desired state: it
 | `kubectl diff` shows unexpected changes | Report the diff; confirm the desired state is what was intended before committing. A surprise in the diff is a signal the change is wrong, not noise to ignore. |
 | Drift between Git and the live cluster | Report the drift and name the owner of the resolution: reconcile the controller (its job) or diagnose the live cluster (`cloud-troubleshooter`). Do not `kubectl apply` to force convergence — that bypasses GitOps. |
 | Git push rejected | `git pull --rebase`, resolve conflicts, re-render to confirm the merged desired state is still valid before re-pushing. |
-| Push blocked with an `approval_id` | Emit APPROVAL_REQUEST with the `approval_id` verbatim; do not retry the command. |
+| Push blocked with an `approval_id` | Request it through the line the denial carries (`subagent-request-approval`), then emit APPROVAL_REQUEST with the `approval_id` that request prints; do not retry the command. |
 | Change would require editing application code or infrastructure | Stop at the boundary: flag the impact in `cross_layer_impacts` and name the owner. Do not edit a surface you do not own. |

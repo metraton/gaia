@@ -150,13 +150,12 @@ class TestAgentProtocolSkill:
     def test_has_approval_request_section(self, skills_dir):
         """approval_request object + fields are documented in the owning skill.
 
-        The approval payload schema migrated out of agent-protocol into
-        agent-approval-protocol, which now OWNS the sealed_payload /
-        approval_request field set. Assert the tokens where they actually live.
+        The envelope field dictionary owns the approval_request field set.
+        Assert the tokens where they actually live.
         """
-        approval = (skills_dir / "agent-approval-protocol" / "SKILL.md").read_text()
+        approval = (skills_dir / "agent-contract-handoff" / "SKILL.md").read_text()
         assert "approval_request" in approval, \
-            "agent-approval-protocol must document approval_request object"
+            "agent-contract-handoff must document approval_request object"
         for field in [
             "operation",
             "exact_content",
@@ -166,7 +165,7 @@ class TestAgentProtocolSkill:
             "verification",
         ]:
             assert field in approval, \
-                f"agent-approval-protocol should document approval_request field '{field}'"
+                f"agent-contract-handoff should document approval_request field '{field}'"
 
     def test_documents_all_valid_statuses(self, content):
         """Must document all active PLAN_STATUS values.

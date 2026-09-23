@@ -122,9 +122,8 @@ def registered_host_surface_names() -> tuple[str, ...]:
 register_adapter(
     DEFAULT_HOST,
     ClaudeCodeAdapter,
-    mechanism_names=("askuserquestion", "elicitationresult"),
+    mechanism_names=("askuserquestion",),
     surface_names=("claude",),
-    skill_document="claude-code-consent-adapter/SKILL.md",
 )
 register_adapter(
     "opencode",

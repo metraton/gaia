@@ -28,8 +28,10 @@ User sends prompt
         v
 Orchestrator dispatches agent (Task/Agent tool call)
         |
-[pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage,
+[pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage, AskUserQuestion,
         |                 and Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit
+        |  AskUserQuestion calls: an approval question must be the exact object
+        |        `gaia approvals question` printed; the hook shows each signature's text
         |  Bash calls: security gate (gaia_cli_only_guard for the orchestrator's Gaia coordination console, blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard)
         |  Task/Agent calls: context injection via DB-backed contracts (project_context_contracts)
         |  Write/Edit calls: protected path validation (_is_protected())
@@ -43,8 +45,10 @@ Orchestrator dispatches agent (Task/Agent tool call)
         |
 Tool executes
         |
-[post_tool_use.py] <- fires on PostToolUse for: Bash, AskUserQuestion
-        |  Audits result, logs to .claude/logs/
+[post_tool_use.py] <- fires on PostToolUse for: Bash, Task, AskUserQuestion,
+        |                 and on PostToolUseFailure for: Bash
+        |  Audits result, logs to .claude/logs/; a signed call closes on its own
+        |        terminal event (success or failure), matched by tool_use_id
         v
 [subagent_stop.py] <- fires on SubagentStop for all agents
         |  Validates the turn's own agent_contract_handoffs row
@@ -79,7 +83,7 @@ To add a new hook entry point: create `hooks/<event_name>.py`, register it in `b
 hooks/
 ├── user_prompt_submit.py  # Sparse notices + heartbeat refresh
 ├── pre_tool_use.py        # Security gate + context injection (PreToolUse)
-├── post_tool_use.py       # Audit logging (PostToolUse)
+├── post_tool_use.py       # Audit logging (PostToolUse, PostToolUseFailure)
 ├── subagent_stop.py       # Contract validation + approval cleanup + memory (SubagentStop)
 ├── subagent_start.py      # Subagent start — additional context injection
 ├── session_start.py       # Session manifest + registry registration (SessionStart)

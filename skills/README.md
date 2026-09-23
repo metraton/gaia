@@ -67,7 +67,6 @@ skills/
 ├── agent-response/        # Orchestrator: read and route a closed agent_contract_handoffs row
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
-├── claude-code-consent-adapter/ # Claude Code adapter vocabulary for its native consent mechanism
 ├── code-review/           # Technique: explicit read-only module/branch/PR review, evidence reconciliation and portable report
 ├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
@@ -97,10 +96,8 @@ skills/
 ├── pending-approvals/     # Present and manage pending approval requests
 ├── readme-writing/        # How to write a README, branching by gate: repository root, component folder, or shipped template
 │   └── reference.md       # per gate (repo root / component folder / shipped template): a filled example + a blank skeleton
-├── subagent-request-approval/ # Plan-first T3 set / blocked-single producer branch
-│   ├── reference.md
-│   └── examples.md
-├── agent-approval-protocol/ # Approval and COMMAND_SET data reference
+├── subagent-request-approval/ # Producer: the phrases a signature needs, their limits, and how to group T3 commands
+│   └── reference.md
 ├── scheduled-task/        # Headless recurring task: crontab + claude -p, reports via notifications
 │   ├── reference.md
 │   └── scripts/           # run-scheduled-task.sh wrapper + crontab.template
@@ -138,13 +135,12 @@ needs it, even if also declared in frontmatter. The overlap is deliberate: listi
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
-- `orchestrator-present-approval` — T3 approval presentation, host-neutral end to end: the sealed surface and its field set, presenting it as text before asking a minimal decision, the conditional rule that makes the reply resolve to the `approval_id`, and who activates versus who executes
+- `orchestrator-present-approval` — T3 approval presentation: open the question Gaia builds (up to four signatures) without printing any of it, and resume the requester once the user decides
 - `gaia-compact` — compact transient continuity after durable state is persisted
 
 Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 - `code-review` — explicit review with snapshot, coverage, evidence-backed findings and a portable JSON report; Gaia carries the artifact through its usual contract, while standalone readers need no Gaia CLI or database
 - `agent-contract-handoff` — reference field dictionary for the contract envelope (input + output); loaded on demand by producers and the orchestrator when field/trigger precision is needed
-- `agent-approval-protocol` — approval and COMMAND_SET data reference
 - `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
 - `execution` — post-approval execution discipline

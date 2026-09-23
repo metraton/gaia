@@ -66,9 +66,8 @@ from gaia.contract.validator import FormValidationResult, validate_form
 # The lowercase 'pending' status column value on the `approvals` table
 # (schema.sql CHECK: 'pending' 'approved' 'rejected' 'revoked' 'expired').
 # NOT to be confused with the UPPERCASE PENDING used by the unrelated
-# `approval_grants` (T3 command_set) table -- see agent-approval-protocol
-# SKILL.md "Status vocabularies -- distinct columns, opposite casing, never
-# collapse". The agent_contract_handoff `approval_request.approval_id` field
+# `approval_grants` (T3 command_set) table; the two columns never collapse.
+# The agent_contract_handoff `approval_request.approval_id` field
 # is a `P-{uuid4_hex}` id that resolves against `approvals`, not
 # `approval_grants`.
 _PENDING_STATUS = "pending"

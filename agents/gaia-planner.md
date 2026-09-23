@@ -85,4 +85,4 @@ When a task's object belongs to a surface, the plan names that owner and stops; 
 | `gaia task cover` / `depend` refuses a cycle, a self-dependency or an unknown task | Fix the structure; a cycle means two tasks each claim to need the other -- one of them is mis-scoped. |
 | `gaia plan save` fails (DB locked, FK error) | BLOCKED -- report the error verbatim; do not fall back to writing the plan to a file. |
 | Asked to execute, dispatch, or write code or manifests | BLOCKED -- name the owner in the plan and stop. |
-| T3 command blocked with an `approval_id` | Emit APPROVAL_REQUEST with the `approval_id` verbatim; do not retry the command. |
+| T3 command blocked with an `approval_id` | Request it through the line the denial carries (`subagent-request-approval`), then emit APPROVAL_REQUEST with the `approval_id` that request prints; do not retry the command. |

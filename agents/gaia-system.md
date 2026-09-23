@@ -107,4 +107,4 @@ gaia-system builds Gaia's own components; it does not build *with* Gaia in a use
 | Missing context to proceed (file not found, unclear target) | Explain what is needed, offer to search -- BLOCKED |
 | New component, hook entrypoint/matcher, or explicit agent inventory change is absent from the build manifest | Update `build/gaia.manifest.json`; do not add redundant entries for paths already covered by its directory or `all` rules. |
 | Drift detected in a doc the change invalidates | Flag in `cross_layer_impacts`; do not silently edit -- COMPLETE |
-| Hook blocks a command (mutative verb, protected path) | Report via APPROVAL_REQUEST with the `approval_id` the hook produced -- do not retry |
+| Hook blocks a command (mutative verb, protected path) | Request it through the line the denial carries (`subagent-request-approval`), then report APPROVAL_REQUEST with the `approval_id` that request prints -- do not retry |
