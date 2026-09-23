@@ -66,27 +66,40 @@ def isolated_db(tmp_path, monkeypatch):
     return db_path
 
 
-def _reply_from_the_real_plugin(raw_reply: str) -> tuple[str, str]:
-    """Normalize a real permission event through the real plugin edge.
+def _reply_from_the_real_plugin(label: str) -> tuple[str, str]:
+    """Read one answer to the signature question through the real plugin edge.
 
     Deliberately unguarded: an absent bun must fail this test rather than let
     an affirmative capability claim pass on a reply the test wrote itself.
     """
-    event = {
-        "type": "permission.replied",
-        "properties": {"requestID": "req-1", "reply": raw_reply},
-    }
+    from gaia.approvals.surface import OPTIONS
+
+    request = {"question": {"options": [
+        {"label": option_label, "description": text} for option_label, text in OPTIONS
+    ]}}
     script = (
-        "import { normalizePermissionReply, permissionDecisionLane } from "
-        f"{json.dumps(str(_PLUGIN))};"
-        f"const event = {json.dumps(event)};"
-        "console.log(JSON.stringify({"
-        " reply: normalizePermissionReply(event.properties.reply),"
-        " lane: permissionDecisionLane(event.type)}));"
+        f"import {{ readSignatureAnswer }} from {json.dumps(str(_PLUGIN))};"
+        f"console.log(JSON.stringify(readSignatureAnswer({json.dumps(request)}, [[{json.dumps(label)}]])));"
     )
     result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
-    observed = json.loads(result.stdout)
-    return observed["reply"], observed["lane"]
+    return json.loads(result.stdout), "control"
+
+
+#: OpenCode's question channel yields no ``always``: its options are Approve,
+#: Reject and Details. The CLI still refuses an ``always`` reply on its own,
+#: so the tests of that refusal hand it to the CLI directly.
+_ALWAYS = ("always", "preferred")
+
+_PHRASES = {
+    "what": "Revisar el estado del repositorio.",
+    "question": "¿Reviso el estado?",
+}
+
+
+def _phrased(command: str) -> dict:
+    return {**_PHRASES, "items": [{
+        "command": command, "does": "Lee el estado de la rama.", "impact": "Nada cambia en el remoto.",
+    }]}
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:
@@ -98,7 +111,7 @@ def _parse(argv: list[str]) -> argparse.Namespace:
 def _present_args(approval_id: str, *, token: str = _TOKEN) -> argparse.Namespace:
     return _parse([
         "approvals", "opencode-present", approval_id,
-        "--session-id", _SESSION, "--call-id", _CALL, "--token", token, "--json",
+        "--session-id", _SESSION, "--agent-id", _AGENT, "--call-id", _CALL, "--token", token, "--json",
     ])
 
 
@@ -121,6 +134,7 @@ def _seed_presented_command_set(command: str = _COMMAND) -> str:
         "scope": "COMMAND_SET",
         "operation": "inspect",
         "exact_content": command,
+        **_phrased(command),
     }
     approval_id = store.insert_requested(payload, agent_id=_AGENT, session_id=_SESSION)
     assert cmd_opencode_present(_present_args(approval_id)) == 0
@@ -135,20 +149,20 @@ def _seed_presented_semantic_approval() -> str:
         agent_type=_AGENT,
         session_id=_SESSION,
     )
+    payload.update(_phrased(_MUTATIVE_COMMAND))
     approval_id = store.insert_requested(payload, agent_id=_AGENT, session_id=_SESSION)
     assert cmd_opencode_present(_present_args(approval_id)) == 0
     return approval_id
 
 
 def _seed_presented_file_path_approval(file_path: Path) -> str:
-    nonce = generate_nonce()
-    pending = write_pending_approval_for_file(
-        nonce,
-        str(file_path.resolve()),
-        session_id=_SESSION,
+    from gaia.approvals.core import request_file_write
+
+    approval_id = request_file_write(
+        str(file_path.resolve()), session_id=_SESSION, agent_id=_AGENT,
+        what="Modificar un archivo protegido.", question="¿Modifico el archivo?",
+        does="Reescribe el archivo.", impact="Cambia un archivo de hooks.",
     )
-    assert pending is not None
-    approval_id = f"P-{nonce}"
     assert cmd_opencode_present(_present_args(approval_id)) == 0
     return approval_id
 
@@ -313,8 +327,8 @@ def test_duplicate_opencode_once_decision_is_idempotent(isolated_db):
 
 def test_a_once_reply_grants_one_index_and_the_grant_refuses_the_second_attempt(isolated_db):
     approval_id = _seed_presented_command_set()
-    reply, lane = _reply_from_the_real_plugin("once")
-    assert (reply, lane) == ("once", "preferred")
+    reply, lane = _reply_from_the_real_plugin("Approve")
+    assert (reply, lane) == ("once", "control")
 
     assert cmd_opencode_decide(_decide_args(approval_id, reply=reply, lane=lane)) == 0
 
@@ -361,15 +375,14 @@ def test_an_always_reply_never_produces_the_grant_shape_a_once_reply_produces(
     isolated_db, capsys
 ):
     once_approval = _seed_presented_command_set(_COMMAND)
-    once_reply, once_lane = _reply_from_the_real_plugin("once")
+    once_reply, once_lane = _reply_from_the_real_plugin("Approve")
     assert cmd_opencode_decide(
         _decide_args(once_approval, reply=once_reply, lane=once_lane)
     ) == 0
     once_shape = _grant_shape(isolated_db, once_approval)
     capsys.readouterr()
 
-    always_reply, always_lane = _reply_from_the_real_plugin("always")
-    assert always_reply == "always"
+    always_reply, always_lane = _ALWAYS
     always_approval = _seed_presented_command_set(_OTHER_COMMAND)
 
     assert cmd_opencode_decide(
@@ -415,7 +428,7 @@ def test_refused_decision_is_audited_without_consuming_the_pending_approval(isol
     approval_id = _seed_presented_command_set()
     control_id = _seed_presented_command_set(_OTHER_COMMAND)
     before = store.get_history(approval_id)
-    reply, lane = _reply_from_the_real_plugin("always")
+    reply, lane = _ALWAYS
 
     with (
         patch.object(store, "activate_command_set_atomically", wraps=store.activate_command_set_atomically) as activate,
@@ -522,7 +535,7 @@ def test_identical_presentation_retry_remains_idempotent(isolated_db):
 
 def test_a_decision_without_a_recorded_presentation_grants_nothing(isolated_db, capsys):
     approval_id = _seed_presented_command_set()
-    reply, lane = _reply_from_the_real_plugin("once")
+    reply, lane = _reply_from_the_real_plugin("Approve")
 
     # Single-field control: this call differs from the granting one below in the
     # token alone, so the refusal is attributable to the missing presentation

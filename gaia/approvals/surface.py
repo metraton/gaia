@@ -62,7 +62,8 @@ class Surface:
 
     Claude Code shows ``text`` and then asks ``question``; OpenCode asks the
     single string ``opencode`` (the text, a blank line, the short question).
-    ``details`` answers the Details option on either host.
+    ``details`` answers the Details option on either host; OpenCode re-asks the
+    signature with ``opencode_details`` (Details, a blank line, the question).
     """
 
     approval_id: str
@@ -70,6 +71,7 @@ class Surface:
     question: dict
     details: str
     opencode: str
+    opencode_details: str
 
 
 # --------------------------------------------------------------------------- #
@@ -243,12 +245,14 @@ def _render(payload: Mapping[str, Any], approval_id: str, header: str) -> Surfac
         raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
     text = _text(payload, items)
     question = _question(payload, header)
+    details = _details(payload, items, approval_id)
     return Surface(
         approval_id=approval_id,
         text=text,
         question=question,
-        details=_details(payload, items, approval_id),
+        details=details,
         opencode=f"{text}\n\n{question['question']}",
+        opencode_details=f"{details}\n\n{question['question']}",
     )
 
 

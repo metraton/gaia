@@ -174,6 +174,7 @@ def _present(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
         [
             sys.executable, str(GAIA_CLI), "approvals", "opencode-present", approval_id,
             "--session-id", SESSION_ID,
+            "--agent-id", AGENT_ID,
             "--call-id", call_id,
             "--token", token,
             "--json",
@@ -195,7 +196,7 @@ def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
     presentation is what binds the token the reply must carry.
     """
     presented = _present(env, approval_id, call_id=call_id, token=token)
-    assert presented.get("visible_lines"), presented
+    assert presented.get("signature"), presented
     return _decide(env, approval_id, call_id=call_id, token=token)
 
 
@@ -294,7 +295,7 @@ def test_protected_file_approval_arms_an_edit_retry_for_only_the_canonical_targe
 
     assert _step(driven, "blocked-file")["allowed"] is False
     assert _step(driven, "approve-file")["allowed"] is True
-    approval_id = driven["permissionAsks"][0]["permission"]["metadata"]["gaiaApprovalID"]
+    approval_id = driven["presentations"][0]["approvalID"]
     assert _approval_status(db_path, approval_id) == "approved"
     assert _grant(db_path, approval_id)["scope"] == "SCOPE_FILE_PATH"
     assert len(driven["controlPrompts"]) == 2, driven
@@ -423,14 +424,9 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     assert decision["controlSessionID"] == SESSION_ID
     question = decision["question"]
     visible = question["question"]
-    assert approval_id in visible
-    assert "DECISION:" in visible and "correlation C-" in visible
     for command in (FIRST_COMMAND, SECOND_COMMAND):
         assert command in visible
-    assert [option["label"] for option in question["options"]] == [
-        f"Approve once [{approval_id}]",
-        f"Reject [{approval_id}]",
-    ]
+    assert [option["label"] for option in question["options"]] == ["Approve", "Reject", "Details"]
     prompt = driven["controlPrompts"][0]["body"]
     assert "tools" not in prompt
     assert isinstance(prompt["system"], str), prompt["system"]
@@ -524,11 +520,11 @@ def test_concurrent_approvals_are_serialized_and_each_native_answer_closes_only_
 
     assert _step(driven, "blocked-first")["allowed"] is False
     assert _step(driven, "blocked-second")["allowed"] is False
-    assert len(driven["permissionAsks"]) == 2
+    assert len(driven["presentations"]) == 2
     assert len(driven["controlPrompts"]) == 2
     approval_ids = [
-        item["permission"]["metadata"]["gaiaApprovalID"]
-        for item in driven["permissionAsks"]
+        item["approvalID"]
+        for item in driven["presentations"]
     ]
     assert len(set(approval_ids)) == 2
     assert all(_approval_status(db_path, approval_id) == "rejected" for approval_id in approval_ids)
@@ -567,8 +563,8 @@ def test_late_approval_waits_through_decision_idle_and_first_retry_lifecycle(db_
     assert _step(driven, "after-first-settlement")["specialistControlPromptCount"] == 2
 
     approval_ids = [
-        item["permission"]["metadata"]["gaiaApprovalID"]
-        for item in driven["permissionAsks"]
+        item["approvalID"]
+        for item in driven["presentations"]
     ]
     assert len(approval_ids) == 2
     assert _approval_status(db_path, approval_ids[0]) == "approved"
@@ -766,8 +762,8 @@ def test_unrelated_tool_call_is_denied_before_policy_and_releases_only_the_activ
     assert _step(driven, "after-idle")["specialistControlPromptCount"] == 2
 
     approval_ids = [
-        item["permission"]["metadata"]["gaiaApprovalID"]
-        for item in driven["permissionAsks"]
+        item["approvalID"]
+        for item in driven["presentations"]
     ]
     assert len(approval_ids) == 2
     closures = _control_closures(db_path)
@@ -1002,10 +998,7 @@ def test_fresh_bound_retry_reserves_exact_index_executes_settles_and_freezes(db_
         "approval_id": approval_id,
         "version": 1,
         "kind": "COMMAND_SET",
-        "correlation_id": (
-            driven["permissionAsks"][0]["permission"]["metadata"]
-            ["gaiaConsent"]["correlation_id"]
-        ),
+        "correlation_id": proof["correlation_id"],
         "agent_id": AGENT_ID,
         "role": AGENT_ID,
         "session_id": SESSION_ID,
@@ -1131,72 +1124,6 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
     ) is True
 
 
-def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
-    """permission.replied=once reaches Gaia's decide CLI from the plugin itself.
-
-    The approval this lane can reach is whichever one the policy bridge named
-    when it refused the call -- the plugin never chooses an approval id. That is
-    what the next test pins down.
-    """
-    env, db_path = db_env
-    _request_set(env)
-
-    driven = _drive(
-        env,
-        [
-            _before("blocked", FIRST_COMMAND),
-            {
-                "kind": "replied", "label": "reply", "requestID": PERMISSION_ID,
-                "reply": "once",
-            },
-        ],
-    )
-    assert _step(driven, "blocked")["allowed"] is False, driven
-    assert _step(driven, "reply")["allowed"] is True, driven
-
-    # The plugin enriched exactly one host-created permission, carrying the approval
-    # the bridge named and a visible surface Gaia sealed.
-    assert len(driven["permissionAsks"]) == 1, driven
-    presented = driven["permissionAsks"][0]["permission"]
-    presented_id = presented["metadata"]["gaiaApprovalID"]
-    assert presented["sessionID"] == SESSION_ID
-    assert presented["metadata"]["gaiaCallID"] == CALL_ID
-    assert presented["pattern"], presented
-
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    row = con.execute(
-        "SELECT status FROM approvals WHERE id=?", (presented_id,)
-    ).fetchone()
-    con.close()
-    assert row is not None, presented_id
-    assert row["status"] != "REQUESTED", (
-        "permission.replied=once did not move the approval the plugin presented"
-    )
-
-
-def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
-    env, db_path = db_env
-    approval_id = _request_set(env)
-    driven = _drive(
-        env,
-        [
-            _before("blocked", FIRST_COMMAND),
-            {
-                "kind": "replied", "label": "rejected", "requestID": PERMISSION_ID,
-                "reply": "reject",
-            },
-        ],
-    )
-
-    assert _step(driven, "blocked")["allowed"] is False, driven
-    assert driven["permissionAsks"][0]["status"] == "ask", driven
-    assert _step(driven, "rejected")["allowed"] is True, driven
-    with sqlite3.connect(db_path) as con:
-        status = con.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()[0]
-    assert status in {"rejected", "REJECTED"}, status
-
-
 def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     """The block path names the pending set, not a freshly minted singular id.
 
@@ -1205,7 +1132,8 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     fail the day they converge; this is that day, so the detector is inverted
     rather than deleted -- the same observation, read for the outcome that is
     now correct. The id is read out of the plugin's own
-        ``permissionAsks[0].permission.metadata.gaiaApprovalID``, so what is asserted is
+    ``presentations[0].approvalID`` -- the approval the bridge named to the
+    plugin's question -- so what is asserted is
     what the plugin presented, never a value this test supplied.
 
     Both items are attempted, each on its own plugin run. At pending time the
@@ -1230,9 +1158,9 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     ):
         driven = _drive(env, [_before(label, command, call_id=call_id)])
         assert _step(driven, label)["allowed"] is False, driven
-        assert len(driven["permissionAsks"]) == 1, driven
+        assert len(driven["presentations"]) == 1, driven
         presented_ids.append(
-            driven["permissionAsks"][0]["permission"]["metadata"]["gaiaApprovalID"]
+            driven["presentations"][0]["approvalID"]
         )
 
         assert presented_ids[-1] == approval_id, (

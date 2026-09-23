@@ -1737,16 +1737,18 @@ def _opencode_binding(
 
 
 def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dict:
-    """Build the native payload OpenCode presents for one pending approval.
+    """Build what OpenCode asks for one pending approval, composed by Gaia alone.
 
-    Returns the visible surface and its structured mirror, both rendered from
-    one sealed envelope so the host edge carries them and composes neither. A
-    payload that cannot be sealed completely returns ``presentation_error``
-    instead: the SHOWN record still stands, and the plugin refuses to raise a
-    permission it cannot show the user in full.
+    ``signature`` is the renderer's surface as the native question carries it:
+    the single string, the Details re-ask string, the header and the options.
+    ``metadata`` binds the retry to the sealed commands. A payload that cannot
+    be rendered returns ``presentation_error`` instead: the SHOWN record still
+    stands, and the plugin opens no question it cannot fill in full.
     """
     approval_id = approval.get("id") or ""
     try:
+        from gaia.approvals import surface
+
         presentation = _import_consent_presentation()
         consent = _import_consent_events()
         binding = consent.binding_from_mapping(
@@ -1762,7 +1764,16 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
             approval_id=approval_id,
             binding=binding,
         )
-        return presentation.native_presentation(envelope, sealed_payload)
+        rendered = surface.render(sealed_payload, approval_id)
+        return {
+            "signature": {
+                "question": rendered.opencode,
+                "details": rendered.opencode_details,
+                "header": rendered.question["header"],
+                "options": rendered.question["options"],
+            },
+            "metadata": presentation.native_metadata(envelope),
+        }
     except Exception as exc:
         return {"presentation_error": str(exc)}
 
