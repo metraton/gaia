@@ -160,6 +160,38 @@ class TestMergeLocalPermissions(unittest.TestCase):
             data = json.loads(local.read_text())
             self.assertEqual(data["permissions"]["defaultMode"], "acceptEdits")
 
+    def test_hides_claude_attribution(self):
+        """Claude Code must add no commit trailer, PR footer, or session link."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            helpers.merge_local_permissions(workspace)
+            data = json.loads((workspace / ".claude" / "settings.local.json").read_text())
+            self.assertEqual(
+                data["attribution"], {"commit": "", "pr": "", "sessionUrl": False}
+            )
+
+    def test_attribution_overrides_user_value_on_already_installed_workspace(self):
+        """Unlike defaultMode this is enforced: a re-enabled footer is reset,
+        and the reset counts as a change so `gaia update` writes it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            helpers.merge_local_permissions(workspace)
+            data = json.loads(local.read_text())
+            data["attribution"] = {"pr": "Generated with Claude Code", "extra": "kept"}
+            local.write_text(json.dumps(data))
+
+            res = helpers.merge_local_permissions(workspace)
+
+            self.assertEqual(res["action"], "updated")
+            data = json.loads(local.read_text())
+            self.assertEqual(
+                data["attribution"],
+                {"pr": "", "extra": "kept", "commit": "", "sessionUrl": False},
+            )
+
     def test_dry_run_does_not_write(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

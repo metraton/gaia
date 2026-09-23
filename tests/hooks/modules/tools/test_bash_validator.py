@@ -421,10 +421,10 @@ class TestClaudeFooterHardening:
     # ---- -F file limitation is documented, not implemented ----
 
     def test_dash_F_file_footer_not_coverable(self, validator):
-        """`git commit -F file` carries the message (and any footer) in a file
-        the hook never reads. The stripper documents this as out of scope and
-        leaves the command untouched -- this test pins that intent so a future
-        change does not silently start reading arbitrary files."""
+        """`git commit -F file` carries the message (and any footer) in a file.
+        The stripper never rewrites files and leaves the command untouched; a
+        footer in the file is refused by publish_attribution_guard instead
+        (see test_publish_attribution.py)."""
         cmd = "git commit -F /tmp/commit_msg.txt"
         # No footer text is present in the command string itself.
         stripped = validator._strip_claude_footers(cmd)
