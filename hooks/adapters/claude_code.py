@@ -16,13 +16,24 @@ import json
 import logging
 import os
 import re
-import shlex
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from .base import HookAdapter
+# The shared tool policy's helpers keep their historical import path here.
+from .tool_policy import (  # noqa: F401
+    DISPATCH_BINDING_REJECTED_EVENT,
+    GAIA_DISPATCH_AGENT_ENV,
+    PolicyVerdict,
+    ToolPolicy,
+    _is_anomalous_dispatch_binding_rejection,
+    _record_dispatch_binding_rejection,
+    build_dispatch_identity_command,
+    dispatch_tmpdir,
+    failure_verdict,
+)
 from .types import (
     AgentCompletion,
     BootstrapResult,
@@ -45,80 +56,9 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Dispatch-identity injection (fail-closed DB guards, M1)
-# ---------------------------------------------------------------------------
-
-# Environment variable the DB-side dispatch guards read to identify the writing
-# agent (gaia.store.writer, gaia.state.permissions, gaia.evidence.store,
-# gaia.briefs.store). Defined here as the single injection-side constant.
-GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
-
 # Requester identity of a main-session call, whose event carries no agent. The
 # approval core never defaults an identity, so the adapter names it explicitly.
 PRIMARY_AGENT = "claude-code-primary"
-
-
-def dispatch_tmpdir(agent_id: str) -> str:
-    """Create and return the subagent's own TMPDIR, or "" when it cannot exist.
-
-    Without it, pytest and every other tool in the agent's shell write to the
-    host's ``/tmp`` (a small tmpfs on the hosts this runs on), which a full
-    suite run fills. The directory must exist before the command runs: Python's
-    ``tempfile`` silently falls back to ``/tmp`` for a missing TMPDIR.
-    """
-    from gaia.paths import dispatch_tmp_dir
-
-    path = dispatch_tmp_dir(agent_id)
-    try:
-        path.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        logger.debug("dispatch TMPDIR %s unavailable: %s", path, exc)
-        return ""
-    return str(path)
-
-
-def build_dispatch_identity_command(command: str, agent_type: str, tmpdir: str = "") -> str:
-    """Prefix a subagent Bash command so ``GAIA_DISPATCH_AGENT`` reaches the CLI.
-
-    ``tmpdir``, when given, is exported as ``TMPDIR`` in the same statement, so
-    the agent's tool temporaries follow the same scope as its identity.
-
-    The DB guards fail OPEN when ``GAIA_DISPATCH_AGENT`` is unset (that is the
-    human-CLI / orchestrator-main-session path). To make them fail CLOSED for a
-    dispatched subagent, the agent's identity must reach the ``gaia`` CLI
-    subprocess -- and the only lever a PreToolUse hook has over a subprocess's
-    environment is the command string it executes. So we export the identity at
-    the front of the command line:
-
-        ``export GAIA_DISPATCH_AGENT=<agent>; <original command>``
-
-    An ``export ...;`` statement is used deliberately rather than a bare
-    ``VAR=x <cmd>`` word prefix: a bare prefix binds the variable to ONLY the
-    first stage of a compound command, so ``GAIA_DISPATCH_AGENT=x cd /repo &&
-    gaia ...`` would leave ``gaia`` without the variable. ``export`` makes it
-    visible to every stage and every subprocess of that single Bash invocation
-    (each tool call is a fresh shell, so the scope is exactly this one command).
-
-    ``agent_type`` is the HARNESS-provided dispatch identity, never a value the
-    agent supplies; the caller only invokes this for a real subagent. Returns
-    the command unchanged when ``agent_type`` is empty (no identity to assert --
-    the guards then stay fail-open for that command, the conservative fallback).
-
-    Note (accepted limitation): a deliberately adversarial agent could append an
-    inline ``GAIA_DISPATCH_AGENT=orchestrator`` assignment to a later stage of
-    its own command and shadow the exported value for that stage. This injection
-    closes the ACCIDENTAL over-authority gap (subagents writing as human by
-    default); a forged inline override is a distinct, adversarial threat still
-    covered by the T3 approval layer on the underlying mutation.
-    """
-    agent = (agent_type or "").strip()
-    if not agent:
-        return command
-    exports = f"{GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}"
-    if tmpdir:
-        exports += f" TMPDIR={shlex.quote(tmpdir)}"
-    return f"export {exports}; {command}"
 
 # Claude Code's PreToolUse responses nest their permission fields under this
 # top-level key. The literal shape is OWNED by this adapter layer: business
@@ -308,33 +248,6 @@ CONTRACT_REJECTED_EVENT = "agent.contract_rejected"
 # Enough to recognize WHICH rejection it was without storing the whole repair
 # block, which is long by design.
 _REJECTION_PREVIEW_CHARS = 400
-
-# Dotted event category written to harness_events when a nascent-row birth is
-# rejected for an ANOMALOUS reason (see _is_anomalous_dispatch_binding_rejection
-# below). Severity is warning, not error: a rejected birth never blocks the
-# dispatch (modules.agents.dispatch_binding.DispatchBindingError is always
-# swallowed), so nothing here forces a repair the way CONTRACT_REJECTED_EVENT
-# does -- it only makes an otherwise-silent misdispatch (a typo'd task_id=, a
-# verifier missing its parent_handoff_id=) visible to triage instead of
-# vanishing into a logger.info line no one reads by default.
-DISPATCH_BINDING_REJECTED_EVENT = "dispatch.binding_rejected"
-
-# DispatchBindingError.reason codes that are ALWAYS anomalous: each of these
-# names a binding that carried SOME plan/verifier coordinate and failed to
-# resolve it, never a turn that simply carried none. Mirrors the reason list
-# in modules.agents.dispatch_binding.DispatchBindingError's own docstring.
-_ALWAYS_ANOMALOUS_BINDING_REASONS = frozenset({
-    "plan_task_id_unresolved",
-    "plan_task_id_not_dispatchable",
-    "verifier_requires_parent_handoff_id",
-    "parent_handoff_id_unresolved",
-})
-
-# The one reason code that is CONDITIONALLY anomalous: a task_execution
-# dispatch with no task_id= token at all. This is the legitimate shape of a
-# free-standing turn (investigation, memory) that carries no plan_id= either --
-# see _is_anomalous_dispatch_binding_rejection.
-_CONDITIONAL_BINDING_REASON = "task_execution_requires_plan_task_id"
 
 
 def full_verdict_gate_enabled() -> bool:
@@ -1093,82 +1006,7 @@ def resolve_subagent_stop_gate(
     return verdict, source
 
 
-def _is_anomalous_dispatch_binding_rejection(
-    reason: str, binding: Dict[str, Any],
-) -> bool:
-    """Whether a rejected nascent-row birth is worth surfacing as an event.
-
-    A rejected birth is the correct, silent outcome for a free-standing turn
-    (investigation, memory) dispatched with no plan coordinate at all --
-    ``extract_dispatch_binding`` labels every non-verifier dispatch
-    ``task_execution`` by default, so the ABSENCE of a ``task_id=`` token on
-    such a turn is not a mistake, it is the shape of a legitimate free
-    dispatch. Emitting an event for that case would train the triage reader
-    to ignore the channel, which defeats the reason it exists.
-
-    Four reasons are anomalous unconditionally: each one means SOME plan or
-    verifier coordinate was supplied and failed to resolve, which is never the
-    free-turn shape. The fifth, ``task_execution_requires_plan_task_id``, is
-    anomalous only when ``plan_id`` WAS extracted from the prompt -- that
-    combination means the dispatcher intended a plan-bound turn (it named the
-    plan) and simply dropped the ``task_id=`` token, the exact misdispatch the
-    convention in ``agents/gaia-orchestrator.md`` exists to prevent.
-    """
-    if reason in _ALWAYS_ANOMALOUS_BINDING_REASONS:
-        return True
-    if reason == _CONDITIONAL_BINDING_REASON:
-        return binding.get("plan_id") is not None
-    return False
-
-
-def _record_dispatch_binding_rejection(
-    exc: Any, *, agent_name: str, binding: Dict[str, Any],
-) -> None:
-    """Record an ANOMALOUS nascent-row birth rejection as a harness_events row.
-
-    Mirrors ``_record_contract_rejection_defect``: writes through
-    ``EventWriter().write_event`` at severity ``warning`` (below the ``error``
-    that channel uses, since a rejected birth never blocks the dispatch the
-    way a contract-gate rejection does), and is strictly best-effort -- every
-    failure is swallowed so a birth rejection, itself already non-blocking,
-    can never become a reason the dispatch fails.
-
-    Silent by design for the legitimate free-turn shape; see
-    :func:`_is_anomalous_dispatch_binding_rejection` for the discriminator.
-    """
-    reason = getattr(exc, "reason", "")
-    if not _is_anomalous_dispatch_binding_rejection(reason, binding):
-        return
-    try:
-        from modules.events.event_writer import EventWriter
-
-        meta: Dict[str, Any] = {
-            "agent": agent_name,
-            "reason": reason,
-            "binding": {
-                "kind": binding.get("kind"),
-                "turn_role": binding.get("turn_role"),
-                "plan_id": binding.get("plan_id"),
-                "plan_task_id": binding.get("plan_task_id"),
-                "parent_handoff_id": binding.get("parent_handoff_id"),
-            },
-        }
-        EventWriter().write_event(
-            DISPATCH_BINDING_REJECTED_EVENT,
-            "hook",
-            agent_name,
-            f"nascent-row birth rejected for {agent_name} ({reason})",
-            severity="warning",
-            meta=meta,
-        )
-    except Exception as write_exc:  # pragma: no cover - telemetry must never block
-        logger.debug(
-            "dispatch binding rejection event write failed (non-fatal): %s",
-            write_exc,
-        )
-
-
-class ClaudeCodeAdapter(HookAdapter):
+class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     """Concrete adapter for Claude Code v2.1+ hook protocol.
 
     Claude Code sends JSON on stdin with these top-level fields:
@@ -1184,7 +1022,14 @@ class ClaudeCodeAdapter(HookAdapter):
         - cwd: str              (SubagentStop only)
 
     Responses use hookSpecificOutput with permissionDecision for PreToolUse.
+
+    The tool-call policy is the shared ``ToolPolicy``, whose verdicts this
+    adapter formats. It is inherited rather than held so the policy's seams
+    (``_maybe_birth_dispatched_row``, ``_adapt_bash``'s validator path) stay
+    reachable on this class, where callers and tests address them.
     """
+
+    PRIMARY_AGENT_TYPE = PRIMARY_AGENT
 
     # ------------------------------------------------------------------ #
     # parse_event: stdin JSON -> HookEvent
@@ -1719,104 +1564,69 @@ class ClaudeCodeAdapter(HookAdapter):
     def adapt_pre_tool_use(
         self, event: HookEvent, *, _dispatch_identity_in_env: bool = False,
     ) -> HookResponse:
-        """Run all pre-tool-use business logic and return a formatted response.
+        """Run the shared tool policy, then Claude Code's own tools, as a hook response.
 
-        Orchestrates: routing (bash vs task), validation, state management,
-        context injection, approval handling, and response formatting.
+        SendMessage and AskUserQuestion exist only in this host, so they are
+        decided here once the shared policy (delegate-mode gate, grant cleanup,
+        input shape) has left the call to the host.
         """
-        from modules.core.state import create_pre_hook_state, save_hook_state
-        from modules.security.approval_grants import (
-            cleanup_expired_grants,
+        verdict = self.pre_tool_verdict(
+            event, dispatch_identity_in_env=_dispatch_identity_in_env,
         )
-        from modules.tools.bash_validator import BashValidator
-        from modules.tools.task_validator import TaskValidator
-        hook_data = event.payload
-        tool_name = hook_data.get("tool_name") or ""
-        tool_input = hook_data.get("tool_input", {})
+        tool_name = event.payload.get("tool_name") or ""
+        if verdict.is_silent and isinstance(tool_name, str):
+            tool_input = event.payload.get("tool_input", {})
+            try:
+                if tool_name.lower() == "sendmessage":
+                    return self._adapt_send_message(
+                        tool_name, tool_input, session_id=event.session_id,
+                    )
+                if tool_name == "AskUserQuestion":
+                    return self._adapt_ask_user_question(tool_input, hook_data=event.payload)
+            except Exception as e:
+                verdict = failure_verdict(e)
+        return self._format_pre_tool_verdict(verdict)
 
-        logger.info("Hook invoked: tool=%s, params=%s", tool_name, json.dumps(tool_input)[:200])
+    def _format_pre_tool_verdict(self, verdict: PolicyVerdict) -> HookResponse:
+        """Translate a policy verdict into Claude Code's PreToolUse response.
 
-        try:
-            # ── Delegate mode gate ─────────────────────────────────
-            # Must run before any other logic.  The orchestrator (main
-            # session) is restricted to dispatch tools plus Read.  Subagents
-            # are unaffected.
-            from modules.orchestrator.delegate_mode import check_delegate_mode
-
-            dm_result = check_delegate_mode(tool_name, hook_data)
-            if dm_result.blocked:
-                logger.warning(
-                    "DELEGATE_MODE denied %s for orchestrator", tool_name,
-                )
-                return HookResponse(
-                    output={
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "deny",
-                            "permissionDecisionReason": dm_result.reason,
-                        }
-                    },
-                    exit_code=0,
-                )
-
-            # Periodic cleanup of expired approval grants
-            cleanup_expired_grants()
-
-            if not isinstance(tool_name, str):
-                return HookResponse(output="Error: Invalid tool name", exit_code=2)
-            if not isinstance(tool_input, dict):
-                return HookResponse(output="Error: Invalid parameters", exit_code=2)
-
-            if tool_name.lower() == "bash":
-                return self._adapt_bash(
-                    tool_name, tool_input, hook_data=hook_data,
-                    _dispatch_identity_in_env=_dispatch_identity_in_env,
-                )
-            elif tool_name.lower() in ("task", "agent"):
-                return self._adapt_task(
-                    tool_name, tool_input,
-                    session_id=event.session_id,
-                    hook_data=hook_data,
-                )
-            elif tool_name.lower() == "sendmessage":
-                return self._adapt_send_message(
-                    tool_name, tool_input, session_id=event.session_id,
-                )
-            elif tool_name.lower() in ("write", "edit"):
-                agent_id = (hook_data or {}).get("agent_id", "")
-                is_subagent = bool(agent_id)
-                session_id = (hook_data or {}).get("session_id", "")
-                return self._adapt_write_edit(
-                    tool_name, tool_input,
-                    session_id=session_id,
-                    is_subagent=is_subagent,
-                    agent_id=agent_id,
-                    agent_type=(hook_data or {}).get("agent_type", ""),
-                )
-            elif tool_name == "AskUserQuestion":
-                return self._adapt_ask_user_question(tool_input, hook_data=hook_data)
-            else:
-                # Other tools pass through
-                return HookResponse(output={}, exit_code=0)
-
-        except Exception as e:
-            logger.error("Unexpected error in adapt_pre_tool_use: %s", e, exc_info=True)
-            from modules.core.operational_errors import storage_exhaustion_message
-            operational_message = storage_exhaustion_message(e)
-            if operational_message is not None:
-                # Exit 2 keeps the failure FAIL-CLOSED: the runtime treats only
-                # exit 2 as blocking (exit 1 is a non-blocking "HOOK ERROR", so
-                # the tool call would proceed unvalidated). The distinct message
-                # is what tells the operator this is storage exhaustion, not a
-                # security-policy denial.
-                return HookResponse(
-                    output=operational_message,
-                    exit_code=2,
-                )
-            return HookResponse(
-                output=f"Error during security validation: {str(e)}",
-                exit_code=2,
+        A refusal exits 2, the only exit code this host treats as blocking
+        (exit 1 is a non-blocking "HOOK ERROR" and the call would run
+        unvalidated).
+        """
+        if verdict.refusal is not None:
+            return HookResponse(output=verdict.refusal, exit_code=2)
+        if verdict.consent is not None:
+            return replace(
+                self.request_consent(verdict.consent), approval_id=verdict.approval_id,
             )
+        if verdict.decision is None:
+            return HookResponse(output={}, exit_code=0)
+        specific: Dict[str, Any] = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": verdict.decision,
+            "permissionDecisionReason": verdict.reason,
+        }
+        if verdict.updated_input is not None:
+            specific["updatedInput"] = verdict.updated_input
+        if verdict.context:
+            specific["additionalContext"] = verdict.context
+        return HookResponse(
+            output={_HOOK_SPECIFIC_OUTPUT: specific}, exit_code=0,
+            approval_id=verdict.approval_id,
+        )
+
+    def _deliver_subagent_context(
+        self, session_id: str, agent_type: str, context: str, task_description: str,
+    ) -> None:
+        """Cache the events digest for this dispatch's SubagentStart to inject."""
+        self._cache_context_for_subagent(
+            session_id, agent_type, context, task_description=task_description,
+        )
+        logger.info(
+            "Cached context for SubagentStart: agent=%s, session=%s",
+            agent_type, session_id,
+        )
 
     def _adapt_bash(
         self,
@@ -1826,140 +1636,11 @@ class ClaudeCodeAdapter(HookAdapter):
         *,
         _dispatch_identity_in_env: bool = False,
     ) -> HookResponse:
-        """Handle Bash tool validation within the adapter.
-
-        Args:
-            tool_name: The tool name ("Bash").
-            parameters: The tool_input dict (contains "command").
-            hook_data: Full hook event payload -- used to detect subagent
-                context via the ``agent_id`` field.
-        """
-        from modules.core.state import create_pre_hook_state, save_hook_state
-        from modules.tools.bash_validator import BashValidator
-
-        command = parameters.get("command", "")
-        if not command:
-            return HookResponse(output="Error: Bash tool requires a command", exit_code=2)
-
-        # Detect subagent context: if agent_id is present in the hook event,
-        # the command is running inside a subagent (not the orchestrator).
-        is_subagent = bool(hook_data and hook_data.get("agent_id"))
-        session_id = (hook_data or {}).get("session_id", "")
-        agent_type = (hook_data or {}).get("agent_type", "") or (
-            "" if is_subagent else PRIMARY_AGENT
-        )
-        # Host stdin carries a top-level snake_case tool_use_id in BOTH
-        # PreToolUse and PostToolUse, and it MATCHES for the same call. Keying
-        # hook state by (session_id, tool_use_id) is what ends the concurrent-
-        # subagent race that clobbered the old single global state file and
-        # lost EXECUTED terminal events.
-        tool_use_id = (hook_data or {}).get("tool_use_id", "")
-
-        validator = BashValidator()
-        result = validator.validate(
-            command, is_subagent=is_subagent, session_id=session_id,
-            agent_type=agent_type, hook_payload=hook_data,
-        )
-
-        if not result.allowed:
-            logger.warning("BLOCKED: %s - %s", command[:100], result.reason)
-            # Block with nonce for the orchestrator approval flow. The T3
-            # deny-vs-native-ask decision was already made in the validator
-            # (decide_t3_outcome): a subagent under the orchestrator gets a
-            # deny+approval_id block_response; the main session falls back to
-            # the native ask dialog. Either way the block_response carries the
-            # correct outcome.
-            if result.block_response is not None:
-                return HookResponse(
-                    output=result.block_response, exit_code=0,
-                    approval_id=result.approval_id,
-                )
-            return HookResponse(
-                output=self._format_blocked_message(result),
-                exit_code=2,
-            )
-
-        # The grant is consumed here, so the call's terminal event
-        # (PostToolUse or PostToolUseFailure, same tool_use_id) can only find
-        # the approval through this state.
-        effective_command = result.modified_input.get("command", command) if result.modified_input else command
-        state = create_pre_hook_state(
-            tool_name=tool_name,
-            command=effective_command,
-            tier=str(result.tier),
-            session_id=session_id,
-            tool_use_id=tool_use_id,
-            allowed=True,
-            consumed_approval_id=result.consumed_approval_id,
-            command_set_reservation=result.command_set_reservation,
-        )
-        # Keyed by (session_id, tool_use_id) when both are present; degrades to
-        # the legacy global file otherwise (create_pre_hook_state/save_hook_state
-        # share the same key resolution, so PostToolUse retrieves the exact
-        # entry this call wrote).
-        state_saved = save_hook_state(state)
-        if result.command_set_reservation and not state_saved:
-            # Deny fail-closed: without the correlation state, the terminal
-            # event could never settle the reserved COMMAND_SET item. The settle here
-            # is best-effort -- the denial stands even if it fails.
-            try:
-                from gaia.store.writer import settle_plan_command
-                settle_plan_command(
-                    result.command_set_reservation["approval_id"],
-                    session_id=session_id, tool_use_id=tool_use_id, success=False,
-                    failure_reason="PreToolUse correlation state could not be persisted",
-                )
-            except Exception as exc:
-                logger.debug("reservation settle on state failure errored: %s", exc)
-            return HookResponse(
-                output="COMMAND_SET denied: host correlation state unavailable",
-                exit_code=2,
-            )
-
-        # Dispatch-identity injection (fail-closed guards, M1). A subagent's
-        # DB writes (memory / evidence / brief+plan content / state transitions /
-        # handoff finalize) are gated by DB-side guards that read
-        # GAIA_DISPATCH_AGENT. That variable is NEVER set at the process level, so
-        # historically every subagent wrote with human-level (fail-open)
-        # authority. Here we export the HARNESS-provided agent identity at the
-        # front of the command so the `gaia` CLI subprocess (and any Python that
-        # imports gaia.store.writer) inherits the real invoking identity and the
-        # guards enforce the per-agent model. The identity is agent_type from the
-        # hook payload -- host-provided, NOT anything the agent can forge. The
-        # orchestrator (main session, no agent_id -> is_subagent False) and a
-        # genuine human CLI call are never injected, so they keep fail-open
-        # human authority. See build_dispatch_identity_command for why an
-        # `export ...;` prefix (not a bare `VAR=x` word) is used.
-        final_command = effective_command
-        if is_subagent and not _dispatch_identity_in_env:
-            final_command = build_dispatch_identity_command(
-                effective_command, agent_type,
-                tmpdir=dispatch_tmpdir(hook_data["agent_id"]),
-            )
-
-        if final_command != command:
-            reason = (
-                result.reason
-                if result.modified_input
-                else "dispatch-identity injected (GAIA_DISPATCH_AGENT)"
-            )
-            logger.info(
-                "MODIFIED: %s -> tier=%s (footer_stripped=%s, dispatch_id=%s)",
-                command[:80], result.tier,
-                bool(result.modified_input), final_command != effective_command,
-            )
-            output = {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": reason,
-                    "updatedInput": {"command": final_command},
-                }
-            }
-            return HookResponse(output=output, exit_code=0)
-
-        logger.info("ALLOWED: %s - tier=%s", command[:100], result.tier)
-        return HookResponse(output={}, exit_code=0)
+        """Decide one Bash call through the shared policy, as a hook response."""
+        return self._format_pre_tool_verdict(self._bash_verdict(
+            tool_name, parameters, hook_data=hook_data,
+            dispatch_identity_in_env=_dispatch_identity_in_env,
+        ))
 
     def _adapt_task(
         self,
@@ -1968,342 +1649,33 @@ class ClaudeCodeAdapter(HookAdapter):
         session_id: str = "",
         hook_data: Optional[dict] = None,
     ) -> HookResponse:
-        """Handle Task/Agent tool validation within the adapter.
+        """Decide one Task/Agent dispatch through the shared policy, as a hook response."""
+        return self._format_pre_tool_verdict(self._task_verdict(
+            tool_name, parameters, session_id=session_id, hook_data=hook_data,
+        ))
 
-        The subagent's payload is the dispatch KERNEL, not a preloaded
-        project-context snapshot. This method therefore no longer builds
-        project context, computes surface routing, appends the workspace
-        memory block, or renders the legacy identity block -- the born row
-        (claimed at SubagentStart) carries everything the kernel renders, and
-        the turn pulls project context on demand through the CLI. What still
-        happens here: task validation, session-events digest, the birth of the
-        nascent row, and the cache bridge that carries the events digest to
-        SubagentStart.
+    def _adapt_write_edit(
+        self,
+        tool_name: str,
+        parameters: dict,
+        session_id: str = "",
+        is_subagent: bool = False,
+        agent_id: str = "",
+        agent_type: str = "",
+    ) -> HookResponse:
+        """Decide one Write/Edit call through the shared policy, as a hook response.
 
-        The session-events digest is agent-agnostic (no project-agent
-        allowlist gate): every dispatched agent, registered or not, receives
-        the same last-events digest.
-
-        ``hook_data`` is the raw PreToolUse payload: the birth path mines its
-        top-level ``prompt_id`` / ``tool_use_id`` / ``cwd`` (dispatch
-        correlation coordinates, v43/v44) which ``parameters`` (the
-        tool_input) does not carry.
+        A main-session write to a protected path is asked inline through this
+        host's native dialog (``request_consent``). The reminder a subagent
+        write may carry travels in ``additionalContext``, not
+        ``permissionDecisionReason``: with ``permissionDecision: "allow"`` this
+        host surfaces the reason only in logs, never to the model
+        (``code.claude.com/docs/en/hooks.md``, "PreToolUse decision control").
         """
-        from modules.core.state import create_pre_hook_state, save_hook_state
-        from modules.tools.task_validator import TaskValidator
-        from modules.session.session_event_injector import build_session_events
-
-        events_text = build_session_events(parameters)
-
-        # Standard task validation (runs against ORIGINAL prompt -- no workaround needed)
-        validator = TaskValidator()
-        result = validator.validate(parameters)
-
-        if not result.allowed:
-            logger.warning("BLOCKED Task: %s - %s", result.agent_name, result.reason)
-            return HookResponse(output=result.reason, exit_code=2)
-
-        state = create_pre_hook_state(
-            tool_name=tool_name,
-            command=f"Task:{result.agent_name}",
-            tier=str(result.tier),
-            allowed=True,
-            is_t3=result.is_t3_operation,
-        )
-        save_hook_state(state)
-
-        logger.info("ALLOWED Task: %s", result.agent_name)
-
-        # Born-at-dispatch (v37, plan 34 task 6): stamp the nascent
-        # agent_contract_handoffs row FROM the dispatch metadata, validated for
-        # referential integrity. Best-effort and STRICTLY non-blocking -- a
-        # dispatch is never blocked by a binding that fails to resolve or a birth
-        # that errors; the row simply is not born (the SubagentStop backstop/reaper
-        # still guarantees exactly-one row).
-        self._maybe_birth_dispatched_row(
-            parameters, result.agent_name, session_id,
-            hook_data=hook_data,
-        )
-
-        # Cache bridge to SubagentStart: only the session-events digest rides
-        # it now (see _cache_context_for_subagent for why the bridge survives
-        # at all). The born row's identity does NOT ride it -- SubagentStart
-        # resolves the row via claim_dispatch_row, so an empty digest needs no
-        # cache entry.
-        additional = events_text or ""
-        if additional:
-            effective_session_id = session_id or "unknown"
-            agent_type = result.agent_name or "unknown"
-            self._cache_context_for_subagent(
-                effective_session_id,
-                agent_type,
-                additional,
-                task_description=parameters.get("description", ""),
-            )
-            logger.info(
-                "Cached context for SubagentStart: agent=%s, session=%s",
-                agent_type, effective_session_id,
-            )
-
-        # Write AGENT_DISPATCH event (non-blocking)
-        try:
-            from modules.events.event_writer import EventWriter, AGENT_DISPATCH
-            prompt = parameters.get("prompt", "")
-            EventWriter().write_event(
-                AGENT_DISPATCH, "hook", result.agent_name or "unknown",
-                f"dispatched for: {prompt[:100]}",
-            )
-        except Exception:
-            pass  # Events are non-critical
-
-        return HookResponse(output={}, exit_code=0)
-
-    @staticmethod
-    def _resolve_dispatch_workspace(
-        parameters: dict, hook_data: Optional[dict],
-    ) -> str:
-        """Resolve the REAL workspace for a dispatch birth.
-
-        The historical chain (``parameters['workspace']`` -> GAIA_WORKSPACE ->
-        literal ``"global"``) landed every birth on ``"global"`` in practice:
-        the Task tool_input never carries a workspace key and GAIA_WORKSPACE
-        is not set by the harness, so the literal fallback always won -- which
-        broke the workspace scoping of everything keyed to the row (injected
-        memory above all). The explicit overrides keep their priority, but the
-        fallback is now the canonical path-based resolver
-        (``gaia.project.current``) anchored at the payload's ``cwd``, the same
-        resolver every other workspace consumer uses; its own last resort is
-        still ``"global"``.
-        """
-        explicit = (
-            parameters.get("workspace")
-            or os.environ.get("GAIA_WORKSPACE")
-        )
-        if explicit:
-            return explicit
-        try:
-            from modules.install_detector import resolve_workspace
-
-            return resolve_workspace((hook_data or {}).get("cwd") or None)
-        except Exception:
-            return "global"
-
-    @staticmethod
-    def _kernel_dispatch_facts(
-        agent_name: str,
-        workspace: str,
-        *,
-        turn_role: Optional[str] = None,
-        cwd: Optional[str] = None,
-        project_token: Optional[str] = None,
-    ) -> "tuple[Optional[Dict[str, Any]], Optional[str]]":
-        """Derive (kernel_sections, dispatch_project) for a birth -- no routing.
-
-        Surface routing left the subagent dispatch path, so the kernel
-        payload is derived from the agent's OWN declarations --
-        ``agent_contract_permissions`` for can_read/can_write, the agent's own
-        ``surface_routing`` row (primary_agent match) for its surface, the
-        dispatch binding for its role.
-
-        The project is DISPATCH DATA first: a ``project=<name>``
-        token in the dispatch prompt (``project_token``, extracted by
-        ``extract_dispatch_binding``) resolves by NAME against the workspace's
-        project_identity (``resolve_project_by_name``). Only when the dispatch
-        named no project does the cwd-based resolution run as fallback
-        (``resolve_dispatch_project``) -- the orchestrator dispatches from the
-        workspace root, so the cwd lane alone left dispatch_project NULL in
-        practice.
-
-        Fail-safe: any error degrades to ``(None, None)`` -- a birth without a
-        kernel payload, never a blocked dispatch.
-        """
-        try:
-            from modules.core.paths import ensure_package_root_importable
-
-            ensure_package_root_importable()
-            from tools.context.context_provider import (
-                build_kernel_sections,
-                resolve_dispatch_project,
-                resolve_project_by_name,
-            )
-
-            sections = build_kernel_sections(
-                agent_name, workspace, turn_role=turn_role,
-            )
-            project = resolve_project_by_name(workspace, project_token)
-            if not project:
-                project = resolve_dispatch_project(workspace, cwd)
-            return sections, project
-        except Exception:
-            logger.debug(
-                "kernel dispatch facts derivation failed (non-fatal)",
-                exc_info=True,
-            )
-            return None, None
-
-    @staticmethod
-    def _maybe_birth_dispatched_row(
-        parameters, agent_name, session_id,
-        hook_data: Optional[dict] = None,
-    ) -> Optional[Dict[str, str]]:
-        """Best-effort born-at-dispatch row birth (plan 34 task 6; plan 49
-        task 1 -- degrade-not-drop, D1).
-
-        Mints a REAL, adoptable identity for the turn (see
-        ``modules.agents.dispatch_identity``) and births the nascent row under
-        it, returning ``{"agent_id": ..., "contract_id": ...}`` on success.
-        Returns None only when NO row was born at all -- a writer error, or an
-        extraction gap. The identity no longer travels to the subagent from
-        here: SubagentStart recovers it by claiming the row itself
-        (``claim_dispatch_row``), so the return value is a birth signal for
-        callers and tests, not a payload.
-
-        BIRTH IS TOTAL: EVERY ``DispatchBindingError`` degrades rather than
-        dropping the row. Whichever coordinate failed to resolve is stamped
-        NULL (referential integrity is not weakened), and the rejection reason
-        plus the failed token are recorded INSIDE the birth envelope via
-        :func:`~modules.agents.dispatch_binding.birth_degraded_row`. The
-        identity is still returned and the turn still runs -- degrade, not
-        block. The reason this is total and not a curated subset is in
-        ``dispatch_binding``'s module docstring: an unborn row is not a weaker
-        binding but no contract at all, and it is UNRECOVERABLE, since
-        ``harness_agent_id`` is stamped only at the SubagentStart claim and no
-        CLI verb can write it afterwards.
-
-        ``hook_data`` (the raw PreToolUse payload) enriches the birth with the
-        v43/v44 dispatch coordinates -- prompt_id/tool_use_id/description/
-        prompt, the kernel_sections payload (derived without routing; see
-        ``_kernel_dispatch_facts``), and the dispatch project -- and anchors
-        the workspace resolution at the payload's cwd
-        (see _resolve_dispatch_workspace). Optional: a caller without it
-        births exactly as before, with NULL coordinates.
-
-        ``session_id`` is stamped as-is when present and NULL when absent --
-        never a placeholder string. A NULL leaves the column open for a later,
-        truer attribution (finalize merges it with COALESCE); the old
-        ``"unknown"`` literal baked a lie into the column that nothing could
-        correct.
-
-        Never raises: every failure path is swallowed so a dispatch is never
-        blocked. See _adapt_task for the rationale.
-        """
-        try:
-            from modules.agents.dispatch_binding import (
-                DispatchBindingError,
-                birth_degraded_row,
-                birth_dispatched_row,
-            )
-            from modules.agents.dispatch_identity import mint_dispatch_identity
-
-            meta = {
-                "prompt": parameters.get("prompt", ""),
-                "subagent_type": agent_name,
-            }
-            from modules.agents.dispatch_binding import extract_dispatch_binding
-            binding = extract_dispatch_binding(meta)
-
-            workspace = ClaudeCodeAdapter._resolve_dispatch_workspace(
-                parameters, hook_data,
-            )
-            # Dispatch coordinates (v43/v44): prompt/description live in the
-            # Task tool_input; prompt_id/tool_use_id/cwd are top-level payload
-            # fields. kernel_sections and the project are derived here, at
-            # birth, with NO surface routing (see _kernel_dispatch_facts).
-            payload = hook_data or {}
-            kernel_sections, dispatch_project = (
-                ClaudeCodeAdapter._kernel_dispatch_facts(
-                    agent_name or "",
-                    workspace,
-                    turn_role=binding.get("turn_role"),
-                    cwd=payload.get("cwd") or None,
-                    project_token=binding.get("project"),
-                )
-            )
-            dispatch_fields = {
-                "dispatch_prompt_id": payload.get("prompt_id") or None,
-                "dispatch_tool_use_id": payload.get("tool_use_id") or None,
-                "dispatch_description": parameters.get("description") or None,
-                "dispatch_prompt": parameters.get("prompt") or None,
-                "kernel_sections": kernel_sections,
-                "dispatch_project": dispatch_project,
-            }
-            sid = session_id or None
-            agent = agent_name or "unknown"
-            ptid = binding.get("plan_task_id")
-            # The identity is MINTED, not derived from (session, agent, task).
-            # A derived key collapses two concurrent dispatches of the same
-            # agent type onto one row -- see dispatch_identity's module comment
-            # for why uniqueness beats per-key idempotency here. Idempotency
-            # survives at the scope that matters: the writer's ON CONFLICT makes
-            # a single dispatch's birth a no-op on retry.
-            identity = mint_dispatch_identity()
-            contract_id = identity["contract_id"]
-
-            try:
-                birth_dispatched_row(
-                    contract_id=contract_id,
-                    agent_id=identity["agent_id"],
-                    workspace=workspace,
-                    kind=binding.get("kind"),
-                    turn_role=binding.get("turn_role"),
-                    plan_task_id=ptid,
-                    plan_id=binding.get("plan_id"),
-                    parent_handoff_id=binding.get("parent_handoff_id"),
-                    session_id=sid,
-                    # The NAME goes in the birth envelope, not in agent_id --
-                    # that column now holds the minted handle the turn adopts.
-                    # It is the only coordinate a turn that never adopts still
-                    # shares with its own row (see the writer's
-                    # find_dispatched_row_by_agent_name).
-                    agent_name=agent,
-                    **dispatch_fields,
-                )
-                logger.info(
-                    "Born-at-dispatch: nascent row stamped (agent=%s, task=%s, "
-                    "contract_id=%s)",
-                    agent, ptid, contract_id,
-                )
-                return identity
-            except DispatchBindingError as exc:
-                # A binding that does not resolve is NOT an error to block on --
-                # log why the row was not born and let the dispatch proceed.
-                logger.info(
-                    "Born-at-dispatch: binding not born (agent=%s): %s",
-                    agent, exc,
-                )
-                _record_dispatch_binding_rejection(
-                    exc, agent_name=agent, binding=binding,
-                )
-                try:
-                    birth_degraded_row(
-                        contract_id=contract_id,
-                        agent_id=identity["agent_id"],
-                        workspace=workspace,
-                        kind=binding.get("kind"),
-                        rejection_reason=exc.reason,
-                        failed_plan_task_id=ptid,
-                        failed_parent_handoff_id=binding.get("parent_handoff_id"),
-                        plan_id=binding.get("plan_id"),
-                        session_id=sid,
-                        agent_name=agent,
-                        **dispatch_fields,
-                    )
-                    logger.info(
-                        "Born-at-dispatch: DEGRADED row stamped (agent=%s, "
-                        "failed_task=%s, failed_parent=%s, reason=%s, "
-                        "contract_id=%s)",
-                        agent, ptid, binding.get("parent_handoff_id"),
-                        exc.reason, contract_id,
-                    )
-                    return identity
-                except Exception:
-                    logger.debug(
-                        "Born-at-dispatch degraded birth failed (non-fatal)",
-                        exc_info=True,
-                    )
-        except Exception:
-            logger.debug("Born-at-dispatch birth failed (non-fatal)", exc_info=True)
-        return None
+        return self._format_pre_tool_verdict(self._write_edit_verdict(
+            tool_name, parameters, session_id=session_id,
+            is_subagent=is_subagent, agent_id=agent_id, agent_type=agent_type,
+        ))
 
     @staticmethod
     def _resolve_dispatch_row(
@@ -2557,439 +1929,32 @@ class ClaudeCodeAdapter(HookAdapter):
         logger.info("ALLOWED SendMessage: agent %s - message length: %d", agent_id, len(message))
         return HookResponse(output={}, exit_code=0)
 
-    def _adapt_write_edit(
-        self,
-        tool_name: str,
-        parameters: dict,
-        session_id: str = "",
-        is_subagent: bool = False,
-        agent_id: str = "",
-        agent_type: str = "",
-    ) -> HookResponse:
-        """Handle Write and Edit tool path protection, plus an advisory
-        artifact-skill reminder.
-
-        A protected-path write by a subagent is decided by the host-neutral
-        ``gaia.approvals.core.protected_write_verdict``, bound to the session
-        and the ``agent_type`` of the event that attempts it; an event missing
-        either is denied without sealing a request (``agent_id`` is never used
-        in its place).
-
-        Blocks modifications to Gaia hooks, settings, and security config
-        by requiring user approval for any path that matches protected path
-        patterns.
-
-        Foreground (orchestrator) flow: returns permissionDecision "ask" so
-        the native Claude Code dialog handles approval.
-
-        Subagent flow: mirrors the bash_validator nonce-based pattern.
-        - Checks for an existing pending approval (retry guard).
-        - If found, returns deny with the existing approval_id.
-        - If not found, writes a pending approval and returns deny with a
-          new approval_id so the orchestrator can ask the user and activate
-          the grant via _handle_ask_user_question_result on PostToolUse.
-        - On retry, if an active grant exists for this path, allows through.
-        - A pending sealed without phrases is denied naming the path and the
-          ``request-file-write`` line that replaces it.
-
-        The protected set is not decided here: it comes from
-        ``modules.security.protected_paths.is_protected_hook_path``, the one
-        predicate the Bash command-string guard consumes too, so widening this
-        surface cannot leave the shell route open against the same tree. It
-        covers every Gaia hook tree -- source checkout and installed copy alike
-        -- because it derives roots from the workspace registry, the path shape
-        and a root marker, never from where this module was loaded from.
-
-        Non-protected subagent writes additionally get a one-shot advisory
-        nudge (see ``modules.agents.artifact_skill_reminder``): when the
-        file's extension maps to a governing skill via ``artifact_skill_map``
-        and that skill has not already been reminded this turn (keyed by
-        session_id + agent_id), the response carries an "allow" decision
-        whose ``additionalContext`` names the governing skill. It travels in
-        ``additionalContext``, not ``permissionDecisionReason`` -- with
-        ``permissionDecision: "allow"``, Claude Code's own hook contract
-        surfaces the reason only in logs and the debug transcript, never to
-        the model, so a reminder placed there would never reach the agent
-        (``code.claude.com/docs/en/hooks.md``, "PreToolUse decision
-        control"). A short ``permissionDecisionReason`` is still set for the
-        audit log, but it is not the channel the agent reads. This never
-        blocks -- it is the prevention half of the gap that
-        ``skill_injection_verifier`` can only detect after the fact at
-        SubagentStop. Restricted to ``is_subagent=True`` (with a non-empty
-        ``agent_id``): the orchestrator delegates instead of writing code
-        itself, so the foreground path is unaffected and existing foreground
-        callers keep the exact-passthrough contract.
-        """
-        from modules.agents.artifact_skill_map import expected_skill_for_path
-        from modules.agents.artifact_skill_reminder import (
-            build_reminder_context,
-            should_remind,
-        )
-        from modules.security.protected_paths import (
-            is_protected_hook_path,
-            resolved_write_target,
-        )
-
-        file_path = parameters.get("file_path", "")
-        if not file_path:
-            return HookResponse(output={}, exit_code=0)
-
-        if not is_protected_hook_path(file_path):
-            if is_subagent and agent_id:
-                expected_skill = expected_skill_for_path(file_path)
-                if expected_skill and should_remind(session_id, agent_id, expected_skill):
-                    return HookResponse(
-                        output={
-                            "hookSpecificOutput": {
-                                "hookEventName": "PreToolUse",
-                                "permissionDecision": "allow",
-                                "permissionDecisionReason": (
-                                    f"artifact-skill reminder logged for "
-                                    f"'{expected_skill}'"
-                                ),
-                                "additionalContext": build_reminder_context(
-                                    file_path, expected_skill,
-                                ),
-                            }
-                        },
-                        exit_code=0,
-                    )
-            return HookResponse(output={}, exit_code=0)
-
-        logger.warning(
-            "PROTECTED_PATH: %s attempted to modify %s (subagent=%s)",
-            tool_name, file_path, is_subagent,
-        )
-
-        # Resolved once, so the grant lookup, the pending lookup, the pending
-        # write and the surface the user reads all name the same object. The
-        # protection check above keeps the path AS WRITTEN instead: it judges
-        # all three forms, and only the literal one carries the `.claude`
-        # component that a symlinked install destroys on resolution.
-        consent_path = resolved_write_target(file_path)
-
-        if not is_subagent:
-            # Foreground / orchestrator context: ask the user for consent
-            # inline (the adapter maps this to the native approval dialog).
-            reason = (
-                "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
-                "require approval."
-            )
-            return self.request_consent(
-                ConsentRequest(
-                    operation=consent_path,
-                    kind="file",
-                    reason=reason,
-                    tier="T3_BLOCKED",
-                )
-            )
-
-        # Subagent context: the neutral core decides (grant bound to this
-        # session and agent -> allow; otherwise name the requester's pending).
-        # The requester comes from the host event only, like the reactive Bash
-        # seal: without it nothing is sealed and the write is denied.
-        from gaia.approvals import core
-        try:
-            core.resolve_requester(session_id, agent_type)
-        except core.RequesterError as exc:
-            return HookResponse(
-                output={
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            f"[PROTECTED_PATH] Write denied without a signature: {exc}"
-                        ),
-                    }
-                },
-                exit_code=0,
-            )
-        try:
-            verdict = core.protected_write_verdict(
-                file_path, session_id=session_id, agent_id=agent_type,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to persist pending file-path approval for subagent; "
-                "falling back to ask: %s (%s)", consent_path, exc,
-            )
-            reason = (
-                "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
-                "require approval. (Pending approval persistence failed; "
-                "native dialog fallback.)"
-            )
-            return self.request_consent(
-                ConsentRequest(
-                    operation=consent_path,
-                    kind="file",
-                    reason=reason,
-                    tier="T3_BLOCKED",
-                )
-            )
-        if verdict["decision"] == "allow":
-            logger.info("File-path grant active, allowing %s through: %s", tool_name, consent_path)
-            return HookResponse(output={}, exit_code=0)
-        from modules.security.approval_messages import build_protected_write_denial_message
-
-        approval_id = verdict["approval_id"][2:]
-        reason = build_protected_write_denial_message(
-            verdict["approval_id"], consent_path, tool_name, verdict["window_minutes"],
-            request_line=verdict.get("request_line") or "",
-        )
-        # Out-of-band approval flow: consent is keyed to the persisted approval_id.
-        response = self.request_consent(
-            ConsentRequest(
-                operation=consent_path,
-                kind="file",
-                reason=reason,
-                tier="T3_BLOCKED",
-                approval_id=approval_id,
-            )
-        )
-        return replace(response, approval_id=verdict["approval_id"])
-
-    @staticmethod
-    def _format_blocked_message(result) -> str:
-        """Format blocked command message. Delegates to blocked_message_formatter."""
-        from modules.security.blocked_message_formatter import format_blocked_message
-        return format_blocked_message(result)
-
     # ------------------------------------------------------------------ #
     # adapt_post_tool_use: full post-tool-use lifecycle
     # ------------------------------------------------------------------ #
 
     def adapt_post_tool_use(self, event: HookEvent) -> HookResponse:
-        """Run all post-tool-use business logic and return a formatted response.
+        """Record the call through the shared policy, or decide an AskUserQuestion answer.
 
-        Orchestrates: state retrieval, duration computation, audit logging,
-        T3 grant confirmation, critical event detection, session context
-        writing, state cleanup, and AskUserQuestion grant activation.
+        The call's outcome is read by this host's ``parse_post_tool_use``. A
+        Task/Agent contract summary reaches the orchestrator as
+        ``additionalContext`` next to the tool result.
         """
-        from modules.core.state import get_hook_state, clear_hook_state
-        from modules.audit.logger import log_execution
-        from modules.audit.event_detector import detect_critical_event
-        from modules.session.session_context_writer import SessionContextWriter
-        from modules.security.approval_grants import check_approval_grant, confirm_grant
-
-        hook_data = event.payload
-        tool_result_data = self.parse_post_tool_use(hook_data)
-        logger.info("Post-hook event: %s", hook_data.get("hook_event_name"))
-
-        raw_tool_response = hook_data.get("tool_response", {})
-        tool_name = tool_result_data.tool_name
-        parameters = hook_data.get("tool_input", {})
-        # Retrieve the exact state this tool call wrote at PreToolUse. The host
-        # sends the SAME top-level tool_use_id at PostToolUse, so the keyed
-        # lookup is unambiguous even with concurrent subagents in flight.
-        post_session_id = hook_data.get("session_id", "")
-        tool_use_id = hook_data.get("tool_use_id", "")
-        output = tool_result_data.output
-        # On a Bash failure tool_response is a bare STRING (see parse_post_tool_use),
-        # so guard the dict access -- otherwise .get() would raise and abort the
-        # whole post-hook before the FAILED event is recorded.
-        duration = (
-            raw_tool_response.get("duration_ms", 0) / 1000.0
-            if isinstance(raw_tool_response, dict)
-            else 0.0
-        )
-        success = tool_result_data.exit_code == 0
-
-        if tool_name == "AskUserQuestion":
-            return self._handle_ask_user_question_result(hook_data)
-
-        # ------------------------------------------------------------- #
-        # Subagent dispatch: the ONLY place a harness-truncated subagent is
-        # observable. A cut never reaches SubagentStop, so the subagent side
-        # writes nothing at all; the parent, however, still receives a result
-        # reporting success but carrying no contract fence. Record it here or
-        # it is lost. Observation only -- never blocks the orchestrator.
-        #
-        # The tool reports itself as "Agent"; "Task" is its former name. The
-        # hooks.json matcher still says "Task" and the harness still honors it,
-        # so the hook DOES fire -- but the payload carries the new name, which
-        # is why gating this branch on "Task" alone silently observed nothing.
-        #
-        # Beyond cut detection, this is also where the orchestrator gets its
-        # look at the row: Claude Code's own hooks reference names this exact
-        # pattern ("To inject context into the parent session after a
-        # subagent returns, use a PostToolUse hook on the Agent tool") and
-        # documents additionalContext as landing "next to the tool result"
-        # for PostToolUse -- but that recommendation covers a SYNCHRONOUS
-        # dispatch, where the tool_response IS the finalized turn. For a
-        # BACKGROUND dispatch (measured: the majority of real ones) this same
-        # branch fires at LAUNCH, not at close -- the tool_response is a stub
-        # carrying only agentId/description/outputFile, status
-        # "async_launched", with no row yet finalized to report on. The
-        # summary line built below carries whichever of its two modes the row
-        # supports (see ``build_contract_summary_line``): the rich closed-row
-        # line for the synchronous case, or a short launch pointer armed with
-        # the same agentId for the async one -- never a state the row has not
-        # reached yet. The summary is strictly best-effort --
-        # _build_contract_summary_context never raises and returns "" when
-        # neither mode applies (no agentId, or a finalized row whose stored
-        # envelope cannot be read), which falls through to the bare response
-        # below.
-        # ------------------------------------------------------------- #
-        from modules.agents.task_result_observer import TASK_TOOL_NAMES
-
-        if tool_name in TASK_TOOL_NAMES:
-            self._observe_task_result(hook_data)
-            summary_line = self._build_contract_summary_context(hook_data)
-            if summary_line:
-                return HookResponse(
-                    output={
-                        "hookSpecificOutput": {
-                            "hookEventName": "PostToolUse",
-                            "additionalContext": summary_line,
-                        }
-                    },
-                    exit_code=0,
-                )
-            return HookResponse(output={}, exit_code=0)
-
-        try:
-            pre_state = get_hook_state(
-                session_id=post_session_id, tool_use_id=tool_use_id
+        tool_result = self.parse_post_tool_use(event.payload)
+        if tool_result.tool_name == "AskUserQuestion":
+            return self._handle_ask_user_question_result(event.payload)
+        verdict = self.post_tool_verdict(event, tool_result)
+        if verdict.context:
+            return HookResponse(
+                output={
+                    _HOOK_SPECIFIC_OUTPUT: {
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": verdict.context,
+                    }
+                },
+                exit_code=0,
             )
-            tier = pre_state.tier if pre_state else "unknown"
-
-            # Prefer wall-clock duration from pre-hook timestamp
-            computed_duration = duration
-            if pre_state and pre_state.start_time_epoch > 0:
-                computed_duration = time.time() - pre_state.start_time_epoch
-
-            log_execution(
-                tool_name=tool_name,
-                parameters=parameters,
-                result=output,
-                duration=computed_duration,
-                exit_code=0 if success else 1,
-                tier=tier,
-            )
-
-            # Confirm the T3 grant after a successful Bash execution. The grant
-            # was already CONSUMED at the match in PreToolUse (bash_validator
-            # flips PENDING->CONSUMED when the command is authorized); it is NOT
-            # swept at SubagentStop (that sweep was removed in the M1 approvals
-            # redesign). Confirming marks the consumed grant so subsequent retries
-            # within the same subagent session are recognized.
-            if tool_name == "Bash" and success:
-                command = parameters.get("command", "")
-                session_id = hook_data.get("session_id", "")
-                if command:
-                    grant = check_approval_grant(command, session_id=session_id)
-                    if grant is not None and not grant.confirmed:
-                        confirm_grant(command, session_id=session_id)
-                        logger.info(
-                            "T3 grant confirmed (consumed at match in PreToolUse): %s", command[:80],
-                        )
-
-            # PostToolUse (success) and PostToolUseFailure (non-zero exit or
-            # interrupt) are the call's only terminal events; the pre_state
-            # keyed by this tool_use_id says which approval the call consumed.
-            # An interrupted call closes nothing: its outcome is unknown, so it
-            # stays without result and its reservation waits to be reclaimed.
-            consumed_approval_id = (
-                pre_state.metadata.get("consumed_approval_id") if pre_state else None
-            )
-            if tool_name == "Bash" and consumed_approval_id:
-                if hook_data.get("is_interrupt") is True:
-                    logger.info(
-                        "Interrupted call left without result: approval_id=%s tool_use_id=%s",
-                        consumed_approval_id[:16], tool_use_id[:16],
-                    )
-                else:
-                    from gaia.approvals.core import close_call
-
-                    outcome = close_call(
-                        consumed_approval_id,
-                        command=pre_state.command,
-                        session_id=post_session_id,
-                        tool_use_id=tool_use_id,
-                        exit_code=tool_result_data.exit_code,
-                        reserved=bool(pre_state.metadata.get("command_set_reservation")),
-                        terminal_event=str(hook_data.get("hook_event_name") or ""),
-                        error="" if success else str(output),
-                    )
-                    if outcome == "unmatched":
-                        raise RuntimeError("COMMAND_SET reservation correlation failed")
-
-            events = detect_critical_event(tool_name, parameters, output, success)
-            if events:
-                writer = SessionContextWriter()
-                for evt in events:
-                    writer.update_context(evt.to_dict())
-
-            # Write COMMAND_EXECUTED event for T2+ Bash commands only (non-blocking)
-            if tool_name == "Bash" and tier in ("T2", "T3"):
-                try:
-                    from modules.events.event_writer import EventWriter, COMMAND_EXECUTED
-                    cmd = parameters.get("command", "")
-                    EventWriter().write_event(
-                        COMMAND_EXECUTED, "hook", "",
-                        f"{'ok' if success else 'error'}: {cmd[:120]}",
-                        severity="info" if success else "warning",
-                        meta={"tier": tier},
-                    )
-                except Exception:
-                    pass  # Events are non-critical
-
-            clear_hook_state(
-                session_id=post_session_id, tool_use_id=tool_use_id
-            )
-            logger.debug("Post-hook completed for %s", tool_name)
-
-        except Exception as e:
-            logger.error("Error in adapt_post_tool_use: %s", e, exc_info=True)
-
         return HookResponse(output={}, exit_code=0)
-
-    @staticmethod
-    def _observe_task_result(hook_data) -> None:
-        """Record a harness-cut subagent turn seen from the Task result.
-
-        Best-effort and strictly non-blocking: detection or persistence
-        failing must never disturb the orchestrator's own turn.
-        """
-        try:
-            from modules.agents.task_result_observer import observe_task_result
-
-            cut = observe_task_result(hook_data)
-            if cut is not None:
-                logger.warning(
-                    "Subagent cut detected: agent=%s reason=%s metrics=%s",
-                    cut.agent, cut.reason, cut.metrics,
-                )
-        except Exception as exc:
-            logger.debug("Task result observation failed (non-fatal): %s", exc)
-
-    @staticmethod
-    def _build_contract_summary_context(hook_data) -> str:
-        """Best-effort contract-row summary line for the Agent/Task result.
-
-        Carries whichever of the two modes ``build_contract_summary_line``
-        produced: MODE A (a finalized row's state/verification/field counts,
-        the synchronous-dispatch case) or MODE B (a short "launched, not
-        finalized yet" pointer, the async-launch case -- PostToolUse fires at
-        launch for a background dispatch, before any row can be finalized).
-
-        Never raises: any failure -- including "the row is not resolvable" --
-        degrades to "" so the caller falls back to the bare HookResponse this
-        branch always returned before the summary existed. "" is also the
-        honest answer when the row cannot be read; see
-        ``build_contract_summary_line`` for the full set of degrade cases.
-        """
-        try:
-            from modules.agents.task_result_observer import build_contract_summary_line
-
-            line = build_contract_summary_line(
-                hook_data.get("tool_response", {}),
-                session_id=str(hook_data.get("session_id", "") or ""),
-            )
-            return line or ""
-        except Exception as exc:
-            logger.debug("Contract summary line build failed (non-fatal): %s", exc)
-            return ""
 
     @staticmethod
     def _extract_exit_code_from_result(error: str) -> int:

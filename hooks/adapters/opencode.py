@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Dict, FrozenSet
 from modules.orchestrator.delegate_mode import ORCHESTRATOR_AGENT_TYPES
 
 from .base import HookAdapter
+from .tool_policy import PolicyVerdict, ToolPolicy
 from .types import (
     AgentCompletion,
     BootstrapResult,
@@ -406,14 +407,12 @@ class OpenCodeAdapter(HookAdapter):
     def adapt_pre_tool_use(
         self, event: HookEvent, *, _shell_env_transport: bool = False,
     ) -> HookResponse:
-        """Run the existing host-neutral policy through an OpenCode boundary.
+        """Run the shared tool policy through an OpenCode boundary.
 
-        Gaia's policy flow still owns validation, grants, and audit state. This
-        adapter supplies that flow with normalized OpenCode identities, then
-        translates only the final host response back to the plugin protocol.
+        ``ToolPolicy`` owns validation, grants, and audit state. This adapter
+        supplies it with normalized OpenCode identities, then formats its
+        verdict in the plugin protocol.
         """
-        from .claude_code import ClaudeCodeAdapter
-
         payload = dict(event.payload)
         original_tool = str(payload.get("tool_name", "")).lower()
         rejection = self._identity_rejection(event, original_tool)
@@ -453,7 +452,7 @@ class OpenCodeAdapter(HookAdapter):
             call_id=event.call_id,
             role_context=event.role_context,
         )
-        policy_adapter = ClaudeCodeAdapter()
+        policy = ToolPolicy()
         if original_tool == "apply_patch":
             try:
                 paths = _apply_patch_paths(payload.get("tool_input", {}).get("patchText"))
@@ -469,19 +468,15 @@ class OpenCodeAdapter(HookAdapter):
                     parent_dispatch_id=event.parent_dispatch_id, call_id=event.call_id,
                     role_context=event.role_context,
                 )
-                checked = self._translate_policy_response(policy_adapter.adapt_pre_tool_use(path_event))
-                if isinstance(checked.output, dict) and checked.output.get("action") != "allow":
+                checked = self._format_policy_verdict(policy.pre_tool_verdict(path_event))
+                if checked.output.get("action") != "allow":
                     return checked
             return HookResponse(output={"action": "allow"})
         if original_tool == "task":
-            return self._adapt_task_with_kernel(policy_adapter, policy_event)
-        if env_identity is not None:
-            response = policy_adapter.adapt_pre_tool_use(
-                policy_event, _dispatch_identity_in_env=True,
-            )
-        else:
-            response = policy_adapter.adapt_pre_tool_use(policy_event)
-        translated = self._translate_policy_response(response)
+            return self._adapt_task_with_kernel(policy, policy_event)
+        translated = self._format_policy_verdict(policy.pre_tool_verdict(
+            policy_event, dispatch_identity_in_env=env_identity is not None,
+        ))
         if env_identity is not None and isinstance(translated.output, dict) and translated.output.get("action") == "allow":
             translated.output["shell_env"] = {
                 "session_id": event.session_id,
@@ -717,7 +712,7 @@ class OpenCodeAdapter(HookAdapter):
         return None
 
     def _adapt_task_with_kernel(
-        self, policy_adapter: "ClaudeCodeAdapter", policy_event: HookEvent,
+        self, policy: ToolPolicy, policy_event: HookEvent,
     ) -> HookResponse:
         """Run the Task dispatch through the shared policy path, then --
         on allow -- replace the host prompt with the just-born row's rendered
@@ -753,10 +748,9 @@ class OpenCodeAdapter(HookAdapter):
         claimed, or a rendering error): a subagent dispatch must never be
         blocked by kernel injection.
         """
-        response = policy_adapter.adapt_pre_tool_use(policy_event)
-        translated = self._translate_policy_response(response)
+        translated = self._format_policy_verdict(policy.pre_tool_verdict(policy_event))
         output = translated.output
-        if not isinstance(output, dict) or output.get("action") != "allow":
+        if output.get("action") != "allow":
             return translated
 
         try:
@@ -1073,57 +1067,48 @@ class OpenCodeAdapter(HookAdapter):
         return names.get(str(tool_name).lower(), str(tool_name))
 
     @staticmethod
-    def _translate_policy_response(response: HookResponse) -> HookResponse:
-        """Convert the legacy response envelope without leaking it to OpenCode."""
-        output = response.output
-        if not isinstance(output, dict):
+    def _format_policy_verdict(verdict: PolicyVerdict) -> HookResponse:
+        """Format a shared-policy verdict in the plugin's ``action`` protocol.
+
+        A consent request with a pending approval becomes a denial naming it,
+        since that signature is asked out of band; one without becomes an ask
+        of the host's own prompt. The approval id travels as a field, so the
+        plugin never reads it back out of the reason.
+        """
+        if verdict.refusal is not None:
             return HookResponse(
-                output={"action": "deny", "reason": str(output)},
-                exit_code=2,
+                output={"action": "deny", "reason": verdict.refusal}, exit_code=2,
             )
-
-        if "action" in output:
-            return _fail_closed(output, response.exit_code)
-
-        specific = output.get("hookSpecificOutput")
-        if isinstance(specific, dict) and specific.get("permissionDecision"):
-            translated = {
-                "action": specific["permissionDecision"],
-                "reason": specific.get("permissionDecisionReason", ""),
-            }
-            if isinstance(specific.get("updatedInput"), dict):
-                translated["updated_input"] = specific["updatedInput"]
-            if response.approval_id:
-                translated["approval_id"] = response.approval_id
-            return _fail_closed(translated, response.exit_code)
-
-        return HookResponse(output={"action": "allow"}, exit_code=response.exit_code)
+        if verdict.consent is not None:
+            decision = "deny" if verdict.consent.approval_id is not None else "ask"
+            reason = verdict.consent.reason
+            updated_input = None if decision == "deny" else verdict.consent.updated_input
+        else:
+            decision, reason, updated_input = verdict.decision, verdict.reason, verdict.updated_input
+        if decision is None:
+            return HookResponse(output={"action": "allow"}, exit_code=0)
+        output: Dict[str, Any] = {"action": decision, "reason": reason}
+        if isinstance(updated_input, dict) and updated_input:
+            output["updated_input"] = updated_input
+        if verdict.approval_id:
+            output["approval_id"] = verdict.approval_id
+        return _fail_closed(output, 0)
 
     @classmethod
     def _without_unverified_decision(cls, event: HookEvent, container: Any) -> Any:
         """Withhold a structured decision whose provenance Gaia did not verify.
 
-        The shared resolver activates a grant from ``answers`` in the tool
-        result OR, failing that, in the tool arguments, and in this lane BOTH
-        cross the bridge as caller-supplied JSON, so a forged
-        ``tool.execute.after`` signs for the user through either one. The
-        discriminator that decides which results carry answers lives in
-        ``plugin.ts``, on the far side of that stdin -- the untrusted side --
-        so it fences nothing.
+        ``answers`` in the tool result and in the tool arguments both cross the
+        bridge as caller-supplied JSON, so a forged ``tool.execute.after``
+        carrying them must never read as the user's decision to anything
+        downstream. The discriminator that decides which results carry answers
+        lives in ``plugin.ts``, on the untrusted side of that stdin, so it
+        fences nothing.
 
         The key is withheld rather than the event denied: the tool has already
-        run, so a denial would gate nothing while discarding the audit record,
-        and the resolver reads an absent ``answers`` as no decision at all,
-        which is fail-closed.
-
-        The consent control plane never reaches this method. For a session the
-        plugin registered as a control (``controlBySession``), its
-        ``tool.execute.after`` returns before ``send``, so the question's
-        answers never cross the bridge and the only route by which a reply
-        becomes a decision is ``gaia approvals opencode-decide``, invoked by the
-        plugin from ``question.replied``. The attested branch below is kept for
-        the case where an attested control-plane session does forward a
-        result; it is not the path a live decision takes.
+        run, so a denial would gate nothing while discarding the audit record.
+        A signature is decided only by ``gaia approvals opencode-decide``, which
+        the plugin runs from the question's own requestID reply.
         """
         if not isinstance(container, dict) or "answers" not in container:
             return container
@@ -1139,12 +1124,10 @@ class OpenCodeAdapter(HookAdapter):
         one path and miss the other. ``_identity_rejection`` is deliberately not
         run here: the tool has already executed, so a denial would gate nothing
         while discarding the audit record of what ran. What this path does
-        withhold is the one payload key that is not merely audited downstream
-        but ACTED ON -- a structured decision that activates a grant -- and it
-        withholds it from both containers the resolver reads.
+        withhold is a structured decision, from both containers it could ride
+        in. The call's outcome is read by this adapter's own
+        ``parse_post_tool_use``.
         """
-        from .claude_code import ClaudeCodeAdapter
-
         payload = self.build_policy_payload(event)
         payload["tool_input"] = self._without_unverified_decision(
             event, payload.get("tool_input", {})
@@ -1168,8 +1151,10 @@ class OpenCodeAdapter(HookAdapter):
             # which the plugin runs from the question's own requestID reply; an
             # answer in a tool result is never a decision here.
             return HookResponse(output={"action": "allow"}, exit_code=0)
-        response = ClaudeCodeAdapter().adapt_post_tool_use(policy_event)
-        return self._translate_policy_response(response)
+        verdict = ToolPolicy().post_tool_verdict(
+            policy_event, self.parse_post_tool_use(payload),
+        )
+        return self._format_policy_verdict(verdict)
 
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
         """Close the row bound to this session on a real lifecycle signal

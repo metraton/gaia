@@ -10,10 +10,12 @@ and it is presented only to the live session and agent that requested it.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -25,7 +27,8 @@ for path in (REPO_ROOT, HOOKS_DIR):
         sys.path.insert(0, str(path))
 
 from adapters.opencode import OpenCodeAdapter  # noqa: E402
-from adapters.types import HookEvent, HookEventType, HookResponse  # noqa: E402
+from adapters.tool_policy import PolicyVerdict  # noqa: E402
+from adapters.types import ConsentRequest, HookEvent, HookEventType  # noqa: E402
 
 GAIA_CLI = REPO_ROOT / "bin" / "gaia"
 PLUGIN = REPO_ROOT / "opencode" / "plugin.ts"
@@ -111,19 +114,54 @@ def test_own_adapter_plugin_offers_no_permission_ask_lane():
 
 
 def test_own_adapter_translation_reads_no_approval_id_from_reason_text():
-    textual = HookResponse(output={"hookSpecificOutput": {
-        "permissionDecision": "deny",
-        "permissionDecisionReason": "[T3_BLOCKED] approval_id: P-" + "a" * 32,
-    }})
-    structured = HookResponse(
-        output={"hookSpecificOutput": {
-            "permissionDecision": "deny", "permissionDecisionReason": "blocked",
-        }},
-        approval_id="P-" + "b" * 32,
+    textual = PolicyVerdict(
+        decision="deny", reason="[T3_BLOCKED] approval_id: P-" + "a" * 32,
+    )
+    structured = PolicyVerdict(
+        decision="deny", reason="blocked", approval_id="P-" + "b" * 32,
     )
 
-    assert "approval_id" not in OpenCodeAdapter._translate_policy_response(textual).output
-    assert OpenCodeAdapter._translate_policy_response(structured).output["approval_id"] == "P-" + "b" * 32
+    assert "approval_id" not in OpenCodeAdapter._format_policy_verdict(textual).output
+    assert OpenCodeAdapter._format_policy_verdict(structured).output["approval_id"] == "P-" + "b" * 32
+
+
+def test_own_adapter_neither_imports_nor_instantiates_the_claude_code_adapter():
+    tree = ast.parse((REPO_ROOT / "hooks" / "adapters" / "opencode.py").read_text(encoding="utf-8"))
+
+    imported = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and (node.module or "").endswith("claude_code")
+    ]
+    named = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.Name, ast.Attribute))
+        and "ClaudeCodeAdapter" in {getattr(node, "id", None), getattr(node, "attr", None)}
+    ]
+    assert imported == [] and named == []
+
+
+def test_own_adapter_formats_the_shared_policy_verdict_in_its_own_protocol():
+    consent = ConsentRequest(
+        operation="/repo/hooks/x.py", kind="file", reason="protected", tier="T3_BLOCKED",
+        approval_id="c" * 32,
+    )
+    pending = OpenCodeAdapter._format_policy_verdict(
+        PolicyVerdict(consent=consent, approval_id="P-" + "c" * 32),
+    )
+    inline = OpenCodeAdapter._format_policy_verdict(PolicyVerdict(consent=replace(
+        consent, approval_id=None, updated_input={"file_path": "/repo/hooks/x.py"},
+    )))
+    refused = OpenCodeAdapter._format_policy_verdict(PolicyVerdict(refusal="no command"))
+
+    assert (pending.output, pending.exit_code) == (
+        {"action": "deny", "reason": "protected", "approval_id": "P-" + "c" * 32}, 2,
+    )
+    assert (inline.output, inline.exit_code) == (
+        {"action": "ask", "reason": "protected",
+         "updated_input": {"file_path": "/repo/hooks/x.py"}}, 0,
+    )
+    assert (refused.output, refused.exit_code) == ({"action": "deny", "reason": "no command"}, 2)
+    assert OpenCodeAdapter._format_policy_verdict(PolicyVerdict()).output == {"action": "allow"}
 
 
 def test_own_adapter_reactive_bash_block_names_its_approval_structurally(db_env, monkeypatch):
