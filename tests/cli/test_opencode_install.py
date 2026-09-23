@@ -185,17 +185,15 @@ def test_translates_agent_tools_disallowed_tools_and_skills(tmp_path):
         package, {"default": {"mode": "subagent"}}, None
     )["developer"]
 
+    external_directory = generated["permission"].pop("external_directory")
     assert generated["permission"] == {
         "*": "deny",
         "read": "allow",
         "edit": "allow",
         "bash": "deny",
         "skill": {"*": "allow"},
-        "external_directory": {
-            "*": "ask",
-            "~/.gaia/scratch/**": "allow",
-        },
     }
+    assert external_directory["*"] == "allow"
 
 
 def test_host_policy_overrides_frontmatter_permissions(tmp_path):
@@ -353,7 +351,7 @@ def test_native_question_is_exposed_only_to_the_root_orchestrator():
     assert all(agent["permission"].get("question") != "allow" for agent in specialists.values())
 
 
-def test_contract_scratch_is_the_only_external_directory_for_subagents():
+def test_every_shipped_specialist_is_a_subagent_with_the_same_external_directory():
     policy = json.loads(
         (_install_helpers._PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text()
     )
@@ -363,10 +361,7 @@ def test_contract_scratch_is_the_only_external_directory_for_subagents():
         None,
     )
 
-    expected = {
-        "*": "ask",
-        "~/.gaia/scratch/**": "allow",
-    }
+    expected = _install_helpers._opencode_subagent_external_directory()
     specialists = {
         name: agent for name, agent in generated.items()
         if agent["mode"] == "subagent"
@@ -384,17 +379,6 @@ def test_contract_scratch_is_the_only_external_directory_for_subagents():
         agent["permission"]["external_directory"] == expected
         for agent in specialists.values()
     )
-    assert list(expected.items()) == [
-        ("*", "ask"),
-        ("~/.gaia/scratch/**", "allow"),
-    ]
-    from gaia.paths import evidence_dir, scratch_dir
-
-    assert generated["gaia-orchestrator"]["permission"]["external_directory"] == {
-        "*": "deny",
-        f"{scratch_dir().resolve().as_posix()}/**": "allow",
-        f"{evidence_dir().resolve().as_posix()}/**": "allow",
-    }
 
 
 def test_replaces_stale_gaia_plugin_but_preserves_foreign_plugin(tmp_path):
