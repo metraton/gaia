@@ -145,6 +145,11 @@ rather than accept it.
 coverage check: an `uncovered_ac` means some AC has no task that could ever
 make it done.
 
+**Approve by activating.** After the audit and the user checkpoint, run
+`gaia plan set-status <slug> active`: `active` is what approved means. Dispatch
+only tasks of an active, unpaused plan; until then send corrections back to the
+planner, who edits the draft directly.
+
 **Changing an approved plan goes through the planner.** Request it with the
 justification (`gaia plan change request <slug> --reason="..."`); the planner
 proposes which tasks the change touches and why; review the proposal

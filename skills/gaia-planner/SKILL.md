@@ -113,7 +113,8 @@ it protects.
    `--reason`: the replaced version is kept with it (`gaia plan history`). Close
    with `gaia brief verify <name>` clean.
 
-7. **Re-plan with the verb that matches the change.** Wording or scope of a
+7. **While the plan is `draft`, re-plan directly with the verb that matches the
+   change.** Wording or scope of a
    task: `gaia task edit` (keeps id, status and gates). A gate's fields:
    `gaia task gate edit` (keeps id; never touches status). Position only:
    `gaia task reorder`. Only a task that no longer applies justifies `gaia task
@@ -121,8 +122,11 @@ it protects.
    covered AC after a verdict marks that verdict stale -- expected, and the
    verifier's to clear.
 
-8. **Change an approved plan through the change flow.** The orchestrator opens
-   it with a justification (`gaia plan change request`). You own the answer:
+8. **Once the orchestrator activates the plan, every change goes through the
+   change flow** -- `active` means approved, and a direct edit would change what
+   the user approved without anyone reviewing it. Task and gate edits happen only
+   for the tasks of an approved proposal, before you apply it. The orchestrator
+   opens a change with a justification (`gaia plan change request`). You own the answer:
    read it (`gaia plan change list <name>`), decide which tasks it really
    touches, and propose the delta with a reason per task:
 
