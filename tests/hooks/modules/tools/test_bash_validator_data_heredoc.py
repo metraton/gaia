@@ -100,6 +100,55 @@ class TestRedirectOnTheCommandLineIsStillAWrite:
         assert result.allowed is False
         assert "[SHELL_WRITE]" in (result.reason or ""), result.reason
 
+    def test_redirect_in_the_header_into_claude_settings_is_refused(self, checkout):
+        command = _heredoc(
+            "gaia plan save --content-file=- > .claude/settings.json", "'P'", "P",
+            "prose only\n",
+        )
+        result = _validate(command)
+        assert result.allowed is False
+        assert "[PROTECTED_PATH]" in (result.reason or ""), result.reason
+
+    def test_redirect_in_the_header_onto_an_account_path_needs_consent(self, checkout):
+        command = _heredoc(
+            "gaia plan save --content-file=- > ~/.ssh/authorized_keys", "'P'", "P",
+            "prose only\n",
+        )
+        result = _validate(command)
+        assert result.allowed is False
+        assert result.tier.value == "T3"
+
+    def test_heredoc_fed_to_sqlite3_is_still_read_by_the_db_guard(self, checkout):
+        command = "sqlite3 ~/.gaia/gaia.db <<'SQL'\nUPDATE plans SET status='done';\nSQL"
+        result = _validate(command)
+        assert result.allowed is False
+        assert "Direct SQL writes to gaia.db" in (result.reason or ""), result.reason
+
+
+class TestWriteGuardsReadOnlyTheDataHeredocCommandLine:
+    """Each guard that runs before the exemption would refuse this prose."""
+
+    @pytest.mark.parametrize("prose", [
+        "Never edit it by hand: echo {} > .claude/settings.json is refused.\n",
+        "Never run sqlite3 ~/.gaia/gaia.db \"UPDATE plans SET x=1\" > ~/.gaia/gaia.db.log.\n",
+        "The manual step is cat key.pub > ~/.ssh/authorized_keys on the host.\n",
+    ], ids=["protected-path", "gaia-db", "account-path"])
+    def test_prose_naming_a_guarded_destination_passes_as_data(self, checkout, prose):
+        command = _heredoc(
+            "gaia plan save --brief=b --content-file=-", "'PLAN'", "PLAN", prose,
+        )
+        result = _validate(command)
+        assert result.allowed is True, result.reason
+        assert result.tier.value != "T3"
+
+    def test_attribution_prose_in_a_data_heredoc_is_not_a_publish(self, checkout):
+        command = _heredoc(
+            "gaia plan save --brief=b --content-file=-", "'PLAN'", "PLAN",
+            "Step: git commit -m fix\nCo-Authored-By: Claude <noreply@anthropic.com>\n",
+        )
+        result = _validate(command)
+        assert result.allowed is True, result.reason
+
 
 class TestHeredocFeedingAnInterpreterIsStillCommands:
     @pytest.mark.parametrize("header", ["bash", "sh", "bash -s"])

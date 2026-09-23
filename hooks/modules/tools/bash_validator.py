@@ -719,6 +719,11 @@ class BashValidator:
                 reason=attribution_reason,
             )
 
+        # A data heredoc's body is stdin the shell never runs, so the write
+        # guards below read only its command line; a command line carrying a
+        # redirect is not a data heredoc at all and is read whole.
+        write_guard_scope = data_heredoc_header(command) or command
+
         # ================================================================
         # GAIA DB WRITE GUARD
         # Reject direct sqlite3 writes to ~/.gaia/gaia.db that bypass the
@@ -727,7 +732,7 @@ class BashValidator:
         # and bash -c wrappers are inspected intact -- decomposition would
         # otherwise split the sqlite3 invocation from its write verb.
         # ================================================================
-        db_write_allowed, db_write_reason = check_gaia_db_write(command)
+        db_write_allowed, db_write_reason = check_gaia_db_write(write_guard_scope)
         if not db_write_allowed:
             logger.warning("BLOCKED gaia.db direct write: %s", command[:100])
             return BashValidationResult(
@@ -782,7 +787,9 @@ class BashValidator:
         # (footer-normalized) command BEFORE unwrap/decompose so compound
         # chains and quoted forms are inspected intact.
         # ================================================================
-        pp_write_allowed, pp_write_reason = check_protected_path_write(command)
+        pp_write_allowed, pp_write_reason = check_protected_path_write(
+            write_guard_scope
+        )
         if not pp_write_allowed:
             logger.warning(
                 "BLOCKED protected-path write via Bash: %s", command[:120]
@@ -808,14 +815,10 @@ class BashValidator:
         # -- the same edit via Write/Edit is permitted, so there is nothing to
         # approve; only the channel is refused. Runs BEFORE the smart sanitizer
         # below, which strips a trailing redirect and would otherwise delete
-        # the destination before this guard could see it. A data heredoc's body
-        # is stdin the shell never runs, so only its command line is checked;
-        # a command line carrying a redirect is not a data heredoc at all and
-        # is checked whole.
+        # the destination before this guard could see it.
         # ================================================================
-        shell_write_scope = data_heredoc_header(command) or command
         shell_write_allowed, shell_write_reason = check_shell_write(
-            shell_write_scope, cwd=(hook_payload or {}).get("cwd") or None,
+            write_guard_scope, cwd=(hook_payload or {}).get("cwd") or None,
         )
         if not shell_write_allowed:
             logger.warning(
@@ -840,7 +843,7 @@ class BashValidator:
         # on, and before the cloud-pipe phase, which refuses a redirect as a
         # CHANNEL and would leave this write with no way to consent to it.
         # ================================================================
-        account_write_target = account_path_redirect_target(command)
+        account_write_target = account_path_redirect_target(write_guard_scope)
         if account_write_target:
             return decide_t3_outcome(
                 command,
