@@ -727,13 +727,12 @@ def cmd_reject(args) -> int:
         return 1
 
     # DB-primary since Task E: exact identity only, never enumeration/first-match.
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject"
     try:
         store = _import_approval_store()
         row = store.get_by_id(approval_id)
         if row is None or row.get("status") != "pending":
             return _reject_live_grant(args, approval_id)
-        store.revoke(approval_id, session_id)
+        _withdraw(args, approval_id, "reject", verb="reject", reason=reason)
     except Exception as exc:
         _print_error(f"Failed to reject approval: {exc}", args)
         return 1
@@ -748,12 +747,28 @@ def cmd_reject(args) -> int:
     return 0
 
 
+def _withdrawer(args) -> tuple[str | None, str | None]:
+    """The session and agent a withdrawal event names: the requester resolver's, never a made-up label."""
+    session_id, agent_id = _requester_identity(args)
+    return session_id or None, agent_id or None
+
+
+def _withdraw(args, approval_id: str, action: str, *, verb: str, reason: str | None = None) -> str:
+    """Withdraw one pending through the core under the resolved identity; return its new state."""
+    from gaia.approvals import core
+
+    session_id, agent_id = _withdrawer(args)
+    return core.withdraw(
+        approval_id, action=action, session_id=session_id, agent_id=agent_id,
+        reason=reason, source=f"gaia approvals {verb}",
+    )
+
+
 def _cmd_reject_all(args, reason: str | None) -> int:
     """Reject all pending approvals across all sessions.
 
-    DB-primary since Task E: queries gaia.approvals.store for all pending
-    rows and revokes each via store.revoke(). Exits 0 always -- an empty
-    queue is not an error.
+    Each pending is rejected through the core's withdrawal. Exits 0 when the
+    queue is empty.
     """
     try:
         # Bulk reject operates on the full queue regardless of liveness.
@@ -769,19 +784,12 @@ def _cmd_reject_all(args, reason: str | None) -> int:
             print("No pending approvals to reject.")
         return 0
 
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject-all"
-    try:
-        store = _import_approval_store()
-    except Exception as exc:
-        _print_error(f"Failed to load approval store: {exc}", args)
-        return 1
-
     rejected_ids = []
     failed_ids = []
     for pending in raw:
         approval_id = pending.get("approval_id") or f"P-{pending.get('nonce', '')}"
         try:
-            store.revoke(approval_id, session_id)
+            _withdraw(args, approval_id, "reject", verb="reject --all", reason=reason)
             rejected_ids.append(approval_id)
         except Exception:
             failed_ids.append(approval_id)
@@ -830,7 +838,7 @@ def cmd_reject_all(args) -> int:
     """Reject all active pending approvals in one pass.
 
     Scans the DB for every non-expired, non-rejected pending approval and
-    calls ``store.revoke()`` on each approval_id.  This is the canonical
+    rejects each through the core's withdrawal.  This is the canonical
     subcommand surface documented in the pending-approvals skill.
 
     Flags:
@@ -877,20 +885,12 @@ def cmd_reject_all(args) -> int:
         print(f"\n{len(raw)} pending(s) would be rejected.")
         return 0
 
-    # Live rejection via store.revoke() (DB path -- all pendings are in DB now).
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject-all"
-    try:
-        store = _import_approval_store()
-    except Exception as exc:
-        _print_error(f"Failed to load approval store: {exc}", args)
-        return 1
-
     rejected_ids = []
     failed_ids = []
     for item in raw:
         approval_id = item["approval_id"]
         try:
-            store.revoke(approval_id, session_id)
+            _withdraw(args, approval_id, "reject", verb="reject-all")
             rejected_ids.append(approval_id)
         except Exception:
             failed_ids.append(approval_id)
@@ -913,7 +913,7 @@ def cmd_clean(args) -> int:
 
     DB-only since FS retirement: all pending approvals and grants live in
     gaia.db.  Expired DB pending rows (status='pending', older than 24h TTL)
-    are transitioned to 'revoked' so the append-only event chain is preserved.
+    are expired through the core's withdrawal, recording the expiry reason.
     Expired approval_grants rows (status='PENDING', past expires_at) are
     transitioned to 'EXPIRED'.
     """
@@ -966,7 +966,6 @@ def cmd_clean(args) -> int:
         rows = store.list_pending(all_sessions=True)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
-        session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-cleanup"
         for row in rows:
             created_at_str = row.get("created_at", "")
             if not created_at_str:
@@ -978,7 +977,7 @@ def cmd_clean(args) -> int:
                 age_hours = (now - created_dt).total_seconds() / 3600
                 if age_hours > 24:
                     try:
-                        store.revoke(row["id"], session_id)
+                        _withdraw(args, row["id"], "expire", verb="clean")
                         db_cleaned += 1
                     except Exception:
                         pass
@@ -1429,10 +1428,8 @@ def cmd_revoke(args) -> int:
             print("Revoke cancelled.")
             return 0
 
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-session"
     try:
-        store = _import_approval_store()
-        store.revoke(raw_id, session_id)
+        _withdraw(args, raw_id, "revoke", verb="revoke")
     except ValueError as exc:
         _print_error(str(exc), args)
         return 1

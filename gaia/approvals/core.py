@@ -829,23 +829,44 @@ def grant_lookup_filter(*, cwd: str, session_id: object, agent_id: object) -> di
 # Withdraw
 # --------------------------------------------------------------------------- #
 
-_WITHDRAW_ACTIONS = frozenset({"reject", "revoke"})
+#: The withdrawal reason of a pending that outlived the pending TTL unanswered.
+EXPIRED_REASON = "expired_ttl"
+_WITHDRAW_ACTIONS = {"reject": "rejected", "revoke": "revoked", "expire": "expired"}
 
 
-def withdraw(approval_id: str, *, action: str, session_id: str, agent_id: Optional[str] = None) -> str:
-    """Reject or revoke ``approval_id``; return the resulting state. Never approves."""
+def withdraw(
+    approval_id: str,
+    *,
+    action: str,
+    session_id: Optional[str],
+    agent_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    source: Optional[str] = None,
+) -> str:
+    """Reject, revoke or expire ``approval_id``; return the resulting state. Never approves.
+
+    A pending is withdrawn with an event naming ``session_id`` and ``agent_id``
+    and carrying ``reason`` (always :data:`EXPIRED_REASON` for ``expire``). Any
+    other row only has its live grant closed, which reads as revoked.
+    """
     from gaia.approvals import store
     from gaia.store import writer
 
     if action not in _WITHDRAW_ACTIONS:
-        raise WithdrawError(f"withdraw accepts reject or revoke, not {action!r}")
+        raise WithdrawError(f"withdraw accepts reject, revoke or expire, not {action!r}")
     row = store.get_by_id(approval_id)
     if row is not None and row.get("status") == "pending":
-        if action == "reject":
-            store.reject(approval_id, session_id, agent_id=agent_id)
-            return "rejected"
-        store.revoke(approval_id, session_id, agent_id=agent_id)
-        return "revoked"
+        if action == "expire":
+            reason = EXPIRED_REASON
+        metadata = {key: value for key, value in (("reason", reason), ("source", source)) if value}
+        transition = {"reject": store.reject, "revoke": store.revoke, "expire": store.expire}[action]
+        transition(
+            approval_id, session_id, agent_id=agent_id,
+            metadata_json=json.dumps(metadata, sort_keys=True) if metadata else None,
+        )
+        return _WITHDRAW_ACTIONS[action]
+    if action == "expire":
+        raise WithdrawError(f"{approval_id} is not a pending request, so it cannot expire")
     result = writer.revoke_approval_grant(approval_id)
     if result.get("status") != "applied":
         raise WithdrawError(f"{approval_id} has no pending request or live grant to withdraw")

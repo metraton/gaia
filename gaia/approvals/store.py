@@ -1336,6 +1336,7 @@ def reject(
     approver_session: str,
     *,
     agent_id: Optional[str] = None,
+    metadata_json: Optional[str] = None,
     con: Optional[sqlite3.Connection] = None,
 ) -> None:
     """Convenience wrapper: transition a pending approval to rejected.
@@ -1346,6 +1347,7 @@ def reject(
         approval_id: The P-{uuid4} approval identifier.
         approver_session: The session_id of the rejecting session.
         agent_id: Optional agent identifier for the REJECTED event.
+        metadata_json: Optional JSON forwarded to the event (e.g. the reason given).
         con: Optional open connection.
 
     Raises:
@@ -1358,6 +1360,7 @@ def reject(
         to_status="rejected",
         agent_id=agent_id,
         session_id=approver_session,
+        metadata_json=metadata_json,
         con=con,
     )
 

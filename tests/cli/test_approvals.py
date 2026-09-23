@@ -688,7 +688,7 @@ class TestCmdReject:
 
         assert approvals_mod.cmd_reject(args) == 0
         assert store.get_by_id(first)["status"] == "pending"
-        assert store.get_by_id(second)["status"] == "revoked"
+        assert store.get_by_id(second)["status"] == "rejected"
 
     def test_same_prefix_live_grant_rejects_only_exact_id(self):
         first = "P-deadbeef000000000000000000000000"
@@ -777,23 +777,23 @@ class TestCmdRejectAll:
         assert data["reason"] == "bulk-test"
 
     def test_reject_all_partial_failure(self, capsys, db_store, monkeypatch):
-        """When one revoke call fails, exit 1 and report partial status."""
+        """When one reject call fails, exit 1 and report partial status."""
         _store, insert_pending = db_store
         insert_pending("git push origin main", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
         insert_pending("kubectl delete pod x", verb="delete",
                        approval_id="P-cccc3333dddd4444cccc3333dddd4444")
 
-        # Make the second revoke raise.
-        orig_revoke = _store.revoke
+        # Make the second reject raise.
+        orig_reject = _store.reject
         calls = {"n": 0}
 
-        def flaky_revoke(approval_id, session_id, **kw):
+        def flaky_reject(approval_id, session_id, **kw):
             calls["n"] += 1
             if calls["n"] == 2:
-                raise RuntimeError("simulated revoke failure")
-            return orig_revoke(approval_id, session_id, **kw)
+                raise RuntimeError("simulated reject failure")
+            return orig_reject(approval_id, session_id, **kw)
 
-        monkeypatch.setattr(_store, "revoke", flaky_revoke)
+        monkeypatch.setattr(_store, "reject", flaky_reject)
 
         rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
         assert rc == 1
@@ -868,19 +868,19 @@ class TestCmdRejectAllSubcommand:
         assert "P-cccc3333" in captured.out
         assert "P-eeee5555" in captured.out
 
-    def test_reject_all_marks_pendings_revoked_in_db(self, db_store):
-        """reject-all must transition DB rows pending -> revoked (not delete them)."""
+    def test_reject_all_marks_pendings_rejected_in_db(self, db_store):
+        """reject-all must transition DB rows pending -> rejected (not delete them)."""
         _store, insert_pending = db_store
         aid = insert_pending("git push origin main",
                              approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
 
         approvals_mod.cmd_reject_all(self._make_args())
 
-        # The row still exists but is now revoked (append-only audit preserved).
+        # The row still exists but is now rejected (append-only audit preserved).
         row = _store.get_by_id(aid)
         assert row is not None, "reject-all must not delete the DB row"
-        assert row["status"] == "revoked", (
-            "reject-all transitions pending -> revoked via store.revoke()"
+        assert row["status"] == "rejected", (
+            "reject-all transitions pending -> rejected through the core's withdrawal"
         )
 
     def test_reject_all_does_not_touch_already_decided(self, capsys, db_store):
@@ -960,9 +960,9 @@ class TestCmdRejectAllSubcommand:
 
         assert rc == 0
         captured = capsys.readouterr()
-        # The DB pending is revoked regardless of --workspace.
+        # The DB pending is rejected regardless of --workspace.
         assert "1 pending(s) rejected" in captured.out
-        assert _store.get_by_id(aid)["status"] == "revoked"
+        assert _store.get_by_id(aid)["status"] == "rejected"
         # Informational note about --workspace being ignored is on stderr.
         assert "workspace" in captured.err.lower()
 
@@ -1014,7 +1014,7 @@ class TestCmdRejectAllSubcommand:
 class TestCmdClean:
     """cmd_clean (DB-only since FS retirement).
 
-    Expired DB pending rows (older than 24h) are revoked.  Expired
+    Expired DB pending rows (older than 24h) are expired.  Expired
     approval_grants rows (past expires_at) are transitioned to EXPIRED.
     No filesystem grant files are swept.
     """
@@ -1052,8 +1052,8 @@ class TestCmdClean:
         assert data["dry_run"] is True
         assert "would_remove" in data
 
-    def test_clean_live_revokes_expired_db_pending(self, capsys, db_store):
-        """Live clean revokes DB pending rows older than 24h."""
+    def test_clean_live_expires_expired_db_pending(self, capsys, db_store):
+        """Live clean expires DB pending rows older than 24h."""
         _store, insert_pending = db_store
         aid = insert_pending("kubectl delete pod", verb="delete",
                              approval_id="P-aabb1122ccdd3344aabb1122ccdd3344")
@@ -1067,8 +1067,7 @@ class TestCmdClean:
 
         rc = approvals_mod.cmd_clean(_make_args(dry_run=False))
         assert rc == 0
-        # The expired row is now revoked.
-        assert _store.get_by_id(aid)["status"] == "revoked"
+        assert _store.get_by_id(aid)["status"] == "expired"
 
     def test_clean_live_keeps_fresh_db_pending(self, capsys, db_store):
         """Live clean must NOT revoke a fresh (< 24h) pending."""
