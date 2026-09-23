@@ -19,7 +19,11 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    workspace rule that decides whether they resolve are in
    `agent-protocol/read-map.md`. Do not read Gaia's database directly.
 3. Inspect the smallest relevant source files, tests, configuration, git diff,
-   or runtime query. Prefer authoritative implementation over prose.
+   or runtime query. Prefer authoritative implementation over prose. Never
+   search from the home directory (`~`) or from `/`: a search rooted there
+   walks every workspace, cache and package store. Locate a binary or package
+   with `gaia paths`, `which`, or its known path, and start a search at the
+   smallest directory that can hold the answer.
 4. Record each material source immediately in the contract:
    `files_checked`, `patterns_checked`, `commands_run`, `key_outputs`, exact
    excerpts in `verbatim_outputs`, whatever your change reaches outside the

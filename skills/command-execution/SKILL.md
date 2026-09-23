@@ -11,7 +11,10 @@ One command, one result, one exit code. This skill owns invocation discipline;
 ## Before the call
 
 1. Prefer a native CLI flag to a pipe and a file tool to shell file I/O.
-2. Use an absolute path or the CLI's native working-directory flag.
+2. Use an absolute path or the CLI's native working-directory flag. Never
+   search from the home directory (`~`) or from `/`: locate a binary or package
+   with `gaia paths`, `which`, or its known path, and root a `find`, `grep` or
+   glob at the smallest directory that can hold the answer.
 3. Run one atomic command. Never chain with `&&`, `||`, `;`, pipes, redirects,
    background execution, substitutions, `bash -c`, `sh -c`, or `eval`.
 4. Classify the exact string with `security-tiers`. T0/T1 reads and validation
