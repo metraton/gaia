@@ -1685,6 +1685,25 @@ def verify_brief(
                 ),
             })
 
+        # Invariant 13: done is computed (derive_brief_state), so a stored AC
+        # status saying otherwise is stale. Descoped is a decision, not a
+        # computation, and never contradicts.
+        for ac in derive_brief_state(workspace, name, db_path=db_path)[
+            "acceptance_criteria"
+        ]:
+            stored_done = ac["status"] == "done"
+            if ac["status"] == "descoped" or stored_done == ac["done"]:
+                continue
+            inconsistencies.append({
+                "kind": "ac_status_contradicts_computed",
+                "detail": (
+                    f"AC '{ac['ac_id']}' is stored as '{ac['status']}' but "
+                    f"computes as {'done' if ac['done'] else 'not done'} -- "
+                    f"done follows from its covering tasks being done and "
+                    f"positive evidence, not from the stored status"
+                ),
+            })
+
         return {
             "brief_name": name,
             "inconsistencies": inconsistencies,

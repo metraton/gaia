@@ -29,6 +29,7 @@ if str(_REPO_ROOT / "tests") not in sys.path:
 from test_brief_plan_managed import (  # noqa: E402  (shared phase A helpers)
     _BRIEF,
     _WS,
+    _brief_id,
     _cli,
     _gate,
     _pass,
@@ -415,3 +416,75 @@ def test_save_and_apply_read_the_plan_body_from_stdin(db, monkeypatch):
     assert _cli("plan", ["plan", "change", "apply", _BRIEF, str(change_id),
                          "--content-file", "-"]) == 0
     assert get_plan(_WS, _BRIEF, db_path=db)["content"] == body + "v2\n"
+
+
+# ---------------------------------------------------------------------------
+# 7. One "done": the text surfaces show the computed state, and verify flags
+#    a stored AC status that contradicts it.
+# ---------------------------------------------------------------------------
+
+def _mixed_states(db: Path) -> dict:
+    """AC-1 computes done while stored pending; AC-2 stays not done.
+
+    T1 (covers AC-1) passes; T2 (covers AC-2) waits on T3; T3 passed, then
+    its gate changed, so its verdict is stale and it reopened.
+    """
+    from gaia.evidence.store import insert_evidence
+    from gaia.store.writer import link_task_criteria, link_task_dependencies, update_gate
+
+    gate_1, _, gate_3 = _seed(db, tasks=3, acs=("AC-1", "AC-2"))
+    link_task_criteria(_WS, _BRIEF, 1, ["AC-1"], db_path=db)
+    link_task_criteria(_WS, _BRIEF, 2, ["AC-2"], db_path=db)
+    link_task_dependencies(_WS, _BRIEF, 2, [3], db_path=db)
+    _pass(db, 1, gate_1)
+    _pass(db, 3, gate_3)
+    update_gate(_WS, _BRIEF, 3, gate_3, evidence_shape="changed", db_path=db)
+    insert_evidence(_WS, _brief_id(db), "AC-1", type="text", text="3 passed",
+                    gate_id=gate_1, db_path=db)
+    return {"gate_3": gate_3}
+
+
+def test_brief_close_help_recommends_no_verb_outside_the_lane(db, capsys):
+    with pytest.raises(SystemExit):
+        _cli("brief", ["brief", "close", "--help"])
+    out = capsys.readouterr().out
+    assert "set-status" not in out, out
+    assert "descoped" in out
+
+
+def test_brief_show_text_shows_computed_ac_and_task_states(db, capsys):
+    ids = _mixed_states(db)
+
+    assert _cli("brief", ["brief", "show", _BRIEF]) == 0
+    out = capsys.readouterr().out
+    lines = {line.split(":")[0].strip("- "): line for line in out.splitlines()
+             if line.startswith("- ")}
+    assert "Source of truth in frontmatter" not in out
+    assert "(computed: done;" in lines["AC-1"], lines["AC-1"]
+    assert "stored: pending, contradicts it" in lines["AC-1"], lines["AC-1"]
+    assert "(computed: not done" in lines["AC-2"], lines["AC-2"]
+    assert "stored" not in lines["AC-2"], "an agreeing stored status is not repeated"
+    assert "(status:" not in out, "the stored status never stands in for done"
+    assert lines["T1"] == "- T1: done"
+    assert lines["T2"] == "- T2: blocked by T3"
+    assert lines["T3"] == f"- T3: not done, stale verdict on gate {ids['gate_3']}"
+
+
+def test_brief_verify_flags_a_stored_ac_status_contradicting_the_computed_one(db):
+    from gaia.briefs.store import verify_brief
+    from gaia.evidence.store import insert_evidence
+    from gaia.store.writer import set_ac_status
+
+    _mixed_states(db)
+    insert_evidence(_WS, _brief_id(db), "AC-2", type="text", text="looks fine",
+                    db_path=db)
+    set_ac_status(_WS, _BRIEF, "AC-2", "done", db_path=db)
+
+    flagged = [i["detail"] for i in verify_brief(_WS, _BRIEF, db_path=db)["inconsistencies"]
+               if i["kind"] == "ac_status_contradicts_computed"]
+    assert len(flagged) == 2, flagged
+    ac_1 = next(d for d in flagged if "AC-1" in d)
+    ac_2 = next(d for d in flagged if "AC-2" in d)
+    assert "'pending'" in ac_1 and "computes as done" in ac_1
+    assert "'done'" in ac_2 and "computes as not done" in ac_2
+    assert not any("set-status" in d for d in flagged)

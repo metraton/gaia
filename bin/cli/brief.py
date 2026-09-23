@@ -451,10 +451,32 @@ def _cmd_show(args) -> int:
         print(json.dumps(out, indent=2, default=str))
         return 0
 
-    print(serialize_brief_to_markdown(brief), end="")
+    print(serialize_brief_to_markdown(brief, derived), end="")
+    print(_render_task_states(derived["tasks"]), end="")
     print(_render_decisions(brief.get("decisions") or {}), end="")
     print(f"\nReady to close: {'yes' if derived['ready_to_close'] else 'no'}")
     return 0
+
+
+def _render_task_states(tasks: list[dict]) -> str:
+    """Render each task's computed state: done, skipped, blocked, stale verdicts."""
+    if not tasks:
+        return ""
+    parts = ["## Tasks", ""]
+    for t in tasks:
+        if t["done"]:
+            label = "done"
+        elif t["status"] == "skipped":
+            label = "skipped"
+        elif t["blocked"]:
+            label = "blocked by " + ", ".join(f"T{o}" for o in t["blocked_by"])
+        else:
+            label = "not done"
+        if t["stale_gate_ids"]:
+            gates = ", ".join(str(g) for g in t["stale_gate_ids"])
+            label += f", stale verdict on gate {gates}"
+        parts.append(f"- T{t['order_num']}: {label}")
+    return "\n".join(parts) + "\n\n"
 
 
 def _render_decisions(decisions: dict) -> str:
@@ -853,8 +875,9 @@ def register(subparsers) -> None:
         description=(
             "Set the brief's status to 'closed', then run verify_brief and "
             "print any inconsistencies as warnings. ADVISORY ONLY: it does NOT "
-            "change AC, milestone, or plan status, and performs no cascade. To "
-            "resolve a flagged AC, use 'gaia ac set-status' (done / descoped)."
+            "change AC, milestone, or plan status, and performs no cascade. A "
+            "flagged AC is settled by its owning agent: done on positive "
+            "evidence, or descoped."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia brief close <name>\n  gaia brief close my-feature --workspace=me\n",

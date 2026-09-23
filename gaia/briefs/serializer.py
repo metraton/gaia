@@ -51,13 +51,13 @@ keys, ACs missing optional fields).
 No external dependencies. We implement a minimal YAML subset (key: value,
 list items, nested 2-space indentation) sufficient for the brief format.
 
-`acceptance_criteria.status` and `milestones.status` are shown -- as
-``(status: X)`` on an AC line, ``[status: X]`` on a milestone line -- but are
-display-only: this module never feeds them into the round-trip dict, so
-editing the marker text has no effect. The DB is the source of truth for
-status; `gaia.briefs.store.upsert_brief` preserves it by matching each row's
-identity (`ac_id` / `name`) against what existed before the edit, and `gaia
-ac/milestone set-status` remain the only way to change it.
+AC and milestone states are shown -- the computed AC state (or the stored
+``(status: X)`` when no derived state is passed) on an AC line, ``[status: X]``
+on a milestone line -- but are display-only: this module never feeds them into
+the round-trip dict, so editing the marker text has no effect. The DB is the
+source of truth; `gaia.briefs.store.upsert_brief` preserves stored status by
+matching each row's identity (`ac_id` / `name`) against what existed before
+the edit.
 """
 
 from __future__ import annotations
@@ -638,12 +638,34 @@ def parse_brief_markdown(text: str) -> dict[str, Any]:
     }
 
 
-def serialize_brief_to_markdown(brief: dict[str, Any]) -> str:
+def _computed_ac_label(ac: dict[str, Any], task_done: dict[int, bool]) -> str:
+    """Label one AC by its computed state, naming a stored status that contradicts it."""
+    if ac["status"] == "descoped":
+        return "descoped"
+    if ac["done"]:
+        label = "computed: done"
+    elif not ac["covered_by"]:
+        label = "computed: not done -- no covering task"
+    elif not all(task_done.get(order) for order in ac["covered_by"]):
+        pending = ", ".join(f"T{o}" for o in ac["covered_by"] if not task_done.get(o))
+        label = f"computed: not done -- waiting on {pending}"
+    else:
+        label = "computed: not done -- no positive evidence"
+    if (ac["status"] == "done") != ac["done"]:
+        label += f"; stored: {ac['status']}, contradicts it"
+    return label
+
+
+def serialize_brief_to_markdown(
+    brief: dict[str, Any], derived: dict[str, Any] | None = None
+) -> str:
     """Serialize a brief dict back to markdown with frontmatter.
 
     Inverse of parse_brief_markdown for the fields it understands. The output
     matches the on-disk format closely enough that round-trip preserves all
-    structured data; whitespace and YAML key ordering are normalized.
+    structured data; whitespace and YAML key ordering are normalized. With
+    ``derived`` (from ``derive_brief_state``), each AC line shows its computed
+    state instead of its stored status.
     """
     # Build frontmatter dict in canonical order
     fm: dict[str, Any] = {}
@@ -708,23 +730,22 @@ def serialize_brief_to_markdown(brief: dict[str, Any]) -> str:
     _section("Context", brief.get("context"))
     _section("Approach", brief.get("approach"))
 
-    # Acceptance Criteria section: leave a stub if frontmatter has ACs.
-    # `status` is display-only here (this section is never parsed back --
-    # `parse_brief_markdown` reads ACs from the frontmatter, not this list),
-    # so showing it costs nothing and closes the invisibility half of the
-    # brief-status defect. Change it via `gaia ac set-status`, not by editing
-    # this line.
+    # This list is display-only: `parse_brief_markdown` reads ACs back from
+    # the frontmatter, so the state labels here never round-trip.
     if acs:
+        computed = {a["ac_id"]: a for a in (derived or {}).get("acceptance_criteria", [])}
+        task_done = {t["order_num"]: t["done"] for t in (derived or {}).get("tasks", [])}
         parts.append("## Acceptance Criteria")
         parts.append("")
-        parts.append("Source of truth in frontmatter.")
         for ac in acs:
             ac_id = ac.get("ac_id", "")
             desc = ac.get("description", "")
             ev_type = ac.get("evidence_type") or ""
             status = ac.get("status") or ""
             line = f"- {ac_id}: {desc}".rstrip()
-            if status:
+            if ac_id in computed:
+                line += f" ({_computed_ac_label(computed[ac_id], task_done)})"
+            elif status:
                 line += f" (status: {status})"
             if ev_type:
                 line += f" (evidence: {ev_type})"

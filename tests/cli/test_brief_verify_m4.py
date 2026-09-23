@@ -217,12 +217,12 @@ class TestInvariant7ClosedBriefNonterminalAc:
         kinds = [i["kind"] for i in result["inconsistencies"]]
         assert "closed_brief_nonterminal_ac" not in kinds
 
-    def test_detail_names_the_command_that_closes_the_ac(self, tmp_db):
-        """The advisory must name the verb, not just the target state.
+    def test_detail_recommends_no_verb_outside_the_orchestrators_lane(self, tmp_db):
+        """The advisory names the AC, its state, and who settles it -- no verb.
 
-        Naming only the states ("mark it 'done' or 'descoped'") left the reader
-        to guess the CLI: two agents separately concluded no such command
-        existed. The detail now carries a runnable `gaia ac set-status`.
+        The orchestrator reads this detail, and `gaia ac set-status` lies
+        outside its lane: recommending it sends the reader toward a command
+        the guard refuses. The owning agent settles the AC instead.
         """
         from gaia.briefs.store import verify_brief
         brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-actionable",
@@ -236,8 +236,10 @@ class TestInvariant7ClosedBriefNonterminalAc:
             i["detail"] for i in result["inconsistencies"]
             if i["kind"] == "closed_brief_nonterminal_ac"
         )
-        assert "gaia ac set-status inv7-actionable AC-3" in detail, detail
-        assert "done|descoped" in detail, detail
+        assert "AC-3" in detail and "status='pending'" in detail, detail
+        assert "{done, descoped}" in detail, detail
+        assert "owning agent" in detail, detail
+        assert "set-status" not in detail, detail
 
     def test_non_closed_brief_with_pending_ac_no_flag(self, tmp_db):
         """Invariant 7 only fires when the brief itself is closed."""

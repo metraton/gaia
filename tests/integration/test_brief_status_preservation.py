@@ -263,7 +263,9 @@ def test_show_markdown_exposes_ac_and_milestone_status(tmp_db, tmp_path,
     captured = capsys.readouterr()
     assert rc == 0, captured.err
 
-    assert "(status: done)" in captured.out
+    assert "stored: done, contradicts it" in captured.out, (
+        "a stored done the computed state refutes stays visible"
+    )
     assert "[status: blocked]" in captured.out
 
 
