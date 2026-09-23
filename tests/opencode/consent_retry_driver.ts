@@ -78,7 +78,6 @@ const presentations: Record<string, unknown>[] = []
 const controlPrompts: Record<string, any>[] = []
 const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
-let lastBridgeApprovalID: string | undefined
 
 /**
  * The arguments the control-plane model passes, parsed from the plugin's
@@ -185,7 +184,6 @@ async function policyBridge(event: Record<string, unknown>) {
   const isAuditTrace = AUDIT_TRACE_EVENTS.has(String(event.event))
   if (!isAuditTrace) {
     lastBridgeAction = (received as any)?.action
-    lastBridgeApprovalID = (received as any)?.approval_id || undefined
   }
   return received
 }
@@ -263,8 +261,15 @@ const directory = process.env.WORKSPACE ?? process.cwd()
 plugin = await GaiaOpenCodePlugin({ gaiaBridge, client, directory })
 const argsByCall = new Map<string, any>()
 
-function recordPresentation(step: any) {
-  presentations.push({ approvalID: lastBridgeApprovalID, sessionID: step.sessionID, callID: step.callID })
+/** The approval the policy bridge named for this call; concurrent steps share no global. */
+function bridgeApprovalIDFor(callID: string): string | undefined {
+  const exchange = exchanges.findLast((item: any) =>
+    item.sent?.event === "tool.execute.before" && item.sent?.callID === callID && item.received?.approval_id)
+  return (exchange as any)?.received?.approval_id
+}
+
+function recordPresentation(step: any, approvalID: string) {
+  presentations.push({ approvalID, sessionID: step.sessionID, callID: step.callID })
 }
 
 /** Deliver one host event and record its observable result, including refusals. */
@@ -277,7 +282,6 @@ async function runStep(step: any): Promise<void> {
       const args = step.reuseArgs ? argsByCall.get(step.callID) : step.args ?? { command: step.command }
       argsByCall.set(step.callID, args)
       lastBridgeAction = undefined
-      lastBridgeApprovalID = undefined
       record.commandBefore = args.command
       beforeCallsInFlight++
       try {
@@ -398,22 +402,6 @@ async function runStep(step: any): Promise<void> {
         },
       })
       record.allowed = true
-    } else if (step.kind === "replied") {
-      await plugin.event({
-        event: {
-          type: step.eventType ?? "permission.replied",
-          properties: {
-            sessionID: step.sessionID ?? scenario.sessionID,
-            permissionID: step.requestID,
-            response: step.reply,
-          },
-        },
-      })
-      await plugin.event({ event: {
-        type: "session.idle",
-        properties: { sessionID: step.sessionID ?? scenario.sessionID },
-      } })
-      record.allowed = true
     } else if (step.kind === "observe-controls") {
       record.controlPromptCount = controlPrompts.length
       record.specialistControlPromptCount = controlPrompts.filter(
@@ -518,8 +506,9 @@ async function runStep(step: any): Promise<void> {
     // tool.execute.before ends every non-allow decision by throwing. The throw
     // IS the observation for a blocked step, so it is recorded rather than
     // propagated -- a driver that died here would report nothing.
-    if (step.kind === "before" && lastBridgeApprovalID) {
-      recordPresentation(step)
+    const approvalID = step.kind === "before" ? bridgeApprovalIDFor(step.callID) : undefined
+    if (approvalID) {
+      recordPresentation(step, approvalID)
       record.requiresApproval = true
     }
     record.allowed = false

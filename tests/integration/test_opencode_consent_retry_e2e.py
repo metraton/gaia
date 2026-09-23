@@ -35,7 +35,6 @@ for _path in (str(REPO_ROOT), str(HOOKS_DIR)):
 
 GAIA_CLI = REPO_ROOT / "bin" / "gaia"
 DRIVER = REPO_ROOT / "tests" / "opencode" / "consent_retry_driver.ts"
-PLUGIN = REPO_ROOT / "opencode" / "plugin.ts"
 
 ROOT_SESSION_ID = "ses-t5-root"
 DISPATCH_CALL_ID = "call-t5-dispatch"
@@ -43,7 +42,6 @@ SESSION_ID = "ses-t5-retry"
 CALL_ID = "call-t5-retry"
 RETRY_CALL_ID = "call-t5-retry-fresh"
 LATER_CALL_ID = "call-t5-later"
-PERMISSION_ID = "perm-t5-retry"
 AGENT_ID = "gaia-system"
 
 # The bash calls under test must arrive as a DISPATCHED subagent, because that
@@ -151,6 +149,31 @@ def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND)):
     return json.loads(result.stdout.strip().splitlines()[-1])["approval_id"]
 
 
+def _request_one_set_per_command(env):
+    """Two independent pending approvals, so two blocked calls queue two questions."""
+    return [_request_set(env, commands=(command,)) for command in (FIRST_COMMAND, SECOND_COMMAND)]
+
+
+def _request_file_write(env, path):
+    """Seal a protected-file request with the real producer: a reactive block is never presented."""
+    result = subprocess.run(
+        [
+            sys.executable, str(GAIA_CLI), "approvals", "request-file-write",
+            "--path", str(path),
+            "--what", "Modificar un hook protegido.",
+            "--question", "¿Modifico el hook?",
+            "--does", "Reescribe el hook.",
+            "--impact", "Cambia un archivo de hooks.",
+            "--agent-id", AGENT_ID,
+            "--session-id", SESSION_ID,
+            "--json",
+        ],
+        cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=180,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    return json.loads(result.stdout.strip().splitlines()[-1])["approval_id"]
+
+
 def _decide(env, approval_id, *, reply="once", call_id=CALL_ID, token="t5-token"):
     """Apply the reply through the same CLI the plugin's reply lane invokes."""
     result = subprocess.run(
@@ -188,12 +211,8 @@ def _present(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
 def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
     """Present then reply, which is exactly what the plugin's own lanes do.
 
-    The pair is used instead of ``permission.replied`` because the plugin's
-    reply lane can only reach the approval its policy bridge named when it
-    refused the call, and that is never the pending plan-first set -- the gap
-    pinned by ``test_a_blocked_attempt_does_not_surface_the_pending_plan_first_approval``.
-    Both halves are the real CLIs the plugin invokes, in the real order: the
-    presentation is what binds the token the reply must carry.
+    Both halves are the real CLIs the plugin's control plane invokes, in the
+    real order: the presentation is what binds the token the reply must carry.
     """
     presented = _present(env, approval_id, call_id=call_id, token=token)
     assert presented.get("signature"), presented
@@ -201,13 +220,12 @@ def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
 
 
 def _drive(
-    env, steps, *, permission_id=PERMISSION_ID, initial_permissions=None,
+    env, steps, *, initial_permissions=None,
     question_during_prompt=False, duplicate_question_when_prompt_races=False,
     racing_duplicate_delay_ms=20_000, auto_safe_idle=True,
 ):
     """Run the real plugin under bun over the dispatch chain plus these steps."""
     scenario = {
-        "permissionID": permission_id,
         "sessionID": SESSION_ID,
         "steps": DISPATCH_STEPS + list(steps),
         "autoSafeIdle": auto_safe_idle,
@@ -242,45 +260,10 @@ def _file_before(label, tool, file_path, *, call_id, content="updated\n"):
     }
 
 
-def test_reactive_singular_bash_approval_arms_one_typed_identical_retry(db_env):
-    env, _db_path = db_env
-
-    driven = _drive(env, [
-        _before("blocked-singular", FIRST_COMMAND),
-        {"kind": "control-decision", "label": "approve-singular", "answer": "approve"},
-        _before("retry-singular", FIRST_COMMAND, call_id=RETRY_CALL_ID),
-        {
-            "kind": "after", "label": "settle-singular", "sessionID": SESSION_ID,
-            "callID": RETRY_CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
-            "metadata": {"exitCode": 0},
-        },
-        _before("post-settlement", FIRST_COMMAND, call_id=LATER_CALL_ID),
-    ])
-
-    assert _step(driven, "blocked-singular")["allowed"] is False
-    assert _step(driven, "approve-singular")["allowed"] is True
-    assert _step(driven, "retry-singular")["allowed"] is True
-    retry_exchange = next(
-        item for item in _tool_exchanges(driven)
-        if item["sent"].get("callID") == RETRY_CALL_ID
-    )
-    assert retry_exchange["sent"]["consentRetry"] | {
-        "version": 1,
-        "kind": "SCOPE_SEMANTIC_SIGNATURE",
-        "command": FIRST_COMMAND,
-        "command_fingerprint": FIRST_FINGERPRINT,
-    } == retry_exchange["sent"]["consentRetry"]
-    assert _step(driven, "post-settlement")["allowed"] is False
-    post_exchange = next(
-        item for item in _tool_exchanges(driven)
-        if item["sent"].get("callID") == LATER_CALL_ID
-    )
-    assert "consentRetry" not in post_exchange["sent"]
-
-
 def test_protected_file_approval_arms_an_edit_retry_for_only_the_canonical_target(db_env):
     env, db_path = db_env
     protected = Path(env["WORKSPACE"]) / ".claude" / "hooks" / "pre_tool_use.py"
+    requested_id = _request_file_write(env, protected)
 
     driven = _drive(env, [
         _file_before("blocked-file", "write", protected, call_id=CALL_ID),
@@ -296,6 +279,7 @@ def test_protected_file_approval_arms_an_edit_retry_for_only_the_canonical_targe
     assert _step(driven, "blocked-file")["allowed"] is False
     assert _step(driven, "approve-file")["allowed"] is True
     approval_id = driven["presentations"][0]["approvalID"]
+    assert approval_id == requested_id
     assert _approval_status(db_path, approval_id) == "approved"
     assert _grant(db_path, approval_id)["scope"] == "SCOPE_FILE_PATH"
     assert len(driven["controlPrompts"]) == 2, driven
@@ -317,6 +301,7 @@ def test_file_retry_path_drift_fails_closed_and_clears_the_typed_claim(db_env):
     env, db_path = db_env
     protected = Path(env["WORKSPACE"]) / ".claude" / "hooks" / "pre_tool_use.py"
     wrong = Path(env["WORKSPACE"]) / "src" / "other.py"
+    _request_file_write(env, protected)
 
     driven = _drive(env, [
         _file_before("blocked-file", "write", protected, call_id=CALL_ID),
@@ -481,7 +466,7 @@ def test_a_second_exact_question_call_is_refused_before_decision(db_env):
 
     duplicate = _step(driven, "duplicate-call")
     assert duplicate["allowed"] is False, driven
-    assert duplicate["error"] == "Gaia consent control plane permits one exact binary question"
+    assert duplicate["error"] == "Gaia consent control plane permits one signature question"
     assert _approval_status(db_path, approval_id) == "pending"
     assert _grant(db_path, approval_id) is None
     assert _control_closures(db_path) == [("drifted_tool_call", approval_id)]
@@ -490,6 +475,7 @@ def test_a_second_exact_question_call_is_refused_before_decision(db_env):
 def test_control_prompt_preserves_specialist_permissions_until_typed_retry(db_env):
     env, _db_path = db_env
     original = [{"permission": "bash", "pattern": "*", "action": "ask"}]
+    _request_set(env)
 
     driven = _drive(env, [
         _before("blocked", FIRST_COMMAND),
@@ -508,6 +494,7 @@ def test_concurrent_approvals_are_serialized_and_each_native_answer_closes_only_
     env, db_path = db_env
     first_call = "call-concurrent-first"
     second_call = "call-concurrent-second"
+    _request_one_set_per_command(env)
 
     driven = _drive(env, [
         {"kind": "concurrent", "steps": [
@@ -516,7 +503,7 @@ def test_concurrent_approvals_are_serialized_and_each_native_answer_closes_only_
         ]},
         {"kind": "control-decision", "label": "reject-first", "answer": "reject"},
         {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
-    ], permission_id=None)
+    ])
 
     assert _step(driven, "blocked-first")["allowed"] is False
     assert _step(driven, "blocked-second")["allowed"] is False
@@ -537,6 +524,7 @@ def test_late_approval_waits_through_decision_idle_and_first_retry_lifecycle(db_
     env, db_path = db_env
     second_call = "call-late-second"
     retry_call = "call-late-first-retry"
+    _request_one_set_per_command(env)
 
     driven = _drive(env, [
         _before("blocked-first", FIRST_COMMAND),
@@ -553,7 +541,7 @@ def test_late_approval_waits_through_decision_idle_and_first_retry_lifecycle(db_
         },
         {"kind": "observe-controls", "label": "after-first-settlement"},
         {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
-    ], permission_id=None)
+    ])
 
     assert _step(driven, "blocked-first")["allowed"] is False
     assert _step(driven, "blocked-second-before-idle")["allowed"] is False
@@ -738,6 +726,7 @@ def test_unrelated_tool_call_is_denied_before_policy_and_releases_only_the_activ
     first_call = "call-unrelated-first"
     second_call = "call-unrelated-second"
     unrelated_call = "call-unrelated-during-control"
+    _request_one_set_per_command(env)
 
     driven = _drive(env, [
         {"kind": "concurrent", "steps": [
@@ -749,11 +738,11 @@ def test_unrelated_tool_call_is_denied_before_policy_and_releases_only_the_activ
         {"kind": "lifecycle", "label": "idle", "sessionID": SESSION_ID, "eventType": "session.idle"},
         {"kind": "observe-controls", "label": "after-idle"},
         {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
-    ], permission_id=None)
+    ])
 
     unrelated = _step(driven, "unrelated")
     assert unrelated["allowed"] is False, driven
-    assert unrelated["error"] == "Gaia consent control plane permits one exact binary question"
+    assert unrelated["error"] == "Gaia consent control plane permits one signature question"
     assert all(
         exchange["sent"].get("callID") != unrelated_call
         for exchange in driven["exchanges"]
@@ -800,17 +789,11 @@ def test_a_question_that_is_not_gaias_closes_the_control_with_a_trace(db_env):
     ("steps", "expected_status", "expected_closures"),
     [
         ([{"kind": "control-decision", "label": "decision", "answer": "reject"}], "rejected", ["decided"]),
-        ([{"kind": "control-decision", "label": "decision", "answer": "Approve"}], "pending", ["reply_unreadable"]),
+        ([{"kind": "control-decision", "label": "decision", "answer": "Sure, go ahead"}], "pending", ["reply_unreadable"]),
         ([{"kind": "control-decision", "label": "decision", "answers": []}], "pending", ["reply_unreadable"]),
-        ([{
-            "kind": "replied",
-            "label": "decision",
-            "requestID": PERMISSION_ID,
-            "reply": "always",
-        }], "pending", ["decide_failed"]),
         ([], "pending", []),
     ],
-    ids=["reject", "free-text", "malformed", "autoapproval", "no-decision"],
+    ids=["reject", "free-text", "malformed", "no-decision"],
 )
 def test_non_yes_decisions_create_no_executable_effect(db_env, steps, expected_status, expected_closures):
     env, db_path = db_env
@@ -841,7 +824,6 @@ def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(
         _before("blocked", FIRST_COMMAND),
         {"kind": "gaia", "label": "rejected-out-of-band", "args": ["approvals", "reject", approval_id]},
         {"kind": "control-decision", "label": "approve", "answer": "approve"},
-        {"kind": "replied", "label": "late-host-reply", "requestID": PERMISSION_ID, "reply": "once"},
     ])
 
     assert _step(driven, "rejected-out-of-band")["allowed"] is True, driven
@@ -856,8 +838,7 @@ def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(
     assert decide_refusals[0]["session_id"] == SESSION_ID
     assert decide_refusals[0]["details"]["call_id"] == CALL_ID
     assert decide_refusals[0]["detail"], decide_refusals[0]
-    # One closure, with Gaia's cause; the late host reply finds no pending
-    # approval and records nothing more.
+    # One closure, with Gaia's cause.
     assert _control_closures(db_path) == [("decide_failed", approval_id)]
     assert _harness_payloads(db_path, "consent.control.closed")[0]["detail"] == decide_refusals[0]["detail"]
 
@@ -1185,10 +1166,9 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     # The id fed to the decide entry point is the one the BLOCK PATH surfaced,
     # read out of the plugin's presentation metadata -- never the one
     # _request_set returned -- so this leg cannot pass on a value the test
-    # supplied. SUBSTITUTED LINK: the host's permission.replied event. What
-    # runs instead is the CLI pair the plugin's own reply lane invokes, with
-    # the presentation that binds the token the reply must carry; that OpenCode
-    # delivers the event at all is not established here.
+    # supplied. SUBSTITUTED LINK: the user's answer to the question. What runs
+    # instead is the CLI pair the plugin's control plane invokes, with the
+    # presentation that binds the token the reply must carry.
     decision = _approve_set(env, presented_ids[0])
     assert decision["decision"] == "once"
     assert decision["status"] == "approved"
@@ -1199,19 +1179,6 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     assert grant["source"] == "plan-first", grant
     assert int(grant["next_index"]) == 0, grant
     assert len(json.loads(grant["command_set_json"])) == 2, grant
-
-
-def test_plugin_delegates_the_permission_request_to_the_host_hook():
-    """The adapter does not fabricate a native permission creator.
-
-    Gaia registers the presentation before aborting the original invocation.
-    The permission hook enriches a correlated host request and waits for its
-    reply event; only a fresh invocation may execute after approval.
-    """
-    source = PLUGIN.read_text()
-    assert '"permission.ask"' in source
-    assert "session.permission.create" not in source
-    assert 'await requestApproval(response, call.sessionID, call.callID, agent ?? "")\n        throw new Error' in source
 
 
 def test_overlapping_bound_workspaces_settle_independently(tmp_path, bootstrapped_db_template):

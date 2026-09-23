@@ -9,9 +9,9 @@ which never runs in the Python suite.
 
 | File | Role |
 |------|------|
-| `*_driver.ts` | Scenario drivers: read a JSON scenario from `argv[2]`, run the real plugin against a stubbed host (`client.session.*`, permission events), print one JSON line of observations. Invoked by the `tests/integration/test_opencode_*.py` and `tests/hooks/adapters/test_opencode_*.py` suites. |
+| `*_driver.ts` | Scenario drivers: read a JSON scenario from `argv[2]`, run the real plugin against a stubbed host (`client.session.*`, question and lifecycle events), print one JSON line of observations. Invoked by the `tests/integration/test_opencode_*.py` and `tests/hooks/adapters/test_opencode_*.py` suites. |
 | `consent_retry_driver.ts` | The consent chain end to end: dispatch, blocked attempt, control question, decision, retry, shell-env delivery. Its bridge is the real `bridge.py` through `isolated_bridge.py`; audit traces (`control.opened`, `control.closed`, `decision.applied`, `retry.refused`, `permission.uncorrelated`) land in the scenario's `GAIA_DB`. |
-| `presentation_driver.ts` | What the plugin hands the host's permission mechanism for one blocked call; observes the `bin/gaia` spawn boundary (cwd). |
+| `presentation_driver.ts` | What the plugin does to present one blocked call: the control prompt, the bridge traces, the abort; observes the `bin/gaia` spawn boundary (cwd). |
 | `sdk_body_contract.ts` | The host stubs' type checks for `session.create` / `session.promptAsync` bodies, mirroring `@opencode-ai/sdk` 1.18.18. |
 | `isolated_bridge.py` | Asserts the private workspace before running `bridge.py` in-process. |
 | `*.test.ts` + `test_*.py` collectors | Pure bun unit tests (`shell_env_delivery`, `binary_question_match`, `consent_retry_evaluate`, `second_root_attestation`) collected into pytest by a one-test wrapper each. |
