@@ -1286,6 +1286,29 @@ def _signature_surface(payload: dict, approval_id: str) -> dict:
     }
 
 
+def cmd_question(args) -> int:
+    """Print the AskUserQuestion input that asks 1 to 4 pending signatures, and nothing else.
+
+    The orchestrator passes it unchanged; the PreToolUse hook recognises it and
+    shows each signature's text itself, so no model prints a signature.
+    """
+    from gaia.approvals import core
+
+    approval_ids = []
+    for raw_id in args.approval_ids:
+        approval_id = _require_canonical_approval_id(raw_id, args)
+        if approval_id is None:
+            return 1
+        approval_ids.append(approval_id)
+    try:
+        surfaces = core.question_batch(approval_ids)
+    except core.SealError as exc:
+        _print_error(str(exc), args)
+        return 1
+    print(json.dumps({"questions": [s.question for s in surfaces]}, ensure_ascii=False))
+    return 0
+
+
 def _print_consent_presentation(approval: dict, args) -> int:
     """Print the signature surface of one pending approval as JSON."""
     approval_id = approval.get("id", "")
@@ -2202,6 +2225,21 @@ def register(subparsers) -> None:
         ),
     )
     p_show.set_defaults(func=cmd_show_v2)
+
+    p_question = sub.add_parser(
+        "question",
+        help="Print the AskUserQuestion input that asks 1 to 4 pending signatures",
+        description=(
+            "Print, as JSON, the exact AskUserQuestion input for the given pending\n"
+            "approvals, one question per signature in the order given. Pass it\n"
+            "unchanged: the hook shows each signature's text and binds each answer."
+        ),
+    )
+    p_question.add_argument(
+        "approval_ids", nargs="+", metavar="APPROVAL_ID",
+        help="Full canonical approval_id P-<32 lowercase hex>, 1 to 4",
+    )
+    p_question.set_defaults(func=cmd_question, json=True)
 
     # revoke (T3.2) -- now checks new DB first
     p_revoke = sub.add_parser(

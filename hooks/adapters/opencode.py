@@ -1164,6 +1164,9 @@ class OpenCodeAdapter(HookAdapter):
             call_id=event.call_id,
             role_context=event.role_context,
         )
+        if payload.get("tool_name") == "AskUserQuestion":
+            ClaudeCodeAdapter.activate_labelled_answers(payload)
+            return self._translate_policy_response(HookResponse(output={}, exit_code=0))
         response = ClaudeCodeAdapter().adapt_post_tool_use(policy_event)
         return self._translate_policy_response(response)
 

@@ -1793,6 +1793,8 @@ class ClaudeCodeAdapter(HookAdapter):
                     agent_id=agent_id,
                     agent_type=(hook_data or {}).get("agent_type", ""),
                 )
+            elif tool_name == "AskUserQuestion":
+                return self._adapt_ask_user_question(tool_input, hook_data=hook_data)
             else:
                 # Other tools pass through
                 return HookResponse(output={}, exit_code=0)
@@ -2416,6 +2418,64 @@ class ClaudeCodeAdapter(HookAdapter):
         )
         return None
 
+    @staticmethod
+    def _adapt_ask_user_question(tool_input: dict, *, hook_data: dict) -> HookResponse:
+        """Show the signatures of a question Gaia built, or deny one it did not build.
+
+        A question without a signature's shape is left alone. One with it must
+        be exactly the object ``gaia approvals question`` printed: each
+        signature is then recorded as shown at its position under this
+        tool_use_id, and the renderer's texts reach the user through
+        ``systemMessage`` (documented as shown to the user). No
+        ``permissionDecision`` is returned: for AskUserQuestion ``allow``
+        without ``updatedInput`` does not skip the question, and no other
+        value would ask it.
+        """
+        from gaia.approvals import core, surface
+
+        questions = tool_input.get("questions")
+        if not isinstance(questions, list) or not any(
+            isinstance(question, dict) and surface.is_signature_question(question)
+            for question in questions
+        ):
+            return HookResponse(output={}, exit_code=0)
+
+        def deny(reason: str) -> HookResponse:
+            return HookResponse(
+                output={
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            f"Gaia did not show this approval question: {reason}. Ask with "
+                            "the exact object `gaia approvals question <approval_id> ...` "
+                            "prints, unchanged, and print nothing about the signature."
+                        ),
+                    }
+                },
+                exit_code=0,
+            )
+
+        tool_use_id = str(hook_data.get("tool_use_id") or "")
+        if not tool_use_id:
+            return deny("the host event carries no tool_use_id to bind the answers to")
+        try:
+            surfaces = core.match_question_batch(questions)
+        except core.SealError as exc:
+            return deny(str(exc))
+        for position, rendered in enumerate(surfaces):
+            core.record_presentation(
+                rendered.approval_id,
+                native_ref=tool_use_id,
+                session_id=str(hook_data.get("session_id") or ""),
+                agent_id=str(hook_data.get("agent_id") or PRIMARY_AGENT),
+                position=position,
+            )
+        return HookResponse(
+            output={"systemMessage": "\n\n".join(rendered.text for rendered in surfaces)},
+            exit_code=0,
+        )
+
     def _adapt_send_message(
         self, tool_name: str, parameters: dict, session_id: str = "",
     ) -> HookResponse:
@@ -2730,12 +2790,8 @@ class ClaudeCodeAdapter(HookAdapter):
         )
         success = tool_result_data.exit_code == 0
 
-        # ------------------------------------------------------------- #
-        # AskUserQuestion: check if user approved a pending T3 grant
-        # ------------------------------------------------------------- #
         if tool_name == "AskUserQuestion":
-            self._handle_ask_user_question_result(hook_data)
-            return HookResponse(output={}, exit_code=0)
+            return self._handle_ask_user_question_result(hook_data)
 
         # ------------------------------------------------------------- #
         # Subagent dispatch: the ONLY place a harness-truncated subagent is
@@ -2937,36 +2993,17 @@ class ClaudeCodeAdapter(HookAdapter):
         match = re.search(r"[Ee]xit code (\d+)", error)
         return int(match.group(1)) if match else 1
 
-    # ------------------------------------------------------------------ #
-    # _handle_ask_user_question_result: grant activation from user answer
-    # ------------------------------------------------------------------ #
+    @staticmethod
+    def activate_labelled_answers(hook_data: Dict[str, Any]) -> None:
+        """OpenCode's question lane only: activate every ``[P-<32 hex>]`` an answered label carries.
 
-    def _handle_ask_user_question_result(self, hook_data: Dict[str, Any]) -> None:
-        """Activate every grant the user signed in one structured decision event.
-
-        Exact-id activation, once per distinct ``[P-<32 hex>]`` tag carried by
-        an answered label. This works identically for same-session and
-        cross-session approvals:
-          1. Extract the complete canonical id from every answered label.
-          2. Load each pending by exact id (any session).
-          3. Activate each grant under the CURRENT session.
-
-        A host question event answers every question in the call independently,
-        so N signed labels are N signatures. Activating only the first discards
-        the rest -- measured on 2026-08-19, when two protected-path approvals
-        were presented in one event, both approved, and only the first activated.
-
-        ``extract_approval_id_from_label`` is the ONLY predicate that decides
-        activation: a label yields a grant exactly when it returns a full id for
-        it. Nothing else reads the answer text, so a reject label -- including
-        "Do not approve ..." -- still yields no nonce and no grant, and this path
-        can lose a signature but never manufacture one.
-
-        DB-only since the grant-lifecycle FS retirement: REQUESTED writes go
-        to the DB, so an approved pending is resolved by exact canonical id
-        through ``activate_db_pending_by_id()``.
-
-        Never blocks (no exceptions raised to caller).
+        Claude Code never calls this -- its answers bind by tool_use_id and
+        position (:meth:`_handle_ask_user_question_result`, D12). OpenCode still
+        reaches it through ``OpenCodeAdapter.adapt_post_tool_use``, which
+        strips any decision it did not attest, until plan 76 task 5 gives
+        OpenCode its own adapter bound by requestID and removes this method.
+        A failed activation is recorded, and one failure does not withhold
+        another signed label. Never raises.
         """
         from gaia.approvals.decision_audit import (
             LANE_CLAUDE_CODE_QUESTION,
@@ -2982,46 +3019,31 @@ class ClaudeCodeAdapter(HookAdapter):
         )
 
         session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
-
-        # Extract answers from tool_response first, then tool_input as fallback
         tool_response = hook_data.get("tool_response", {})
         answers = {}
         if isinstance(tool_response, dict):
             answers = tool_response.get("answers", {})
         if not answers and isinstance(hook_data.get("tool_input", {}), dict):
             answers = hook_data.get("tool_input", {}).get("answers", {})
-
-        # No answers is not a decision that granted nothing -- it is no decision
-        # at all, and recording one here would erase the distinction the audit
-        # record exists to make.
+        # No answers is no decision at all, so nothing is recorded for it.
         if not answers:
-            logger.info("AskUserQuestion: no answers found in payload, skipping grant activation")
             return
 
         labels = [str(v) for v in answers.values()]
-
         try:
             if not session_id:
-                logger.info("AskUserQuestion: no session_id available, skipping grant activation")
                 record_decision_not_activated(
                     reason=REASON_NO_SESSION_BINDING,
                     lane=LANE_CLAUDE_CODE_QUESTION,
                     decision_values=labels,
                 )
                 return
-
-            # One canonical id per distinct signed label, in answer order.
             approval_ids: List[str] = []
             for label in labels:
                 approval_id = extract_approval_id_from_label(label)
                 if approval_id and approval_id not in approval_ids:
                     approval_ids.append(approval_id)
-
             if not approval_ids:
-                logger.info(
-                    "AskUserQuestion: no canonical approval id in answer labels -- "
-                    "nothing to activate for session %s", session_id[:12],
-                )
                 record_decision_not_activated(
                     reason=REASON_NO_NONCE_IN_LABELS,
                     lane=LANE_CLAUDE_CODE_QUESTION,
@@ -3029,27 +3051,10 @@ class ClaudeCodeAdapter(HookAdapter):
                     decision_values=labels,
                 )
                 return
-
-            logger.info(
-                "AskUserQuestion: %d signed label(s), activating grants for session %s",
-                len(approval_ids), session_id[:12],
-            )
-
-            # One failure must not withhold the grants the user also signed, so
-            # the loop records it and continues instead of returning.
             for approval_id in approval_ids:
                 result = activate_db_pending_by_id(
                     approval_id, current_session_id=session_id,
                 )
-                logger.info(
-                    "AskUserQuestion DB activation: approval_id=%s success=%s status=%s reason=%s",
-                    approval_id,
-                    result.success,
-                    getattr(result.status, "value", str(result.status)),
-                    result.reason,
-                )
-                # A replayed answer finds its grant already in place and succeeds
-                # idempotently; it still granted nothing new, so it is recorded.
                 if result.success and result.idempotent:
                     record_decision_not_activated(
                         reason=REASON_DUPLICATE_DECISION,
@@ -3068,9 +3073,103 @@ class ClaudeCodeAdapter(HookAdapter):
                         decision_values=labels,
                         detail=result.reason or getattr(result.status, "value", ""),
                     )
-
         except Exception as e:
-            logger.error("Error in _handle_ask_user_question_result: %s", e, exc_info=True)
+            logger.error("Error in activate_labelled_answers: %s", e, exc_info=True)
+
+    @staticmethod
+    def _handle_ask_user_question_result(hook_data: Dict[str, Any]) -> HookResponse:
+        """Decide each signature shown in this call from the label chosen at its position.
+
+        Only signatures PreToolUse recorded as shown under this tool_use_id are
+        decided, each by the answer to its own question: ``Approve``,
+        ``Reject`` and ``Details`` are the option keys, and any other text (the
+        Other row, a dismissal) or no answer decides nothing. A label is never
+        searched for an approval id. An Approve that activates nothing is
+        recorded (``decision_audit``) so a lost signature stays findable.
+        Details answers with the renderer's Details and asks the model to
+        present that signature again.
+        """
+        from gaia.approvals import core, surface
+
+        tool_use_id = str(hook_data.get("tool_use_id") or "")
+        try:
+            shown = core.presented(tool_use_id) if tool_use_id else []
+        except Exception as exc:
+            logger.error("AskUserQuestion: cannot read its presentations: %s", exc, exc_info=True)
+            return HookResponse(output={}, exit_code=0)
+        if not shown:
+            return HookResponse(output={}, exit_code=0)
+
+        tool_response = hook_data.get("tool_response")
+        tool_input = hook_data.get("tool_input")
+        response = tool_response if isinstance(tool_response, dict) else {}
+        asked = tool_input if isinstance(tool_input, dict) else {}
+        questions = response.get("questions") or asked.get("questions") or []
+        answers = response.get("answers") or asked.get("answers") or {}
+        session_id = str(hook_data.get("session_id") or "")
+
+        details: List[str] = []
+        for position, approval_id in shown:
+            question = questions[position] if position < len(questions) else {}
+            answer = answers.get(question.get("question")) if isinstance(question, dict) else None
+            option_key = surface.OPTION_KEYS.get(answer)
+            try:
+                result = core.decide(
+                    native_ref=tool_use_id,
+                    session_id=session_id,
+                    option_key=option_key,
+                    free_text=None if option_key or answer is None else str(answer),
+                    position=position,
+                )
+            except Exception as exc:
+                logger.error(
+                    "AskUserQuestion: decision failed for %s: %s", approval_id, exc, exc_info=True,
+                )
+                continue
+            logger.info(
+                "AskUserQuestion decision: approval_id=%s position=%d status=%s reason=%s",
+                approval_id, position, result.status, result.reason,
+            )
+            if option_key == "approve" and result.status != "activated":
+                from gaia.approvals.decision_audit import (
+                    LANE_CLAUDE_CODE_QUESTION,
+                    REASON_ACTIVATION_FAILED,
+                    record_decision_not_activated,
+                )
+
+                record_decision_not_activated(
+                    reason=REASON_ACTIVATION_FAILED,
+                    lane=LANE_CLAUDE_CODE_QUESTION,
+                    session_id=session_id,
+                    approval_id=approval_id,
+                    decision_values=[answer],
+                    detail=result.reason,
+                )
+            if option_key == "details":
+                details.append(approval_id)
+
+        if not details:
+            return HookResponse(output={}, exit_code=0)
+        try:
+            surfaces = core.question_batch(details)
+        except core.SealError as exc:
+            logger.info("AskUserQuestion: Details not shown for %s: %s", details, exc)
+            return HookResponse(output={}, exit_code=0)
+        return HookResponse(
+            output={
+                "systemMessage": "\n\n".join(rendered.details for rendered in surfaces),
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": (
+                        "The user chose Details; Gaia showed them. Ask again with "
+                        f"`gaia approvals question {' '.join(details)}` and pass its "
+                        "output unchanged to AskUserQuestion. Print nothing about the "
+                        "signature yourself."
+                    ),
+                },
+            },
+            exit_code=0,
+        )
 
     # ------------------------------------------------------------------ #
     # adapt_subagent_stop: full subagent-stop lifecycle

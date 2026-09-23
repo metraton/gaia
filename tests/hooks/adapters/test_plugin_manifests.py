@@ -171,11 +171,11 @@ class TestHooksJson:
         assert "SubagentStop" in data["hooks"]
 
     def test_pre_tool_use_matchers(self):
-        """PreToolUse must have Bash, Task, Agent, SendMessage, and file-tool matchers."""
+        """PreToolUse must have Bash, Task, Agent, SendMessage, AskUserQuestion, and file-tool matchers."""
         data = json.loads(self.hooks_path.read_text())
         matchers = {entry["matcher"] for entry in data["hooks"]["PreToolUse"]}
         expected = {
-            "Bash", "Task", "Agent", "SendMessage",
+            "Bash", "Task", "Agent", "SendMessage", "AskUserQuestion",
             "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit",
         }
         assert matchers == expected, (

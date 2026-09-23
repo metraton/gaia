@@ -459,6 +459,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("approvals", "list"),
     ("approvals", "pending"),
     ("approvals", "show"),
+    ("approvals", "question"),
     ("approvals", "history"),
     ("approvals", "stats"),
     # Substrate and installation diagnostics. Each was verified read-only by

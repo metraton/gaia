@@ -1,0 +1,49 @@
+{
+  "provenance": "Host-produced AskUserQuestion results copied from a Claude Code 2.1.273 session transcript (toolUseResult, the object a PostToolUse hook receives as tool_response), 2026-09-23. One free-text answer is cut to its first sentence; nothing else is edited.",
+  "results": [
+    {
+      "case": "four questions in one call, each answered with an option label",
+      "tool_use_id": "toolu_01PLehXCAUD7w96fHF35ciat",
+      "tool_response": {
+        "questions": [
+          {"question": "D1 — ¿Cuándo se da por terminado un comando firmado? Hoy, cuando el orquestador cierra su turno, Gaia marca FAILED todo lo que sigue abierto, incluso comandos de subagentes que todavía corren. Por eso aparecen éxitos marcados como fallos y firmas repetidas.", "header": "D1 Cierre", "options": [{"label": "Evento propio (Recomendado)", "description": "Cada comando se cierra con su propio evento de éxito o fallo. Un Stop ajeno nunca lo marca FAILED. Si un comando nunca se cierra, queda 'sin resultado', no 'fallido'."}, {"label": "Barrido por agente", "description": "Se mantiene el barrido al cerrar, pero cada agente barre solo sus propios comandos. Es más simple, pero sigue adivinando."}], "multiSelect": false},
+          {"question": "D2 — Un comando de un set puede fallar a propósito, por ejemplo un rebase que para en un conflicto. Hoy eso congela todo el set y hay que firmar de nuevo el resto. ¿Qué hacemos?", "header": "D2 Fallo", "options": [{"label": "Fallo declarado (Recomendado)", "description": "Al pedir la firma, cada comando puede declarar qué salidas distintas de 0 son normales. Si pasa una de esas, el set sigue. Cualquier otro fallo lo congela, como hoy."}, {"label": "Siempre congela", "description": "Se deja como hoy: cualquier fallo congela el set. Es más seguro, pero cuesta firmas extra."}], "multiSelect": false},
+          {"question": "D3 — Un comando firmado no puede decir en qué carpeta corre. Si depende de la carpeta, falla después de gastar la firma. ¿Cómo lo resolvemos?", "header": "D3 Carpeta", "options": [{"label": "Carpeta sellada (Recomendado)", "description": "Cada comando del set lleva su carpeta dentro de la firma, y la ves al firmar. Si corre en otra carpeta, no coincide."}, {"label": "Solo rutas -C", "description": "No se agrega nada. Los agentes siguen usando git -C o rutas absolutas, como hoy."}], "multiSelect": false},
+          {"question": "D4 — Hoy una firma de un solo comando dura 5 minutos y la de un set dura 60. El reloj arranca cuando firmas, y un agente puede gastarse la ventana antes de ejecutar. ¿Qué hacemos?", "header": "D4 Ventana", "options": [{"label": "Una sola, 30 min (Recomendado)", "description": "Todas las firmas duran lo mismo, 30 minutos, y la duración se muestra en la superficie de la firma (WINDOW)."}, {"label": "Por tipo, visible", "description": "Se mantienen 5, 30 y 60 minutos según el tipo, pero la duración se muestra siempre al firmar."}], "multiSelect": false}
+        ],
+        "answers": {
+          "D1 — ¿Cuándo se da por terminado un comando firmado? Hoy, cuando el orquestador cierra su turno, Gaia marca FAILED todo lo que sigue abierto, incluso comandos de subagentes que todavía corren. Por eso aparecen éxitos marcados como fallos y firmas repetidas.": "Evento propio (Recomendado)",
+          "D2 — Un comando de un set puede fallar a propósito, por ejemplo un rebase que para en un conflicto. Hoy eso congela todo el set y hay que firmar de nuevo el resto. ¿Qué hacemos?": "Fallo declarado (Recomendado)",
+          "D3 — Un comando firmado no puede decir en qué carpeta corre. Si depende de la carpeta, falla después de gastar la firma. ¿Cómo lo resolvemos?": "Carpeta sellada (Recomendado)",
+          "D4 — Hoy una firma de un solo comando dura 5 minutos y la de un set dura 60. El reloj arranca cuando firmas, y un agente puede gastarse la ventana antes de ejecutar. ¿Qué hacemos?": "Una sola, 30 min (Recomendado)"
+        }
+      }
+    },
+    {
+      "case": "free text typed in the Other row arrives in place of a label",
+      "tool_use_id": "toolu_01GDWnF8KKsabknYnJc12CZK",
+      "tool_response": {
+        "questions": [
+          {"question": "5 — ¿Cómo guardamos los cambios de un plan?", "header": "Versiones", "options": [{"label": "Historia con motivo (Recomendado)", "description": "Cada cambio guarda la versión anterior y el motivo. El plan vigente queda limpio y se puede ver qué cambió y por qué."}, {"label": "Agregados en el texto", "description": "Como hoy: el cambio se agrega al final del plan y hay que reconciliarlo a mano."}], "multiSelect": false},
+          {"question": "6 — ¿Cómo pauso un plan o una tarea?", "header": "Pausa", "options": [{"label": "Estado 'pausado' (Recomendado)", "description": "Un estado nuevo con motivo. Mientras está pausado no se despacha nada, y al retomar todo sigue donde quedó."}, {"label": "Volver a borrador", "description": "Como hoy: el plan vuelve a borrador. Es más simple, pero no se distingue 'en revisión' de 'pausado'."}], "multiSelect": false}
+        ],
+        "answers": {
+          "5 — ¿Cómo guardamos los cambios de un plan?": "Historia con motivo (Recomendado)",
+          "6 — ¿Cómo pauso un plan o una tarea?": "Bueno, eso es algo que podríamos discutir."
+        }
+      }
+    },
+    {
+      "case": "the user dismissed the question without selecting anything",
+      "tool_use_id": "toolu_013zBEtDkgBEqaNRhWGHyhqT",
+      "tool_response": {
+        "questions": [
+          {"question": "¿Reinstalo Gaia?", "header": "Aprobación", "options": [{"label": "Approve", "description": "Ejecuta el comando una vez."}, {"label": "Reject", "description": "No se ejecuta nada."}, {"label": "Details", "description": "Explica el porqué y muestra todo."}], "multiSelect": false}
+        ],
+        "answers": {
+          "¿Reinstalo Gaia?": "[User dismissed — do not proceed, wait for next instruction]"
+        }
+      }
+    }
+  ]
+}

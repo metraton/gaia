@@ -11,6 +11,7 @@ orthography (D17); only the option labels are English (D8, D11).
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
@@ -33,6 +34,8 @@ OPTIONS = (
     ("Reject", "Rechaza la solicitud; no se ejecuta nada"),
     ("Details", "Ver qué hace cada paso y su impacto"),
 )
+#: The core decision each option label stands for (``core.DECISION_OPTIONS``).
+OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 
 _NO_AGENT = "agente sin identificar"
 _NO_TITLE = "Solicitud sin título declarado."
@@ -254,6 +257,30 @@ def render(payload: Mapping[str, Any], approval_id: str) -> Surface:
     return _render(payload, approval_id, HEADER)
 
 
+def batch_header(position: int, total: int) -> str:
+    """The header of the signature at 1-based ``position`` among ``total`` asked in one call."""
+    return HEADER if total == 1 else f"Aprob. {position}/{total}"
+
+
+def batch_question(payload: Mapping[str, Any], position: int, total: int) -> dict:
+    """The question object a request shows at ``position`` of a ``total``-signature call."""
+    return _question(payload, batch_header(position, total))
+
+
+def is_signature_question(question: Mapping[str, Any]) -> bool:
+    """Whether a host question object has the shape of a signature: its header or its options."""
+    header = str(question.get("header") or "")
+    labels = [
+        option.get("label") for option in question.get("options") or ()
+        if isinstance(option, Mapping)
+    ]
+    return (
+        header == HEADER
+        or re.fullmatch(r"Aprob\. \d+/\d+", header) is not None
+        or labels == [label for label, _ in OPTIONS]
+    )
+
+
 def render_batch(
     requests: Sequence[tuple[Mapping[str, Any], str]],
 ) -> list[Surface]:
@@ -270,7 +297,7 @@ def render_batch(
             f"a question call presents 1 to {BATCH_MAX} signatures, not {total}"
         )
     surfaces = [
-        _render(payload, approval_id, HEADER if total == 1 else f"Aprob. {position}/{total}")
+        _render(payload, approval_id, batch_header(position, total))
         for position, (payload, approval_id) in enumerate(requests, start=1)
     ]
     texts = [surface.question["question"] for surface in surfaces]

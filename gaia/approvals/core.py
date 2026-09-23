@@ -566,6 +566,88 @@ def record_presentation(
     )
 
 
+def _row_payload(row: Mapping[str, Any]) -> dict:
+    try:
+        payload = json.loads(row.get("payload_json") or "")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def question_batch(approval_ids: list[str]) -> list:
+    """Render the 1 to 4 pending requests one host question call asks, in order.
+
+    Each must be pending and presentable (:func:`check_presentable`); the
+    renderer rejects a batch whose question texts repeat.
+    """
+    from gaia.approvals import store, surface
+
+    if len(set(approval_ids)) != len(approval_ids):
+        raise SealError("a signature appears more than once in one question call")
+    requests = []
+    for approval_id in approval_ids:
+        row = store.get_by_id(approval_id)
+        if row is None or row.get("status") != "pending":
+            raise SealError(f"{approval_id} is not a pending approval")
+        payload = _row_payload(row)
+        check_presentable(payload)
+        requests.append((payload, approval_id))
+    return surface.render_batch(requests)
+
+
+def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
+    """Return the batch whose question objects are exactly ``questions``, in order.
+
+    Each position is matched against every pending request rendered for that
+    position, so only the object Gaia produced is recognised; a question no
+    pending request renders, or one two requests render alike, raises
+    :class:`SealError` naming the position.
+    """
+    from gaia.approvals import store, surface
+
+    total = len(questions)
+    if not 1 <= total <= surface.BATCH_MAX:
+        raise SealError(f"a question call presents 1 to {surface.BATCH_MAX} signatures, not {total}")
+    pending = [(row["id"], _row_payload(row)) for row in store.list_pending(all_sessions=True)]
+    approval_ids = []
+    for position, asked in enumerate(questions, start=1):
+        asked = {"multiSelect": False, **asked} if isinstance(asked, Mapping) else {}
+        matches = []
+        for approval_id, payload in pending:
+            try:
+                rendered = surface.batch_question(payload, position, total)
+            except SealError:
+                continue
+            if rendered == asked:
+                matches.append(approval_id)
+        if not matches:
+            raise SealError(f"question {position} is not the one Gaia rendered for a pending approval")
+        if len(matches) > 1:
+            raise SealError(
+                f"question {position} is rendered alike by {', '.join(matches)}; "
+                "withdraw the stale one before asking"
+            )
+        approval_ids.append(matches[0])
+    return question_batch(approval_ids)
+
+
+def presented(native_ref: str) -> list[tuple[int, str]]:
+    """The ``(position, approval_id)`` pairs recorded as shown in host question ``native_ref``."""
+    from gaia.approvals.store import _open_db
+
+    con = _open_db()
+    try:
+        rows = con.execute(
+            "SELECT json_extract(metadata_json, '$.position'), approval_id "
+            "FROM approval_events WHERE event_type = 'SHOWN' "
+            "AND json_extract(metadata_json, '$.native_ref') = ? ORDER BY id",
+            (native_ref,),
+        ).fetchall()
+    finally:
+        con.close()
+    return sorted(dict(rows).items())
+
+
 def _presented_approval(native_ref: str, position: int) -> Optional[str]:
     from gaia.approvals.store import _open_db
 

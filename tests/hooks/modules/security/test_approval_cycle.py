@@ -559,22 +559,11 @@ class TestDefaultTTL:
 
 
 class TestConditionalActivation:
-    """Test 11: Conditional activation based on answers in AskUserQuestion.
+    """Test 11: an answer with no recorded presentation activates nothing.
 
-    DB-only since the grant-lifecycle FS retirement.  Activation is
-    nonce-targeted: the orchestrator's Approve label carries a
-    ``[P-<nonce8>]`` tag (mandated by orchestrator-present-approval:
-    "Without the suffix no grant is created"), the PostToolUse handler
-    extracts it and activates the specific DB pending via
-    ``activate_db_pending_by_id``.
-
-    The legacy "no-nonce session-wide activation" path (an unlabeled
-    "Approve" activating ALL of a session's pendings) was dropped during
-    the FS retirement: it has no production caller (every real Approve
-    label is nonce-suffixed) and it violated informed consent by
-    activating grants the user never specifically saw.  These tests now
-    assert the nonce-targeted DB behavior; an approve answer WITHOUT a
-    nonce activates nothing.
+    Since plan 76 task 4 a Claude Code answer decides only a signature the
+    PreToolUse hook recorded as shown under the same tool_use_id; no label is
+    read for an approval id, with or without one.
     """
 
     @pytest.fixture(autouse=True)
@@ -663,20 +652,25 @@ class TestConditionalActivation:
         from gaia.store.writer import check_db_semantic_grant
         return check_db_semantic_grant(command, session_id=session_id) is not None
 
-    def test_approve_answer_activates_grants(self):
-        """A nonce-labeled Approve answer activates the targeted DB grant."""
+    def test_id_labeled_approve_activates_nothing(self):
+        """A label carrying the approval id is never read for it (plan 76 task 4, D12).
+
+        Activation follows only a presentation recorded under the call's
+        tool_use_id; tests/hooks/adapters/test_ask_user_question_binding.py
+        covers that path.
+        """
         session_id = "test-cycle-session"
         approval_id = self._deny_creates_db_pending("terraform apply", session_id)
-        hook_data = self._make_hook_data(
-            answers={"Proceed with terraform apply?":
-                     f"Approve -- terraform apply [{approval_id}]"},
-            session_id=session_id,
-        )
-        self.adapter._handle_ask_user_question_result(hook_data)
+        for in_tool_input in (False, True):
+            hook_data = self._make_hook_data(
+                answers={"Proceed with terraform apply?":
+                         f"Approve -- terraform apply [{approval_id}]"},
+                session_id=session_id,
+                in_tool_input=in_tool_input,
+            )
+            self.adapter._handle_ask_user_question_result(hook_data)
 
-        assert self._grant_active("terraform apply", session_id), (
-            "Grant should be active after nonce-labeled approval"
-        )
+        assert not self._grant_active("terraform apply", session_id)
 
     def test_reject_answer_does_not_activate_grants(self):
         """Answers containing 'Reject' should NOT activate pending grants."""
@@ -738,21 +732,6 @@ class TestConditionalActivation:
 
         assert not self._grant_active("terraform apply", session_id), (
             "A no-nonce approve must not activate any grant (legacy path dropped)"
-        )
-
-    def test_answers_from_tool_input_fallback(self):
-        """A nonce-labeled answer in tool_input (fallback) also activates."""
-        session_id = "test-cycle-session"
-        approval_id = self._deny_creates_db_pending("terraform apply", session_id)
-        hook_data = self._make_hook_data(
-            answers={"q1": f"Approve -- terraform apply [{approval_id}]"},
-            session_id=session_id,
-            in_tool_input=True,
-        )
-        self.adapter._handle_ask_user_question_result(hook_data)
-
-        assert self._grant_active("terraform apply", session_id), (
-            "Answers from tool_input fallback should activate the targeted grant"
         )
 
 
