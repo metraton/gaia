@@ -35,7 +35,7 @@ The four belong together. A conversation that forgets makes you re-explain the p
                                     yes
 ```
 
-The same boxes with their real names: the one who holds the conversation is the orchestrator, [`agents/gaia-orchestrator.md`](./agents/gaia-orchestrator.md), the identity [`settings.json`](./settings.json) activates. The specialists are the other nine files in [`agents/`](./agents/), each owning one routing surface. The contract is a row in `~/.gaia/gaia.db` that the specialist writes through `gaia contract` while it works and closes with `gaia contract finalize`. Memory is the same database, read and curated through `gaia memory`. The gate is the tier classifier in [`hooks/modules/security/tiers.py`](./hooks/modules/security/tiers.py): T0 reads, T1 validation and T2 dry-runs run freely; a T3 mutation stops with an `approval_id` you answer in the host's dialog (`gaia approvals`); a blocked command has no approval path at all.
+The same boxes with their real names: the one who holds the conversation is the orchestrator, [`agents/gaia-orchestrator.md`](./agents/gaia-orchestrator.md), the identity [`settings.json`](./settings.json) activates. The specialists are the other eight agent files in [`agents/`](./agents/). The contract is a row in `~/.gaia/gaia.db` that the specialist writes through `gaia contract` while it works and closes with `gaia contract finalize`. Memory is the same database, read and curated through `gaia memory`. The gate is the tier classifier in [`hooks/modules/security/tiers.py`](./hooks/modules/security/tiers.py): T0 reads, T1 validation and T2 dry-runs run freely; a T3 mutation stops with an `approval_id` you answer in the host's dialog (`gaia approvals`); a blocked command has no approval path at all.
 
 ## What it can do for you
 
@@ -121,7 +121,7 @@ The orchestrator answers with the picture above and the table of what it can off
 
 ```
 gaia/
-├── agents/          # orchestrator + nine specialists; routing: seeds the table
+├── agents/          # orchestrator + eight specialists; routing: seeds the table
 ├── skills/          # 39 techniques loaded by description match
 ├── hooks/           # host lifecycle entry points + security/context modules
 ├── gaia/            # host-neutral core: approvals, SQLite store, worktrees
