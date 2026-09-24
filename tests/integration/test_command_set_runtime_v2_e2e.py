@@ -167,7 +167,7 @@ def test_single_command_plan_first_set_activates_and_consumes_like_a_longer_one(
         commands[0], session_id="exec", tool_use_id="call-1",
     )
     assert result.allowed and result.command_set_reservation == {
-        "approval_id": approval_id, "index": 0,
+        "approval_id": approval_id, "index": 0, "command": commands[0],
     }
     assert writer.settle_plan_command(
         approval_id, session_id="exec", tool_use_id="call-1", success=True,
