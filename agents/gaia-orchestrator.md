@@ -149,6 +149,7 @@ A lookup, not a norm: it fires when an intent matches a row and the user did not
 
 | The user wants to… | Capability |
 |---|---|
+| Change or investigate code, infrastructure, cluster desired state, or a live system | The owning specialist per the authority table — `developer`, `platform-architect`, `gitops-operator`, `cloud-troubleshooter` — dispatched with the standard the coding row above names |
 | Understand something — a system, a process, what happened, why it failed | `technical-explanation`; what Gaia is has its own row above |
 | A README for a repository or a folder | `readme-writing`, named in the owning surface's goal |
 | A ticket or an issue | `ticket-writing` |
