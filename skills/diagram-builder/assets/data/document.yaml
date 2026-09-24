@@ -17,11 +17,12 @@ version: "0.2.0"   # optional — shown in the header; bump it when the deck cha
 # set it to `neutral` for the house look.
 palette: rose-pine
 
-# PAGES — one page per PRINCIPLE, then ONE page for the compositions and edge
-# cases that are not a principle. Each principle page demonstrates the principle
-# that names it, and the content of every box explains the tool that box is
-# demonstrating, so the deck documents itself and the guardrail keeps it honest.
-# The last page is the deck's edge-case fixture rather than a lesson.
+# PAGES — one page per PRINCIPLE, then ONE page for the flow form whose phases
+# are sections, then ONE page for the compositions and edge cases that are not
+# a principle. Each principle page demonstrates the principle that names it, and
+# the content of every box explains the tool that box is demonstrating, so the
+# deck documents itself and the guardrail keeps it honest. The flow page is a
+# FORM demo, not a lesson; the last page is the deck's edge-case fixture.
 # The scaffold copies all of them; the first step of the guide is to DELETE the
 # pages the new deck does not need.
 pages:
@@ -73,12 +74,20 @@ pages:
     order: 9
     visible: true
     file: pages/p9-the-hole.yaml
+  # ── A FORM, not a principle. The flow whose phases are sections: the shape
+  # the semantic doctrine's "when the idea MOVES, the layout is the path" names,
+  # and the seed side of the "flow — phases as sections" skeleton in reference.md.
+  - id: p10-flow-phases
+    name: "Flow · phases as sections"
+    order: 10
+    visible: true
+    file: pages/p10-flow-phases.yaml
   # ── LAST · not a principle. The compositions and edge cases the nine pages
   # above do not need but the engine must keep supporting — three of them are
   # the only live subjects invariants G and X have. It sits at the END because a
   # reader should meet the principles before the borderline cases they permit.
   - id: overview
     name: "Compositions & edge cases"
-    order: 10
+    order: 11
     visible: true
     file: pages/overview.yaml

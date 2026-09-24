@@ -349,6 +349,39 @@ sections:
       - { id: c, title: "C", order: 3, filters: [path] }
 ```
 
+**flow — phases as sections** — the shape an explanation with phases lowers
+into (`SKILL.md`, "When the idea MOVES, the layout is the path"): phases are
+sibling sections in `order`, steps are ordered components inside their phase,
+the path is ONE chip declared by a step in every phase, and the kicker carries
+`STEP n OF m` as a convention the engine neither validates nor renders. The root
+holds only sections, so it is a compound row of equal-weight zones that stacks
+in the same `order` below the 1440px breakpoint. Seed:
+`data/pages/p10-flow-phases.yaml`.
+
+```yaml
+form: flow
+columns: 3
+filters:
+  - { key: path, label: "The path", steps: ["Phase 1 → Phase 2 → Phase 3, one chip across every phase-section"] }
+sections:
+  - id: phase-1
+    title: "Phase 1"
+    order: 1
+    span: 1
+    columns: 1
+    children:
+      - { id: s1, kicker: "STEP 1 OF 4", title: "…", order: 1, filters: [path] }
+      - { id: s2, kicker: "STEP 2 OF 4", title: "…", order: 2, filters: [path] }
+  - id: phase-2
+    title: "Phase 2"
+    order: 2
+    span: 1
+    columns: 1
+    children:
+      - { id: s3, kicker: "STEP 3 OF 4", title: "…", order: 1, filters: [path] }
+      - { id: s4, kicker: "STEP 4 OF 4", title: "…", order: 2, filters: [path] }
+```
+
 **comparison** — two inline sections side by side (span 1 each).
 
 ```yaml
