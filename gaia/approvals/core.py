@@ -618,21 +618,34 @@ def _row_payload(row: Mapping[str, Any]) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def question_batch(approval_ids: list[str]) -> list:
+def question_batch(approval_ids: list[str], *, one_per_session: bool = False) -> list:
     """Render the pending requests one host question call asks, in order: at most 4 questions in all.
 
     Each must be pending and presentable (:func:`check_presentable`); the
-    renderer rejects a batch whose question texts repeat.
+    renderer rejects a batch whose question texts repeat. ``one_per_session``
+    refuses two signatures requested by the same session, the refusal the
+    OpenCode plugin applies in ``presentForOrchestrator``: there a session
+    holds one bound retry at a time, so the second approval would not activate.
     """
     from gaia.approvals import store, surface
 
     if len(set(approval_ids)) != len(approval_ids):
         raise SealError("a signature appears more than once in one question call")
     requests = []
+    requester_of: dict[str, str] = {}
     for approval_id in approval_ids:
         row = store.get_by_id(approval_id)
         if row is None or row.get("status") != "pending":
             raise SealError(f"{approval_id} is not a pending approval")
+        session_id = row.get("session_id") or ""
+        if one_per_session and session_id and session_id in requester_of:
+            raise SealError(
+                f"{requester_of[session_id]} and {approval_id} were requested by the same "
+                f"specialist session {session_id}, which holds one approved retry at a time: "
+                f"ask them in separate calls, {approval_id} after that session has run "
+                f"{requester_of[session_id]}"
+            )
+        requester_of[session_id] = approval_id
         payload = _row_payload(row)
         check_presentable(payload)
         requests.append((payload, approval_id))

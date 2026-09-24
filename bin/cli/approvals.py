@@ -1421,7 +1421,8 @@ def cmd_question(args) -> int:
     In an OpenCode shell, marked by ``GAIA_HOST_SESSION_ID``, the same batch
     is checked but each signature is carried only by its id, one placeholder
     per signature, because there the plugin writes every signature's
-    questions into the call itself (D39).
+    questions into the call itself (D39); like the plugin, it refuses two
+    signatures requested by the same specialist session in one call.
     """
     from gaia.approvals import core
 
@@ -1434,7 +1435,7 @@ def cmd_question(args) -> int:
         approval_ids.append(approval_id)
     try:
         if opencode:
-            surfaces = core.question_batch(approval_ids)
+            surfaces = core.question_batch(approval_ids, one_per_session=True)
         else:
             surfaces = core.hand_out_question(approval_ids, session_id="", agent_id="")
     except core.SealError as exc:

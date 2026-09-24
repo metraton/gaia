@@ -130,7 +130,7 @@ def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
     return env, db_path
 
 
-def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND)):
+def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND), session_id=SESSION_ID):
     """Seal the set with the real plan-first producer, never by hand."""
     argv = [sys.executable, str(GAIA_CLI), "approvals", "request-set"]
     for command in commands:
@@ -142,7 +142,7 @@ def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND)):
         "--verification", "git -C . log --oneline -1",
         "--rollback", "revert the published revision",
         "--agent-id", AGENT_ID,
-        "--session-id", SESSION_ID,
+        "--session-id", session_id,
         "--json",
     ]
     result = subprocess.run(argv, cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=180)

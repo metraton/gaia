@@ -181,9 +181,35 @@ def test_approval_live_fixes_question_cli_in_opencode_prints_one_id_placeholder(
     assert printed == {False: approval_id, True: f"{approval_id} details"}
 
     # D39: one call asks several signatures, one placeholder each, in order.
-    other_id = _request_set(env, commands=("docker push registry/app:2",))
+    other_id = _request_set(env, commands=("docker push registry/app:2",), session_id="ses-other-specialist")
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
         code = cmd_question(argparse.Namespace(approval_ids=[approval_id, other_id], details=False, json=True))
     assert code == 0, out.getvalue() + err.getvalue()
     assert [q["question"] for q in json.loads(out.getvalue())["questions"]] == [approval_id, other_id]
+
+
+def test_approval_live_fixes_question_cli_in_opencode_refuses_two_signatures_of_one_session(
+    db_env, monkeypatch,
+):
+    """The CLI refuses what the plugin's presentForOrchestrator refuses, before the question opens."""
+    env, _ = db_env
+    first = _request_set(env)
+    second = _request_set(env, commands=("docker push registry/app:2",))
+    from bin.cli.approvals import cmd_question
+
+    monkeypatch.setenv("GAIA_HOST_SESSION_ID", ROOT_SESSION_ID)
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        code = cmd_question(argparse.Namespace(approval_ids=[first, second], details=False, json=True))
+
+    assert code == 1
+    refusal = out.getvalue() + err.getvalue()
+    assert "separate calls" in refusal and SESSION_ID in refusal, refusal
+    assert '"questions"' not in refusal, "a refused batch must print no question input"
+
+    # Claude Code keeps asking them together: there each approval activates on its own answer.
+    monkeypatch.delenv("GAIA_HOST_SESSION_ID")
+    with redirect_stdout(io.StringIO()) as claude_out:
+        assert cmd_question(argparse.Namespace(approval_ids=[first, second], details=False, json=True)) == 0
+    assert json.loads(claude_out.getvalue())["questions"]
