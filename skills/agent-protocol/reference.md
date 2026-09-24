@@ -57,7 +57,7 @@ finished contract, so its shape is already guaranteed by something other than
 you. What no check can see is how the turn ran: a turn that wrote nothing until
 its last second and then closed perfectly passes every validation. That is what
 the skill owns. "The gate at the wall" below sets out the three cases the stop
-gate decides between, and why the fenced block is still required output.
+gate decides between, and why the final message is not an input to it.
 
 ### 2. Adopt the contract you were born with
 
@@ -267,7 +267,7 @@ one moment, because the work does.
 | `framing` | No section of its own. Its output is one `evidence_report.key_outputs` note: the goal restated, and what the available context lets you do about it. |
 | `investigating` | `evidence_report` -- `patterns_checked`, `files_checked`, `commands_run`, `key_outputs`, `verbatim_outputs`, `open_gaps`. Keeps accumulating once execution starts. |
 | `planning` | `agent_status.pending_steps` (the ordered list of remaining pieces); `approval_request` when a COMMAND_SET is required -- opened here, plan-first. |
-| `executing` | `evidence_report` continued; the runtime's typed COMMAND_SET progress fields; `failure_report` when something breaks. |
+| `executing` | `evidence_report` continued, including `cross_layer_impacts` for what the change reaches outside the file it was sent to; the runtime's typed COMMAND_SET progress fields; `failure_report` when something breaks. |
 | `verifying` | `evidence_report.verification`; `consolidation_report` for multi-surface work; the closing `agent_state`. |
 
 `pending_steps` doubles as the progress meter. Retire an entry as its piece
@@ -359,9 +359,10 @@ final-message text is read:
 
 No fenced block is required in the final message: the fence was retired as an
 input to the close, and the row is the only source the gate reads. The fence
-survives solely as one of four identity lanes in `resolve_minted_agent_id` -- a
-hint about WHICH row is this turn's own, which can never make an unclosed row
-read as closed.
+survives solely as one of four identity lanes in
+`hooks/modules/agents/handoff_persister.py::resolve_minted_agent_id` -- a hint
+about WHICH row is this turn's own, which can never make an unclosed row read
+as closed.
 
 **The reaper is not a second way to close.** A turn that stops after its last
 `fill` leaves the row where the draft left it: open. The SubagentStop persister
