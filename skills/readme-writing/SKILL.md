@@ -35,7 +35,7 @@ A repo root and one of its folders are two separate passes, each through its own
 ### Repository root -- seven sections
 
 1. **Title and one line** -- what this is, under 120 characters.
-2. **What it is and why it exists** -- the problem it solves, who uses it, what it produces.
+2. **What it is and why it exists** -- the problem it solves, who uses it, what it produces. This section explains, so `technical-explanation` governs it: the fixed order (what exists, how it connects, what happens, why) and the plain register are that skill's, not restated here.
 3. **Flow** -- one plain-text flow, and what it interacts with. One, not several.
 4. **Requirements** -- tools with their versions, permissions, credentials.
 5. **How it is used** -- the real invocation, with the output it is expected to produce.

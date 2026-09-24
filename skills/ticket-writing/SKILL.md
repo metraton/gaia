@@ -24,7 +24,7 @@ never in the description -- so the description reads clean.
 
 | Field | Content |
 |-------|---------|
-| *Objective* | 1-2 sentences: what it achieves and why (high level). |
+| *Objective* | 1-2 sentences: what it achieves and why (high level) -- the plain register of `technical-explanation`: consequence over artifact, common nouns, no identifiers. |
 | *What it covers* | 3-5 bullets of scope -- what, not how. |
 | *Acceptance criteria* | Checklist "Done when..." -- verifiable, not vague. |
 | *Links* | Brief slug / repo if applicable. |
