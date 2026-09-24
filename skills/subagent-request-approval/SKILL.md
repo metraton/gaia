@@ -6,10 +6,9 @@ description: Use when a T3 command was blocked or a predictable ordered T3 set m
 # Request Approval — Producer Branch
 
 You ask for a signature by writing a few short phrases. Gaia builds everything
-else the user sees -- the block with the header and the exact numbered
-commands, the short question with Approve / Reject / Details, the Details
-block with the 30-minute validity, the ID and the fingerprints -- and shows the
-same thing on every host. No model writes or copies any of it.
+the user sees -- one question per command with Approve / Reject / Details, and
+behind Details a second question that explains that command -- and shows the
+same thing in Claude Code and in OpenCode. No model writes or copies any of it.
 
 ## What you write
 
@@ -24,13 +23,22 @@ full spelling (accents included), for someone who does not read commands.
 | `--does` | Once per `--command`, in order: what that command does. | 100 characters |
 | `--impact` | Once per `--command`, in order: what changes for the user, and whether it can be undone. | 100 characters |
 
-Optional, per request: `--rollback` (how to undo it, shown in Details),
+`--does` and `--impact` are what the user reads when they press Details;
+`--what` and `--question` stay with the signature for whoever reviews it later,
+but the question itself shows only you and the command.
+
+Optional, per request: `--rollback` -- how to undo it, written as a sentence in
+the user's language, not as a command; the user reads it in Details -- and
 `--verification` (how you will confirm the result). Optional, per command:
 `--cwd` (the existing directory it must run in, once for all or once per
 command; the default is where you run the request) and
 `--expect-exit POSITION=CODES` (non-zero exits that still let the set go on,
-e.g. `2=1`). The signature names a command's directory only when it is not
-the one you run the request from.
+e.g. `2=1`). Details names a command's folder when it runs somewhere other
+than where you asked from, or when the command uses relative paths.
+
+One request holds at most 4 commands, because the host shows at most 4
+questions at a time and each command is its own question. More than that goes
+in another request.
 
 A command sealed in another directory than the one your Bash runs in is run
 as exactly `cd <sealed directory> && <sealed command>`, with the directory and
@@ -46,31 +54,29 @@ gaia approvals request-set \
   --question '¿Reinstalo Gaia?' \
   --does 'gaia dev: instala en tu espacio de trabajo la versión nueva de main.' \
   --impact 'actualiza tu base de datos; ese cambio no se deshace.' \
-  --rollback 'volver al código anterior con --ref c1d8b89; la base queda actualizada.'
+  --rollback 'Reinstalar la versión anterior; la base de datos queda actualizada.'
 ```
 
--- and what the user then sees, built and shown by Gaia: the block, with every
-command exact on one line,
+-- and what the user then sees, built by Gaia, headed `Firma 1/1`:
 
 ```
-Solicitud de aprobación · gaia-system
-Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
-
-1  python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all
+[GAIA-SECURITY] [ AGENT-REQUEST ] [ gaia-system ] [ COMMAND ] [ python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all ]
 ```
 
-and below it the short question `¿Reinstalo Gaia?` with Approve / Reject /
-Details. Details shows a block of the same kind with each command's `--does`
-and `--impact`, the rollback, the 30-minute validity, the ID and the
-fingerprint, and asks again.
+with Approve / Reject / Details. Details asks again, headed `Detalle 1/1`, with
+your phrases under fixed English labels:
+
+```
+[GAIA-SECURITY] [ DETAILS ] [ gaia-system ] [ COMMAND: python3 ... --host all ] [ DOES: gaia dev: instala en tu espacio de trabajo la versión nueva de main. ] [ IMPACT: actualiza tu base de datos; ese cambio no se deshace. ] [ ROLLBACK: Reinstalar la versión anterior; la base de datos queda actualizada. ]
+```
 
 A protected-path write is requested the same way with
 `gaia approvals request-file-write --path <absolute path>` and one `--does` and
 `--impact` for the edit.
 
-Pass no `--session-id` or `--agent-id`: the request is sealed to the session and
-agent that ran it, read from the dispatch environment on both hosts, and only
-that agent in that session can use the signature.
+Pass no `--session-id` or `--agent-id`; the request refuses them. It is sealed
+to the session and agent that ran it, read from the dispatch environment on
+both hosts, and only that agent in that session can use the signature.
 
 ## When a command was blocked first
 
@@ -130,16 +136,12 @@ gaia approvals request-set \
   --impact 'Queda visible en GitHub; se puede cerrar sin fusionar.'
 ```
 
-The block names the folder only for the command that runs elsewhere:
+The user gets two questions, `Firma 1/2` and `Firma 2/2`, one per command.
+Only the push's Details names its folder, because only the push runs
+elsewhere:
 
 ```
-Solicitud de aprobación · developer
-Publicar la rama de prueba y abrir su pull request.
-
-1  en /home/jorge/ws/me/demo-repo
-   git push origin feature/demo-login
-
-2  gh pr create --repo metraton/demo --base main --head feature/demo-login --title "Login de prueba" --body-file /home/jorge/.gaia/scratch/demo-1234/pr.md
+[GAIA-SECURITY] [ DETAILS ] [ developer ] [ COMMAND: git push origin feature/demo-login ] [ DOES: Sube la rama feature/demo-login al repositorio remoto. ] [ IMPACT: Otros ven la rama; se puede borrar del remoto. ] [ ROLLBACK: no declarado; no supongas que se puede deshacer ] [ CWD: /home/jorge/ws/me/demo-repo ]
 ```
 
 ## After requesting

@@ -2513,7 +2513,10 @@ def register(subparsers) -> None:
     )
     p_request_set.add_argument(
         "--rollback",
-        help="How the set is undone; sealed and shown verbatim",
+        help=(
+            "How the set is undone, as a human sentence in the user's language, "
+            "not a command; sealed and shown verbatim under ROLLBACK in Details"
+        ),
     )
     p_request_set.add_argument("--agent-id")
     p_request_set.add_argument("--session-id")
@@ -2545,7 +2548,10 @@ def register(subparsers) -> None:
     )
     p_request_file_write.add_argument(
         "--rollback",
-        help="How the edit is undone; sealed and shown verbatim",
+        help=(
+            "How the edit is undone, as a human sentence in the user's language, "
+            "not a command; sealed and shown verbatim under ROLLBACK in Details"
+        ),
     )
     p_request_file_write.add_argument(
         "--impact",

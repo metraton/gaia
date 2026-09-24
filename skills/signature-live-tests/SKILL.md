@@ -38,21 +38,27 @@ folder: it only reclaims entries named by a closed contract id, and
    when the window closes with nothing matched (`in_flight`, then `no_result`,
    if a call matched but never closed). A test passes only when both lines and the
    files match its expected result; report which part did not.
-5. The specialist removes its own files at the end (`rm` of the exact path,
-   which inside scratch needs no signature). The folder and `otra/` stay,
-   empty of test files.
+5. Every test ends with its specialist removing its own file, whatever the
+   answer was: approved, rejected, or never decided. A specialist whose
+   signature was rejected or left pending has stopped at `APPROVAL_REQUEST`,
+   so once the result is recorded (and a still-pending signature withdrawn with
+   `gaia approvals reject <approval_id>`), resume it once more to remove
+   whichever of its files remains, original or renamed (`rm` of the exact
+   path, which inside scratch needs no signature). The folder and `otra/`
+   stay, empty of test files; check the listing before the next test.
 
 The specialist's fixed steps: `mkdir -p <folder>` (and `<folder>/otra` for
 test 5); create its file with the Write tool, which needs no signature; ask
-the signature with `gaia approvals request-set` before running anything; run
-the sealed command only after approval, byte for byte; record the folder
-listing; remove its files.
+the signature with `gaia approvals request-set` before running anything, with
+`--rollback` written as a sentence, not a command; run the sealed command only
+after approval, byte for byte; record the folder listing; remove its files,
+also when its signature was not approved.
 
 ## The catalog
 
 Each command is a `mv` of the test's own file. Unless a test says otherwise
 it is sealed with `--cwd` set to the specialist's own directory and absolute
-paths, so the block shows no folder line.
+paths, so Details shows no `CWD` field.
 
 **Test 1 -- Approve.** File `nota-1.txt`. Asks: rename it to `nota-1-ok.txt`.
 User: Approve. Expected: State `approved`, Outcome `executed`; only
@@ -65,8 +71,8 @@ blocked again under a new id -- the rejected signature is not reusable;
 withdraw that new one with `gaia approvals reject <new_id>`.
 
 **Test 3 -- Details, then Approve.** File `nota-3.txt`. Asks: rename it to
-`nota-3-ok.txt`. User: Details first. Expected: the Details block shows what
-the command does, its impact, rollback, 30 min, ID and fingerprint; State is
+`nota-3-ok.txt`. User: Details first. Expected: the Details question shows
+the command, what it does, its impact and the rollback; State is
 still `pending`, no Outcome line, and `nota-3.txt` is unchanged. Ask again
 with `gaia approvals question <approval_id>` (Details itself is
 `gaia approvals question --details`); user: Approve. Expected: State
@@ -79,8 +85,8 @@ signature; State `approved`, Outcome `executed`; only `nota-4-b.txt` exists.
 
 **Test 5 -- Another folder.** File `otra/nota-5.txt`. Asks: rename
 `nota-5.txt` to `nota-5-ok.txt` with `--cwd <folder>/otra` and relative names.
-User: Approve. Expected: the block shows `en <folder>/otra` with the command on
-the next line; it runs as `cd <folder>/otra && <command>`; State `approved`,
+User: Details, then Approve. Expected: Details ends with
+`[ CWD: <folder>/otra ]`; it runs as `cd <folder>/otra && <command>`; State `approved`,
 Outcome `executed`; only `otra/nota-5-ok.txt` exists.
 
 **Test 6 -- Several signatures in one question.** Two specialists, files
@@ -101,12 +107,13 @@ line, file unchanged -- because only an Approve would read `approved`.
 Withdraw it with `gaia approvals reject <approval_id>`.
 
 **Test 8 -- How it looks.** File `nota-8.txt`. Asks: rename it to
-`nota-8-ok.txt`. User: confirms the block reads `Solicitud de aprobación ·
-<agent>`, a short description, a blank line, and the numbered command, exact,
-on one line, with no validity; and that the question has at most 60
-characters with Approve / Reject / Details. Then Details, and confirms that
-block keeps what it does, impact, rollback, 30 min, ID and fingerprint without
-the command. Then Reject. Expected: the user says both look right; State
+`nota-8-ok.txt`. User: confirms the question, headed `Firma 1/1`, is one line
+`[GAIA-SECURITY] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact command> ]`
+with Approve / Reject / Details. Then Details, and confirms the question,
+headed `Detalle 1/1`, is one line
+`[GAIA-SECURITY] [ DETAILS ] [ <agent> ] [ COMMAND: ... ] [ DOES: ... ] [ IMPACT: ... ] [ ROLLBACK: ... ]`,
+with the labels in English, the phrases in the user's language, the rollback
+as a sentence, and no validity or ID. Then Reject. Expected: the user says both look right; State
 `rejected`, no Outcome line; `nota-8.txt` unchanged.
 
 Running the catalog is tests 1 to 8 in order, reporting per test: the answer

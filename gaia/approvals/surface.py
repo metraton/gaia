@@ -1,24 +1,25 @@
-"""The one renderer of a signature's surface: one one-line question per command (D33).
+"""The one renderer of a signature's surface: one one-line question per command (D33, D37).
 
 Gaia composes every line a user reads; the requester only seals short phrases
-(title, question, and per item what it does and its impact) and a host only
-shows the result. Each command of a signature is its own question, on one
-line, the same text in both hosts; a Details re-ask replaces each command's
-question with its one-line Details text. Phrase limits are checked when a
-request is sealed (:func:`check_phrases`, called by ``core.seal_request``), so
-an over-long phrase is returned to its author instead of reaching a
-presentation; nothing is truncated. Fixed strings follow D12 in the user's
-language with full orthography (D17); only the option labels are English (D8,
-D11).
+(title, question, and per item what it does and its impact, plus the rollback)
+and a host only shows the result. Each command of a signature is its own
+question, on one line, the same text in both hosts, in the machine format of
+D37: bracketed fields under a ``[GAIA-SECURITY]`` prefix whose labels are fixed
+English, while the requester's phrases stay in the user's language. A Details
+re-ask replaces each command's question with its one-line Details text. Phrase
+limits are checked when a request is sealed (:func:`check_phrases`, called by
+``core.seal_request``), so an over-long phrase is returned to its author
+instead of reaching a presentation; nothing is truncated.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from gaia.approvals.core import WINDOW_MINUTES, SealError, _ensure_hooks_importable
+from gaia.approvals.core import SealError, _ensure_hooks_importable
 
 TITLE_MAX = 120
 QUESTION_MAX = 60
@@ -41,8 +42,10 @@ OPTIONS = (
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 
-_HEADING = "Solicitud de aprobación"
-_DETAILS_HEADING = "Detalle"
+#: Opens every question Gaia asks, so the user reads it as Gaia's security and not the model's (D37).
+_PREFIX = "[GAIA-SECURITY]"
+_RELATIVE_START = re.compile(r"\.{1,2}(/|$)")
+_FILE_NAME = re.compile(r"[\w-]\.[A-Za-z][A-Za-z0-9]{0,7}$")
 _NO_AGENT = "agente sin identificar"
 _NO_DOES = "(sin descripción declarada)"
 _NO_IMPACT = "no declarado"
@@ -158,28 +161,58 @@ def _folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str
     return cwd
 
 
-def _command_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's question: who asks and the exact command; its folder is shown only in Details."""
-    return f"{_HEADING} · {_agent(payload)}: {_target(item)}"
+def _uses_relative_path(command: str) -> bool:
+    """Whether an argument of ``command`` reads as a path relative to its folder.
+
+    A token counts when it starts at ``.``/``..`` or ends in a file name with a
+    letter-led extension (``nota-6.txt``, ``src/app.py``); a bare ``a/b`` does
+    not, so a branch such as ``feature/demo-login`` shows no folder.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    for position, token in enumerate(tokens):
+        value = token.split("=", 1)[1] if token.startswith("-") and "=" in token else token
+        if position == 0 and not value.startswith("."):
+            continue
+        if not value or value.startswith(("-", "/", "~", "$")) or "://" in value:
+            continue
+        if _RELATIVE_START.match(value) or _FILE_NAME.search(value):
+            return True
+    return False
 
 
-def _details_text(
-    payload: Mapping[str, Any], item: Mapping[str, Any], approval_id: str,
-    index: int, count: int,
-) -> str:
-    """One command's Details question: what it does, its folder when it runs elsewhere, impact, rollback, window and ID."""
-    heading = _DETAILS_HEADING if count == 1 else f"{_DETAILS_HEADING} {index}/{count}"
-    window = payload.get("window_minutes") or WINDOW_MINUTES
+def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str]:
+    """The sealed folder, shown when it differs from the requester's or the command reads relative paths (D37)."""
     folder = _folder(payload, item)
-    parts = [
-        f"{heading} · {_agent(payload)}: {_one_line(item.get('does') or _NO_DOES)}",
-        *([f"En {_one_line(folder)}"] if folder else []),
-        f"Impacto: {_one_line(item.get('impact') or _NO_IMPACT)}",
-        f"Rollback: {_one_line(payload.get('rollback_hint') or _NO_ROLLBACK)}",
-        f"Vale {window} min",
-        f"ID {approval_id}",
+    if folder:
+        return folder
+    command = item.get("command")
+    cwd = item.get("cwd") or payload.get("requested_from")
+    if command and cwd and _uses_relative_path(command):
+        return cwd
+    return None
+
+
+def _command_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
+    """One command's signature question: who asks and the exact command (D37)."""
+    return f"{_PREFIX} [ AGENT-REQUEST ] [ {_agent(payload)} ] [ COMMAND ] [ {_target(item)} ]"
+
+
+def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
+    """One command's Details question: the command, what it does, impact, rollback, and its folder when it matters (D37)."""
+    folder = _details_folder(payload, item)
+    fields = [
+        "[ DETAILS ]",
+        f"[ {_agent(payload)} ]",
+        f"[ COMMAND: {_target(item)} ]",
+        f"[ DOES: {_one_line(item.get('does') or _NO_DOES)} ]",
+        f"[ IMPACT: {_one_line(item.get('impact') or _NO_IMPACT)} ]",
+        f"[ ROLLBACK: {_one_line(payload.get('rollback_hint') or _NO_ROLLBACK)} ]",
+        *([f"[ CWD: {_one_line(folder)} ]"] if folder else []),
     ]
-    return " · ".join(parts)
+    return " ".join([_PREFIX, *fields])
 
 
 def _question(text: str, header: str) -> dict:
@@ -216,10 +249,7 @@ def render_at(
             f"asked with at most {BATCH_MAX}"
         )
     texts = [_command_text(payload, item) for item in items]
-    details = [
-        _details_text(payload, item, approval_id, index, len(items))
-        for index, item in enumerate(items, start=1)
-    ]
+    details = [_details_text(payload, item) for item in items]
     return Surface(
         approval_id=approval_id,
         text="\n".join(texts),
@@ -265,7 +295,7 @@ def looks_like_signature(question: Mapping[str, Any]) -> bool:
     return (
         is_signature_question(question)
         or re.match(r"(?i)(aprob|approv)", header) is not None
-        or _HEADING in str(question.get("question") or "")
+        or str(question.get("question") or "").startswith(_PREFIX)
     )
 
 
