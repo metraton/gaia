@@ -7,10 +7,9 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 
 Gaia builds every signature, and each of its commands is one question on one
 line: who asks and the exact command, written as a request for review in the
-user's language, plus the folder only when the command runs somewhere other
-than the project. Details turns each question into one line with what that
-command does, its impact, the rollback, how long the approval lasts and its
-ID. Only the Approve / Reject / Details labels stay in English. No model writes
+user's language. Details turns each question into one line with what that
+command does, the folder it runs in when that is not the project, its impact,
+the rollback, how long the approval lasts and its ID. Only the Approve / Reject / Details labels stay in English. No model writes
 any of it. You never print, copy, summarise or translate any part of it; you
 only run `gaia approvals question` and open what it gives you, unchanged. You
 can run it again at any time for the approvals still pending -- for example

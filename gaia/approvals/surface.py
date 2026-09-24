@@ -162,21 +162,21 @@ def _folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str
 
 
 def _command_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's question: who asks and the exact command, with its folder when it runs elsewhere."""
-    text = f"{_HEADING} · {_agent(payload)}: {_target(item)}"
-    folder = _folder(payload, item)
-    return f"{text} (en {_one_line(folder)})" if folder else text
+    """One command's question: who asks and the exact command; its folder is shown only in Details."""
+    return f"{_HEADING} · {_agent(payload)}: {_target(item)}"
 
 
 def _details_text(
     payload: Mapping[str, Any], item: Mapping[str, Any], approval_id: str,
     index: int, count: int,
 ) -> str:
-    """One command's Details question: what it does, its impact, the rollback, the window and the ID."""
+    """One command's Details question: what it does, its folder when it runs elsewhere, impact, rollback, window and ID."""
     heading = _DETAILS_HEADING if count == 1 else f"{_DETAILS_HEADING} {index}/{count}"
     window = payload.get("window_minutes") or WINDOW_MINUTES
+    folder = _folder(payload, item)
     parts = [
         f"{heading} · {_agent(payload)}: {_one_line(item.get('does') or _NO_DOES)}",
+        *([f"En {_one_line(folder)}"] if folder else []),
         f"Impacto: {_one_line(item.get('impact') or _NO_IMPACT)}",
         f"Rollback: {_one_line(payload.get('rollback_hint') or _NO_ROLLBACK)}",
         f"Vale {window} min",
