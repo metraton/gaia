@@ -29,14 +29,14 @@ HEADER_MAX = 12
 BATCH_MAX = 4
 OPTION_WORDS_MAX = 8
 
+#: Headers of the pre-D33 surface, still recognised on a question a model copied.
 HEADER = "Aprobación"
-#: The header of a Details re-ask of a lone question.
 DETAILS_HEADER = "Detalles"
 DEFAULT_QUESTION = "¿Apruebo esta solicitud?"
 OPTIONS = (
     ("Approve", "Autoriza exactamente este comando"),
-    ("Reject", "Rechaza toda la solicitud; no se ejecuta nada"),
-    ("Details", "Ver qué hace, su impacto y rollback"),
+    ("Reject", "Rechaza la firma; no se ejecuta nada"),
+    ("Details", "Qué hace, impacto y cómo deshacerlo"),
 )
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
@@ -198,9 +198,7 @@ def _question(text: str, header: str) -> dict:
 
 def batch_header(position: int, total: int, *, details: bool = False) -> str:
     """The header of the question, or of its Details re-ask, at 1-based ``position`` among ``total`` asked in one call."""
-    if total == 1:
-        return DETAILS_HEADER if details else HEADER
-    return f"{'Detalle' if details else 'Aprob.'} {position}/{total}"
+    return f"{'Detalle' if details else 'Firma'} {position}/{total}"
 
 
 def question_count(payload: Mapping[str, Any]) -> int:
@@ -254,7 +252,7 @@ def is_signature_question(question: Mapping[str, Any]) -> bool:
     ]
     return (
         header in (HEADER, DETAILS_HEADER)
-        or re.fullmatch(r"(Aprob\.|Detalle) \d+/\d+", header) is not None
+        or re.fullmatch(r"(Firma|Aprob\.|Detalle) \d+/\d+", header) is not None
         or labels == [label for label, _ in OPTIONS]
     )
 
@@ -279,9 +277,9 @@ def render_batch(
 ) -> list[Surface]:
     """Render the requests asked in one question call: one question per command, at most BATCH_MAX in all.
 
-    A lone question keeps the header ``Aprobación``; otherwise each header
-    names its position, ``Aprob. N/M``. Question texts must differ: the host
-    indexes each answer by its question text.
+    Each header names the question's position in the call, ``Firma N/M``.
+    Question texts must differ: the host indexes each answer by its question
+    text.
     """
     counts = [question_count(payload) for payload, _ in requests]
     total = sum(counts)
