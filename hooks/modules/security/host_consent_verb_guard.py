@@ -45,6 +45,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Tuple
 
+from .shell_substitution import _MAX_NESTING_DEPTH
+
 CONSENT_VERBS = frozenset({"opencode-present", "opencode-decide"})
 
 REJECTION_MESSAGE = (
@@ -69,7 +71,11 @@ _READERS = frozenset({
 _GIT_READ_SUBCOMMANDS = frozenset({"log", "show", "grep", "diff", "blame", "status"})
 _XARGS_VALUE_FLAGS = frozenset({"-I", "-n", "-L", "-P", "-d", "-E", "-s", "-a"})
 _MAX_SCRIPT_BYTES = 1_000_000
-_MAX_DEPTH = 8
+# The fence reads at least as deep as the validator's own substitution descent:
+# past its bound it refuses what it could not read, so a shallower bound here
+# would refuse a read the validator judges free (the matrix row
+# read-body-at-the-descent-bound).
+_MAX_DEPTH = _MAX_NESTING_DEPTH
 _PLAIN_VERB = re.compile(r"^[a-z][a-z0-9-]*$")
 
 

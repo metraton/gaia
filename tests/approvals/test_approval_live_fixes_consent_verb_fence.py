@@ -157,6 +157,26 @@ def test_approval_live_fixes_claude_code_leaves_reads_of_the_verbs_alone(db_env,
     assert verdict.allowed is True, verdict.reason
 
 
+def _nested_at_the_descent_bound(body):
+    from modules.security.shell_substitution import _MAX_NESTING_DEPTH
+
+    return "echo $(" * _MAX_NESTING_DEPTH + body + ")" * _MAX_NESTING_DEPTH
+
+
+def test_approval_live_fixes_the_fence_reads_as_deep_as_the_validator(db_env):
+    """At the validator's own descent bound the fence judges the words: a read is free, the verb is not."""
+    from modules.security.host_consent_verb_guard import REJECTION_MESSAGE
+
+    read = _claude_code_verdict(_nested_at_the_descent_bound("pwd"), CLAUDE_CODE_SUBAGENT)
+    hidden = _claude_code_verdict(
+        _nested_at_the_descent_bound(f"gaia approvals opencode-dec''ide {BINDING}"), CLAUDE_CODE_SUBAGENT,
+    )
+
+    assert read.allowed is True, read.reason
+    assert hidden.allowed is False
+    assert hidden.reason == REJECTION_MESSAGE, hidden.reason
+
+
 @pytest.mark.parametrize(
     ("session_id", "command"),
     [(ROOT_SESSION_ID, PRESENT), (ROOT_SESSION_ID, DECIDE), (SESSION_ID, PRESENT), (SESSION_ID, DECIDE)]
