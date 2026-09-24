@@ -20,12 +20,26 @@ from cli.approvals import cmd_opencode_decide, cmd_opencode_present
 # lookup; a short display label like "P-open-1" is rejected outright by the
 # CLI's _require_canonical_approval_id identity check.
 _APPROVAL_ID = "P-" + "a1c0de00" * 4
+_AGENT_ID = "agent-1"
+_PHRASED_PAYLOAD = json.dumps({
+    "operation": "PUSH command intercepted: push",
+    "exact_content": "git push origin main",
+    "scope": "SINGULAR",
+    "what": "Publicar la rama principal.",
+    "question": "¿Publico la rama?",
+    "items": [{
+        "command": "git push origin main",
+        "does": "Publica la rama principal.",
+        "impact": "El remoto avanza.",
+    }],
+})
 
 
 def _args(**overrides):
     values = {
         "approval_id": _APPROVAL_ID,
         "session_id": "ses-1",
+        "agent_id": _AGENT_ID,
         "call_id": "call-1",
         "token": "secret-token",
         "reply": "once",
@@ -35,13 +49,37 @@ def _args(**overrides):
     return argparse.Namespace(**values)
 
 
-def test_opencode_decision_requires_matching_presentation(capsys):
-    store = MagicMock()
-    store.get_by_id.return_value = {
+def _pending(session_id="ses-1"):
+    return {
         "id": _APPROVAL_ID,
         "status": "pending",
-        "session_id": "ses-1",
+        "session_id": session_id,
+        "agent_id": _AGENT_ID,
+        "payload_json": _PHRASED_PAYLOAD,
     }
+
+
+def _recording_store(approval):
+    """A store whose SHOWN events are kept, so presentation and decision see the same history."""
+    store = MagicMock()
+    events: list[dict[str, str]] = []
+    store.get_by_id.return_value = approval
+    store.get_history.side_effect = lambda _id, **_kw: events
+
+    def record_event(*_args, **kwargs):
+        events.append({
+            "event_type": "SHOWN",
+            "session_id": kwargs["session_id"],
+            "metadata_json": kwargs["metadata_json"],
+        })
+
+    store.record_event.side_effect = record_event
+    return store, events
+
+
+def test_opencode_decision_requires_matching_presentation(capsys):
+    store = MagicMock()
+    store.get_by_id.return_value = _pending()
     store.get_history.return_value = []
 
     with patch("cli.approvals._import_approval_store", return_value=store):
@@ -53,20 +91,7 @@ def test_opencode_decision_requires_matching_presentation(capsys):
 
 
 def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(capsys):
-    store = MagicMock()
-    approval = {"id": _APPROVAL_ID, "status": "pending", "session_id": "ses-1"}
-    events: list[dict[str, str]] = []
-    store.get_by_id.return_value = approval
-    store.get_history.side_effect = lambda _id: events
-
-    def record_event(*_args, **kwargs):
-        events.append({
-            "event_type": "SHOWN",
-            "session_id": kwargs["session_id"],
-            "metadata_json": kwargs["metadata_json"],
-        })
-
-    store.record_event.side_effect = record_event
+    store, _events = _recording_store(_pending())
     store.activate_approval_atomically.return_value.success = True
     store.activate_approval_atomically.return_value.retry_descriptor = {
         "version": 1,
@@ -81,9 +106,9 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
     store.activate_approval_atomically.assert_called_once_with(
         _APPROVAL_ID,
         approver_session="ses-1",
-        agent_id="opencode-plugin",
+        agent_id=_AGENT_ID,
         binding={
-            "agent_id": "opencode-plugin",
+            "agent_id": _AGENT_ID,
             "session_id": "ses-1",
             "call_id": "call-1",
         },
@@ -98,90 +123,55 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
     assert emitted["retry_descriptor"] == store.activate_approval_atomically.return_value.retry_descriptor
 
 
-def _unowned_store():
-    """A pending approval minted without --session-id, as request-set persists it."""
-    store = MagicMock()
-    approval = {"id": _APPROVAL_ID, "status": "pending", "session_id": None}
-    events: list[dict[str, str]] = []
-    store.get_by_id.return_value = approval
-    store.get_history.side_effect = lambda _id, **_kw: events
-
-    def adopt_session(_id, session_id, **_kwargs):
-        approval["session_id"] = session_id
-
-    def record_event(*_args, **kwargs):
-        events.append({
-            "event_type": "SHOWN",
-            "session_id": kwargs["session_id"],
-            "metadata_json": kwargs["metadata_json"],
-        })
-
-    store.adopt_session.side_effect = adopt_session
-    store.record_event.side_effect = record_event
-    return store, approval, events
-
-
-def test_unowned_approval_is_adopted_by_the_presenting_session(capsys):
-    store, approval, events = _unowned_store()
+def test_an_approval_with_no_requesting_session_is_never_presented_or_adopted(capsys):
+    """PD6: the requester is sealed at request time, so no presenter can claim it later."""
+    store, events = _recording_store(_pending(session_id=None))
 
     with patch("cli.approvals._import_approval_store", return_value=store):
-        assert cmd_opencode_present(_args()) == 0
-
-    store.adopt_session.assert_called_once()
-    assert store.adopt_session.call_args.args[:2] == (_APPROVAL_ID, "ses-1")
-    assert approval["session_id"] == "ses-1"
-    assert [e["event_type"] for e in events] == ["SHOWN"]
-    assert events[0]["session_id"] == "ses-1"
-    emitted = json.loads(capsys.readouterr().out.splitlines()[-1])
-    assert emitted["status"] == "presented"
-    assert emitted["approval_id"] == _APPROVAL_ID
-
-
-def test_adopted_approval_rejects_presentation_from_another_session(capsys):
-    store, _approval, events = _unowned_store()
-
-    with patch("cli.approvals._import_approval_store", return_value=store):
-        assert cmd_opencode_present(_args(session_id="ses-a", call_id="call-a")) == 0
-        rc = cmd_opencode_present(_args(session_id="ses-b", call_id="call-b"))
+        rc = cmd_opencode_present(_args())
 
     assert rc == 1
-    assert len(events) == 1
-    assert store.adopt_session.call_count == 1
-    assert "OpenCode session does not own this approval" in capsys.readouterr().out
+    assert events == []
+    store.adopt_session.assert_not_called()
+    assert "has no requesting session" in capsys.readouterr().out
 
 
-def test_owned_approval_still_rejects_a_foreign_session(capsys):
-    store = MagicMock()
-    store.get_by_id.return_value = {
-        "id": _APPROVAL_ID, "status": "pending", "session_id": "ses-owner",
-    }
-    store.get_history.return_value = []
+def test_owned_approval_rejects_a_foreign_session(capsys):
+    store, events = _recording_store(_pending(session_id="ses-owner"))
 
     with patch("cli.approvals._import_approval_store", return_value=store):
         rc = cmd_opencode_present(_args(session_id="ses-intruder"))
 
     assert rc == 1
-    store.adopt_session.assert_not_called()
-    store.record_event.assert_not_called()
-    assert "OpenCode session does not own this approval" in capsys.readouterr().out
+    assert events == []
+    assert "OpenCode presentation must come from the requesting session" in capsys.readouterr().out
 
 
-def test_reload_after_adoption_is_idempotent(capsys):
-    store, _approval, events = _unowned_store()
+def test_owned_approval_rejects_another_agent_of_the_same_session(capsys):
+    store, events = _recording_store(_pending())
+
+    with patch("cli.approvals._import_approval_store", return_value=store):
+        rc = cmd_opencode_present(_args(agent_id="agent-other"))
+
+    assert rc == 1
+    assert events == []
+    assert "OpenCode presentation must come from the requesting agent" in capsys.readouterr().out
+
+
+def test_a_repeated_presentation_of_the_same_call_is_idempotent(capsys):
+    store, events = _recording_store(_pending())
 
     with patch("cli.approvals._import_approval_store", return_value=store):
         assert cmd_opencode_present(_args()) == 0
         assert cmd_opencode_present(_args()) == 0
 
     assert len(events) == 1
-    assert store.adopt_session.call_count == 1
     lines = capsys.readouterr().out.splitlines()
     assert json.loads(lines[-1])["status"] == "presented"
 
 
 def test_opencode_presentation_token_cannot_be_reused_for_a_different_call():
     store = MagicMock()
-    approval = {"id": _APPROVAL_ID, "status": "pending", "session_id": "ses-1"}
     events = [{
         "event_type": "SHOWN",
         "metadata_json": json.dumps({
@@ -190,7 +180,7 @@ def test_opencode_presentation_token_cannot_be_reused_for_a_different_call():
             "token_sha256": "9d3b28b4f" * 7,
         }),
     }]
-    store.get_by_id.return_value = approval
+    store.get_by_id.return_value = _pending()
     store.get_history.return_value = events
 
     with patch("cli.approvals._import_approval_store", return_value=store):

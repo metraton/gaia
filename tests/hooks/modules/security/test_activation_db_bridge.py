@@ -122,7 +122,9 @@ def _make_v12_schema(con: sqlite3.Connection) -> None:
     """)
 
 
-def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
+def _sealed_payload(
+    command: str, *, agent_type: str = "test-agent", session_id: str = "test-bridge-session",
+) -> dict:
     """Seal ``command`` with the REAL producer, fed the classifier's own verdict.
 
     The verdict is asserted mutative before it is used: a payload built from a
@@ -139,11 +141,13 @@ def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
         verb=verdict.verb,
         category=verdict.category,
         agent_type=agent_type,
+        session_id=session_id,
     )
 
 
 def _sealed_command_set_payload(
-    command_set: list[dict], *, agent_type: str = "test-agent"
+    command_set: list[dict], *, agent_type: str = "test-agent",
+    session_id: str = "test-bridge-session",
 ) -> dict:
     """Seal a multi-command (COMMAND_SET) envelope with the REAL producer.
 
@@ -172,6 +176,7 @@ def _sealed_command_set_payload(
         category=sealed_under.category,
         agent_type=agent_type,
         command_set=command_set,
+        session_id=session_id,
     )
     if len(command_set) > 1:
         from gaia.approvals.command_set import request_fingerprint
@@ -497,7 +502,7 @@ class TestCheckWriteAlignment:
         from modules.tools.bash_validator import validate_bash_command
 
         result1 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, session_id=session_id, agent_type="test-agent",
         )
         assert not result1.allowed, "T3 command should be blocked"
 
@@ -528,7 +533,7 @@ class TestCheckWriteAlignment:
 
         # Step 3: Retry the command -- should pass through.
         result2 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id,
+            command, is_subagent=True, session_id=session_id, agent_type="test-agent",
         )
         assert result2.allowed, (
             f"Retry should be allowed after DB-bridge activation, got: {result2.reason}"
@@ -554,69 +559,11 @@ class TestCheckWriteAlignment:
 # ---------------------------------------------------------------------------
 
 class TestHandleAskUserQuestionDbBridge:
-    """_handle_ask_user_question_result uses DB bridge when filesystem pending is absent."""
+    """An AskUserQuestion answer with no recorded presentation leaves the pending as it was.
 
-    def test_adapter_db_bridge_on_approve(self, db_and_store):
-        """When an AskUserQuestion answer has a [P-xxx] nonce but no filesystem
-        pending exists, the adapter activates via DB bridge."""
-        db_path, assert_con, store = db_and_store
-        command = "terraform apply"
-        session_id = "test-bridge-session"
-
-        payload = _sealed_payload(command)
-        approval_id = store.insert_requested(
-            payload,
-            agent_id="test-agent",
-            session_id=session_id,
-        )
-        # No filesystem pending file is written (M2 state: DB only).
-
-        # Build an AskUserQuestion hook_data with an id-labeled approve answer.
-        # The label must carry the COMPLETE canonical id: the resolver reads
-        # `[P-<32 lowercase hex>]` and never scans for a matching prefix, so a
-        # truncated id resolves to nothing and nothing activates.
-        approve_label = f"Approve -- terraform apply [{approval_id}]"
-
-        hook_data = {
-            "hook_event_name": "PostToolUse",
-            "tool_name": "AskUserQuestion",
-            "session_id": session_id,
-            "tool_input": {},
-            "tool_response": {"answers": {"Proceed?": approve_label}},
-        }
-
-        ADAPTERS_DIR = HOOKS_DIR / "adapters"
-        sys.path.insert(0, str(ADAPTERS_DIR))
-        from adapters.claude_code import ClaudeCodeAdapter
-
-        adapter = ClaudeCodeAdapter()
-        adapter._handle_ask_user_question_result(hook_data)
-
-        # Verify the DB grant was created. The filesystem grant plane this test
-        # used to assert was retired with the DB cutover: activation inserts a
-        # SCOPE_SEMANTIC_SIGNATURE row and writes no grant file, so the row the
-        # retry's guard reads is the only grant there is to assert.
-        from gaia.store.writer import check_db_semantic_grant
-
-        grant = check_db_semantic_grant(command)
-        assert grant is not None, (
-            "DB semantic grant must exist after _handle_ask_user_question_result "
-            "activates via DB bridge"
-        )
-        assert grant["approval_id"] == approval_id
-        assert grant["status"] == "PENDING"
-
-        # Verify DB events.
-        events = store.replay_for_approval(approval_id, con=assert_con)
-        event_types = [e["event_type"] for e in events]
-        assert "SHOWN" in event_types, f"SHOWN missing: {event_types}"
-        assert "APPROVED" in event_types, f"APPROVED missing: {event_types}"
-
-        # Verify status flipped.
-        row = assert_con.execute(
-            "SELECT status FROM approvals WHERE id = ?", (approval_id,)
-        ).fetchone()
-        assert row[0] == "approved"
+    Activation from the question lane is covered by
+    tests/hooks/adapters/test_ask_user_question_binding.py (plan 76, task 4).
+    """
 
     def test_adapter_no_activation_on_reject(self, db_and_store):
         """When the user rejects, no grant is created and DB status stays pending."""
@@ -729,7 +676,7 @@ class TestActivateDbPendingCommandSet:
         from gaia.store.writer import PLAN_COMMAND_SET_TTL_MINUTES
         from datetime import datetime, timezone
 
-        assert PLAN_COMMAND_SET_TTL_MINUTES == 60
+        assert PLAN_COMMAND_SET_TTL_MINUTES == 30
 
         before = datetime.now(timezone.utc)
         result = activate_db_pending_by_id(
@@ -744,9 +691,9 @@ class TestActivateDbPendingCommandSet:
             row["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
         ).replace(tzinfo=timezone.utc)
         ttl_minutes = (expires_at - before).total_seconds() / 60
-        # Allow a small execution-time window around the canonical plan-first TTL.
-        assert 59 <= ttl_minutes <= 61, (
-            f"COMMAND_SET TTL must be ~60 min, got {ttl_minutes:.2f}"
+        # Allow a small execution-time window around the single approval window.
+        assert 29 <= ttl_minutes <= 31, (
+            f"COMMAND_SET TTL must be ~30 min, got {ttl_minutes:.2f}"
         )
 
     def test_command_set_consumable_by_bash_validator(self, db_and_store):
@@ -963,8 +910,17 @@ class TestSealedPayloadCommandSet:
             category="MUTATIVE",
             agent_type="developer",
             command_set=cset,
+            cwd="/work/repo",
+            session_id="test-bridge-session",
         )
-        assert payload["command_set"] == cset
+        assert [
+            {"command": item["command"], "rationale": item["rationale"]}
+            for item in payload["command_set"]
+        ] == cset
+        assert [(item["position"], item["cwd"]) for item in payload["command_set"]] == [
+            (0, "/work/repo"),
+            (1, "/work/repo"),
+        ]
         assert payload["commands"] == ["git add -A", "git push origin main"]
 
     def test_single_command_payload_omits_command_set_key(self):
@@ -975,6 +931,7 @@ class TestSealedPayloadCommandSet:
             verb="push",
             category="MUTATIVE",
             agent_type="developer",
+            session_id="test-bridge-session",
         )
         assert "command_set" not in payload
         assert payload["commands"] == ["git push origin main"]
@@ -987,6 +944,8 @@ class TestSealedPayloadCommandSet:
             verb="apply",
             category="MUTATIVE",
             command_set=[{"command": "terraform apply", "rationale": "one"}],
+            agent_type="developer",
+            session_id="test-bridge-session",
         )
         # A set of length 1 is not a batch -- no command_set key.
         assert "command_set" not in payload

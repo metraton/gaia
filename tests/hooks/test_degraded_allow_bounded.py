@@ -113,7 +113,7 @@ def test_degraded_allow_does_not_permit_an_already_mutating_command(
     """A push that was already classified T3 is denied, not allowed, on failure."""
     result = validate_bash_command(
         MUTATING_COMMAND,
-        is_subagent=True,
+        is_subagent=True, agent_type="gaia-system",
         session_id="degraded-allow-bounded",
     )
 
@@ -131,7 +131,7 @@ def test_degraded_allow_denial_carries_a_reason(audit_sink, persistence_failure)
     """The denial explains itself instead of failing opaquely."""
     result = validate_bash_command(
         MUTATING_COMMAND,
-        is_subagent=True,
+        is_subagent=True, agent_type="gaia-system",
         session_id="degraded-allow-bounded",
     )
     assert _decision(result) == "deny"
@@ -148,7 +148,7 @@ def test_degraded_allow_records_the_event(audit_sink, persistence_failure):
     """The degradation is recorded whichever way it resolves."""
     validate_bash_command(
         MUTATING_COMMAND,
-        is_subagent=True,
+        is_subagent=True, agent_type="gaia-system",
         session_id="degraded-allow-bounded",
     )
     records = _audit_records(audit_sink)
@@ -187,7 +187,7 @@ def test_degraded_allow_leaves_the_deny_list_permanent(audit_sink, persistence_f
     """A deny-listed command is stopped before the degraded path, as before."""
     result = validate_bash_command(
         DENY_LISTED_COMMAND,
-        is_subagent=True,
+        is_subagent=True, agent_type="gaia-system",
         session_id="degraded-allow-bounded",
     )
     assert result.allowed is False

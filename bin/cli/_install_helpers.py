@@ -337,15 +337,13 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
             agent["model"] = model
         permission = _opencode_frontmatter_permissions(frontmatter)
         if host_policy["mode"] == "subagent":
-            # "ask", never "deny": OpenCode evaluates a deny before any plugin
-            # hook runs, so a command Gaia already consented to died at the
-            # host gate with no trace (measured 2026-09-17, cp /dev/null).
-            # "ask" reaches the plugin's permission.ask, which carries Gaia's
-            # verdict through and denies uncorrelated requests with a trace.
-            permission["external_directory"] = {
-                "*": "ask",
-                "~/.gaia/scratch/**": "allow",
-            }
+            # OpenCode 1.18.32's external-directory prompt is its own: the
+            # host waits on the user's reply and the prompt never reaches the
+            # plugin, so Gaia could neither answer nor trace it. Subagents go
+            # outside the project unprompted, as in Claude Code; the permission
+            # does not split reading from writing, so secrets and account paths
+            # are held by hooks/modules/security/sensitive_paths.py instead.
+            permission["external_directory"] = _opencode_subagent_external_directory()
         permission.update(host_policy.get("permission", {}))
         if name == "gaia-orchestrator":
             # The shipped manifest owns dispatch inventory.  Keeping specialist
@@ -421,6 +419,31 @@ def _opencode_orchestrator_paths(package_root: Path) -> dict[str, Any]:
         "glob": "deny",
         "grep": "deny",
     }
+
+
+def _opencode_subagent_external_directory() -> dict[str, str]:
+    """Allow every directory; Gaia's and OpenCode's own roots are named too, so they stay open if the wildcard narrows."""
+    from gaia.paths import evidence_dir, scratch_dir, tmp_dir, worktrees_dir
+
+    roots = [
+        *(path.resolve().as_posix() for path in (scratch_dir(), evidence_dir(), tmp_dir(), worktrees_dir())),
+        _opencode_tmp_root(),
+    ]
+    if any(char in root for root in roots for char in "*?"):
+        raise ValueError("OpenCode permission paths cannot contain wildcard characters (* or ?)")
+    return {"*": "allow", **{f"{root}/**": "allow" for root in roots}}
+
+
+def _opencode_tmp_root() -> str:
+    """Return OpenCode's Global.Path.tmp, which it computes as os.tmpdir() joined with "opencode"."""
+    from gaia.paths import tmp_dir
+
+    base = next((os.environ[name] for name in ("TMPDIR", "TMP", "TEMP") if os.environ.get(name)), "/tmp")
+    # A TMPDIR under Gaia's tmp root is the per-dispatch one Gaia gives agent
+    # shells, present when an agent runs the install; OpenCode never has it.
+    if Path(base).resolve().is_relative_to(tmp_dir().resolve()):
+        base = "/tmp"
+    return (Path(base) / "opencode").as_posix()
 
 
 def _opencode_frontmatter_permissions(frontmatter: dict[str, Any]) -> dict[str, Any]:

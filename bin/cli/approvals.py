@@ -4,8 +4,8 @@ gaia approvals -- Approval System v2 Track 1 CLI subcommand.
 Subcommands:
   list [--json] [--session SESSION_ID] [--orphans-only]
                                          -- list pending approvals
-                                            (--orphans-only filters to
-                                             pendings from dead sessions)
+                                            (--orphans-only keeps the
+                                             pendings read as orphaned)
   show APPROVAL_ID [--json|--consent-surface]
                                          -- show detail or trusted consent data
   revoke APPROVAL_ID                     -- revoke an active command_set grant by approval_id
@@ -126,6 +126,7 @@ def _pending_to_display(p: dict) -> dict:
     return {
         "approval_id": _approval_id_label(nonce),
         "nonce_prefix": _nonce_short(nonce),
+        "state": p.get("state"),
         "command": p.get("command", ""),
         "verb": p.get("danger_verb", ""),
         "category": p.get("danger_category", ""),
@@ -174,6 +175,7 @@ def _pending_to_machine(p: dict) -> dict:
             approval_id[2:] if approval_id.startswith("P-") else approval_id
         ),
         "status": p.get("status"),
+        "state": p.get("state"),
         "operation": payload.get("operation"),
         "exact_content": payload.get("exact_content"),
         "commands": list(payload_commands(payload)),
@@ -210,9 +212,10 @@ def _scan_pending_shared(exclude_live_sessions: bool = False) -> list:
     file-write blocks) are now written exclusively to the DB.
 
     When ``exclude_live_sessions=True``, only pendings whose owning session
-    is NOT currently alive (orphans) are returned -- this backs the
-    ``--orphans-only`` flag.  Session liveness is checked via
-    session_registry.get_live_sessions() when available.
+    the registry does not hold live are returned (session_registry.
+    get_live_sessions(), when available). ``--orphans-only`` does not use it:
+    it filters on the reading's ``orphaned`` state, which also weighs recent
+    activity and the pending TTL.
 
     Returns a list of dicts in the shape _pending_to_display() expects.
 
@@ -420,8 +423,9 @@ def cmd_list(args) -> int:
     Without ``--session``, all grants are shown.  With ``--session SESSION_ID``,
     only that session's grants are shown.
 
-    ``--orphans-only`` filters pending approvals to rows whose owning session
-    is no longer alive (orphaned pendings from dead sessions).
+    ``--orphans-only`` keeps the pending approvals whose reading is
+    ``orphaned`` -- the one rule every reader applies -- so a request past its
+    TTL reads expired here too, never orphaned.
 
     Each DB-grants row carries two independent statuses -- ``status``, the
     consent decision resolved from the approvals table (batched below via
@@ -450,7 +454,7 @@ def cmd_list(args) -> int:
     # implementation name as the primary API vocabulary.
     pending_rows = []
     try:
-        pending_rows = _scan_pending_shared(exclude_live_sessions=orphans_only)
+        pending_rows = _scan_pending_shared()
     except Exception:
         pass
 
@@ -468,12 +472,22 @@ def cmd_list(args) -> int:
         except Exception:
             decision_statuses = {}
 
-    db_items = [
-        _grant_to_display(
+    readings = _read(
+        [p.get("approval_id") for p in pending_rows] + [g.get("approval_id") for g in db_grants]
+    )
+    db_items = []
+    for g in db_grants:
+        item = _grant_to_display(
             g, decision_statuses.get(g.get("approval_id", ""), _GRANT_DECISION_FALLBACK)
         )
-        for g in db_grants
-    ]
+        item["outcome"] = readings.get(item["approval_id"], {}).get("outcome")
+        db_items.append(item)
+    for p in pending_rows:
+        p["state"] = readings.get(p.get("approval_id"), {}).get("state")
+    if orphans_only:
+        from gaia.approvals.reading import ORPHANED
+
+        pending_rows = [p for p in pending_rows if p["state"] == ORPHANED]
     pending_display_items = [_pending_to_display(p) for p in pending_rows]
 
     if getattr(args, "json", False):
@@ -500,16 +514,17 @@ def cmd_list(args) -> int:
         # an approved grant with unconsumed commands must never print
         # "PENDING" as if it were still awaiting a decision.
         print(
-            f"\n{'APPROVAL_ID':<34}  {'STATUS':<10}  {'GRANT_STATE':<12}  "
+            f"\n{'APPROVAL_ID':<34}  {'STATUS':<10}  {'GRANT_STATE':<12}  {'OUTCOME':<15}  "
             f"{'AGE':<6}  {'CMD_COUNT':<10}  FIRST_COMMAND"
         )
-        print("-" * 92)
+        print("-" * 109)
         for item in db_items:
             cmd_preview = item["first_command"][:30]
             print(
                 f"{item['approval_id']:<34}  "
                 f"{item['status'].upper():<10}  "
                 f"{item['grant_state']:<12}  "
+                f"{item['outcome'] or '-':<15}  "
                 f"{item['age']:<6}  "
                 f"{str(item['command_count']):<10}  "
                 f"{cmd_preview}"
@@ -517,13 +532,14 @@ def cmd_list(args) -> int:
         print(f"\n{len(db_items)} DB grant(s).")
 
     if pending_display_items:
-        print(f"\n{'ID':<12}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
-        print("-" * 70)
+        print(f"\n{'ID':<12}  {'STATE':<9}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
+        print("-" * 81)
         for item in pending_display_items:
             cmd_preview = item["command"][:40]
             source = item["source"][:14] if item["source"] else "-"
             print(
                 f"{item['approval_id']:<12}  "
+                f"{item['state'] or '-':<9}  "
                 f"{item['age']:<6}  "
                 f"{item['verb']:<10}  "
                 f"{source:<16}  "
@@ -622,19 +638,37 @@ def cmd_show(args) -> int:
 # Subcommand: revoke
 # ---------------------------------------------------------------------------
 
-def _revoke_grant(args, approval_id: str | None = None) -> int:
+def _record_grant_revoked(args, approval_id: str, verb: str) -> None:
+    """Append REVOKED to the approval's chain under the resolved identity; the decision row stays as signed.
+
+    A grant older than the ``approvals`` table has no chain to append to.
+    """
+    store = _import_approval_store()
+    if store.get_by_id(approval_id) is None:
+        return
+    session_id, agent_id = _withdrawer(args)
+    store.record_event(
+        approval_id, "REVOKED", agent_id=agent_id, session_id=session_id,
+        metadata_json=json.dumps(
+            {"reason": "grant revoked", "source": f"gaia approvals {verb}"}, sort_keys=True,
+        ),
+    )
+
+
+def _revoke_grant(args, approval_id: str | None = None, *, verb: str = "revoke") -> int:
     """Revoke an active command_set grant by its approval_id (legacy path).
 
     Calls ``writer.revoke_approval_grant(approval_id)`` to mark the grant
-    REVOKED in the DB.  After revocation, any unconsumed commands in the
-    command_set will require fresh approval.
+    REVOKED in the DB, then records who revoked it in the approval's event
+    chain.  After revocation, any unconsumed commands in the command_set will
+    require fresh approval.
 
     This is the legacy ``approval_grants``-table path. It is invoked as the
     fallback by the unified :func:`cmd_revoke` when an id is not found in the
     new ``approvals`` table.
 
     ``approval_id`` overrides the one carried by ``args`` for callers that
-    already hold the exact stored id.
+    already hold the exact stored id; ``verb`` names the command in the event.
 
     Exits 0 on success, 1 if the grant is not found or already in a terminal
     state.
@@ -650,6 +684,11 @@ def _revoke_grant(args, approval_id: str | None = None) -> int:
 
     status = result.get("status")
     if status == "applied":
+        try:
+            _record_grant_revoked(args, approval_id, verb)
+        except Exception as exc:
+            _print_error(f"Grant {approval_id} revoked, but its audit event was not written: {exc}", args)
+            return 1
         print(f"Revoked approval_id={approval_id}")
         return 0
     elif status == "not_found":
@@ -698,7 +737,7 @@ def _reject_live_grant(args, approval_id: str) -> int:
         _print_error(f"Cannot reject {approval_id}: no exact live grant exists", args)
         return 1
 
-    return _revoke_grant(args, live[0]["approval_id"])
+    return _revoke_grant(args, live[0]["approval_id"], verb="reject")
 
 
 def cmd_reject(args) -> int:
@@ -727,13 +766,12 @@ def cmd_reject(args) -> int:
         return 1
 
     # DB-primary since Task E: exact identity only, never enumeration/first-match.
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject"
     try:
         store = _import_approval_store()
         row = store.get_by_id(approval_id)
         if row is None or row.get("status") != "pending":
             return _reject_live_grant(args, approval_id)
-        store.revoke(approval_id, session_id)
+        _withdraw(args, approval_id, "reject", verb="reject", reason=reason)
     except Exception as exc:
         _print_error(f"Failed to reject approval: {exc}", args)
         return 1
@@ -748,12 +786,28 @@ def cmd_reject(args) -> int:
     return 0
 
 
+def _withdrawer(args) -> tuple[str | None, str | None]:
+    """The session and agent a withdrawal event names: the requester resolver's, never a made-up label."""
+    session_id, agent_id = _requester_identity(args)
+    return session_id or None, agent_id or None
+
+
+def _withdraw(args, approval_id: str, action: str, *, verb: str, reason: str | None = None) -> str:
+    """Withdraw one pending through the core under the resolved identity; return its new state."""
+    from gaia.approvals import core
+
+    session_id, agent_id = _withdrawer(args)
+    return core.withdraw(
+        approval_id, action=action, session_id=session_id, agent_id=agent_id,
+        reason=reason, source=f"gaia approvals {verb}",
+    )
+
+
 def _cmd_reject_all(args, reason: str | None) -> int:
     """Reject all pending approvals across all sessions.
 
-    DB-primary since Task E: queries gaia.approvals.store for all pending
-    rows and revokes each via store.revoke(). Exits 0 always -- an empty
-    queue is not an error.
+    Each pending is rejected through the core's withdrawal. Exits 0 when the
+    queue is empty.
     """
     try:
         # Bulk reject operates on the full queue regardless of liveness.
@@ -769,19 +823,12 @@ def _cmd_reject_all(args, reason: str | None) -> int:
             print("No pending approvals to reject.")
         return 0
 
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject-all"
-    try:
-        store = _import_approval_store()
-    except Exception as exc:
-        _print_error(f"Failed to load approval store: {exc}", args)
-        return 1
-
     rejected_ids = []
     failed_ids = []
     for pending in raw:
         approval_id = pending.get("approval_id") or f"P-{pending.get('nonce', '')}"
         try:
-            store.revoke(approval_id, session_id)
+            _withdraw(args, approval_id, "reject", verb="reject --all", reason=reason)
             rejected_ids.append(approval_id)
         except Exception:
             failed_ids.append(approval_id)
@@ -830,7 +877,7 @@ def cmd_reject_all(args) -> int:
     """Reject all active pending approvals in one pass.
 
     Scans the DB for every non-expired, non-rejected pending approval and
-    calls ``store.revoke()`` on each approval_id.  This is the canonical
+    rejects each through the core's withdrawal.  This is the canonical
     subcommand surface documented in the pending-approvals skill.
 
     Flags:
@@ -877,20 +924,12 @@ def cmd_reject_all(args) -> int:
         print(f"\n{len(raw)} pending(s) would be rejected.")
         return 0
 
-    # Live rejection via store.revoke() (DB path -- all pendings are in DB now).
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject-all"
-    try:
-        store = _import_approval_store()
-    except Exception as exc:
-        _print_error(f"Failed to load approval store: {exc}", args)
-        return 1
-
     rejected_ids = []
     failed_ids = []
     for item in raw:
         approval_id = item["approval_id"]
         try:
-            store.revoke(approval_id, session_id)
+            _withdraw(args, approval_id, "reject", verb="reject-all")
             rejected_ids.append(approval_id)
         except Exception:
             failed_ids.append(approval_id)
@@ -913,7 +952,7 @@ def cmd_clean(args) -> int:
 
     DB-only since FS retirement: all pending approvals and grants live in
     gaia.db.  Expired DB pending rows (status='pending', older than 24h TTL)
-    are transitioned to 'revoked' so the append-only event chain is preserved.
+    are expired through the core's withdrawal, recording the expiry reason.
     Expired approval_grants rows (status='PENDING', past expires_at) are
     transitioned to 'EXPIRED'.
     """
@@ -966,7 +1005,6 @@ def cmd_clean(args) -> int:
         rows = store.list_pending(all_sessions=True)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
-        session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-cleanup"
         for row in rows:
             created_at_str = row.get("created_at", "")
             if not created_at_str:
@@ -978,7 +1016,7 @@ def cmd_clean(args) -> int:
                 age_hours = (now - created_dt).total_seconds() / 3600
                 if age_hours > 24:
                     try:
-                        store.revoke(row["id"], session_id)
+                        _withdraw(args, row["id"], "expire", verb="clean")
                         db_cleaned += 1
                     except Exception:
                         pass
@@ -1026,21 +1064,25 @@ def cmd_stats(args) -> int:
     """Show approval system statistics from the DB.
 
     DB-only since FS retirement: all pending approvals and grants live in
-    gaia.db.  Counts are derived from the approvals table (all statuses) and
-    the approval_grants table (active grants).
+    gaia.db.  ``states`` and ``outcomes`` count each approval's reading
+    (gaia.approvals.reading): a replaced or expired request is not counted
+    revoked, and a call with no result or an old Stop-sweep failure is not
+    counted failed. ``revoked`` and ``rejected`` are those derived counts;
+    ``pending_all_sessions`` and the verb breakdown still count every row
+    stored as pending.
     """
-    # DB counts.
     db_pending = 0
-    db_approved = 0
-    db_rejected = 0
-    db_revoked = 0
     verb_counts: dict = {}
+    states: dict = {}
+    outcomes: dict = {}
     try:
         store = _import_approval_store()
-        all_rows = store.list_all(limit=1000)
+        all_rows = _with_reading(store.list_all(limit=1000))
         for row in all_rows:
-            status = row.get("status", "")
-            if status == "pending":
+            states[row["state"]] = states.get(row["state"], 0) + 1
+            if row["outcome"]:
+                outcomes[row["outcome"]] = outcomes.get(row["outcome"], 0) + 1
+            if row.get("status") == "pending":
                 db_pending += 1
                 # Extract verb from payload for breakdown.
                 payload_json = row.get("payload_json") or "{}"
@@ -1053,12 +1095,6 @@ def cmd_stats(args) -> int:
                     verb_counts[verb] = verb_counts.get(verb, 0) + 1
                 except Exception:
                     pass
-            elif status == "approved":
-                db_approved += 1
-            elif status == "rejected":
-                db_rejected += 1
-            elif status == "revoked":
-                db_revoked += 1
     except Exception as exc:
         _print_error(f"Failed to query DB statistics: {exc}", args)
         return 1
@@ -1074,11 +1110,13 @@ def cmd_stats(args) -> int:
 
     stats = {
         "pending_all_sessions": db_pending,
-        "approved": db_approved,
-        "rejected": db_rejected,
-        "revoked": db_revoked,
+        "approved": states.get("approved", 0),
+        "rejected": states.get("rejected", 0),
+        "revoked": states.get("revoked", 0),
         "active_db_grants": db_active_grants,
         "verb_breakdown": verb_counts,
+        "states": dict(sorted(states.items())),
+        "outcomes": dict(sorted(outcomes.items())),
     }
 
     if getattr(args, "json", False):
@@ -1088,9 +1126,14 @@ def cmd_stats(args) -> int:
     print("Approval System Stats")
     print("---------------------")
     print(f"  Pending (all sessions) : {stats['pending_all_sessions']}")
-    print(f"  Approved               : {stats['approved']}")
-    print(f"  Rejected               : {stats['rejected']}")
-    print(f"  Revoked                : {stats['revoked']}")
+    for state in ("pending", "orphaned", "expired", "approved", "rejected", "revoked", "replaced"):
+        print(f"  {state.capitalize():<23}: {states.get(state, 0)}")
+    for outcome, title in (
+        ("executed", "Executed"), ("failed", "Failed"), ("no_result", "No result"),
+        ("in_flight", "In flight"), ("legacy_executed", "Executed (legacy)"),
+        ("legacy_failed", "Failed (legacy)"),
+    ):
+        print(f"  {title:<23}: {outcomes.get(outcome, 0)}")
     print(f"  Active DB grants       : {stats['active_db_grants']}")
     if verb_counts:
         print("  Verb breakdown (pending):")
@@ -1127,6 +1170,30 @@ def _import_approval_display():
     return display
 
 
+def _read(approval_ids) -> dict:
+    """Each approval's reading (gaia.approvals.reading), keyed by id, with the registry's live sessions."""
+    from gaia.approvals import reading
+
+    return reading.read_ids(approval_ids, live=reading.live_sessions())
+
+
+def _with_reading(rows: list) -> list:
+    """Attach each ``approvals`` row's derived ``state`` and ``outcome`` to it, in place."""
+    readings = _read(row.get("id") for row in rows)
+    for row in rows:
+        reading = readings.get(row.get("id"), {})
+        row["state"] = reading.get("state")
+        row["outcome"] = reading.get("outcome")
+    return rows
+
+
+def _not_pending(approval: dict) -> str:
+    """Why a non-pending approval cannot be presented or decided, naming its derived state."""
+    approval_id = approval.get("id", "")
+    state = _read([approval_id]).get(approval_id, {}).get("state") or approval.get("status")
+    return f"Approval {approval_id} is {state}, not pending"
+
+
 # ---------------------------------------------------------------------------
 # T3.1: gaia approvals pending -- shortcut for list --status=pending
 # ---------------------------------------------------------------------------
@@ -1161,10 +1228,10 @@ def cmd_pending(args) -> int:
 
     try:
         store = _import_approval_store()
-        rows = store.list_pending(
+        rows = _with_reading(store.list_pending(
             all_sessions=all_sessions,
             session_id=session_id,
-        )
+        ))
     except Exception as exc:
         _print_error(f"Failed to query pending approvals: {exc}", args)
         return 1
@@ -1258,43 +1325,60 @@ def cmd_show_v2(args) -> int:
             return 1
 
     grant = _grant_row_for(raw_id)
+    reading = _read([raw_id]).get(raw_id)
 
     if output_json:
         print(json.dumps(
-            {"approval": approval, "events": events, "grant": grant},
+            {"approval": approval, "events": events, "grant": grant, "reading": reading},
             indent=2,
             default=str,
         ))
         return 0
 
     display = _import_approval_display()
-    display.print_approval_detail(approval, events, grant=grant)
+    display.print_approval_detail(approval, events, grant=grant, reading=reading)
     return 0
 
 
-def _native_consent_presentation(payload: dict, approval_id: str) -> dict:
-    """Return trusted unbound surface data and its resolver-compatible label."""
-    from adapters.consent_presentation import (
-        UNBOUND_PRESENTATION,
-        envelope_from_sealed_payload,
-        native_presentation,
-    )
-    from modules.security.approval_grants import render_approve_label
+def _signature_surface(payload: dict, approval_id: str) -> dict:
+    """Return the signature a host shows: text, question, Details and OpenCode's single string."""
+    from gaia.approvals import surface
 
-    envelope = envelope_from_sealed_payload(
-        payload,
-        approval_id=approval_id,
-        binding=UNBOUND_PRESENTATION,
-    )
-    presentation = native_presentation(envelope, payload)
+    rendered = surface.render(payload, approval_id)
     return {
-        **presentation,
-        "approve_label": render_approve_label(payload, approval_id),
+        "approval_id": approval_id,
+        "text": rendered.text,
+        "question": rendered.question,
+        "details": rendered.details,
+        "opencode": rendered.opencode,
     }
 
 
+def cmd_question(args) -> int:
+    """Print the AskUserQuestion input that asks 1 to 4 pending signatures, and nothing else.
+
+    The orchestrator passes it unchanged; the PreToolUse hook recognises it and
+    shows each signature's text itself, so no model prints a signature.
+    """
+    from gaia.approvals import core
+
+    approval_ids = []
+    for raw_id in args.approval_ids:
+        approval_id = _require_canonical_approval_id(raw_id, args)
+        if approval_id is None:
+            return 1
+        approval_ids.append(approval_id)
+    try:
+        surfaces = core.question_batch(approval_ids)
+    except core.SealError as exc:
+        _print_error(str(exc), args)
+        return 1
+    print(json.dumps({"questions": [s.question for s in surfaces]}, ensure_ascii=False))
+    return 0
+
+
 def _print_consent_presentation(approval: dict, args) -> int:
-    """Print read-only native consent data for one pending approval."""
+    """Print the signature surface of one pending approval as JSON."""
     approval_id = approval.get("id", "")
     status = approval.get("status")
     if status != "pending":
@@ -1308,12 +1392,12 @@ def _print_consent_presentation(approval: dict, args) -> int:
         payload = json.loads(approval.get("payload_json") or "")
         if not isinstance(payload, dict):
             raise ValueError("sealed payload is not a JSON object")
-        presentation = _native_consent_presentation(payload, approval_id)
+        presentation = _signature_surface(payload, approval_id)
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
         _print_error(f"Cannot render consent surface for {approval_id}: {exc}", args)
         return 1
 
-    print(json.dumps(presentation, indent=2))
+    print(json.dumps(presentation, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -1413,10 +1497,8 @@ def cmd_revoke(args) -> int:
             print("Revoke cancelled.")
             return 0
 
-    session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-session"
     try:
-        store = _import_approval_store()
-        store.revoke(raw_id, session_id)
+        _withdraw(args, raw_id, "revoke", verb="revoke")
     except ValueError as exc:
         _print_error(str(exc), args)
         return 1
@@ -1513,8 +1595,74 @@ def cmd_approve(args) -> int:
     return 0
 
 
+def _requester_identity(args) -> tuple[str, str]:
+    """Resolve the requesting session and agent: explicit flags, else the dispatch env.
+
+    The OpenCode plugin exports ``GAIA_HOST_SESSION_ID`` to a dispatched
+    shell, Claude Code exports ``CLAUDE_CODE_SESSION_ID``, and both hosts
+    inject ``GAIA_DISPATCH_AGENT``; neither is guessed.
+    """
+    session_id = (
+        getattr(args, "session_id", None)
+        or os.environ.get("GAIA_HOST_SESSION_ID")
+        or os.environ.get("CLAUDE_CODE_SESSION_ID")
+        or os.environ.get("CLAUDE_SESSION_ID")
+        or ""
+    )
+    agent_id = getattr(args, "agent_id", None) or os.environ.get("GAIA_DISPATCH_AGENT") or ""
+    return session_id, agent_id
+
+
+def _per_command(args, flag: str, commands: list) -> list:
+    """Align an optional per-command flag with the commands: one value per --command."""
+    values = list(getattr(args, flag, None) or [])
+    if not values:
+        return [None] * len(commands)
+    if len(values) != len(commands):
+        raise ValueError(f"pass one --{flag} per --command, in the same order")
+    return values
+
+
+def _request_set_items(args) -> list[dict]:
+    """Pair each --command with its --cwd, --expect-exit, --does and --impact declarations.
+
+    One --cwd applies to every command; N --cwd flags align with N commands.
+    --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions.
+    --does and --impact, when given, come once per command.
+    """
+    commands = list(args.command)
+    cwds = list(getattr(args, "cwd", None) or [os.getcwd()])
+    if len(cwds) == 1:
+        cwds = cwds * len(commands)
+    if len(cwds) != len(commands):
+        raise ValueError("pass one --cwd for all commands or one per --command")
+    does = _per_command(args, "does", commands)
+    impacts = _per_command(args, "impact", commands)
+    expected: dict[int, list[int]] = {}
+    for spec in getattr(args, "expect_exit", None) or []:
+        position, _, codes = spec.partition("=")
+        if not position.isdigit() or not 1 <= int(position) <= len(commands) or not codes:
+            raise ValueError(f"--expect-exit {spec!r} must be POSITION=CODE[,CODE] for a listed command")
+        expected[int(position) - 1] = [int(code) for code in codes.split(",")]
+    return [
+        {
+            "command": command, "cwd": os.path.abspath(cwd),
+            "expect_exit": expected.get(index, []),
+            "does": does[index], "impact": impacts[index],
+        }
+        for index, (command, cwd) in enumerate(zip(commands, cwds))
+    ]
+
+
 def cmd_request_set(args) -> int:
     """Validate and persist a plan-first COMMAND_SET approval request.
+
+    Sealed by gaia.approvals.core.request_command_set, which refuses the
+    request when a phrase is missing and names it: ``--what`` (the title),
+    ``--question``, and one ``--does`` and ``--impact`` per command. Each
+    command carries its ``--cwd`` and ``--expect-exit`` declarations, and the
+    requester is the explicit ``--session-id``/``--agent-id`` or the dispatch
+    environment.
 
     ``--verification`` and ``--rollback`` are sealed into the payload rather
     than left for the consent surface to fill in: the requesting agent already
@@ -1526,31 +1674,24 @@ def cmd_request_set(args) -> int:
     declared; it never invents one.
     """
     try:
-        from gaia.approvals.command_set import request_fingerprint, validate_request_set
-        store = _import_approval_store()
-        items = validate_request_set(list(args.command))
-        fingerprint = request_fingerprint(item["command"] for item in items)
-        payload = {
-            "request_type": "COMMAND_SET",
-            "operation": "Execute an ordered T3 command set",
-            "exact_content": "\n".join(item["command"] for item in items),
-            "commands": [item["command"] for item in items],
-            "command_set": items,
-            "request_fingerprint": fingerprint,
-            "scope": "COMMAND_SET",
-            "risk_level": "high",
-            "rollback_hint": (getattr(args, "rollback", None) or "").strip() or None,
-            "verification": (getattr(args, "verification", None) or "").strip() or None,
-            "rationale": args.rationale or "Plan-first ordered execution",
-        }
-        approval_id = store.insert_requested(
-            payload,
-            agent_id=args.agent_id,
-            session_id=args.session_id,
+        from gaia.approvals import core
+        session_id, agent_id = _requester_identity(args)
+        items = _request_set_items(args)
+        approval_id = core.request_command_set(
+            items,
+            what=getattr(args, "what", None),
+            session_id=session_id,
+            agent_id=agent_id,
+            question=getattr(args, "question", None),
+            rollback=getattr(args, "rollback", None),
+            verification=getattr(args, "verification", None),
+            rationale=args.rationale,
         )
+        sealed = json.loads(_import_approval_store().get_by_id(approval_id)["payload_json"])
     except Exception as exc:
         _print_error(f"COMMAND_SET request rejected: {exc}", args)
         return 1
+    items = sealed["command_set"]
     result = {"status": "pending", "approval_id": approval_id, "command_set": items}
     if args.json:
         print(json.dumps(result))
@@ -1560,53 +1701,37 @@ def cmd_request_set(args) -> int:
 
 
 def cmd_request_file_write(args) -> int:
-    """Proactively seal rollback/verification/impact for a protected-path write.
+    """Proactively seal the phrases, rollback and verification for a protected-path write.
 
-    The reactive PreToolUse block for a protected-path Write/Edit mints a
-    SCOPE_FILE_PATH pending through write_pending_approval_for_file() with no
-    way for the requesting agent to declare rollback/verification/impact --
-    its one call site (hooks/adapters/claude_code.py) never passes a
-    ``context`` dict. This verb is the producer that DOES: it mints the SAME
-    kind of pending, through the SAME function, up front. When the write is
-    then actually attempted, the PreToolUse handler's existing pending-reuse
-    step (already there for retry dedup, matched by file-path signature
-    across all sessions via find_pending_for_file(), within
-    PENDING_REUSE_WINDOW_MINUTES) finds THIS pending and reuses its nonce --
-    surfacing the fields declared here instead of minting a fresh, field-
-    empty one. No PreToolUse code change was needed for this to work: the
-    reuse path already existed for a different reason (retry dedup) and
-    serves this one for free.
+    Mints through gaia.approvals.core.request_file_write, which refuses the
+    request when ``--what``, ``--question``, ``--does`` or ``--impact`` is
+    missing and names it. The later attempt by the same session and agent
+    reuses THIS pending, and it replaces the phraseless request a reactive
+    Write/Edit block sealed for the same path.
     """
     path = (args.path or "").strip()
     if not path or not os.path.isabs(path):
         _print_error("--path must be an absolute file path", args)
         return 1
     try:
-        from modules.security.approval_grants import (
-            generate_nonce,
-            write_pending_approval_for_file,
+        from gaia.approvals import core
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
+        from modules.security.protected_paths import resolved_write_target
+        session_id, agent_id = _requester_identity(args)
+        approval_id = core.request_file_write(
+            resolved_write_target(path),
+            session_id=session_id,
+            agent_id=agent_id,
+            what=getattr(args, "what", None),
+            question=getattr(args, "question", None),
+            does=getattr(args, "does", None),
+            impact=args.impact,
+            rollback=args.rollback,
+            verification=args.verification,
         )
-        nonce = generate_nonce()
-        context = {
-            "risk": "medium",
-            "rollback": (args.rollback or "").strip() or None,
-            "verification": (args.verification or "").strip() or None,
-            "impact": (args.impact or "").strip() or None,
-            "description": (args.rationale or "").strip() or None,
-        }
-        pending = write_pending_approval_for_file(
-            nonce=nonce,
-            file_path=path,
-            session_id=args.session_id,
-            context=context,
-        )
-        if pending is None:
-            _print_error("Failed to persist pending file-write approval", args)
-            return 1
     except Exception as exc:
         _print_error(f"File-write request rejected: {exc}", args)
         return 1
-    approval_id = f"P-{nonce}"
     result = {"status": "pending", "approval_id": approval_id, "path": path}
     if args.json:
         print(json.dumps(result))
@@ -1620,9 +1745,8 @@ def _opencode_binding(
 ) -> tuple[dict | None, str | None]:
     """Require matching presentations to agree on the approval's owning session.
 
-    An approval whose row names no session has not been presented anywhere
-    yet -- cmd_opencode_present adopts the session in the same transaction as
-    the first SHOWN -- so a NULL owner passes here to reach the "no matching
+    An approval whose row names no session was never presented (presentation
+    refuses it), so a NULL owner passes here only to reach the "no matching
     presentation" outcome instead of being refused as foreign.
     """
     approval_id = _resolve_approval_id(args.approval_id)
@@ -1647,7 +1771,7 @@ def _opencode_binding(
         return None, f"No approval found for id: {approval_id}"
     accepted_statuses = {"pending", "approved"} if allow_approved else {"pending"}
     if approval.get("status") not in accepted_statuses:
-        return None, f"Approval {approval_id} is not pending"
+        return None, _not_pending(approval)
     owner = approval.get("session_id")
     if owner is not None and owner != session_id:
         return None, "OpenCode session does not own this approval"
@@ -1679,16 +1803,18 @@ def _opencode_binding(
 
 
 def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dict:
-    """Build the native payload OpenCode presents for one pending approval.
+    """Build what OpenCode asks for one pending approval, composed by Gaia alone.
 
-    Returns the visible surface and its structured mirror, both rendered from
-    one sealed envelope so the host edge carries them and composes neither. A
-    payload that cannot be sealed completely returns ``presentation_error``
-    instead: the SHOWN record still stands, and the plugin refuses to raise a
-    permission it cannot show the user in full.
+    ``signature`` is the renderer's surface as the native question carries it:
+    the single string, the Details re-ask string, the header and the options.
+    ``metadata`` binds the retry to the sealed commands. A payload that cannot
+    be rendered returns ``presentation_error`` instead: the SHOWN record still
+    stands, and the plugin opens no question it cannot fill in full.
     """
     approval_id = approval.get("id") or ""
     try:
+        from gaia.approvals import surface
+
         presentation = _import_consent_presentation()
         consent = _import_consent_events()
         binding = consent.binding_from_mapping(
@@ -1704,21 +1830,68 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
             approval_id=approval_id,
             binding=binding,
         )
-        return presentation.native_presentation(envelope, sealed_payload)
+        rendered = surface.render(sealed_payload, approval_id)
+        return {
+            "signature": {
+                "question": rendered.opencode,
+                "details": rendered.opencode_details,
+                "header": rendered.question["header"],
+                "options": rendered.question["options"],
+            },
+            "metadata": presentation.native_metadata(envelope),
+        }
     except Exception as exc:
         return {"presentation_error": str(exc)}
+
+
+def _opencode_presentation_refusal(args) -> str | None:
+    """Why this presentation may not record SHOWN, or ``None`` when it may.
+
+    The requester is sealed when the request is made (PD6), so a question is
+    opened only by the call of that same session and agent: the plugin runs
+    this from the requester's own tool call, so the requester is live by
+    construction, and a session resumed after a host restart presents again on
+    its next attempt. A pending with no requester is never adopted -- it is
+    only shown by the readers -- and a request lacking its requester's phrases
+    is never shown at all.
+    """
+    approval_id = _resolve_approval_id(args.approval_id)
+    try:
+        approval = _import_approval_store().get_by_id(approval_id)
+    except Exception as exc:
+        return f"Failed to load approval: {exc}"
+    if approval is None:
+        return f"Approval {approval_id} is not pending"
+    if approval.get("status") != "pending":
+        return _not_pending(approval)
+    if not approval.get("session_id"):
+        return (
+            f"Approval {approval_id} has no requesting session; it is shown by "
+            "the readers and never presented"
+        )
+    if approval["session_id"] != args.session_id.strip():
+        return "OpenCode presentation must come from the requesting session"
+    if approval.get("agent_id") != args.agent_id.strip():
+        return "OpenCode presentation must come from the requesting agent"
+    try:
+        from gaia.approvals.core import SealError, check_presentable
+
+        check_presentable(json.loads(approval.get("payload_json") or "{}"))
+    except SealError as exc:
+        return str(exc)
+    return None
 
 
 def cmd_opencode_present(args) -> int:
     """Record an OpenCode-native presentation before requesting user consent.
 
-    A pending approval minted without a session (``request-set`` and
-    ``request-file-write`` persist NULL when ``--session-id`` is omitted, and a
-    dispatched OpenCode agent has no way to learn its own session id) is adopted
-    by the first session that presents it, in the same transaction as the SHOWN
-    event. From then on the ownership check applies unchanged: any other
-    session is refused.
+    Refused, with no SHOWN recorded, whenever
+    :func:`_opencode_presentation_refusal` names a reason.
     """
+    refusal = _opencode_presentation_refusal(args)
+    if refusal is not None:
+        _print_error(refusal, args)
+        return 1
     approval, error = _opencode_binding(args)
     if approval is not None:
         # A matching event already exists. Presentation is idempotent so plugin
@@ -1748,12 +1921,8 @@ def cmd_opencode_present(args) -> int:
             approval = store.get_by_id(approval_id, con=con)
             if approval is None or approval.get("status") != "pending":
                 raise ValueError(f"Approval {approval_id} is not pending")
-            owner = approval.get("session_id")
-            if owner is None:
-                store.adopt_session(approval_id, session_id, con=con)
-                approval["session_id"] = session_id
-            elif owner != session_id:
-                raise ValueError("OpenCode session does not own this approval")
+            if approval.get("session_id") != session_id:
+                raise ValueError("OpenCode presentation must come from the requesting session")
             store.record_event(
                 approval_id,
                 "SHOWN",
@@ -1937,7 +2106,7 @@ def cmd_history(args) -> int:
 
     try:
         store = _import_approval_store()
-        rows = store.list_all(status=status_filter, limit=limit)
+        rows = _with_reading(store.list_all(status=status_filter, limit=limit))
     except Exception as exc:
         _print_error(f"Failed to query history: {exc}", args)
         return 1
@@ -2081,15 +2250,20 @@ def register(subparsers) -> None:
         description=(
             "List DB-backed command_set/semantic-signature grants, then the\n"
             "genuinely undecided pending approvals below them.\n\n"
-            "The DB-grants table has two status columns, and they answer two\n"
-            "different questions:\n"
+            "The DB-grants table has three state columns, and they answer\n"
+            "three different questions:\n"
             "  STATUS       -- the consent decision (approved/rejected/revoked/\n"
             "                  expired), read from the approvals table. A row only\n"
             "                  ever appears in this table after a decision was\n"
             "                  made, so STATUS is APPROVED here in practice.\n"
             "  GRANT_STATE  -- whether this already-approved grant's commands\n"
             "                  are still usable: PENDING (unconsumed, can still\n"
-            "                  be replayed), CONSUMED, FAILED, REVOKED, EXPIRED.\n\n"
+            "                  be replayed), CONSUMED, FAILED, REVOKED, EXPIRED.\n"
+            "  OUTCOME      -- what became of the approved call: executed,\n"
+            "                  failed, no_result, in_flight, unused, or\n"
+            "                  legacy_executed/legacy_failed for old rows.\n\n"
+            "The pending section's STATE is the undecided request's reading:\n"
+            "pending, orphaned (no sign of life from its requester) or expired.\n"
             "GRANT_STATE=PENDING is never a decision awaiting your input --\n"
             "that only ever appears in the separate 'pending approval(s)'\n"
             "section beneath the DB-grants table, or via 'gaia approvals\n"
@@ -2102,7 +2276,7 @@ def register(subparsers) -> None:
         "--orphans-only",
         action="store_true",
         dest="orphans_only",
-        help="Show only pendings from sessions no longer alive (via session_registry)",
+        help="Show only the pendings whose STATE is orphaned",
     )
     p_list.set_defaults(func=cmd_list)
 
@@ -2161,11 +2335,26 @@ def register(subparsers) -> None:
         "--consent-surface",
         action="store_true",
         help=(
-            "JSON native consent data: byte-exact visible_text plus the exact "
-            "resolver-compatible approve_label"
+            "JSON signature surface: the text to print, the question to ask "
+            "(Approve / Reject / Details), its Details and OpenCode's single string"
         ),
     )
     p_show.set_defaults(func=cmd_show_v2)
+
+    p_question = sub.add_parser(
+        "question",
+        help="Print the AskUserQuestion input that asks 1 to 4 pending signatures",
+        description=(
+            "Print, as JSON, the exact AskUserQuestion input for the given pending\n"
+            "approvals, one question per signature in the order given. Pass it\n"
+            "unchanged: the hook shows each signature's text and binds each answer."
+        ),
+    )
+    p_question.add_argument(
+        "approval_ids", nargs="+", metavar="APPROVAL_ID",
+        help="Full canonical approval_id P-<32 lowercase hex>, 1 to 4",
+    )
+    p_question.set_defaults(func=cmd_question, json=True)
 
     # revoke (T3.2) -- now checks new DB first
     p_revoke = sub.add_parser(
@@ -2209,6 +2398,29 @@ def register(subparsers) -> None:
         "request-set", help="Create a governed plan-first COMMAND_SET request"
     )
     p_request_set.add_argument("--command", action="append", required=True)
+    p_request_set.add_argument(
+        "--what",
+        help="Required title: what the set does, in one human sentence (120 characters at most)",
+    )
+    p_request_set.add_argument(
+        "--question", help="Required: the short question the user answers (60 characters at most)"
+    )
+    p_request_set.add_argument(
+        "--does", action="append",
+        help="Required: what each command does, once per --command (100 characters at most)",
+    )
+    p_request_set.add_argument(
+        "--impact", action="append",
+        help="Required: the impact of each command, once per --command (100 characters at most)",
+    )
+    p_request_set.add_argument(
+        "--cwd", action="append",
+        help="Directory each command runs in: once for all, or once per --command",
+    )
+    p_request_set.add_argument(
+        "--expect-exit", action="append", dest="expect_exit", metavar="POSITION=CODES",
+        help="Non-zero exits a command may end with and still advance the set, e.g. 2=1",
+    )
     p_request_set.add_argument("--rationale")
     p_request_set.add_argument(
         "--verification",
@@ -2226,11 +2438,21 @@ def register(subparsers) -> None:
     p_request_file_write = sub.add_parser(
         "request-file-write",
         help=(
-            "Proactively seal rollback/verification/impact for an upcoming "
-            "protected-path Write/Edit"
+            "Proactively seal the phrases, rollback and verification for an "
+            "upcoming protected-path Write/Edit"
         ),
     )
     p_request_file_write.add_argument("--path", required=True)
+    p_request_file_write.add_argument(
+        "--what",
+        help="Required title: what the edit does, in one human sentence (120 characters at most)",
+    )
+    p_request_file_write.add_argument(
+        "--question", help="Required: the short question the user answers (60 characters at most)"
+    )
+    p_request_file_write.add_argument(
+        "--does", help="Required: what the edit does to the file (100 characters at most)"
+    )
     p_request_file_write.add_argument("--rationale")
     p_request_file_write.add_argument(
         "--verification",
@@ -2242,7 +2464,7 @@ def register(subparsers) -> None:
     )
     p_request_file_write.add_argument(
         "--impact",
-        help="What changes for whoever runs it, in one line; sealed and shown verbatim",
+        help="Required: what changes for whoever runs it (100 characters at most)",
     )
     p_request_file_write.add_argument("--agent-id")
     p_request_file_write.add_argument("--session-id")
@@ -2259,6 +2481,11 @@ def register(subparsers) -> None:
         p_opencode.add_argument("--call-id", required=True)
         p_opencode.add_argument("--token", required=True)
         p_opencode.add_argument("--json", action="store_true", help="JSON output")
+        if name == "opencode-present":
+            p_opencode.add_argument(
+                "--agent-id", required=True,
+                help="The agent of the calling session; must be the approval's requester",
+            )
         if name == "opencode-decide":
             p_opencode.add_argument("--reply", choices=("once", "always", "reject"), required=True)
             # A neutral lane token, never a host event name: the harness edge
@@ -2439,7 +2666,7 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--session", metavar="SESSION_ID")
     p_list.add_argument(
         "--orphans-only", action="store_true", dest="orphans_only",
-        help="Show only pendings from sessions no longer alive",
+        help="Show only the pendings whose STATE is orphaned",
     )
     p_list.set_defaults(func=cmd_list)
 

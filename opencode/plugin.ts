@@ -1,7 +1,8 @@
 import { fileURLToPath } from "node:url"
-import { lstatSync, realpathSync, statSync } from "node:fs"
+import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
-import { delimiter, dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
+import { homedir } from "node:os"
+import { delimiter, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 import { ShellEnvDelivery } from "./shell-env"
 
 type BridgeResponse = {
@@ -20,7 +21,7 @@ type PendingApproval = {
   callID: string
   token: string
   role: string
-  surface: NativeConsentPresentation
+  surface: SignatureSurface
 }
 
 type RetryOperation =
@@ -56,11 +57,14 @@ type BoundRetry = PendingApproval & {
   operation: RetryOperation
 }
 
-export type BinaryDecisionRequest = {
+/** Which of the renderer's strings a signature question carries. */
+export type SignatureMode = "signature" | "details"
+
+export type SignatureRequest = {
   sessionID: string
   approvalID: string
   correlationID: string
-  visibleText: string
+  mode: SignatureMode
   metadata: Record<string, unknown>
   question: {
     header: string
@@ -71,9 +75,12 @@ export type BinaryDecisionRequest = {
   }
 }
 
+/** A user's answer to a signature question, by the option's position. */
+export type SignatureAnswer = "once" | "reject" | "details"
+
 type ControlDecision = {
   approval: PendingApproval
-  request: BinaryDecisionRequest
+  request: SignatureRequest
   retry: BoundRetry
   questionCallID?: string
   questionID?: string
@@ -97,7 +104,8 @@ type RoleCapabilityContext = {
   verified: true
 }
 
-type PermissionReply = "once" | "always" | "reject"
+/** The two answers that reach Gaia as a decision; Details only re-asks. */
+type DecisionReply = Exclude<SignatureAnswer, "details">
 
 type HostParentRecord = "none" | "present" | "unavailable"
 
@@ -293,6 +301,19 @@ function normalizePatch(args: Record<string, unknown>, cwd: string): Record<stri
   return { ...args, patchText: normalizedLines.join("\n"), file_paths: filePaths }
 }
 
+/**
+ * The directory a bash call runs in: its `workdir` argument, resolved against
+ * the session directory, or the session directory itself. A signed command is
+ * sealed to one directory, so the policy must compare where it will actually
+ * run, not where the bridge process happens to start.
+ */
+function bashDirectory(args: Record<string, unknown>, input: any): string | undefined {
+  const base = typeof input?.directory === "string" ? input.directory : undefined
+  const workdir = typeof args.workdir === "string" && args.workdir ? args.workdir : undefined
+  if (workdir) return base ? resolve(base, workdir) : isAbsolute(workdir) ? resolve(workdir) : undefined
+  return base
+}
+
 /** Canonicalize governed file tools before any request reaches Gaia's bridge. */
 export function normalizeBridgeToolRequest(
   tool: unknown,
@@ -301,11 +322,14 @@ export function normalizeBridgeToolRequest(
 ): NormalizedBridgeToolRequest {
   const canonicalTool = canonicalFileTool(tool)
   if (!canonicalTool) {
+    const plainArgs = args && typeof args === "object" && !Array.isArray(args)
+      ? args as Record<string, unknown>
+      : {}
+    const bridgeTool = canonicalBridgeToolName(tool)
     return {
-      tool: canonicalBridgeToolName(tool),
-      args: args && typeof args === "object" && !Array.isArray(args)
-        ? args as Record<string, unknown>
-        : {},
+      tool: bridgeTool,
+      args: plainArgs,
+      ...(bridgeTool.toLowerCase() === "bash" ? { cwd: bashDirectory(plainArgs, input) } : {}),
       originalTool: tool,
       originalArgs: args,
     }
@@ -327,30 +351,6 @@ export function normalizeBridgeToolRequest(
     originalArgs,
   }
 }
-
-/** Host reply spellings mapped onto the protocol vocabulary Gaia accepts. */
-const PERMISSION_REPLIES: Record<string, PermissionReply> = {
-  once: "once",
-  allow: "once",
-  always: "always",
-  reject: "reject",
-  deny: "reject",
-}
-
-export function normalizePermissionReply(reply: unknown): PermissionReply | undefined {
-  if (typeof reply !== "string") return undefined
-  return PERMISSION_REPLIES[reply.trim().toLowerCase()]
-}
-
-/** The event OpenCode is expected to deliver a permission reply on. */
-export const PREFERRED_PERMISSION_EVENT = "permission.replied"
-
-/**
- * Compatibility only: an older OpenCode build spells the same reply with a
- * versioned event name. The name stops at this edge -- Gaia's neutral layer is
- * handed a lane token and never a host event name.
- */
-export const COMPATIBILITY_PERMISSION_EVENTS = ["permission.v2.replied"]
 
 export type DecisionLane = "control" | "preferred" | "compatibility"
 
@@ -380,6 +380,13 @@ export const CONTROL_OPENED_EVENT = "control.opened"
 export const CONTROL_CLOSED_EVENT = "control.closed"
 export const DECISION_APPLIED_EVENT = "decision.applied"
 export const CONSENT_RETRY_REFUSED_EVENT = "retry.refused"
+
+/** The schema-valid arguments the control-plane model is asked to pass; Gaia overwrites them. */
+export const CONTROL_PLACEHOLDER_QUESTION = {
+  question: "Gaia",
+  header: "Gaia",
+  options: [{ label: "OK", description: "Gaia fills this question in" }],
+}
 
 /**
  * The one message the plugin puts in the orchestrator's session once the user
@@ -416,21 +423,13 @@ export type ControlCloseReason =
   | "question_mismatch"
   | "question_rejected"
   | "reply_unreadable"
-  | "permission_reply_unusable"
+  | "details_requested"
   | "decision_duplicate"
   | "retry_conflict"
   | "prompt_rejected"
   | "session_ended"
   | "drifted_tool_call"
   | "drifted_tool_result"
-
-export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
-  if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
-  if (typeof eventType === "string" && COMPATIBILITY_PERMISSION_EVENTS.includes(eventType)) {
-    return "compatibility"
-  }
-  return undefined
-}
 
 export type LaneAdmission = {
   lane: DecisionLane
@@ -470,6 +469,24 @@ export class PermissionDecisionRouter {
 const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
 const gaiaBinDirectory = dirname(gaiaPath)
+
+/**
+ * Create and return a dispatched child's own TMPDIR, or undefined when it
+ * cannot exist. Mirrors gaia/paths/resolver.py::dispatch_tmp_dir, which owns
+ * the rule; tests/integration/test_opencode_shell_env.py compares the two.
+ */
+function dispatchTmpDir(owner: string): string | undefined {
+  const override = process.env.GAIA_DATA_DIR
+  const dataDir = override ? resolve(override) : join(homedir(), ".gaia")
+  const name = createHash("sha256").update(owner).digest("hex").slice(0, 12)
+  try {
+    mkdirSync(join(dataDir, "tmp", name), { recursive: true })
+    // Python resolves symlinks in an overridden data dir, never in ~/.gaia.
+    return join(override ? realpathSync(dataDir) : dataDir, "tmp", name)
+  } catch {
+    return undefined
+  }
+}
 
 function traceableBridgeRequest(event: Record<string, unknown>): Record<string, unknown> {
   const traceableArgs = (value: unknown) => {
@@ -570,8 +587,12 @@ export function gaiaFailureCause(result: { stdout: string; stderr: string }): st
   return result.stderr.trim() || "gaia exited non-zero without reporting a cause"
 }
 
-export type NativeConsentPresentation = {
-  visibleLines: string[]
+/** The renderer's signature for one approval, exactly as `opencode-present` emitted it. */
+export type SignatureSurface = {
+  question: string
+  details: string
+  header: string
+  options: Array<{ label: string; description: string }>
   metadata: Record<string, unknown>
 }
 
@@ -838,30 +859,28 @@ export function evaluateConsentRetry(
   }
 }
 
-export function binaryDecisionRequest(
+/**
+ * The question that asks one signature: the renderer's string for `mode`
+ * placed as-is, with the renderer's header and options. The plugin composes no
+ * text of its own; it only chooses which of Gaia's two strings is asked.
+ */
+export function signatureRequest(
   approval: PendingApproval,
   controlSessionID: string,
-): BinaryDecisionRequest {
+  mode: SignatureMode = "signature",
+): SignatureRequest {
   const retry = boundRetry(approval)
-  const visibleText = approval.surface.visibleLines.join("\n")
-  if (!visibleText.includes(approval.approvalID)) {
-    throw new Error("Gaia consent surface does not visibly identify its approval")
-  }
-  const approve = `Approve once [${approval.approvalID}]`
-  const reject = `Reject [${approval.approvalID}]`
+  const surface = approval.surface
   return {
     sessionID: controlSessionID,
     approvalID: approval.approvalID,
     correlationID: retry.correlationID,
-    visibleText,
-    metadata: { ...approval.surface.metadata },
+    mode,
+    metadata: { ...surface.metadata },
     question: {
-      header: "Gaia approval",
-      question: `${visibleText}\n\nDECISION: ${approval.approvalID} / ${retry.correlationID}`,
-      options: [
-        { label: approve, description: "Activate this exact request once" },
-        { label: reject, description: "Create no grant and perform no operation" },
-      ],
+      header: surface.header,
+      question: mode === "details" ? surface.details : surface.question,
+      options: surface.options.map((option) => ({ ...option })),
       multiple: false,
       custom: false,
     },
@@ -869,20 +888,19 @@ export function binaryDecisionRequest(
 }
 
 /**
- * Whether the host's copy of the question is the one binary question Gaia
- * asked, compared by the fields that carry consent: header, question text,
- * the ordered option labels and descriptions, single choice, and no custom
- * answer.
+ * Whether the host's copy of the question is the signature question Gaia
+ * wrote into the call, compared by the fields that carry consent: header,
+ * question text, the ordered option labels and descriptions, single choice,
+ * and no custom answer.
  *
  * Compared structurally, never as serialized bytes: the host re-encodes the
  * question (QuestionInfo declares question, header, options, multiple, custom
- * in that order; the plugin sends header first) and may add keys of its own
- * (`tool`). A byte comparison closed the control on every such re-encoding,
- * silently.
+ * in that order) and may add keys of its own (`tool`). A byte comparison
+ * closed the control on every such re-encoding, silently.
  */
-export function matchesBinaryQuestion(
+export function matchesSignatureQuestion(
   questions: unknown,
-  expected: BinaryDecisionRequest["question"],
+  expected: SignatureRequest["question"],
 ): boolean {
   if (!Array.isArray(questions) || questions.length !== 1) return false
   const question = questions[0] as Record<string, unknown> | null
@@ -899,77 +917,89 @@ export function matchesBinaryQuestion(
   })
 }
 
-/** Match OpenCode's normalized pre-execution copy of Gaia's question. */
-export function matchesHostBinaryQuestionCall(
+/** Match OpenCode's event copy of the question Gaia wrote into the validated call. */
+export function matchesHostSignatureQuestionEvent(
   questions: unknown,
-  expected: BinaryDecisionRequest["question"],
+  expected: SignatureRequest["question"],
+  questionCallWritten: boolean,
 ): boolean {
-  if (!Array.isArray(questions) || questions.length !== 1) return false
-  const question = questions[0] as Record<string, unknown> | null
-  if (!question || typeof question !== "object") return false
-  const hasCustom = Object.prototype.hasOwnProperty.call(question, "custom")
-  if (hasCustom && question.custom !== false) return false
-  return matchesBinaryQuestion([{ ...question, custom: false }], expected)
-}
-
-/** Match OpenCode's event copy after the exact question tool call was validated. */
-export function matchesHostBinaryQuestionEvent(
-  questions: unknown,
-  expected: BinaryDecisionRequest["question"],
-  exactQuestionCallValidated: boolean,
-): boolean {
-  if (!exactQuestionCallValidated || !Array.isArray(questions) || questions.length !== 1) return false
+  if (!questionCallWritten || !Array.isArray(questions) || questions.length !== 1) return false
   const question = questions[0] as Record<string, unknown> | null
   if (!question || typeof question !== "object" || question.multiple !== false) return false
   if (question.custom !== undefined && question.custom !== false) return false
-  return matchesBinaryQuestion([{ ...question, custom: false }], expected)
+  return matchesSignatureQuestion([{ ...question, custom: false }], expected)
 }
 
-export function readBinaryDecision(
-  request: BinaryDecisionRequest,
+const SIGNATURE_ANSWERS: SignatureAnswer[] = ["once", "reject", "details"]
+
+/**
+ * Map the one selected label to the option it names, by position: Approve,
+ * Reject, Details. Anything else -- no answer, several, or text typed in the
+ * host's free-text row -- decides nothing.
+ */
+export function readSignatureAnswer(
+  request: SignatureRequest,
   answers: unknown,
-): PermissionReply | undefined {
+): SignatureAnswer | undefined {
   if (!Array.isArray(answers) || answers.length !== 1 || !Array.isArray(answers[0])) {
     return undefined
   }
   if (answers[0].length !== 1) return undefined
-  const selected = answers[0][0]
-  if (selected === request.question.options[0].label) return "once"
-  if (selected === request.question.options[1].label) return "reject"
-  return undefined
+  const index = request.question.options.findIndex((option) => option.label === answers[0][0])
+  return index === -1 ? undefined : SIGNATURE_ANSWERS[index]
+}
+
+function isOption(value: unknown): value is { label: string; description: string } {
+  const option = value as Record<string, unknown> | null
+  return Boolean(option) && typeof option?.label === "string" && Boolean(option.label)
+    && typeof option?.description === "string"
 }
 
 /**
- * Read the sealed consent surface Gaia rendered for one presented approval.
+ * Read the signature Gaia rendered for one presented approval.
  *
- * The text and the metadata are both Gaia's, never this edge's: a surface this
- * plugin composed would be a description of a consent request written by the
- * party asking for it. A response missing either half is refused rather than
- * shown, because the alternative is a permission prompt whose fields the user
- * cannot see.
+ * The strings and the metadata are both Gaia's, never this edge's: a question
+ * this plugin composed would be a description of a consent request written by
+ * the party asking for it. A response missing any part is refused rather than
+ * asked, because the alternative is a question whose content the user cannot
+ * trust.
  */
-export function readConsentPresentation(stdout: string): NativeConsentPresentation {
+export function readConsentPresentation(stdout: string): SignatureSurface {
   let emitted: any
   try {
     emitted = JSON.parse(stdout.trim().split("\n").pop() ?? "")
   } catch {
     throw new Error("Gaia did not emit a consent presentation to render")
   }
-  const lines = emitted?.visible_lines
+  const signature = emitted?.signature
   const metadata = emitted?.metadata
-  if (!Array.isArray(lines) || lines.length === 0 || !metadata) {
+  const options = signature?.options
+  if (
+    typeof signature?.question !== "string" || !signature.question
+    || typeof signature?.details !== "string" || !signature.details
+    || typeof signature?.header !== "string" || !signature.header
+    || !Array.isArray(options) || options.length !== SIGNATURE_ANSWERS.length || !options.every(isOption)
+    || !metadata || typeof metadata !== "object"
+  ) {
     throw new Error(
       emitted?.presentation_error
-        ? `Gaia could not seal a complete consent surface: ${emitted.presentation_error}`
-        : "Gaia returned no user-visible consent surface for this approval",
+        ? `Gaia could not render this signature: ${emitted.presentation_error}`
+        : "Gaia returned no complete signature for this approval",
     )
   }
-  return { visibleLines: lines.map(String), metadata }
+  return {
+    question: signature.question,
+    details: signature.details,
+    header: signature.header,
+    options: options.map((option: { label: string; description: string }) => ({
+      label: option.label, description: option.description,
+    })),
+    metadata,
+  }
 }
 
 function approvalID(response: BridgeResponse): string | undefined {
-  if (response.approval_id) return response.approval_id
-  return response.reason?.match(/approval_id:\s*(P-[A-Za-z0-9-]+)/)?.[1]
+  return response.approval_id || undefined
 }
 
 export function toolResult(output: any): Record<string, unknown> {
@@ -1060,14 +1090,6 @@ async function announceLiveness(input: any): Promise<void> {
 
 export const GaiaOpenCodePlugin = async (input: any) => {
   await announceLiveness(input)
-  const pending = new Map<string, PendingApproval>()
-  const pendingByCall = new Map<string, PendingApproval>()
-  // `sessionID:callID` pairs Gaia ALLOWED in tool.execute.before. OpenCode runs
-  // its own permission gate AFTER that verdict, and a second gate that can deny
-  // what Gaia granted makes an approval mean something different here than on
-  // Claude Code, where PreToolUse is the last word. Consumed on use, so one
-  // verdict frees exactly the one call it ruled on.
-  const allowedByCall = new Set<string>()
   const controlsBySession = new Map<string, ControlDecision[]>()
   const controlByQuestion = new Map<string, ControlDecision>()
   const releasedControlCalls = new Set<string>()
@@ -1379,7 +1401,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   /** Hand the user's reply to Gaia; a refusal is logged and traced with Gaia's cause. */
   async function decide(
     approval: PendingApproval,
-    reply: PermissionReply,
+    reply: DecisionReply,
     lane: DecisionLane = "preferred",
   ): Promise<{ ok: true; retry?: BoundRetry } | { ok: false; cause: string }> {
     const decided = await gaia([
@@ -1472,14 +1494,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return control && (control.presenting || control.presented) ? control : undefined
   }
 
-  function controlForApproval(approval: PendingApproval): ControlDecision | undefined {
-    return (controlsBySession.get(approval.sessionID) ?? []).find((control) => (
-      control.approval.approvalID === approval.approvalID
-      && control.approval.callID === approval.callID
-      && control.approval.token === approval.token
-    ))
-  }
-
   async function correlateQuestionEvent(
     control: ControlDecision,
     requestID: string,
@@ -1493,7 +1507,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       await clearControl(control, "question_mismatch", `second question ${requestID} for one control`)
       return
     }
-    if (!matchesHostBinaryQuestionEvent(questions, control.request.question, control.questionCallID !== undefined)) {
+    if (!matchesHostSignatureQuestionEvent(questions, control.request.question, control.questionCallID !== undefined)) {
       await clearControl(control, "question_mismatch", `host asked ${JSON.stringify(questions)}`)
       return
     }
@@ -1545,18 +1559,36 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     detail?: string,
     advance = true,
   ): Promise<void> {
-    for (const [key, approval] of pendingByCall) {
-      if (approval.token === control.approval.token) pendingByCall.delete(key)
-    }
-    for (const [key, approval] of pending) {
-      if (approval.token === control.approval.token) pending.delete(key)
-    }
     await releaseControl(control, reason, detail, advance)
+  }
+
+  /** Ask the same signature again, next in its session, carrying the renderer's Details.
+   *
+   * Details decides nothing: the approval, its presentation token and its
+   * bound retry carry over unchanged, so the answer to the re-asked question
+   * reaches Gaia exactly as an answer to the first one would have.
+   */
+  async function reaskWithDetails(control: ControlDecision): Promise<void> {
+    const sessionID = control.request.sessionID
+    const details: ControlDecision = {
+      approval: control.approval,
+      request: signatureRequest(control.approval, sessionID, "details"),
+      retry: control.retry,
+      awaitingSafeIdle: false,
+      presenting: false,
+      presented: false,
+      closed: false,
+    }
+    const controls = controlsBySession.get(sessionID) ?? []
+    const position = controls.indexOf(control)
+    controls.splice(position === -1 ? 0 : position + 1, 0, details)
+    controlsBySession.set(sessionID, controls)
+    await clearControl(control, "details_requested")
   }
 
   async function applyDecision(
     control: ControlDecision,
-    reply: PermissionReply,
+    reply: DecisionReply,
     lane: DecisionLane,
   ): Promise<boolean> {
     const existing = retryBySession.get(control.approval.sessionID)
@@ -1669,7 +1701,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const approval = control.approval
     const session = input?.client?.session
     if (typeof session?.promptAsync !== "function") {
-      throw new Error("OpenCode control plane cannot provide a binary question")
+      throw new Error("OpenCode control plane cannot open a signature question")
     }
     const failClosed = async (cause: string): Promise<Error> => {
       await reportUncorrelatedDenial(approval.sessionID, approval.callID, {
@@ -1679,11 +1711,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
     const controlSessionID = control.request.sessionID
     control.presenting = true
+    // The model only opens the question: OpenCode offers a plugin no route to
+    // open one itself (1.18.32 exposes list/reply/reject), so a model's
+    // question-tool call is the opener, and tool.execute.before replaces its
+    // arguments with Gaia's signature before the host asks anything.
     const instruction = [
       "You are a mechanical consent control plane.",
-      "Invoke the question tool exactly once with the JSON below and do nothing else.",
-      "Do not answer the question, infer consent, rewrite any text, or emit approval prose.",
-      JSON.stringify({ questions: [control.request.question] }),
+      "Invoke the question tool exactly once with the placeholder JSON below and do nothing else.",
+      "Gaia fills the question in before the user sees it. Do not answer it, infer consent, or emit approval prose.",
+      JSON.stringify({ questions: [CONTROL_PLACEHOLDER_QUESTION] }),
     ].join("\n")
     let prompted: unknown
     try {
@@ -1715,7 +1751,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     await reportControlOpened(approval, controlSessionID)
   }
 
-  async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
+  async function openSignatureQuestion(approval: PendingApproval): Promise<ControlDecision> {
     const primarySessionID = primaryFor(approval.sessionID)
     if (!primarySessionID || approval.sessionID === primarySessionID) {
       throw new Error("OpenCode control plane requires an approval session bound to an active primary")
@@ -1723,7 +1759,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const controlSessionID = approval.sessionID
     const control: ControlDecision = {
       approval,
-      request: binaryDecisionRequest(approval, controlSessionID),
+      request: signatureRequest(approval, controlSessionID),
       retry: boundRetry(approval),
       awaitingSafeIdle: false,
       presenting: false,
@@ -1794,6 +1830,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const presented = await gaia([
       "approvals", "opencode-present", id,
       "--session-id", sessionID,
+      "--agent-id", role,
       "--call-id", callID,
       "--token", approval.token,
       "--json",
@@ -1804,9 +1841,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       throw new Error(`Gaia could not present approval ${id}: ${cause}`)
     }
     const surface = readConsentPresentation(presented.stdout)
-    const pendingApproval = { ...approval, surface }
-    const control = await openBinaryDecision(pendingApproval)
-    if (!control.closed) pendingByCall.set(`${sessionID}:${callID}`, pendingApproval)
+    await openSignatureQuestion({ ...approval, surface })
   }
 
   /** Leave a durable trace of a denial that otherwise only reached stderr.
@@ -1845,9 +1880,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   return {
     dispose: async () => {
       shellIdentities.clear()
-      pending.clear()
-      pendingByCall.clear()
-      allowedByCall.clear()
       controlByQuestion.clear()
       controlsBySession.clear()
       releasedControlCalls.clear()
@@ -1876,9 +1908,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         const sessionID = event.properties?.sessionID
         const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
         if (!control || control.closed || control.request.sessionID !== sessionID) return
-        const reply = readBinaryDecision(control.request, event.properties?.answers)
+        const reply = readSignatureAnswer(control.request, event.properties?.answers)
         if (!reply) {
           await clearControl(control, "reply_unreadable", JSON.stringify(event.properties?.answers))
+          return
+        }
+        if (reply === "details") {
+          await reaskWithDetails(control)
           return
         }
         await applyDecision(control, reply, "control")
@@ -1931,7 +1967,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         ) {
           const key = `${part.sessionID}:${part.callID}`
           const retried = retryByCall.get(key)
-          allowedByCall.delete(key)
           if (retried) {
             retryByCall.delete(key)
             if (retryBySession.get(part.sessionID) === retried) {
@@ -1996,69 +2031,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         }
         return
       }
-      const lane = permissionDecisionLane(event.type)
-      if (!lane) return
-      const requestID = event.properties.permissionID
-      const sessionID = event.properties.sessionID
-      if (typeof requestID !== "string" || typeof sessionID !== "string") return
-      const approval = pending.get(requestID)
-      if (!approval) return
-      if (approval.sessionID !== sessionID) return
-      const reply = normalizePermissionReply(event.properties.response ?? event.properties.reply)
-      const control = controlForApproval(approval)
-      if (!control || control.closed) {
-        pending.delete(requestID)
-        return
-      }
-      if (control !== activeControl(sessionID) || !control.presented) return
-      if (!reply) {
-        await clearControl(control, "permission_reply_unusable", `${event.type} on ${requestID}`)
-        return
-      }
-      await applyDecision(control, reply, lane)
     },
-    "permission.ask": async (permission: any, output: { status: "ask" | "deny" | "allow" }) => {
-      const sessionID = permission?.sessionID
-      const callID = permission?.callID
-      const key = typeof sessionID === "string" && typeof callID === "string"
-        ? `${sessionID}:${callID}`
-        : undefined
-      const approval = key ? pendingByCall.get(key) : undefined
-      if (!approval) {
-        // A pair Gaia already allowed carries its verdict through: deciding it
-        // again here would let the host's gate revoke consent Gaia granted.
-        // Deleting is the consume -- the allow is spent on this one request.
-        if (key && allowedByCall.delete(key)) {
-          output.status = "allow"
-          return
-        }
-        // This hook must never turn an uncorrelated or unsupported host request
-        // into consent. Keep the host's request denied and make the capability
-        // failure observable to the host log/stderr.
-        output.status = "deny"
-        console.error("[gaia-opencode:permission] denied uncorrelated permission request")
-        await reportUncorrelatedDenial(sessionID, callID)
-        return
-      }
-      if (permission.id === undefined || permission.sessionID !== approval.sessionID) {
-        output.status = "deny"
-        console.error("[gaia-opencode:permission] denied permission request with invalid correlation")
-        return
-      }
-      pendingByCall.delete(key!)
-      pending.set(permission.id, approval)
-      permission.title = "Gaia approval required"
-      permission.pattern = approval.surface.visibleLines
-      permission.metadata = {
-        ...(permission.metadata ?? {}),
-        gaiaApprovalID: approval.approvalID,
-        gaiaCallID: approval.callID,
-        gaiaConsent: approval.surface.metadata,
-      }
-      // The host owns the prompt and its reply. Do not auto-allow when a host
-      // lacks the old creation API; OpenCode will deliver permission.replied.
-      output.status = "ask"
-    },
+    // No "permission.ask" hook: the installed OpenCode (1.18.32) never
+    // triggers one -- its bundle calls no plugin hook named permission, so a
+    // host permission prompt is the host's alone and a signature is asked
+    // only through the question tool above.
     "tool.execute.before": async (call, output) => {
       const control = owningControl(call.sessionID)
       if (control) {
@@ -2066,14 +2043,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           throw new Error("Gaia consent control plane is already closed")
         }
         const tool = canonicalBridgeToolName(call.tool)
-        if (
-          tool !== "AskUserQuestion"
-          || !matchesHostBinaryQuestionCall(output.args?.questions, control.request.question)
-          || control.questionCallID !== undefined
-        ) {
+        if (tool !== "AskUserQuestion" || control.questionCallID !== undefined) {
           await clearControl(control, "drifted_tool_call", `${tool} ${call.callID}`)
-          throw new Error("Gaia consent control plane permits one exact binary question")
+          throw new Error("Gaia consent control plane permits one signature question")
         }
+        // Whatever the model passed is replaced: the user is asked Gaia's
+        // signature, never a copy a model typed.
+        applyUpdatedInput(output, { questions: [structuredClone(control.request.question)] })
         control.questionCallID = call.callID
         return
       }
@@ -2159,10 +2135,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             cwd: resolve(directory), args: output.args,
           })
         }
-        // Recorded last, so every check this branch still owes has passed: a
-        // throw above aborts the call, and a call that never runs must not
-        // leave a verdict the host's permission gate could later honor.
-        allowedByCall.add(`${call.sessionID}:${call.callID}`)
         return
       }
       if (retry && retryProof && retryBySession.get(call.sessionID) === retry) {
@@ -2185,9 +2157,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         throw new Error("Gaia refused a drifted control-plane tool result")
       }
       shellIdentities.forget(call.sessionID, call.callID)
-      // The call is over, so an allow the host never submitted to its gate has
-      // no request left to answer and must not outlive the call that earned it.
-      allowedByCall.delete(`${call.sessionID}:${call.callID}`)
       const agent = agentBySession.get(call.sessionID)
       if (call.tool === "task") {
         const sessionID = output.metadata?.sessionId
@@ -2244,6 +2213,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       // carry it (measured: a specialist fell back to ./bin/gaia).
       output.env.PATH = [gaiaBinDirectory, output.env.PATH ?? process.env.PATH]
         .filter(Boolean).join(delimiter)
+      // `gaia approvals request-set` seals the requesting session from here,
+      // under a host-neutral name read ahead of Claude Code's variables.
+      output.env.GAIA_HOST_SESSION_ID = call.sessionID
       const context = roleContext(call.sessionID)
       if (!call.callID && isPrimarySession(call.sessionID)
         && context?.attestation && context.role === "gaia-orchestrator") return
@@ -2253,6 +2225,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         agent: agentBySession.get(call.sessionID),
         attestation: context?.attestation,
       })
+      // Tool temporaries (pytest's tmp_path above all) otherwise fill the
+      // host's /tmp, a small tmpfs where this runs.
+      const tmpdir = dispatchTmpDir(call.sessionID)
+      if (tmpdir) output.env.TMPDIR = tmpdir
     },
     // The installed OpenCode host fires this hook mid-compaction, before the
     // summary completes, with a mutable {context, prompt} output -- unlike

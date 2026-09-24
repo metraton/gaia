@@ -55,14 +55,22 @@ def _command_summary(payload_json: Optional[str]) -> str:
     return content
 
 
+def _state_cell(row: Dict[str, Any]) -> str:
+    """The row's derived state (and outcome) when a reader attached one, else its stored status."""
+    if row.get("state"):
+        return f"{row['state']}/{row['outcome']}" if row.get("outcome") else row["state"]
+    return row.get("status") or "-"
+
+
 def print_approvals_table(rows: List[Dict[str, Any]]) -> None:
     """Print a compact table of approval rows.
 
-    Columns: ID (short), STATUS, AGE, STALE, COMMAND_SUMMARY
+    Columns: ID (short), STATE, AGE, STALE, COMMAND_SUMMARY
     Each row must have the fields produced by store.list_pending() or
     store.list_all():
         id, status, age_seconds, payload_json
-    The optional ``stale`` field is shown when present.
+    The optional ``state``/``outcome`` (gaia.approvals.reading) and ``stale``
+    fields are shown when present.
 
     Args:
         rows: List of approval dicts from store.list_pending() / list_all().
@@ -71,16 +79,16 @@ def print_approvals_table(rows: List[Dict[str, Any]]) -> None:
         print("No approvals found.")
         return
 
-    header = f"{'ID':<14}  {'STATUS':<10}  {'AGE':<6}  {'STALE':<5}  COMMAND_SUMMARY"
+    header = f"{'ID':<14}  {'STATE':<24}  {'AGE':<6}  {'STALE':<5}  COMMAND_SUMMARY"
     print(header)
-    print("-" * 80)
+    print("-" * 94)
     for row in rows:
         short = _short_id(row.get("id", ""))
-        status = row.get("status", "-")[:10]
+        state = _state_cell(row)
         age = format_age(row.get("age_seconds", 0.0))
         stale = "yes" if row.get("stale") else "no"
         summary = _command_summary(row.get("payload_json"))
-        print(f"{short:<14}  {status:<10}  {age:<6}  {stale:<5}  {summary}")
+        print(f"{short:<14}  {state:<24}  {age:<6}  {stale:<5}  {summary}")
 
     print(f"\n{len(rows)} approval(s).")
 
@@ -107,6 +115,7 @@ def print_approval_detail(
     approval: Dict[str, Any],
     events: List[Dict[str, Any]],
     grant: Optional[Dict[str, Any]] = None,
+    reading: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Print full detail for a single approval including its event chain.
 
@@ -118,9 +127,13 @@ def print_approval_detail(
             user signed, the grant says whether that signature is still usable.
             Omitting it printed ``approved`` for a capability that had already
             expired.
+        reading: The approval's reading (gaia.approvals.reading.read); its
+            state replaces the stored status, which calls a replaced or an
+            expired request revoked.
     """
     approval_id = approval.get("id", "?")
-    status = approval.get("status", "?")
+    reading = reading or {}
+    state = reading.get("state") or approval.get("status", "?")
     created_at = approval.get("created_at", "?")
     decided_at = approval.get("decided_at") or "-"
     session_id = approval.get("session_id") or "-"
@@ -150,7 +163,22 @@ def print_approval_detail(
     lines = [
         f"Approval {approval_id}",
         "",
-        f"  Status      : {status}",
+        f"  State       : {state}",
+    ]
+    if reading.get("outcome"):
+        lines.append(f"  Outcome     : {reading['outcome']}")
+    if reading.get("reason"):
+        lines.append(f"  Reason      : {reading['reason']}")
+    if reading:
+        requester = reading.get("requester")
+        lines.append(
+            "  Requester   : "
+            + (f"{requester['session_id']} / {requester['agent_id']}" if requester else "not sealed")
+        )
+        window = reading.get("window_minutes")
+        lines.append(f"  Window      : {f'{window} min from the decision' if window else 'not sealed'}")
+        lines.append(f"  Directory   : {', '.join(reading.get('cwd') or []) or 'not sealed'}")
+    lines += [
         f"  Age         : {age_str}",
         f"  Created     : {created_at}",
         f"  Decided     : {decided_at}",
@@ -256,15 +284,15 @@ def print_history_table(rows: List[Dict[str, Any]]) -> None:
         print("No approvals in history.")
         return
 
-    header = f"{'ID':<14}  {'STATUS':<10}  {'AGE':<6}  {'SESSION':<20}  COMMAND_SUMMARY"
+    header = f"{'ID':<14}  {'STATE':<24}  {'AGE':<6}  {'SESSION':<20}  COMMAND_SUMMARY"
     print(header)
-    print("-" * 80)
+    print("-" * 94)
     for row in rows:
         short = _short_id(row.get("id", ""))
-        status = row.get("status", "-")[:10]
+        state = _state_cell(row)
         age = format_age(row.get("age_seconds", 0.0))
         session = (row.get("session_id") or "-")[:20]
         summary = _command_summary(row.get("payload_json"))
-        print(f"{short:<14}  {status:<10}  {age:<6}  {session:<20}  {summary}")
+        print(f"{short:<14}  {state:<24}  {age:<6}  {session:<20}  {summary}")
 
     print(f"\n{len(rows)} approval(s).")

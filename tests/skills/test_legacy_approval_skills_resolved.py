@@ -142,7 +142,6 @@ def test_new_skills_exist():
     new_skills = [
         SKILLS_DIR / "subagent-request-approval" / "SKILL.md",
         SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md",
-        SKILLS_DIR / "agent-approval-protocol" / "SKILL.md",
     ]
     for skill_path in new_skills:
         assert skill_path.exists(), f"New skill file missing: {skill_path}"

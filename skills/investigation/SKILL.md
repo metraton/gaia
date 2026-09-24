@@ -19,7 +19,11 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    workspace rule that decides whether they resolve are in
    `agent-protocol/read-map.md`. Do not read Gaia's database directly.
 3. Inspect the smallest relevant source files, tests, configuration, git diff,
-   or runtime query. Prefer authoritative implementation over prose.
+   or runtime query. Prefer authoritative implementation over prose. Never
+   search from the home directory (`~`) or from `/`: a search rooted there
+   walks every workspace, cache and package store. Locate a binary or package
+   with `gaia paths`, `which`, or its known path, and start a search at the
+   smallest directory that can hold the answer.
 4. Record each material source immediately in the contract:
    `files_checked`, `patterns_checked`, `commands_run`, `key_outputs`, exact
    excerpts in `verbatim_outputs`, whatever your change reaches outside the
@@ -53,35 +57,16 @@ Once the cause and desired outcome are known, enumerate the exact mutations the
 accepted plan predictably requires. Classify every command through
 `security-tiers` before execution.
 
-A single predictable T3 command is requested plan-first too -- proactively,
-the instant it is known, rather than waiting for PreToolUse to block it. For
-two or more exact T3 commands, prefer grouping them into one plan-first
-COMMAND_SET only when:
-
-- all commands serve one bounded goal and are known verbatim now;
-- order is meaningful and can be shown explicitly;
-- the risk, rollback, and verification can be explained for the complete set;
-- no item depends on unseen output from an earlier item; and
-- each item is one atomic invocation, never `&&`, `;`, a pipe, substitution, or
-  other shell composition.
-
-Do not group speculative clean-up, alternatives, unrelated repositories or
-services, condition-dependent follow-ups, or commands that must be derived from
-earlier results. Request those later only after new read-only investigation.
-Consent grouping reduces repeated consent; it does not make execution atomic.
-
-Use `gaia approvals request-set --command '<exact 1>' [--command '<exact 2>' ...]
---rationale '<why>' --verification '<the desired-state check to run after>'
---rollback '<how the effect is undone>'` before attempting any item -- one
-`--command` for a single operation, one per item for a group. The three
-non-command flags are not optional decoration: `--verification` and `--rollback`
-are sealed at mint and rendered verbatim as the `VERIFICATION` and `ROLLBACK`
-fields of the consent surface the user reads, so omitting them mints an approval
-whose surface states their absence and asks the user to consent without knowing
-how the effect is checked or undone. Author them from the forecast above, where
-they are already reasoned. A command already blocked (the reactive path, reached
-only after an attempted command trips PreToolUse) is relayed exactly; never
-retrofit it into a different spelling or self-mint consent metadata.
+Request every predictable T3 command before attempting it, the instant it is
+known, rather than waiting for the policy gate to block it. The forecast is what
+the request is built from -- what each command does, its impact, how it is
+undone and checked: `subagent-request-approval` says which phrases to write and
+how to group the commands into the fewest signatures, leaving for a later
+request anything whose exact form depends on a result not yet seen. Do not
+group speculative clean-up, alternatives, or unrelated repositories or
+services. A command already blocked is requested through the line its denial
+carries; never retrofit it into a different spelling. Consent grouping reduces
+repeated consent; it does not make execution atomic.
 
 ## Evidence quality
 

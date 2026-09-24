@@ -105,7 +105,7 @@ already wrote.
 
 - `APPROVAL_REQUEST`: `approval_request` is non-null and
   `approval_request.exact_content` is non-blank. All approval-set data stays in
-  this object; see `agent-approval-protocol`.
+  this object; see `subagent-request-approval`.
 - `COMPLETE`: `pending_steps` is `[]`, `next_action` is exactly `done`, and
   `evidence_report.verification.result` is `pass`.
 - plan-task-bound producers do not self-complete. They close their increment as
@@ -164,8 +164,7 @@ distinguishable phase never sets it).
 
 `approval_request` contains the consent data reference: `operation`,
 `exact_content`, `scope`, `risk_level`, `rollback`, `verification`, and when
-minted, `approval_id`. COMMAND_SET adds its ordered command set and request
-fingerprint as specified by `agent-approval-protocol`.
+minted, `approval_id`, copied verbatim from the request's output.
 
 `failure_report` is optional. When present it atomically contains non-empty
 `attempted`, `symptom`, and `evidence`; optional `component`; and optional

@@ -98,12 +98,25 @@ def build_t3_approval_instructions(nonce: str | None = None) -> str:
 _SUBAGENT_APPROVAL_SKILL = "subagent-request-approval"
 
 
+def _phrases_request(request_line: str, target: str) -> str:
+    """The instruction a phraseless reactive denial carries in place of reporting its id."""
+    return (
+        "Nothing is shown to the user without your phrases. Request the "
+        "signature with this line, writing each <...> for the user:\n"
+        f"  {request_line}\n"
+        "Then report APPROVAL_REQUEST with the approval_id that line prints; "
+        "it replaces the one below, which was sealed without phrases.\n"
+        f"Do NOT retry this {target} before the user decides.\n"
+    )
+
+
 def build_t3_blocked_denial_message(
     approval_id: str,
     command: str,
     verb: str,
     category: str,
     guidance: str = "",
+    request_line: str = "",
 ) -> str:
     """Return the canonical T3_BLOCKED denial message for subagent context.
 
@@ -121,19 +134,58 @@ def build_t3_blocked_denial_message(
             safe equivalent says what it is; a refusal that names none leaves
             the agent hunting for a spelling that passes, which is the
             behaviour the no-elusion rule exists to prevent.
+        request_line: ``gaia.approvals.core.request_line`` of the named
+            request when it carries no phrases: the denial then asks for that
+            request instead of reporting this approval_id, which no host shows.
 
     Returns:
         The denial message string to embed in the hook response.
     """
     guidance_line = f"Instead: {guidance}\n" if guidance else ""
+    next_step = (
+        _phrases_request(request_line, "command") if request_line else
+        "Do NOT retry this command. Report APPROVAL_REQUEST with this"
+        " approval_id in your contract row.\n"
+    )
     return (
         f"[T3_BLOCKED] This command requires user approval.\n"
         f"T3 command blocked. Load Skill('{_SUBAGENT_APPROVAL_SKILL}') to emit"
         f" the approval payload and await user decision.\n"
-        f"Do NOT retry this command. Report APPROVAL_REQUEST with this"
-        f" approval_id in your contract row.\n"
+        f"{next_step}"
         f"Command: {command}\n"
         f"Verb: '{verb}' ({category})\n"
         f"{guidance_line}"
+        f"approval_id: {approval_id}"
+    )
+
+
+def build_protected_write_denial_message(
+    approval_id: str,
+    path: str,
+    tool_name: str,
+    window_minutes: int,
+    request_line: str = "",
+) -> str:
+    """Return the denial a subagent reads when a Write/Edit on a protected path is blocked.
+
+    ``request_line`` works as in :func:`build_t3_blocked_denial_message`.
+    """
+    next_step = (
+        _phrases_request(request_line, "operation") if request_line else
+        "Do NOT retry this operation. Report APPROVAL_REQUEST with this approval_id "
+        "in your contract row.\n"
+    )
+    return (
+        f"[T3_BLOCKED] This file modification requires user approval.\n"
+        f"{next_step}"
+        f"The approval expires. Once the user decides, the grant for this path stays "
+        f"usable for {window_minutes} minutes and then lapses on its own. The clock "
+        f"starts at their DECISION, not at this request, so the wait for an answer "
+        f"costs nothing -- but everything after it (your re-dispatch, grounding, the "
+        f"edits and the tests between them) is spent inside that one window, and "
+        f"nothing you do extends it. A write attempted after it lapses is blocked "
+        f"again under a NEW approval_id; this one will not work twice.\n"
+        f"File: {path}\n"
+        f"Tool: {tool_name}\n"
         f"approval_id: {approval_id}"
     )

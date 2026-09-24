@@ -1,48 +1,20 @@
 # Producer approval reference
 
-The current COMMAND_SET intake is plan-first:
+`gaia approvals request-set` (`bin/cli/approvals.py::cmd_request_set`, sealed by
+`gaia/approvals/core.py::request_command_set`) accepts one or more exact,
+atomic, non-interactive T3 commands. It refuses, naming the cause: a missing or
+over-long phrase, a command that is shell composition, a protected path, a
+permanently blocked operation, or a command that is not T3. The limits are the
+renderer's (`gaia/approvals/surface.py`: `TITLE_MAX`, `QUESTION_MAX`,
+`LINE_MAX`).
 
-```
-gaia approvals request-set \
-  --command '<exact T3 command 0>' \
-  --command '<exact T3 command 1>' \
-  --rationale '<bounded goal>' \
-  --verification '<desired-state check after execution>' \
-  --rollback '<how to undo the effect>' \
-  --agent-id <agent_id> \
-  --session-id <session_id>
-```
+With `--json` it prints `status`, the canonical `approval_id`, and `command_set`
+(each command with its fingerprint). Copy the id; never derive an id or a
+fingerprint yourself.
 
-The implementation is `bin/cli/approvals.py::cmd_request_set` plus
-`gaia/approvals/command_set.py::validate_request_set`. It requires at least one
-exact, atomic, non-interactive T3 string and rejects shell composition,
-protected paths, permanently blocked operations, and non-T3 items. A set of
-one is the proactive path for a single predictable T3 command: request it
-before any attempt, the same way a longer set is requested.
+`gaia approvals request-file-write --path <absolute path>` is the same request
+for a Write/Edit on a protected path. A later Write/Edit of that path by the
+same agent in the same session uses this request once it is approved.
 
-The CLI persists a REQUESTED payload containing `request_type`, `operation`,
-`exact_content`, `commands`, `command_set` (each command plus SHA-256
-fingerprint), the order-sensitive `request_fingerprint`, `scope`, `risk_level`,
-`rollback_hint`, `verification`, and `rationale`. Its direct output is `status`,
-the canonical `approval_id`, and `command_set` with per-command fingerprints.
-The order-sensitive fingerprint is read back from the pending JSON returned by
-`gaia approvals list --json`; match by the full canonical id and never derive it.
-
-The reactive single-command path is separate and begins only after the
-pre-execution policy gate
-already returned `[T3_BLOCKED]` for an attempted command. Relay its sealed
-payload unchanged, checkpoint, and stop. A blocked command must not be
-rewritten or folded into a retrospective set. Prefer the proactive one-command
-request-set above when the T3 command is known in advance from read-only
-investigation, so consent is sought because the operation is mutative, not
-because the hook intercepted it.
-
-Reactive singular command and protected-path FILE_WRITE retries are supported
-as typed grants on OpenCode (`hooks/adapters/opencode.py::_consent_retry_rejection`):
-the former binds `SCOPE_SEMANTIC_SIGNATURE`, the latter `SCOPE_FILE_PATH`.
-Request-set-of-one remains the preferred proactive path for a predictable
-command because it seals rollback and verification before any attempt.
-
-Grouping criteria are semantic, not merely numeric: one goal, exact known
-commands, ordered execution, coherent risk/rollback/verification, and no
-dependency on unseen output. Otherwise request singularly or investigate again.
+The reactive denial's request line is `gaia/approvals/core.py::request_line`,
+rendered into the denial by `hooks/modules/security/approval_messages.py`.

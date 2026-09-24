@@ -38,7 +38,7 @@ For an explicitly requested IaC review, load `code-review` with `Skill` or the h
 1. **Understand what exists**: read the relevant modules, stacks, and state before proposing anything; discover the naming and structural patterns the codebase already follows, and ground uncertain knowledge in official provider documentation rather than guessing.
 2. **Implement and plan**: before generating declarations, explicitly load `code-standards` with `Skill` or the host's available skill-loading tool and apply it to the coherent IaC change. Run the tool's simulation (`plan`, `preview`, `diff`, `synth`) to compare code against what is deployed. The plan is the evidence — read it, do not assume it.
 3. **Propose with evidence**: present the plan grounded in what you found — which existing module you followed, which patterns you matched, exactly what the plan output will create, update, or destroy.
-4. **Present T3 for review**: applying a change to live infrastructure is soft-T3. Present an APPROVAL_REQUEST plan first. If a hook blocks the apply, pass the `approval_id` from the deny response through verbatim — do not retry.
+4. **Present T3 for review**: applying a change to live infrastructure is soft-T3. Request the apply before running it (`subagent-request-approval`). If a hook blocks it, request it through the line the denial carries and report the `approval_id` that request prints — do not retry.
 5. **Execute and verify**: when apply is in the assignment and approved, apply, then confirm the intended outcome — a re-plan that shows no diff, or the resource present as declared. A declaration-only assignment closes against its requested checks without applying. In either case, check the changed artifact against `code-standards` and record evidence and limits alongside the IaC checks; a clean plan or a listed skill is not the whole definition of done.
 6. **Update context**: if you discovered infrastructure topology or module structure not in Project Context, persist it to the contracts you own (`infrastructure`, `infrastructure_topology`).
 
@@ -75,5 +75,5 @@ A resource that is the prerequisite for another surface's work is still infrastr
 | Apply timeout | Check cloud quotas and rate limits; report and retry, do not assume the change failed. |
 | State lock held | Report who holds the lock — wait, or force-unlock only with explicit caution and confirmation. |
 | Drift detected (code ≠ live) | Report the drift and ask the decision: sync code to live, or apply code to live? Do not silently pick one. |
-| Apply blocked with an `approval_id` | Emit APPROVAL_REQUEST with the `approval_id` verbatim; do not retry the command. |
+| Apply blocked with an `approval_id` | Request it through the line the denial carries (`subagent-request-approval`), then emit APPROVAL_REQUEST with the `approval_id` that request prints; do not retry the command. |
 | Change would require editing application code or a desired-state manifest | Stop at the boundary: flag the impact in `cross_layer_impacts` and name the owner. Do not edit a surface you do not own. |

@@ -11,24 +11,15 @@ ROOT = Path(__file__).resolve().parents[2]
 METADATA = ROOT / "opencode" / "consent-metadata.json"
 
 
-def test_registered_metadata_matches_plugin_constants():
-    """The audit enumeration includes every real plugin permission event."""
+def test_registered_metadata_is_the_shipped_opencode_file():
+    """The registry enumerates exactly the names the shipped metadata file declares."""
     from adapters.registry import get_adapter, registered_host_mechanism_names
     from adapters.opencode import OpenCodeAdapter
 
-    script = (
-        "import { PREFERRED_PERMISSION_EVENT, COMPATIBILITY_PERMISSION_EVENTS } "
-        f"from {json.dumps(str(ROOT / 'opencode' / 'plugin.ts'))};"
-        "console.log(JSON.stringify([PREFERRED_PERMISSION_EVENT,"
-        " ...COMPATIBILITY_PERMISSION_EVENTS]));"
-    )
-    result = subprocess.run(
-        ["bun", "-e", script], capture_output=True, text=True, check=True, timeout=30,
-    )
     names = json.loads(METADATA.read_text(encoding="utf-8"))["mechanism_names"]
-    assert names == json.loads(result.stdout)
+    assert names
     assert registered_host_mechanism_names() == (
-        "askuserquestion", "elicitationresult", *names,
+        "askuserquestion", *names,
     )
     assert isinstance(get_adapter("opencode"), OpenCodeAdapter)
     assert get_adapter("opencode") is get_adapter("opencode")
@@ -93,4 +84,4 @@ def test_copy_install_inventory_supplies_registry_metadata(tmp_path, monkeypatch
         capture_output=True, text=True, check=True, timeout=30,
     )
     expected = json.loads(METADATA.read_text(encoding="utf-8"))["mechanism_names"]
-    assert json.loads(result.stdout) == ["askuserquestion", "elicitationresult", *expected]
+    assert json.loads(result.stdout) == ["askuserquestion", *expected]

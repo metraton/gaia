@@ -10,11 +10,10 @@ exercising the SAME mechanism ``applyUpdatedInput`` (T6) already applies to
 every other tool's ``updated_input``.
 
 These tests mock every collaborator at the module boundary it is imported
-from (``ClaudeCodeAdapter.adapt_pre_tool_use`` for the delegated birth+
-validation, ``gaia.store.writer.claim_dispatch_row`` for the row claim, and
+from (``ToolPolicy.pre_tool_verdict`` for the shared birth+validation,
+``gaia.store.writer.claim_dispatch_row`` for the row claim, and
 ``modules.context.kernel_builder.build_dispatch_kernel`` for the render) so
-this subset stays a pure adapter test, per test_opencode.py's own convention
-of monkeypatching ``ClaudeCodeAdapter`` methods rather than touching the DB.
+this subset stays a pure adapter test rather than touching the DB.
 """
 
 from __future__ import annotations
@@ -27,7 +26,13 @@ HOOKS_DIR = Path(__file__).parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 from adapters.opencode import CLOSING_RULES_KERNEL, OpenCodeAdapter
-from adapters.types import HookResponse
+from adapters.tool_policy import PolicyVerdict, ToolPolicy
+
+
+def _policy_returns(monkeypatch, verdict: PolicyVerdict) -> None:
+    monkeypatch.setattr(
+        ToolPolicy, "pre_tool_verdict", lambda _self, event, **_kwargs: verdict,
+    )
 
 
 def _bypass_control_plane_attestation(monkeypatch):
@@ -72,13 +77,8 @@ def _claimed_row(prompt: str):
 
 
 def _inject(monkeypatch, prompt: str, *, task_id: str | None = None):
-    from adapters.claude_code import ClaudeCodeAdapter
-
     _bypass_control_plane_attestation(monkeypatch)
-    monkeypatch.setattr(
-        ClaudeCodeAdapter, "adapt_pre_tool_use",
-        lambda _self, event: HookResponse(output={}),
-    )
+    _policy_returns(monkeypatch, PolicyVerdict())
     monkeypatch.setattr(
         "gaia.store.writer.claim_dispatch_row",
         lambda **kwargs: _claimed_row(prompt),
@@ -102,17 +102,15 @@ def _obsolete_appended_size(prompt: str) -> int:
 def test_task_dispatch_births_row_with_dispatch_tool_use_id_from_callid(monkeypatch):
     """AC-1(a): the delegated call carries the OpenCode callID as the
     correlation key the birth path stamps into dispatch_tool_use_id."""
-    from adapters.claude_code import ClaudeCodeAdapter
-
     _bypass_control_plane_attestation(monkeypatch)
     seen = {}
 
-    def fake_policy(_self, event):
+    def fake_policy(_self, event, **_kwargs):
         seen["tool_use_id"] = event.payload.get("tool_use_id")
         seen["dispatch_prompt"] = event.payload["tool_input"]["prompt"]
-        return HookResponse(output={})
+        return PolicyVerdict()
 
-    monkeypatch.setattr(ClaudeCodeAdapter, "adapt_pre_tool_use", fake_policy)
+    monkeypatch.setattr(ToolPolicy, "pre_tool_verdict", fake_policy)
     monkeypatch.setattr(
         "gaia.store.writer.claim_dispatch_row", lambda **kwargs: None
     )
@@ -132,13 +130,8 @@ def test_task_dispatch_injects_one_kernel_with_original_goal_once(monkeypatch):
         captured_claim.update(kwargs)
         return _claimed_row(prompt)
 
-    from adapters.claude_code import ClaudeCodeAdapter
-
     _bypass_control_plane_attestation(monkeypatch)
-    monkeypatch.setattr(
-        ClaudeCodeAdapter, "adapt_pre_tool_use",
-        lambda _self, event: HookResponse(output={}),
-    )
+    _policy_returns(monkeypatch, PolicyVerdict())
     monkeypatch.setattr("gaia.store.writer.claim_dispatch_row", fake_claim)
     response = OpenCodeAdapter().adapt_pre_tool_use(_task_event(prompt=prompt))
 
@@ -161,13 +154,8 @@ def test_task_dispatch_appends_closing_rules_once_after_kernel(monkeypatch):
     appending a second copy of the original prompt. This is an
     ADAPTER-side append, never a ``kernel_builder.build_dispatch_kernel``
     change: the mock below returns a kernel with none of this text."""
-    from adapters.claude_code import ClaudeCodeAdapter
-
     _bypass_control_plane_attestation(monkeypatch)
-    monkeypatch.setattr(
-        ClaudeCodeAdapter, "adapt_pre_tool_use",
-        lambda _self, event: HookResponse(output={}),
-    )
+    _policy_returns(monkeypatch, PolicyVerdict())
     monkeypatch.setattr(
         "gaia.store.writer.claim_dispatch_row",
         lambda **kwargs: {"contract_id": "a1.tok", "agent_id": "a1"},
@@ -231,13 +219,8 @@ def test_task_dispatch_degrades_to_plain_allow_when_claim_finds_nothing(monkeypa
     """A birth/claim miss (writer error, already-claimed row, degraded
     birth) must never block or corrupt the dispatch -- the prompt is
     forwarded exactly as the delegated call returned it."""
-    from adapters.claude_code import ClaudeCodeAdapter
-
     _bypass_control_plane_attestation(monkeypatch)
-    monkeypatch.setattr(
-        ClaudeCodeAdapter, "adapt_pre_tool_use",
-        lambda _self, event: HookResponse(output={}),
-    )
+    _policy_returns(monkeypatch, PolicyVerdict())
     monkeypatch.setattr(
         "gaia.store.writer.claim_dispatch_row", lambda **kwargs: None
     )
@@ -252,20 +235,13 @@ def test_task_dispatch_degrades_to_plain_allow_when_claim_finds_nothing(monkeypa
 def test_task_dispatch_denied_by_policy_never_reaches_the_claim_step(monkeypatch):
     """A denied/asked Task dispatch has no row to claim a kernel from --
     the claim step must not even run."""
-    from adapters.claude_code import ClaudeCodeAdapter
-
     called = {"claim": False}
 
     def fail_if_called(**kwargs):
         called["claim"] = True
         return None
 
-    monkeypatch.setattr(
-        ClaudeCodeAdapter, "adapt_pre_tool_use",
-        lambda _self, event: HookResponse(
-            output={"action": "deny", "reason": "blocked agent"}, exit_code=2,
-        ),
-    )
+    _policy_returns(monkeypatch, PolicyVerdict(refusal="blocked agent"))
     monkeypatch.setattr("gaia.store.writer.claim_dispatch_row", fail_if_called)
 
     response = OpenCodeAdapter().adapt_pre_tool_use(_task_event())

@@ -5,66 +5,115 @@ description: Use when a T3 command was blocked or a predictable ordered T3 set m
 
 # Request Approval — Producer Branch
 
-## Plan-first set
+You ask for a signature by writing a few short phrases. Gaia builds everything
+else the user sees -- the header, the numbered commands, the question with
+Approve / Reject / Details, the Details page, the 30-minute validity, the ID
+and the fingerprints -- and shows the same thing on every host.
 
-After read-only investigation, collect every predictable exact T3 command that
-forms one coherent bounded operation -- one command or several. Do not attempt
-the commands first, even a single one: request it proactively through the
-same verb.
+## What you write
 
-Run one CLI request, with one `--command` per atomic item in execution order:
+Every phrase is required: Gaia refuses a request that lacks one, or has one
+over its limit, and names the flag. Write them in the user's language, with
+full spelling (accents included), for someone who does not read commands.
+
+| Flag | What it says | Limit |
+|------|--------------|-------|
+| `--what` | The title: what the request does, in human words, with no commands, flags, paths or IDs. | 120 characters |
+| `--question` | The short question the user answers. | 60 characters |
+| `--does` | Once per `--command`, in order: what that command does. | 100 characters |
+| `--impact` | Once per `--command`, in order: what changes for the user, and whether it can be undone. | 100 characters |
+
+Optional, per request: `--rollback` (how to undo it, shown in Details),
+`--verification` (how you will confirm the result). Optional, per command:
+`--cwd` (the directory it must run in, once for all or once per command) and
+`--expect-exit POSITION=CODES` (non-zero exits that still let the set go on,
+e.g. `2=1`).
+
+Example -- the request:
 
 ```
-gaia approvals request-set --command '<exact 0>' --command '<exact 1>' --rationale '<goal, risk>' --verification '<check to run after>' --rollback '<how to undo>' --agent-id <agent_id> [--session-id <session_id>]
+gaia approvals request-set \
+  --command 'python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all' \
+  --what 'Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.' \
+  --question '¿Reinstalo Gaia?' \
+  --does 'gaia dev: instala en tu espacio de trabajo la versión nueva de main.' \
+  --impact 'actualiza tu base de datos; ese cambio no se deshace.' \
+  --rollback 'volver al código anterior con --ref c1d8b89; la base queda actualizada.'
 ```
 
-A single predictable T3 command uses the identical verb with one `--command`.
+-- and what the user then sees, built by Gaia:
 
-`--session-id` is optional, and the same rule governs `request-file-write`:
-pass it only when the dispatch handed you a session id; never invent one, and
-never guess one. Omitted, the row is born without an owner and the first host
-session that presents it adopts it, in the same write as the SHOWN event
-(`bin/cli/approvals.py::cmd_opencode_present`); from then on every other
-session is refused. A dispatched OpenCode agent has no way to learn its own
-session id -- the plugin exports nothing but `GAIA_DISPATCH_AGENT` into its
-shell -- so omitting the flag is the normal case there. A wrong value is worse
-than none: an approval owned by a session that will never present it cannot be
-presented by anyone, and dies pending with a single REQUESTED event.
+```
+Solicitud de aprobación · gaia-system
+Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
 
-The CLI validates T3 eligibility, persists REQUESTED, and returns `status`, the
-canonical `approval_id`, and `command_set` with each command fingerprint. Relay
-those values inside `approval_request`; do not calculate an id or fingerprint.
-The order-sensitive `request_fingerprint` is persisted but not returned by this
-command; when it is needed, read the pending back with `gaia approvals list
---json` and match the full canonical id.
+Comandos (1)
+  1  python3 .../0ac7481a.../bin/gaia dev \
+         --workspace /home/jorge/ws/me \
+         --ref bbc2f09 \
+         --host all
+```
 
-## Blocked single command
+followed by the question `¿Reinstalo Gaia?` with Approve / Reject / Details.
+Details shows each command's `--does` and `--impact`, the rollback, the
+30-minute validity, the exact command, the ID and the fingerprint.
 
-When the pre-execution policy gate returns `[T3_BLOCKED]`, stop. Copy the
-returned `approval_id` and sealed payload verbatim into `approval_request`. Do
-not retry, reword, split, wrap, or seek the same effect through another tool.
+A protected-path write is requested the same way with
+`gaia approvals request-file-write --path <absolute path>` and one `--does` and
+`--impact` for the edit.
 
-## Checkpoint and stop
+Pass no `--session-id` or `--agent-id`: the request is sealed to the session and
+agent that ran it, read from the dispatch environment on both hosts, and only
+that agent in that session can use the signature.
 
-1. Set `agent_state` to `APPROVAL_REQUEST`.
-2. Put all exact consent data in `approval_request`, including full ordered set,
-   risk, rollback, and verification when COMMAND_SET.
-3. Add only the block/request outcome to evidence; do not duplicate payloads.
-4. Set `pending_steps` to execution after consent and `next_action` to relay the
-   request to the user.
-5. Finalize the non-terminal contract and stop; the persisted row is the delivery.
+## When a command was blocked first
 
-The producer does not present an approval as already granted and does not verify
-execution before it happens. `orchestrator-present-approval` selects the host
-modality and presents consent; `execution` owns post-grant execution.
+A T3 command you ran without asking comes back denied, and the denial carries
+a `gaia approvals request-set` (or `request-file-write`) line with the exact
+command or path already in it. Replace each `<...>` with your phrases and run
+that line. Your request replaces the one the block sealed without phrases. Do
+not retry the command, reword it, or reach its effect another way.
 
-## Grouping boundary
+## How many requests
 
-Use a set only for exact commands already implied by the accepted plan, with
-one risk/rollback/verification narrative. Do not group unrelated effects,
-alternatives, speculative cleanup, or commands derived from earlier outputs.
-Consent grouping is not atomic execution.
+Ask for the fewest signatures your knowledge allows. Everything you already
+know exactly goes into one request, in the order it must run; anything whose
+exact form depends on a result you have not seen yet waits for a later
+request. Never request a command you cannot yet write byte for byte.
 
-For continuation after a failed set, follow `command-execution` for the
-execution-time stop and `agent-protocol` for consumer reconciliation. This
-skill constructs the new exact request that reconciliation identifies.
+### One T3 alone
+
+One push: one request with one `--command`.
+
+### A known batch
+
+Push a branch and its tag: both are known now, so they go in one request, in
+order, with one `--does` and one `--impact` each:
+
+```
+gaia approvals request-set \
+  --command 'git -C /repo push origin main' \
+  --command 'git -C /repo push origin v1.4.0' \
+  --what 'Publicar la rama principal y la versión 1.4.0.' \
+  --question '¿Publico la versión 1.4.0?' \
+  --does 'Sube la rama principal al repositorio remoto.' \
+  --impact 'Los demás ven los cambios; se revierte con otro commit.' \
+  --does 'Publica la etiqueta v1.4.0.' \
+  --impact 'Dispara la publicación del paquete; no se deshace.'
+```
+
+### Batches in sequence
+
+Open a pull request, then merge it: the merge needs the PR number, which only
+exists after the first step. Request the push and the PR creation now; after
+they run and you read the number, request the merge in a new request.
+
+## After requesting
+
+The command prints the canonical `approval_id`. Set `agent_state` to
+`APPROVAL_REQUEST`, fill `approval_request` (`agent-contract-handoff`) with that
+id copied verbatim and the commands exactly as requested, set `pending_steps`
+to the execution after consent, finalize, and stop. The orchestrator presents
+it (`orchestrator-present-approval`); the approved work runs under `execution`.
+A set that failed is not resumed: after fresh investigation, request what still
+has to run as a new request.

@@ -335,36 +335,14 @@ the one state that says the turn has not ended. `gaia contract validate
 --draft-id <id>` runs the same shape check without persisting.
 
 Do not pass `--session-id` unless the dispatch handed one over -- to `gaia
-contract`, and equally to `gaia approvals request-set` / `request-file-write`.
-The born contract row already carries the session attribution, and an invented
-value (the literal `unknown`, say) corrupts it. An approval row minted without
-the flag is simply unowned until the first host session presents it and adopts
-it (`bin/cli/approvals.py::cmd_opencode_present`); an approval minted with a
-guessed value is owned by a session that will never present it, and no other
-session can. `subagent-request-approval` states the same rule from the
-producer's side.
+contract`. The born contract row already carries the session attribution, and
+an invented value (the literal `unknown`, say) corrupts it. An approval request
+takes no identity flags at all: it is sealed to the session and agent from the
+dispatch environment (`subagent-request-approval`).
 
-**Approval on OpenCode ends the turn.** There a blocked T3 attempt is a tool
-error, not a prompt the specialist can wait behind. The plugin reuses that
-already-bound specialist child for the exact native binary question; it never
-creates a separate control child and does not replace the specialist's agent or
-tool permissions. The original operation remains blocked and the specialist's
-own turn is over when the error returns. Close `APPROVAL_REQUEST` and finalize;
-do not plan to stay in the turn for the answer.
-
-Controls for the same child enter one guarded FIFO. Only the head is presented,
-and an accepted decision remains deferred until `session.idle` before its typed
-retry is armed; later approvals stay queued through idle and retry settlement.
-Exact approval/session/call/token/question correlation and one admitted decision
-lane bind the answer. Chat or free text is not consent.
-
-After safe idle, the plugin prompts the orchestrator's root session with a fixed
-notice naming the already-known specialist session and command index
-(`opencode/plugin.ts::activationNotice`). The orchestrator consumes that
-internal coordinate and re-dispatches with `task_id` = that session; the user is
-never asked to find or open it. A resumed specialist retries the byte-identical
-command at the named index and nothing else (`orchestrator-present-approval`,
-"Two ways consent reaches Gaia").
+**An approval request ends the turn.** Close `APPROVAL_REQUEST` and finalize;
+do not plan to stay in the turn for the answer. The orchestrator presents it
+and, once the user decides, resumes you to run it (`execution`).
 
 **The gate at the wall.** `_resolve_subagent_stop_gate_full` in
 `hooks/adapters/claude_code.py` resolves this turn's own dispatch row and

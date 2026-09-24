@@ -22,6 +22,7 @@
         {"matcher": "Task"},
         {"matcher": "Agent"},
         {"matcher": "SendMessage"},
+        {"matcher": "AskUserQuestion"},
         {"matcher": "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit"}
       ],
       "PostToolUse": [
@@ -29,6 +30,7 @@
         {"matcher": "Task"},
         {"matcher": "AskUserQuestion"}
       ],
+      "PostToolUseFailure": [{"matcher": "Bash"}],
       "SubagentStop": [{"matcher": "*"}],
       "SessionStart": [{"matcher": "startup|resume|compact"}],
       "SessionEnd": [{}],

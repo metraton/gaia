@@ -161,7 +161,9 @@ def test_protected_path_pending_round_trips_as_one_opaque_machine_identity(
     assert machine["payload_fingerprint"] == produced["fingerprint"]
     assert machine["agent_id"] == produced["agent_id"]
     assert machine["session_id"] == produced["session_id"]
-    assert machine["binding"] == {"session_id": produced["session_id"]}
+    assert machine["binding"] == {
+        "session_id": produced["session_id"], "agent_id": produced["agent_id"],
+    }
     assert machine["correlation_id"] == payload.get("correlation_id")
     assert machine["created_at"] == produced["created_at"]
     assert machine["decided_at"] == produced["decided_at"]

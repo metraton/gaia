@@ -97,7 +97,9 @@ def test_subagent_bash_gets_identity_injected(adapter):
     }
     resp = adapter._adapt_bash("Bash", {"command": "git status"}, hook_data=hook_data)
     cmd = _updated_command(resp)
-    assert cmd == "export GAIA_DISPATCH_AGENT=developer; git status"
+    # TMPDIR rides in the same export (tests/hooks/test_dispatch_tmpdir.py).
+    assert cmd.startswith("export GAIA_DISPATCH_AGENT=developer TMPDIR=")
+    assert cmd.endswith("; git status")
 
 
 def test_subagent_gaia_cli_command_carries_identity(adapter):
@@ -112,7 +114,7 @@ def test_subagent_gaia_cli_command_carries_identity(adapter):
     resp = adapter._adapt_bash("Bash", {"command": "gaia contract view"}, hook_data=hook_data)
     cmd = _updated_command(resp)
     assert cmd is not None
-    assert cmd.startswith("export GAIA_DISPATCH_AGENT=gaia-planner;")
+    assert cmd.startswith("export GAIA_DISPATCH_AGENT=gaia-planner ")
     assert cmd.endswith("gaia contract view")
 
 

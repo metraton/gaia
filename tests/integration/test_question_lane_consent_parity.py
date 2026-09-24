@@ -95,8 +95,10 @@ def _request_set(tmp_path, commands=(FIRST_COMMAND, SECOND_COMMAND)):
     """Seal the set with the real plan-first producer, never by hand."""
     argv = [sys.executable, str(GAIA_CLI), "approvals", "request-set"]
     for command in commands:
-        argv += ["--command", command]
+        argv += ["--command", command, "--does", "Publica una parte.", "--impact", "Queda visible."]
     argv += [
+        "--what", "Publicar la rama y la imagen.",
+        "--question", "¿Publico la rama y la imagen?",
         "--rationale", "Publish the branch and the image under one consent",
         "--verification", "git -C . log --oneline -1",
         "--rollback", "revert the published revision",
@@ -212,7 +214,8 @@ def test_question_lane_grant_executes_under_opencode_without_a_proof(
 
     assert response.output.get("action") == "allow", response.output
     row = _grant_row(substrate, approval_id)
-    assert row["session_id"] == ORCHESTRATOR_SESSION
+    # D6: the grant binds to the requesting session, not the approver's.
+    assert row["session_id"] == SUBAGENT_SESSION
     assert row["reservation_session_id"] == SUBAGENT_SESSION
     assert row["reservation_tool_use_id"] == SUBAGENT_CALL
     assert row["reservation_index"] == 0

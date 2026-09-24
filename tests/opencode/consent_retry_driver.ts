@@ -73,11 +73,27 @@ type Exchange = {
 }
 
 const exchanges: Exchange[] = []
-const permissionAsks: Record<string, unknown>[] = []
+/** Each approval a blocked step handed to the plugin's question, in order. */
+const presentations: Record<string, unknown>[] = []
 const controlPrompts: Record<string, any>[] = []
 const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
-let lastBridgeRequiresApproval = false
+
+/**
+ * The arguments the control-plane model passes, parsed from the plugin's
+ * instruction as a model would copy them, and the question the host then asks:
+ * whatever the plugin left in those same arguments after tool.execute.before.
+ */
+function controlQuestionCall(prompt: any): { sessionID: string; args: any } {
+  const sessionID = prompt?.path?.id
+  const instruction = prompt?.body?.parts?.[0]?.text
+  const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
+  const args = encoded ? JSON.parse(encoded) : undefined
+  if (typeof sessionID !== "string" || !Array.isArray(args?.questions)) {
+    throw new Error("driver observed no control-plane question call")
+  }
+  return { sessionID, args }
+}
 
 /** A manually released barrier, independent of bridge subprocess timing. */
 function barrier() {
@@ -168,10 +184,6 @@ async function policyBridge(event: Record<string, unknown>) {
   const isAuditTrace = AUDIT_TRACE_EVENTS.has(String(event.event))
   if (!isAuditTrace) {
     lastBridgeAction = (received as any)?.action
-    lastBridgeRequiresApproval = Boolean(
-      (received as any)?.approval_id
-      || String((received as any)?.reason ?? "").match(/approval_id:\s*P-[A-Za-z0-9-]+/),
-    )
   }
   return received
 }
@@ -215,23 +227,13 @@ const client = {
       permissionTransitions.push({ sessionID, before, after: sessionPermissions.get(sessionID) })
       controlPrompts.push(request)
       if (scenario.questionDuringPrompt === true && request.body.system !== undefined && !promptRaceQuestion) {
-        const instruction = request.body.parts?.[0]?.text
-        const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
-        const questions = encoded ? JSON.parse(encoded).questions : undefined
-        if (!Array.isArray(questions)) throw new Error("driver observed no prompt-race control question")
-        const question = questions[0]
-        promptRaceQuestion = {
-          sessionID,
-          requestID: "question-during-prompt",
-          callID: "question-call-during-prompt",
-          questions,
-          question,
-        }
+        const { args } = controlQuestionCall(request)
+        const callID = "question-call-during-prompt"
         controlQuestionBeforeCalls++
-        await plugin["tool.execute.before"](
-          { sessionID, callID: promptRaceQuestion.callID, tool: "question" },
-          { args: { questions } },
-        )
+        await plugin["tool.execute.before"]({ sessionID, callID, tool: "question" }, { args })
+        const questions = args.questions
+        const question = questions[0]
+        promptRaceQuestion = { sessionID, requestID: "question-during-prompt", callID, questions, question }
         await plugin.event({ event: {
           type: "question.asked",
           properties: {
@@ -259,18 +261,15 @@ const directory = process.env.WORKSPACE ?? process.cwd()
 plugin = await GaiaOpenCodePlugin({ gaiaBridge, client, directory })
 const argsByCall = new Map<string, any>()
 
-async function presentPermission(step: any) {
-  const permission = {
-    id: step.permissionID ?? scenario.permissionID ?? `perm-${permissionAsks.length + 1}`,
-    sessionID: step.sessionID,
-    callID: step.callID,
-    title: "host permission",
-    metadata: {},
-  }
-  const permissionOutput = { status: "ask" as const }
-  await plugin["permission.ask"](permission, permissionOutput)
-  permissionAsks.push({ permission, status: permissionOutput.status })
-  return permissionOutput.status
+/** The approval the policy bridge named for this call; concurrent steps share no global. */
+function bridgeApprovalIDFor(callID: string): string | undefined {
+  const exchange = exchanges.findLast((item: any) =>
+    item.sent?.event === "tool.execute.before" && item.sent?.callID === callID && item.received?.approval_id)
+  return (exchange as any)?.received?.approval_id
+}
+
+function recordPresentation(step: any, approvalID: string) {
+  presentations.push({ approvalID, sessionID: step.sessionID, callID: step.callID })
 }
 
 /** Deliver one host event and record its observable result, including refusals. */
@@ -283,7 +282,6 @@ async function runStep(step: any): Promise<void> {
       const args = step.reuseArgs ? argsByCall.get(step.callID) : step.args ?? { command: step.command }
       argsByCall.set(step.callID, args)
       lastBridgeAction = undefined
-      lastBridgeRequiresApproval = false
       record.commandBefore = args.command
       beforeCallsInFlight++
       try {
@@ -295,27 +293,28 @@ async function runStep(step: any): Promise<void> {
         beforeCallsInFlight--
       }
       record.commandAfter = args.command
-      if (lastBridgeAction === "allow") {
-        record.allowed = true
-        stepResults.push(record)
-        return
-      }
-      record.allowed = await presentPermission(step) === "allow"
+      record.allowed = true
     } else if (step.kind === "shell-env") {
       const output = { env: {} as Record<string, string> }
       await plugin["shell.env"]({ sessionID: step.sessionID, callID: step.callID, cwd: directory }, output)
       record.env = output.env
       // Never execute the signed publication text: only observe the delivered
-      // child environment -- the identity it carries and which `gaia` it resolves.
+      // child environment -- the identity it carries, which `gaia` it resolves,
+      // and where its temporary files go.
       const child = Bun.spawn([
         "python3", "-B", "-c",
-        "import os, shutil; print(os.environ.get('GAIA_DISPATCH_AGENT', '<unset>')); print(shutil.which('gaia') or '<none>')",
+        "import os, shutil, tempfile; print(os.environ.get('GAIA_DISPATCH_AGENT', '<unset>')); "
+          + "print(shutil.which('gaia') or '<none>'); print(os.environ.get('TMPDIR', '<unset>')); "
+          + "print(tempfile.gettempdir())",
       ], {
-        env: { ...process.env, ...output.env }, stdout: "pipe", stderr: "pipe",
+        env: { ...process.env, TMPDIR: "/tmp", ...output.env }, stdout: "pipe", stderr: "pipe",
       })
-      const [childIdentity, gaiaOnPath] = (await new Response(child.stdout).text()).trim().split("\n")
+      const [childIdentity, gaiaOnPath, childTmpdir, childTempdir] =
+        (await new Response(child.stdout).text()).trim().split("\n")
       record.childIdentity = childIdentity
       record.gaiaOnPath = gaiaOnPath
+      record.childTmpdir = childTmpdir
+      record.childTempdir = childTempdir
       if (await child.exited !== 0) throw new Error("identity observation child failed")
       record.allowed = true
     } else if (step.kind === "after") {
@@ -403,22 +402,6 @@ async function runStep(step: any): Promise<void> {
         },
       })
       record.allowed = true
-    } else if (step.kind === "replied") {
-      await plugin.event({
-        event: {
-          type: step.eventType ?? "permission.replied",
-          properties: {
-            sessionID: step.sessionID ?? scenario.sessionID,
-            permissionID: step.requestID,
-            response: step.reply,
-          },
-        },
-      })
-      await plugin.event({ event: {
-        type: "session.idle",
-        properties: { sessionID: step.sessionID ?? scenario.sessionID },
-      } })
-      record.allowed = true
     } else if (step.kind === "observe-controls") {
       record.controlPromptCount = controlPrompts.length
       record.specialistControlPromptCount = controlPrompts.filter(
@@ -426,14 +409,8 @@ async function runStep(step: any): Promise<void> {
       ).length
       record.allowed = true
     } else if (step.kind === "question-event") {
-      const prompt = controlPrompts.at(-1)
-      const controlSessionID = prompt?.path?.id
-      const instruction = prompt?.body?.parts?.[0]?.text
-      const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
-      const questions = encoded ? JSON.parse(encoded).questions : undefined
-      if (typeof controlSessionID !== "string" || !Array.isArray(questions)) {
-        throw new Error("driver observed no structured Gaia control question")
-      }
+      const { sessionID: controlSessionID, args } = controlQuestionCall(controlPrompts.at(-1))
+      const questions = args.questions
       await plugin.event({ event: {
         type: "question.asked",
         properties: {
@@ -471,18 +448,22 @@ async function runStep(step: any): Promise<void> {
       } })
       record.allowed = true
     } else if (step.kind === "control-decision") {
-      const prompt = controlPrompts.at(-1)
-      const controlSessionID = prompt?.path?.id
-      const instruction = prompt?.body?.parts?.[0]?.text
-      const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
-      const questions = encoded ? JSON.parse(encoded).questions : undefined
-      if (typeof controlSessionID !== "string" || !Array.isArray(questions)) {
-        throw new Error("driver observed no structured Gaia control question")
-      }
-      const question = questions[0]
-      const callQuestions = [hostNormalizedQuestion(question, step.questionCallEncoding)]
+      const { sessionID: controlSessionID, args: modelArgs } = controlQuestionCall(controlPrompts.at(-1))
+      record.modelQuestion = structuredClone(modelArgs.questions[0])
       const requestID = step.requestID ?? `question-${controlPrompts.length}`
       const callID = step.callID ?? `question-call-${controlPrompts.length}`
+      await plugin["tool.execute.before"](
+        { sessionID: controlSessionID, callID, tool: "question" },
+        { args: modelArgs },
+      )
+      const callQuestions = modelArgs.questions
+      const question = callQuestions[0]
+      if (step.secondQuestionCall === true) {
+        await plugin["tool.execute.before"](
+          { sessionID: controlSessionID, callID: `${callID}-second`, tool: "question" },
+          { args: { questions: structuredClone(callQuestions) } },
+        )
+      }
       const askedEvent = { event: {
         type: "question.asked",
         properties: {
@@ -490,16 +471,6 @@ async function runStep(step: any): Promise<void> {
           questions: [hostNormalizedQuestion(question, step.questionEncoding)],
         },
       } }
-      await plugin["tool.execute.before"](
-        { sessionID: controlSessionID, callID, tool: "question" },
-        { args: { questions: callQuestions } },
-      )
-      if (step.secondQuestionCall === true) {
-        await plugin["tool.execute.before"](
-          { sessionID: controlSessionID, callID: `${callID}-second`, tool: "question" },
-          { args: { questions: callQuestions } },
-        )
-      }
       await plugin.event(askedEvent)
       if (step.duplicateQuestionEvent === true) {
         await plugin.event({ event: {
@@ -507,11 +478,8 @@ async function runStep(step: any): Promise<void> {
           properties: { ...askedEvent.event.properties, id: `${requestID}-duplicate` },
         } })
       }
-      const selected = step.answer === "approve"
-        ? question.options[0].label
-        : step.answer === "reject"
-          ? question.options[1].label
-          : step.answer
+      const byAnswer: Record<string, number> = { approve: 0, reject: 1, details: 2 }
+      const selected = step.answer in byAnswer ? question.options[byAnswer[step.answer]].label : step.answer
       await plugin.event({ event: {
         type: "question.replied",
         properties: {
@@ -538,8 +506,9 @@ async function runStep(step: any): Promise<void> {
     // tool.execute.before ends every non-allow decision by throwing. The throw
     // IS the observation for a blocked step, so it is recorded rather than
     // propagated -- a driver that died here would report nothing.
-    if (step.kind === "before" && lastBridgeRequiresApproval) {
-      await presentPermission(step)
+    const approvalID = step.kind === "before" ? bridgeApprovalIDFor(step.callID) : undefined
+    if (approvalID) {
+      recordPresentation(step, approvalID)
       record.requiresApproval = true
     }
     record.allowed = false
@@ -619,7 +588,7 @@ function redactIdentity(exchange: Exchange) {
 console.log(JSON.stringify({
   steps: stepResults,
   exchanges: scenario.redactIdentityRecords ? exchanges.map(redactIdentity) : exchanges,
-  permissionAsks,
+  presentations,
   controlPrompts,
   permissionTransitions,
   sessionPermissions: Object.fromEntries(sessionPermissions),

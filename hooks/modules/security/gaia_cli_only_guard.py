@@ -459,6 +459,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("approvals", "list"),
     ("approvals", "pending"),
     ("approvals", "show"),
+    ("approvals", "question"),
     ("approvals", "history"),
     ("approvals", "stats"),
     # Substrate and installation diagnostics. Each was verified read-only by
@@ -591,6 +592,11 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("memory", "reclassify"),
     ("memory", "link"),
     ("memory", "checkpoint"),
+    # Withdrawal (D5 of brief aprobaciones-agnosticas-al-host): the coordinator
+    # may reject or revoke an approval it can see going stale, because both only
+    # take back consent Gaia issued. Granting stays out: `approve` is denied below.
+    ("approvals", "reject"),
+    ("approvals", "revoke"),
 })
 
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
@@ -606,22 +612,11 @@ ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRI
 # consent-governed paths. Coordinator-owned brief and lifecycle writes are
 # separately allowlisted and shape-checked below.
 #
-# The approvals six split cleanly along the read/write line this guard
-# enforces, and that line is NOT the same line security-tiers draws for T3:
-# per security-tiers, ``revoke``/``reject``/``reject-all``/``clean`` are
-# themselves NOT T3 (they only revoke or discard a grant Gaia itself issued,
-# never reaching outside the local approval store -- see
-# CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS), while ``approve`` stays T3 because
-# it grants capability without the AskUserQuestion flow. But this guard is
-# narrower than the T3 gate: it allows the orchestrator's bare CLI lane only
-# the verbs that read an approval's state back, never one that writes a row
-# in the approvals store -- and all six of these write a row (a grant, a
-# replay-of-execution, or a discard), whether or not that write also happens
-# to need the user's consent. So all six stay denied here, deliberately, for
-# a reason narrower than "is this T3": approving/replaying GRANT capability,
-# revoking/rejecting/reject-all/clean DISCARD or clear it, and every one of
-# those six is still a write to state this guard's allowlist does not open,
-# even the ones security-tiers itself does not gate behind approval.
+# Of the approvals writes, only single reject/revoke are admitted (above):
+# ``approve`` and ``replay`` GRANT capability without the user's consent
+# surface, so they stay denied for the coordinator whatever their tier;
+# ``reject-all`` and ``clean`` sweep many rows at once and stay with a
+# specialist or the user.
 EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("task", "add"),
     ("task", "remove"),
@@ -642,8 +637,6 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("plan", "delete"),
     ("approvals", "approve"),
     ("approvals", "replay"),
-    ("approvals", "revoke"),
-    ("approvals", "reject"),
     ("approvals", "reject-all"),
     ("approvals", "clean"),
     ("memory", "edit"),
@@ -687,6 +680,23 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("cleanup",),
     ("dev",),
 })
+
+
+# Flags each admitted withdrawal verb accepts besides its one APPROVAL_ID.
+_WITHDRAW_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    ("approvals", "reject"): frozenset({"--reason", "--json"}),
+    ("approvals", "revoke"): frozenset({"--yes"}),
+}
+
+
+def _explicitly_denied_reason(phrase: Tuple[str, ...]) -> str:
+    """Return the categorical denial for a phrase excluded from the orchestrator."""
+    return (
+        f"GAIA CLI ONLY: 'gaia {' '.join(phrase)}' is explicitly excluded "
+        f"from the orchestrator's allowlist (a mutation that belongs to a "
+        f"specialist's own governed path, not a bare CLI call). Denied "
+        f"outright, not approvable."
+    )
 
 
 def match_allowed_phrase(
@@ -945,12 +955,7 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
 
     denied = match_allowed_phrase(candidate, EXPLICITLY_DENIED_PHRASES)
     if denied is not None:
-        return False, (
-            f"GAIA CLI ONLY: 'gaia {' '.join(denied)}' is explicitly excluded "
-            f"from the orchestrator's allowlist (a mutation that belongs to a "
-            f"specialist's own governed path, not a bare CLI call). Denied "
-            f"outright, not approvable."
-        )
+        return False, _explicitly_denied_reason(denied)
 
     shown = " ".join(candidate) if candidate else "<no subcommand>"
     return False, (
@@ -1158,6 +1163,17 @@ def _validate_orchestrator_write(
         valid = bool(args) and not args[0].startswith("-")
     elif phrase == ("plan", "change", "approve"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1].isdigit()
+    elif phrase in _WITHDRAW_FLAGS:
+        # One approval by id. `reject --all` (or any abbreviation argparse
+        # expands to it) is the reject-all sweep and gets that verdict.
+        flag_names = [arg.split("=", 1)[0] for arg in args if arg.startswith("-")]
+        if any(len(name) > 2 and "--all".startswith(name) for name in flag_names):
+            return _explicitly_denied_reason(("approvals", "reject-all"))
+        positional = [
+            arg for i, arg in enumerate(args)
+            if not arg.startswith("-") and (i == 0 or args[i - 1] != "--reason")
+        ]
+        valid = len(positional) == 1 and set(flag_names) <= _WITHDRAW_FLAGS[phrase]
     elif phrase == ("task", "gate", "reverify"):
         valid = (
             len(args) >= 3 and not args[0].startswith("-")

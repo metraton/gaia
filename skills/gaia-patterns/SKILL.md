@@ -52,7 +52,10 @@ Entry points (`hooks/*.py`) are stdin/stdout glue only. All logic lives in the a
 
 ```
 hooks/pre_tool_use.py          -- reads stdin, calls adapter, writes stdout
-  -> adapters/claude_code.py   -- parses event, dispatches to modules
+  -> adapters/claude_code.py   -- parses event, formats the host response
+                                  (adapters/opencode.py is OpenCode's)
+    -> adapters/tool_policy.py -- the shared tool policy both adapters call
+    -> gaia/approvals/core.py  -- the host-neutral approval core
     -> modules/security/*      -- blocked_commands, mutative_verbs
     -> modules/context/*       -- contracts_loader, kernel_builder
     -> modules/agents/*        -- dispatch_binding, artifact_skill_map

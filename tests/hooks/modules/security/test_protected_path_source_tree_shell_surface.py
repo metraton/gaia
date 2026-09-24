@@ -112,8 +112,8 @@ class TestOneSharedPredicate:
         )
 
     def test_write_edit_gate_consumes_the_same_predicate(self):
-        adapter = REPO_ROOT / "hooks" / "adapters" / "claude_code.py"
-        tree = ast.parse(adapter.read_text(encoding="utf-8"))
+        gate = REPO_ROOT / "hooks" / "adapters" / "tool_policy.py"
+        tree = ast.parse(gate.read_text(encoding="utf-8"))
 
         imports = [
             node

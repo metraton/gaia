@@ -19,6 +19,7 @@ Public API::
         evidence_dir,
         worktrees_dir,
         tmp_dir,
+        dispatch_tmp_dir,
         rejected_turns_dir,
         ensure_layout,
         workspace_id,  # alias for gaia.project.current()
@@ -36,6 +37,7 @@ from gaia.paths.resolver import (
     cache_dir,
     data_dir,
     db_path,
+    dispatch_tmp_dir,
     events_dir,
     evidence_dir,
     logs_dir,
@@ -66,6 +68,7 @@ __all__ = [
     "evidence_dir",
     "worktrees_dir",
     "tmp_dir",
+    "dispatch_tmp_dir",
     "rejected_turns_dir",
     "ensure_layout",
     "workspace_id",

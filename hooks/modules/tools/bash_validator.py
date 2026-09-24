@@ -92,6 +92,7 @@ from ..security.protected_path_guard import (
     check as check_protected_path_write,
 )
 from ..security.shell_write_guard import check as check_shell_write
+from ..security.sensitive_read_guard import check as check_sensitive_read
 from ..security.publish_attribution_guard import check as check_publish_attribution
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
 # `..tools.stage_decomposer`, which (via this package's own __init__.py
@@ -133,14 +134,14 @@ class BashValidationResult:
     # plain error string (exit 2).  Used for structured block responses that
     # should correct the agent rather than terminate execution.
     block_response: Optional[Dict[str, Any]] = None
-    # When a T3 command is allowed because it matched (and consumed) an active
-    # grant, this carries the approval_id of that grant. The adapter stashes it
-    # in HookState so the terminal event is appended to the approval_events
-    # chain for this approval -- EXECUTED by PostToolUse on a clean exit, or
-    # FAILED by the Stop-hook reconciliation on a non-zero exit (the host does
-    # not fire PostToolUse then). None for non-T3 / no-grant paths.
+    # The approval_id of the grant a T3 command matched and consumed; the
+    # adapter keeps it in HookState so the call's own terminal event records
+    # EXECUTED or FAILED against it. None for non-T3 / no-grant paths.
     consumed_approval_id: Optional[str] = None
     command_set_reservation: Optional[Dict[str, Any]] = None
+    # The pending approval a T3 denial asks consent for, named structurally so
+    # no adapter reads it back out of the denial text.
+    approval_id: Optional[str] = None
 
     def __post_init__(self):
         if self.suggestions is None:
@@ -1045,6 +1046,24 @@ class BashValidator:
             return _composition_result
 
         # ================================================================
+        # SENSITIVE READ GUARD
+        # Reading or listing a path on the shared sensitive list is refused
+        # with the same reason Read/Glob/Grep get, and no approval. Runs after
+        # composition so the exfiltration pipe keeps its own verdict, and
+        # after the account-path write above so a write keeps its signature.
+        # ================================================================
+        sensitive_allowed, sensitive_reason = check_sensitive_read(
+            command, (hook_payload or {}).get("cwd") or None,
+        )
+        if not sensitive_allowed:
+            logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=sensitive_reason,
+            )
+
+        # ================================================================
         # PHASE 5: AGGREGATE
         # 3e. Dispatch to per-stage classifiers (single or compound)
         # and combine into the final BashValidationResult.
@@ -1205,9 +1224,10 @@ class BashValidator:
                         reason="COMMAND_SET denied: adapter lacks stable tool-call correlation",
                     )
             try:
-                from gaia.store.writer import reserve_plan_command
-                cs_match = reserve_plan_command(
-                    command, session_id=session_id, tool_use_id=tool_use_id
+                from gaia.approvals.core import match_command
+                cs_match = match_command(
+                    command, cwd=cwd or os.getcwd(), session_id=session_id,
+                    agent_id=agent_type or None, tool_use_id=tool_use_id,
                 )
             except Exception as exc:
                 return BashValidationResult(
@@ -1226,7 +1246,13 @@ class BashValidator:
             # DB-primary + filesystem-fallback grant check.
             # check_approval_grant() now returns a DB row first (Brief 71 CHECK-
             # side cutover), falling back to filesystem when no DB row exists.
-            grant = check_approval_grant(command, session_id=session_id)
+            from gaia.approvals.core import grant_lookup_filter
+            grant = check_approval_grant(
+                command, session_id=session_id,
+                requester=grant_lookup_filter(
+                    cwd=cwd or os.getcwd(), session_id=session_id, agent_id=agent_type,
+                ),
+            )
             if grant is not None:
                 # Consume the DB semantic grant immediately (replay protection,
                 # Gap B fix).  Single-use: a consumed grant will not match on a
@@ -1251,16 +1277,6 @@ class BashValidator:
                     except Exception as _cg_err:
                         logger.warning(
                             "DB semantic grant consume failed (non-fatal): %s", _cg_err
-                        )
-                    # Also mark the companion filesystem grant as used so the
-                    # filesystem fallback path cannot replay the same command.
-                    try:
-                        from ..security.approval_grants import consume_grant as _consume_fs_grant
-                        _consume_fs_grant(command, session_id=session_id)
-                    except Exception as _fs_cg_err:
-                        logger.debug(
-                            "Filesystem grant consume (companion cleanup) failed "
-                            "(non-fatal): %s", _fs_cg_err
                         )
 
                 if grant.confirmed:
@@ -1315,6 +1331,7 @@ class BashValidator:
                     session_id=session_id,
                     agent_type=agent_type,
                     guidance=result.guidance,
+                    cwd=cwd,
                 )
 
         # Flag-dependent classification (sed -i, find -exec, tar -x, etc.)
@@ -1350,9 +1367,10 @@ class BashValidator:
                     # every retry (the flag path never reaches the matcher).  The
                     # consume + return semantics replicate the verb branch exactly.
                     try:
-                        from gaia.store.writer import reserve_plan_command
-                        cs_match = reserve_plan_command(
-                            command, session_id=session_id, tool_use_id=tool_use_id
+                        from gaia.approvals.core import match_command
+                        cs_match = match_command(
+                            command, cwd=cwd or os.getcwd(), session_id=session_id,
+                            agent_id=agent_type or None, tool_use_id=tool_use_id,
                         )
                     except Exception as exc:
                         return BashValidationResult(
@@ -1368,7 +1386,14 @@ class BashValidator:
                             command_set_reservation=cs_match,
                         )
 
-                    grant = check_approval_grant(command, session_id=session_id)
+                    from gaia.approvals.core import grant_lookup_filter
+                    grant = check_approval_grant(
+                        command, session_id=session_id,
+                        requester=grant_lookup_filter(
+                            cwd=cwd or os.getcwd(), session_id=session_id,
+                            agent_id=agent_type,
+                        ),
+                    )
                     if grant is not None:
                         # Consume the DB semantic grant immediately (replay
                         # protection) -- identical to the verb branch.
@@ -1393,18 +1418,6 @@ class BashValidator:
                                 logger.warning(
                                     "DB semantic grant consume failed (non-fatal): %s",
                                     _cg_err,
-                                )
-                            # Also mark the companion filesystem grant as used so
-                            # the filesystem fallback path cannot replay it.
-                            try:
-                                from ..security.approval_grants import (
-                                    consume_grant as _consume_fs_grant,
-                                )
-                                _consume_fs_grant(command, session_id=session_id)
-                            except Exception as _fs_cg_err:
-                                logger.debug(
-                                    "Filesystem grant consume (companion cleanup) "
-                                    "failed (non-fatal): %s", _fs_cg_err
                                 )
 
                         if grant.confirmed:
@@ -1451,6 +1464,7 @@ class BashValidator:
                         native_ask_reason=native_ask_reason,
                         session_id=session_id,
                         agent_type=agent_type,
+                        cwd=cwd,
                     )
 
         # Not blocked, not mutative -> SAFE by elimination
@@ -1569,9 +1583,7 @@ class BashValidator:
         )
 
         # Propagate the consumed approval_id from whichever component matched a
-        # grant, so the terminal event is recorded for that approval (EXECUTED
-        # by PostToolUse on a clean exit, or FAILED by the Stop-hook
-        # reconciliation on a non-zero exit).
+        # grant, so the call's terminal event closes that approval.
         consumed_approval_id = next(
             (r.consumed_approval_id for r in component_results if r.consumed_approval_id),
             None,
@@ -1837,13 +1849,36 @@ class BashValidator:
 # T2.1 DB-backed helpers (cutover from filesystem approval cache)
 # ---------------------------------------------------------------------------
 
-def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
-    """Query the DB for an existing pending approval matching this command/session.
+def _pending_requests_of(session_id: str, agent_id: str) -> list:
+    """Return the pending requests, oldest first, whose sealed requester is this session and agent.
+
+    A pending is reused only by its own requester (D6): approving it seals a
+    grant bound to ``requested_by``, so naming it to anyone else yields a
+    grant that requester cannot consume and a second signature for the same
+    command. A payload that names no requester is never reused.
+    """
+    from gaia.approvals.store import get_pending
+    import json as _json
+
+    requester = {"session_id": session_id, "agent_id": agent_id}
+    own = []
+    for row in get_pending(all_sessions=True):
+        try:
+            payload = _json.loads(row.get("payload_json") or "")
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("requested_by") == requester:
+            own.append((row, payload))
+    return own
+
+
+def _find_pending_in_db(session_id: str, command: str, agent_id: str) -> Optional[str]:
+    """Return the requester's own pending approval matching this command, else None.
 
     Replaces find_pending_for_command() (filesystem) as part of the T2.1
-    cutover. Looks up approvals with status='pending' in the DB and matches
-    each pending's stored command against the incoming command using the SAME
-    semantic matcher the consumption path uses (check_db_semantic_grant /
+    cutover. Looks up the pending requests of this session and agent and
+    matches each one's stored command against the incoming command using the
+    SAME semantic matcher the consumption path uses (check_db_semantic_grant /
     matches_approval_signature), instead of a byte-exact comparison (Fix B).
 
     Why semantic, not byte-exact (double-approval fix, B):
@@ -1859,41 +1894,22 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
         keep-path policy), so distinct operations are NOT collapsed together.
 
     Args:
-        session_id: Current session identifier (empty string if unknown).
-            Retained for signature compatibility; NOT used to scope the query
-            (see cross-session note below).
+        session_id: Session of the host event that was blocked.
         command: The Bash command that was blocked.
+        agent_id: Agent of the host event that was blocked.
 
     Returns:
         The approval_id (P-{hex}) if a matching pending exists, else None.
     """
     try:
-        from gaia.approvals.store import get_pending
         from ..security.approval_scopes import (
             SCOPE_SEMANTIC_SIGNATURE,
             build_approval_signature,
             matches_approval_signature,
         )
-        import json as _json
-        # Dedup MUST be cross-session (all_sessions=True). A T3 command can be
-        # blocked under the subagent session and a pending row minted there;
-        # if this lookup were scoped to the current session it would miss that
-        # row on any cross-session retry, and insert_requested() would mint a
-        # fresh P- on every miss -- a new approval conjured "from thin air" each
-        # time. The semantic match below keeps the reuse pinned to THIS
-        # command's operation, so widening the session scope does not collapse
-        # distinct commands together.
-        rows = get_pending(all_sessions=True)
         # Newest-first so a retry reuses the most recent matching pending,
         # mirroring check_db_semantic_grant()'s ORDER BY created_at DESC.
-        for row in reversed(rows):
-            payload_str = row.get("payload_json")
-            if not payload_str:
-                continue
-            try:
-                payload = _json.loads(payload_str)
-            except Exception:
-                continue
+        for row, payload in reversed(_pending_requests_of(session_id, agent_id)):
             pending_command = payload.get("exact_content")
             if not pending_command:
                 continue
@@ -1919,11 +1935,11 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
     return None
 
 
-def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
-    """Return the id of a pending plan-first COMMAND_SET that carries ``command``.
+def _find_pending_plan_set_in_db(command: str, session_id: str, agent_id: str) -> Optional[str]:
+    """Return the id of this requester's pending plan-first COMMAND_SET that carries ``command``.
 
-    A blocked command that is an item of a set the user has not answered yet
-    must be refused under THAT approval's id. Only a payload whose
+    A blocked command that is an item of a set its requester has not had
+    answered yet must be refused under THAT approval's id. Only a payload whose
     ``request_type`` is ``COMMAND_SET`` and which carries a
     ``request_fingerprint`` activates into the reservation lane
     (``insert_plan_command_set``, reached from ``activate_db_pending_by_id``
@@ -1940,25 +1956,16 @@ def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
 
     Args:
         command: The Bash command that was classified T3.
+        session_id: Session of the host event that was blocked.
+        agent_id: Agent of the host event that was blocked.
 
     Returns:
         The approval_id (P-{hex}) of the pending set, else None.
     """
     try:
-        from gaia.approvals.store import get_pending
-        import json as _json
-
-        # Newest-first, mirroring _find_pending_in_db: get_pending returns
-        # oldest-first, and the most recently requested set is the one the user
-        # is being asked about.
-        for row in reversed(get_pending(all_sessions=True)):
-            payload_str = row.get("payload_json")
-            if not payload_str:
-                continue
-            try:
-                payload = _json.loads(payload_str)
-            except Exception:
-                continue
+        # Newest-first, mirroring _find_pending_in_db: the most recently
+        # requested set is the one the user is being asked about.
+        for row, payload in reversed(_pending_requests_of(session_id, agent_id)):
             if payload.get("request_type") != "COMMAND_SET":
                 continue
             request_fingerprint = payload.get("request_fingerprint")
@@ -1975,6 +1982,20 @@ def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
             "_find_pending_plan_set_in_db query failed (non-fatal): %s", _err
         )
     return None
+
+
+def _phrases_request_line(approval_id: str, payload: Optional[dict] = None) -> str:
+    """The request line the denial asks for when the named pending has no phrases; else empty.
+
+    No host shows a request without its requester's phrases (PD10), so naming
+    such a pending as the approval to report would strand the requester.
+    """
+    from gaia.approvals import core
+    from gaia.approvals.store import get_by_id
+
+    if payload is None:
+        payload = json.loads((get_by_id(approval_id) or {}).get("payload_json") or "{}")
+    return core.request_line(payload) if core.missing_phrases(payload) else ""
 
 
 #: What the sealed payload may state for impact, rollback and verification,
@@ -2118,8 +2139,17 @@ def _build_sealed_payload(
     category: str,
     agent_type: str = "",
     command_set: list | None = None,
+    *,
+    cwd: str | None = None,
+    session_id: str = "",
 ) -> dict:
     """Build a sealed_payload dict from hook-intercepted command context.
+
+    Sealed through gaia.approvals.core.seal_request like every other request:
+    each item carries the directory it was attempted in (``cwd``, else this
+    process's), no declared non-zero exit, its position and fingerprint, and
+    the payload names the requesting session and agent exactly as the host
+    event gave them (``core.RequesterError`` when either is missing).
 
     Used by the T2.1 cutover path when bash_validator detects a T3 command
     and calls store.insert_requested(). The 7 D13 fields are populated from
@@ -2159,7 +2189,7 @@ def _build_sealed_payload(
             semantic-signature behaviour.
 
     Returns:
-        Dict with the 7 sealed_payload fields from D13, plus an optional
+        The payload from ``seal_request("command", ...)``, which carries a
         ``command_set`` key when a multi-command set was supplied.
     """
     # Normalize the command_set into the canonical [{command, rationale}, ...]
@@ -2186,32 +2216,30 @@ def _build_sealed_payload(
     # command bytes, request_fingerprint the ordered command list -- so these
     # statements cannot move what a post-grant retry must keep byte-identical.
     authored = _authored_statements(verb, category)
+    from gaia.approvals.core import seal_request
 
-    payload = {
-        "operation": f"{category} command intercepted: {verb}",
-        "exact_content": command,
-        "scope": command.split()[0] if command.strip() else "unknown",
-        "risk_level": "high" if category.upper() == "DESTRUCTIVE" else "medium",
-        "impact": authored.get("impact"),
-        "rollback_hint": authored.get("rollback"),
-        "verification": authored.get("verification"),
-        "rationale": (
+    directory = cwd or os.getcwd()
+    items = normalized_set if is_command_set else [{"command": command, "rationale": ""}]
+    # The program's name, not its path: the title is limited to 120 characters.
+    base = os.path.basename(command.split()[0]) if command.strip() else "unknown"
+    return seal_request(
+        "command",
+        [{**item, "cwd": directory, "expect_exit": []} for item in items],
+        what=f"Run {base} {verb} ({category.lower()})",
+        session_id=session_id,
+        agent_id=agent_type,
+        rollback=authored.get("rollback"),
+        verification=authored.get("verification"),
+        impact=authored.get("impact"),
+        rationale=(
             f"Agent '{agent_type}' attempted a {category.lower()} ({verb}) command "
             "that requires user approval per the T3 security policy."
             if agent_type
             else f"A {category.lower()} ({verb}) command requires user approval per T3 policy."
         ),
-        "commands": (
-            [it["command"] for it in normalized_set] if is_command_set else [command]
-        ),
-    }
-
-    if is_command_set:
-        # Carry the full {command, rationale} set verbatim. This is the
-        # multi-command signal the activation path branches on.
-        payload["command_set"] = normalized_set
-
-    return payload
+        operation=f"{category} command intercepted: {verb}",
+        risk_level="high" if category.upper() == "DESTRUCTIVE" else "medium",
+    )
 
 
 def decide_t3_outcome(
@@ -2225,8 +2253,12 @@ def decide_t3_outcome(
     agent_type: str = "",
     command_set: list | None = None,
     guidance: str = "",
+    cwd: str | None = None,
 ) -> BashValidationResult:
     """Single decision point for the outcome of a T3 (state-mutating) command.
+
+    ``cwd`` is the directory the command was attempted in; it is sealed into
+    the pending request so the grant matches only there.
 
     Every T3 classifier -- mutative verbs, pipe composition (file_to_exec), and
     flag-dependent mutations -- converges here so the deny-vs-ask policy is
@@ -2298,6 +2330,21 @@ def decide_t3_outcome(
     is_chain_command_set = len(_normalized_set) > 1
 
     if has_orchestrator_above:
+        # No requester in the host event: nothing is sealed and no approval_id
+        # is named, because a request bound to a guessed identity could be
+        # consumed by whoever shares the guess.
+        from gaia.approvals.core import RequesterError, resolve_requester
+        try:
+            resolve_requester(session_id, agent_type)
+        except RequesterError as exc:
+            reason = f"T3 {category.lower()} command denied without a signature: {exc}"
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=reason,
+                block_response=build_hook_permission_response("deny", reason),
+            )
+
         # Subagent-under-orchestrator: deny + persisted approval_id so the
         # orchestrator can run the approval cycle.  Reuse an existing pending
         # approval on retry to avoid generating duplicates while the user reviews.
@@ -2316,14 +2363,14 @@ def decide_t3_outcome(
             # reservation lane; a singular id named here -- freshly minted or
             # reused -- strands the set, because approving it never creates a
             # grant and the retry blocks again.
-            approval_id = _find_pending_plan_set_in_db(command)
+            approval_id = _find_pending_plan_set_in_db(command, session_id, agent_type)
             if approval_id:
                 logger.info(
                     "Naming pending plan-first COMMAND_SET approval_id=%s for: %s",
                     approval_id, command[:80],
                 )
             else:
-                approval_id = _find_pending_in_db(session_id or "", command)
+                approval_id = _find_pending_in_db(session_id, command, agent_type)
                 if approval_id:
                     logger.info(
                         "Reusing pending approval_id=%s for retry: %s",
@@ -2336,6 +2383,7 @@ def decide_t3_outcome(
                     verb=verb,
                     category=category,
                     guidance=guidance,
+                    request_line=_phrases_request_line(approval_id),
                 )
                 hook_deny = build_hook_permission_response("deny", reason)
                 return BashValidationResult(
@@ -2343,6 +2391,7 @@ def decide_t3_outcome(
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"T3 {category.lower()} command: {command[:60]}",
                     block_response=hook_deny,
+                    approval_id=approval_id,
                 )
 
         # No existing pending -- insert via DB (D16: exclusive path).
@@ -2352,6 +2401,8 @@ def decide_t3_outcome(
             category=category,
             agent_type=agent_type,
             command_set=_normalized_set if is_chain_command_set else None,
+            cwd=cwd,
+            session_id=session_id,
         )
         try:
             from gaia.approvals.store import insert_requested
@@ -2470,6 +2521,7 @@ def decide_t3_outcome(
             verb=verb,
             category=category,
             guidance=guidance,
+            request_line=_phrases_request_line(approval_id, sealed_payload),
         )
         hook_deny = build_hook_permission_response("deny", reason)
         return BashValidationResult(
@@ -2477,6 +2529,7 @@ def decide_t3_outcome(
             tier=SecurityTier.T3_BLOCKED,
             reason=f"T3 {category.lower()} command: {command[:60]}",
             block_response=hook_deny,
+            approval_id=approval_id,
         )
 
     # No orchestrator above (orchestrator itself, or security context): the

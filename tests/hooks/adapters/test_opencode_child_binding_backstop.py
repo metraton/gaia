@@ -18,8 +18,8 @@ Two halves:
 
 Mocks every collaborator at the module boundary it is imported from
 (``gaia.store.writer.is_harness_session_bound`` /
-``gaia.store.writer.bind_harness_child_session``, ``ClaudeCodeAdapter.
-adapt_pre_tool_use`` for the delegated policy), per this directory's own
+``gaia.store.writer.bind_harness_child_session``, ``ToolPolicy.
+pre_tool_verdict`` for the shared policy), per this directory's own
 convention of a pure adapter test that never touches the DB.
 """
 
@@ -76,12 +76,12 @@ def test_unbound_dispatched_child_is_denied_by_the_named_backstop(monkeypatch):
 
 
 def test_bound_dispatched_child_passes_through_to_ordinary_policy(monkeypatch):
-    from adapters.claude_code import ClaudeCodeAdapter
+    from adapters.tool_policy import PolicyVerdict, ToolPolicy
 
     monkeypatch.setattr("gaia.store.writer.is_harness_session_bound", lambda *a, **k: True)
     monkeypatch.setattr(
-        ClaudeCodeAdapter, "adapt_pre_tool_use",
-        lambda _self, event: HookResponse(output={"action": "allow"}),
+        ToolPolicy, "pre_tool_verdict",
+        lambda _self, event, **_kwargs: PolicyVerdict(),
     )
 
     response = OpenCodeAdapter().adapt_pre_tool_use(_child_tool_event())
@@ -94,7 +94,7 @@ def test_backstop_never_engages_for_the_primary_sessions_own_tool_call(monkeypat
     """The primary carries no dispatch handle at all -- the backstop must
     never even consult the binding table for it (a deny here would be a
     denial-of-service against the orchestrator itself)."""
-    from adapters.claude_code import ClaudeCodeAdapter
+    from adapters.tool_policy import PolicyVerdict, ToolPolicy
 
     called = {"checked": False}
 
@@ -104,8 +104,8 @@ def test_backstop_never_engages_for_the_primary_sessions_own_tool_call(monkeypat
 
     monkeypatch.setattr("gaia.store.writer.is_harness_session_bound", fail_if_called)
     monkeypatch.setattr(
-        ClaudeCodeAdapter, "adapt_pre_tool_use",
-        lambda _self, event: HookResponse(output={"action": "allow"}),
+        ToolPolicy, "pre_tool_verdict",
+        lambda _self, event, **_kwargs: PolicyVerdict(),
     )
 
     response = OpenCodeAdapter().adapt_pre_tool_use(_primary_tool_event())

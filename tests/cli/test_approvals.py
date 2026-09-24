@@ -243,7 +243,13 @@ class TestCmdList:
     # ----- --orphans-only --------------------------------------------------
 
     def test_list_orphans_only_filters_live_sessions(self, capsys, db_store):
-        """With --orphans-only, pendings from live sessions are hidden."""
+        """With --orphans-only, pendings from live sessions are hidden.
+
+        The reading counts a request's own recent activity as a sign of life,
+        so the quiet period is patched to zero: only the registry decides here.
+        """
+        from datetime import timedelta
+
         _store, insert_pending = db_store
         insert_pending("live cmd", session_id="session-alive",
                        approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
@@ -253,7 +259,7 @@ class TestCmdList:
         with patch(
             "modules.session.session_registry.get_live_sessions",
             return_value={"session-alive"},
-        ):
+        ), patch("gaia.approvals.reading.sign_of_life", return_value=timedelta(0)):
             rc = approvals_mod.cmd_list(_make_args(orphans_only=True, json=True))
 
         assert rc == 0
@@ -539,20 +545,13 @@ class TestCmdShow:
 
         assert rc == 0
         output = json.loads(capsys.readouterr().out)
-        expected = approvals_mod._native_consent_presentation(payload, self.canonical_id)
-        assert output == expected
-        assert output["visible_text"] == expected["visible_text"]
-        assert output["metadata"]["commands"] == commands
-        assert output["metadata"]["fingerprints"] == [
-            _sha256(command) for command in commands
-        ]
-        assert output["approve_label"] == (
-            f"Approve -- COMMAND_SET approval request (2 commands) [{self.canonical_id}]"
-        )
-        assert "No impact statement was declared" in output["visible_text"]
-        assert "No rollback was declared" in output["visible_text"]
-        assert "No verification step was declared" in output["visible_text"]
-        assert "No window was declared" in output["visible_text"]
+        assert output == approvals_mod._signature_surface(payload, self.canonical_id)
+        assert "Comandos (2)" in output["text"]
+        for index, command in enumerate(commands, start=1):
+            assert f"  {index}  {command}" in output["details"]
+            assert _sha256(command) in output["details"]
+        assert "Rollback: no declarado" in output["details"]
+        assert "approve_label" not in output
         assert store.get_by_id(self.canonical_id) == before_row
         assert store.get_history(self.canonical_id) == before_events
         assert [event["event_type"] for event in before_events] == ["REQUESTED"]
@@ -695,7 +694,7 @@ class TestCmdReject:
 
         assert approvals_mod.cmd_reject(args) == 0
         assert store.get_by_id(first)["status"] == "pending"
-        assert store.get_by_id(second)["status"] == "revoked"
+        assert store.get_by_id(second)["status"] == "rejected"
 
     def test_same_prefix_live_grant_rejects_only_exact_id(self):
         first = "P-deadbeef000000000000000000000000"
@@ -784,23 +783,23 @@ class TestCmdRejectAll:
         assert data["reason"] == "bulk-test"
 
     def test_reject_all_partial_failure(self, capsys, db_store, monkeypatch):
-        """When one revoke call fails, exit 1 and report partial status."""
+        """When one reject call fails, exit 1 and report partial status."""
         _store, insert_pending = db_store
         insert_pending("git push origin main", approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
         insert_pending("kubectl delete pod x", verb="delete",
                        approval_id="P-cccc3333dddd4444cccc3333dddd4444")
 
-        # Make the second revoke raise.
-        orig_revoke = _store.revoke
+        # Make the second reject raise.
+        orig_reject = _store.reject
         calls = {"n": 0}
 
-        def flaky_revoke(approval_id, session_id, **kw):
+        def flaky_reject(approval_id, session_id, **kw):
             calls["n"] += 1
             if calls["n"] == 2:
-                raise RuntimeError("simulated revoke failure")
-            return orig_revoke(approval_id, session_id, **kw)
+                raise RuntimeError("simulated reject failure")
+            return orig_reject(approval_id, session_id, **kw)
 
-        monkeypatch.setattr(_store, "revoke", flaky_revoke)
+        monkeypatch.setattr(_store, "reject", flaky_reject)
 
         rc = approvals_mod.cmd_reject(self._make_reject_all_args(json=True))
         assert rc == 1
@@ -875,19 +874,19 @@ class TestCmdRejectAllSubcommand:
         assert "P-cccc3333" in captured.out
         assert "P-eeee5555" in captured.out
 
-    def test_reject_all_marks_pendings_revoked_in_db(self, db_store):
-        """reject-all must transition DB rows pending -> revoked (not delete them)."""
+    def test_reject_all_marks_pendings_rejected_in_db(self, db_store):
+        """reject-all must transition DB rows pending -> rejected (not delete them)."""
         _store, insert_pending = db_store
         aid = insert_pending("git push origin main",
                              approval_id="P-aaaa1111bbbb2222aaaa1111bbbb2222")
 
         approvals_mod.cmd_reject_all(self._make_args())
 
-        # The row still exists but is now revoked (append-only audit preserved).
+        # The row still exists but is now rejected (append-only audit preserved).
         row = _store.get_by_id(aid)
         assert row is not None, "reject-all must not delete the DB row"
-        assert row["status"] == "revoked", (
-            "reject-all transitions pending -> revoked via store.revoke()"
+        assert row["status"] == "rejected", (
+            "reject-all transitions pending -> rejected through the core's withdrawal"
         )
 
     def test_reject_all_does_not_touch_already_decided(self, capsys, db_store):
@@ -967,9 +966,9 @@ class TestCmdRejectAllSubcommand:
 
         assert rc == 0
         captured = capsys.readouterr()
-        # The DB pending is revoked regardless of --workspace.
+        # The DB pending is rejected regardless of --workspace.
         assert "1 pending(s) rejected" in captured.out
-        assert _store.get_by_id(aid)["status"] == "revoked"
+        assert _store.get_by_id(aid)["status"] == "rejected"
         # Informational note about --workspace being ignored is on stderr.
         assert "workspace" in captured.err.lower()
 
@@ -1021,7 +1020,7 @@ class TestCmdRejectAllSubcommand:
 class TestCmdClean:
     """cmd_clean (DB-only since FS retirement).
 
-    Expired DB pending rows (older than 24h) are revoked.  Expired
+    Expired DB pending rows (older than 24h) are expired.  Expired
     approval_grants rows (past expires_at) are transitioned to EXPIRED.
     No filesystem grant files are swept.
     """
@@ -1059,8 +1058,8 @@ class TestCmdClean:
         assert data["dry_run"] is True
         assert "would_remove" in data
 
-    def test_clean_live_revokes_expired_db_pending(self, capsys, db_store):
-        """Live clean revokes DB pending rows older than 24h."""
+    def test_clean_live_expires_expired_db_pending(self, capsys, db_store):
+        """Live clean expires DB pending rows older than 24h."""
         _store, insert_pending = db_store
         aid = insert_pending("kubectl delete pod", verb="delete",
                              approval_id="P-aabb1122ccdd3344aabb1122ccdd3344")
@@ -1074,8 +1073,7 @@ class TestCmdClean:
 
         rc = approvals_mod.cmd_clean(_make_args(dry_run=False))
         assert rc == 0
-        # The expired row is now revoked.
-        assert _store.get_by_id(aid)["status"] == "revoked"
+        assert _store.get_by_id(aid)["status"] == "expired"
 
     def test_clean_live_keeps_fresh_db_pending(self, capsys, db_store):
         """Live clean must NOT revoke a fresh (< 24h) pending."""
@@ -1134,27 +1132,32 @@ class TestCmdStats:
 # ---------------------------------------------------------------------------
 
 class TestCmdRequestFileWrite:
-    """cmd_request_file_write mints a SCOPE_FILE_PATH pending up front, through
-    the same write_pending_approval_for_file() the reactive PreToolUse block
-    uses -- so what this handler wires from argparse into `context` is what
-    ends up sealed. tests/hooks/modules/security/test_file_write_context_sealing.py
-    covers the sealing and reuse properties directly against that function;
-    this covers the CLI layer this handler itself adds (argument wiring,
-    validation, printed/returned shape)."""
+    """cmd_request_file_write mints a phrased SCOPE_FILE_PATH pending up front
+    through gaia.approvals.core.request_file_write; this covers the CLI layer
+    the handler adds (argument wiring, validation, printed/returned shape)."""
 
     def _args(self, **kwargs):
         defaults = {
             "path": "/tmp/does-not-need-to-exist/protected.py",
+            "what": "Ajustar el archivo protegido.",
+            "question": "¿Edito el archivo?",
+            "does": "Cambia la validación del archivo.",
+            "impact": "Afecta a quien lo ejecute.",
             "rationale": None,
             "verification": None,
             "rollback": None,
-            "impact": None,
-            "agent_id": None,
+            "agent_id": "developer",
             "session_id": "test-session-aaa",
             "json": False,
         }
         defaults.update(kwargs)
         return SimpleNamespace(**defaults)
+
+    def test_a_request_with_no_resolvable_agent_is_rejected(self, capsys, db_store):
+        """D6: a request is bound to its requester, so an unknown agent cannot seal one."""
+        rc = approvals_mod.cmd_request_file_write(self._args(agent_id=None))
+        assert rc == 1
+        assert "carries no agent" in capsys.readouterr().err
 
     def test_rejects_a_relative_path(self, capsys, db_store):
         rc = approvals_mod.cmd_request_file_write(

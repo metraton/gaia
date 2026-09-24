@@ -551,6 +551,49 @@ def _extract_brief_id(envelope: dict):
     return brief_id or None
 
 
+_HANDOFF_DECISIONS = {
+    "approved": "APPROVED", "rejected": "REJECTED", "revoked": "REVOKED",
+    "replaced": "REVOKED", "expired": "EXPIRED",
+}
+_GRANT_DECISIONS = {"REVOKED": "REVOKED", "EXPIRED": "EXPIRED"}
+
+
+def handoff_approval_decision(approval_id: str, db_path=None) -> Optional[tuple]:
+    """The ``(decision, decided_at)`` an APPROVAL_REQUEST handoff records for ``approval_id``.
+
+    ``None`` while nothing is decided -- a pending or orphaned request, or an
+    id no row names -- so a request is never recorded approved before it is
+    signed. An approved request whose grant was revoked or lapsed records that.
+    """
+    import sqlite3
+
+    from gaia.approvals import reading, store
+
+    con = store._open_db(db_path) if db_path is not None else store._open_db()
+    try:
+        grant = con.execute(
+            "SELECT status, consumed_at, revoked_at FROM approval_grants WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        try:
+            approval = store.get_by_id(approval_id, con=con)
+        except sqlite3.OperationalError:
+            approval = None
+    finally:
+        con.close()
+    if approval is None:
+        if grant is None:
+            return None
+        return _GRANT_DECISIONS.get(grant[0], "APPROVED"), grant[1] or grant[2]
+    state = reading.read_ids([approval_id], db_path=db_path).get(approval_id, {}).get("state")
+    decision = _HANDOFF_DECISIONS.get(state)
+    if decision is None:
+        return None
+    if decision == "APPROVED" and grant is not None:
+        return _GRANT_DECISIONS.get(grant[0], decision), grant[1] or grant[2] or approval.get("decided_at")
+    return decision, approval.get("decided_at")
+
+
 def close_born_dispatch_row(
     _writer,
     *,
@@ -1100,37 +1143,15 @@ def persist_handoff(
                     approval_id = approval_req.get("approval_id")
                     if approval_id:
                         try:
-                            grants = _writer.list_approval_grants(
-                                session_id=session_id
-                            )
-                            decision = "APPROVED"
-                            decided_at_val = _writer._now_iso()
-                            for g in grants:
-                                if g.get("approval_id") == approval_id:
-                                    grant_status = g.get("status", "PENDING")
-                                    if grant_status == "CONSUMED":
-                                        decision = "APPROVED"
-                                    elif grant_status == "REVOKED":
-                                        decision = "REVOKED"
-                                    elif grant_status == "EXPIRED":
-                                        decision = "EXPIRED"
-                                    else:
-                                        # PENDING treated as granted
-                                        decision = "APPROVED"
-                                    decided_at_val = (
-                                        g.get("consumed_at")
-                                        or g.get("revoked_at")
-                                        or decided_at_val
-                                    )
-                                    break
-
-                            _writer.insert_handoff_approval(
-                                handoff_id=handoff_id,
-                                approval_id=approval_id,
-                                decision=decision,
-                                decided_at=decided_at_val,
-                                db_path=db_path,
-                            )
+                            decided = handoff_approval_decision(approval_id, db_path)
+                            if decided is not None:
+                                _writer.insert_handoff_approval(
+                                    handoff_id=handoff_id,
+                                    approval_id=approval_id,
+                                    decision=decided[0],
+                                    decided_at=decided[1] or _writer._now_iso(),
+                                    db_path=db_path,
+                                )
                         except Exception as _approval_exc:
                             logger.warning(
                                 "T9 backstop: approval row write failed for "

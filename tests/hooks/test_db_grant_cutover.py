@@ -53,7 +53,9 @@ def _make_schema(con: sqlite3.Connection) -> None:
     con.executescript(writer._SCHEMA_PATH.read_text(encoding="utf-8"))
 
 
-def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
+def _sealed_payload(
+    command: str, *, agent_type: str = "test-agent", session_id: str = "test-cutover-session",
+) -> dict:
     """Seal ``command`` with the REAL producer, fed the classifier's own verdict.
 
     The verdict is asserted mutative before it is used: a payload built from a
@@ -70,6 +72,7 @@ def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
         verb=verdict.verb,
         category=verdict.category,
         agent_type=agent_type,
+        session_id=session_id,
     )
 
 
@@ -358,7 +361,7 @@ class TestFullCycleViaValidator:
 
         # Step 1: Validator blocks command, writes REQUESTED to DB.
         result1 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id
+            command, is_subagent=True, session_id=session_id, agent_type="test-agent"
         )
         assert not result1.allowed, "T3 command must be blocked on first attempt"
 
@@ -387,7 +390,7 @@ class TestFullCycleViaValidator:
 
         # Step 4: Retry -- validator must allow.
         result2 = validate_bash_command(
-            command, is_subagent=True, session_id=session_id
+            command, is_subagent=True, session_id=session_id, agent_type="test-agent"
         )
         assert result2.allowed, (
             f"Retry after DB activation must be allowed, got: {result2.reason}"
@@ -405,7 +408,7 @@ class TestFullCycleViaValidator:
         if row2 is not None and row2[0] == "CONSUMED":
             # Step 6: Second retry -- must be blocked (replay protection).
             result3 = validate_bash_command(
-                command, is_subagent=True, session_id=session_id
+                command, is_subagent=True, session_id=session_id, agent_type="test-agent"
             )
             # Note: if filesystem fallback grant still exists (not yet cleaned up),
             # this may still pass until SubagentStop. The important thing is the
@@ -479,7 +482,7 @@ class TestFlagPathFullCycleViaValidator:
 
         # Step 1: subagent issues the command -> blocked, REQUESTED persisted.
         result1 = validate_bash_command(
-            command, is_subagent=True, session_id=session_sub
+            command, is_subagent=True, session_id=session_sub, agent_type="test-agent"
         )
         assert not result1.allowed, "flag-path T3 command must block on first attempt"
 
@@ -510,7 +513,7 @@ class TestFlagPathFullCycleViaValidator:
 
         # Step 4: subagent retries under its own session -> MUST be allowed.
         result2 = validate_bash_command(
-            command, is_subagent=True, session_id=session_sub
+            command, is_subagent=True, session_id=session_sub, agent_type="test-agent"
         )
         assert result2.allowed, (
             "flag-path retry after activation MUST be allowed (grant honoured); "
@@ -544,7 +547,7 @@ class TestFlagPathFullCycleViaValidator:
         ids = []
         for _ in range(3):
             res = validate_bash_command(
-                command, is_subagent=True, session_id=session_sub
+                command, is_subagent=True, session_id=session_sub, agent_type="test-agent"
             )
             assert not res.allowed, "each retry must block while unapproved"
             reason = res.block_response.get("hookSpecificOutput", {}).get(
@@ -585,7 +588,7 @@ class TestConsumeAtMatch:
         from modules.security.approval_grants import activate_db_pending_by_id
 
         blocked = validate_bash_command(
-            command, is_subagent=True, session_id=session_id
+            command, is_subagent=True, session_id=session_id, agent_type="test-agent"
         )
         assert not blocked.allowed, "T3 command must block on first attempt"
         reason = blocked.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -615,7 +618,7 @@ class TestConsumeAtMatch:
         assert row_before[1] is None, "consumed_at must be unset before the match"
 
         # The match: bash_validator AUTHORIZES the command (PreToolUse).
-        allowed = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        allowed = validate_bash_command(command, is_subagent=True, session_id=session_id, agent_type="test-agent")
         assert allowed.allowed, f"grant must authorize the retry, got: {allowed.reason}"
 
         # Consumption happened AT the match, independent of any execution outcome.
@@ -638,10 +641,10 @@ class TestConsumeAtMatch:
 
         self._block_and_activate(command, session_id)
 
-        first = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        first = validate_bash_command(command, is_subagent=True, session_id=session_id, agent_type="test-agent")
         assert first.allowed, "first (matching) validate must authorize"
 
-        second = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        second = validate_bash_command(command, is_subagent=True, session_id=session_id, agent_type="test-agent")
         assert not second.allowed, (
             "second validate of the same command must be denied -- the grant was "
             "consumed at the first match (replay protection)"
@@ -692,7 +695,7 @@ class TestGrantReuse:
         )
 
         # ...and authorizing through the validator consumes it (single-use).
-        allowed = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        allowed = validate_bash_command(command, is_subagent=True, session_id=session_id, agent_type="test-agent")
         assert allowed.allowed, f"fresh validate must authorize the live grant: {allowed.reason}"
 
         row2 = assert_con.execute(

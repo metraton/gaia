@@ -27,9 +27,10 @@ Agnosticism (decision #1):
     not violate agnosticism. What IS forbidden, and enforced by never
     importing anything under ``hooks/`` from this module, is coupling to the
     Claude Code harness. This module imports only the standard library plus
-    two other gaia-substrate modules that are themselves harness-free:
-    ``gaia.paths`` (DB path resolution) and ``gaia.approvals.store``
-    (the canonical read API for the ``approvals`` table).
+    gaia-substrate modules that are themselves harness-free on the paths it
+    uses: ``gaia.paths`` (DB path resolution), ``gaia.approvals.store`` (the
+    canonical read API for the ``approvals`` table) and
+    ``gaia.approvals.reading`` (the derived state of a non-pending row).
 
 Read-only by construction:
     The DB is opened with a ``mode=ro`` URI connection -- this layer NEVER
@@ -65,9 +66,8 @@ from gaia.contract.validator import FormValidationResult, validate_form
 # The lowercase 'pending' status column value on the `approvals` table
 # (schema.sql CHECK: 'pending' 'approved' 'rejected' 'revoked' 'expired').
 # NOT to be confused with the UPPERCASE PENDING used by the unrelated
-# `approval_grants` (T3 command_set) table -- see agent-approval-protocol
-# SKILL.md "Status vocabularies -- distinct columns, opposite casing, never
-# collapse". The agent_contract_handoff `approval_request.approval_id` field
+# `approval_grants` (T3 command_set) table; the two columns never collapse.
+# The agent_contract_handoff `approval_request.approval_id` field
 # is a `P-{uuid4_hex}` id that resolves against `approvals`, not
 # `approval_grants`.
 _PENDING_STATUS = "pending"
@@ -193,12 +193,14 @@ def _extract_approval_id(envelope: Any) -> Optional[str]:
 
 
 def _lookup_status(db_path: Path, approval_id: str) -> Optional[str]:
-    """Read-only lookup of ``approvals.status`` for ``approval_id``.
+    """Read-only lookup of ``approval_id``: 'pending', or the derived state it left pending in.
 
-    Opens the connection in ``mode=ro`` URI form so this layer NEVER creates
-    or mutates gaia.db -- pure observation. Returns None when the row, the
-    ``approvals`` table, or the database itself is not queryable (all
-    collapse to "does not resolve to a pending grant").
+    A decided or withdrawn row is named by ``gaia.approvals.reading``, so a
+    replaced or expired request is not reported as revoked. Opens the
+    connection in ``mode=ro`` URI form so this layer NEVER creates or mutates
+    gaia.db -- pure observation. Returns None when the row, the ``approvals``
+    table, or the database itself is not queryable (all collapse to "does not
+    resolve to a pending grant").
     """
     uri = f"file:{db_path}?mode=ro"
     try:
@@ -206,10 +208,13 @@ def _lookup_status(db_path: Path, approval_id: str) -> Optional[str]:
     except sqlite3.OperationalError:
         return None
     try:
-        from gaia.approvals.store import get_by_id
+        from gaia.approvals.reading import decision_state
+        from gaia.approvals.store import get_by_id, get_history
 
         row = get_by_id(approval_id, con=con)
-        return row["status"] if row else None
+        if row is None or row["status"] == _PENDING_STATUS:
+            return row["status"] if row else None
+        return decision_state(row, get_history(approval_id, con=con))
     except sqlite3.OperationalError:
         # e.g. a foreign/older gaia.db that predates the `approvals` table.
         return None
@@ -258,10 +263,7 @@ def validate_crosscheck(
             "row in gaia.db"
         )
     else:
-        detail = (
-            f"approval_id {approval_id!r} resolves to status {status!r}, "
-            "not 'pending'"
-        )
+        detail = f"approval_id {approval_id!r} is {status}, not pending"
 
     error = CrossCheckError(
         code=CrossCheckErrorCode.APPROVAL_ID_NOT_PENDING,

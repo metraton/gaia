@@ -30,6 +30,7 @@ Public API::
     )
 """
 
+import hashlib
 import os
 import sys
 from pathlib import Path
@@ -265,6 +266,23 @@ def tmp_dir() -> Path:
         ``data_dir() / "tmp"``
     """
     return data_dir() / "tmp"
+
+
+def dispatch_tmp_dir(owner: str) -> Path:
+    """Return the TMPDIR a dispatched agent's shell receives, one per run.
+
+    ``owner`` is the host's own identity for the dispatched run: Claude Code's
+    ``agent_id``, OpenCode's child ``sessionID``. The name is twelve hex digits
+    of its SHA-256 so the path stays short: a unix socket path must fit in
+    104 bytes on macOS (108 on Linux), and tools bind sockets several levels
+    below TMPDIR. ``opencode/plugin.ts::dispatchTmpDir`` derives this same path
+    in TypeScript; a divergence would split one agent's temporaries across two
+    roots, and ``tests/integration/test_opencode_shell_env.py`` compares both.
+
+    Returns:
+        ``tmp_dir() / <12 hex of sha256(owner)>`` (not created here).
+    """
+    return tmp_dir() / hashlib.sha256(owner.encode()).hexdigest()[:12]
 
 
 def rejected_turns_dir() -> Path:

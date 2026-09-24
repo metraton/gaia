@@ -2109,17 +2109,6 @@ def _check_iam_policy_binding(
     return None
 
 
-ACCOUNT_SENSITIVE_HOME_PREFIXES: FrozenSet[str] = frozenset({
-    ".ssh", ".gnupg", ".aws", ".kube", ".docker",
-    ".config/gcloud", ".config/gh", ".config/git",
-})
-
-ACCOUNT_SENSITIVE_HOME_FILES: FrozenSet[str] = frozenset({
-    ".bashrc", ".bash_profile", ".bash_login", ".profile",
-    ".zshrc", ".zprofile", ".zshenv",
-    ".netrc", ".git-credentials", ".gitconfig",
-})
-
 # A redirect's destination, taken from the operator onward, the clobber
 # override `>|` included: it writes the same file as `>`, and a gate one
 # operator away is not a gate. `2>&1` yields the fd `1`, which no path
@@ -2127,50 +2116,16 @@ ACCOUNT_SENSITIVE_HOME_FILES: FrozenSet[str] = frozenset({
 _REDIRECT_TARGET_RE = _re.compile(r"\d?>>?\|?\s*&?\s*([^\s;|&]+)")
 
 
-def _home_relative_path(token: str) -> str:
-    """The part of *token* under $HOME, or "" when it lands anywhere else.
-
-    Three spellings must fold onto one answer -- `~/x`, an unexpanded `$HOME/x`
-    (classification runs before the shell expands anything), and the absolute.
-    """
-    import os
-
-    home = os.path.expanduser("~")
-    candidate = token
-    for prefix in ("~/", "$HOME/", "${HOME}/"):
-        if candidate.startswith(prefix):
-            candidate = os.path.join(home, candidate[len(prefix):])
-            break
-
-    if not os.path.isabs(candidate):
-        return ""
-
-    norm = os.path.normpath(candidate)
-    if norm != home and not norm.startswith(home + os.sep):
-        return ""
-    return os.path.relpath(norm, home)
-
-
 def is_account_sensitive_path(token: str) -> bool:
     """True when writing *token* hands out access to the user's own account.
 
     Deliberately NOT MKDIR_SENSITIVE_PATH_PREFIXES: that set is sensitive by
-    LOCATION (privileged OS directories) and treats the whole home directory
-    as safe, which is the reasoning that left `~/.ssh/authorized_keys` open.
-    These paths are sensitive by CONTENTS -- they decide who may log in, they
-    run on the next shell or the next git invocation, they name the program
-    that hands out the credentials, or they are the credentials themselves --
-    and an object valuable by its contents stays T3 wherever it sits.
+    LOCATION (privileged OS directories). The account set is sensitive by
+    CONTENTS and lives in ``sensitive_paths``, the one list every lane reads.
     """
-    relative = _home_relative_path(token)
-    if not relative:
-        return False
-    if relative in ACCOUNT_SENSITIVE_HOME_FILES:
-        return True
-    return any(
-        relative == prefix or relative.startswith(prefix + "/")
-        for prefix in ACCOUNT_SENSITIVE_HOME_PREFIXES
-    )
+    from .sensitive_paths import is_account_path
+
+    return is_account_path(token)
 
 
 def account_path_redirect_target(command: str) -> str:

@@ -38,6 +38,15 @@
         ]
       },
       {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"
+          }
+        ]
+      },
+      {
         "matcher": "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit",
         "hooks": [
           {
@@ -68,6 +77,17 @@
       },
       {
         "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",

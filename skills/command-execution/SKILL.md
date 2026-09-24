@@ -11,7 +11,10 @@ One command, one result, one exit code. This skill owns invocation discipline;
 ## Before the call
 
 1. Prefer a native CLI flag to a pipe and a file tool to shell file I/O.
-2. Use an absolute path or the CLI's native working-directory flag.
+2. Use an absolute path or the CLI's native working-directory flag. Never
+   search from the home directory (`~`) or from `/`: locate a binary or package
+   with `gaia paths`, `which`, or its known path, and root a `find`, `grep` or
+   glob at the smallest directory that can hold the answer.
 3. Run one atomic command. Never chain with `&&`, `||`, `;`, pipes, redirects,
    background execution, substitutions, `bash -c`, `sh -c`, or `eval`.
 4. Classify the exact string with `security-tiers`. T0/T1 reads and validation
@@ -58,7 +61,10 @@ One command, one result, one exit code. This skill owns invocation discipline;
    back to attribute and reclaim the entry once the contract closes. A file
    worth keeping as proof of what was done is deposited as evidence through
    the contract's evidence clause (`agent-contract-handoff`), not left sitting
-   in scratch or committed as a side effect.
+   in scratch or committed as a side effect. Temporaries a tool creates on its
+   own (pytest's `tmp_path`, build caches, sockets) are neither: a dispatched
+   agent's shell already carries `TMPDIR` under `~/.gaia/tmp`, so leave it in
+   place instead of pointing a tool at `/tmp`.
 8. Work against a SCRATCH DATABASE by setting `GAIA_DB` to a file under the
    scratch directory, named by `contract_id` like any other scratch entry
    (`~/.gaia/scratch/<contract_id>.db`). `GAIA_DB` is FILE-scoped: it relocates

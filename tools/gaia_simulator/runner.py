@@ -339,11 +339,12 @@ class HookRunner:
     def _prepare_payload(self, event: ReplayEvent) -> str:
         """Serialize the event payload for the hook subprocess.
 
-        Injects ``agent_id`` into tool-call payloads that lack one, so
-        delegate mode recognises them as subagent context instead of
-        blocking them as orchestrator calls. Agent/SendMessage/Task
-        payloads are left untouched since the orchestrator context is
-        correct for those.
+        Gives a tool-call payload that lacks ``agent_id`` the identity a
+        Claude Code subagent event carries -- the instance as ``agent_id``
+        and the agent's name as ``agent_type`` -- so delegate mode sees
+        subagent context and a T3 request binds to that agent instead of
+        being refused for naming none. Agent/SendMessage/Task payloads are
+        left untouched since the orchestrator context is correct for those.
 
         Args:
             event: The ReplayEvent being replayed.
@@ -355,7 +356,11 @@ class HookRunner:
         tool_name = (payload.get("tool_name") or event.tool_name or "").lower()
 
         if not payload.get("agent_id") and tool_name not in self._ORCHESTRATOR_TOOLS:
-            payload = {**payload, "agent_id": "replay-simulator"}
+            payload = {
+                **payload,
+                "agent_id": "replay-simulator",
+                "agent_type": payload.get("agent_type") or "replay-simulator",
+            }
 
         return json.dumps(payload)
 

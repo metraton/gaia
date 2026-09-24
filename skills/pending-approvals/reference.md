@@ -1,50 +1,36 @@
 # Pending approvals reference
 
-The primary store is `approvals` plus `approval_events` and
-`approval_grants` in Gaia's shared database. `gaia approvals list/show` query
-that store; full-id lookup is not constrained to the current session.
+The store is `approvals`, `approval_events` and `approval_grants` in Gaia's
+database. Read and change it only through `gaia approvals`; never edit the
+database directly.
 
-Legacy singular grants may still exist outside the decision table. CLI
-compatibility for them is exact equality on the complete stored id, never
-prefix selection. Do not inspect, edit, move, or delete either backing store directly; use the CLI so
-status, fingerprints, audit events, expiry, and ambiguity checks remain intact.
+## States
 
-There is no automatic pending-approval injection into a new conversation.
-Discovery is an explicit user action: list/search pending approvals or provide a
-full id. Before approval, re-present the exact payload. Short labels and raw
-nonces are invalid lookup keys even when they happen to be unique.
+Every reader derives one state from the stored rows
+(`gaia/approvals/reading.py`); none is a stored value.
 
-COMMAND_SET progress is DB-only and may end partially completed. Display the
-full ordered set plus `next_index`, consumed indexes, failed index/reason, and
-status when present. `FAILED` is terminal/frozen: untouched remainder is audit
-history, not pending authorization. Approving a pending request activates it;
-it does not prove any command executed. `SKILL.md` carries the current
-COMMAND_SET activation shape: a plan-first `request-set` pending -- the one
-carrying a `request_fingerprint` -- now activates through the same writer from
-either entry point, so the structured decision path and the CLI `approve` path
-are no longer split. Read it there rather than inferring either state from this
-line.
+| State | Meaning |
+|-------|---------|
+| `pending` | Undecided, waiting for the user. |
+| `orphaned` | Undecided, but the session that requested it shows no sign of life. Withdraw it, or let it expire. |
+| `expired` | Undecided past the 24-hour pending lifetime. |
+| `replaced` | Withdrawn because the same requester asked again for the same command with its phrases. Not a user rejection. |
+| `rejected` | The user, or the orchestrator withdrawing it, rejected it. |
+| `revoked` | Its grant was revoked; it can no longer be used. |
+| `approved` | The user approved it; a grant exists. |
 
-When an adapter receives no separate approval metadata with the native answer,
-the selected control carries the complete canonical id. The structured decision
-path accepts only an affirmative label ending in `[P-<32 lowercase hex>]`;
-activation and audit correlation use that exact id. The compact `P-XXXXXXXX`
-value is display only and is invalid for show, reject, revoke, approve, history,
-replay, or adapter activation. Mechanism-specific instructions belong to the
-adapter skill declared by
-`hooks/adapters/registry.py::registered_adapter_skill_documents`.
+An approved request also has an outcome:
 
-Read verbs (`list`/`show`/`pending`/`history`/`stats`) are the orchestrator's
-to run directly through its trusted-CLI lane. That lane is not a read-only
-lane, and the split here is not an approvals rule: it also carries the
-coordination writes the orchestrator owns -- brief, plan and task lifecycle,
-`notifications ack`, memory curation, `scan`/`context scan`, `paths`. What
-separates the two sides is ownership of the effect, not the read/write shape
-of the verb. Approvals are where that ownership stops:
-`approve`/`revoke`/`reject`/`reject-all`/`clean`/`replay` are categorically
-denied to the orchestrator role
-(`gaia_cli_only_guard.EXPLICITLY_DENIED_PHRASES`) because the consent record
-is the user's to move -- granted, refused, or withdrawn -- never something a
-coordinator issues to itself. Dispatch a specialist, or route through
-the structured decision path owned by the active host adapter, never a bare
-orchestrator CLI call.
+| Outcome | Meaning |
+|---------|---------|
+| `unused` | Nothing has run yet and the window is still open. |
+| `in_flight` | A command started and has not reported its end; the window is still open. |
+| `executed` | Its commands reported their end, none of them a failure. |
+| `failed` | A command failed outside its declared exits; the set is frozen. |
+| `no_result` | A command started and the window closed without its end being reported. Not a failure. |
+| `legacy_executed` / `legacy_failed` | Recorded by the mechanism before this one; not counted with the current outcomes. |
+
+`gaia approvals history --status <pending|approved|rejected|revoked>` filters
+by the stored status, not by the state: a `replaced` row, and an `expired` one
+recorded by the older sweep, are listed under `revoked`, and no filter selects `orphaned` or `no_result`. Read the
+STATE column, or use `list --orphans-only` for orphans.

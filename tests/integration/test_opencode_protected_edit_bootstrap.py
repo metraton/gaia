@@ -184,17 +184,11 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
     for label, target in expected.items():
         result = by_label[label]
         assert result["allowed"] is False, result
-        assert len(result["permissionIndexes"]) == 1, result
         exchange = _exchange(driven, result["callID"])
         assert exchange["received"]["action"] == "deny", exchange
         approval_id = exchange["received"].get("approval_id")
         assert re.fullmatch(r"P-[0-9a-f]{32}", approval_id or ""), exchange
         approval_ids.add(approval_id)
-        permission = driven["permissionAsks"][result["permissionIndexes"][0]]["permission"]
-        assert permission["metadata"]["gaiaApprovalID"] == approval_id
-        assert permission["metadata"]["gaiaConsent"]["operation"] == (
-            "FILE_WRITE command intercepted: write"
-        )
         assert exchange["sent"]["cwd"] == str(nested.resolve())
         assert exchange["sent"]["worktree"] == str(root.resolve())
         assert exchange["sent"]["originalTool"] == label.split("|", 1)[0]
@@ -208,7 +202,6 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
     for label in ("edit-unprotected", "write-unprotected", "patch-unprotected"):
         result = by_label[label]
         assert result["allowed"] is True, result
-        assert result["permissionIndexes"] == []
         exchange = _exchange(driven, result["callID"])
         assert exchange["received"]["action"] == "allow", exchange
 
@@ -219,7 +212,8 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
             )
         }
     assert approval_ids <= stored_ids
-    assert len(driven["controlPrompts"]) == len(expected)
+    # A reactive block carries no requester phrases, so no question opens (PD10).
+    assert driven["controlPrompts"] == []
     sample_result = by_label[next(iter(expected))]
     sample = _exchange(driven, sample_result["callID"])
     assert sample["sent"]["roleContext"] == {
@@ -245,36 +239,17 @@ def test_literal_apply_patch_relative_target_reaches_guard_before_native_patch(
     result = driven["results"][0]
     assert result["allowed"] is False
     assert result["beforeReturned"] is False
-    assert "[T3_BLOCKED]" in result["error"]
-    assert result["permissionIndexes"] == [0]
     exchange = _exchange(driven, result["callID"])
     assert exchange["sent"]["tool"] == "apply_patch"
     assert exchange["sent"]["args"]["file_paths"] == [str(protected.resolve())]
     assert exchange["received"]["action"] == "deny"
-    assert re.fullmatch(r"P-[0-9a-f]{32}", exchange["received"].get("approval_id", ""))
-    permission = driven["permissionAsks"][0]
-    assert permission["status"] == "ask"
-    assert permission["permission"]["metadata"]["gaiaApprovalID"] == exchange["received"]["approval_id"]
-    assert permission["permission"]["metadata"]["gaiaConsent"]["operation"] == (
-        "FILE_WRITE command intercepted: write"
-    )
-    assert len(driven["controlPrompts"]) == 1
-    assert protected.read_text() == "ORIGINAL\n"
-
-
-def test_host_permission_carries_through_a_correlated_bridge_allow(tmp_path):
-    """The host gate cannot revoke the bridge's one-call allow verdict."""
-    root, _, unprotected = _workspace(tmp_path)
-    driven = _drive(root, root, [
-        _step("bridge-allow", "Edit", {"path": str(unprotected)}, request_permission=True),
-    ])
-    result = driven["results"][0]
-    assert result["beforeReturned"] is True
-    assert _exchange(driven, result["callID"])["received"]["action"] == "allow"
-    assert result["allowed"] is True
-    assert driven["permissionAsks"][0]["status"] == "allow"
-    assert "gaiaApprovalID" not in driven["permissionAsks"][0]["permission"]["metadata"]
+    approval_id = exchange["received"].get("approval_id", "")
+    assert re.fullmatch(r"P-[0-9a-f]{32}", approval_id)
+    # A reactive block carries no requester phrases, so it is never presented.
+    assert f"Gaia could not present approval {approval_id}" in result["error"]
+    assert "requester's phrases" in result["error"]
     assert driven["controlPrompts"] == []
+    assert protected.read_text() == "ORIGINAL\n"
 
 
 def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed(tmp_path):
@@ -325,7 +300,6 @@ def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed
     ]
     for result in driven["results"][1:]:
         assert result["allowed"] is False
-        assert result["permissionIndexes"] == []
         assert not _has_request(driven, result["callID"])
         assert "Gaia denied file tool" in result["error"]
 
@@ -346,7 +320,6 @@ def test_missing_or_ambiguous_workspace_context_denies_before_bridge(tmp_path):
         )
         result = driven["results"][0]
         assert result["allowed"] is False
-        assert result["permissionIndexes"] == []
         assert not _has_request(driven, result["callID"])
         assert "Gaia denied file tool" in result["error"]
 
@@ -369,7 +342,6 @@ def test_unresolvable_targets_deny_before_bridge(tmp_path):
 
     for result in driven["results"]:
         assert result["allowed"] is False
-        assert result["permissionIndexes"] == []
         assert not _has_request(driven, result["callID"])
         assert "Gaia denied file tool" in result["error"]
 
@@ -463,7 +435,6 @@ def test_invalid_args_and_patch_payloads_fail_before_the_production_bridge(tmp_p
     assert protected.read_bytes() == before
     for result in driven["results"]:
         assert result["allowed"] is False, result
-        assert result["permissionIndexes"] == [], result
         assert not _has_request(driven, result["callID"]), result
         assert "Gaia denied file tool" in result["error"], result
     print(f"OPENCODE_INVALID_PAYLOAD_MATRIX cases={len(invalid_cases)} skips=0")

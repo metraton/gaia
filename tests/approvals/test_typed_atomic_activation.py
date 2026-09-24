@@ -52,6 +52,7 @@ def _semantic_payload() -> dict:
         verb="push",
         category="MUTATIVE",
         agent_type=AGENT_ID,
+        session_id=SESSION_ID,
     )
 
 

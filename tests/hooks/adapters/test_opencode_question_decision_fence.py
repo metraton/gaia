@@ -1,32 +1,21 @@
 #!/usr/bin/env python3
-"""A structured decision activates a grant only when Gaia verified where it
-came from -- asserted over the OpenCode transport, end to end.
+"""An OpenCode question answer delivered through the bridge activates no grant.
 
-Two things are proven here and they are not the same thing.
+On OpenCode only the control plane signs: the plugin reads the answer to the
+question Gaia wrote and hands it to ``gaia approvals opencode-decide``. Label
+activation through ``tool.execute.after`` is retired, so an answer reaching
+the shared resolver that way -- however well attested -- must leave every
+pending as it was.
 
-The AFFIRMATIVE half proves the lane WORKS: the real ``GaiaOpenCodePlugin``
-runs under bun, its own ``questionAnswers`` composes the answer mapping from
-OpenCode's native ``metadata.answers``, the real Gaia-side bridge answers
-issuance, and the emitted event is then parsed and delivered by the real
-``OpenCodeAdapter.adapt_post_tool_use`` -- which hands it to the shared Claude
-resolver. Nothing on that path is re-implemented here, because an activation
-asserted over a hand-written dict proves a shape no adapter emits.
+The real ``GaiaOpenCodePlugin`` runs under bun and composes the answer mapping
+from OpenCode's native ``metadata.answers``; the emitted event is delivered by
+the real ``OpenCodeAdapter.adapt_post_tool_use``. The forged cases are
+synthetic on purpose: the bridge reads stdin, so an arbitrary writer really can
+present a ``tool.execute.after`` naming the question tool.
 
-The NEGATIVE half proves the lane REFUSES. Its fixtures are synthetic on
-purpose: the bridge reads stdin, so an arbitrary writer really can present a
-``tool.execute.after`` naming the question tool and carrying a forged mapping,
-and that is exactly what must activate nothing. The discriminator that decides
-which results carry answers lives in ``plugin.ts`` -- the far side of that
-stdin -- so it is not a fence at all, and these tests fail against an adapter
-that trusts it.
-
-EVERY case in the matrix runs twice, once through each container the resolver
-reads: the ``tool_response`` the plugin builds, and the ``tool_input`` it falls
-back to, which in this lane is the caller's own tool arguments. Covering only
-the first leaves a second, fully caller-controlled activation route open --
-measured, not assumed: with the fence absent, a forged event whose answers sit
-only in ``args`` activates a real pending, which is what
-``TestAttestedApproveActivates`` asserts as the positive control for that route.
+EVERY case runs twice, once through each container the resolver reads: the
+``tool_response`` the plugin builds, and the ``tool_input`` it falls back to,
+which in this lane is the caller's own tool arguments.
 """
 
 from __future__ import annotations
@@ -135,6 +124,7 @@ def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
         verb=verdict.verb,
         category=verdict.category,
         agent_type=agent_type,
+        session_id=SESSION,
     )
 
 
@@ -228,22 +218,11 @@ def _unattested(emitted: dict) -> dict:
     )
 
 
-def _not_activated_records() -> list[dict]:
-    """Read the durable non-activation records back OUT of the store."""
-    from gaia.approvals.decision_audit import DECISION_NOT_ACTIVATED_EVENT
-    from gaia.store.reader import cross_surface_query
-
-    rows = cross_surface_query(
-        surface="harness_events", type=DECISION_NOT_ACTIVATED_EVENT, last=50
-    )
-    return [json.loads(r["raw"]["payload"] or "{}") for r in rows]
-
-
 # ---------------------------------------------------------------------------
-# The lane works: an approve the runtime attested activates end to end
+# The transport carries the answer; the answer signs nothing
 # ---------------------------------------------------------------------------
 
-class TestAttestedApproveActivates:
+class TestAnAttestedAnswerIsCarriedNotSigned:
 
     def test_the_plugin_emits_the_native_answers_as_a_canonical_mapping(self, drive):
         """The transport half, asserted on the plugin's own emission.
@@ -263,14 +242,14 @@ class TestAttestedApproveActivates:
         }
 
     @pytest.mark.parametrize("container", _CONTAINERS)
-    def test_an_attested_approve_activates_through_the_whole_transport(
+    def test_even_an_attested_exact_approve_label_activates_nothing(
         self, drive, container
     ):
-        """plugin -> bridge shape -> OpenCodeAdapter -> resolver -> activation.
+        """plugin -> bridge shape -> OpenCodeAdapter -> resolver: no activation.
 
-        Run for both containers, this is also the positive control the negative
-        half needs: without it, a fence test could pass because the route does
-        not exist rather than because the fence closed it.
+        Label activation through the bridge is retired: on OpenCode only the
+        control plane's own ``opencode-decide`` signs, so the best-provenanced
+        label answer is the reference every forged case below must not exceed.
         """
         command = "terraform apply"
         approval_id = _request(command)
@@ -280,32 +259,8 @@ class TestAttestedApproveActivates:
         )
 
         assert response.exit_code == 0
-        assert _status(approval_id) == "approved"
-        assert _grant(command) is not None, (
-            "the grant must be executable, not merely marked approved"
-        )
-
-    @pytest.mark.parametrize("container", _CONTAINERS)
-    def test_two_signed_labels_in_one_answer_both_activate(self, drive, container):
-        first_cmd = "terraform apply"
-        second_cmd = "kubectl delete pod web-1"
-        first = _request(first_cmd)
-        second = _request(second_cmd)
-
-        _deliver(
-            _through(
-                _answered_turn(
-                    drive,
-                    [_approve_label(first, first_cmd), _approve_label(second, second_cmd)],
-                ),
-                container,
-            )
-        )
-
-        assert _status(first) == "approved"
-        assert _status(second) == "approved"
-        assert _grant(first_cmd) is not None
-        assert _grant(second_cmd) is not None
+        assert _status(approval_id) == "pending"
+        assert _grant(command) is None
 
 
 # ---------------------------------------------------------------------------
@@ -450,20 +405,6 @@ class TestOnlyAnExactApproveActivates:
         assert _status(approval_id) == "pending"
         assert _grant(command) is None
 
-    def test_a_shared_prefix_activates_only_the_exact_signed_id(self, drive, container):
-        prefix = "deadbeef"
-        signed_cmd = "git push origin signed"
-        unsigned_cmd = "git push origin unsigned"
-        signed = _request(signed_cmd, approval_id=f"P-{prefix}{'f' * 24}")
-        unsigned = _request(unsigned_cmd, approval_id=f"P-{prefix}{'0' * 24}")
-
-        _deliver(_through(_answered_turn(drive, [_approve_label(signed, signed_cmd)]), container))
-
-        assert _status(signed) == "approved"
-        assert _status(unsigned) == "pending"
-        assert _grant(signed_cmd) is not None
-        assert _grant(unsigned_cmd) is None
-
     def test_an_expired_pending_is_not_revived_by_a_late_answer(self, drive, container):
         import gaia.approvals.store as store
 
@@ -477,24 +418,3 @@ class TestOnlyAnExactApproveActivates:
 
         assert _status(approval_id) == "expired"
         assert _grant(command) is None
-
-    def test_a_duplicate_reply_does_not_activate_a_second_time(self, drive, container):
-        command = "terraform apply"
-        approval_id = _request(command)
-        emitted = _through(
-            _answered_turn(drive, [_approve_label(approval_id, command)]), container
-        )
-
-        _deliver(emitted)
-        assert _status(approval_id) == "approved"
-
-        _deliver(emitted)
-
-        assert _status(approval_id) == "approved"
-        assert any(
-            record.get("approval_id") == approval_id
-            for record in _not_activated_records()
-        ), (
-            "the replayed answer must be recorded as not activated, so a "
-            "dropped signature stays distinguishable from a replayed one"
-        )

@@ -198,7 +198,7 @@ class TestDoubleApprovalReproduction:
 
         # Step 1: block the redirect form -> DB REQUESTED row + approval_id.
         result1 = validate_bash_command(
-            blocked_form, is_subagent=True, session_id=session_id,
+            blocked_form, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result1.allowed, "T3 push must be blocked"
         reason = result1.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -219,7 +219,7 @@ class TestDoubleApprovalReproduction:
         # Step 3: retry with the redirect-STRIPPED form -> must be ALLOWED
         # (active grant matches across the redirect difference -- Fix A).
         result2 = validate_bash_command(
-            retry_form, is_subagent=True, session_id=session_id,
+            retry_form, is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert result2.allowed, (
             f"plain retry must match the grant minted for the redirect form, "
@@ -243,14 +243,14 @@ class TestDoubleApprovalReproduction:
         # test_sanitizer_redirect_t3_evasion.py). fd-dups are never touched
         # by the sanitizer and always reach the T3 classifier directly.
         result_reblock_a = validate_bash_command(
-            "git push 2>&1", is_subagent=True, session_id=session_id,
+            "git push 2>&1", is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result_reblock_a.allowed
         reason_a = result_reblock_a.block_response["hookSpecificOutput"]["permissionDecisionReason"]
         id_a = re.search(r"approval_id:\s*(P-[\w-]+)", reason_a).group(1)
 
         result_reblock_b = validate_bash_command(
-            "git push 1>&2", is_subagent=True, session_id=session_id,
+            "git push 1>&2", is_subagent=True, agent_type="gaia-system", session_id=session_id,
         )
         assert not result_reblock_b.allowed
         reason_b = result_reblock_b.block_response["hookSpecificOutput"]["permissionDecisionReason"]
@@ -272,19 +272,20 @@ class TestDoubleApprovalReproduction:
         # Mint a pending whose stored exact_content carries a redirect.
         payload = _build_sealed_payload(
             "git push 2>&1", verb="push", category="MUTATIVE", agent_type="t",
+            session_id=session_id,
         )
         approval_id = astore.insert_requested(payload, session_id=session_id)
 
         # The redirect-stripped form must find the SAME pending semantically.
-        found = _find_pending_in_db(session_id, "git push")
+        found = _find_pending_in_db(session_id, "git push", "t")
         assert found == approval_id, (
             f"semantic dedup must reuse pending {approval_id}, got {found}"
         )
         # A byte-exact match still works too.
-        assert _find_pending_in_db(session_id, "git push 2>&1") == approval_id
+        assert _find_pending_in_db(session_id, "git push 2>&1", "t") == approval_id
 
         # A genuinely different command must NOT match.
-        assert _find_pending_in_db(session_id, "git pull") is None
+        assert _find_pending_in_db(session_id, "git pull", "t") is None
 
 
 # ---------------------------------------------------------------------------
@@ -330,9 +331,10 @@ class TestChdirPathPolicy:
 
         payload = _build_sealed_payload(
             "git -C /repo/a push", verb="push", category="MUTATIVE", agent_type="t",
+            session_id=session_id,
         )
         approval_id = astore.insert_requested(payload, session_id=session_id)
 
         # Same path (with a redirect) reuses; different path does not.
-        assert _find_pending_in_db(session_id, "git -C /repo/a push 2>&1") == approval_id
-        assert _find_pending_in_db(session_id, "git -C /repo/b push") is None
+        assert _find_pending_in_db(session_id, "git -C /repo/a push 2>&1", "t") == approval_id
+        assert _find_pending_in_db(session_id, "git -C /repo/b push", "t") is None

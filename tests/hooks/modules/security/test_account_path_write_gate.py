@@ -43,6 +43,7 @@ HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security import mutative_verbs as mutative_verbs_module
+from modules.security import sensitive_paths as sensitive_paths_module
 from modules.security import tiers as tiers_module
 from modules.security.mutative_verbs import detect_mutative_command
 from modules.security.tiers import SecurityTier
@@ -132,12 +133,7 @@ def without_the_account_path_set(monkeypatch):
     counterfactual a measurement of the ENTRY: every code path stays live and
     only the membership it consults goes away.
     """
-    monkeypatch.setattr(
-        mutative_verbs_module, "ACCOUNT_SENSITIVE_HOME_PREFIXES", frozenset()
-    )
-    monkeypatch.setattr(
-        mutative_verbs_module, "ACCOUNT_SENSITIVE_HOME_FILES", frozenset()
-    )
+    monkeypatch.setattr(sensitive_paths_module, "HOME_ENTRIES", {})
     _clear_classifier_caches()
     yield
     _clear_classifier_caches()

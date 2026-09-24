@@ -13,7 +13,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from adapters.opencode import OpenCodeAdapter, _apply_patch_paths
 from adapters.registry import get_adapter
-from adapters.types import HookEventType, HookResponse, HostCapability, ValidationResult
+from adapters.types import HookEventType, HostCapability, ValidationResult
 
 
 def test_parses_tool_before_with_immutable_correlation_fields():
@@ -89,23 +89,18 @@ def test_fails_closed_when_the_policy_rejects_missing_bash_input():
     assert response.output["action"] == "deny"
 
 
-def test_translates_the_policy_adapter_response_without_claude_fields(monkeypatch):
-    from adapters.claude_code import ClaudeCodeAdapter
+def test_translates_the_policy_verdict_without_claude_fields(monkeypatch):
+    from adapters.tool_policy import PolicyVerdict, ToolPolicy
 
-    def fake_policy(_self, event):
+    def fake_policy(_self, event, **_kwargs):
         assert event.payload["tool_name"] == "Bash"
         assert event.payload["tool_use_id"] == "call-1"
-        return HookResponse(
-            output={
-                "hookSpecificOutput": {
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": "rewritten",
-                    "updatedInput": {"command": "git status"},
-                }
-            }
+        return PolicyVerdict(
+            decision="allow", reason="rewritten",
+            updated_input={"command": "git status"},
         )
 
-    monkeypatch.setattr(ClaudeCodeAdapter, "adapt_pre_tool_use", fake_policy)
+    monkeypatch.setattr(ToolPolicy, "pre_tool_verdict", fake_policy)
     response = OpenCodeAdapter().adapt_pre_tool_use(OpenCodeAdapter().parse_event(json.dumps({
         "event": "tool.execute.before",
         "sessionID": "ses-parent",
@@ -120,16 +115,17 @@ def test_translates_the_policy_adapter_response_without_claude_fields(monkeypatc
     }
 
 
-def test_forwards_post_tool_use_to_the_policy_adapter(monkeypatch):
-    from adapters.claude_code import ClaudeCodeAdapter
+def test_forwards_post_tool_use_to_the_shared_policy(monkeypatch):
+    from adapters.tool_policy import PolicyVerdict, ToolPolicy
 
-    def fake_policy(_self, event):
+    def fake_policy(_self, event, tool_result):
         assert event.payload["tool_name"] == "Bash"
         assert event.payload["tool_use_id"] == "call-2"
         assert event.payload["tool_response"] == {"output": "ok"}
-        return HookResponse(output={})
+        assert (tool_result.output, tool_result.exit_code) == ("ok", 0)
+        return PolicyVerdict()
 
-    monkeypatch.setattr(ClaudeCodeAdapter, "adapt_post_tool_use", fake_policy)
+    monkeypatch.setattr(ToolPolicy, "post_tool_verdict", fake_policy)
     response = OpenCodeAdapter().adapt_post_tool_use(OpenCodeAdapter().parse_event(json.dumps({
         "event": "tool.execute.after",
         "sessionID": "ses-parent",

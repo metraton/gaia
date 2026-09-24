@@ -13,7 +13,8 @@ keeping the real security boundaries (signature byte-binding, single-use
 PENDING->CONSUMED replay guard, expires_at TTL):
 
   * check_db_semantic_grant()      -- session_id is audit metadata, not a filter.
-  * _find_pending_in_db()          -- dedup queries all_sessions=True.
+  * _find_pending_in_db()          -- dedup reuses only the requester's own
+                                      pending (brief aprobaciones-agnosticas-al-host D6).
   * insert_requested()             -- fingerprint idempotency: identical payload
                                       reuses the existing pending id.
   * APPROVAL_GRANT_TTL_MINUTES = 5 -- grant-lifetime source (distinct from the
@@ -78,6 +79,7 @@ def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
         verb=verdict.verb,
         category=verdict.category,
         agent_type=agent_type,
+        session_id="S1",
     )
 
 
@@ -365,31 +367,33 @@ def test_insert_requested_fingerprint_idempotent(iso_db):
 
 
 # ---------------------------------------------------------------------------
-# 6. _find_pending_in_db finds a pending minted under another session
+# 6. _find_pending_in_db reuses only the requester's own pending (D6)
 # ---------------------------------------------------------------------------
 
-def test_find_pending_in_db_cross_session(iso_db):
+def test_find_pending_in_db_reuses_only_the_requesters_pending(iso_db):
     import gaia.approvals.store as astore
     from modules.tools.bash_validator import _find_pending_in_db
 
     command = "terraform apply"
     payload = _sealed_payload(command)
-    approval_id = astore.insert_requested(payload, agent_id="a", session_id="S1")
+    approval_id = astore.insert_requested(payload, agent_id="test-agent", session_id="S1")
 
-    # Look up from a different session -- must find the S1 pending.
-    found = _find_pending_in_db("S2", command)
-    assert found == approval_id, "_find_pending_in_db must be cross-session"
+    assert _find_pending_in_db("S1", command, "test-agent") == approval_id
+    assert _find_pending_in_db("S2", command, "test-agent") is None, (
+        "a pending approved for S1 seals a grant S2 cannot consume"
+    )
+    assert _find_pending_in_db("S1", command, "other-agent") is None
 
 
 # ---------------------------------------------------------------------------
-# 7. insert_semantic_grant default TTL is 60 minutes
+# 7. insert_semantic_grant default TTL is the 30-minute approval window
 # ---------------------------------------------------------------------------
 
-def test_grant_ttl_default_is_5_minutes(iso_db):
+def test_grant_ttl_default_is_the_approval_window(iso_db):
     from gaia.store.writer import insert_semantic_grant, APPROVAL_GRANT_TTL_MINUTES
     import gaia.store.writer as swriter
 
-    assert APPROVAL_GRANT_TTL_MINUTES == 5
+    assert APPROVAL_GRANT_TTL_MINUTES == 30
 
     command = "terraform apply"
     approval_id = "P-ttl-default-test"
@@ -417,9 +421,9 @@ def test_grant_ttl_default_is_5_minutes(iso_db):
     expires = datetime.strptime(row["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
         tzinfo=timezone.utc
     )
-    # expires_at should be ~5 min after the call instant (allow 2-min slack).
-    lower = before + timedelta(minutes=5) - timedelta(minutes=2)
-    upper = after + timedelta(minutes=5) + timedelta(minutes=2)
+    # expires_at should be ~30 min after the call instant (allow 2-min slack).
+    lower = before + timedelta(minutes=30) - timedelta(minutes=2)
+    upper = after + timedelta(minutes=30) + timedelta(minutes=2)
     assert lower <= expires <= upper, (
         f"expires_at {expires} not ~5min from now ({before}..{after})"
     )

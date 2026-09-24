@@ -148,8 +148,6 @@ def test_help_flag_value_does_not_falsely_trigger_the_carve_out():
         f"{_GAIA} plan delete my-brief",
         f"{_GAIA} approvals approve P-xyz",
         f"{_GAIA} approvals replay P-xyz",
-        f"{_GAIA} approvals revoke P-xyz",
-        f"{_GAIA} approvals reject P-xyz",
         f"{_GAIA} approvals reject-all",
         f"{_GAIA} approvals clean",
         f"{_GAIA} memory edit --name=foo --field=body --content=x",
@@ -173,10 +171,18 @@ def test_approval_verbs_stay_categorically_denied_not_approvable():
     """Approval verbs specifically: no approval_id, no T3-style escape --
     reason text must say denied outright, matching the module's own
     categorical-deny contract."""
-    for verb in ("approve", "revoke", "reject", "reject-all", "clean", "replay"):
+    for verb in ("approve", "reject-all", "clean", "replay"):
         allowed, reason = _check(f"{_GAIA} approvals {verb} P-xyz")
         assert allowed is False
         assert "not approvable" in reason or "excluded" in reason
+
+
+@pytest.mark.parametrize("verb", ["reject", "revoke"])
+def test_orchestrator_may_withdraw_a_single_approval(verb):
+    """D5 of brief aprobaciones-agnosticas-al-host: the coordinator withdraws
+    consent (reject/revoke one approval) but never grants it."""
+    allowed, reason = _check(f"{_GAIA} approvals {verb} P-xyz")
+    assert allowed is True, reason
 
 
 def test_coordinator_owned_write_shapes_unaffected():
