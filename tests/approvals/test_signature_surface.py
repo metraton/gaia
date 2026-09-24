@@ -83,7 +83,8 @@ def test_signature_surface_golden_d12_example():
         "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.",
         "",
         "Comandos (1)",
-        f"  1  python3 {WORKTREE_GAIA} dev \\",
+        f"  1  python3 {WORKTREE_GAIA} \\",
+        "         dev \\",
         "         --workspace /home/jorge/ws/me \\",
         "         --ref bbc2f09 \\",
         "         --host all",
@@ -386,10 +387,12 @@ def test_signature_surface_request_set_rejects_before_persisting(db):
         con.close()
 
 
-def test_signature_surface_cli_presents_the_d12_surface(db, tmp_path):
+def test_signature_surface_cli_presents_the_d12_surface(db, tmp_path, monkeypatch):
     from bin.cli.approvals import cmd_request_set, cmd_show_v2
     from gaia.approvals import surface
 
+    # Requested from the folder it runs in: the D12 surface names no folder.
+    monkeypatch.chdir(tmp_path)
     code, out = _run(cmd_request_set, _request_set_args(cwd=[str(tmp_path)]))
     assert code == 0, out
     approval_id = json.loads(out)["approval_id"]

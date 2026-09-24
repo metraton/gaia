@@ -184,13 +184,15 @@ def seal_request(
     rationale: Optional[str] = None,
     operation: Optional[str] = None,
     risk_level: str = "medium",
+    requested_from: Optional[str] = None,
 ) -> dict:
     """Build the sealed payload for any request kind: ``command``, ``command_set`` or ``file_write``.
 
     ``what`` is the signature's title and ``question`` its question; each item
     may carry ``does`` and ``impact``. All four are checked against the
     signature surface limits here, when the request is made
-    (``surface.SurfaceLimitError``).
+    (``surface.SurfaceLimitError``). ``requested_from`` is the requester's shell
+    folder: the surface names an item's folder only when it differs (D3).
 
     ``operation`` is required for ``command`` (the reactive Bash block): it is
     the ``<CATEGORY> command intercepted: <verb>`` line activation reads to
@@ -225,6 +227,10 @@ def seal_request(
         "rationale": _optional_text(rationale) or what_text,
         "risk_level": risk_level,
     }
+    if requested_from is not None:
+        if not os.path.isabs(requested_from):
+            raise SealError("requested_from must be an absolute directory")
+        payload["requested_from"] = requested_from
     if kind == "command_set":
         payload.update(
             request_type="COMMAND_SET",
@@ -415,12 +421,13 @@ def request_command_set(
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
     rationale: Optional[str] = None,
+    requested_from: Optional[str] = None,
 ) -> str:
     """Validate a plan-first set, seal it and persist the pending request; return its approval_id.
 
     Every phrase is required (:class:`NotPresentableError` names each one
     missing), and the requester's phraseless reactive requests the set covers
-    are replaced.
+    are replaced. ``requested_from`` is the requester's shell folder.
     """
     from gaia.approvals.command_set import CommandSetValidationError, validate_request_set
 
@@ -433,6 +440,7 @@ def request_command_set(
     payload = seal_request(
         "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, rationale=rationale,
+        requested_from=requested_from,
     )
     return _persist_replacing(payload)
 

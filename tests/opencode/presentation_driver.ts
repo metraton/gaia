@@ -111,15 +111,31 @@ await plugin["tool.execute.after"](
 
 let error: string | undefined
 let originalInvocationExecuted = false
-try {
-  await plugin["tool.execute.before"](
-    { sessionID: scenario.sessionID, callID: scenario.callID, tool: scenario.tool ?? "bash" },
-    { args: scenario.args ?? {} },
-  )
-  originalInvocationExecuted = true
-} catch (thrown: any) {
-  // The throw is the host-visible abort signal for the original invocation.
-  error = String(thrown?.message ?? thrown)
+let requestResultOutput: string | undefined
+if (scenario.requestOutput !== undefined) {
+  // A request made proactively: the specialist's own `gaia approvals request-*`
+  // call ran and printed its approval id; nothing was attempted or blocked.
+  const result = { title: "", output: scenario.requestOutput, metadata: { exit: 0 } }
+  try {
+    await plugin["tool.execute.after"](
+      { sessionID: scenario.sessionID, callID: scenario.callID, tool: "bash", args: scenario.args ?? {} },
+      result,
+    )
+  } catch (thrown: any) {
+    error = String(thrown?.message ?? thrown)
+  }
+  requestResultOutput = result.output
+} else {
+  try {
+    await plugin["tool.execute.before"](
+      { sessionID: scenario.sessionID, callID: scenario.callID, tool: scenario.tool ?? "bash" },
+      { args: scenario.args ?? {} },
+    )
+    originalInvocationExecuted = true
+  } catch (thrown: any) {
+    // The throw is the host-visible abort signal for the original invocation.
+    error = String(thrown?.message ?? thrown)
+  }
 }
 
 // The blocked attempt ends the specialist's turn, so the host idles its session.
@@ -148,5 +164,5 @@ if (scenario.controlPrompt !== undefined) {
 
 console.log(JSON.stringify({
   controlPrompts, bridgeEvents, deletedSessions, controlSessionLingered, error, originalInvocationExecuted,
-  gaiaSpawnCwds,
+  gaiaSpawnCwds, requestResultOutput,
 }))

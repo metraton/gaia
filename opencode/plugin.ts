@@ -1002,6 +1002,23 @@ function approvalID(response: BridgeResponse): string | undefined {
   return response.approval_id || undefined
 }
 
+const APPROVAL_REQUEST_COMMAND = /^\s*(?:\S*\/)?gaia\s+approvals\s+(?:request-set|request-file-write)(?:\s|$)/
+const CANONICAL_APPROVAL_ID = /\bP-[0-9a-f]{32}\b/g
+
+/**
+ * The approval a successful `gaia approvals request-set` or `request-file-write`
+ * call printed, or undefined for any other command, or output naming no single id.
+ *
+ * Only a hint of which approval to present: `gaia approvals opencode-present`
+ * still refuses one this session and agent did not request.
+ */
+export function requestedApprovalID(command: unknown, output: unknown): string | undefined {
+  if (typeof command !== "string" || !APPROVAL_REQUEST_COMMAND.test(command)) return undefined
+  if (typeof output !== "string") return undefined
+  const ids = new Set(output.match(CANONICAL_APPROVAL_ID) ?? [])
+  return ids.size === 1 ? [...ids][0] : undefined
+}
+
 export function toolResult(output: any): Record<string, unknown> {
   const text = typeof output?.output === "string" ? output.output : ""
   const match = text.match(/(?:Command exited with code|exit code)\s+(\d+)/i)
@@ -1823,9 +1840,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
   }
 
-  async function requestApproval(response: BridgeResponse, sessionID: string, callID: string, role: string) {
-    const id = approvalID(response)
-    if (!id) return
+  async function requestApproval(id: string, sessionID: string, callID: string, role: string) {
     const approval = { approvalID: id, sessionID, callID, role, token: crypto.randomUUID() }
     const presented = await gaia([
       "approvals", "opencode-present", id,
@@ -1842,6 +1857,32 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
     const surface = readConsentPresentation(presented.stdout)
     await openSignatureQuestion({ ...approval, surface })
+  }
+
+  /** Queue Gaia's question for an approval the specialist just requested, with no attempt needed.
+   *
+   * The question opens in the specialist's session once its turn ends, exactly
+   * as after a blocked attempt, so no model has to remember to attempt the
+   * sealed command for the user to be asked. A request made from the primary
+   * session, or one Gaia refuses to present, leaves the request as it is: the
+   * cause is traced and told to the requester in its tool result.
+   */
+  async function presentRequested(
+    id: string,
+    sessionID: string,
+    callID: string,
+    output: { output?: unknown },
+  ): Promise<void> {
+    let notice: string
+    try {
+      await requestApproval(id, sessionID, callID, (await identify(sessionID)) ?? "")
+      notice = `Gaia asks ${id} as a question in this session when your turn ends: close APPROVAL_REQUEST with it and do not ask it yourself.`
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error)
+      console.error(`[gaia-opencode:control] requested ${id} was not presented: ${cause}`)
+      notice = `Gaia could not queue the question for ${id}: ${cause}`
+    }
+    if (typeof output.output === "string") output.output = `${output.output.trimEnd()}\n${notice}\n`
   }
 
   /** Leave a durable trace of a denial that otherwise only reached stderr.
@@ -2141,8 +2182,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         retryBySession.delete(call.sessionID)
         await presentNextControl(call.sessionID)
       }
-      if (approvalID(response)) {
-        await requestApproval(response, call.sessionID, call.callID, agent ?? "")
+      const blockedApprovalID = approvalID(response)
+      if (blockedApprovalID) {
+        await requestApproval(blockedApprovalID, call.sessionID, call.callID, agent ?? "")
         throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
       }
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
@@ -2185,6 +2227,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         args: call.args,
         result,
       })
+      const requested = normalizedToken(call.tool) === "bash" && result.exit_code === 0
+        ? requestedApprovalID(call.args?.command, result.output)
+        : undefined
+      if (requested) await presentRequested(requested, call.sessionID, call.callID, output)
       const retryKey = `${call.sessionID}:${call.callID}`
       const retried = retryByCall.get(retryKey)
       if (retried) {

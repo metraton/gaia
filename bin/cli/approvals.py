@@ -1362,9 +1362,20 @@ def cmd_question(args) -> int:
     Each question text is the renderer's single string, so no model prints a
     signature; with ``--details`` it carries the Details instead of the text.
     The orchestrator passes it unchanged and the PreToolUse hook recognises it.
+    Refused in an OpenCode shell, which the plugin marks with
+    ``GAIA_HOST_SESSION_ID``: there Gaia opens each signature itself.
     """
     from gaia.approvals import core
 
+    if os.environ.get("GAIA_HOST_SESSION_ID"):
+        _print_error(
+            "gaia approvals question is for Claude Code. In OpenCode, Gaia asks each "
+            "signature itself, in the requesting specialist's session, when the request "
+            "is made or the sealed command is attempted: do not ask it or copy it. The "
+            "specialist closes APPROVAL_REQUEST and the user answers Gaia's question there.",
+            args,
+        )
+        return 1
     approval_ids = []
     for raw_id in args.approval_ids:
         approval_id = _require_canonical_approval_id(raw_id, args)
@@ -1695,6 +1706,7 @@ def cmd_request_set(args) -> int:
             rollback=getattr(args, "rollback", None),
             verification=getattr(args, "verification", None),
             rationale=args.rationale,
+            requested_from=os.getcwd(),
         )
         sealed = json.loads(_import_approval_store().get_by_id(approval_id)["payload_json"])
     except Exception as exc:
@@ -1815,7 +1827,9 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
     """Build what OpenCode asks for one pending approval, composed by Gaia alone.
 
     ``signature`` is the renderer's surface as the native question carries it:
-    the single string, the Details re-ask string, the header and the options.
+    the one-line string, the one-line Details re-ask string, the header and the
+    options. One line, because the OpenCode app collapses the question text's
+    white space.
     ``metadata`` binds the retry to the sealed commands. A payload that cannot
     be rendered returns ``presentation_error`` instead: the SHOWN record still
     stands, and the plugin opens no question it cannot fill in full.
@@ -1842,8 +1856,8 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
         rendered = surface.render(sealed_payload, approval_id)
         return {
             "signature": {
-                "question": rendered.asked,
-                "details": rendered.asked_details,
+                "question": rendered.asked_line,
+                "details": rendered.asked_details_line,
                 "header": rendered.question["header"],
                 "options": rendered.question["options"],
             },
@@ -2386,6 +2400,10 @@ def register(subparsers) -> None:
         help="Full approval_id (P-{uuid4hex}) of the approval to revoke",
     )
     p_revoke.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    p_revoke.add_argument(
+        "--reason", default=None,
+        help="Why it is revoked; recorded on the REVOKED event of a pending approval",
+    )
     p_revoke.set_defaults(func=cmd_revoke)
 
     # approve (T3.3) -- cross-session grant

@@ -24,11 +24,15 @@ or rebuild any part of it; you only open the question.
 
 ## OpenCode
 
-The question opens in the specialist's own session, at its attempt. Resume the
-requesting specialist (`task_id`) with `execution` so it attempts the
-requested command; its turn ends there and the user answers in that session, one signature after
-another. When the user approves, Gaia posts a notice in your session naming
-the specialist session: resume that session (`task_id`) with `execution`.
+Gaia opens the question itself, in the requesting specialist's session, when
+its turn ends: you do not present anything. Do not run `gaia approvals
+question` (it refuses in OpenCode) and do not ask or copy a signature with the
+question tool (the hook refuses it); tell the user the question is waiting in
+that session. When the user approves, Gaia posts a notice in your session
+naming the specialist session: resume that session (`task_id`) with
+`execution`. If a request shows no question (`gaia approvals show` has no
+SHOWN event), resume the specialist with `execution` so it attempts the sealed
+command; the refused attempt opens the question.
 
 ## After the answer
 

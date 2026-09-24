@@ -28,7 +28,8 @@ Optional, per request: `--rollback` (how to undo it, shown in Details),
 `--cwd` (the existing directory it must run in, once for all or once per
 command; the default is where you run the request) and
 `--expect-exit POSITION=CODES` (non-zero exits that still let the set go on,
-e.g. `2=1`).
+e.g. `2=1`). The signature names a command's directory only when it is not
+the one you run the request from.
 
 A command sealed in another directory than the one your Bash runs in is run
 as exactly `cd <sealed directory> && <sealed command>`, with the directory and
@@ -55,7 +56,8 @@ Solicitud de aprobación · gaia-system
 Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
 
 Comandos (1)
-  1  python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev \
+  1  python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia \
+         dev \
          --workspace /home/jorge/ws/me \
          --ref bbc2f09 \
          --host all
@@ -124,5 +126,7 @@ The command prints the canonical `approval_id`. Set `agent_state` to
 id copied verbatim and the commands exactly as requested, set `pending_steps`
 to the execution after consent, finalize, and stop. The orchestrator presents
 it (`orchestrator-present-approval`); the approved work runs under `execution`.
+In OpenCode, Gaia itself asks the user in your session as soon as your turn
+ends, with no further step from you or the orchestrator.
 A set that failed is not resumed: after fresh investigation, request what still
 has to run as a new request.

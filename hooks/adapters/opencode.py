@@ -415,6 +415,9 @@ class OpenCodeAdapter(HookAdapter):
         """
         payload = dict(event.payload)
         original_tool = str(payload.get("tool_name", "")).lower()
+        lookalike = self._signature_lookalike_refusal(original_tool, payload.get("tool_input"))
+        if lookalike is not None:
+            return HookResponse(output={"action": "deny", "reason": lookalike}, exit_code=2)
         rejection = self._identity_rejection(event, original_tool)
         if rejection is not None:
             rejection = self._with_identity_gap(rejection, payload)
@@ -484,6 +487,32 @@ class OpenCodeAdapter(HookAdapter):
                 "agent_type": env_identity.role,
             }
         return translated
+
+    @staticmethod
+    def _signature_lookalike_refusal(tool_name: str, tool_input: object) -> str | None:
+        """Refuse a question that reads as a Gaia signature: the plugin's own never reaches here.
+
+        The plugin fills its signature question into its control session and
+        returns before the bridge, so any signature-shaped question arriving is
+        a model's copy, whose answer would decide nothing.
+        """
+        if tool_name not in {"askuserquestion", "question"} or not isinstance(tool_input, dict):
+            return None
+        from gaia.approvals.surface import looks_like_signature
+
+        questions = tool_input.get("questions")
+        if not isinstance(questions, list) or not any(
+            isinstance(question, dict) and looks_like_signature(question) for question in questions
+        ):
+            return None
+        return (
+            "Gaia did not open this question: it copies an approval signature, and its "
+            "answer would decide nothing. In OpenCode Gaia asks each signature itself, in "
+            "the requesting specialist's session, when the request is made or the sealed "
+            "command is attempted. Do not ask or copy it: tell the user to answer Gaia's "
+            "question in that session; if none is open, resume the specialist with "
+            "`execution` so it attempts the sealed command byte for byte."
+        )
 
     @classmethod
     def _bash_command(cls, event: HookEvent, tool_name: str) -> str | None:

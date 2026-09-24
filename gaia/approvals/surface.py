@@ -22,6 +22,9 @@ from gaia.approvals.core import WINDOW_MINUTES, SealError, _ensure_hooks_importa
 TITLE_MAX = 120
 QUESTION_MAX = 60
 LINE_MAX = 100
+#: The column a command line is broken before, between tokens, so the host's own
+#: wrap (which knows no continuation indent) is not reached at common widths.
+WRAP_COLUMN = 80
 #: Host limits of one AskUserQuestion call: its header and its question count.
 HEADER_MAX = 12
 BATCH_MAX = 4
@@ -37,6 +40,7 @@ OPTIONS = (
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 
+_HEADING = "Solicitud de aprobación"
 _NO_AGENT = "agente sin identificar"
 _NO_TITLE = "Solicitud sin título declarado."
 _NO_DOES = "(sin descripción declarada)"
@@ -55,7 +59,9 @@ class Surface:
     line, the short question. Details re-asks the signature with
     ``asked_details`` (``details``, a blank line, the short question).
     ``question`` and ``details_question`` are the AskUserQuestion objects that
-    carry those two strings.
+    carry those two strings. ``asked_line`` and ``asked_details_line`` say the
+    same on one line, for OpenCode: its desktop app shows the question text
+    with collapsing white space, so line breaks and indents do not survive.
     """
 
     approval_id: str
@@ -65,6 +71,8 @@ class Surface:
     asked_details: str
     question: dict
     details_question: dict
+    asked_line: str
+    asked_details_line: str
 
 
 # --------------------------------------------------------------------------- #
@@ -124,17 +132,26 @@ def _tokens(command: str) -> Optional[list[str]]:
         return None
 
 
-def _command_lines(command: str) -> list[str]:
-    """Lay one command out as D12 shows it, every token exact (D23): each flag, with its values, on its own line."""
+def _command_lines(command: str, width: int) -> list[str]:
+    """Lay one command out as D12 shows it, every token exact (D23).
+
+    Each flag, with its values, starts its own line, and a line that would pass
+    ``width`` continues on the next one between tokens. A token longer than
+    ``width`` is never split: it stays on a line that has not yet passed
+    ``width``, so a line overruns only by that one token.
+    """
     tokens = None if "\n" in command else _tokens(command)
     if not tokens:
         return command.split("\n")
-    groups: list[list[str]] = [[]]
+    lines: list[str] = []
     for token in tokens:
-        if token.startswith("-") and token != "-" and groups[-1]:
-            groups.append([])
-        groups[-1].append(token)
-    lines = [" ".join(group) for group in groups]
+        starts_flag = token.startswith("-") and token != "-"
+        fits = bool(lines) and len(lines[-1]) + 1 + len(token) <= width
+        overlong = bool(lines) and len(token) > width and len(lines[-1]) <= width
+        if not starts_flag and (fits or overlong):
+            lines[-1] += " " + token
+        else:
+            lines.append(token)
     return [line + " \\" for line in lines[:-1]] + lines[-1:]
 
 
@@ -157,22 +174,62 @@ def _numbered(position: int, width: int) -> str:
     return f"  {position:>{width}}  "
 
 
-def _text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+def _heading(payload: Mapping[str, Any]) -> str:
     requester = payload.get("requested_by") or {}
-    noun = "Archivos" if items and "path" in items[0] else "Comandos"
+    return f"{_HEADING} · {requester.get('agent_id') or _NO_AGENT}"
+
+
+def _noun(items: Sequence[Mapping[str, Any]]) -> str:
+    return "Archivos" if items and "path" in items[0] else "Comandos"
+
+
+def _folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str]:
+    """The line that says where a command runs, only when that is not the requester's shell folder (D3).
+
+    ``requested_from`` is sealed by the request; a payload sealed without it
+    (a reactive block, which seals the folder it ran in, or an older row) shows
+    no folder.
+    """
+    origin = payload.get("requested_from")
+    cwd = item.get("cwd")
+    if "command" not in item or not origin or not cwd or cwd == origin:
+        return None
+    return f"en la carpeta {cwd}"
+
+
+def _text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
     lines = [
-        f"Solicitud de aprobación · {requester.get('agent_id') or _NO_AGENT}",
+        _heading(payload),
         payload.get("what") or _NO_TITLE,
         "",
-        f"{noun} ({len(items)})",
+        f"{_noun(items)} ({len(items)})",
     ]
     width = len(str(len(items)))
     for position, item in enumerate(items, start=1):
         prefix = _numbered(position, width)
-        first, *rest = _command_lines(_target(item))
+        continuation = " " * (len(prefix) + 4)
+        first, *rest = _command_lines(_target(item), WRAP_COLUMN - len(continuation) - 2)
         lines.append(prefix + first)
-        lines.extend(" " * (len(prefix) + 4) + line for line in rest)
+        lines.extend(continuation + line for line in rest)
+        folder = _folder(payload, item)
+        if folder:
+            lines.append(" " * len(prefix) + folder)
     return "\n".join(lines)
+
+
+def _validity(
+    payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], approval_id: str
+) -> str:
+    fingerprints = [command_fingerprint(_target(item)) for item in items]
+    if len(fingerprints) == 1:
+        prints = f"huella {fingerprints[0]}"
+    else:
+        prints = "huellas " + " · ".join(
+            f"{position} {fingerprint}"
+            for position, fingerprint in enumerate(fingerprints, start=1)
+        )
+    window = payload.get("window_minutes") or WINDOW_MINUTES
+    return f"Vale {window} min · ID {approval_id} · {prints}"
 
 
 def _details(
@@ -190,17 +247,40 @@ def _details(
         _numbered(position, width) + _target(item)
         for position, item in enumerate(items, start=1)
     )
-    fingerprints = [command_fingerprint(_target(item)) for item in items]
-    if len(fingerprints) == 1:
-        prints = f"huella {fingerprints[0]}"
-    else:
-        prints = "huellas " + " · ".join(
-            f"{position} {fingerprint}"
-            for position, fingerprint in enumerate(fingerprints, start=1)
-        )
-    window = payload.get("window_minutes") or WINDOW_MINUTES
-    lines.append(f"Vale {window} min · ID {approval_id} · {prints}")
+    lines.append(_validity(payload, items, approval_id))
     return "\n".join(lines)
+
+
+def _listed(items: Sequence[Mapping[str, Any]], line: Any) -> str:
+    return " · ".join(f"[{position}] {line(item)}" for position, item in enumerate(items, start=1))
+
+
+def _text_line(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
+    """``_text`` on one line: the same parts, joined by separators instead of line breaks."""
+    def command(item: Mapping[str, Any]) -> str:
+        folder = _folder(payload, item)
+        return _target(item) + (f" ({folder})" if folder else "")
+
+    return " — ".join([
+        _heading(payload),
+        payload.get("what") or _NO_TITLE,
+        f"{_noun(items)} ({len(items)}): {_listed(items, command)}",
+    ])
+
+
+def _details_line(
+    payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], approval_id: str
+) -> str:
+    """``_details`` on one line: the same parts, joined by separators instead of line breaks."""
+    exact = "Comando exacto" if len(items) == 1 else "Comandos exactos"
+    return " — ".join([
+        _listed(items, lambda item: (
+            f"{item.get('does') or _NO_DOES} Impacto: {item.get('impact') or _NO_IMPACT}"
+        )),
+        f"Rollback: {payload.get('rollback_hint') or _NO_ROLLBACK}",
+        f"{exact}: {_listed(items, _target)}",
+        _validity(payload, items, approval_id),
+    ])
 
 
 def _short_question(payload: Mapping[str, Any]) -> str:
@@ -237,6 +317,8 @@ def _render(payload: Mapping[str, Any], approval_id: str, header: str) -> Surfac
         asked_details=asked_details,
         question=_question(asked, header),
         details_question=_question(asked_details, header),
+        asked_line=f"{_text_line(payload, items)} — {short}",
+        asked_details_line=f"{_details_line(payload, items, approval_id)} — {short}",
     )
 
 
@@ -269,6 +351,21 @@ def is_signature_question(question: Mapping[str, Any]) -> bool:
         header == HEADER
         or re.fullmatch(r"Aprob\. \d+/\d+", header) is not None
         or labels == [label for label, _ in OPTIONS]
+    )
+
+
+def looks_like_signature(question: Mapping[str, Any]) -> bool:
+    """Whether a question reads as a signature to the user, however it was typed.
+
+    Wider than :func:`is_signature_question`: a model's copy carries a translated
+    header, other option descriptions or only the heading, and the user reads
+    it as Gaia's signature all the same.
+    """
+    header = str(question.get("header") or "")
+    return (
+        is_signature_question(question)
+        or re.match(r"(?i)(aprob|approv)", header) is not None
+        or _HEADING in str(question.get("question") or "")
     )
 
 
