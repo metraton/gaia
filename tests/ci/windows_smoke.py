@@ -193,9 +193,10 @@ def _run_grant_cycle(workspace: Path) -> tuple[bool, str]:
     Uses the production pre_tool_use entry point (via the committed harness) for
     block and retry, and activates the pending approval at the DB plane
     (``activate_db_pending_by_id``) -- deliberately NOT via any host-chosen
-    activation route (risk R3). The retry runs under a DIFFERENT session id than
-    the block to confirm the grant is session-agnostic, exactly as the shipped
-    tests/integration/test_grant_cycle_no_session_env.py invariant requires.
+    activation route (risk R3). The activation runs under the approver's session
+    and the grant stays bound to its requester (D6): a foreign session's retry
+    is denied and the requesting session's retry is allowed, exactly as
+    tests/integration/test_grant_cycle_no_session_env.py requires.
     """
     from tests.fixtures.grant_cycle_harness import run_pre_tool_use_event
     from gaia.approvals.store import get_pending
@@ -203,19 +204,24 @@ def _run_grant_cycle(workspace: Path) -> tuple[bool, str]:
 
     command = "git push origin winsmoke"
     block_session = "winsmoke-block"
-    retry_session = "winsmoke-retry"  # different on purpose
+    approver_session = "winsmoke-approver"
+    foreign_session = "winsmoke-foreign"
+
+    def attempt(session_id: str):
+        return run_pre_tool_use_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": session_id,
+                "tool_name": "Bash",
+                "tool_input": {"command": command},
+                "agent_id": "a12345670f1e2d3c4",
+                "agent_type": "developer",
+            },
+            cwd=workspace,
+        )
 
     # Phase 1: block (subagent context => structured deny + DB pending row).
-    block = run_pre_tool_use_event(
-        {
-            "hook_event_name": "PreToolUse",
-            "session_id": block_session,
-            "tool_name": "Bash",
-            "tool_input": {"command": command},
-            "agent_id": "a12345670f1e2d3c4",
-        },
-        cwd=workspace,
-    )
+    block = attempt(block_session)
     if block.permission_decision != "deny":
         return False, f"block: expected deny, got {block.permission_decision!r} (exit {block.exit_code}); stderr={block.stderr[:300]}"
 
@@ -227,29 +233,25 @@ def _run_grant_cycle(workspace: Path) -> tuple[bool, str]:
     if not approval_id.startswith("P-"):
         return False, f"unexpected approval_id format: {approval_id!r}"
 
-    # Phase 2: activate at the DB plane, under a DIFFERENT session (R3-safe).
+    # Phase 2: activate at the DB plane, under the approver's session (R3-safe).
     activation = activate_db_pending_by_id(
-        approval_id, current_session_id=retry_session
+        approval_id, current_session_id=approver_session
     )
     if not getattr(activation, "success", False):
         return False, f"activate: failed status={getattr(activation,'status',None)!r} reason={getattr(activation,'reason',None)!r}"
     if get_pending(all_sessions=True):
         return False, "activate: pending row should be consumed after activation"
 
-    # Phase 3: retry under the different session -> must be allowed through.
-    retry = run_pre_tool_use_event(
-        {
-            "hook_event_name": "PreToolUse",
-            "session_id": retry_session,
-            "tool_name": "Bash",
-            "tool_input": {"command": command},
-            "agent_id": "a12345670f1e2d3c4",
-        },
-        cwd=workspace,
-    )
+    # Phase 3: a foreign session cannot use the requester's grant.
+    foreign = attempt(foreign_session)
+    if foreign.permission_decision != "deny":
+        return False, f"foreign retry: expected deny, got decision={foreign.permission_decision!r} exit={foreign.exit_code}"
+
+    # Phase 4: the requesting session's retry is allowed through.
+    retry = attempt(block_session)
     if not retry.is_allowed:
         return False, f"retry: expected allow, got decision={retry.permission_decision!r} exit={retry.exit_code}; stderr={retry.stderr[:300]}"
-    return True, "block -> DB pending -> DB activate -> cross-session retry allowed"
+    return True, "block -> DB pending -> DB activate -> foreign denied, requester retry allowed"
 
 
 def _run_fts5_sync() -> tuple[bool, str]:
@@ -324,7 +326,7 @@ def phase_smoke() -> int:
 
     checks = [
         ("post_tool_use no-crash (filelock runtime)", lambda: _run_post_tool_use_critical_event(workspace)),
-        ("T3 grant activation (DB plane, session-agnostic)", lambda: _run_grant_cycle(workspace)),
+        ("T3 grant activation (DB plane, bound to requester)", lambda: _run_grant_cycle(workspace)),
         ("FTS5 sync (episodes -> episodes_fts trigger)", _run_fts5_sync),
     ]
 
