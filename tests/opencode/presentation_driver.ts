@@ -1,17 +1,18 @@
 /**
- * Drives the real GaiaOpenCodePlugin through one blocked tool call and prints
- * what it did about presenting the approval.
+ * Drives the real GaiaOpenCodePlugin through one blocked tool call and, when
+ * the scenario asks for it, the orchestrator's question call that presents the
+ * approval (D39), and prints what the plugin did about presenting it.
  *
- * The plugin runs here and executes the real `gaia approvals opencode-present`
- * CLI against the database in GAIA_DB; what is captured is the control-plane
- * prompt it sent, the bridge traces, the cwd of every Gaia process and the
- * abort the original invocation received.
+ * The plugin runs here and executes the real `gaia approvals show` and
+ * `opencode-present` CLIs against the database in GAIA_DB; what is captured is
+ * every prompt or session the plugin opened (D39: none), the questions it wrote
+ * into the orchestrator's call, the bridge traces, the cwd of every Gaia
+ * process and the abort each invocation received.
  *
  * Usage: bun presentation_driver.ts '<scenario json>'
  */
 
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
-import { assertPromptAsyncBody } from "./sdk_body_contract.ts"
 
 const scenario = JSON.parse(process.argv[2])
 const controlPrompts: Record<string, unknown>[] = []
@@ -59,22 +60,24 @@ async function gaiaBridge(event: Record<string, unknown>) {
   return { action: "allow" as const }
 }
 
+// create/promptAsync/prompt/delete only record: under D39 the plugin opens no
+// session and sends no prompt, so any entry here is a regression.
 const client = {
   session: {
     async messages() {
       return { data: [{ info: { role: "assistant", agent: "gaia-orchestrator" } }] }
     },
+    async create(request: Record<string, unknown>) {
+      controlPrompts.push({ create: request })
+      return { data: { id: "control-session" } }
+    },
     async promptAsync(request: Record<string, unknown>) {
-      assertPromptAsyncBody(request)
       controlPrompts.push(request)
-      if (scenario.controlPrompt === "rejected") {
-        // The SDK client resolves the host's schema rejection as data, not a throw.
-        return {
-          error: { name: "BadRequestError", data: { message: 'schema rejection kind=Payload at ["system"]' } },
-          response: { ok: false, status: 400 },
-        }
-      }
       return { data: undefined, response: { ok: true, status: 204 } }
+    },
+    async prompt(request: Record<string, unknown>) {
+      controlPrompts.push(request)
+      return { data: undefined, response: { ok: true, status: 200 } }
     },
     async delete({ path }: any) {
       deletedSessions.push(path.id)
@@ -148,22 +151,25 @@ if (scenario.outcome === undefined || scenario.outcome === "pending" || scenario
   }
 }
 
-// A control still registered for the child session makes the plugin refuse any
-// non-question tool result on it; a released one lets the probe fall through.
-let controlSessionLingered: boolean | undefined
-if (scenario.controlPrompt !== undefined) {
+// The orchestrator's question call, with what `gaia approvals question` prints
+// in an OpenCode shell: the approval id as the whole question text.
+let askError: string | undefined
+let askedQuestions: unknown[] | undefined
+if (scenario.ask === true) {
+  const args = { questions: [{
+    question: scenario.approvalID, header: "Gaia",
+    options: [{ label: "OK", description: "Gaia fills this question in" }],
+  }] }
   try {
-    await plugin["tool.execute.after"](
-      { sessionID: scenario.sessionID, callID: "probe-after", tool: "bash" },
-      { title: "probe", output: "", metadata: {} },
-    )
-    controlSessionLingered = false
+    await plugin["tool.execute.before"]({ sessionID: rootSessionID, callID: scenario.askCallID, tool: "question" }, { args })
+    askedQuestions = args.questions
   } catch (thrown: any) {
-    controlSessionLingered = String(thrown?.message ?? thrown).includes("control-plane")
+    askError = String(thrown?.message ?? thrown)
   }
 }
 
 console.log(JSON.stringify({
-  controlPrompts, bridgeEvents, deletedSessions, controlSessionLingered, error, originalInvocationExecuted,
-  gaiaSpawnCwds, requestResultOutput,
+  controlPrompts, bridgeEvents, deletedSessions, error, originalInvocationExecuted,
+  gaiaSpawnCwds, askError: askError ?? null, askedQuestions: askedQuestions ?? null,
+  rootSessionID, requestResultOutput,
 }))

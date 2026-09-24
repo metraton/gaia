@@ -4,8 +4,9 @@ The installed OpenCode (1.18.32) never triggers a plugin's ``permission.ask``
 hook: its bundle triggers tool.execute.before/after, shell.env and the chat and
 compaction hooks, and nothing named permission. The consent lane that hook fed
 is therefore retired, and a signature reaches the user only through the native
-question tool. An approval is identified by structure, never read out of text,
-and it is presented only to the live session and agent that requested it.
+question tool. An approval is identified by structure, never read out of text;
+only the orchestrator that dispatched its requester asks it (D39), while its
+presentation and grant stay bound to the session and agent that requested it.
 """
 
 from __future__ import annotations
@@ -267,9 +268,6 @@ def driven_env(tmp_path, monkeypatch, bootstrapped_db_template):
     return env, db_path
 
 
-SHORT_QUESTION = "¿Publico la rama y la imagen?"
-
-
 def _rendered(approval_id):
     from gaia.approvals.store import get_by_id
     from gaia.approvals.surface import render
@@ -277,25 +275,15 @@ def _rendered(approval_id):
     return render(json.loads(get_by_id(approval_id)["payload_json"]), approval_id)
 
 
-def _posted(driven):
-    """The texts Gaia posted into the specialist's session with session.prompt, in order."""
-    from tests.integration.test_opencode_consent_retry_e2e import SESSION_ID
-
+def _asked(questions):
+    """The OpenCode questions: the renderer's own, one line per command (D37), single choice, no typed row."""
     return [
-        event["text"] for event in driven["hostEvents"]
-        if event["type"] == "message" and event["sessionID"] == SESSION_ID
+        {
+            "header": question["header"], "question": question["question"],
+            "options": question["options"], "multiple": False, "custom": False,
+        }
+        for question in questions
     ]
-
-
-def _asked(rendered):
-    """The OpenCode question: only the short question; the signature text is posted before it (D26)."""
-    return {
-        "header": rendered.question["header"],
-        "question": SHORT_QUESTION,
-        "options": rendered.question["options"],
-        "multiple": False,
-        "custom": False,
-    }
 
 
 def _opencode_presentations(approval_id):
@@ -313,8 +301,8 @@ def _decision(label, answer, request_id):
     return {"kind": "control-decision", "label": label, "answer": answer, "requestID": request_id}
 
 
-def test_own_adapter_asks_the_renderer_single_string_and_closes_on_execute_after(driven_env):
-    """The user is asked Gaia's string, not the model's; Approve arms the retry and after settles it."""
+def test_own_adapter_asks_the_renderer_questions_and_closes_on_execute_after(driven_env):
+    """The user is asked Gaia's questions, not the model's placeholder; Approve arms the retry and after settles it."""
     from tests.integration import test_opencode_consent_retry_e2e as e2e
 
     env, db_path = driven_env
@@ -334,11 +322,11 @@ def test_own_adapter_asks_the_renderer_single_string_and_closes_on_execute_after
 
     decision = e2e._step(driven, "approve")
     assert driven["presentations"][0]["approvalID"] == approval_id, driven["presentations"]
-    assert decision["question"] == _asked(rendered)
-    assert _posted(driven) == [f"```\n{rendered.text}\n```"]
-    instruction = driven["controlPrompts"][0]["body"]["parts"][0]["text"]
-    assert decision["modelQuestion"]["question"] == "Gaia"
-    assert rendered.text.splitlines()[0] not in instruction and approval_id not in instruction
+    assert decision["questions"] == _asked(rendered.questions)
+    # The orchestrator's call carried only the id; nothing was posted or prompted anywhere.
+    assert decision["modelQuestion"]["question"] == approval_id
+    assert driven["hostEvents"] == [{"type": "question.asked", "sessionID": e2e.ROOT_SESSION_ID}]
+    assert driven["controlPrompts"] == []
     assert e2e._step(driven, "retry")["allowed"] is True
     assert e2e._control_closures(db_path) == [("decided", approval_id)]
     assert json.loads(e2e._grant(db_path, approval_id)["consumed_indexes_json"]) == [0]
@@ -354,19 +342,21 @@ def test_own_adapter_details_reasks_the_same_signature_with_the_renderer_details
     driven = e2e._drive(env, [
         e2e._before("blocked", e2e.FIRST_COMMAND),
         _decision("details", "details", "question-first"),
-        {"kind": "observe-controls", "label": "after-details"},
-        _decision("approve", "approve", "question-details"),
+        {**_decision("approve", "approve", "question-details"), "mode": "details"},
     ])
 
-    assert e2e._step(driven, "details")["question"] == _asked(rendered)
-    assert e2e._step(driven, "approve")["question"] == _asked(rendered)
-    assert _posted(driven) == [f"```\n{rendered.text}\n```", f"```\n{rendered.details}\n```"]
-    assert e2e._step(driven, "approve")["modelQuestion"]["question"] == "Gaia"
-    assert e2e._step(driven, "after-details")["controlPromptCount"] == 2
+    details = e2e._step(driven, "details")
+    assert details["questions"] == _asked(rendered.questions)
+    assert f"gaia approvals question --details {approval_id}" in details["output"]
+    approve = e2e._step(driven, "approve")
+    assert approve["modelQuestion"]["question"] == f"{approval_id} details"
+    assert approve["questions"] == _asked(rendered.details_questions)
+    assert driven["controlPrompts"] == []
     assert e2e._control_closures(db_path) == [
         ("details_requested", approval_id), ("decided", approval_id),
     ]
-    assert len(_opencode_presentations(approval_id)) == 1
+    # Each question the orchestrator asked is its own presentation.
+    assert len(_opencode_presentations(approval_id)) == 2
     assert e2e._approval_status(db_path, approval_id) == "approved"
 
 
@@ -474,16 +464,14 @@ def test_own_adapter_asks_a_batch_one_signature_after_another(driven_env):
         e2e._before("blocked-first", e2e.FIRST_COMMAND),
         e2e._before("blocked-second", e2e.SECOND_COMMAND, call_id="call-second"),
         {"kind": "lifecycle", "label": "idle", "sessionID": e2e.SESSION_ID, "eventType": "session.idle"},
-        _decision("reject-first", "reject", "question-first"),
-        _decision("approve-second", "approve", "question-second"),
+        {**_decision("reject-first", "reject", "question-first"), "approvalIDs": [first]},
+        {**_decision("approve-second", "approve", "question-second"), "approvalIDs": [second]},
     ], auto_safe_idle=False)
 
     assert [item["approvalID"] for item in driven["presentations"]] == [first, second]
-    assert e2e._step(driven, "reject-first")["question"]["question"] == SHORT_QUESTION
-    assert e2e._step(driven, "approve-second")["question"]["question"] == SHORT_QUESTION
-    assert _posted(driven) == [f"```\n{_rendered(item).text}\n```" for item in (first, second)]
-    control_prompts = [p for p in driven["controlPrompts"] if p["path"]["id"] == e2e.SESSION_ID]
-    assert len(control_prompts) == 2
+    assert e2e._step(driven, "reject-first")["questions"] == _asked(_rendered(first).questions)
+    assert e2e._step(driven, "approve-second")["questions"] == _asked(_rendered(second).questions)
+    assert driven["controlPrompts"] == []
     assert e2e._control_closures(db_path) == [("decided", first), ("decided", second)]
     assert e2e._approval_status(db_path, first) == "rejected"
     assert e2e._approval_status(db_path, second) == "approved"

@@ -3,7 +3,8 @@
 Every step below is executed by a real component. The plugin closure in
 ``opencode/plugin.ts`` runs under bun; its policy bridge is the real
 ``opencode/bridge.py``; its consent surface and its permission reply go through
-the real ``gaia approvals opencode-present`` / ``opencode-decide`` CLIs; the
+the real ``gaia approvals opencode-present`` / ``opencode-decide`` CLIs, run
+from the orchestrator's own question call (D39); the
 reservation, settlement and freeze are the real ``gaia.store.writer`` lanes
 reached through Gaia's own pre/post tool policy. Nothing here hand-writes a
 payload under test.
@@ -164,6 +165,7 @@ def _request_file_write(env, path):
             "--question", "¿Modifico el hook?",
             "--does", "Reescribe el hook.",
             "--impact", "Cambia un archivo de hooks.",
+            "--rollback", "Restaurar el hook desde git.",
             "--agent-id", AGENT_ID,
             "--session-id", SESSION_ID,
             "--json",
@@ -219,28 +221,18 @@ def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
     return _decide(env, approval_id, call_id=call_id, token=token)
 
 
-def _drive(
-    env, steps, *, initial_permissions=None,
-    question_during_prompt=False, duplicate_question_when_prompt_races=False,
-    racing_duplicate_delay_ms=20_000, auto_safe_idle=True, reject_messages=False,
-):
+def _drive(env, steps, *, auto_safe_idle=True):
     """Run the real plugin under bun over the dispatch chain plus these steps.
 
-    ``reject_messages`` makes the host refuse every ``session.prompt`` post.
+    A ``control-decision`` step is the orchestrator's own question call in the
+    root session (D39), asking what ``gaia approvals question`` prints.
     """
     scenario = {
         "sessionID": SESSION_ID,
+        "rootSessionID": ROOT_SESSION_ID,
         "steps": DISPATCH_STEPS + list(steps),
         "autoSafeIdle": auto_safe_idle,
-        "rejectMessages": reject_messages,
     }
-    if initial_permissions is not None:
-        scenario["initialPermissions"] = {SESSION_ID: initial_permissions}
-    if question_during_prompt:
-        scenario["questionDuringPrompt"] = True
-    if duplicate_question_when_prompt_races:
-        scenario["duplicateQuestionWhenPromptRaces"] = True
-        scenario["racingDuplicateDelayMs"] = racing_duplicate_delay_ms
     result = subprocess.run(
         ["bun", str(DRIVER), json.dumps(scenario)],
         cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=300,
@@ -286,7 +278,7 @@ def test_protected_file_approval_arms_an_edit_retry_for_only_the_canonical_targe
     assert approval_id == requested_id
     assert _approval_status(db_path, approval_id) == "approved"
     assert _grant(db_path, approval_id)["scope"] == "SCOPE_FILE_PATH"
-    assert len(driven["controlPrompts"]) == 2, driven
+    assert driven["controlPrompts"] == [], driven
     assert _step(driven, "retry-file")["allowed"] is True
     retry_exchange = next(
         item for item in _tool_exchanges(driven, tool="Edit")
@@ -398,6 +390,34 @@ def _step(driven, label):
     return matched[0]
 
 
+def _rendered(approval_id):
+    """The signature the shared renderer produces for the persisted request."""
+    from gaia.approvals import store, surface
+
+    return surface.render(json.loads(store.get_by_id(approval_id)["payload_json"]), approval_id)
+
+
+def test_a_blocked_specialist_is_asked_nothing_until_the_orchestrator_asks(db_env):
+    """D39: a block ends the specialist's turn with the approval id and opens no question anywhere."""
+    from gaia.approvals.store import get_history
+
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [_before("blocked", FIRST_COMMAND)])
+
+    blocked = _step(driven, "blocked")
+    assert blocked["allowed"] is False and approval_id in blocked["error"], blocked
+    assert driven["presentations"] == [{"approvalID": approval_id, "sessionID": SESSION_ID, "callID": CALL_ID}]
+    assert driven["controlPrompts"] == [] and driven["hostEvents"] == []
+    assert [
+        event for event in get_history(approval_id)
+        if event["event_type"] == "SHOWN" and "opencode" in (event.get("metadata_json") or "")
+    ] == []
+    assert _approval_status(db_path, approval_id) == "pending"
+    assert _control_closures(db_path) == []
+
+
 def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env):
     env, db_path = db_env
     approval_id = _request_set(env)
@@ -410,17 +430,17 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     assert _step(driven, "blocked")["allowed"] is False, driven
     decision = _step(driven, "approve")
     assert decision["allowed"] is True, driven
-    assert decision["controlSessionID"] == SESSION_ID
-    question = decision["question"]
-    [block] = [event for event in driven["hostEvents"] if event["type"] == "message"]
-    for command in (FIRST_COMMAND, SECOND_COMMAND):
-        assert command in block["text"]
-        assert command not in question["question"]
-    assert [option["label"] for option in question["options"]] == ["Approve", "Reject", "Details"]
-    prompt = driven["controlPrompts"][0]["body"]
-    assert "tools" not in prompt
-    assert isinstance(prompt["system"], str), prompt["system"]
-    assert "agent" not in prompt
+    # The orchestrator asked, in its own session; the blocked specialist was asked nothing.
+    assert decision["controlSessionID"] == ROOT_SESSION_ID
+    assert decision["modelQuestion"]["question"] == approval_id
+    assert driven["controlPrompts"] == []
+    assert [event for event in driven["hostEvents"] if event["type"] == "message"] == []
+    # One D37 question per sealed command, each carrying its own command.
+    questions = decision["questions"]
+    assert [q["question"] for q in questions] == [q["question"] for q in _rendered(approval_id).questions]
+    for question, command in zip(questions, (FIRST_COMMAND, SECOND_COMMAND)):
+        assert command in question["question"]
+        assert [option["label"] for option in question["options"]] == ["Approve", "Reject", "Details"]
     assert _approval_status(db_path, approval_id) == "approved"
     grant = _grant(db_path, approval_id)
     assert grant is not None
@@ -477,102 +497,43 @@ def test_a_second_exact_question_call_is_refused_before_decision(db_env):
     assert _control_closures(db_path) == [("drifted_tool_call", approval_id)]
 
 
-def test_control_prompt_preserves_specialist_permissions_until_typed_retry(db_env):
-    env, _db_path = db_env
-    original = [{"permission": "bash", "pattern": "*", "action": "ask"}]
-    _request_set(env)
+def test_concurrent_approvals_are_asked_one_at_a_time_and_each_answer_closes_only_its_control(db_env):
+    """Two signatures of one specialist session: the orchestrator asks them in two calls.
 
-    driven = _drive(env, [
-        _before("blocked", FIRST_COMMAND),
-        {"kind": "control-decision", "label": "approve", "answer": "approve"},
-        _before("retry", FIRST_COMMAND, call_id=RETRY_CALL_ID),
-    ], initial_permissions=original)
-
-    assert driven["sessionPermissions"][SESSION_ID] == original
-    assert driven["permissionTransitions"][0] == {
-        "sessionID": SESSION_ID, "before": original, "after": original,
-    }
-    assert _step(driven, "retry")["allowed"] is True
-
-
-def test_concurrent_approvals_are_serialized_and_each_native_answer_closes_only_its_control(db_env):
+    The session holds one bound retry at a time, so the plugin refuses both in
+    one call; asked one after the other, each answer decides only its own.
+    """
     env, db_path = db_env
-    first_call = "call-concurrent-first"
-    second_call = "call-concurrent-second"
-    _request_one_set_per_command(env)
+    first_id, second_id = _request_one_set_per_command(env)
 
     driven = _drive(env, [
         {"kind": "concurrent", "steps": [
-            _before("blocked-first", FIRST_COMMAND, call_id=first_call),
-            _before("blocked-second", SECOND_COMMAND, call_id=second_call),
+            _before("blocked-first", FIRST_COMMAND, call_id="call-concurrent-first"),
+            _before("blocked-second", SECOND_COMMAND, call_id="call-concurrent-second"),
         ]},
-        {"kind": "control-decision", "label": "reject-first", "answer": "reject"},
-        {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
+        {"kind": "control-decision", "label": "both-at-once", "answer": "reject",
+         "approvalIDs": [first_id, second_id]},
+        {"kind": "control-decision", "label": "reject-first", "answer": "reject", "approvalIDs": [first_id]},
+        {"kind": "control-decision", "label": "approve-second", "answer": "approve", "approvalIDs": [second_id]},
     ])
 
     assert _step(driven, "blocked-first")["allowed"] is False
     assert _step(driven, "blocked-second")["allowed"] is False
-    assert len(driven["presentations"]) == 2
-    assert len(driven["controlPrompts"]) == 2
-    approval_ids = [
-        item["approvalID"]
-        for item in driven["presentations"]
-    ]
-    assert len(set(approval_ids)) == 2
-    assert all(_approval_status(db_path, approval_id) == "rejected" for approval_id in approval_ids)
-    assert sorted(_control_closures(db_path)) == sorted([
-        ("decided", approval_ids[0]), ("decided", approval_ids[1]),
-    ])
+    assert {item["approvalID"] for item in driven["presentations"]} == {first_id, second_id}
+    both = _step(driven, "both-at-once")
+    assert both["allowed"] is False and "one signature per specialist session" in both["error"], both
+    assert _approval_status(db_path, first_id) == "rejected"
+    assert _approval_status(db_path, second_id) == "approved"
+    assert _grant(db_path, first_id) is None and _grant(db_path, second_id) is not None
+    assert _control_closures(db_path) == [("decided", first_id), ("decided", second_id)]
 
 
-def test_late_approval_waits_through_decision_idle_and_first_retry_lifecycle(db_env):
-    env, db_path = db_env
-    second_call = "call-late-second"
-    retry_call = "call-late-first-retry"
-    _request_one_set_per_command(env)
+def test_an_activated_approval_is_told_to_the_orchestrator_and_traced(db_env):
+    """The user's yes has an actor: the orchestrator's own question result says whom to resume.
 
-    driven = _drive(env, [
-        _before("blocked-first", FIRST_COMMAND),
-        {"kind": "control-decision", "label": "approve-first", "answer": "approve", "deferIdle": True},
-        _before("blocked-second-before-idle", SECOND_COMMAND, call_id=second_call),
-        {"kind": "observe-controls", "label": "before-idle"},
-        {"kind": "lifecycle", "label": "first-idle", "sessionID": SESSION_ID, "eventType": "session.idle"},
-        {"kind": "observe-controls", "label": "after-idle"},
-        _before("retry-first", FIRST_COMMAND, call_id=retry_call),
-        {
-            "kind": "after", "label": "settle-first", "sessionID": SESSION_ID,
-            "callID": retry_call, "tool": "bash", "command": FIRST_COMMAND,
-            "metadata": {"exitCode": 0},
-        },
-        {"kind": "observe-controls", "label": "after-first-settlement"},
-        {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
-    ])
-
-    assert _step(driven, "blocked-first")["allowed"] is False
-    assert _step(driven, "blocked-second-before-idle")["allowed"] is False
-    assert _step(driven, "before-idle")["specialistControlPromptCount"] == 1
-    assert _step(driven, "after-idle")["specialistControlPromptCount"] == 1
-    assert _step(driven, "retry-first")["allowed"] is True
-    assert _step(driven, "after-first-settlement")["specialistControlPromptCount"] == 2
-
-    approval_ids = [
-        item["approvalID"]
-        for item in driven["presentations"]
-    ]
-    assert len(approval_ids) == 2
-    assert _approval_status(db_path, approval_ids[0]) == "approved"
-    assert _approval_status(db_path, approval_ids[1]) == "rejected"
-    assert sorted(_control_closures(db_path)) == sorted([
-        ("decided", approval_ids[0]), ("decided", approval_ids[1]),
-    ])
-
-
-def test_an_activated_approval_is_announced_to_the_orchestrator_and_traced(db_env):
-    """The user's yes has an actor: the root session is prompted to resume the specialist.
-
-    The specialist's turn ended with the blocked attempt, so the notice goes to
-    the orchestrator's ROOT session, naming the specialist session to resume
-    with task_id and the index it must retry.
+    The specialist's turn ended with the blocked attempt, so the result of the
+    orchestrator's question call names the specialist session to resume with
+    task_id and execution; the grant stays that specialist's (D6).
     """
     env, db_path = db_env
     approval_id = _request_set(env)
@@ -582,42 +543,33 @@ def test_an_activated_approval_is_announced_to_the_orchestrator_and_traced(db_en
         {"kind": "control-decision", "label": "approve", "answer": "approve"},
     ])
 
-    prompts = driven["controlPrompts"]
-    assert len(prompts) == 2, prompts
-    notice = prompts[1]
-    assert notice["path"] == {"id": ROOT_SESSION_ID}
-    assert notice["body"]["parts"] == [{
-            "type": "text",
-            "text": (
-                f"Gaia: approval {approval_id} has an executable COMMAND_SET grant "
-                "and typed retry descriptor. "
-                f"Resume the specialist session {SESSION_ID} (task_id) so it retries command [0] now."
-            ),
-    }]
-    assert "agent" not in notice["body"]
+    decision = _step(driven, "approve")
+    assert (
+        f"Gaia: approval {approval_id} is approved and bound to {AGENT_ID} in session {SESSION_ID}. "
+        f"Resume that specialist (task_id {SESSION_ID}) with execution"
+    ) in decision["output"], decision
+    assert driven["controlPrompts"] == []
     applied = _harness_payloads(db_path, "consent.decision.applied")
     assert len(applied) == 1, applied
     assert applied[0]["approval_id"] == approval_id
     assert applied[0]["session_id"] == SESSION_ID
-    assert applied[0]["call_id"] == CALL_ID
-    assert applied[0]["control_session_id"] == _step(driven, "approve")["controlSessionID"]
+    assert applied[0]["call_id"] == decision["callID"]
+    assert applied[0]["control_session_id"] == ROOT_SESSION_ID
     assert applied[0]["reply"] == "once"
     assert applied[0]["lane"] == "control"
     assert applied[0]["next_index"] == 0
-    assert applied[0]["notified_session_id"] == ROOT_SESSION_ID
-    assert "notify_failure" not in applied[0]
 
 
-def test_a_rejection_is_not_announced(db_env):
+def test_a_rejection_is_told_and_not_traced_as_applied(db_env):
     env, db_path = db_env
-    _request_set(env)
+    approval_id = _request_set(env)
 
     driven = _drive(env, [
         _before("blocked", FIRST_COMMAND),
         {"kind": "control-decision", "label": "reject", "answer": "reject"},
     ])
 
-    assert len(driven["controlPrompts"]) == 1, driven["controlPrompts"]
+    assert f"Gaia: approval {approval_id} is rejected; nothing runs." in _step(driven, "reject")["output"]
     assert _harness_payloads(db_path, "consent.decision.applied") == []
 
 
@@ -644,63 +596,29 @@ def test_the_hosts_own_encoding_of_the_question_still_correlates(db_env, encodin
     assert _control_closures(db_path) == [("decided", approval_id)]
 
 
-def test_event_60148_correlates_while_prompt_async_is_still_resolving(db_env):
+@pytest.mark.parametrize("session_id", [ROOT_SESSION_ID, SESSION_ID], ids=["orchestrator", "specialist"])
+def test_an_exact_question_event_without_gaias_question_call_decides_nothing(db_env, session_id):
+    """Provenance is the validated question call, never the text: Gaia's exact questions typed elsewhere count for nothing."""
     env, db_path = db_env
     approval_id = _request_set(env)
-
-    driven = _drive(env, [
-        _before("blocked", FIRST_COMMAND),
-        {"kind": "control-reply", "label": "approve", "answer": "approve"},
-    ], question_during_prompt=True)
-
-    assert _step(driven, "blocked")["allowed"] is False, driven
-    assert _step(driven, "approve")["allowed"] is True, driven
-    assert _approval_status(db_path, approval_id) == "approved"
-    assert _grant(db_path, approval_id) is not None
-    assert _control_closures(db_path) == [("decided", approval_id)]
-
-
-def test_control_waits_for_original_turn_idle_before_the_measured_delayed_duplicate_shape(db_env):
-    env, db_path = db_env
-    approval_id = _request_set(env)
-
-    driven = _drive(env, [
-        _before("blocked", FIRST_COMMAND),
-        {"kind": "observe-controls", "label": "before-safe-idle"},
-        {"kind": "lifecycle", "label": "safe-idle", "sessionID": SESSION_ID, "eventType": "session.idle"},
-        {"kind": "control-reply", "label": "reject", "answer": "reject"},
-    ], question_during_prompt=True, duplicate_question_when_prompt_races=True, auto_safe_idle=False)
-
-    assert _step(driven, "blocked")["allowed"] is False, driven
-    assert _step(driven, "before-safe-idle")["specialistControlPromptCount"] == 0
-    assert len(driven["controlPrompts"]) == 1
-    assert driven["controlQuestionBeforeCalls"] == 1
-    assert driven["racingDuplicateAttempted"] is False
-    assert _step(driven, "reject")["allowed"] is True
-    assert _approval_status(db_path, approval_id) == "rejected"
-    assert _grant(db_path, approval_id) is None
-    assert _control_closures(db_path) == [("decided", approval_id)]
-
-
-def test_an_exact_pre_call_question_event_is_not_accepted_as_gaia_provenance(db_env):
-    env, db_path = db_env
-    approval_id = _request_set(env)
+    questions = [
+        {**question, "multiple": False, "custom": False}
+        for question in _rendered(approval_id).questions
+    ]
 
     driven = _drive(env, [
         _before("blocked", FIRST_COMMAND),
         {
-            "kind": "question-event",
-            "label": "unrelated-exact-event",
-            "questionEncoding": "event-60148",
+            "kind": "question-event", "label": "unrelated-exact-event", "sessionID": session_id,
+            "requestID": "question-not-gaias", "questions": questions,
+            "answers": [["Approve"] for _ in questions],
         },
     ])
 
     assert _step(driven, "unrelated-exact-event")["allowed"] is True, driven
     assert _approval_status(db_path, approval_id) == "pending"
     assert _grant(db_path, approval_id) is None
-    assert _control_closures(db_path) == [("question_mismatch", approval_id)]
-    closed = _harness_payloads(db_path, "consent.control.closed")[0]
-    assert "preceded the validated Gaia call" in closed["detail"]
+    assert _control_closures(db_path) == []
 
 
 def test_a_later_question_event_closes_the_correlated_control_without_a_decision(db_env):
@@ -726,49 +644,6 @@ def test_a_later_question_event_closes_the_correlated_control_without_a_decision
     assert "second question" in closed["detail"]
 
 
-def test_unrelated_tool_call_is_denied_before_policy_and_releases_only_the_active_queue_entry(db_env):
-    env, db_path = db_env
-    first_call = "call-unrelated-first"
-    second_call = "call-unrelated-second"
-    unrelated_call = "call-unrelated-during-control"
-    _request_one_set_per_command(env)
-
-    driven = _drive(env, [
-        {"kind": "concurrent", "steps": [
-            _before("blocked-first", FIRST_COMMAND, call_id=first_call),
-            _before("blocked-second", SECOND_COMMAND, call_id=second_call),
-        ]},
-        _before("unrelated", "pwd", call_id=unrelated_call),
-        {"kind": "observe-controls", "label": "before-idle"},
-        {"kind": "lifecycle", "label": "idle", "sessionID": SESSION_ID, "eventType": "session.idle"},
-        {"kind": "observe-controls", "label": "after-idle"},
-        {"kind": "control-decision", "label": "reject-second", "answer": "reject"},
-    ])
-
-    unrelated = _step(driven, "unrelated")
-    assert unrelated["allowed"] is False, driven
-    assert unrelated["error"] == "Gaia consent control plane permits one signature question"
-    assert all(
-        exchange["sent"].get("callID") != unrelated_call
-        for exchange in driven["exchanges"]
-    ), driven["exchanges"]
-    assert _step(driven, "before-idle")["specialistControlPromptCount"] == 1
-    assert _step(driven, "after-idle")["specialistControlPromptCount"] == 2
-
-    approval_ids = [
-        item["approvalID"]
-        for item in driven["presentations"]
-    ]
-    assert len(approval_ids) == 2
-    closures = _control_closures(db_path)
-    assert [reason for reason, _approval_id in closures] == ["drifted_tool_call", "decided"]
-    drifted_id = closures[0][1]
-    decided_id = closures[1][1]
-    assert {drifted_id, decided_id} == set(approval_ids)
-    assert _approval_status(db_path, drifted_id) == "pending"
-    assert _approval_status(db_path, decided_id) == "rejected"
-
-
 def test_a_question_that_is_not_gaias_closes_the_control_with_a_trace(db_env):
     env, db_path = db_env
     approval_id = _request_set(env)
@@ -787,7 +662,7 @@ def test_a_question_that_is_not_gaias_closes_the_control_with_a_trace(db_env):
     assert closed["detail"].startswith("host asked "), closed
     assert closed["control_session_id"] == _step(driven, "mismatch")["controlSessionID"]
     assert closed["session_id"] == SESSION_ID
-    assert closed["call_id"] == CALL_ID
+    assert closed["call_id"] == _step(driven, "mismatch")["callID"]
 
 
 @pytest.mark.parametrize(
@@ -820,9 +695,9 @@ def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(
     The approval is rejected out of band between the presentation and the
     answer, so the real CLI refuses the 'once' reply. The plugin traces the
     cause (decide_failed) and clears the pending control instead of keeping a
-    control whose question is already consumed. The presentation is the
-    question on screen, whose SHOWN is recorded once its block is posted, so
-    the rejection lands while the user reads it.
+    control whose question is already consumed. SHOWN is recorded when the
+    orchestrator's question call is written, so the rejection lands while the
+    user reads the question.
     """
     env, db_path = db_env
     approval_id = _request_set(env)
@@ -845,7 +720,7 @@ def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(
     assert len(decide_refusals) == 1, refusals
     assert decide_refusals[0]["approval_id"] == approval_id
     assert decide_refusals[0]["session_id"] == SESSION_ID
-    assert decide_refusals[0]["details"]["call_id"] == CALL_ID
+    assert decide_refusals[0]["details"]["call_id"] == _step(driven, "approve")["callID"]
     assert decide_refusals[0]["detail"], decide_refusals[0]
     # One closure, with Gaia's cause.
     assert _control_closures(db_path) == [("decide_failed", approval_id)]
@@ -853,7 +728,7 @@ def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(
 
 
 def test_a_signature_withdrawn_before_its_question_is_never_shown_and_is_traced(db_env):
-    """Rejected before the question call posts its block: no question, no SHOWN, one traced closure."""
+    """Rejected before the orchestrator asks: its question call is refused, no SHOWN, the cause traced by approval."""
     from gaia.approvals.store import get_history
 
     env, db_path = db_env
@@ -866,12 +741,18 @@ def test_a_signature_withdrawn_before_its_question_is_never_shown_and_is_traced(
     ])
 
     assert _step(driven, "rejected-out-of-band")["allowed"] is True, driven
-    assert _step(driven, "approve")["allowed"] is False, driven
+    asked = _step(driven, "approve")
+    assert asked["allowed"] is False, driven
+    assert f"Gaia could not present approval {approval_id}" in asked["error"], asked
     assert [e for e in get_history(approval_id) if e["event_type"] == "SHOWN"] == []
     assert _grant(db_path, approval_id) is None
-    assert _control_closures(db_path) == [("block_rejected", approval_id)]
-    closed = _harness_payloads(db_path, "consent.control.closed")[0]
-    assert f"could not record that {approval_id} was shown" in closed["detail"], closed
+    assert _control_closures(db_path) == []
+    refusals = [
+        payload for payload in _harness_payloads(db_path, "consent.decision.not_activated")
+        if payload["reason"] == "presentation_failed"
+    ]
+    assert [(p["approval_id"], p["session_id"]) for p in refusals] == [(approval_id, SESSION_ID)], refusals
+    assert refusals[0]["detail"] and refusals[0]["detail"] in asked["error"]
 
 
 def test_drift_after_yes_is_refused_before_policy_and_changes_no_state(db_env):
@@ -1014,7 +895,9 @@ def test_fresh_bound_retry_reserves_exact_index_executes_settles_and_freezes(db_
         "agent_id": AGENT_ID,
         "role": AGENT_ID,
         "session_id": SESSION_ID,
-        "original_call_id": CALL_ID,
+        # The grant is bound through the orchestrator's question call that
+        # presented it (D39); the retry is the specialist's own fresh call.
+        "original_call_id": _step(driven, "approve")["callID"],
         "retry_call_id": RETRY_CALL_ID,
         "command": FIRST_COMMAND,
         "command_fingerprint": FIRST_FINGERPRINT,

@@ -5,12 +5,12 @@
  * The claim this driver exists to support is about a SEQUENCE of tool calls
  * sharing one identity, so nothing in the sequence may be hand-written: the
  * plugin closure runs, its own `bridge()` is reached through a recorder that
- * forwards verbatim to the real `opencode/bridge.py`, and `requestApproval`
- * executes the real `gaia approvals opencode-present` / `opencode-decide`
- * CLIs against the database in GAIA_DB.
+ * forwards verbatim to the real `opencode/bridge.py`, and the orchestrator's
+ * question call executes the real `gaia approvals show` / `opencode-present` /
+ * `opencode-decide` CLIs against the database in GAIA_DB (D39).
  *
  * Normal scenarios double two host seams because no
- * OpenCode host runs here: the host-created permission request and the host's
+ * OpenCode host runs here: the host's question events and the host's
  * decision to invoke a tool at all. The second is
  * why a `before` step in this scenario proves what the PLUGIN does with an
  * invocation carrying a given session/call identity, and never that OpenCode
@@ -24,7 +24,6 @@
 
 import { isAbsolute } from "node:path"
 import { pathToFileURL } from "node:url"
-import { assertPromptAsyncBody, assertSessionCreateBody } from "./sdk_body_contract.ts"
 
 const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
 const gaiaPath = new URL("../../bin/gaia", import.meta.url).pathname
@@ -75,26 +74,29 @@ type Exchange = {
 const exchanges: Exchange[] = []
 /** Each approval a blocked step handed to the plugin's question, in order. */
 const presentations: Record<string, unknown>[] = []
+/** Every prompt the plugin sent into any session; D39 leaves it empty. */
 const controlPrompts: Record<string, any>[] = []
 /** Messages posted with session.prompt and question.asked deliveries, in the order the host saw them. */
 const hostEvents: Record<string, unknown>[] = []
 const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
+let questionCalls = 0
+
+const OPTION_BY_ANSWER: Record<string, number> = { approve: 0, reject: 1, details: 2 }
 
 /**
- * The arguments the control-plane model passes, parsed from the plugin's
- * instruction as a model would copy them, and the question the host then asks:
- * whatever the plugin left in those same arguments after tool.execute.before.
+ * The question-tool input `gaia approvals question` prints in an OpenCode
+ * shell (`_opencode_question` in bin/cli/approvals.py): one placeholder per
+ * approval, carrying only its id, plus " details" for the Details re-ask.
  */
-function controlQuestionCall(prompt: any): { sessionID: string; args: any } {
-  const sessionID = prompt?.path?.id
-  const instruction = prompt?.body?.parts?.[0]?.text
-  const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
-  const args = encoded ? JSON.parse(encoded) : undefined
-  if (typeof sessionID !== "string" || !Array.isArray(args?.questions)) {
-    throw new Error("driver observed no control-plane question call")
+function placeholderArgs(approvalIDs: string[], details: boolean) {
+  return {
+    questions: approvalIDs.map((approvalID) => ({
+      question: details ? `${approvalID} details` : approvalID,
+      header: "Gaia",
+      options: [{ label: "OK", description: "Gaia fills this question in" }],
+    })),
   }
-  return { sessionID, args }
 }
 
 /** A manually released barrier, independent of bridge subprocess timing. */
@@ -198,77 +200,81 @@ if (scenario.pluginModulePath !== undefined
 const { GaiaOpenCodePlugin } = await import(scenario.pluginModulePath === undefined
   ? new URL("../../opencode/plugin.ts", import.meta.url).href
   : pathToFileURL(scenario.pluginModulePath).href)
-const sessionPermissions = new Map<string, unknown>(Object.entries(scenario.initialPermissions ?? {}))
-const permissionTransitions: Record<string, unknown>[] = []
-let promptRaceQuestion: {
-  sessionID: string
-  requestID: string
-  callID: string
-  questions: any[]
-  question: any
-} | undefined
 let plugin: any
-let beforeCallsInFlight = 0
-let controlQuestionBeforeCalls = 0
-let racingDuplicateAttempted = false
 
+// create/promptAsync/prompt only record: under D39 the plugin opens no session,
+// sends no prompt and posts no message, so any entry here is a regression.
 const client = {
   session: {
     async messages({ sessionID }: { sessionID: string }) {
       return { data: scenario.messages?.[sessionID] ?? [] }
     },
     async create(request: any) {
-      assertSessionCreateBody(request)
-      return { data: { id: `control-${controlPrompts.length + 1}`, title: request.body.title } }
+      controlPrompts.push({ create: request })
+      return { data: { id: `control-${controlPrompts.length}` } }
     },
     async promptAsync(request: any) {
-      assertPromptAsyncBody(request)
-      const sessionID = request.path.id
-      const before = sessionPermissions.get(sessionID)
-      if (request.body.tools !== undefined) sessionPermissions.set(sessionID, structuredClone(request.body.tools))
-      permissionTransitions.push({ sessionID, before, after: sessionPermissions.get(sessionID) })
       controlPrompts.push(request)
-      if (scenario.questionDuringPrompt === true && request.body.system !== undefined && !promptRaceQuestion) {
-        const { args } = controlQuestionCall(request)
-        const callID = "question-call-during-prompt"
-        controlQuestionBeforeCalls++
-        await plugin["tool.execute.before"]({ sessionID, callID, tool: "question" }, { args })
-        const questions = args.questions
-        const question = questions[0]
-        promptRaceQuestion = { sessionID, requestID: "question-during-prompt", callID, questions, question }
-        await plugin.event({ event: {
-          type: "question.asked",
-          properties: {
-            sessionID,
-            id: promptRaceQuestion.requestID,
-            questions: [hostNormalizedQuestion(question, "event-60148")],
-          },
-        } })
-        if (scenario.duplicateQuestionWhenPromptRaces === true && beforeCallsInFlight > 0) {
-          racingDuplicateAttempted = true
-          await Bun.sleep(scenario.racingDuplicateDelayMs ?? 20_000)
-          controlQuestionBeforeCalls++
-          await plugin["tool.execute.before"](
-            { sessionID, callID: promptRaceQuestion.callID, tool: "question" },
-            { args: { questions } },
-          )
-        }
-      }
       return { data: undefined, response: { ok: true, status: 204 } }
     },
     async prompt(request: any) {
-      assertPromptAsyncBody(request)
-      const part = request.body.parts[0]
-      hostEvents.push({
-        type: "message", sessionID: request.path.id, noReply: request.body.noReply,
-        partCount: request.body.parts.length, synthetic: part?.synthetic, text: part?.text,
-      })
-      if (scenario.rejectMessages === true) {
-        return { error: { name: "BadRequest" }, response: { ok: false, status: 400 } }
-      }
+      hostEvents.push({ type: "message", sessionID: request?.path?.id, text: request?.body?.parts?.[0]?.text })
       return { data: { info: { role: "user" } }, response: { ok: true, status: 200 } }
     },
   },
+}
+
+/**
+ * The orchestrator's own question-tool call (D39): the host asks whatever the
+ * plugin left in `args` after tool.execute.before, delivers question.asked and
+ * question.replied, and only then tool.execute.after, whose output carries
+ * Gaia's notice back to the orchestrator.
+ */
+async function askAsOrchestrator(step: any, record: Record<string, unknown>, args: any): Promise<void> {
+  const sessionID = step.sessionID ?? scenario.rootSessionID
+  const callID = step.callID ?? `question-call-${++questionCalls}`
+  const requestID = step.requestID ?? `question-${callID}`
+  record.controlSessionID = sessionID
+  record.callID = callID
+  record.modelQuestion = structuredClone(args.questions[0])
+  await plugin["tool.execute.before"]({ sessionID, callID, tool: "question" }, { args })
+  const questions = args.questions
+  record.questions = structuredClone(questions)
+  record.question = structuredClone(questions[0])
+  if (step.secondQuestionCall === true) {
+    await plugin["tool.execute.before"](
+      { sessionID, callID: `${callID}-second`, tool: "question" },
+      { args: { questions: structuredClone(questions) } },
+    )
+  }
+  const asked = {
+    type: "question.asked",
+    properties: {
+      sessionID, id: requestID,
+      questions: questions.map((question: any) => hostNormalizedQuestion(question, step.questionEncoding)),
+    },
+  }
+  await plugin.event({ event: asked })
+  if (step.duplicateQuestionEvent === true) {
+    await plugin.event({ event: { ...asked, properties: { ...asked.properties, id: `${requestID}-duplicate` } } })
+  }
+  if (Array.isArray(step.gaiaBeforeReply)) {
+    // A Gaia CLI call made while the user reads the question, as another
+    // session would make it.
+    const child = Bun.spawn(["python3", "-B", gaiaPath, ...step.gaiaBeforeReply], {
+      cwd: directory, env: { ...process.env, GAIA_HOST: "opencode" }, stdout: "pipe", stderr: "pipe",
+    })
+    record.gaiaBeforeReplyExitCode = await child.exited
+  }
+  if (step.answer === undefined && step.answers === undefined) return
+  const answers = step.answers ?? questions.map((question: any) => [
+    step.answer in OPTION_BY_ANSWER ? question.options[OPTION_BY_ANSWER[step.answer]].label : step.answer,
+  ])
+  record.selected = answers
+  await plugin.event({ event: { type: "question.replied", properties: { sessionID, requestID, answers } } })
+  const output = { output: "User has answered your questions.", metadata: { answers } }
+  await plugin["tool.execute.after"]({ sessionID, callID, tool: "question", args }, output)
+  record.output = output.output
 }
 
 const directory = process.env.WORKSPACE ?? process.cwd()
@@ -304,15 +310,10 @@ async function runStep(step: any): Promise<void> {
       argsByCall.set(step.callID, args)
       lastBridgeAction = undefined
       record.commandBefore = args.command
-      beforeCallsInFlight++
-      try {
-        await plugin["tool.execute.before"](
-          { sessionID: step.sessionID, callID: step.callID, tool: step.tool ?? "bash" },
-          { args },
-        )
-      } finally {
-        beforeCallsInFlight--
-      }
+      await plugin["tool.execute.before"](
+        { sessionID: step.sessionID, callID: step.callID, tool: step.tool ?? "bash" },
+        { args },
+      )
       record.commandAfter = args.command
       record.allowed = true
     } else if (step.kind === "shell-env") {
@@ -423,134 +424,31 @@ async function runStep(step: any): Promise<void> {
         },
       })
       record.allowed = true
-    } else if (step.kind === "observe-controls") {
-      record.controlPromptCount = controlPrompts.length
-      record.specialistControlPromptCount = controlPrompts.filter(
-        (prompt) => prompt?.path?.id === scenario.sessionID && prompt?.body?.system !== undefined,
-      ).length
-      record.allowed = true
     } else if (step.kind === "question-event") {
-      const { sessionID: controlSessionID, args } = controlQuestionCall(controlPrompts.at(-1))
-      const questions = args.questions
+      // A question the host asked in a session with no Gaia question call
+      // behind it, answered with Gaia's own labels: never a decision.
       await plugin.event({ event: {
         type: "question.asked",
-        properties: {
-          sessionID: controlSessionID,
-          id: step.requestID ?? `question-event-${controlPrompts.length}`,
-          questions: [hostNormalizedQuestion(questions[0], step.questionEncoding)],
-        },
+        properties: { sessionID: step.sessionID, id: step.requestID, questions: step.questions },
       } })
-      record.allowed = true
-    } else if (step.kind === "control-reply") {
-      if (!promptRaceQuestion) throw new Error("driver observed no prompt-race question lifecycle")
-      const selected = step.answer === "approve"
-        ? promptRaceQuestion.question.options[0].label
-        : promptRaceQuestion.question.options[1].label
       await plugin.event({ event: {
         type: "question.replied",
-        properties: {
-          sessionID: promptRaceQuestion.sessionID,
-          requestID: promptRaceQuestion.requestID,
-          answers: [[selected]],
-        },
-      } })
-      await plugin["tool.execute.after"](
-        {
-          sessionID: promptRaceQuestion.sessionID,
-          callID: promptRaceQuestion.callID,
-          tool: "question",
-          args: { questions: promptRaceQuestion.questions },
-        },
-        { output: "User has answered your questions.", metadata: { answers: [[selected]] } },
-      )
-      await plugin.event({ event: {
-        type: "session.idle",
-        properties: { sessionID: promptRaceQuestion.sessionID },
+        properties: { sessionID: step.sessionID, requestID: step.requestID, answers: step.answers },
       } })
       record.allowed = true
     } else if (step.kind === "control-decision") {
-      const { sessionID: controlSessionID, args: modelArgs } = controlQuestionCall(controlPrompts.at(-1))
-      record.modelQuestion = structuredClone(modelArgs.questions[0])
-      const requestID = step.requestID ?? `question-${controlPrompts.length}`
-      const callID = step.callID ?? `question-call-${controlPrompts.length}`
-      await plugin["tool.execute.before"](
-        { sessionID: controlSessionID, callID, tool: "question" },
-        { args: modelArgs },
-      )
-      const callQuestions = modelArgs.questions
-      const question = callQuestions[0]
-      if (step.secondQuestionCall === true) {
-        await plugin["tool.execute.before"](
-          { sessionID: controlSessionID, callID: `${callID}-second`, tool: "question" },
-          { args: { questions: structuredClone(callQuestions) } },
-        )
+      // The orchestrator asks the approvals the blocked steps named, by default
+      // the last one, with exactly what `gaia approvals question` prints.
+      const approvalIDs = step.approvalIDs ?? [presentations.at(-1)?.approvalID]
+      if (approvalIDs.some((approvalID: unknown) => typeof approvalID !== "string")) {
+        throw new Error("driver has no approval for the orchestrator to ask")
       }
-      const askedEvent = { event: {
-        type: "question.asked",
-        properties: {
-          sessionID: controlSessionID, id: requestID,
-          questions: [hostNormalizedQuestion(question, step.questionEncoding)],
-        },
-      } }
-      await plugin.event(askedEvent)
-      if (step.duplicateQuestionEvent === true) {
-        await plugin.event({ event: {
-          ...askedEvent.event,
-          properties: { ...askedEvent.event.properties, id: `${requestID}-duplicate` },
-        } })
-      }
-      if (Array.isArray(step.gaiaBeforeReply)) {
-        // A Gaia CLI call made while the user reads the question, as another
-        // session would make it.
-        const child = Bun.spawn(["python3", "-B", gaiaPath, ...step.gaiaBeforeReply], {
-          cwd: directory, env: { ...process.env, GAIA_HOST: "opencode" }, stdout: "pipe", stderr: "pipe",
-        })
-        record.gaiaBeforeReplyExitCode = await child.exited
-      }
-      const byAnswer: Record<string, number> = { approve: 0, reject: 1, details: 2 }
-      const selected = step.answer in byAnswer ? question.options[byAnswer[step.answer]].label : step.answer
-      await plugin.event({ event: {
-        type: "question.replied",
-        properties: {
-          sessionID: controlSessionID,
-          requestID,
-          answers: step.answers ?? [[selected]],
-        },
-      } })
-      await plugin["tool.execute.after"](
-        { sessionID: controlSessionID, callID, tool: "question", args: { questions: callQuestions } },
-        { output: "User has answered your questions.", metadata: { answers: [[selected]] } },
-      )
-      if (step.deferIdle !== true) {
-        await plugin.event({ event: { type: "session.idle", properties: { sessionID: controlSessionID } } })
-      }
-      record.controlSessionID = controlSessionID
-      record.question = question
-      record.selected = selected
+      await askAsOrchestrator(step, record, placeholderArgs(approvalIDs, step.mode === "details"))
       record.allowed = true
     } else if (step.kind === "orchestrator-question") {
-      // The orchestrator's own question-tool call, with the arguments
-      // `gaia approvals question` printed; the host then asks whatever the
-      // plugin left in those arguments.
-      const args = structuredClone(step.args)
-      await plugin["tool.execute.before"]({ sessionID: step.sessionID, callID: step.callID, tool: "question" }, { args })
-      const question = args.questions[0]
-      record.question = structuredClone(question)
-      const requestID = `asked-${step.callID}`
-      await plugin.event({ event: {
-        type: "question.asked",
-        properties: { sessionID: step.sessionID, id: requestID, questions: [hostNormalizedQuestion(question, "event-60148")] },
-      } })
-      if (step.answer) {
-        const selected = question.options[({ approve: 0, reject: 1, details: 2 } as Record<string, number>)[step.answer]].label
-        await plugin.event({ event: {
-          type: "question.replied",
-          properties: { sessionID: step.sessionID, requestID, answers: [[selected]] },
-        } })
-        const output = { output: "User has answered your questions.", metadata: { answers: [[selected]] } }
-        await plugin["tool.execute.after"]({ sessionID: step.sessionID, callID: step.callID, tool: "question", args }, output)
-        record.output = output.output
-      }
+      // The orchestrator's own question-tool call, with the arguments the test
+      // captured from `gaia approvals question`.
+      await askAsOrchestrator(step, record, structuredClone(step.args))
       record.allowed = true
     } else {
       throw new Error(`unknown scenario step: ${step.kind}`)
@@ -614,7 +512,7 @@ for (const step of scenario.steps) {
   const blockedControlNeedsIdle = stepResults.some(
     (result) => labels.includes(result.label) && result.requiresApproval === true,
   )
-  if (scenario.autoSafeIdle !== false && blockedControlNeedsIdle && controlPrompts.length === 0) {
+  if (scenario.autoSafeIdle !== false && blockedControlNeedsIdle) {
     await plugin.event({ event: { type: "session.idle", properties: { sessionID: scenario.sessionID } } })
   }
 }
@@ -644,10 +542,6 @@ console.log(JSON.stringify({
   presentations,
   controlPrompts,
   hostEvents,
-  permissionTransitions,
-  sessionPermissions: Object.fromEntries(sessionPermissions),
   observations,
   maxActiveIssuers,
-  controlQuestionBeforeCalls,
-  racingDuplicateAttempted,
 }))

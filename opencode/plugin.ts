@@ -399,7 +399,6 @@ export type ControlCloseReason =
   | "session_ended"
   | "drifted_tool_call"
   | "drifted_tool_result"
-  | "superseded"
 
 /**
  * What the orchestrator's question call returns once Gaia settled its answer.
@@ -1501,7 +1500,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<void> {
     if (control.closed) return
     control.closed = true
-    control.presenter?.settle(presenterNotice(control.approval, reason, detail))
+    control.presenter.settle(presenterNotice(control.approval, reason, detail))
     if (control.questionID && controlByQuestion.get(control.questionID) === control) {
       controlByQuestion.delete(control.questionID)
     }
@@ -1874,7 +1873,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       )
     })
     try {
-      return await Promise.race([control.presenter!.notice, late])
+      return await Promise.race([control.presenter.notice, late])
     } finally {
       clearTimeout(timer)
     }
@@ -1890,15 +1889,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    *
    * A presentation Gaia refused travels on the same channel with the approval
    * it named and the cause Gaia returned, so the bridge records it under its
-   * own reason instead of as an uncorrelated request. A control plane the HOST
-   * refused after the presentation carries `stage: "control-plane"`, and a
-   * reply Gaia refused after the user gave it carries `stage: "decide"`, so
-   * the bridge can tell the three refusals apart.
+   * own reason instead of as an uncorrelated request, and a reply Gaia refused
+   * after the user gave it carries `stage: "decide"`, so the bridge can tell
+   * the refusals apart.
    */
   async function reportUncorrelatedDenial(
     sessionID: unknown,
     callID: unknown,
-    failure?: { approvalID: string; cause: string; stage?: "control-plane" | "decide" },
+    failure?: { approvalID: string; cause: string; stage?: "decide" },
   ) {
     try {
       await send({
@@ -1947,11 +1945,20 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (!control || control.request.sessionID !== sessionID) return
         // One requestID answers the whole call; each signature decides on its
         // own questions only, so one Reject never reaches another signature.
+        // A reply that does not carry exactly one answer per asked question
+        // cannot be sliced by position, so it decides nothing for any of them.
         const answers = event.properties?.answers
+        const members = control.group ?? [control]
+        const asked = members.reduce((count, member) => count + member.request.questions.length, 0)
+        if (!Array.isArray(answers) || answers.length !== asked) {
+          const detail = `${Array.isArray(answers) ? answers.length : "no"} answers for ${asked} questions: ${JSON.stringify(answers)}`
+          for (const member of members) await clearControl(member, "reply_unreadable", detail)
+          return
+        }
         let offset = 0
-        for (const member of control.group ?? [control]) {
+        for (const member of members) {
           const count = member.request.questions.length
-          await applySignatureAnswers(member, Array.isArray(answers) ? answers.slice(offset, offset + count) : answers)
+          await applySignatureAnswers(member, answers.slice(offset, offset + count))
           offset += count
         }
         return

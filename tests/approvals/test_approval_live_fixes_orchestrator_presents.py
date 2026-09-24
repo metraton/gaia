@@ -1,13 +1,12 @@
-"""D25: in OpenCode the orchestrator presents a pending signature itself.
+"""D39: in OpenCode only the orchestrator presents a pending signature.
 
 The orchestrator runs ``gaia approvals question <id>``, which in OpenCode prints
 a question carrying only the approval id, and calls the question tool with it.
 The real plugin (``opencode/plugin.ts`` under bun, real bridge, real
-``opencode-present`` / ``opencode-decide``) posts the renderer's text before
-the question (D26), replaces those arguments with the short question, records
-SHOWN, and binds the answer to that
-approval; the grant stays bound to the requesting session and agent (D6), and
-the same specialist executes it.
+``opencode-present`` / ``opencode-decide``) replaces those arguments with the
+renderer's questions, one per command (D37), records SHOWN, and binds the
+answer to that approval; the grant stays bound to the requesting session and
+agent (D6), and the same specialist executes it.
 
 WHAT IS NOT PROVEN: no OpenCode host runs here, so the question call and the
 host's question events are issued by the driver, not observed from OpenCode.
@@ -90,7 +89,8 @@ def test_approval_live_fixes_opencode_orchestrator_presents_and_the_specialist_e
 
     asked = _step(driven, "ask")
     assert asked["allowed"] is True, driven
-    assert asked["question"]["question"] == "¿Publico la rama y la imagen?"
+    assert [q["question"] for q in asked["questions"]] == [q["question"] for q in _rendered(approval_id).questions]
+    assert FIRST_COMMAND in asked["question"]["question"]
     assert [option["label"] for option in asked["question"]["options"]] == ["Approve", "Reject", "Details"]
     # The model only opened the question: no control prompt went to any session.
     assert driven["controlPrompts"] == []
@@ -129,8 +129,10 @@ def test_approval_live_fixes_opencode_orchestrator_details_is_asked_again_with_t
 
     assert _approval_status(db_path, approval_id) == "pending"
     assert f"gaia approvals question --details {approval_id}" in _step(driven, "ask")["output"]
-    [_, details_block] = [event for event in driven["hostEvents"] if event["type"] == "message"]
-    assert details_block["text"] == f"```\n{_rendered(approval_id).details}\n```"
+    assert [q["question"] for q in _step(driven, "details")["questions"]] == [
+        q["question"] for q in _rendered(approval_id).details_questions
+    ]
+    assert [event for event in driven["hostEvents"] if event["type"] == "message"] == []
 
 
 @pytest.mark.parametrize("who", ["foreign requester", "specialist session"])
@@ -144,6 +146,7 @@ def test_approval_live_fixes_opencode_presentation_outside_the_orchestrator_of_t
                 sys.executable, str(GAIA_CLI), "approvals", "request-set", "--command", FIRST_COMMAND,
                 "--what", "Publicar la rama.", "--question", "¿Publico la rama?",
                 "--does", "Sube la rama.", "--impact", "Queda visible.",
+                "--rollback", "Borrar la rama remota.",
                 "--agent-id", AGENT_ID, "--session-id", "ses-not-a-child", "--json",
             ],
             cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=120,
@@ -177,12 +180,10 @@ def test_approval_live_fixes_question_cli_in_opencode_prints_one_id_placeholder(
         printed[details] = question["question"]
     assert printed == {False: approval_id, True: f"{approval_id} details"}
 
+    # D39: one call asks several signatures, one placeholder each, in order.
+    other_id = _request_set(env, commands=("docker push registry/app:2",))
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
-        code = cmd_question(argparse.Namespace(
-            approval_ids=[approval_id, _request_set(env, commands=("docker push registry/app:2",))],
-            details=False, json=True,
-        ))
-    assert code == 1
-    assert '"questions"' not in out.getvalue()
-    assert "one signature per call" in out.getvalue() + err.getvalue()
+        code = cmd_question(argparse.Namespace(approval_ids=[approval_id, other_id], details=False, json=True))
+    assert code == 0, out.getvalue() + err.getvalue()
+    assert [q["question"] for q in json.loads(out.getvalue())["questions"]] == [approval_id, other_id]

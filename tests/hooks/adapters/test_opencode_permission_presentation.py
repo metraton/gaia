@@ -6,8 +6,10 @@ real GaiaOpenCodePlugin does under bun for one blocked call. Nothing in this
 file hand-writes the shape under test -- three earlier rounds of this plan
 passed while asserting over a payload no adapter emits.
 
-No OpenCode UI is observed: no OpenCode host runs in this suite. The question
-Gaia writes into the host's question tool is asserted by test_own_adapter.
+A blocked specialist is asked nothing; only the orchestrator's own question
+call presents the approval (D39), so the plugin half is driven through both.
+No OpenCode UI is observed: no OpenCode host runs in this suite. The answer
+lane is asserted by test_own_adapter and the consent-retry e2e.
 """
 
 from __future__ import annotations
@@ -117,17 +119,14 @@ def _present(env, approval_id, token=TOKEN, call_id=CALL_ID):
 
 
 def _renderer_signature(approval_id):
-    """The signature the shared renderer produces for the persisted payload."""
+    """The questions the shared renderer produces for the persisted payload (D37), as OpenCode takes them."""
     from gaia.approvals import surface
 
-    payload = _stored_payload(approval_id)
-    rendered = surface.render(payload, approval_id)
+    rendered = surface.render(_stored_payload(approval_id), approval_id)
+    fields = ("question", "header", "options")
     return {
-        "block": f"```\n{rendered.text}\n```",
-        "details_block": f"```\n{rendered.details}\n```",
-        "question": payload["question"],
-        "header": rendered.question["header"],
-        "options": rendered.question["options"],
+        "questions": [{key: q[key] for key in fields} for q in rendered.questions],
+        "details_questions": [{key: q[key] for key in fields} for q in rendered.details_questions],
     }
 
 
@@ -169,14 +168,12 @@ def _stored_payload(approval_id):
     return json.loads(row["payload_json"])
 
 
-def _drive_plugin(
-    env, approval_id, call_id=CALL_ID, command=COMMANDS[0], control_prompt=None, directory=None,
-):
+def _drive_plugin(env, approval_id, call_id=CALL_ID, command=COMMANDS[0], ask=False, directory=None):
     """Run the real plugin under bun and return what it delivered natively.
 
-    ``control_prompt="rejected"`` makes the driver's host stub answer
-    ``session.promptAsync`` the way the SDK client reports a schema rejection:
-    a resolved ``{ error, response: { ok: false } }``, never a throw.
+    The specialist's call is blocked on ``approval_id``; with ``ask`` the
+    orchestrator then asks it in its own question call (D39), as
+    ``gaia approvals question`` prints it, under call id ``ask-<call_id>``.
     ``directory`` is the host's project directory handed to the plugin.
     """
     scenario = {
@@ -185,9 +182,9 @@ def _drive_plugin(
         "approvalID": approval_id,
         "tool": "bash",
         "args": {"command": command},
+        "ask": ask,
+        "askCallID": f"ask-{call_id}",
     }
-    if control_prompt is not None:
-        scenario["controlPrompt"] = control_prompt
     if directory is not None:
         scenario["directory"] = directory
     result = subprocess.run(
@@ -230,8 +227,10 @@ def test_cli_presentation_emits_the_renderer_signature_and_the_sealed_metadata(d
     envelope = _expected_envelope(approval_id)
 
     assert emitted["signature"] == _renderer_signature(approval_id)
-    assert PHRASES["what"] in emitted["signature"]["block"]
-    assert emitted["signature"]["question"] == PHRASES["question"]
+    questions = emitted["signature"]["questions"]
+    assert len(questions) == len(COMMANDS) == len(emitted["signature"]["details_questions"])
+    for question, command in zip(questions, COMMANDS):
+        assert command in question["question"] and "\n" not in question["question"]
     assert emitted["metadata"] == consent_presentation.native_metadata(envelope)
     assert json.loads(emitted["metadata"]["canonical_payload"]) == json.loads(
         envelope.canonical_payload()
@@ -247,11 +246,22 @@ def test_a_phraseless_request_is_never_presented(db_env):
     assert refused.returncode == 1, refused.stdout
     assert "--question" in json.loads(refused.stdout.strip().splitlines()[-1])["error"]
 
-    delivered = _drive_plugin(db_env, phraseless_id, call_id="call-phraseless-2")
+    delivered = _drive_plugin(db_env, phraseless_id, call_id="call-phraseless-2", ask=True)
     assert delivered["originalInvocationExecuted"] is False
-    assert f"Gaia could not present approval {phraseless_id}" in delivered["error"]
+    assert delivered["askedQuestions"] is None
+    assert f"Gaia could not present approval {phraseless_id}" in delivered["askError"]
     assert delivered["controlPrompts"] == []
     assert [e["event_type"] for e in get_history(phraseless_id)] == ["REQUESTED"]
+    # The refusal is traced by approval, with Gaia's own cause, from the asking call.
+    traces = [
+        e for e in delivered["bridgeEvents"]
+        if e.get("event") == "permission.uncorrelated" and "approvalID" in e
+    ]
+    assert [(t["approvalID"], t["sessionID"], t["callID"]) for t in traces] == [
+        (phraseless_id, SESSION_ID, "ask-call-phraseless-2"),
+    ], delivered["bridgeEvents"]
+    assert "--question" in traces[0]["cause"] and traces[0]["cause"] in delivered["askError"]
+    assert "stage" not in traces[0]
 
 
 def test_approval_live_fixes_bridge_marks_presentable_only_a_phrased_approval(db_env, approval_id):
@@ -273,29 +283,18 @@ def test_approval_live_fixes_bridge_marks_presentable_only_a_phrased_approval(db
     assert "presentable" not in deny("P-" + "0" * 32)
 
 
-def test_a_refused_presentation_keeps_the_approval_id_and_gaia_cause(db_env):
-    """The agent must see WHICH approval failed and WHY Gaia refused, not a generic line."""
-    from gaia.approvals.store import get_history, insert_requested
+def test_a_blocked_specialist_is_handed_the_approval_and_nothing_is_opened(db_env, approval_id):
+    """D39: the block names the approval; no session, prompt, question or Gaia process follows it."""
+    from gaia.approvals.store import get_history
 
-    cause = "OpenCode presentation must come from the requesting session"
-    foreign_id = insert_requested(PRESENTABLE_PAYLOAD, agent_id=AGENT_ID, session_id="ses-other-owner")
-    delivered = _drive_plugin(db_env, foreign_id, call_id="call-refused")
+    delivered = _drive_plugin(db_env, approval_id, call_id="call-blocked")
 
-    assert delivered["controlPrompts"] == [], delivered
     assert delivered["originalInvocationExecuted"] is False
-    assert foreign_id in delivered["error"], delivered["error"]
-    assert cause in delivered["error"]
-    assert [e["event_type"] for e in get_history(foreign_id)] == ["REQUESTED"]
-
-    traces = [
-        e for e in delivered["bridgeEvents"]
-        if e.get("event") == "permission.uncorrelated" and "approvalID" in e
-    ]
-    assert len(traces) == 1, delivered["bridgeEvents"]
-    assert traces[0]["approvalID"] == foreign_id
-    assert traces[0]["cause"] == cause
-    assert traces[0]["sessionID"] == SESSION_ID
-    assert traces[0]["callID"] == "call-refused"
+    assert approval_id in delivered["error"], delivered["error"]
+    assert delivered["controlPrompts"] == [] and delivered["deletedSessions"] == []
+    assert delivered["gaiaSpawnCwds"] == [], delivered["gaiaSpawnCwds"]
+    assert [e for e in delivered["bridgeEvents"] if e.get("event") == "control.opened"] == []
+    assert [e["event_type"] for e in get_history(approval_id)] == ["REQUESTED"]
 
 
 def test_gaia_runs_from_the_session_directory_not_the_serve_cwd(db_env, approval_id, tmp_path):
@@ -310,128 +309,41 @@ def test_gaia_runs_from_the_session_directory_not_the_serve_cwd(db_env, approval
     assert str(session_directory) != os.getcwd()
 
     delivered = _drive_plugin(
-        db_env, approval_id, call_id="call-cwd", directory=str(session_directory),
+        db_env, approval_id, call_id="call-cwd", directory=str(session_directory), ask=True,
     )
 
-    assert len(delivered["controlPrompts"]) == 1, delivered
-    assert delivered["gaiaSpawnCwds"] == [str(session_directory)], delivered["gaiaSpawnCwds"]
+    assert delivered["askError"] is None, delivered
+    assert delivered["gaiaSpawnCwds"], delivered
+    assert set(delivered["gaiaSpawnCwds"]) == {str(session_directory)}, delivered["gaiaSpawnCwds"]
 
 
 def test_gaia_inherits_the_process_cwd_when_the_host_names_no_directory(db_env, approval_id):
-    delivered = _drive_plugin(db_env, approval_id, call_id="call-no-directory")
+    delivered = _drive_plugin(db_env, approval_id, call_id="call-no-directory", ask=True)
 
-    assert delivered["gaiaSpawnCwds"] == [None], delivered["gaiaSpawnCwds"]
-
-
-def test_control_prompt_body_matches_the_installed_sdk_types(db_env, approval_id):
-    """SessionPromptAsyncData.body (@opencode-ai/sdk 1.18.18): system is a string, not an array.
-
-    The array form was accepted by every stub and rejected by the real host,
-    which left the control session empty and the user never asked.
-    """
-    delivered = _drive_plugin(db_env, approval_id, call_id="call-sdk-shape")
-
-    assert len(delivered["controlPrompts"]) == 1, delivered
-    prompt = delivered["controlPrompts"][0]
-    assert prompt["path"] == {"id": SESSION_ID}
-    body = prompt["body"]
-    assert isinstance(body["system"], str) and body["system"]
-    assert "agent" not in body
-    assert "tools" not in body
-    assert body["parts"][0]["type"] == "text"
-    assert isinstance(body["parts"][0]["text"], str)
+    assert delivered["askError"] is None, delivered
+    assert delivered["gaiaSpawnCwds"], delivered
+    assert set(delivered["gaiaSpawnCwds"]) == {None}, delivered["gaiaSpawnCwds"]
 
 
-def test_control_question_uses_the_cached_specialist_child_instead_of_creating_a_hidden_child(
-    db_env, approval_id,
-):
-    """The active root can render questions only for child sessions already in its cache."""
-    delivered = _drive_plugin(db_env, approval_id, call_id="call-cached-child")
+def test_an_opened_control_is_traced_in_the_orchestrator_session_that_asked(db_env, approval_id):
+    """SHOWN records the presentation; the question the orchestrator's call carries is a separate trace."""
+    from gaia.approvals.store import get_history
 
-    assert [prompt["path"]["id"] for prompt in delivered["controlPrompts"]] == [SESSION_ID]
-    assert delivered["deletedSessions"] == []
+    delivered = _drive_plugin(db_env, approval_id, call_id="call-opened", ask=True)
 
-
-def test_an_opened_control_is_traced_after_the_host_accepted_the_prompt(db_env, approval_id):
-    """SHOWN records the presentation; the question reaching the host is a separate trace."""
-    delivered = _drive_plugin(db_env, approval_id, call_id="call-opened")
-
+    assert delivered["askError"] is None, delivered
+    assert [q["question"] for q in delivered["askedQuestions"]] == [
+        q["question"] for q in _renderer_signature(approval_id)["questions"]
+    ]
     opened = [e for e in delivered["bridgeEvents"] if e.get("event") == "control.opened"]
     assert len(opened) == 1, delivered["bridgeEvents"]
     assert opened[0]["approvalID"] == approval_id
     assert opened[0]["sessionID"] == SESSION_ID
-    assert opened[0]["callID"] == "call-opened"
-    assert opened[0]["controlSessionID"] == SESSION_ID
-
-
-def test_a_rejected_control_prompt_fails_closed_with_the_host_cause(db_env, approval_id):
-    """A prompt the host refused leaves no control waiting and names the approval and cause."""
-    from gaia.approvals.store import get_history
-
-    delivered = _drive_plugin(db_env, approval_id, call_id="call-rejected-prompt", control_prompt="rejected")
-
-    assert delivered["originalInvocationExecuted"] is False
-    error = delivered["error"]
-    assert error.startswith(
-        f"Gaia could not open the consent control plane for {approval_id}: control-plane prompt rejected: HTTP 400"
-    ), error
-    assert "BadRequestError" in error
-    assert "[T3_BLOCKED]" not in error
-    assert delivered["deletedSessions"] == []
-    assert delivered["controlSessionLingered"] is False
-    # SHOWN waits for the signature's block, which only the question call posts;
-    # a refused prompt never got that far, so nothing claims the user saw it.
-    assert [e["event_type"] for e in get_history(approval_id)] == ["REQUESTED"]
-    assert [e for e in delivered["bridgeEvents"] if e.get("event") == "control.opened"] == []
-
-
-def test_a_rejected_control_prompt_is_traced_with_its_phase(db_env, approval_id):
-    delivered = _drive_plugin(db_env, approval_id, call_id="call-rejected-trace", control_prompt="rejected")
-
-    traces = [
-        e for e in delivered["bridgeEvents"]
-        if e.get("event") == "permission.uncorrelated" and "approvalID" in e
-    ]
-    assert len(traces) == 1, delivered["bridgeEvents"]
-    assert traces[0]["approvalID"] == approval_id
-    assert traces[0]["sessionID"] == SESSION_ID
-    assert traces[0]["callID"] == "call-rejected-trace"
-    assert traces[0]["stage"] == "control-plane"
-    assert traces[0]["cause"].startswith("control-plane prompt rejected: HTTP 400"), traces[0]
-
-
-def test_the_bridge_records_a_control_plane_failure_under_its_own_reason(db_env, approval_id):
-    sys.path.insert(0, str(REPO_ROOT / "opencode"))
-    import bridge as opencode_bridge
-
-    from gaia.approvals.decision_audit import (
-        DECISION_NOT_ACTIVATED_EVENT,
-        DETAILS_PAYLOAD_KEY,
-        REASON_CONTROL_PLANE_FAILED,
-    )
-    from gaia.store.reader import cross_surface_query
-
-    response = opencode_bridge.handle({
-        "event": "permission.uncorrelated",
-        "sessionID": SESSION_ID,
-        "callID": "call-rejected-trace",
-        "approvalID": approval_id,
-        "stage": "control-plane",
-        "cause": "control-plane prompt rejected: HTTP 400",
-    })
-    assert response["action"] == "allow", response
-
-    rows = cross_surface_query(
-        surface="harness_events", type=DECISION_NOT_ACTIVATED_EVENT,
-        db_path=Path(db_env["GAIA_DB"]),
-    )
-    assert len(rows) == 1, rows
-    assert rows[0]["raw"]["severity"] == "warning"
-    payload = json.loads(rows[0]["raw"]["payload"])
-    assert payload["reason"] == REASON_CONTROL_PLANE_FAILED
-    assert payload["approval_id"] == approval_id
-    assert payload["detail"] == "control-plane prompt rejected: HTTP 400"
-    assert payload[DETAILS_PAYLOAD_KEY]["call_id"] == "call-rejected-trace"
+    assert opened[0]["callID"] == "ask-call-opened"
+    assert opened[0]["controlSessionID"] == delivered["rootSessionID"]
+    shown = [e for e in get_history(approval_id) if e["event_type"] == "SHOWN"]
+    assert len(shown) == 1 and shown[0]["session_id"] == SESSION_ID
+    assert json.loads(shown[0]["metadata_json"])["presenter_session_id"] == delivered["rootSessionID"]
 
 
 def test_the_bridge_records_a_refused_decision_under_its_own_reason(db_env, approval_id):
