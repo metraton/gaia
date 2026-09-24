@@ -1905,9 +1905,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
 
   /** Trace that the host accepted the consent question for this approval.
    *
-   * `gaia approvals opencode-present` writes SHOWN before the prompt is
-   * attempted, so SHOWN alone only says the presentation was registered. This
-   * record is what says the question reached the host, and in which session.
+   * SHOWN is recorded only once the signature's block is posted, when the
+   * question call arrives; this record is what says the control prompt reached
+   * the host, and in which session.
    * The opened control never depends on this call succeeding.
    */
   async function reportControlOpened(approval: PendingApproval, controlSessionID: string) {
@@ -1950,16 +1950,36 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
   }
 
-  async function requestApproval(id: string, sessionID: string, callID: string, role: string) {
-    const approval = { approvalID: id, sessionID, callID, role, token: crypto.randomUUID() }
-    const presented = await gaia([
-      "approvals", "opencode-present", id,
-      "--session-id", sessionID,
-      "--agent-id", role,
-      "--call-id", callID,
+  /** `gaia approvals opencode-present` for one approval: a preview renders it, otherwise SHOWN is recorded. */
+  async function opencodePresent(
+    approval: Omit<PendingApproval, "surface">,
+    options: { presenterSessionID?: string; preview?: boolean } = {},
+  ) {
+    return gaia([
+      "approvals", "opencode-present", approval.approvalID,
+      "--session-id", approval.sessionID,
+      "--agent-id", approval.role,
+      ...(options.presenterSessionID ? ["--presenter-session-id", options.presenterSessionID] : []),
+      "--call-id", approval.callID,
       "--token", approval.token,
+      ...(options.preview ? ["--preview"] : []),
       "--json",
     ])
+  }
+
+  /** Record SHOWN once the host has accepted the signature's block, and not before:
+   * a block the host refused was never seen, so it leaves no SHOWN.
+   */
+  async function recordShown(approval: PendingApproval, presenterSessionID?: string): Promise<void> {
+    const recorded = await opencodePresent(approval, { presenterSessionID })
+    if (!recorded.ok) {
+      throw new Error(`Gaia could not record that ${approval.approvalID} was shown: ${gaiaFailureCause(recorded)}`)
+    }
+  }
+
+  async function requestApproval(id: string, sessionID: string, callID: string, role: string) {
+    const approval = { approvalID: id, sessionID, callID, role, token: crypto.randomUUID() }
+    const presented = await opencodePresent(approval, { preview: true })
     if (!presented.ok) {
       const cause = gaiaFailureCause(presented)
       await reportUncorrelatedDenial(sessionID, callID, { approvalID: id, cause })
@@ -2046,28 +2066,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     if (await parentOf(sessionID) !== call.sessionID) {
       throw new Error(`Gaia opens ${ask.approvalID} only from the orchestrator that dispatched its requester ${sessionID}`)
     }
-    const token = crypto.randomUUID()
-    const presented = await gaia([
-      "approvals", "opencode-present", ask.approvalID,
-      "--session-id", sessionID,
-      "--agent-id", role,
-      "--presenter-session-id", call.sessionID,
-      "--call-id", call.callID,
-      "--token", token,
-      "--json",
-    ])
+    const binding = { approvalID: ask.approvalID, sessionID, callID: call.callID, role, token: crypto.randomUUID() }
+    const presented = await opencodePresent(binding, { presenterSessionID: call.sessionID, preview: true })
     if (!presented.ok) {
       const cause = gaiaFailureCause(presented)
       await reportUncorrelatedDenial(sessionID, call.callID, { approvalID: ask.approvalID, cause })
       throw new Error(`Gaia could not present approval ${ask.approvalID}: ${cause}`)
     }
-    const approval: PendingApproval = {
-      approvalID: ask.approvalID, sessionID, callID: call.callID, role, token,
-      surface: readConsentPresentation(presented.stdout),
-    }
+    const approval: PendingApproval = { ...binding, surface: readConsentPresentation(presented.stdout) }
     const request = signatureRequest(approval, call.sessionID, ask.mode)
     try {
       await postSignatureBlock(request)
+      await recordShown(approval, call.sessionID)
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error)
       await reportUncorrelatedDenial(sessionID, call.callID, { approvalID: ask.approvalID, cause })
@@ -2318,6 +2328,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         }
         try {
           await postSignatureBlock(control.request)
+          await recordShown(control.approval)
         } catch (error) {
           await clearControl(control, "block_rejected", error instanceof Error ? error.message : String(error))
           throw error

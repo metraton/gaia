@@ -168,8 +168,8 @@ def test_approval_live_fixes_opencode_request_opens_gaia_question_without_an_att
     approval_id = next(
         token for token in sealed.stdout.split() if token.startswith("P-")
     )
-    shown = [event for event in get_history(approval_id) if event["event_type"] == "SHOWN"]
-    assert [json.loads(event["metadata_json"])["call_id"] for event in shown] == [call_id]
+    # Queued, not yet shown: SHOWN waits for the block the question call posts.
+    assert [event for event in get_history(approval_id) if event["event_type"] == "SHOWN"] == []
 
 
 def _opencode_pre_question(questions):

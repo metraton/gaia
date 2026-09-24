@@ -85,6 +85,7 @@ from ..security.fail_open import clear_classification, note_mutative_classificat
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.data_heredoc import data_heredoc_header
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
+from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
 )
@@ -685,6 +686,24 @@ class BashValidator:
             )
 
         command = command.strip()
+
+        # ================================================================
+        # HOST CONSENT VERB GUARD
+        # The verbs that record SHOWN and apply a reply are the OpenCode
+        # plugin's, run from its own spawn; from a shell they would let a
+        # requester approve itself. Categorical for every role and host, and
+        # ahead of the sealed-retry lane so no signature can carry them.
+        # ================================================================
+        consent_verb_allowed, consent_verb_reason = check_host_consent_verb(
+            data_heredoc_header(command) or command
+        )
+        if not consent_verb_allowed:
+            logger.warning("BLOCKED host consent verb from a shell: %s", command[:120])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=consent_verb_reason,
+            )
 
         sealed = self._sealed_elsewhere(command, session_id, agent_type, hook_payload)
         if sealed is not None:

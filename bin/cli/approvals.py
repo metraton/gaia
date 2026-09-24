@@ -1847,8 +1847,8 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
     the session, and a question of the short question, header and options,
     because OpenCode shows a question's text on one line.
     ``metadata`` binds the retry to the sealed commands. A payload that cannot
-    be rendered returns ``presentation_error`` instead: the SHOWN record still
-    stands, and the plugin opens no question it cannot fill in full.
+    be rendered returns ``presentation_error`` instead, and the plugin opens no
+    question it cannot fill in full.
     """
     approval_id = approval.get("id") or ""
     try:
@@ -1926,12 +1926,24 @@ def cmd_opencode_present(args) -> int:
     """Record an OpenCode-native presentation before requesting user consent.
 
     Refused, with no SHOWN recorded, whenever
-    :func:`_opencode_presentation_refusal` names a reason.
+    :func:`_opencode_presentation_refusal` names a reason. ``--preview`` passes
+    the same checks and prints the presentation without recording SHOWN: the
+    plugin needs the block to post it, and records SHOWN only once the host
+    has accepted the post.
     """
     refusal = _opencode_presentation_refusal(args)
     if refusal is not None:
         _print_error(refusal, args)
         return 1
+    if getattr(args, "preview", False):
+        approval_id = _resolve_approval_id(args.approval_id)
+        approval = _import_approval_store().get_by_id(approval_id)
+        print(json.dumps({
+            "status": "previewed",
+            "approval_id": approval_id,
+            **_opencode_presentation(approval, args.session_id.strip(), args.call_id.strip()),
+        }))
+        return 0
     approval, error = _opencode_binding(args)
     if approval is not None:
         # A matching event already exists. Presentation is idempotent so plugin
@@ -2539,6 +2551,10 @@ def register(subparsers) -> None:
             p_opencode.add_argument(
                 "--presenter-session-id",
                 help="The orchestrator session whose question shows it; recorded on SHOWN only",
+            )
+            p_opencode.add_argument(
+                "--preview", action="store_true",
+                help="Print the presentation after the same checks, recording no SHOWN",
             )
         if name == "opencode-decide":
             p_opencode.add_argument("--reply", choices=("once", "always", "reject"), required=True)

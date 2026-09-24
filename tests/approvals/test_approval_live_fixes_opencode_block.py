@@ -15,6 +15,8 @@ host renders the block with its line breaks is not observed.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -22,9 +24,13 @@ from tests.approvals.test_approval_live_fixes_orchestrator_presents import (
     _ask,
     _placeholder,
     _rendered,
+    _shown,
 )
 from tests.integration.test_opencode_consent_retry_e2e import (  # noqa: F401 (db_env is a fixture)
+    AGENT_ID,
+    CALL_ID,
     FIRST_COMMAND,
+    GAIA_CLI,
     ROOT_SESSION_ID,
     SECOND_COMMAND,
     SESSION_ID,
@@ -103,6 +109,7 @@ def test_approval_live_fixes_specialist_question_follows_the_posted_block(db_env
     first, second = _messages_before_each_ask(driven, SESSION_ID)
     _assert_posted_by_gaia(first, _fenced(rendered.text))
     _assert_posted_by_gaia(second, _fenced(rendered.details))
+    assert [(session, shown["call_id"]) for session, shown in _shown(approval_id)] == [(SESSION_ID, CALL_ID)]
     for label in ("details", "approve"):
         assert _step(driven, label)["question"]["question"] == SHORT_QUESTION, driven
     assert _approval_status(db_path, approval_id) == "approved"
@@ -145,3 +152,25 @@ def test_approval_live_fixes_no_question_is_asked_when_the_block_is_refused(db_e
     assert _step(driven, "ask")["allowed"] is False, driven
     assert [event for event in driven["hostEvents"] if event["type"] == "question.asked"] == []
     assert _approval_status(db_path, approval_id) == "pending"
+    # SHOWN says the user saw the signature; a refused block showed them nothing.
+    assert _shown(approval_id) == []
+
+
+def test_approval_live_fixes_a_preview_renders_the_signature_and_records_nothing(db_env):
+    env, _ = db_env
+    approval_id = _request_set(env)
+
+    result = subprocess.run(
+        [
+            sys.executable, str(GAIA_CLI), "approvals", "opencode-present", approval_id,
+            "--session-id", SESSION_ID, "--agent-id", AGENT_ID,
+            "--call-id", "call-preview", "--token", "preview", "--preview", "--json",
+        ],
+        cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    previewed = json.loads(result.stdout.strip().splitlines()[-1])
+    assert previewed["status"] == "previewed"
+    assert previewed["signature"]["block"] == _fenced(_rendered(approval_id).text)
+    assert _shown(approval_id) == []
