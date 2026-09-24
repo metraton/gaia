@@ -1,6 +1,6 @@
 ---
 name: gws-setup
-description: Use when installing or configuring the Google Workspace CLI (gws) for a Google account -- "instalá gws", "configurá el cli de Google Workspace", "conectá mi cuenta de Google", "set up gws", "install the Google Workspace CLI".
+description: Use when installing or configuring the Google Workspace CLI (gws) for a Google account -- "instala gws", "configura el cli de Google Workspace", "conecta mi cuenta de Google", "set up gws", "install the Google Workspace CLI".
 ---
 
 # GWS Setup

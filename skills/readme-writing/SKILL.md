@@ -1,6 +1,6 @@
 ---
 name: readme-writing
-description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a folder that holds one kind of thing (modules, migrations, components, services, scripts, environments, workloads; Gaia's own agents/, skills/ and hooks/ are one instance of that same shape), or the README shipped inside a template or scaffold handed to someone else. Triggers -- "escribí el README", "actualizá el README", "limpiá el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
+description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a folder that holds one kind of thing (modules, migrations, components, services, scripts, environments, workloads; Gaia's own agents/, skills/ and hooks/ are one instance of that same shape), or the README shipped inside a template or scaffold handed to someone else. Triggers -- "escribe el README", "actualiza el README", "limpia el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
 ---
 
 # README Writing

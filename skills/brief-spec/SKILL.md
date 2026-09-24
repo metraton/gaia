@@ -1,6 +1,6 @@
 ---
 name: brief-spec
-description: Use when the user wants to capture a feature as a brief or spec before planning it -- "armá un brief para esto", "necesito un spec antes de planear", "definamos el alcance de la feature", "write a brief for this", "spec this out before we plan it".
+description: Use when the user wants to capture a feature as a brief or spec before planning it -- "arma un brief para esto", "necesito un spec antes de planear", "definamos el alcance de la feature", "write a brief for this", "spec this out before we plan it".
 ---
 
 # Brief Spec
