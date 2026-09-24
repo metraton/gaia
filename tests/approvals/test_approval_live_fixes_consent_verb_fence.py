@@ -44,6 +44,32 @@ DECIDE = (
     "--call-id call-self --token self --reply once --json"
 )
 
+BINDING = f"{APPROVAL_ID} --session-id {SESSION_ID} --call-id call-self --token self --reply once"
+
+# Every spelling bash turns into the same argv, as the verifier listed them
+# (evidence 244), plus the plain forms.
+SHELL_SPELLINGS = {
+    "empty-quotes": f"gaia approvals opencode-dec''ide {BINDING}",
+    "empty-double-quotes": f'gaia approvals opencode-dec""ide {BINDING}',
+    "backslash": f"gaia approvals opencode-dec\\ide {BINDING}",
+    "partial-quoting": f"gaia approvals 'opencode'-decide {BINDING}",
+    "ansi-c": f"gaia approvals $'opencode-decide' {BINDING}",
+    "ansi-c-hex": f"gaia approvals $'opencode-\\x64ecide' {BINDING}",
+    "line-continuation": f"gaia approvals \\\nopencode-decide {BINDING}",
+    "brace-expansion": f"gaia approvals {{opencode-decide,}} {BINDING}",
+    "xargs-verb": f"echo opencode-decide {BINDING} | xargs gaia approvals",
+    "xargs-placeholder": f"printf %s opencode-decide | xargs -I{{}} gaia approvals {{}} {BINDING}",
+    "variable-suffix": f"S=decide; gaia approvals opencode-$S {BINDING}",
+    "braced-variable-suffix": f"S=decide; gaia approvals opencode-${{S}} {BINDING}",
+    "bash-c-empty-quotes": f"bash -c \"gaia approvals opencode-dec''ide {BINDING}\"",
+    "sh-c-variable": f"sh -c 'S=decide; gaia approvals opencode-$S {BINDING}'",
+    "bash-c-after-option": f"bash -o pipefail -c 'gaia approvals opencode-\"decide\" {BINDING}'",
+    "piped-into-bash": f"echo 'gaia approvals opencode-decide {BINDING}' | bash",
+    "eval": f"eval gaia approvals opencode-dec''ide {BINDING}",
+    "command-substitution": f"echo $(gaia approvals opencode-decide {BINDING})",
+    "variable-program": f"G=gaia; $G approvals opencode-decide {BINDING}",
+}
+
 MODEL_SPELLINGS = [
     PRESENT,
     DECIDE,
@@ -51,6 +77,19 @@ MODEL_SPELLINGS = [
     f"cd /tmp && {DECIDE}",
     f"bash -c '{PRESENT}'",
     "python3 -c \"import subprocess; subprocess.run(['gaia', 'approvals', 'opencode-decide', 'P-x'])\"",
+    "python3 -c \"import subprocess; subprocess.run(['gaia', 'approvals', 'opencode-' + 'decide', 'P-x'])\"",
+    *SHELL_SPELLINGS.values(),
+]
+
+PLAIN_READS = [
+    f"grep -rn opencode-decide {GAIA_CLI.parent}",
+    f'grep -rn "approvals opencode-decide" {GAIA_CLI.parent}',
+    f"rg 'gaia approvals opencode-present' {GAIA_CLI.parent}",
+    "git log -S opencode-decide --oneline",
+    f"cat {GAIA_CLI.parent}/cli/approvals.py",
+    f"gaia approvals show {APPROVAL_ID} --json",
+    f"gaia approvals question {APPROVAL_ID}",
+    "gaia memory search 'approvals opencode-decide'",
 ]
 
 CLAUDE_CODE_SUBAGENT = {
@@ -99,23 +138,32 @@ def test_approval_live_fixes_the_cli_alone_lets_a_requester_approve_itself(db_en
     "payload", [CLAUDE_CODE_SUBAGENT, CLAUDE_CODE_ORCHESTRATOR], ids=["subagent", "orchestrator"],
 )
 def test_approval_live_fixes_claude_code_refuses_the_host_consent_verbs(db_env, command, payload):
+    from modules.security.host_consent_verb_guard import REJECTION_MESSAGE
+
     verdict = _claude_code_verdict(command, payload)
 
     assert verdict.allowed is False, verdict.reason
+    if payload is CLAUDE_CODE_SUBAGENT:
+        # The orchestrator's own lane refuses first with its own words; a
+        # subagent reaches this guard, whose refusal carries nothing to sign.
+        assert verdict.reason == REJECTION_MESSAGE, verdict.reason
     assert verdict.block_response is None, "a categorical refusal carries no approval to sign"
 
 
-@pytest.mark.parametrize("command", [
-    f"grep -rn opencode-decide {GAIA_CLI.parent}",
-    f"gaia approvals show {APPROVAL_ID} --json",
-    f"gaia approvals question {APPROVAL_ID}",
-])
+@pytest.mark.parametrize("command", PLAIN_READS)
 def test_approval_live_fixes_claude_code_leaves_reads_of_the_verbs_alone(db_env, command):
-    assert _claude_code_verdict(command, CLAUDE_CODE_SUBAGENT).allowed is True
+    verdict = _claude_code_verdict(command, CLAUDE_CODE_SUBAGENT)
+
+    assert verdict.allowed is True, verdict.reason
 
 
-@pytest.mark.parametrize("session_id", [SESSION_ID, ROOT_SESSION_ID], ids=["specialist", "orchestrator"])
-@pytest.mark.parametrize("command", [PRESENT, DECIDE])
+@pytest.mark.parametrize(
+    ("session_id", "command"),
+    [(ROOT_SESSION_ID, PRESENT), (ROOT_SESSION_ID, DECIDE), (SESSION_ID, PRESENT), (SESSION_ID, DECIDE)]
+    + [(SESSION_ID, spelling) for spelling in SHELL_SPELLINGS.values()],
+    ids=["orchestrator-present", "orchestrator-decide", "specialist-present", "specialist-decide"]
+    + [f"specialist-{name}" for name in SHELL_SPELLINGS],
+)
 def test_approval_live_fixes_opencode_refuses_the_host_consent_verbs(db_env, session_id, command):
     env, db_path = db_env
     approval_id = _request_set(env)

@@ -695,7 +695,7 @@ class BashValidator:
         # ahead of the sealed-retry lane so no signature can carry them.
         # ================================================================
         consent_verb_allowed, consent_verb_reason = check_host_consent_verb(
-            data_heredoc_header(command) or command
+            command, cwd=(hook_payload or {}).get("cwd") or None,
         )
         if not consent_verb_allowed:
             logger.warning("BLOCKED host consent verb from a shell: %s", command[:120])

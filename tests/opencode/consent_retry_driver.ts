@@ -499,6 +499,14 @@ async function runStep(step: any): Promise<void> {
           properties: { ...askedEvent.event.properties, id: `${requestID}-duplicate` },
         } })
       }
+      if (Array.isArray(step.gaiaBeforeReply)) {
+        // A Gaia CLI call made while the user reads the question, as another
+        // session would make it.
+        const child = Bun.spawn(["python3", "-B", gaiaPath, ...step.gaiaBeforeReply], {
+          cwd: directory, env: { ...process.env, GAIA_HOST: "opencode" }, stdout: "pipe", stderr: "pipe",
+        })
+        record.gaiaBeforeReplyExitCode = await child.exited
+      }
       const byAnswer: Record<string, number> = { approve: 0, reject: 1, details: 2 }
       const selected = step.answer in byAnswer ? question.options[byAnswer[step.answer]].label : step.answer
       await plugin.event({ event: {

@@ -820,18 +820,22 @@ def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(
     The approval is rejected out of band between the presentation and the
     answer, so the real CLI refuses the 'once' reply. The plugin traces the
     cause (decide_failed) and clears the pending control instead of keeping a
-    control whose question is already consumed.
+    control whose question is already consumed. The presentation is the
+    question on screen, whose SHOWN is recorded once its block is posted, so
+    the rejection lands while the user reads it.
     """
     env, db_path = db_env
     approval_id = _request_set(env)
 
     driven = _drive(env, [
         _before("blocked", FIRST_COMMAND),
-        {"kind": "gaia", "label": "rejected-out-of-band", "args": ["approvals", "reject", approval_id]},
-        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+        {
+            "kind": "control-decision", "label": "approve", "answer": "approve",
+            "gaiaBeforeReply": ["approvals", "reject", approval_id],
+        },
     ])
 
-    assert _step(driven, "rejected-out-of-band")["allowed"] is True, driven
+    assert _step(driven, "approve")["gaiaBeforeReplyExitCode"] == 0, driven
     # `gaia approvals reject` marks a presented approval revoked; what matters
     # here is that the user's later 'once' could not turn it into a grant.
     assert _approval_status(db_path, approval_id) not in ("pending", "approved")
@@ -846,6 +850,28 @@ def test_a_reply_gaia_refuses_is_traced_with_its_cause_and_releases_the_control(
     # One closure, with Gaia's cause.
     assert _control_closures(db_path) == [("decide_failed", approval_id)]
     assert _harness_payloads(db_path, "consent.control.closed")[0]["detail"] == decide_refusals[0]["detail"]
+
+
+def test_a_signature_withdrawn_before_its_question_is_never_shown_and_is_traced(db_env):
+    """Rejected before the question call posts its block: no question, no SHOWN, one traced closure."""
+    from gaia.approvals.store import get_history
+
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "gaia", "label": "rejected-out-of-band", "args": ["approvals", "reject", approval_id]},
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+    ])
+
+    assert _step(driven, "rejected-out-of-band")["allowed"] is True, driven
+    assert _step(driven, "approve")["allowed"] is False, driven
+    assert [e for e in get_history(approval_id) if e["event_type"] == "SHOWN"] == []
+    assert _grant(db_path, approval_id) is None
+    assert _control_closures(db_path) == [("block_rejected", approval_id)]
+    closed = _harness_payloads(db_path, "consent.control.closed")[0]
+    assert f"could not record that {approval_id} was shown" in closed["detail"], closed
 
 
 def test_drift_after_yes_is_refused_before_policy_and_changes_no_state(db_env):

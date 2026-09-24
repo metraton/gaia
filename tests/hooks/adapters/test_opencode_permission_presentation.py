@@ -379,9 +379,9 @@ def test_a_rejected_control_prompt_fails_closed_with_the_host_cause(db_env, appr
     assert "[T3_BLOCKED]" not in error
     assert delivered["deletedSessions"] == []
     assert delivered["controlSessionLingered"] is False
-    # The presentation was registered before the prompt was attempted; nothing
-    # after it may claim the question reached the user.
-    assert [e["event_type"] for e in get_history(approval_id)] == ["REQUESTED", "SHOWN"]
+    # SHOWN waits for the signature's block, which only the question call posts;
+    # a refused prompt never got that far, so nothing claims the user saw it.
+    assert [e["event_type"] for e in get_history(approval_id)] == ["REQUESTED"]
     assert [e for e in delivered["bridgeEvents"] if e.get("event") == "control.opened"] == []
 
 
