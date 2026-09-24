@@ -1342,17 +1342,17 @@ def cmd_show_v2(args) -> int:
 
 
 def _signature_surface(payload: dict, approval_id: str) -> dict:
-    """Return the signature both hosts ask: text, question object, Details and the single asked strings."""
+    """Return the signature both hosts show: its block and Details block, and the short question object."""
     from gaia.approvals import surface
 
     rendered = surface.render(payload, approval_id)
     return {
         "approval_id": approval_id,
         "text": rendered.text,
+        "block": rendered.block,
         "question": rendered.question,
         "details": rendered.details,
-        "asked": rendered.asked,
-        "asked_details": rendered.asked_details,
+        "details_block": rendered.details_block,
     }
 
 
@@ -1373,9 +1373,9 @@ def _opencode_question(approval_id: str, details: bool) -> dict:
 def cmd_question(args) -> int:
     """Print the question-tool input that asks pending signatures, and nothing else.
 
-    In Claude Code it asks 1 to 4 signatures and each question text is the
-    renderer's single string, which the PreToolUse hook recognises; with
-    ``--details`` it carries the Details instead. In an OpenCode shell, marked
+    In Claude Code it asks 1 to 4 signatures, each by its short question; the
+    PreToolUse hook recognises the object and shows each signature's block, or
+    with ``--details`` its Details block, when the question opens (D29). In an OpenCode shell, marked
     by ``GAIA_HOST_SESSION_ID``, it asks one signature and carries only its id,
     because there the plugin writes the signature into the call itself.
     """

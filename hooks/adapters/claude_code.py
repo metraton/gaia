@@ -1795,16 +1795,16 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
     @staticmethod
     def _adapt_ask_user_question(tool_input: dict, *, hook_data: dict) -> HookResponse:
-        """Record the signatures of a question Gaia built, or deny one it did not build.
+        """Show and record the signatures of a question Gaia built, or deny one it did not build.
 
         A question without a signature's shape is left alone. One with it must
-        be exactly the object ``gaia approvals question`` printed, whose
-        question texts already carry each signature (D23): each is then
-        recorded as shown at its position under this tool_use_id. Nothing else
-        is shown: ``systemMessage`` does not reach the desktop app. No
-        ``permissionDecision`` is returned: for AskUserQuestion ``allow``
-        without ``updatedInput`` does not skip the question, and no other
-        value would ask it.
+        be exactly the object ``gaia approvals question`` printed: each
+        signature is recorded as shown at its position under this tool_use_id,
+        and its block (its Details block on a Details re-ask) goes out as the
+        ``permissionDecisionReason`` of an ``allow`` (D29). The hooks reference
+        documents that reason as shown to the user for ``allow``, and that
+        ``allow`` without ``updatedInput`` does not answer AskUserQuestion, so
+        the question still opens for the user.
         """
         from gaia.approvals import core, surface
 
@@ -1838,6 +1838,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             surfaces = core.match_question_batch(questions)
         except core.SealError as exc:
             return deny(str(exc))
+        blocks = []
         for position, rendered in enumerate(surfaces):
             core.record_presentation(
                 rendered.approval_id,
@@ -1846,7 +1847,18 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 agent_id=str(hook_data.get("agent_id") or PRIMARY_AGENT),
                 position=position,
             )
-        return HookResponse(output={}, exit_code=0)
+            asks_details = questions[position].get("header") == rendered.details_question["header"]
+            blocks.append(rendered.details_block if asks_details else rendered.block)
+        return HookResponse(
+            output={
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "\n\n".join(blocks),
+                }
+            },
+            exit_code=0,
+        )
 
     def _adapt_send_message(
         self, tool_name: str, parameters: dict, session_id: str = "",

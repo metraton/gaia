@@ -1,8 +1,11 @@
-"""The one renderer of a signature's surface: visible text, question and Details (brief D12).
+"""The one renderer of a signature's surface: its block, short question and Details (D27, D29).
 
 Gaia composes every line a user reads; the requester only seals short phrases
 (title, question, and per item what it does and its impact) and a host only
-shows the result. Phrase limits are checked when a request is sealed
+shows the result. The signature is one block outside the question -- shown in
+Claude Code by the PreToolUse decision reason, posted in OpenCode by the
+plugin, the same bytes in both -- and the question carries only the short
+question. Phrase limits are checked when a request is sealed
 (:func:`check_phrases`, called by ``core.seal_request``), so an over-long
 phrase is returned to its author instead of reaching a presentation; nothing
 is truncated. Fixed strings follow D12 in the user's language with full
@@ -12,7 +15,6 @@ orthography (D17); only the option labels are English (D8, D11).
 from __future__ import annotations
 
 import re
-import shlex
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
@@ -22,15 +24,15 @@ from gaia.approvals.core import WINDOW_MINUTES, SealError, _ensure_hooks_importa
 TITLE_MAX = 120
 QUESTION_MAX = 60
 LINE_MAX = 100
-#: The column a command line is broken before, between tokens, so the host's own
-#: wrap (which knows no continuation indent) is not reached at common widths.
-WRAP_COLUMN = 80
 #: Host limits of one AskUserQuestion call: its header and its question count.
 HEADER_MAX = 12
 BATCH_MAX = 4
 OPTION_WORDS_MAX = 8
 
 HEADER = "Aprobación"
+#: The header of a Details re-ask: the question text is the same short question,
+#: so the header is what tells the hook to show the Details block.
+DETAILS_HEADER = "Detalles"
 DEFAULT_QUESTION = "¿Apruebo esta solicitud?"
 OPTIONS = (
     ("Approve", "Autoriza exactamente lo que se muestra arriba"),
@@ -53,25 +55,17 @@ class SurfaceLimitError(SealError):
 
 @dataclass(frozen=True)
 class Surface:
-    """One signature as both hosts ask it (D23).
+    """One signature as both hosts show it (D27, D29).
 
-    ``asked`` is the single string a host asks: the visible ``text``, a blank
-    line, the short question. Details re-asks the signature with
-    ``asked_details`` (``details``, a blank line, the short question).
-    ``question`` and ``details_question`` are the AskUserQuestion objects that
-    carry those two strings.
-
-    OpenCode shows a question's text on one line, so there (D26) ``block`` or
-    ``details_block`` -- ``text`` or ``details`` as a Markdown code block -- is
-    posted into the session before a question that asks only
-    ``short_question``.
+    ``block`` (``text`` as a Markdown code block) is shown outside the question,
+    and ``details_block`` (``details`` likewise) on a Details re-ask.
+    ``question`` and ``details_question`` are the AskUserQuestion objects; both
+    ask only ``short_question`` and differ by header.
     """
 
     approval_id: str
     text: str
     details: str
-    asked: str
-    asked_details: str
     question: dict
     details_question: dict
     short_question: str
@@ -125,51 +119,6 @@ def check_question(question: Mapping[str, Any]) -> None:
 # Render
 # --------------------------------------------------------------------------- #
 
-def _tokens(command: str) -> Optional[list[str]]:
-    """Split on whitespace keeping each token's quoting; ``None`` when unbalanced."""
-    lexer = shlex.shlex(command, posix=False)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        return list(lexer)
-    except ValueError:
-        return None
-
-
-def _command_lines(command: str, width: int) -> list[str]:
-    """Lay one command out as D12 shows it, every token exact (D23).
-
-    Each flag, with its values, starts its own line. A command longer than
-    ``width`` also gives every positional argument its own line, because the
-    host wraps a line past its width with no continuation indent: there a flag
-    keeps one value (none when written ``--flag=value``), and the words after
-    the program join the first line only while it fits. A token is never split,
-    so a line overruns ``width`` only by a token longer than it.
-    """
-    tokens = None if "\n" in command else _tokens(command)
-    if not tokens:
-        return command.split("\n")
-    wraps = len(" ".join(tokens)) > width
-    lines: list[str] = []
-    takes_value = False
-    for token in tokens:
-        if token.startswith("-") and token != "-":
-            lines.append(token)
-            takes_value = "=" not in token
-            continue
-        joins = bool(lines) and (
-            not wraps
-            or takes_value
-            or (len(lines) == 1 and len(lines[0]) + 1 + len(token) <= width)
-        )
-        takes_value = False
-        if joins:
-            lines[-1] += " " + token
-        else:
-            lines.append(token)
-    return [line + " \\" for line in lines[:-1]] + lines[-1:]
-
-
 def _items(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     """The sealed items in order; a pre-core row is read from its command list."""
     items = payload.get("items")
@@ -186,20 +135,20 @@ def _target(item: Mapping[str, Any]) -> str:
 
 
 def _numbered(position: int, width: int) -> str:
-    return f"  {position:>{width}}  "
+    return f"{position:>{width}}  "
 
 
-def _heading(payload: Mapping[str, Any]) -> str:
+def _heading(payload: Mapping[str, Any]) -> list[str]:
+    """The block's first two lines: who asks, and what for in human words."""
     requester = payload.get("requested_by") or {}
-    return f"{_HEADING} · {requester.get('agent_id') or _NO_AGENT}"
-
-
-def _noun(items: Sequence[Mapping[str, Any]]) -> str:
-    return "Archivos" if items and "path" in items[0] else "Comandos"
+    return [
+        f"{_HEADING} · {requester.get('agent_id') or _NO_AGENT}",
+        payload.get("what") or _NO_TITLE,
+    ]
 
 
 def _folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str]:
-    """The line that says where a command runs, only when that is not the requester's shell folder (D3).
+    """The folder a command runs in, only when it is not the requester's shell folder (D3).
 
     ``requested_from`` is sealed by the request; a payload sealed without it
     (a reactive block, which seals the folder it ran in, or an older row) shows
@@ -209,26 +158,21 @@ def _folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Optional[str
     cwd = item.get("cwd")
     if "command" not in item or not origin or not cwd or cwd == origin:
         return None
-    return f"en la carpeta {cwd}"
+    return cwd
 
 
 def _text(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
-    lines = [
-        _heading(payload),
-        payload.get("what") or _NO_TITLE,
-        "",
-        f"{_noun(items)} ({len(items)})",
-    ]
+    """The signature block: each command exact on one line, under ``en <carpeta>`` when it runs elsewhere."""
+    lines = _heading(payload)
     width = len(str(len(items)))
     for position, item in enumerate(items, start=1):
         prefix = _numbered(position, width)
-        continuation = " " * (len(prefix) + 4)
-        first, *rest = _command_lines(_target(item), WRAP_COLUMN - len(continuation) - 2)
-        lines.append(prefix + first)
-        lines.extend(continuation + line for line in rest)
         folder = _folder(payload, item)
+        lines.append("")
         if folder:
-            lines.append(" " * len(prefix) + folder)
+            lines += [f"{prefix}en {folder}", " " * len(prefix) + _target(item)]
+        else:
+            lines.append(prefix + _target(item))
     return "\n".join(lines)
 
 
@@ -250,19 +194,21 @@ def _validity(
 def _details(
     payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], approval_id: str
 ) -> str:
-    lines: list[str] = []
-    for position, item in enumerate(items, start=1):
-        lead = f"{position}  "
-        lines.append(lead + (item.get("does") or _NO_DOES))
-        lines.append(" " * len(lead) + f"Impacto: {item.get('impact') or _NO_IMPACT}")
-    lines.append(f"Rollback: {payload.get('rollback_hint') or _NO_ROLLBACK}")
-    lines.append("Comando exacto:" if len(items) == 1 else "Comandos exactos:")
+    """The Details block: the signature's layout with what each command does and its impact in place of the command."""
+    lines = _heading(payload)
     width = len(str(len(items)))
-    lines.extend(
-        _numbered(position, width) + _target(item)
-        for position, item in enumerate(items, start=1)
-    )
-    lines.append(_validity(payload, items, approval_id))
+    for position, item in enumerate(items, start=1):
+        prefix = _numbered(position, width)
+        lines += [
+            "",
+            prefix + (item.get("does") or _NO_DOES),
+            " " * len(prefix) + f"Impacto: {item.get('impact') or _NO_IMPACT}",
+        ]
+    lines += [
+        "",
+        f"Rollback: {payload.get('rollback_hint') or _NO_ROLLBACK}",
+        _validity(payload, items, approval_id),
+    ]
     return "\n".join(lines)
 
 
@@ -279,9 +225,9 @@ def _short_question(payload: Mapping[str, Any]) -> str:
     return short
 
 
-def _question(asked: str, header: str) -> dict:
+def _question(short: str, header: str) -> dict:
     question = {
-        "question": asked,
+        "question": short,
         "header": header,
         "options": [{"label": label, "description": text} for label, text in OPTIONS],
         "multiSelect": False,
@@ -290,23 +236,19 @@ def _question(asked: str, header: str) -> dict:
     return question
 
 
-def _render(payload: Mapping[str, Any], approval_id: str, header: str) -> Surface:
+def _render(payload: Mapping[str, Any], approval_id: str, position: int, total: int) -> Surface:
     items = _items(payload)
     if not items:
         raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
     text = _text(payload, items)
     details = _details(payload, items, approval_id)
     short = _short_question(payload)
-    asked = f"{text}\n\n{short}"
-    asked_details = f"{details}\n\n{short}"
     return Surface(
         approval_id=approval_id,
         text=text,
         details=details,
-        asked=asked,
-        asked_details=asked_details,
-        question=_question(asked, header),
-        details_question=_question(asked_details, header),
+        question=_question(short, batch_header(position, total)),
+        details_question=_question(short, batch_header(position, total, details=True)),
         short_question=short,
         block=_code_block(text),
         details_block=_code_block(details),
@@ -315,19 +257,21 @@ def _render(payload: Mapping[str, Any], approval_id: str, header: str) -> Surfac
 
 def render(payload: Mapping[str, Any], approval_id: str) -> Surface:
     """Render one sealed request; a phrase the payload does not declare is stated as absent."""
-    return _render(payload, approval_id, HEADER)
+    return _render(payload, approval_id, 1, 1)
 
 
-def batch_header(position: int, total: int) -> str:
-    """The header of the signature at 1-based ``position`` among ``total`` asked in one call."""
-    return HEADER if total == 1 else f"Aprob. {position}/{total}"
+def batch_header(position: int, total: int, *, details: bool = False) -> str:
+    """The header of the signature, or of its Details re-ask, at 1-based ``position`` among ``total`` asked in one call."""
+    if total == 1:
+        return DETAILS_HEADER if details else HEADER
+    return f"{'Detalle' if details else 'Aprob.'} {position}/{total}"
 
 
 def batch_questions(
     payload: Mapping[str, Any], approval_id: str, position: int, total: int,
 ) -> tuple[dict, dict]:
     """The signature and Details question objects a request shows at ``position`` of a ``total``-signature call."""
-    rendered = _render(payload, approval_id, batch_header(position, total))
+    rendered = _render(payload, approval_id, position, total)
     return rendered.question, rendered.details_question
 
 
@@ -339,8 +283,8 @@ def is_signature_question(question: Mapping[str, Any]) -> bool:
         if isinstance(option, Mapping)
     ]
     return (
-        header == HEADER
-        or re.fullmatch(r"Aprob\. \d+/\d+", header) is not None
+        header in (HEADER, DETAILS_HEADER)
+        or re.fullmatch(r"(Aprob\.|Detalle) \d+/\d+", header) is not None
         or labels == [label for label, _ in OPTIONS]
     )
 
@@ -377,7 +321,7 @@ def render_batch(
             f"a question call presents 1 to {BATCH_MAX} signatures, not {total}"
         )
     surfaces = [
-        _render(payload, approval_id, batch_header(position, total))
+        _render(payload, approval_id, position, total)
         for position, (payload, approval_id) in enumerate(requests, start=1)
     ]
     texts = [_short_question(payload) for payload, _ in requests]
