@@ -72,7 +72,7 @@ def _approved_set(repo: str, expect_exit: dict | None = None) -> str:
     ]
     approval_id = core.request_command_set(
         items, what="Publicar la rama y abrir el PR", question="¿Publico la rama?",
-        session_id=SESSION, agent_id=AGENT_TYPE,
+        session_id=SESSION, agent_id=AGENT_TYPE, rollback="Borrar la rama remota y cerrar el PR.",
     )
     core.record_presentation(
         approval_id, native_ref="toolu_question", session_id=SESSION, agent_id="gaia-orchestrator",

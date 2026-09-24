@@ -217,13 +217,18 @@ def test_cli_consent_surface_is_the_signature_surface_without_an_id_label():
     assert presentation == {
         "approval_id": APPROVAL_ID,
         "text": rendered.text,
-        "block": rendered.block,
-        "question": rendered.question,
+        "questions": list(rendered.questions),
         "details": rendered.details,
-        "details_block": rendered.details_block,
+        "details_questions": list(rendered.details_questions),
     }
     assert "approve_label" not in presentation
-    assert all(APPROVAL_ID not in option["label"] for option in rendered.question["options"])
+    asked = presentation["questions"] + presentation["details_questions"]
+    assert asked, "a signature with no question proves nothing about its labels"
+    assert all(
+        APPROVAL_ID not in option["label"]
+        for question in asked
+        for option in question["options"]
+    )
 
 
 def _undeclared_payload() -> dict:
