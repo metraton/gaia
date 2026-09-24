@@ -14,11 +14,13 @@ or rebuild any part of it; you only open the question.
    pending ids the specialists returned -- up to 4 in one question, one
    signature each.
 2. Call AskUserQuestion with that output exactly as printed, and print nothing
-   about the signature, before or after. The hook shows each signature's text
-   to the user, and its Details when the user chooses Details.
-3. When the hook asks for it (Details was chosen, or it did not recognise the
-   question), run `gaia approvals question` again for the ids it names and pass
-   the new output unchanged.
+   about the signature, before or after: each question text already carries
+   its signature, and the hook refuses any other text.
+3. When the user chooses Details, the hook names the command to run:
+   `gaia approvals question --details <approval_id> ...`, whose questions carry
+   the Details. Pass that output unchanged the same way. If the hook did not
+   recognise a question, run `gaia approvals question` again for the ids it
+   names.
 
 ## OpenCode
 

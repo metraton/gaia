@@ -49,6 +49,16 @@ PRODUCER = SKILLS / "subagent-request-approval" / "SKILL.md"
 PRESENTER = SKILLS / "orchestrator-present-approval" / "SKILL.md"
 EXECUTION = SKILLS / "execution" / "SKILL.md"
 PENDING = SKILLS / "pending-approvals" / "SKILL.md"
+CYCLE_SKILLS = (
+    "subagent-request-approval", "orchestrator-present-approval", "execution", "pending-approvals",
+)
+
+# What D23 retired from the signature itself: systemMessage as the way it
+# reaches the user, and command paths abbreviated with '...'.
+RETIRED_FROM_THE_SIGNATURE = {
+    "systemMessage as the signature route": re.compile(r"systemMessage"),
+    "abbreviated path": re.compile(r"\.\.\./|/\.\.\.|\w\.\.\.(/|\s)"),
+}
 
 
 def _skill_docs() -> list[Path]:
@@ -112,16 +122,50 @@ def test_approval_cycle_skills_producer_states_each_phrase_limit(flag, limit):
     assert any(re.search(rf"\b{limit}\b", row) for row in rows), rows
 
 
-def test_approval_cycle_skills_producer_carries_the_d12_example():
+@pytest.mark.parametrize("retired", sorted(RETIRED_FROM_THE_SIGNATURE))
+def test_approval_cycle_skills_teach_no_signature_mechanism_d23_retired(retired):
+    pattern = RETIRED_FROM_THE_SIGNATURE[retired]
+    offenders = [
+        f"{doc.relative_to(ROOT)}: {match.group(0)!r}"
+        for name in CYCLE_SKILLS
+        for doc in sorted((SKILLS / name).glob("*.md"))
+        for match in [pattern.search(doc.read_text(encoding="utf-8"))]
+        if match
+    ]
+    assert not offenders, "\n".join(offenders)
+
+
+def test_approval_cycle_skills_producer_carries_the_d12_example_with_exact_commands():
+    from gaia.approvals import surface
+
     producer = PRODUCER.read_text(encoding="utf-8")
+    command = (
+        "python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia"
+        " dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all"
+    )
     for phrase in (
         "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.",
         "¿Reinstalo Gaia?",
         "gaia dev: instala en tu espacio de trabajo la versión nueva de main.",
         "actualiza tu base de datos; ese cambio no se deshace.",
-        "Solicitud de aprobación · gaia-system",
     ):
         assert phrase in producer, phrase
+    shown = surface.render({
+        "what": "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.",
+        "question": "¿Reinstalo Gaia?",
+        "requested_by": {"agent_id": "gaia-system"},
+        "items": [{"command": command}],
+    }, "P-" + "0" * 32).asked
+    assert shown in producer, shown
+
+
+def test_approval_cycle_skills_producer_and_execution_teach_the_sealed_directory_form():
+    from gaia.approvals.core import sealed_invocation
+
+    form = sealed_invocation("<sealed directory>", "<sealed command>").replace("'", "")
+    assert form == "cd <sealed directory> && <sealed command>"
+    for doc in (PRODUCER, EXECUTION):
+        assert f"`{form}`" in doc.read_text(encoding="utf-8"), doc.name
 
 
 def test_approval_cycle_skills_producer_never_passes_an_identity():
@@ -179,3 +223,12 @@ def test_approval_cycle_skills_pending_matches_the_orchestrator_guard():
     assert "activate_approval_atomically(" in approvals
     assert "creates the grant" in skill
     assert "never approves" in skill
+
+
+def test_approval_cycle_skills_withdrawal_reason_matches_the_cli_and_the_guard():
+    from modules.security.gaia_cli_only_guard import _WITHDRAW_FLAGS
+
+    skill = PENDING.read_text(encoding="utf-8")
+    assert "--reason <text>" in skill
+    for verb in ("reject", "revoke"):
+        assert "--reason" in _WITHDRAW_FLAGS[("approvals", verb)], verb

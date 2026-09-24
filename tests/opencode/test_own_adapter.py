@@ -320,7 +320,7 @@ def test_own_adapter_asks_the_renderer_single_string_and_closes_on_execute_after
 
     decision = e2e._step(driven, "approve")
     assert driven["presentations"][0]["approvalID"] == approval_id, driven["presentations"]
-    assert decision["question"] == _asked(rendered, rendered.opencode)
+    assert decision["question"] == _asked(rendered, rendered.asked)
     instruction = driven["controlPrompts"][0]["body"]["parts"][0]["text"]
     assert decision["modelQuestion"]["question"] == "Gaia"
     assert rendered.text.splitlines()[0] not in instruction and approval_id not in instruction
@@ -343,8 +343,8 @@ def test_own_adapter_details_reasks_the_same_signature_with_the_renderer_details
         _decision("approve", "approve", "question-details"),
     ])
 
-    assert e2e._step(driven, "details")["question"] == _asked(rendered, rendered.opencode)
-    assert e2e._step(driven, "approve")["question"] == _asked(rendered, rendered.opencode_details)
+    assert e2e._step(driven, "details")["question"] == _asked(rendered, rendered.asked)
+    assert e2e._step(driven, "approve")["question"] == _asked(rendered, rendered.asked_details)
     assert e2e._step(driven, "approve")["modelQuestion"]["question"] == "Gaia"
     assert e2e._step(driven, "after-details")["controlPromptCount"] == 2
     assert e2e._control_closures(db_path) == [
@@ -463,8 +463,8 @@ def test_own_adapter_asks_a_batch_one_signature_after_another(driven_env):
     ], auto_safe_idle=False)
 
     assert [item["approvalID"] for item in driven["presentations"]] == [first, second]
-    assert e2e._step(driven, "reject-first")["question"]["question"] == _rendered(first).opencode
-    assert e2e._step(driven, "approve-second")["question"]["question"] == _rendered(second).opencode
+    assert e2e._step(driven, "reject-first")["question"]["question"] == _rendered(first).asked
+    assert e2e._step(driven, "approve-second")["question"]["question"] == _rendered(second).asked
     control_prompts = [p for p in driven["controlPrompts"] if p["path"]["id"] == e2e.SESSION_ID]
     assert len(control_prompts) == 2
     assert e2e._control_closures(db_path) == [("decided", first), ("decided", second)]

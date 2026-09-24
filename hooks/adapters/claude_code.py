@@ -1795,13 +1795,13 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
     @staticmethod
     def _adapt_ask_user_question(tool_input: dict, *, hook_data: dict) -> HookResponse:
-        """Show the signatures of a question Gaia built, or deny one it did not build.
+        """Record the signatures of a question Gaia built, or deny one it did not build.
 
         A question without a signature's shape is left alone. One with it must
-        be exactly the object ``gaia approvals question`` printed: each
-        signature is then recorded as shown at its position under this
-        tool_use_id, and the renderer's texts reach the user through
-        ``systemMessage`` (documented as shown to the user). No
+        be exactly the object ``gaia approvals question`` printed, whose
+        question texts already carry each signature (D23): each is then
+        recorded as shown at its position under this tool_use_id. Nothing else
+        is shown: ``systemMessage`` does not reach the desktop app. No
         ``permissionDecision`` is returned: for AskUserQuestion ``allow``
         without ``updatedInput`` does not skip the question, and no other
         value would ask it.
@@ -1846,10 +1846,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 agent_id=str(hook_data.get("agent_id") or PRIMARY_AGENT),
                 position=position,
             )
-        return HookResponse(
-            output={"systemMessage": "\n\n".join(rendered.text for rendered in surfaces)},
-            exit_code=0,
-        )
+        return HookResponse(output={}, exit_code=0)
 
     def _adapt_send_message(
         self, tool_name: str, parameters: dict, session_id: str = "",
@@ -1972,8 +1969,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         Other row, a dismissal) or no answer decides nothing. A label is never
         searched for an approval id. An Approve that activates nothing is
         recorded (``decision_audit``) so a lost signature stays findable.
-        Details answers with the renderer's Details and asks the model to
-        present that signature again.
+        Details asks the model to present that signature again with
+        ``--details``, whose question text carries the renderer's Details.
         """
         from gaia.approvals import core, surface
 
@@ -2036,21 +2033,15 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         if not details:
             return HookResponse(output={}, exit_code=0)
-        try:
-            surfaces = core.question_batch(details)
-        except core.SealError as exc:
-            logger.info("AskUserQuestion: Details not shown for %s: %s", details, exc)
-            return HookResponse(output={}, exit_code=0)
         return HookResponse(
             output={
-                "systemMessage": "\n\n".join(rendered.details for rendered in surfaces),
                 "hookSpecificOutput": {
                     "hookEventName": "PostToolUse",
                     "additionalContext": (
-                        "The user chose Details; Gaia showed them. Ask again with "
-                        f"`gaia approvals question {' '.join(details)}` and pass its "
-                        "output unchanged to AskUserQuestion. Print nothing about the "
-                        "signature yourself."
+                        "The user chose Details. Ask again with "
+                        f"`gaia approvals question --details {' '.join(details)}` and pass "
+                        "its output unchanged to AskUserQuestion: its question carries "
+                        "the Details. Print nothing about the signature yourself."
                     ),
                 },
             },

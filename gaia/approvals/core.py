@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -601,9 +602,9 @@ def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
     """Return the batch whose question objects are exactly ``questions``, in order.
 
     Each position is matched against every pending request rendered for that
-    position, so only the object Gaia produced is recognised; a question no
-    pending request renders, or one two requests render alike, raises
-    :class:`SealError` naming the position.
+    position, as its signature or as its Details re-ask, so only an object
+    Gaia produced is recognised; a question no pending request renders, or one
+    two requests render alike, raises :class:`SealError` naming the position.
     """
     from gaia.approvals import store, surface
 
@@ -617,10 +618,10 @@ def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
         matches = []
         for approval_id, payload in pending:
             try:
-                rendered = surface.batch_question(payload, position, total)
-            except SealError:
+                rendered = surface.batch_questions(payload, approval_id, position, total)
+            except (SealError, TypeError, ValueError, AttributeError):
                 continue
-            if rendered == asked:
+            if asked in rendered:
                 matches.append(approval_id)
         if not matches:
             raise SealError(f"question {position} is not the one Gaia rendered for a pending approval")
@@ -727,12 +728,74 @@ def match_command(
     agent_id: Optional[str],
     tool_use_id: str,
 ) -> Optional[dict]:
-    """Reserve ``command`` if it is exactly the next sealed item for this directory and requester."""
+    """Reserve ``command`` if it is exactly the next sealed item for this directory and requester.
+
+    The reservation carries ``command``, the sealed bytes its EXECUTED or
+    FAILED event records whatever form the call took (:func:`sealed_elsewhere`).
+    """
     from gaia.store.writer import reserve_plan_command
 
-    return reserve_plan_command(
+    reserved = reserve_plan_command(
         command, session_id=session_id, tool_use_id=tool_use_id, cwd=cwd, agent_id=agent_id,
     )
+    return None if reserved is None else {**reserved, "command": command}
+
+
+def sealed_invocation(cwd: str, command: str) -> str:
+    """The only compound accepted (D24): the one that runs an item sealed in another directory."""
+    return f"cd {shlex.quote(cwd)} && {command}"
+
+
+def _sealed_items_of(requester: Mapping[str, str]) -> Iterable[Mapping[str, Any]]:
+    """Every command item the requester's pending requests and live set grants carry."""
+    from gaia.approvals.store import _open_db
+
+    for _, payload in _own_pendings(requester):
+        yield from _payload_items(payload)
+    con = _open_db()
+    try:
+        rows = con.execute(
+            "SELECT command_set_json FROM approval_grants WHERE scope = 'COMMAND_SET' "
+            "AND source = 'plan-first' AND status = 'PENDING' AND session_id = ? AND agent_id = ?",
+            (requester["session_id"], requester["agent_id"]),
+        ).fetchall()
+    finally:
+        con.close()
+    for (items_json,) in rows:
+        yield from json.loads(items_json or "[]")
+
+
+def sealed_elsewhere(
+    invocation: str, *, session_id: object, agent_id: object,
+) -> Optional[tuple[str, str]]:
+    """Return ``(cwd, command)`` when ``invocation`` is the cd form of an item this requester sealed.
+
+    It qualifies only byte for byte as :func:`sealed_invocation` writes it, and
+    only for an item one of the requester's pending requests or live set
+    grants carries with that directory and that command; any other compound is
+    left to the ordinary refusal.
+    """
+    head, joined, command = invocation.partition(" && ")
+    if not joined or not head.startswith("cd "):
+        return None
+    try:
+        target = shlex.split(head[len("cd "):])
+        requester = resolve_requester(session_id, agent_id)
+    except (ValueError, RequesterError):
+        return None
+    if len(target) != 1 or not os.path.isabs(target[0]):
+        return None
+    cwd = target[0]
+    if sealed_invocation(cwd, command) != invocation:
+        return None
+    try:
+        items = list(_sealed_items_of(requester))
+    except sqlite3.Error:
+        return None
+    for item in items:
+        if item.get("command") == command and item.get("cwd") == cwd:
+            return cwd, command
+    return None
 
 
 def close_command(approval_id: str, *, session_id: str, tool_use_id: str, exit_code: int) -> str:

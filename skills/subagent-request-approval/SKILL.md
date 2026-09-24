@@ -25,9 +25,15 @@ full spelling (accents included), for someone who does not read commands.
 
 Optional, per request: `--rollback` (how to undo it, shown in Details),
 `--verification` (how you will confirm the result). Optional, per command:
-`--cwd` (the directory it must run in, once for all or once per command) and
+`--cwd` (the existing directory it must run in, once for all or once per
+command; the default is where you run the request) and
 `--expect-exit POSITION=CODES` (non-zero exits that still let the set go on,
 e.g. `2=1`).
+
+A command sealed in another directory than the one your Bash runs in is run
+as exactly `cd <sealed directory> && <sealed command>`, with the directory and
+the command byte for byte as sealed. It is the only compound Gaia accepts; any
+other directory, command or chain is refused.
 
 Example -- the request:
 
@@ -41,22 +47,25 @@ gaia approvals request-set \
   --rollback 'volver al código anterior con --ref c1d8b89; la base queda actualizada.'
 ```
 
--- and what the user then sees, built by Gaia:
+-- and the question the user then answers, built by Gaia, with every command
+exact:
 
 ```
 Solicitud de aprobación · gaia-system
 Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
 
 Comandos (1)
-  1  python3 .../0ac7481a.../bin/gaia dev \
+  1  python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev \
          --workspace /home/jorge/ws/me \
          --ref bbc2f09 \
          --host all
+
+¿Reinstalo Gaia?
 ```
 
-followed by the question `¿Reinstalo Gaia?` with Approve / Reject / Details.
-Details shows each command's `--does` and `--impact`, the rollback, the
-30-minute validity, the exact command, the ID and the fingerprint.
+with Approve / Reject / Details. Details asks again with each command's
+`--does` and `--impact`, the rollback, the 30-minute validity, the exact
+command, the ID and the fingerprint in place of the text.
 
 A protected-path write is requested the same way with
 `gaia approvals request-file-write --path <absolute path>` and one `--does` and

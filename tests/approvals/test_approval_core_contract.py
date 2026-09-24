@@ -15,13 +15,15 @@ import json
 import re
 import sqlite3
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import pytest
 
 from gaia.store import writer
 
 COMMANDS = ["git push origin feat/x", "gh pr create --base main --fill"]
-REPO = "/tmp/approval-core-repo"
+#: An existing directory: request-set refuses a --cwd that does not exist (D24).
+REPO = str(Path(__file__).resolve().parent)
 SESSION = "ses-requester"
 AGENT = "gaia-system"
 #: Every requested signature carries its requester's phrases (plan 76 PD10).
@@ -231,7 +233,7 @@ def test_approval_core_contract_command_matches_only_in_its_sealed_directory(db)
     approval_id = _approved_set(db)
     assert core.match_command(COMMANDS[0], cwd="/elsewhere", session_id=SESSION, agent_id=AGENT, tool_use_id="t1") is None
     assert core.match_command(COMMANDS[0], cwd=REPO, session_id=SESSION, agent_id=AGENT, tool_use_id="t2") == {
-        "approval_id": approval_id, "index": 0,
+        "approval_id": approval_id, "index": 0, "command": COMMANDS[0],
     }
 
 

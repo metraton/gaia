@@ -21,8 +21,13 @@ source changes. The same prohibition applies to fixtures and bulk operations.
    commands in order, their directory, and how much of the grant's window is
    left.
 2. Run exactly one command per tool call using `command-execution`, byte for
-   byte as requested, in its sealed directory. Never join commands, skip an
-   index, substitute an equivalent spelling, or add an unapproved command.
+   byte as requested, in its sealed directory. When that directory is not the
+   one your Bash runs in, run exactly `cd <sealed directory> && <sealed command>`,
+   the only compound accepted. Never join commands otherwise, skip an index,
+   substitute an equivalent spelling, or add an unapproved command. In OpenCode
+   a still-pending approval asks the user at this attempt: the call is refused
+   while the question opens in your session, so end the turn with
+   `APPROVAL_REQUEST`; you are resumed after the answer.
 3. After every result, checkpoint the exact command, index and exit status.
 4. A command that exits with a code its request declared with `--expect-exit`
    has succeeded for the set: continue with the next index. Any other failure

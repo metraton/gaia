@@ -1,9 +1,11 @@
-"""The one signature-surface renderer (plan 76, task 2; brief decisions D12, D14, D17).
+"""The one signature-surface renderer (plan 76, task 2; brief decisions D12, D14, D17, D23).
 
 Gaia composes the visible text, the question and Details of every signature
-from the phrases a requester seals; hosts only show them. The D12 example,
-read with the full orthography D17 requires, is the golden test. Length limits are enforced when the request is made, so an
-over-long phrase never reaches a presentation.
+from the phrases a requester seals; hosts only ask them. The D12 example, read
+with the full orthography D17 requires and the exact commands D23 requires, is
+the golden test. Both hosts ask one string: the text, a blank line, the short
+question. Length limits are enforced when the request is made, so an over-long
+phrase never reaches a presentation.
 """
 
 from __future__ import annotations
@@ -81,13 +83,14 @@ def test_signature_surface_golden_d12_example():
         "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.",
         "",
         "Comandos (1)",
-        "  1  python3 .../0ac7481a.../bin/gaia dev \\",
+        f"  1  python3 {WORKTREE_GAIA} dev \\",
         "         --workspace /home/jorge/ws/me \\",
         "         --ref bbc2f09 \\",
         "         --host all",
     ])
+    assert "..." not in rendered.text
     assert rendered.question == {
-        "question": "¿Reinstalo Gaia?",
+        "question": rendered.text + "\n\n¿Reinstalo Gaia?",
         "header": "Aprobación",
         "options": [
             {"label": "Approve", "description": "Autoriza exactamente lo que se muestra arriba"},
@@ -106,17 +109,20 @@ def test_signature_surface_golden_d12_example():
     ])
 
 
-def test_signature_surface_opencode_string_is_text_blank_line_question():
-    """OpenCode asks one string: the visible text, a blank line, then the short question."""
+def test_signature_surface_single_string_is_text_blank_line_question_on_both_hosts():
+    """Both hosts ask one string: the visible text, a blank line, then the short question."""
     from gaia.approvals import surface
 
     rendered = surface.render(_d12_payload(), APPROVAL_ID)
 
-    assert rendered.opencode == rendered.text + "\n\n¿Reinstalo Gaia?"
-    assert rendered.opencode.startswith("Solicitud de aprobación · gaia-system\n")
+    assert rendered.asked == rendered.text + "\n\n¿Reinstalo Gaia?"
+    assert rendered.asked.startswith("Solicitud de aprobación · gaia-system\n")
+    assert rendered.question["question"] == rendered.asked
+    assert rendered.asked_details == rendered.details + "\n\n¿Reinstalo Gaia?"
+    assert rendered.details_question == {**rendered.question, "question": rendered.asked_details}
 
 
-def test_signature_surface_opencode_string_is_not_held_to_the_question_limit():
+def test_signature_surface_question_limit_applies_only_to_the_short_question():
     from gaia.approvals import surface
 
     payload = _seal(
@@ -126,8 +132,11 @@ def test_signature_surface_opencode_string_is_not_held_to_the_question_limit():
 
     rendered = surface.render(payload, APPROVAL_ID)
 
-    assert len(rendered.opencode) > 60
-    assert rendered.opencode.endswith("\n\n" + "x" * 60)
+    assert len(rendered.question["question"]) > surface.QUESTION_MAX
+    assert rendered.asked.endswith("\n\n" + "x" * 60)
+    surface.check_question(rendered.question)
+    with pytest.raises(surface.SurfaceLimitError, match="60"):
+        _seal([{"command": "git push origin main"}], question="x" * 61)
 
 
 def test_signature_surface_options_carry_no_approval_id():
@@ -194,7 +203,7 @@ def test_signature_surface_undeclared_phrases_are_stated_not_invented():
 
     rendered = surface.render(payload, APPROVAL_ID)
 
-    assert rendered.question["question"] == "¿Apruebo esta solicitud?"
+    assert rendered.asked.endswith("\n\n¿Apruebo esta solicitud?")
     assert "1  (sin descripción declarada)" in rendered.details
     assert "   Impacto: no declarado." in rendered.details
 
@@ -220,7 +229,7 @@ def test_signature_surface_batch_of_four_keeps_each_signature_apart():
 
     assert [item.approval_id for item in batch] == [approval_id for _, approval_id in entries]
     assert [item.question["question"] for item in batch] == [
-        f"¿Publico la rama {index}?" for index in range(1, 5)
+        f"{item.text}\n\n¿Publico la rama {index}?" for index, item in enumerate(batch, start=1)
     ]
 
 
@@ -333,7 +342,6 @@ def test_signature_surface_question_within_host_limits_passes():
     [
         ({"header": "x" * 13}, "header.*12"),
         ({"description": " ".join(["palabra"] * 9)}, "8 words"),
-        ({"question": "x" * 61}, "question.*60"),
     ],
 )
 def test_signature_surface_question_rejects_each_host_limit(override, match):
@@ -378,11 +386,11 @@ def test_signature_surface_request_set_rejects_before_persisting(db):
         con.close()
 
 
-def test_signature_surface_cli_presents_the_d12_surface(db):
+def test_signature_surface_cli_presents_the_d12_surface(db, tmp_path):
     from bin.cli.approvals import cmd_request_set, cmd_show_v2
     from gaia.approvals import surface
 
-    code, out = _run(cmd_request_set, _request_set_args())
+    code, out = _run(cmd_request_set, _request_set_args(cwd=[str(tmp_path)]))
     assert code == 0, out
     approval_id = json.loads(out)["approval_id"]
 
@@ -399,5 +407,6 @@ def test_signature_surface_cli_presents_the_d12_surface(db):
         "text": expected.text,
         "question": expected.question,
         "details": expected.details,
-        "opencode": expected.opencode,
+        "asked": expected.asked,
+        "asked_details": expected.asked_details,
     }

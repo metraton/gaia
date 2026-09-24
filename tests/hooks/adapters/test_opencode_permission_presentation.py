@@ -122,8 +122,8 @@ def _renderer_signature(approval_id):
 
     rendered = surface.render(_stored_payload(approval_id), approval_id)
     return {
-        "question": rendered.opencode,
-        "details": rendered.opencode_details,
+        "question": rendered.asked,
+        "details": rendered.asked_details,
         "header": rendered.question["header"],
         "options": rendered.question["options"],
     }

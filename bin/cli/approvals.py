@@ -647,10 +647,11 @@ def _record_grant_revoked(args, approval_id: str, verb: str) -> None:
     if store.get_by_id(approval_id) is None:
         return
     session_id, agent_id = _withdrawer(args)
+    reason = getattr(args, "reason", None) or "grant revoked"
     store.record_event(
         approval_id, "REVOKED", agent_id=agent_id, session_id=session_id,
         metadata_json=json.dumps(
-            {"reason": "grant revoked", "source": f"gaia approvals {verb}"}, sort_keys=True,
+            {"reason": reason, "source": f"gaia approvals {verb}"}, sort_keys=True,
         ),
     )
 
@@ -1341,7 +1342,7 @@ def cmd_show_v2(args) -> int:
 
 
 def _signature_surface(payload: dict, approval_id: str) -> dict:
-    """Return the signature a host shows: text, question, Details and OpenCode's single string."""
+    """Return the signature both hosts ask: text, question object, Details and the single asked strings."""
     from gaia.approvals import surface
 
     rendered = surface.render(payload, approval_id)
@@ -1350,15 +1351,17 @@ def _signature_surface(payload: dict, approval_id: str) -> dict:
         "text": rendered.text,
         "question": rendered.question,
         "details": rendered.details,
-        "opencode": rendered.opencode,
+        "asked": rendered.asked,
+        "asked_details": rendered.asked_details,
     }
 
 
 def cmd_question(args) -> int:
     """Print the AskUserQuestion input that asks 1 to 4 pending signatures, and nothing else.
 
-    The orchestrator passes it unchanged; the PreToolUse hook recognises it and
-    shows each signature's text itself, so no model prints a signature.
+    Each question text is the renderer's single string, so no model prints a
+    signature; with ``--details`` it carries the Details instead of the text.
+    The orchestrator passes it unchanged and the PreToolUse hook recognises it.
     """
     from gaia.approvals import core
 
@@ -1373,7 +1376,9 @@ def cmd_question(args) -> int:
     except core.SealError as exc:
         _print_error(str(exc), args)
         return 1
-    print(json.dumps({"questions": [s.question for s in surfaces]}, ensure_ascii=False))
+    details = getattr(args, "details", False)
+    questions = [s.details_question if details else s.question for s in surfaces]
+    print(json.dumps({"questions": questions}, ensure_ascii=False))
     return 0
 
 
@@ -1498,7 +1503,7 @@ def cmd_revoke(args) -> int:
             return 0
 
     try:
-        _withdraw(args, raw_id, "revoke", verb="revoke")
+        _withdraw(args, raw_id, "revoke", verb="revoke", reason=getattr(args, "reason", None))
     except ValueError as exc:
         _print_error(str(exc), args)
         return 1
@@ -1626,16 +1631,20 @@ def _per_command(args, flag: str, commands: list) -> list:
 def _request_set_items(args) -> list[dict]:
     """Pair each --command with its --cwd, --expect-exit, --does and --impact declarations.
 
-    One --cwd applies to every command; N --cwd flags align with N commands.
+    One --cwd applies to every command; N --cwd flags align with N commands,
+    and each must be an existing directory, or no call could ever run there.
     --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions.
     --does and --impact, when given, come once per command.
     """
     commands = list(args.command)
-    cwds = list(getattr(args, "cwd", None) or [os.getcwd()])
+    cwds = [os.path.abspath(cwd) for cwd in getattr(args, "cwd", None) or [os.getcwd()]]
     if len(cwds) == 1:
         cwds = cwds * len(commands)
     if len(cwds) != len(commands):
         raise ValueError("pass one --cwd for all commands or one per --command")
+    missing = [cwd for cwd in cwds if not os.path.isdir(cwd)]
+    if missing:
+        raise ValueError(f"--cwd {missing[0]} is not an existing directory")
     does = _per_command(args, "does", commands)
     impacts = _per_command(args, "impact", commands)
     expected: dict[int, list[int]] = {}
@@ -1646,7 +1655,7 @@ def _request_set_items(args) -> list[dict]:
         expected[int(position) - 1] = [int(code) for code in codes.split(",")]
     return [
         {
-            "command": command, "cwd": os.path.abspath(cwd),
+            "command": command, "cwd": cwd,
             "expect_exit": expected.get(index, []),
             "does": does[index], "impact": impacts[index],
         }
@@ -1833,8 +1842,8 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
         rendered = surface.render(sealed_payload, approval_id)
         return {
             "signature": {
-                "question": rendered.opencode,
-                "details": rendered.opencode_details,
+                "question": rendered.asked,
+                "details": rendered.asked_details,
                 "header": rendered.question["header"],
                 "options": rendered.question["options"],
             },
@@ -2335,8 +2344,8 @@ def register(subparsers) -> None:
         "--consent-surface",
         action="store_true",
         help=(
-            "JSON signature surface: the text to print, the question to ask "
-            "(Approve / Reject / Details), its Details and OpenCode's single string"
+            "JSON signature surface: the text, the question object to ask "
+            "(Approve / Reject / Details), its Details and the single strings both hosts ask"
         ),
     )
     p_show.set_defaults(func=cmd_show_v2)
@@ -2346,13 +2355,18 @@ def register(subparsers) -> None:
         help="Print the AskUserQuestion input that asks 1 to 4 pending signatures",
         description=(
             "Print, as JSON, the exact AskUserQuestion input for the given pending\n"
-            "approvals, one question per signature in the order given. Pass it\n"
-            "unchanged: the hook shows each signature's text and binds each answer."
+            "approvals, one question per signature in the order given. Each\n"
+            "question text carries its signature. Pass it unchanged: the hook\n"
+            "checks it and binds each answer."
         ),
     )
     p_question.add_argument(
         "approval_ids", nargs="+", metavar="APPROVAL_ID",
         help="Full canonical approval_id P-<32 lowercase hex>, 1 to 4",
+    )
+    p_question.add_argument(
+        "--details", action="store_true",
+        help="Ask again with each signature's Details in its question text",
     )
     p_question.set_defaults(func=cmd_question, json=True)
 
@@ -2692,6 +2706,7 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_revoke = subparsers.add_parser("revoke", help="Revoke a pending approval")
     p_revoke.add_argument("approval_id", metavar="APPROVAL_ID")
     p_revoke.add_argument("--yes", action="store_true")
+    p_revoke.add_argument("--reason", default=None, help="Why it is revoked; recorded on the REVOKED event")
     p_revoke.set_defaults(func=cmd_revoke)
 
     p_history = subparsers.add_parser("history", help="Show approval history")

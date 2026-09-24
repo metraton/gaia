@@ -685,7 +685,7 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
 # Flags each admitted withdrawal verb accepts besides its one APPROVAL_ID.
 _WITHDRAW_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("approvals", "reject"): frozenset({"--reason", "--json"}),
-    ("approvals", "revoke"): frozenset({"--yes"}),
+    ("approvals", "revoke"): frozenset({"--reason", "--yes"}),
 }
 
 

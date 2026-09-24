@@ -43,35 +43,28 @@ _NO_DOES = "(sin descripción declarada)"
 _NO_IMPACT = "no declarado."
 _NO_ROLLBACK = "no declarado; no supongas que se puede deshacer."
 
-#: A path token longer than this is shown as its last components behind "...";
-#: a kept component longer than the second bound keeps its first characters.
-#: Only the visible text abbreviates: Details carries every exact command.
-_PATH_MAX = 40
-_PATH_TAIL = 3
-_COMPONENT_MAX = 24
-_COMPONENT_KEEP = 8
-
-
 class SurfaceLimitError(SealError):
     """Raised when a phrase or a question does not fit the signature surface."""
 
 
 @dataclass(frozen=True)
 class Surface:
-    """One signature as a host shows it.
+    """One signature as both hosts ask it (D23).
 
-    Claude Code shows ``text`` and then asks ``question``; OpenCode asks the
-    single string ``opencode`` (the text, a blank line, the short question).
-    ``details`` answers the Details option on either host; OpenCode re-asks the
-    signature with ``opencode_details`` (Details, a blank line, the question).
+    ``asked`` is the single string a host asks: the visible ``text``, a blank
+    line, the short question. Details re-asks the signature with
+    ``asked_details`` (``details``, a blank line, the short question).
+    ``question`` and ``details_question`` are the AskUserQuestion objects that
+    carry those two strings.
     """
 
     approval_id: str
     text: str
-    question: dict
     details: str
-    opencode: str
-    opencode_details: str
+    asked: str
+    asked_details: str
+    question: dict
+    details_question: dict
 
 
 # --------------------------------------------------------------------------- #
@@ -101,8 +94,11 @@ def check_phrases(
 
 
 def check_question(question: Mapping[str, Any]) -> None:
-    """Reject a question object that exceeds the question, header or option limits."""
-    _check_line("question", question.get("question"), QUESTION_MAX)
+    """Reject a question object whose header or options exceed the host limits.
+
+    Its question text is the whole signature: only the short question inside
+    it is held to ``QUESTION_MAX``.
+    """
     _check_line("header", question.get("header"), HEADER_MAX)
     for option in question.get("options") or ():
         words = len(str(option.get("description") or "").split())
@@ -117,27 +113,6 @@ def check_question(question: Mapping[str, Any]) -> None:
 # Render
 # --------------------------------------------------------------------------- #
 
-def _abbreviate_path(path: str) -> str:
-    if len(path) <= _PATH_MAX:
-        return path
-    parts = path.strip("/").split("/")
-    kept = [
-        part[:_COMPONENT_KEEP] + "..." if len(part) > _COMPONENT_MAX else part
-        for part in parts[-_PATH_TAIL:]
-    ]
-    prefix = ".../" if len(parts) > _PATH_TAIL else "/"
-    return prefix + "/".join(kept)
-
-
-def _abbreviate_token(token: str) -> str:
-    if token.startswith("/"):
-        return _abbreviate_path(token)
-    flag, equals, value = token.partition("=")
-    if equals and flag.startswith("-") and value.startswith("/"):
-        return f"{flag}={_abbreviate_path(value)}"
-    return token
-
-
 def _tokens(command: str) -> Optional[list[str]]:
     """Split on whitespace keeping each token's quoting; ``None`` when unbalanced."""
     lexer = shlex.shlex(command, posix=False)
@@ -150,7 +125,7 @@ def _tokens(command: str) -> Optional[list[str]]:
 
 
 def _command_lines(command: str) -> list[str]:
-    """Lay one command out as D12 shows it: each flag, with its values, on its own line."""
+    """Lay one command out as D12 shows it, every token exact (D23): each flag, with its values, on its own line."""
     tokens = None if "\n" in command else _tokens(command)
     if not tokens:
         return command.split("\n")
@@ -158,7 +133,7 @@ def _command_lines(command: str) -> list[str]:
     for token in tokens:
         if token.startswith("-") and token != "-" and groups[-1]:
             groups.append([])
-        groups[-1].append(_abbreviate_token(token))
+        groups[-1].append(token)
     lines = [" ".join(group) for group in groups]
     return [line + " \\" for line in lines[:-1]] + lines[-1:]
 
@@ -228,9 +203,15 @@ def _details(
     return "\n".join(lines)
 
 
-def _question(payload: Mapping[str, Any], header: str) -> dict:
+def _short_question(payload: Mapping[str, Any]) -> str:
+    short = payload.get("question") or DEFAULT_QUESTION
+    _check_line("question", short, QUESTION_MAX)
+    return short
+
+
+def _question(asked: str, header: str) -> dict:
     question = {
-        "question": payload.get("question") or DEFAULT_QUESTION,
+        "question": asked,
         "header": header,
         "options": [{"label": label, "description": text} for label, text in OPTIONS],
         "multiSelect": False,
@@ -244,15 +225,18 @@ def _render(payload: Mapping[str, Any], approval_id: str, header: str) -> Surfac
     if not items:
         raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
     text = _text(payload, items)
-    question = _question(payload, header)
     details = _details(payload, items, approval_id)
+    short = _short_question(payload)
+    asked = f"{text}\n\n{short}"
+    asked_details = f"{details}\n\n{short}"
     return Surface(
         approval_id=approval_id,
         text=text,
-        question=question,
         details=details,
-        opencode=f"{text}\n\n{question['question']}",
-        opencode_details=f"{details}\n\n{question['question']}",
+        asked=asked,
+        asked_details=asked_details,
+        question=_question(asked, header),
+        details_question=_question(asked_details, header),
     )
 
 
@@ -266,9 +250,12 @@ def batch_header(position: int, total: int) -> str:
     return HEADER if total == 1 else f"Aprob. {position}/{total}"
 
 
-def batch_question(payload: Mapping[str, Any], position: int, total: int) -> dict:
-    """The question object a request shows at ``position`` of a ``total``-signature call."""
-    return _question(payload, batch_header(position, total))
+def batch_questions(
+    payload: Mapping[str, Any], approval_id: str, position: int, total: int,
+) -> tuple[dict, dict]:
+    """The signature and Details question objects a request shows at ``position`` of a ``total``-signature call."""
+    rendered = _render(payload, approval_id, batch_header(position, total))
+    return rendered.question, rendered.details_question
 
 
 def is_signature_question(question: Mapping[str, Any]) -> bool:
@@ -291,9 +278,10 @@ def render_batch(
     """Render 1 to 4 requests asked in one question call, one question per signature.
 
     A lone signature keeps the header ``Aprobación``; in a batch each header
-    names its position, ``Aprob. N/M``. Question texts must differ: the host
-    indexes each answer by its question text, so a repeated text could not be
-    tied back to its own signature.
+    names its position, ``Aprob. N/M``. Short questions must differ: the host
+    indexes each answer by its question text, and the same short question
+    would leave a signature and its Details re-ask indistinguishable from
+    another's.
     """
     total = len(requests)
     if not 1 <= total <= BATCH_MAX:
@@ -304,7 +292,7 @@ def render_batch(
         _render(payload, approval_id, batch_header(position, total))
         for position, (payload, approval_id) in enumerate(requests, start=1)
     ]
-    texts = [surface.question["question"] for surface in surfaces]
+    texts = [_short_question(payload) for payload, _ in requests]
     if len(set(texts)) != len(texts):
         raise SurfaceLimitError(
             "the signatures of one question call need distinct question texts"

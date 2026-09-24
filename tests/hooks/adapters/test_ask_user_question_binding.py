@@ -1,15 +1,16 @@
 """Claude Code signs on the question Gaia builds, each answer bound to its own signature (plan 76, task 4).
 
-PD4 and PD9: the orchestrator asks AskUserQuestion with the exact object
-``gaia approvals question`` prints for 1 to 4 pending signatures. PreToolUse
-compares that object with the batch Gaia renders, records SHOWN per signature
-under the call's tool_use_id and position, and answers with the renderer's text
-as ``systemMessage`` (documented as a message shown to the user); a question
-that differs, or a signature without its requester's phrases, is denied with a
-reason. PostToolUse maps each chosen label of the SAME tool_use_id to its own
-signature: Approve activates with no ID in the label, Reject rejects, Details
-shows the renderer's Details and asks for that signature again, and free text,
-a dismissal or no selection decide nothing.
+PD4, PD9 and D23: the orchestrator asks AskUserQuestion with the exact object
+``gaia approvals question`` prints for 1 to 4 pending signatures, each question
+text being the renderer's single string (text, a blank line, the short
+question). PreToolUse compares that object with the batch Gaia renders byte for
+byte and records SHOWN per signature under the call's tool_use_id and position;
+no hook answers through ``systemMessage``, which the desktop app does not show.
+A question that differs, or a signature without its requester's phrases, is
+denied with a reason. PostToolUse maps each chosen label of the SAME
+tool_use_id to its own signature: Approve activates with no ID in the label,
+Reject rejects, Details asks for that signature again with the Details inside
+the question, and free text, a dismissal or no selection decide nothing.
 
 The PostToolUse shape comes from host-produced results in
 ``fixtures/ask_user_question_post_real.json``.
@@ -164,27 +165,39 @@ def test_question_verb_prints_only_the_ask_user_question_input(db):
     assert out == {"questions": [_surfaces(first)[0].question]}
 
 
-def test_pre_one_signature_shows_the_renderer_text_and_records_shown(db):
+def test_pre_one_signature_asks_the_renderer_single_string_and_records_shown(db):
     first = _request(1)
     _, asked = _question_cli(first)
+    rendered = _surfaces(first)[0]
+    assert asked["questions"][0]["question"] == rendered.text + "\n\n¿Publico la rama 1?"
 
     output = _pre(asked["questions"], "toolu_one")
 
-    assert output == {"systemMessage": _surfaces(first)[0].text}
+    assert output == {}
     assert _shown(db, first) == [{"native_ref": "toolu_one", "position": 0}]
     ordinary = REAL[0]["tool_response"]["questions"]
     assert _pre(ordinary, REAL[0]["tool_use_id"]) == {}
 
 
-def test_pre_four_signatures_show_each_text_in_order(db):
+def test_pre_accepts_only_the_single_string_byte_for_byte(db):
+    first = _request(1)
+    _, asked = _question_cli(first)
+    exact = asked["questions"][0]
+
+    for text in ("¿Publico la rama 1?", exact["question"] + " ", exact["question"].replace("\n\n", "\n")):
+        reason = _deny_reason(_pre([{**exact, "question": text}], "toolu_off_by_bytes"))
+        assert "question 1" in reason
+    assert _shown(db, first) == []
+
+
+def test_pre_four_signatures_are_recorded_in_order_without_system_message(db):
     ids = [_request(n) for n in range(1, 5)]
     _, asked = _question_cli(*ids)
 
     output = _pre(asked["questions"], "toolu_four")
 
-    texts = [surface.text for surface in _surfaces(*ids)]
-    assert output["systemMessage"] == "\n\n".join(texts)
-    assert "hookSpecificOutput" not in output
+    assert [q["question"] for q in asked["questions"]] == [s.asked for s in _surfaces(*ids)]
+    assert output == {}
     for position, approval_id in enumerate(ids):
         assert _shown(db, approval_id) == [{"native_ref": "toolu_four", "position": position}]
 
@@ -245,6 +258,7 @@ def test_post_approve_label_carries_no_id_and_activates_a_bound_grant(db):
     _post(questions, {questions[0]["question"]: "Approve"}, "toolu_approve")
 
     assert _status(first) == "approved"
+    assert _shown(db, first) == [{"native_ref": "toolu_approve", "position": 0}]
     grant = _rows(db, "SELECT * FROM approval_grants WHERE approval_id = ?", first)
     assert len(grant) == 1
     assert (grant[0]["session_id"], grant[0]["agent_id"]) == (REQUESTER_SESSION, REQUESTER)
@@ -272,7 +286,9 @@ def test_post_label_with_an_approval_id_never_activates(db):
     assert _status(first) == "pending"
 
 
-def test_post_details_shows_the_renderer_details_and_asks_that_signature_again(db):
+def test_post_details_asks_that_signature_again_with_the_details_inside_the_question(db):
+    from bin.cli.approvals import cmd_question
+
     first, second = _request(1), _request(2)
     _, asked = _question_cli(first, second)
     questions = asked["questions"]
@@ -280,10 +296,17 @@ def test_post_details_shows_the_renderer_details_and_asks_that_signature_again(d
 
     output = _post(questions, {questions[1]["question"]: "Details"}, "toolu_details")
 
-    assert output["systemMessage"] == _surfaces(first, second)[1].details
+    assert "systemMessage" not in output
     context = output["hookSpecificOutput"]["additionalContext"]
-    assert f"gaia approvals question {second}" in context and first not in context
+    assert f"gaia approvals question --details {second}" in context and first not in context
     assert [_status(first), _status(second)] == ["pending", "pending"]
+    out = io.StringIO()
+    with redirect_stdout(out):
+        assert cmd_question(argparse.Namespace(approval_ids=[second], details=True, json=True)) == 0
+    [again] = json.loads(out.getvalue())["questions"]
+    assert again["question"] == _surfaces(second)[0].details + "\n\n¿Publico la rama 2?"
+    assert _pre([again], "toolu_details_again") == {}
+    assert _shown(db, second)[-1] == {"native_ref": "toolu_details_again", "position": 0}
 
 
 @pytest.mark.parametrize(

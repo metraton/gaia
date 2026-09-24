@@ -1084,12 +1084,24 @@ class BashValidator:
         # case is unaffected.
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
+        tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
+        from gaia.approvals.core import sealed_elsewhere
+        sealed = (
+            sealed_elsewhere(command, session_id=session_id, agent_id=agent_type)
+            if has_operators else None
+        )
         if not has_operators:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type,
-                tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
-                cwd=payload_cwd,
+                agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
+            )
+        elif sealed is not None:
+            # The one compound accepted (D24): its command runs in its sealed
+            # directory, reserved or refused exactly as that command alone.
+            sealed_cwd, sealed_command = sealed
+            result = self._validate_single_command(
+                sealed_command, is_subagent=is_subagent, session_id=session_id,
+                agent_type=agent_type, tool_use_id=tool_use_id, cwd=sealed_cwd,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(

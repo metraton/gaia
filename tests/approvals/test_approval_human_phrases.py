@@ -18,13 +18,15 @@ import re
 import shlex
 import sqlite3
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import pytest
 
 from gaia.store import writer
 
 COMMAND = "git push origin feat/phrases"
-REPO = "/tmp/approval-phrases-repo"
+#: An existing directory: request-set refuses a --cwd that does not exist (D24).
+REPO = str(Path(__file__).resolve().parent)
 SESSION = "ses-phrases"
 AGENT = "gaia-system"
 
