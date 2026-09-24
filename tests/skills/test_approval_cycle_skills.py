@@ -155,8 +155,60 @@ def test_approval_cycle_skills_producer_carries_the_d12_example_with_exact_comma
         "question": "¿Reinstalo Gaia?",
         "requested_by": {"agent_id": "gaia-system"},
         "items": [{"command": command}],
-    }, "P-" + "0" * 32).asked
+    }, "P-" + "0" * 32).block
     assert shown in producer, shown
+
+
+def test_approval_cycle_skills_producer_carries_the_d27_example_with_its_folder():
+    producer = PRODUCER.read_text(encoding="utf-8")
+    shown = surface.render({
+        "what": "Publicar la rama de prueba y abrir su pull request.",
+        "question": "¿Publico la rama y abro el PR?",
+        "requested_by": {"agent_id": "developer"},
+        "requested_from": "/home/jorge/ws/me",
+        "items": [
+            {"command": "git push origin feature/demo-login", "cwd": "/home/jorge/ws/me/demo-repo"},
+            {
+                "command": (
+                    "gh pr create --repo metraton/demo --base main --head feature/demo-login"
+                    ' --title "Login de prueba" --body-file /home/jorge/.gaia/scratch/demo-1234/pr.md'
+                ),
+                "cwd": "/home/jorge/ws/me",
+            },
+        ],
+    }, "P-" + "0" * 32).block
+    assert shown in producer, shown
+
+
+# D29: the block is Gaia's and shown outside the question, so no skill may
+# teach that the signature travels inside the question text.
+SIGNATURE_INSIDE_THE_QUESTION = re.compile(
+    r"(?i)question text[^.|]*(carries|holds|contains)|carries its (signature|details)"
+    r"|(signature|block)[^.|]*inside the question"
+)
+
+
+def test_approval_cycle_skills_no_skill_puts_the_signature_inside_the_question():
+    offenders = [
+        f"{doc.relative_to(ROOT)}: {match.group(0)!r}"
+        for doc in [*_skill_docs(), *sorted(AGENTS.glob("*.md"))]
+        for match in [SIGNATURE_INSIDE_THE_QUESTION.search(doc.read_text(encoding="utf-8"))]
+        if match
+    ]
+    assert not offenders, "\n".join(offenders)
+
+
+def test_approval_cycle_skills_presenter_teaches_the_d29_surface():
+    """The orchestrator only runs the question verb; Gaia shows the block on each host."""
+    presenter = PRESENTER.read_text(encoding="utf-8")
+    for teaching in (
+        "hook shows each\n   signature's block",
+        "plugin posts the signature's block",
+        "`gaia approvals question --details <approval_id> ...`",
+        "never print, copy, summarise",
+        "run it again at any time",
+    ):
+        assert teaching in presenter, teaching
 
 
 def test_approval_cycle_skills_producer_and_execution_teach_the_sealed_directory_form():

@@ -34,7 +34,7 @@ TEACHING_MAP = (
         "bin/cli/approvals.py", "def cmd_question",
     ),
     (
-        "orchestrator-present-approval/SKILL.md", "the hook refuses any other text",
+        "orchestrator-present-approval/SKILL.md", "the hook shows the Details block",
         "hooks/adapters/claude_code.py", "def _adapt_ask_user_question",
     ),
     (

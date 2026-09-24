@@ -6,9 +6,10 @@ description: Use when a T3 command was blocked or a predictable ordered T3 set m
 # Request Approval — Producer Branch
 
 You ask for a signature by writing a few short phrases. Gaia builds everything
-else the user sees -- the header, the numbered commands, the question with
-Approve / Reject / Details, the Details page, the 30-minute validity, the ID
-and the fingerprints -- and shows the same thing on every host.
+else the user sees -- the block with the header and the exact numbered
+commands, the short question with Approve / Reject / Details, the Details
+block with the 30-minute validity, the ID and the fingerprints -- and shows the
+same thing on every host. No model writes or copies any of it.
 
 ## What you write
 
@@ -48,27 +49,20 @@ gaia approvals request-set \
   --rollback 'volver al código anterior con --ref c1d8b89; la base queda actualizada.'
 ```
 
--- and the question the user then answers, built by Gaia, with every command
-exact:
+-- and what the user then sees, built and shown by Gaia: the block, with every
+command exact on one line,
 
 ```
 Solicitud de aprobación · gaia-system
 Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
 
-Comandos (1)
-  1  python3 \
-         /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia \
-         dev \
-         --workspace /home/jorge/ws/me \
-         --ref bbc2f09 \
-         --host all
-
-¿Reinstalo Gaia?
+1  python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all
 ```
 
-with Approve / Reject / Details. Details asks again with each command's
-`--does` and `--impact`, the rollback, the 30-minute validity, the exact
-command, the ID and the fingerprint in place of the text.
+and below it the short question `¿Reinstalo Gaia?` with Approve / Reject /
+Details. Details shows a block of the same kind with each command's `--does`
+and `--impact`, the rollback, the 30-minute validity, the ID and the
+fingerprint, and asks again.
 
 A protected-path write is requested the same way with
 `gaia approvals request-file-write --path <absolute path>` and one `--does` and
@@ -118,7 +112,35 @@ gaia approvals request-set \
 
 Open a pull request, then merge it: the merge needs the PR number, which only
 exists after the first step. Request the push and the PR creation now; after
-they run and you read the number, request the merge in a new request.
+they run and you read the number, request the merge in a new request. The
+first request, run from `/home/jorge/ws/me` with the push sealed in the
+repository:
+
+```
+gaia approvals request-set \
+  --command 'git push origin feature/demo-login' \
+  --cwd /home/jorge/ws/me/demo-repo \
+  --command 'gh pr create --repo metraton/demo --base main --head feature/demo-login --title "Login de prueba" --body-file /home/jorge/.gaia/scratch/demo-1234/pr.md' \
+  --cwd /home/jorge/ws/me \
+  --what 'Publicar la rama de prueba y abrir su pull request.' \
+  --question '¿Publico la rama y abro el PR?' \
+  --does 'Sube la rama feature/demo-login al repositorio remoto.' \
+  --impact 'Otros ven la rama; se puede borrar del remoto.' \
+  --does 'Abre el pull request de la rama hacia main.' \
+  --impact 'Queda visible en GitHub; se puede cerrar sin fusionar.'
+```
+
+The block names the folder only for the command that runs elsewhere:
+
+```
+Solicitud de aprobación · developer
+Publicar la rama de prueba y abrir su pull request.
+
+1  en /home/jorge/ws/me/demo-repo
+   git push origin feature/demo-login
+
+2  gh pr create --repo metraton/demo --base main --head feature/demo-login --title "Login de prueba" --body-file /home/jorge/.gaia/scratch/demo-1234/pr.md
+```
 
 ## After requesting
 
