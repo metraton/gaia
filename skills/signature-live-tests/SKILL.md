@@ -91,8 +91,7 @@ Outcome `executed`; only `otra/nota-5-ok.txt` exists.
 
 **Test 6 -- Several signatures in one question.** Two specialists, files
 `nota-6a.txt` and `nota-6b.txt`, each asks to rename its file to `-ok`. Ask
-both: in Claude Code one `gaia approvals question <id-6a> <id-6b>`; in
-OpenCode, which asks one signature per call, two questions one after another.
+both in one `gaia approvals question <id-6a> <id-6b>`, in either host.
 User: Approve 6a, Reject 6b. Expected: each answer decides only its own
 signature -- 6a State `approved`, Outcome `executed`, renamed; 6b State
 `rejected`, no Outcome line, unchanged.

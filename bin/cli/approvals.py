@@ -1398,10 +1398,10 @@ def _signature_surface(payload: dict, approval_id: str) -> dict:
 
 
 def _opencode_question(approval_id: str, details: bool) -> dict:
-    """The question-tool input the OpenCode plugin replaces with Gaia's signature.
+    """The question-tool input the OpenCode plugin replaces with one signature's questions.
 
     It carries only the approval id, plus `` details`` for the Details re-ask:
-    the form ``orchestratorAsk`` in ``opencode/plugin.ts`` recognises. Header
+    the form ``orchestratorAsks`` in ``opencode/plugin.ts`` recognises. Header
     and option only satisfy the host's question schema; the plugin discards them.
     """
     return {
@@ -1418,9 +1418,10 @@ def cmd_question(args) -> int:
     at most 4 in all (D33), or with ``--details`` each command's Details
     question, and records which signature it handed out at which slot, so the
     PreToolUse hook tells apart two pending signatures that render alike (D31).
-    In an OpenCode shell, marked by ``GAIA_HOST_SESSION_ID``, it asks one
-    signature and carries only its id, because there the plugin writes the
-    signature's questions into the call itself.
+    In an OpenCode shell, marked by ``GAIA_HOST_SESSION_ID``, the same batch
+    is checked but each signature is carried only by its id, one placeholder
+    per signature, because there the plugin writes every signature's
+    questions into the call itself (D39).
     """
     from gaia.approvals import core
 
@@ -1431,13 +1432,6 @@ def cmd_question(args) -> int:
         if approval_id is None:
             return 1
         approval_ids.append(approval_id)
-    if opencode and len(approval_ids) != 1:
-        _print_error(
-            "In OpenCode the question tool asks one signature per call: run "
-            "gaia approvals question once per approval, one after another.",
-            args,
-        )
-        return 1
     try:
         if opencode:
             surfaces = core.question_batch(approval_ids)
@@ -1448,7 +1442,7 @@ def cmd_question(args) -> int:
         return 1
     details = getattr(args, "details", False)
     if opencode:
-        questions = [_opencode_question(approval_ids[0], details)]
+        questions = [_opencode_question(approval_id, details) for approval_id in approval_ids]
     else:
         questions = [
             question
@@ -1911,12 +1905,16 @@ def _opencode_binding(
     return None, "No matching OpenCode permission presentation exists"
 
 
-def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dict:
+def _opencode_presentation(
+    approval: dict, session_id: str, call_id: str, *, signature: str | None = None,
+) -> dict:
     """Build what OpenCode asks for one pending approval, composed by Gaia alone.
 
     ``signature`` is the renderer's surface as OpenCode shows it (D33): one
     one-line question per command, and its Details re-ask, each with its
-    header and options; nothing is posted outside the question.
+    header and options; nothing is posted outside the question. The
+    ``signature`` letter names this approval inside a call that mixes several
+    (D38), exactly as ``surface.render_batch`` heads them.
     ``metadata`` binds the retry to the sealed commands. A payload that cannot
     be rendered returns ``presentation_error`` instead, and the plugin opens no
     question it cannot fill in full.
@@ -1940,7 +1938,10 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
             approval_id=approval_id,
             binding=binding,
         )
-        rendered = surface.render(sealed_payload, approval_id)
+        rendered = surface.render_at(
+            sealed_payload, approval_id, 1, surface.question_count(sealed_payload),
+            signature=signature,
+        )
         strip = ("question", "header", "options")
         return {
             "signature": {
@@ -2075,7 +2076,9 @@ def cmd_opencode_present(args) -> int:
         print(json.dumps({
             "status": "presented",
             "approval_id": approval_id,
-            **_opencode_presentation(approval, session_id, call_id),
+            **_opencode_presentation(
+                approval, session_id, call_id, signature=getattr(args, "signature", None),
+            ),
         }))
     return 0
 
@@ -2630,6 +2633,10 @@ def register(subparsers) -> None:
             p_opencode.add_argument(
                 "--presenter-session-id",
                 help="The orchestrator session whose question shows it; recorded on SHOWN only",
+            )
+            p_opencode.add_argument(
+                "--signature", metavar="LETTER",
+                help="This approval's letter in a call asking several (D38 headers)",
             )
             p_opencode.add_argument(
                 "--preview", action="store_true",

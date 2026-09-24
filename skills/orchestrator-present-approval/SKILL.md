@@ -19,36 +19,28 @@ A signature is approved only when every one of its questions gets Approve; a
 Reject on any of them rejects the whole signature. One call asks at most 4
 questions, so a signature carries at most 4 commands.
 
-## Claude Code
+## Presenting
+
+The flow is the same in Claude Code and OpenCode. Only you open the question:
+a specialist that asks for a signature, or is blocked on a command, asks the
+user nothing. It ends its turn and returns `APPROVAL_REQUEST` with the
+approval id in its contract. You decide when to ask.
 
 1. Run `gaia approvals question <approval_id> [<approval_id> ...]` with the
    pending ids -- up to 4 questions in all, one per command.
-2. Call AskUserQuestion with that output unchanged. Gaia's hook checks it is
-   exactly what Gaia wrote before the questions open. Print nothing about the
-   signature.
-3. Details: the hook names the command to run,
+2. Call your question tool (AskUserQuestion in Claude Code, question in
+   OpenCode) with that output unchanged, and print nothing about the
+   signature. Gaia checks the call before the questions open -- the hook in
+   Claude Code, the plugin in OpenCode, which fills the call with every
+   signature's questions -- and ties each answer to its own signature. Only
+   approvals your own specialists requested are accepted. In OpenCode, ask
+   two signatures of the same specialist in separate calls: that specialist
+   runs one approval at a time.
+3. Details: Gaia names the command to run -- the hook's message in Claude
+   Code, your call's result in OpenCode --
    `gaia approvals question --details <approval_id> ...`. Pass its output to
-   AskUserQuestion the same way. If the hook refuses a question, run
+   the question tool the same way. If Gaia refuses a question, run
    `gaia approvals question` again for the ids it names.
-
-## OpenCode
-
-Gaia also opens the question in the requesting specialist's session as soon as
-the request is made; the user may answer it there, and on approval
-Gaia posts a notice in your session naming the specialist session to resume
-(`task_id`) with `execution`. To present a pending signature yourself, without resuming
-anyone:
-
-1. Run `gaia approvals question <approval_id>`, one id per call.
-2. Call the question tool with that output unchanged, and print nothing about
-   the signature. Gaia's plugin fills your call with that signature's
-   questions, one per command, and binds the answers to that approval. Only
-   approvals your own specialists requested are accepted; ask several one
-   after another.
-3. Your call's result says what Gaia did with the answers. Details: run
-   `gaia approvals question --details <approval_id>` and ask again the same
-   way. Approved: resume the specialist session it names (`task_id`) with
-   `execution`.
 
 ## After the answer
 

@@ -164,7 +164,8 @@ The command prints the canonical `approval_id`. Set `agent_state` to
 id copied verbatim and the commands exactly as requested, set `pending_steps`
 to the execution after consent, finalize, and stop. The orchestrator presents
 it (`orchestrator-present-approval`); the approved work runs under `execution`.
-In OpenCode, Gaia itself asks the user in your session as soon as your turn
-ends, with no further step from you or the orchestrator.
+This is the same in Claude Code and OpenCode: nothing is asked in your
+session, neither when you request nor when your turn ends. The orchestrator
+reads the approval id from your contract and decides when to ask the user.
 A set that failed is not resumed: after fresh investigation, request what still
 has to run as a new request.
