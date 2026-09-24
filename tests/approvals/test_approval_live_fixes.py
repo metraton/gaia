@@ -74,6 +74,7 @@ def _request(cwd, *, command=COMMAND, question="¿Publico la rama?", what="Publi
         [{"command": command, "cwd": cwd, "does": "Sube la rama al remoto.",
           "impact": "La rama queda publicada."}],
         what=what, question=question, session_id=SESSION, agent_id=AGENT,
+        rollback="Borrar la rama remota.",
     )
 
 
@@ -429,6 +430,7 @@ def _request_set_cli(env, cwd, command):
         "--command", command, "--cwd", cwd,
         "--does", "Publica la rama.", "--impact", "Queda visible.",
         "--what", "Publicar la rama.", "--question", "¿Publico la rama?",
+        "--rollback", "Borrar la rama remota.",
         "--agent-id", e2e.AGENT_ID, "--session-id", e2e.SESSION_ID, "--json",
     ]
     return subprocess.run(
@@ -524,7 +526,7 @@ def test_approval_live_fixes_request_set_refuses_a_directory_that_does_not_exist
         command=[COMMAND], cwd=[str(Path(host["other"]) / "missing")], expect_exit=None,
         what="Publicar la rama.", question="¿Publico la rama?",
         does=["Sube la rama al remoto."], impact=["La rama queda publicada."],
-        rationale=None, verification=None, rollback=None,
+        rationale=None, verification=None, rollback="Borrar la rama remota.",
         agent_id=AGENT, session_id=SESSION, json=True,
     )
     out = io.StringIO()
@@ -532,6 +534,7 @@ def test_approval_live_fixes_request_set_refuses_a_directory_that_does_not_exist
         code = cmd_request_set(args)
 
     assert code == 1
+    assert "is not an existing directory" in out.getvalue(), out.getvalue()
     con = sqlite3.connect(host["db"])
     try:
         assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0

@@ -76,7 +76,7 @@ def _request_set(command=COMMAND, cwd=None):
         command=[command], cwd=[cwd] if cwd else None, expect_exit=None,
         what="Publicar la rama.", question=SHORT_QUESTION,
         does=["Sube la rama al remoto."], impact=["La rama queda publicada."],
-        rationale=None, verification=None, rollback=None,
+        rationale=None, verification=None, rollback="Borrar la rama remota.",
         agent_id=AGENT, session_id=SESSION, json=True,
     )
     out = io.StringIO()
@@ -132,6 +132,7 @@ def _request_line(kind, target):
     phrases = [
         "--what", "Publicar la rama.", "--question", SHORT_QUESTION,
         "--does", "Sube la rama al remoto.", "--impact", "La rama queda publicada.",
+        "--rollback", "Borrar la rama remota.",
     ]
     if kind == "request-set":
         return ["approvals", "request-set", "--command", target, *phrases]

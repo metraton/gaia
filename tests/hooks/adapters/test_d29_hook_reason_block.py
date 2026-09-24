@@ -1,14 +1,11 @@
-"""Claude Code shows each signature's block through the PreToolUse decision reason (plan 76, task 16, D29).
+"""Claude Code's PreToolUse records a Gaia question and adds nothing to it (plan 76, task 16; D37 replaces D29).
 
 The orchestrator asks AskUserQuestion with the object ``gaia approvals
-question`` prints, unchanged. PreToolUse recognises it as Gaia's, records
-SHOWN per signature, and answers ``allow`` whose ``permissionDecisionReason``
-is the block of every signature in the call (the Details block on a Details
-re-ask). The hooks reference documents that reason as shown to the user for
-``allow``, and that ``allow`` without ``updatedInput`` does not answer
-AskUserQuestion: no ``updatedInput`` is returned, so the question opens. A
-question Gaia did not print is denied without SHOWN. Nothing reads the
-transcript or compares printed text.
+question`` prints, unchanged. Since D37 each question carries its signature in
+its own text, so PreToolUse recognises it as Gaia's, records SHOWN per
+position, and returns no decision -- no reason block, no ``updatedInput`` --
+so the question opens as printed. A question Gaia did not print is denied
+without SHOWN. Nothing reads the transcript or compares printed text.
 """
 
 from __future__ import annotations
@@ -48,7 +45,7 @@ def _request(n: int) -> str:
         what=f"Publicar la rama {n} en el remoto.",
         question=f"¿Publico la rama {n}?",
         session_id="ses-d29-requester", agent_id="developer",
-        requested_from="/tmp/d29-repo",
+        requested_from="/tmp/d29-repo", rollback="Borrar la rama remota.",
     )
 
 
@@ -84,44 +81,37 @@ def _presented(tool_use_id):
 
 
 def test_d29_hook_reason_block_one_signature_allows_with_its_block(db):
-    from gaia.approvals import core
-
+    """The signature travels in the question itself (D37), so the hook records SHOWN and returns no decision."""
     approval_id = _request(1)
     questions = _question_cli(approval_id)
 
-    specific = _pre(questions, "toolu_d29_one")["hookSpecificOutput"]
+    output = _pre(questions, "toolu_d29_one")
 
-    assert questions[0]["question"] == "¿Publico la rama 1?"
-    assert specific["permissionDecision"] == "allow"
-    assert specific["permissionDecisionReason"] == core.question_batch([approval_id])[0].block
-    assert "updatedInput" not in specific
+    assert questions[0]["question"] == (
+        "[GAIA-SECURITY] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ git push origin feat/d29-1 ]"
+    )
+    assert output == {}
     assert _presented("toolu_d29_one") == [(0, approval_id)]
 
 
 def test_d29_hook_reason_block_four_signatures_each_bring_their_block(db):
-    from gaia.approvals import core
-
     ids = [_request(n) for n in range(1, 5)]
 
-    specific = _pre(_question_cli(*ids), "toolu_d29_four")["hookSpecificOutput"]
+    output = _pre(_question_cli(*ids), "toolu_d29_four")
 
-    blocks = [s.block for s in core.question_batch(ids)]
-    assert specific["permissionDecision"] == "allow"
-    assert specific["permissionDecisionReason"] == "\n\n".join(blocks)
-    assert "updatedInput" not in specific
+    assert output == {}
     assert _presented("toolu_d29_four") == list(enumerate(ids))
 
 
 def test_d29_hook_reason_block_details_re_ask_brings_the_details_block(db):
-    from gaia.approvals import core
-
     approval_id = _request(1)
+    questions = _question_cli(approval_id, details=True)
 
-    specific = _pre(_question_cli(approval_id, details=True), "toolu_d29_det")["hookSpecificOutput"]
+    output = _pre(questions, "toolu_d29_det")
 
-    rendered = core.question_batch([approval_id])[0]
-    assert specific["permissionDecisionReason"] == rendered.details_block
-    assert "git push origin feat/d29-1" not in specific["permissionDecisionReason"]
+    assert questions[0]["question"].startswith("[GAIA-SECURITY] [ DETAILS ] [ developer ]")
+    assert output == {}
+    assert _presented("toolu_d29_det") == [(0, approval_id)]
 
 
 def test_d29_hook_reason_block_a_question_gaia_did_not_print_is_denied_without_shown(db):
@@ -141,5 +131,6 @@ def test_d29_hook_reason_block_never_reads_the_transcript(db, tmp_path):
 
     with_path = _pre(questions, "toolu_d29_tx", transcript_path=str(missing))
 
-    assert with_path["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert with_path == {}
+    assert _presented("toolu_d29_tx") == [(0, approval_id)]
     assert not missing.exists()

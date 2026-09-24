@@ -69,7 +69,7 @@ def _request(n: int) -> str:
           "impact": "La rama queda visible para todo el equipo."}],
         what=f"Publicar la rama {n} en el remoto.",
         question=f"¿Publico la rama {n}?",
-        session_id=REQUESTER_SESSION, agent_id=REQUESTER,
+        session_id=REQUESTER_SESSION, agent_id=REQUESTER, rollback="Borrar la rama remota.",
     )
 
 
@@ -80,7 +80,7 @@ def _phraseless() -> str:
     payload = core.seal_request(
         "command_set", [{"command": "git push origin feat/sin-frases", "cwd": REPO}],
         what="Publicar la rama sin frases.",
-        session_id=REQUESTER_SESSION, agent_id=REQUESTER,
+        session_id=REQUESTER_SESSION, agent_id=REQUESTER, rollback="Borrar la rama remota.",
     )
     return store.insert_requested(payload, agent_id=REQUESTER, session_id=REQUESTER_SESSION)
 
@@ -162,26 +162,24 @@ def test_question_verb_prints_only_the_ask_user_question_input(db):
     code, out = _question_cli(first)
 
     assert code == 0
-    assert out == {"questions": [_surfaces(first)[0].question]}
+    assert out == {"questions": list(_surfaces(first)[0].questions)}
 
 
-def _allowed_with(output, *blocks):
-    """PreToolUse let the question open (``allow``, no ``updatedInput``) showing ``blocks``."""
-    return output == {"hookSpecificOutput": {
-        "hookEventName": "PreToolUse", "permissionDecision": "allow",
-        "permissionDecisionReason": "\n\n".join(blocks),
-    }}
+def _opens_unchanged(output):
+    """PreToolUse recorded the question and returned no decision, so it opens as printed (D37)."""
+    return output == {}
 
 
 def test_pre_one_signature_asks_the_short_question_shows_its_block_and_records_shown(db):
     first = _request(1)
     _, asked = _question_cli(first)
-    rendered = _surfaces(first)[0]
-    assert asked["questions"][0]["question"] == "¿Publico la rama 1?"
+    assert asked["questions"][0]["question"] == (
+        f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {REQUESTER} ] [ COMMAND ] [ git push origin feat/binding-1 ]"
+    )
 
     output = _pre(asked["questions"], "toolu_one")
 
-    assert _allowed_with(output, rendered.block), output
+    assert _opens_unchanged(output), output
     assert _shown(db, first) == [{"native_ref": "toolu_one", "position": 0}]
     ordinary = REAL[0]["tool_response"]["questions"]
     assert _pre(ordinary, REAL[0]["tool_use_id"]) == {}
@@ -193,7 +191,7 @@ def test_pre_accepts_only_the_printed_object_byte_for_byte(db):
     exact = asked["questions"][0]
     text_inside = _surfaces(first)[0].text + "\n\n" + exact["question"]
 
-    for text in (text_inside, exact["question"] + " ", exact["question"].replace("¿", "")):
+    for text in (text_inside, exact["question"] + " ", exact["question"].replace("[GAIA-SECURITY] ", "")):
         reason = _deny_reason(_pre([{**exact, "question": text}], "toolu_off_by_bytes"))
         assert "question 1" in reason
     assert _shown(db, first) == []
@@ -206,8 +204,8 @@ def test_pre_four_signatures_are_recorded_in_order_without_system_message(db):
     output = _pre(asked["questions"], "toolu_four")
 
     surfaces = _surfaces(*ids)
-    assert [q["question"] for q in asked["questions"]] == [s.short_question for s in surfaces]
-    assert _allowed_with(output, *[s.block for s in surfaces]), output
+    assert asked["questions"] == [q for s in surfaces for q in s.questions]
+    assert _opens_unchanged(output), output
     assert "systemMessage" not in output
     for position, approval_id in enumerate(ids):
         assert _shown(db, approval_id) == [{"native_ref": "toolu_four", "position": position}]
@@ -231,7 +229,7 @@ def test_pre_signature_without_phrases_is_not_shown_and_is_denied(db):
     bare = _phraseless()
     code, refused = _question_cli(bare)
     assert code == 1 and "--question" in refused["error"]
-    forged = surface.render(json.loads(get_by_id(bare)["payload_json"]), bare).question
+    forged = surface.render(json.loads(get_by_id(bare)["payload_json"]), bare).questions[0]
 
     reason = _deny_reason(_pre([forged], "toolu_bare"))
 
@@ -316,8 +314,9 @@ def test_post_details_asks_that_signature_again_and_pre_shows_its_details_block(
         assert cmd_question(argparse.Namespace(approval_ids=[second], details=True, json=True)) == 0
     [again] = json.loads(out.getvalue())["questions"]
     rendered = _surfaces(second)[0]
-    assert again == rendered.details_question and again["question"] == "¿Publico la rama 2?"
-    assert _allowed_with(_pre([again], "toolu_details_again"), rendered.details_block)
+    assert again == rendered.details_questions[0]
+    assert again["question"].startswith(f"[GAIA-SECURITY] [ DETAILS ] [ {REQUESTER} ]")
+    assert _opens_unchanged(_pre([again], "toolu_details_again"))
     assert _shown(db, second)[-1] == {"native_ref": "toolu_details_again", "position": 0}
 
 
