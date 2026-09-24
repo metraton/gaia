@@ -499,6 +499,30 @@ async function runStep(step: any): Promise<void> {
       record.question = question
       record.selected = selected
       record.allowed = true
+    } else if (step.kind === "orchestrator-question") {
+      // The orchestrator's own question-tool call, with the arguments
+      // `gaia approvals question` printed; the host then asks whatever the
+      // plugin left in those arguments.
+      const args = structuredClone(step.args)
+      await plugin["tool.execute.before"]({ sessionID: step.sessionID, callID: step.callID, tool: "question" }, { args })
+      const question = args.questions[0]
+      record.question = structuredClone(question)
+      const requestID = `asked-${step.callID}`
+      await plugin.event({ event: {
+        type: "question.asked",
+        properties: { sessionID: step.sessionID, id: requestID, questions: [hostNormalizedQuestion(question, "event-60148")] },
+      } })
+      if (step.answer) {
+        const selected = question.options[({ approve: 0, reject: 1, details: 2 } as Record<string, number>)[step.answer]].label
+        await plugin.event({ event: {
+          type: "question.replied",
+          properties: { sessionID: step.sessionID, requestID, answers: [[selected]] },
+        } })
+        const output = { output: "User has answered your questions.", metadata: { answers: [[selected]] } }
+        await plugin["tool.execute.after"]({ sessionID: step.sessionID, callID: step.callID, tool: "question", args }, output)
+        record.output = output.output
+      }
+      record.allowed = true
     } else {
       throw new Error(`unknown scenario step: ${step.kind}`)
     }

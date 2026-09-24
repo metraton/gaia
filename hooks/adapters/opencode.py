@@ -509,9 +509,10 @@ class OpenCodeAdapter(HookAdapter):
     def _signature_lookalike_refusal(tool_name: str, tool_input: object) -> str | None:
         """Refuse a question that reads as a Gaia signature: the plugin's own never reaches here.
 
-        The plugin fills its signature question into its control session and
-        returns before the bridge, so any signature-shaped question arriving is
-        a model's copy, whose answer would decide nothing.
+        The plugin writes every signature question itself -- in the requester's
+        control session, or in the orchestrator's call that carries only the
+        approval id -- and returns before the bridge, so any signature-shaped
+        question arriving is a model's copy, whose answer would decide nothing.
         """
         if tool_name not in {"askuserquestion", "question"} or not isinstance(tool_input, dict):
             return None
@@ -524,11 +525,9 @@ class OpenCodeAdapter(HookAdapter):
             return None
         return (
             "Gaia did not open this question: it copies an approval signature, and its "
-            "answer would decide nothing. In OpenCode Gaia asks each signature itself, in "
-            "the requesting specialist's session, when the request is made or the sealed "
-            "command is attempted. Do not ask or copy it: tell the user to answer Gaia's "
-            "question in that session; if none is open, resume the specialist with "
-            "`execution` so it attempts the sealed command byte for byte."
+            "answer would decide nothing. Do not type or copy a signature: run "
+            "`gaia approvals question <approval_id>` and call the question tool with its "
+            "output unchanged; Gaia writes the signature into that call."
         )
 
     @classmethod

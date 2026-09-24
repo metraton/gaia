@@ -1356,39 +1356,55 @@ def _signature_surface(payload: dict, approval_id: str) -> dict:
     }
 
 
-def cmd_question(args) -> int:
-    """Print the AskUserQuestion input that asks 1 to 4 pending signatures, and nothing else.
+def _opencode_question(approval_id: str, details: bool) -> dict:
+    """The question-tool input the OpenCode plugin replaces with Gaia's signature.
 
-    Each question text is the renderer's single string, so no model prints a
-    signature; with ``--details`` it carries the Details instead of the text.
-    The orchestrator passes it unchanged and the PreToolUse hook recognises it.
-    Refused in an OpenCode shell, which the plugin marks with
-    ``GAIA_HOST_SESSION_ID``: there Gaia opens each signature itself.
+    It carries only the approval id, plus `` details`` for the Details re-ask:
+    the form ``orchestratorAsk`` in ``opencode/plugin.ts`` recognises. Header
+    and option only satisfy the host's question schema; the plugin discards them.
+    """
+    return {
+        "question": f"{approval_id} details" if details else approval_id,
+        "header": "Gaia",
+        "options": [{"label": "OK", "description": "Gaia fills this question in"}],
+    }
+
+
+def cmd_question(args) -> int:
+    """Print the question-tool input that asks pending signatures, and nothing else.
+
+    In Claude Code it asks 1 to 4 signatures and each question text is the
+    renderer's single string, which the PreToolUse hook recognises; with
+    ``--details`` it carries the Details instead. In an OpenCode shell, marked
+    by ``GAIA_HOST_SESSION_ID``, it asks one signature and carries only its id,
+    because there the plugin writes the signature into the call itself.
     """
     from gaia.approvals import core
 
-    if os.environ.get("GAIA_HOST_SESSION_ID"):
-        _print_error(
-            "gaia approvals question is for Claude Code. In OpenCode, Gaia asks each "
-            "signature itself, in the requesting specialist's session, when the request "
-            "is made or the sealed command is attempted: do not ask it or copy it. The "
-            "specialist closes APPROVAL_REQUEST and the user answers Gaia's question there.",
-            args,
-        )
-        return 1
+    opencode = bool(os.environ.get("GAIA_HOST_SESSION_ID"))
     approval_ids = []
     for raw_id in args.approval_ids:
         approval_id = _require_canonical_approval_id(raw_id, args)
         if approval_id is None:
             return 1
         approval_ids.append(approval_id)
+    if opencode and len(approval_ids) != 1:
+        _print_error(
+            "In OpenCode the question tool asks one signature per call: run "
+            "gaia approvals question once per approval, one after another.",
+            args,
+        )
+        return 1
     try:
         surfaces = core.question_batch(approval_ids)
     except core.SealError as exc:
         _print_error(str(exc), args)
         return 1
     details = getattr(args, "details", False)
-    questions = [s.details_question if details else s.question for s in surfaces]
+    if opencode:
+        questions = [_opencode_question(approval_ids[0], details)]
+    else:
+        questions = [s.details_question if details else s.question for s in surfaces]
     print(json.dumps({"questions": questions}, ensure_ascii=False))
     return 0
 
@@ -1946,19 +1962,20 @@ def cmd_opencode_present(args) -> int:
                 raise ValueError(f"Approval {approval_id} is not pending")
             if approval.get("session_id") != session_id:
                 raise ValueError("OpenCode presentation must come from the requesting session")
+            shown = {
+                "host": "opencode",
+                "call_id": call_id,
+                "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            }
+            presenter = (getattr(args, "presenter_session_id", None) or "").strip()
+            if presenter:
+                shown["presenter_session_id"] = presenter
             store.record_event(
                 approval_id,
                 "SHOWN",
                 agent_id="opencode-plugin",
                 session_id=session_id,
-                metadata_json=json.dumps(
-                    {
-                        "host": "opencode",
-                        "call_id": call_id,
-                        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
-                    },
-                    sort_keys=True,
-                ),
+                metadata_json=json.dumps(shown, sort_keys=True),
                 con=con,
             )
             con.commit()
@@ -2517,6 +2534,10 @@ def register(subparsers) -> None:
             p_opencode.add_argument(
                 "--agent-id", required=True,
                 help="The agent of the calling session; must be the approval's requester",
+            )
+            p_opencode.add_argument(
+                "--presenter-session-id",
+                help="The orchestrator session whose question shows it; recorded on SHOWN only",
             )
         if name == "opencode-decide":
             p_opencode.add_argument("--reply", choices=("once", "always", "reject"), required=True)

@@ -214,7 +214,7 @@ def test_approval_live_fixes_opencode_refuses_a_signature_question_it_did_not_op
 
     assert output.get("action") == "deny", output
     assert "Gaia did not open this question" in output.get("reason", ""), output
-    assert "specialist" in output["reason"], output
+    assert "gaia approvals question" in output["reason"], output
 
 
 def test_approval_live_fixes_opencode_leaves_an_ordinary_question_to_the_policy():
@@ -224,20 +224,6 @@ def test_approval_live_fixes_opencode_leaves_an_ordinary_question_to_the_policy(
     }])
 
     assert "Gaia did not open this question" not in str(output.get("reason", "")), output
-
-
-def test_approval_live_fixes_question_cli_refuses_in_an_opencode_shell(host, monkeypatch):
-    from bin.cli.approvals import cmd_question
-
-    approval_id = _request_set()
-    monkeypatch.setenv("GAIA_HOST_SESSION_ID", "ses-opencode-shell")
-    out, err = io.StringIO(), io.StringIO()
-    with redirect_stdout(out), redirect_stderr(err):
-        code = cmd_question(argparse.Namespace(approval_ids=[approval_id], details=False, json=True))
-
-    assert code == 1
-    assert '"questions"' not in out.getvalue()
-    assert "OpenCode" in out.getvalue() + err.getvalue()
 
 
 def test_approval_live_fixes_opencode_signature_reads_on_one_line(host):

@@ -24,15 +24,22 @@ or rebuild any part of it; you only open the question.
 
 ## OpenCode
 
-Gaia opens the question itself, in the requesting specialist's session, when
-its turn ends: you do not present anything. Do not run `gaia approvals
-question` (it refuses in OpenCode) and do not ask or copy a signature with the
-question tool (the hook refuses it); tell the user the question is waiting in
-that session. When the user approves, Gaia posts a notice in your session
-naming the specialist session: resume that session (`task_id`) with
-`execution`. If a request shows no question (`gaia approvals show` has no
-SHOWN event), resume the specialist with `execution` so it attempts the sealed
-command; the refused attempt opens the question.
+Gaia also opens the question in the requesting specialist's session as soon as
+the request is made; the user may answer it there, and on approval
+Gaia posts a notice in your session naming the specialist session to resume
+(`task_id`) with `execution`. To present a pending signature yourself -- the same approvals,
+without resuming anyone:
+
+1. Run `gaia approvals question <approval_id>`, one id per call: in OpenCode
+   it prints a question that carries only that id.
+2. Call the question tool with that output unchanged. Gaia writes the signature
+   into your call before the user sees it and binds the answer to that
+   approval. Only approvals your own specialists requested are accepted; ask
+   several one after another. A signature you type or copy is refused.
+3. Your call's result says what Gaia did with the answer. Details: run
+   `gaia approvals question --details <approval_id>` and ask again the same
+   way. Approved: resume the specialist session it names (`task_id`) with
+   `execution`.
 
 ## After the answer
 
