@@ -546,19 +546,22 @@ class TestCmdShow:
         assert rc == 0
         output = json.loads(capsys.readouterr().out)
         assert output == approvals_mod._signature_surface(payload, self.canonical_id)
-        from gaia.approvals.command_set import command_fingerprint
 
-        text_lines = output["text"].splitlines()
-        assert "Comandos (" not in output["text"]
-        for index, command in enumerate(commands, start=1):
-            assert f"{index}  {command}" in text_lines
-            assert command not in output["details"]
-            assert f"{index} {command_fingerprint(command)}" in output["details"]
-        assert f"ID {self.canonical_id}" in output["details"]
-        assert "Rollback: no declarado" in output["details"]
-        assert output["block"] == f"```\n{output['text']}\n```"
-        assert output["details_block"] == f"```\n{output['details']}\n```"
-        assert "approve_label" not in output
+        agent = "agente sin identificar"
+        assert output["text"].splitlines() == [
+            f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {agent} ] [ COMMAND ] [ {command} ]"
+            for command in commands
+        ]
+        details_lines = output["details"].splitlines()
+        assert [q["question"] for q in output["questions"]] == output["text"].splitlines()
+        assert [q["question"] for q in output["details_questions"]] == details_lines
+        assert [q["header"] for q in output["questions"]] == ["Firma 1/2", "Firma 2/2"]
+        assert [q["header"] for q in output["details_questions"]] == ["Detalle 1/2", "Detalle 2/2"]
+        for command, line in zip(commands, details_lines):
+            assert line.startswith(f"[GAIA-SECURITY] [ DETAILS ] [ {agent} ] [ COMMAND: {command} ]")
+            assert "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]" in line
+        assert self.canonical_id not in output["text"] + output["details"]
+        assert "block" not in output and "details_block" not in output
         assert store.get_by_id(self.canonical_id) == before_row
         assert store.get_history(self.canonical_id) == before_events
         assert [event["event_type"] for event in before_events] == ["REQUESTED"]
@@ -1152,7 +1155,7 @@ class TestCmdRequestFileWrite:
             "impact": "Afecta a quien lo ejecute.",
             "rationale": None,
             "verification": None,
-            "rollback": None,
+            "rollback": "Restaurar el archivo desde git.",
             "agent_id": "developer",
             "session_id": "test-session-aaa",
             "json": False,

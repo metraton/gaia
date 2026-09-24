@@ -1,7 +1,8 @@
 """No signature reaches the user without its requester's human phrases (plan 76, task 11, PD10).
 
 request-set and request-file-write refuse a request missing its title, question,
-or what each item does and its impact, naming the phrase that is missing. A
+what each item does and its impact, or its rollback sentence (D38), naming the
+phrase that is missing. A
 reactive block (Bash, protected write) still seals its request under the
 event's identity, but denies naming the exact command or path and the request
 line to complete with phrases. The core owns one presentable check, and a
@@ -35,6 +36,7 @@ PHRASES = {
     "question": "¿Publico la rama?",
     "does": "git push: sube la rama al remoto.",
     "impact": "La rama queda visible para todos.",
+    "rollback": "Borrar la rama remota.",
 }
 
 
@@ -63,7 +65,7 @@ def _set_args(**overrides):
         "command": [COMMAND], "cwd": [REPO], "expect_exit": None,
         "what": PHRASES["what"], "question": PHRASES["question"],
         "does": [PHRASES["does"]], "impact": [PHRASES["impact"]],
-        "rationale": None, "verification": None, "rollback": None,
+        "rationale": None, "verification": None, "rollback": PHRASES["rollback"],
         "agent_id": AGENT, "session_id": SESSION, "json": True,
     }
     values.update(overrides)
@@ -75,7 +77,7 @@ def _file_args(path, **overrides):
         "path": path, "what": "Ajustar la configuración protegida.",
         "question": "¿Edito la configuración?", "does": "Cambia un valor del archivo.",
         "impact": "Afecta a la próxima sesión.", "rationale": None,
-        "verification": None, "rollback": None,
+        "verification": None, "rollback": "Restaurar el archivo desde git.",
         "agent_id": AGENT, "session_id": SESSION, "json": True,
     }
     values.update(overrides)
@@ -120,6 +122,7 @@ def _request_line_in(reason, verb):
         ({"question": None}, "--question"),
         ({"does": None}, "--does"),
         ({"impact": None}, "--impact"),
+        ({"rollback": None}, "--rollback"),
     ],
 )
 def test_approval_human_phrases_request_set_names_the_missing_phrase(db, overrides, named):
@@ -145,6 +148,7 @@ def test_approval_human_phrases_request_set_title_does_not_fall_back_to_rational
         ({"question": None}, "--question"),
         ({"does": None}, "--does"),
         ({"impact": None}, "--impact"),
+        ({"rollback": None}, "--rollback"),
     ],
 )
 def test_approval_human_phrases_request_file_write_names_the_missing_phrase(db, tmp_path, overrides, named):
@@ -209,7 +213,7 @@ def test_approval_human_phrases_reactive_bash_denial_names_command_and_request_l
     tokens = _request_line_in(reason, "request-set")
     assert tokens[tokens.index("--command") + 1] == COMMAND
     assert tokens[tokens.index("--cwd") + 1] == REPO
-    for flag in ("--what", "--question", "--does", "--impact"):
+    for flag in ("--what", "--question", "--does", "--impact", "--rollback"):
         assert flag in tokens
     assert "Report APPROVAL_REQUEST with this approval_id" not in reason
 
@@ -228,7 +232,7 @@ def test_approval_human_phrases_reactive_protected_write_denial_names_path_and_r
     assert f"File: {target}" in reason
     tokens = _request_line_in(reason, "request-file-write")
     assert tokens[tokens.index("--path") + 1] == target
-    for flag in ("--what", "--question", "--does", "--impact"):
+    for flag in ("--what", "--question", "--does", "--impact", "--rollback"):
         assert flag in tokens
     assert len(_rows(db, "SELECT id FROM approvals WHERE status='pending'")) == 1
 

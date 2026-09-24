@@ -72,7 +72,7 @@ with Approve / Reject / Details. Details asks again, headed `Detalle 1/1`, with
 your phrases under fixed English labels:
 
 ```
-[GAIA-SECURITY] [ DETAILS ] [ gaia-system ] [ COMMAND: python3 ... --host all ] [ DOES: gaia dev: instala en tu espacio de trabajo la versión nueva de main. ] [ IMPACT: actualiza tu base de datos; ese cambio no se deshace. ] [ ROLLBACK: Reinstalar la versión anterior; la base de datos queda actualizada. ]
+[GAIA-SECURITY] [ DETAILS ] [ gaia-system ] [ COMMAND: python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all ] [ DOES: gaia dev: instala en tu espacio de trabajo la versión nueva de main. ] [ IMPACT: actualiza tu base de datos; ese cambio no se deshace. ] [ ROLLBACK: Reinstalar la versión anterior; la base de datos queda actualizada. ]
 ```
 
 A protected-path write is requested the same way with

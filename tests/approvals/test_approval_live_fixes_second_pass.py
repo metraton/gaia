@@ -1,13 +1,12 @@
 """The second live-test pass of plan 76 task 14, pinned against what each component produces.
 
 (1) OpenCode: a request made with ``gaia approvals request-set`` or
-``request-file-write`` opens Gaia's own question in the requester's session with
-no attempt of the sealed command; a signature-shaped question Gaia did not open
-is refused with what to do instead; ``gaia approvals question`` refuses to run
-in an OpenCode shell. (What OpenCode shows for a signature is D26's, in
-``test_approval_live_fixes_opencode_block.py``.)
-(2) A command sealed outside the requester's shell folder shows that folder.
-(3) A long command stays exact on one line (D27/D29 replaced the wrapping).
+``request-file-write`` opens no question in the requester's session, since only
+the orchestrator opens one (D39); a signature-shaped question Gaia did not open
+is refused with what to do instead.
+(2) A command sealed outside the requester's shell folder shows that folder in
+Details, never in the question (D35, D37).
+(3) A long command stays exact on one line (D37 replaced the wrapping).
 (4) A refused sensitive read is not called irreversible.
 (5) The installed CLI takes ``revoke --reason`` and records it.
 """
@@ -98,13 +97,8 @@ def _rendered(approval_id):
     return surface.render(json.loads(_row(approval_id)["payload_json"]), approval_id)
 
 
-def _command_block(text):
-    """The lines after the heading, description and blank line: every command line the user reads."""
-    return text.split("\n")[3:]
-
-
 # --------------------------------------------------------------------------- #
-# (1) OpenCode: Gaia's own question, with no model step after the request
+# (1) OpenCode: the request opens no question; the orchestrator asks (D39)
 # --------------------------------------------------------------------------- #
 
 @pytest.fixture()
@@ -140,7 +134,7 @@ def _request_line(kind, target):
 
 
 @pytest.mark.parametrize("kind", ["request-set", "request-file-write"])
-def test_approval_live_fixes_opencode_request_opens_gaia_question_without_an_attempt(
+def test_approval_live_fixes_opencode_request_opens_no_question_in_the_requester_session(
     cli_env, tmp_path, kind,
 ):
     target = COMMAND if kind == "request-set" else str(tmp_path / "protected.json")
@@ -161,13 +155,12 @@ def test_approval_live_fixes_opencode_request_opens_gaia_question_without_an_att
     delivered = json.loads(driven.stdout.strip().splitlines()[-1])
 
     assert delivered.get("error") is None, delivered
-    assert [prompt["path"]["id"] for prompt in delivered["controlPrompts"]] == [SESSION], delivered
+    assert delivered["controlPrompts"] == [], delivered
     from gaia.approvals.store import get_history
 
     approval_id = next(
         token for token in sealed.stdout.split() if token.startswith("P-")
     )
-    # Queued, not yet shown: SHOWN waits for the block the question call posts.
     assert [event for event in get_history(approval_id) if event["event_type"] == "SHOWN"] == []
 
 
@@ -229,25 +222,25 @@ def test_approval_live_fixes_opencode_leaves_an_ordinary_question_to_the_policy(
 # (2) The folder, only when a command runs outside the requester's shell folder
 # --------------------------------------------------------------------------- #
 
-def test_approval_live_fixes_signature_names_the_folder_of_a_command_run_elsewhere(host):
+def test_approval_live_fixes_details_names_the_folder_of_a_command_run_elsewhere(host):
     elsewhere = _rendered(_request_set(cwd=host["other"]))
 
-    assert _command_block(elsewhere.text)[0] == f"1  en {host['other']}", elsewhere.text
-    assert host["other"] not in elsewhere.question["question"]
+    assert elsewhere.details.endswith(f"[ CWD: {host['other']} ]"), elsewhere.details
+    assert host["other"] not in elsewhere.text
 
 
 def test_approval_live_fixes_signature_omits_the_folder_the_requester_runs_in(host):
     here = _rendered(_request_set())
 
-    assert host["repo"] not in here.text, here.text
+    assert host["repo"] not in here.text + here.details, here.details
 
 
 # --------------------------------------------------------------------------- #
-# (3) A long command stays exact on one line (D27/D29; the host wraps it)
+# (3) A long command stays exact on one line (D37; the host wraps it)
 # --------------------------------------------------------------------------- #
 
 # The command of the Claude Code live test (P-8a94e99b...), whose Gaia-made
-# breaks and the host's own wrap together broke it apart; D27 keeps it whole.
+# breaks and the host's own wrap together broke it apart; one line keeps it whole.
 # The folder keeps the live one's length off Gaia's scratch, where cp is not T3.
 LIVE_SCRATCH = "/home/jorge/ws/me/pruebas/a1fc9164405433383.b2455ec1105e"
 LIVE_CP = (
@@ -262,7 +255,9 @@ LIVE_CP = (
     "mv muestra.txt movido.txt",
 ])
 def test_approval_live_fixes_long_command_stays_exact_on_one_line(host, command):
-    assert _command_block(_rendered(_request_set(command=command)).text) == [f"1  {command}"]
+    assert _rendered(_request_set(command=command)).text.splitlines() == [
+        f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {AGENT} ] [ COMMAND ] [ {command} ]"
+    ]
 
 
 # --------------------------------------------------------------------------- #

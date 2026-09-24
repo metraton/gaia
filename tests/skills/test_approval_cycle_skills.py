@@ -154,9 +154,15 @@ def test_approval_cycle_skills_producer_carries_the_d12_example_with_exact_comma
         "what": "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.",
         "question": "¿Reinstalo Gaia?",
         "requested_by": {"agent_id": "gaia-system"},
-        "items": [{"command": command}],
-    }, "P-" + "0" * 32).block
-    assert shown in producer, shown
+        "rollback_hint": "Reinstalar la versión anterior; la base de datos queda actualizada.",
+        "items": [{
+            "command": command,
+            "does": "gaia dev: instala en tu espacio de trabajo la versión nueva de main.",
+            "impact": "actualiza tu base de datos; ese cambio no se deshace.",
+        }],
+    }, "P-" + "0" * 32)
+    for line in (shown.text, shown.details):
+        assert f"```\n{line}\n```" in producer, line
 
 
 def test_approval_cycle_skills_producer_carries_the_d27_example_with_its_folder():
@@ -166,44 +172,34 @@ def test_approval_cycle_skills_producer_carries_the_d27_example_with_its_folder(
         "question": "¿Publico la rama y abro el PR?",
         "requested_by": {"agent_id": "developer"},
         "requested_from": "/home/jorge/ws/me",
+        "rollback_hint": "Cerrar el pull request sin fusionar y borrar la rama del remoto.",
         "items": [
-            {"command": "git push origin feature/demo-login", "cwd": "/home/jorge/ws/me/demo-repo"},
+            {"command": "git push origin feature/demo-login", "cwd": "/home/jorge/ws/me/demo-repo",
+             "does": "Sube la rama feature/demo-login al repositorio remoto.",
+             "impact": "Otros ven la rama; se puede borrar del remoto."},
             {
                 "command": (
                     "gh pr create --repo metraton/demo --base main --head feature/demo-login"
                     ' --title "Login de prueba" --body-file /home/jorge/.gaia/scratch/demo-1234/pr.md'
                 ),
                 "cwd": "/home/jorge/ws/me",
+                "does": "Abre el pull request de la rama hacia main.",
+                "impact": "Queda visible en GitHub; se puede cerrar sin fusionar.",
             },
         ],
-    }, "P-" + "0" * 32).block
-    assert shown in producer, shown
+    }, "P-" + "0" * 32)
+    push_details, pr_details = shown.details.splitlines()
+    assert f"```\n{push_details}\n```" in producer, push_details
+    assert push_details.endswith("[ CWD: /home/jorge/ws/me/demo-repo ]")
+    assert "[ CWD:" not in pr_details
 
 
-# D29: the block is Gaia's and shown outside the question, so no skill may
-# teach that the signature travels inside the question text.
-SIGNATURE_INSIDE_THE_QUESTION = re.compile(
-    r"(?i)question text[^.|]*(carries|holds|contains)|carries its (signature|details)"
-    r"|(signature|block)[^.|]*inside the question"
-)
-
-
-def test_approval_cycle_skills_no_skill_puts_the_signature_inside_the_question():
-    offenders = [
-        f"{doc.relative_to(ROOT)}: {match.group(0)!r}"
-        for doc in [*_skill_docs(), *sorted(AGENTS.glob("*.md"))]
-        for match in [SIGNATURE_INSIDE_THE_QUESTION.search(doc.read_text(encoding="utf-8"))]
-        if match
-    ]
-    assert not offenders, "\n".join(offenders)
-
-
-def test_approval_cycle_skills_presenter_teaches_the_d29_surface():
-    """The orchestrator only runs the question verb; Gaia shows the block on each host."""
+def test_approval_cycle_skills_presenter_teaches_the_d37_d39_surface():
+    """Only the orchestrator opens the question, with what the question verb printed (D37, D39)."""
     presenter = PRESENTER.read_text(encoding="utf-8")
     for teaching in (
-        "hook shows each\n   signature's block",
-        "plugin posts the signature's block",
+        "Only you open the question",
+        "with that output unchanged",
         "`gaia approvals question --details <approval_id> ...`",
         "never print, copy, summarise",
         "run it again at any time",

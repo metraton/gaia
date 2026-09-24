@@ -1,10 +1,10 @@
 """The four fixes the first live test found (plan 76, task 14; brief D23 and D24, PD13).
 
-(1) In Claude Code AskUserQuestion asks only the short question, the object
-checked byte for byte by PreToolUse, whose ``allow`` reason shows the block
-(D29, which replaced D23's text inside the question); no hook answers through
-``systemMessage``, which the desktop app does not show; Details comes back as
-its own block with the re-asked question; commands are shown exactly. (2) An item sealed in another directory runs as the
+(1) In Claude Code AskUserQuestion asks the question ``gaia approvals
+question`` printed, one line per command in the D37 machine format, checked
+byte for byte by PreToolUse; no hook answers through ``systemMessage``, which
+the desktop app does not show; Details comes back as its own re-asked
+question; commands are shown exactly. (2) An item sealed in another directory runs as the
 exact ``cd <sealed directory> && <sealed command>`` on both hosts, the only
 compound accepted, and ``request-set`` refuses a directory that does not exist.
 (3) One presentation records one SHOWN. (4) The orchestrator may withdraw with
@@ -143,27 +143,13 @@ def _denied(output) -> bool:
 # (1) Claude Code: the signature inside the question, exact commands
 # --------------------------------------------------------------------------- #
 
-def test_approval_live_fixes_question_asks_only_the_short_question_and_the_hook_shows_the_block(host):
-    approval_id = _request(host["repo"])
-    rendered = _rendered(approval_id)
-
-    [question] = _question_cli(approval_id)
-    specific = _ask_pre([question], "toolu_block")["hookSpecificOutput"]
-
-    assert question["question"] == "¿Publico la rama?"
-    assert specific["permissionDecision"] == "allow"
-    assert specific["permissionDecisionReason"] == rendered.block
-    assert rendered.block.startswith("```\nSolicitud de aprobación · gaia-system\n")
-
-
 def test_approval_live_fixes_pre_accepts_only_the_printed_object_byte_for_byte(host):
     approval_id = _request(host["repo"])
-    rendered = _rendered(approval_id)
     [question] = _question_cli(approval_id)
 
-    text_inside = {**question, "question": rendered.text + "\n\n¿Publico la rama?"}
-    one_byte_off = {**question, "question": question["question"].replace("¿", "", 1)}
-    for impostor in (text_inside, one_byte_off):
+    typed_phrase = {**question, "question": "¿Publico la rama?"}
+    one_byte_off = {**question, "question": question["question"].replace("[GAIA-SECURITY]", "[GAIA-SECURITY", 1)}
+    for impostor in (typed_phrase, one_byte_off):
         assert _denied(_ask_pre([impostor], "toolu_impostor")), impostor["question"]
     assert _events(approval_id, "SHOWN") == []
 
@@ -190,7 +176,7 @@ def test_approval_live_fixes_no_hook_response_uses_system_message(host):
         assert "systemMessage" not in json.dumps(output), output
 
 
-def test_approval_live_fixes_details_block_comes_back_with_the_reasked_question(host):
+def test_approval_live_fixes_details_comes_back_as_the_reasked_question(host):
     approval_id = _request(host["repo"])
     rendered = _rendered(approval_id)
     [question] = _question_cli(approval_id)
@@ -201,10 +187,9 @@ def test_approval_live_fixes_details_block_comes_back_with_the_reasked_question(
     context = output["hookSpecificOutput"]["additionalContext"]
     assert f"gaia approvals question --details {approval_id}" in context
     [again] = _question_cli(approval_id, details=True)
-    assert again == {**question, "header": "Detalles"}
-    specific = _ask_pre([again], "toolu_details")["hookSpecificOutput"]
-    assert specific["permissionDecision"] == "allow"
-    assert specific["permissionDecisionReason"] == rendered.details_block
+    assert again == rendered.details_questions[0]
+    assert again["header"] == "Detalle 1/1"
+    assert _ask_pre([again], "toolu_details") == {}
     _ask_post([again], {again["question"]: "Approve"}, "toolu_details")
     assert [event["event_type"] for event in _events(approval_id)].count("APPROVED") == 1
 
@@ -219,14 +204,14 @@ def test_approval_live_fixes_renderer_shows_every_command_exactly(host):
         assert token in rendered.text, token
 
 
-def test_approval_live_fixes_question_is_the_short_question_within_its_limit(host):
+def test_approval_live_fixes_question_phrase_keeps_its_limit_and_stays_out_of_the_question(host):
     from gaia.approvals import surface
 
     approval_id = _request(host["repo"], question="x" * 60, what="y" * 120)
-    rendered = _rendered(approval_id)
+    [question] = _rendered(approval_id).questions
 
-    assert rendered.question["question"] == "x" * 60
-    surface.check_question(rendered.question)
+    assert question["question"] == f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {AGENT} ] [ COMMAND ] [ {COMMAND} ]"
+    surface.check_question(question)
     with pytest.raises(surface.SurfaceLimitError, match="60"):
         _request(host["repo"], question="x" * 61)
 
@@ -438,6 +423,23 @@ def _request_set_cli(env, cwd, command):
     )
 
 
+def _orchestrator_approves(env, approval_id):
+    """The orchestrator asks what `gaia approvals question` printed and the user approves (D39)."""
+    from tests.integration import test_opencode_consent_retry_e2e as e2e
+
+    printed = subprocess.run(
+        [sys.executable, str(_ROOT / "bin" / "gaia"), "approvals", "question", approval_id],
+        cwd=env["WORKSPACE"], env={**env, "GAIA_HOST_SESSION_ID": e2e.ROOT_SESSION_ID},
+        capture_output=True, text=True, timeout=120,
+    )
+    assert printed.returncode == 0, printed.stdout + printed.stderr
+    return {
+        "kind": "orchestrator-question", "label": "approve", "sessionID": e2e.ROOT_SESSION_ID,
+        "callID": "call-orchestrator-ask", "answer": "approve",
+        "args": json.loads(printed.stdout.strip().splitlines()[-1]),
+    }
+
+
 def test_approval_live_fixes_opencode_runs_an_item_sealed_elsewhere_as_the_cd_form(driven_env):
     from tests.integration import test_opencode_consent_retry_e2e as e2e
 
@@ -451,15 +453,14 @@ def test_approval_live_fixes_opencode_runs_an_item_sealed_elsewhere_as_the_cd_fo
 
     driven = e2e._drive(env, [
         e2e._before("blocked", invocation),
-        {"kind": "control-decision", "label": "approve", "answer": "approve",
-         "requestID": "question-elsewhere"},
+        _orchestrator_approves(env, approval_id),
         e2e._before("retry", invocation, call_id=e2e.RETRY_CALL_ID),
         {"kind": "after", "label": "settle", "sessionID": e2e.SESSION_ID,
          "callID": e2e.RETRY_CALL_ID, "tool": "bash", "command": invocation,
          "metadata": {"exitCode": 0}},
     ])
 
-    assert driven["presentations"][0]["approvalID"] == approval_id, driven["presentations"]
+    assert e2e._step(driven, "blocked")["allowed"] is False, driven["steps"]
     assert e2e._step(driven, "retry")["allowed"] is True, driven["steps"]
     con = sqlite3.connect(db_path)
     try:
@@ -489,8 +490,7 @@ def test_approval_live_fixes_opencode_runs_a_cloud_command_sealed_elsewhere_and_
 
     driven = e2e._drive(env, [
         e2e._before("blocked", invocation),
-        {"kind": "control-decision", "label": "approve", "answer": "approve",
-         "requestID": "question-cloud"},
+        _orchestrator_approves(env, approval_id),
         *[
             e2e._before(f"variant {name}", text, call_id=f"call-variant-{index}")
             for index, (name, text) in enumerate(sorted(variants.items()))
@@ -501,7 +501,6 @@ def test_approval_live_fixes_opencode_runs_a_cloud_command_sealed_elsewhere_and_
          "metadata": {"exitCode": 0}},
     ])
 
-    assert driven["presentations"][0]["approvalID"] == approval_id, driven["presentations"]
     refused_variants = [name for name in variants if e2e._step(driven, f"variant {name}")["allowed"] is False]
     assert sorted(refused_variants) == sorted(variants), driven["steps"]
     assert e2e._step(driven, "retry")["allowed"] is True, driven["steps"]

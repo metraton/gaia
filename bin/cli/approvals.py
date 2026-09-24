@@ -1384,7 +1384,7 @@ def cmd_show_v2(args) -> int:
 
 
 def _signature_surface(payload: dict, approval_id: str) -> dict:
-    """Return the signature both hosts show: its block and Details block, and the short question object."""
+    """Return the signature both hosts show: one question per command and its Details re-ask (D37), with their texts."""
     from gaia.approvals import surface
 
     rendered = surface.render(payload, approval_id)
@@ -1959,13 +1959,13 @@ def _opencode_presentation(
 def _opencode_presentation_refusal(args) -> str | None:
     """Why this presentation may not record SHOWN, or ``None`` when it may.
 
-    The requester is sealed when the request is made (PD6), so a question is
-    opened only by the call of that same session and agent: the plugin runs
-    this from the requester's own tool call, so the requester is live by
-    construction, and a session resumed after a host restart presents again on
-    its next attempt. A pending with no requester is never adopted -- it is
-    only shown by the readers -- and a request lacking its requester's phrases
-    is never shown at all.
+    The requester is sealed when the request is made (PD6), so a presentation
+    must name that same session and agent. Only the orchestrator opens the
+    question (D39): the plugin runs this from the orchestrator's question call,
+    naming the sealed requester and passing the orchestrator's session as the
+    presenter. A pending with no requester is never adopted -- it is only
+    shown by the readers -- and a request lacking its requester's phrases is
+    never shown at all.
     """
     approval_id = _resolve_approval_id(args.approval_id)
     try:
@@ -2000,8 +2000,8 @@ def cmd_opencode_present(args) -> int:
     Refused, with no SHOWN recorded, whenever
     :func:`_opencode_presentation_refusal` names a reason. ``--preview`` passes
     the same checks and prints the presentation without recording SHOWN: the
-    plugin needs the block to post it, and records SHOWN only once the host
-    has accepted the post.
+    plugin puts its questions into the orchestrator's call, and records SHOWN
+    only once the host has asked them.
     """
     refusal = _opencode_presentation_refusal(args)
     if refusal is not None:

@@ -7,10 +7,9 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 
 Gaia builds every signature, and each of its commands is one question on one
 line, marked `[GAIA-SECURITY]` so the user reads it as Gaia's check and not as
-your question: who asks and the exact command. Details turns each question
-into one line with the command, what it does, its impact and the rollback,
-plus the folder when it matters. The field labels are English; what the
-requester wrote is in the user's language. No model writes any of it. You never print, copy, summarise or translate any part of it; you
+your question: who asks and the exact command; Details adds what it does, its
+impact and the rollback. No model writes any of it.
+You never print, copy, summarise or translate any part of it; you
 only run `gaia approvals question` and open what it gives you, unchanged. You
 can run it again at any time for the approvals still pending -- for example
 when several specialists return signatures.
