@@ -6,7 +6,7 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 # Present Approval — Orchestrator Branch
 
 Gaia builds every signature, and each of its commands is one question on one
-line: who asks and the exact command, written as a request for review in the
+line: who asks and the exact command, written as a request for approval in the
 user's language. Details turns each question into one line with what that
 command does, the folder it runs in when that is not the project, its impact,
 the rollback, how long the approval lasts and its ID. Only the Approve / Reject / Details labels stay in English. No model writes

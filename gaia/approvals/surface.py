@@ -41,10 +41,7 @@ OPTIONS = (
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 
-#: "revisión", not "aprobación": the host harness reacted to that word in a question.
-_HEADING = "Solicitud de revisión"
-#: Headings a model's hand-typed copy may carry; each reads as Gaia's signature to the user.
-_SIGNATURE_HEADINGS = (_HEADING, "Solicitud de aprobación")
+_HEADING = "Solicitud de aprobación"
 _DETAILS_HEADING = "Detalle"
 _NO_AGENT = "agente sin identificar"
 _NO_DOES = "(sin descripción declarada)"
@@ -268,7 +265,7 @@ def looks_like_signature(question: Mapping[str, Any]) -> bool:
     return (
         is_signature_question(question)
         or re.match(r"(?i)(aprob|approv)", header) is not None
-        or any(heading in str(question.get("question") or "") for heading in _SIGNATURE_HEADINGS)
+        or _HEADING in str(question.get("question") or "")
     )
 
 
