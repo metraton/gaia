@@ -1,6 +1,6 @@
 ---
 name: ticket-writing
-description: Use when creating or drafting tickets or issues, or when standardizing ticket output for a project
+description: Use when creating or drafting a ticket or issue, or standardizing ticket output for a project -- "armame un ticket", "escribí el issue", "necesito una tarea para Jira", "create a ticket", "draft an issue".
 ---
 
 # Ticket Writing

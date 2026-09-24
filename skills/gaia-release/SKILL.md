@@ -1,6 +1,6 @@
 ---
 name: gaia-release
-description: Use when testing, validating, or publishing Gaia releases -- "install local", "pre-release", "dry-run", "release", RC, stable, plugin dry-run
+description: Use when testing, validating, or publishing Gaia releases -- "install local", "pre-release", "dry-run", "release", RC, stable, plugin dry-run, "instalá local", "hagamos un release", "probemos el pre-release", "publiquemos la versión estable"
 ---
 
 # Gaia Release

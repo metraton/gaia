@@ -1,6 +1,6 @@
 ---
 name: session-reflection
-description: Use when the user asks to reflect on a session, or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, and reports what changed.
+description: Use when the user asks to reflect on a session -- "reflexionemos sobre la sesión", "cerremos esto", "guardemos lo que aprendimos", "let's reflect on this session", "wrap up this session" -- or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, and reports what changed.
 ---
 
 # Session Reflection

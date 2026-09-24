@@ -1,6 +1,6 @@
 ---
 name: pending-approvals
-description: Use when the user asks to list, inspect, approve, reject, or revoke pending approvals
+description: Use when the user asks to list, inspect, approve, reject, or revoke pending approvals -- "qué aprobaciones tengo pendientes", "aprobá esto", "rechazá esa aprobación", "revocá el permiso", "show pending approvals", "approve this".
 ---
 
 # Pending Approvals
