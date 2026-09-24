@@ -78,6 +78,7 @@ skills/
 ├── execution/             # Post-approval execution discipline
 ├── fast-queries/          # Project Context-first scoped diagnostics
 ├── gaia-compact/          # Preserve transient continuity without duplicating durable state
+├── gaia-check/            # Guided live certification of Gaia by area (first: approvals), both hosts
 ├── gaia-patterns/         # Gaia component patterns: hooks, agents, routing, CLI
 │   └── reference.md
 ├── gaia-planner/          # Feature planning, briefs, task decomposition
@@ -94,7 +95,6 @@ skills/
 │   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
-├── signature-live-tests/  # Fixed catalog of live signature tests, both hosts
 ├── readme-writing/        # How to write a README, branching by gate: repository root, component folder, or shipped template
 │   └── reference.md       # per gate (repo root / component folder / shipped template): a filled example + a blank skeleton
 ├── subagent-request-approval/ # Producer: the phrases a signature needs, their limits, and how to group T3 commands
@@ -147,7 +147,7 @@ Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 - `execution` — post-approval execution discipline
 - `git-conventions` — Conventional Commits format
 - `pending-approvals` — present and resolve pending approval requests
-- `signature-live-tests` — the fixed catalog of live signature tests the orchestrator runs as a guided certification in either host
+- `gaia-check` — guided live certification of Gaia by area, first area approvals: blind specialists with ordinary reversible tasks, the orchestrator guides the user and checks with the CLI, in either host
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
 - `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match
 - `gaia-research` — technique for mining one or more bookmarked GitHub repos (or, in the inverse direction, finding who solves a capability the user wants) for ideas Gaia can take: burden of proof set by the claim type, code read instead of README, evidential status marked on every idea. Ends at digested ideas and deliberately produces no brief or plan — `brief-spec` picks up downstream. Loaded on demand by description match, invocable directly via the Skill tool
@@ -166,7 +166,7 @@ Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 | Common | Most agents via `skills:` frontmatter | command-execution, investigation |
 | Domain | Per-agent via `skills:` frontmatter | gaia-patterns |
 | Workflow | On-demand (agent reads from disk) | subagent-request-approval, execution, git-conventions |
-| Orchestrator | On-demand via Skill tool | agent-response, orchestrator-present-approval, signature-live-tests |
+| Orchestrator | On-demand via Skill tool | agent-response, orchestrator-present-approval, gaia-check |
 
 **SKILL.md format:**
 
