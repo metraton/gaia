@@ -1373,9 +1373,11 @@ def _opencode_question(approval_id: str, details: bool) -> dict:
 def cmd_question(args) -> int:
     """Print the question-tool input that asks pending signatures, and nothing else.
 
-    In Claude Code it asks 1 to 4 signatures, each by its short question; the
-    PreToolUse hook recognises the object and shows each signature's block, or
-    with ``--details`` its Details block, when the question opens (D29). In an OpenCode shell, marked
+    In Claude Code it asks 1 to 4 signatures, each by its short question, and
+    records which it handed out at which slot, so the PreToolUse hook tells
+    apart two pending signatures with the same short question (D31); the hook
+    shows each signature's block, or with ``--details`` its Details block, when
+    the question opens (D29). In an OpenCode shell, marked
     by ``GAIA_HOST_SESSION_ID``, it asks one signature and carries only its id,
     because there the plugin writes the signature into the call itself.
     """
@@ -1396,7 +1398,10 @@ def cmd_question(args) -> int:
         )
         return 1
     try:
-        surfaces = core.question_batch(approval_ids)
+        if opencode:
+            surfaces = core.question_batch(approval_ids)
+        else:
+            surfaces = core.hand_out_question(approval_ids, session_id="", agent_id="")
     except core.SealError as exc:
         _print_error(str(exc), args)
         return 1

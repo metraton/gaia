@@ -606,13 +606,86 @@ def question_batch(approval_ids: list[str]) -> list:
     return surface.render_batch(requests)
 
 
+#: ``metadata_json.kind`` of the NOOP event recording that ``gaia approvals
+#: question`` handed a signature out at a slot (D31). NOOP because a hand-out
+#: changes no status and the ``approval_events`` CHECK stays closed.
+HANDOUT_KIND = "question_handed_out"
+
+
+def hand_out_question(approval_ids: list[str], *, session_id: str, agent_id: str) -> list:
+    """Render the question for ``approval_ids`` and record each one as handed out at its slot."""
+    import uuid
+
+    from gaia.approvals import store
+
+    surfaces = question_batch(approval_ids)
+    handout = uuid.uuid4().hex
+    for position, approval_id in enumerate(approval_ids):
+        store.record_event(
+            approval_id, "NOOP", agent_id=agent_id, session_id=session_id,
+            metadata_json=json.dumps(
+                {"kind": HANDOUT_KIND, "handout": handout,
+                 "position": position, "total": len(approval_ids)},
+                sort_keys=True,
+            ),
+        )
+    return surfaces
+
+
+def _handouts() -> list[list[str]]:
+    """Every recorded hand-out whose signatures are all still pending, newest first, in slot order."""
+    from gaia.approvals.store import _open_db
+
+    con = _open_db()
+    try:
+        rows = con.execute(
+            "SELECT e.metadata_json, e.approval_id FROM approval_events e "
+            "JOIN approvals a ON a.id = e.approval_id "
+            "WHERE e.event_type = 'NOOP' AND a.status = 'pending' "
+            "AND json_extract(e.metadata_json, '$.kind') = ? ORDER BY e.id DESC",
+            (HANDOUT_KIND,),
+        ).fetchall()
+    finally:
+        con.close()
+    slots: dict[str, dict[int, str]] = {}
+    totals: dict[str, int] = {}
+    for metadata_json, approval_id in rows:
+        metadata = json.loads(metadata_json)
+        slots.setdefault(metadata["handout"], {})[metadata["position"]] = approval_id
+        totals[metadata["handout"]] = metadata["total"]
+    return [
+        [by_slot[position] for position in sorted(by_slot)]
+        for handout, by_slot in slots.items()
+        if len(by_slot) == totals[handout]
+    ]
+
+
+def _renders_each(
+    approval_ids: list[str], asked: list[dict], payloads: Mapping[str, dict],
+) -> bool:
+    from gaia.approvals import surface
+
+    total = len(asked)
+    for position, (approval_id, question) in enumerate(zip(approval_ids, asked), start=1):
+        try:
+            rendered = surface.batch_questions(payloads[approval_id], approval_id, position, total)
+        except (KeyError, SealError, TypeError, ValueError, AttributeError):
+            return False
+        if question not in rendered:
+            return False
+    return True
+
+
 def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
     """Return the batch whose question objects are exactly ``questions``, in order.
 
-    Each position is matched against every pending request rendered for that
-    position, as its signature or as its Details re-ask, so only an object
-    Gaia produced is recognised; a question no pending request renders, or one
-    two requests render alike, raises :class:`SealError` naming the position.
+    The newest hand-out of ``gaia approvals question`` (:func:`hand_out_question`)
+    whose signatures render exactly these objects, as signatures or as Details
+    re-asks, decides which signature each slot asks (D31): two pending requests
+    with the same short question render the same object, and only that record
+    tells them apart. Without such a hand-out each position is matched against
+    every pending request rendered for it; a question no pending request
+    renders, or one two render alike, raises :class:`SealError` naming the position.
     """
     from gaia.approvals import store, surface
 
@@ -620,9 +693,15 @@ def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
     if not 1 <= total <= surface.BATCH_MAX:
         raise SealError(f"a question call presents 1 to {surface.BATCH_MAX} signatures, not {total}")
     pending = [(row["id"], _row_payload(row)) for row in store.list_pending(all_sessions=True)]
+    asked_all = [
+        {"multiSelect": False, **asked} if isinstance(asked, Mapping) else {}
+        for asked in questions
+    ]
+    for handed in _handouts():
+        if len(handed) == total and _renders_each(handed, asked_all, dict(pending)):
+            return question_batch(handed)
     approval_ids = []
-    for position, asked in enumerate(questions, start=1):
-        asked = {"multiSelect": False, **asked} if isinstance(asked, Mapping) else {}
+    for position, asked in enumerate(asked_all, start=1):
         matches = []
         for approval_id, payload in pending:
             try:

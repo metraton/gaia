@@ -33,8 +33,10 @@ folder: it only reclaims entries named by a closed contract id, and
 4. Check with `gaia approvals show <approval_id>` and with the file listing the
    specialist records before cleaning. State and Outcome are separate lines:
    State is the user's decision (`pending`, `orphaned`, `approved`,
-   `rejected`), Outcome is what became of an approved request (`executed`) and
-   is absent while nothing ran. A test passes only when both lines and the
+   `rejected`), Outcome is what became of an approved request: `executed`
+   once it ran; before that, `unused` while its window is open and no line
+   when the window closes with nothing matched (`in_flight`, then `no_result`,
+   if a call matched but never closed). A test passes only when both lines and the
    files match its expected result; report which part did not.
 5. The specialist removes its own files at the end (`rm` of the exact path,
    which inside scratch needs no signature). The folder and `otra/` stay,

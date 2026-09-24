@@ -546,11 +546,18 @@ class TestCmdShow:
         assert rc == 0
         output = json.loads(capsys.readouterr().out)
         assert output == approvals_mod._signature_surface(payload, self.canonical_id)
-        assert "Comandos (2)" in output["text"]
+        from gaia.approvals.command_set import command_fingerprint
+
+        text_lines = output["text"].splitlines()
+        assert "Comandos (" not in output["text"]
         for index, command in enumerate(commands, start=1):
-            assert f"  {index}  {command}" in output["details"]
-            assert _sha256(command) in output["details"]
+            assert f"{index}  {command}" in text_lines
+            assert command not in output["details"]
+            assert f"{index} {command_fingerprint(command)}" in output["details"]
+        assert f"ID {self.canonical_id}" in output["details"]
         assert "Rollback: no declarado" in output["details"]
+        assert output["block"] == f"```\n{output['text']}\n```"
+        assert output["details_block"] == f"```\n{output['details']}\n```"
         assert "approve_label" not in output
         assert store.get_by_id(self.canonical_id) == before_row
         assert store.get_history(self.canonical_id) == before_events
