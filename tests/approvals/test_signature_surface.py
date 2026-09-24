@@ -354,10 +354,12 @@ def _run(handler, args):
     return code, out.getvalue()
 
 
-def test_signature_surface_request_set_rejects_before_persisting(db):
+def test_signature_surface_request_set_rejects_before_persisting(db, tmp_path):
     from bin.cli.approvals import cmd_request_set
 
-    code, _ = _run(cmd_request_set, _request_set_args(question="x" * 61))
+    code, _ = _run(
+        cmd_request_set, _request_set_args(cwd=[str(tmp_path)], question="x" * 61)
+    )
 
     assert code == 1
     con = sqlite3.connect(db)
@@ -367,11 +369,15 @@ def test_signature_surface_request_set_rejects_before_persisting(db):
         con.close()
 
 
-def test_signature_surface_request_set_without_rollback_is_refused_with_what_to_write(db):
+def test_signature_surface_request_set_without_rollback_is_refused_with_what_to_write(
+    db, tmp_path
+):
     """D38: a request names how to undo it, or says plainly it cannot be undone."""
     from bin.cli.approvals import cmd_request_set
 
-    code, out = _run(cmd_request_set, _request_set_args(rollback=None))
+    code, out = _run(
+        cmd_request_set, _request_set_args(cwd=[str(tmp_path)], rollback=None)
+    )
 
     assert code == 1
     assert "--rollback is required" in out, out
