@@ -139,6 +139,23 @@ def _fail_closed(output: Dict[str, Any], exit_code: int) -> HookResponse:
     )
 
 
+def _carries_requester_phrases(approval_id: str) -> bool:
+    """Whether ``approval_id`` passes the check `gaia approvals opencode-present` runs before showing it.
+
+    An approval that cannot be read counts as phraseless: the plugin then
+    delivers the denial itself instead of a presentation Gaia would refuse.
+    """
+    from gaia.approvals.core import missing_phrases
+    from gaia.approvals.store import get_by_id
+
+    try:
+        row = get_by_id(approval_id) or {}
+        return not missing_phrases(json.loads(row.get("payload_json") or "{}"))
+    except Exception as exc:
+        logger.warning("approval %s unreadable for presentation: %s", approval_id, exc)
+        return False
+
+
 class OpenCodeAdapter(HookAdapter):
     """Translate OpenCode plugin events into Gaia's normalized hook contract."""
 
@@ -1122,7 +1139,10 @@ class OpenCodeAdapter(HookAdapter):
         A consent request with a pending approval becomes a denial naming it,
         since that signature is asked out of band; one without becomes an ask
         of the host's own prompt. The approval id travels as a field, so the
-        plugin never reads it back out of the reason.
+        plugin never reads it back out of the reason. ``presentable`` marks a
+        named approval that already carries its requester's phrases: only that
+        one is presented, while a phraseless reactive placeholder reaches the
+        specialist as the denial's request line (PD10).
         """
         if verdict.refusal is not None:
             return HookResponse(
@@ -1141,6 +1161,8 @@ class OpenCodeAdapter(HookAdapter):
             output["updated_input"] = updated_input
         if verdict.approval_id:
             output["approval_id"] = verdict.approval_id
+            if decision == "deny" and _carries_requester_phrases(verdict.approval_id):
+                output["presentable"] = True
         return _fail_closed(output, 0)
 
     @classmethod

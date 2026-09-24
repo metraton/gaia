@@ -53,6 +53,7 @@ async function gaiaBridge(event: Record<string, unknown>) {
       action: "ask" as const,
       reason: scenario.reason ?? `[T3_BLOCKED] approval_id: ${scenario.approvalID}`,
       approval_id: scenario.approvalID,
+      presentable: true,
     }
   }
   return { action: "allow" as const }

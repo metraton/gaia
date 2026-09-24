@@ -252,6 +252,25 @@ def test_a_phraseless_request_is_never_presented(db_env):
     assert [e["event_type"] for e in get_history(phraseless_id)] == ["REQUESTED"]
 
 
+def test_approval_live_fixes_bridge_marks_presentable_only_a_phrased_approval(db_env, approval_id):
+    """The plugin presents on `presentable`; a phraseless placeholder never earns it."""
+    from adapters.opencode import OpenCodeAdapter
+    from adapters.tool_policy import PolicyVerdict
+    from gaia.approvals.store import insert_requested
+
+    phraseless_id = insert_requested(SEALED_PAYLOAD, agent_id=AGENT_ID, session_id=SESSION_ID)
+
+    def deny(named):
+        verdict = PolicyVerdict(decision="deny", reason="[T3_BLOCKED]", approval_id=named)
+        return OpenCodeAdapter._format_policy_verdict(verdict).output
+
+    assert deny(approval_id)["presentable"] is True
+    phraseless = deny(phraseless_id)
+    assert phraseless["approval_id"] == phraseless_id
+    assert "presentable" not in phraseless
+    assert "presentable" not in deny("P-" + "0" * 32)
+
+
 def test_a_refused_presentation_keeps_the_approval_id_and_gaia_cause(db_env):
     """The agent must see WHICH approval failed and WHY Gaia refused, not a generic line."""
     from gaia.approvals.store import get_history, insert_requested

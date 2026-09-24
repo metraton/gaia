@@ -245,11 +245,45 @@ def test_literal_apply_patch_relative_target_reaches_guard_before_native_patch(
     assert exchange["received"]["action"] == "deny"
     approval_id = exchange["received"].get("approval_id", "")
     assert re.fullmatch(r"P-[0-9a-f]{32}", approval_id)
-    # A reactive block carries no requester phrases, so it is never presented.
-    assert f"Gaia could not present approval {approval_id}" in result["error"]
-    assert "requester's phrases" in result["error"]
+    # A reactive block carries no requester phrases, so it is never presented:
+    # the specialist reads the denial's request line instead.
+    assert "presentable" not in exchange["received"], exchange
+    assert "could not present" not in result["error"], result["error"]
+    assert "gaia approvals request-file-write" in result["error"], result["error"]
     assert driven["controlPrompts"] == []
     assert protected.read_text() == "ORIGINAL\n"
+
+
+def test_approval_live_fixes_opencode_unrequested_t3_hands_back_the_canonical_denial(
+    tmp_path, isolated_gaia_db,
+):
+    """A T3 command attempted before any request reaches the specialist as Claude Code's denial.
+
+    The block mints a phraseless placeholder no host may show (PD10), so the
+    plugin must not try to present it: the specialist reads the exact command
+    and the request line to complete with its phrases, never a refused
+    presentation of the placeholder.
+    """
+    root, _, _ = _workspace(tmp_path)
+    command = f"git -C {root} push origin main"
+
+    driven = _drive(root, root, [_step("unrequested-push", "bash", {"command": command})])
+
+    result = driven["results"][0]
+    assert result["allowed"] is False, result
+    exchange = _exchange(driven, result["callID"])
+    assert exchange["received"]["action"] == "deny", exchange
+    approval_id = exchange["received"].get("approval_id", "")
+    assert re.fullmatch(r"P-[0-9a-f]{32}", approval_id), exchange
+    assert "presentable" not in exchange["received"], exchange
+    assert "could not present" not in result["error"], result["error"]
+    assert command in result["error"]
+    assert "gaia approvals request-set" in result["error"]
+    assert "--question" in result["error"]
+    assert driven["controlPrompts"] == []
+    from gaia.approvals.store import get_history
+
+    assert [e["event_type"] for e in get_history(approval_id)] == ["REQUESTED"]
 
 
 def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed(tmp_path):

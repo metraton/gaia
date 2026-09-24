@@ -9,6 +9,7 @@ type BridgeResponse = {
   action: "allow" | "ask" | "deny"
   reason?: string
   approval_id?: string
+  presentable?: boolean
   updated_input?: Record<string, unknown>
   attestation?: string
   shell_env?: { session_id: string; call_id: string; agent_type: string }
@@ -551,6 +552,7 @@ async function bridge(event: Record<string, unknown>, cwd: string | undefined): 
     console.error(`[gaia-opencode-bridge:response] ${JSON.stringify({
       action: response.action,
       approval_id: response.approval_id,
+      presentable: response.presentable,
       has_updated_input: Boolean(response.updated_input),
     })}`)
   }
@@ -2182,8 +2184,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         retryBySession.delete(call.sessionID)
         await presentNextControl(call.sessionID)
       }
+      // A reactive block names a phraseless placeholder no host shows; its
+      // denial already carries the request line the specialist completes.
       const blockedApprovalID = approvalID(response)
-      if (blockedApprovalID) {
+      if (blockedApprovalID && response.presentable === true) {
         await requestApproval(blockedApprovalID, call.sessionID, call.callID, agent ?? "")
         throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
       }
