@@ -17,6 +17,7 @@ from contextlib import redirect_stdout
 import pytest
 
 from gaia.store import writer
+from tests.integration.test_opencode_consent_retry_e2e import db_env  # noqa: F401 (fixture)
 
 SESSION = "ses-parity"
 
@@ -81,6 +82,39 @@ def test_d27_host_parity_block_bytes_match(approval_id):
 
 def test_d27_host_parity_details_bytes_match(approval_id):
     assert _claude_code_reason(approval_id, details=True) == _opencode_signature(approval_id)["details_block"]
+
+
+def test_d27_host_parity_plugin_posts_the_claude_code_bytes_before_the_short_question(db_env):
+    """The real plugin (driven, no OpenCode host) posts the Claude Code reason bytes, then asks only the short question."""
+    from tests.approvals.test_approval_live_fixes_opencode_block import (
+        SHORT_QUESTION,
+        _assert_posted_by_gaia,
+        _messages_before_each_ask,
+    )
+    from tests.approvals.test_approval_live_fixes_orchestrator_presents import _ask, _placeholder
+    from tests.integration.test_opencode_consent_retry_e2e import (
+        FIRST_COMMAND,
+        ROOT_SESSION_ID,
+        _drive,
+        _request_set,
+        _step,
+    )
+
+    env, _db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _ask("ask", _placeholder(env, approval_id), answer="details"),
+        _ask("details", _placeholder(env, approval_id, details=True), answer="details",
+             call_id="call-details"),
+    ])
+
+    first, second = _messages_before_each_ask(driven, ROOT_SESSION_ID)
+    _assert_posted_by_gaia(first, _claude_code_reason(approval_id, details=False))
+    _assert_posted_by_gaia(second, _claude_code_reason(approval_id, details=True))
+    for label in ("ask", "details"):
+        question = _step(driven, label)["question"]["question"]
+        assert question == SHORT_QUESTION and FIRST_COMMAND not in question, driven
 
 
 def test_d27_host_parity_opencode_question_carries_only_the_short_question(approval_id):
