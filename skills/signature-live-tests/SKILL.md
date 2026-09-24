@@ -30,9 +30,12 @@ folder: it only reclaims entries named by a closed contract id, and
 3. When it returns `APPROVAL_REQUEST`, present it with
    `orchestrator-present-approval` -- unchanged. Remind the user of the answer
    for this test right before the question opens.
-4. Check with `gaia approvals show <approval_id>` (the State line) and with the
-   file listing the specialist records before cleaning. A test passes only
-   when both match its expected result; report which part did not.
+4. Check with `gaia approvals show <approval_id>` and with the file listing the
+   specialist records before cleaning. State and Outcome are separate lines:
+   State is the user's decision (`pending`, `orphaned`, `approved`,
+   `rejected`), Outcome is what became of an approved request (`executed`) and
+   is absent while nothing ran. A test passes only when both lines and the
+   files match its expected result; report which part did not.
 5. The specialist removes its own files at the end (`rm` of the exact path,
    which inside scratch needs no signature). The folder and `otra/` stay,
    empty of test files.
@@ -50,46 +53,50 @@ it is sealed with `--cwd` set to the specialist's own directory and absolute
 paths, so the block shows no folder line.
 
 **Test 1 -- Approve.** File `nota-1.txt`. Asks: rename it to `nota-1-ok.txt`.
-User: Approve. Expected: State `executed`; only `nota-1-ok.txt` exists;
-nothing else in the folder changed.
+User: Approve. Expected: State `approved`, Outcome `executed`; only
+`nota-1-ok.txt` exists; nothing else in the folder changed.
 
 **Test 2 -- Reject.** File `nota-2.txt`. Asks: rename it to `nota-2-ok.txt`.
-User: Reject. Expected: State `rejected`; `nota-2.txt` unchanged. Resumed, the
-specialist runs the identical command once and it is blocked again under a new
-id -- the rejected signature is not reusable; withdraw that new one with
-`gaia approvals reject <new_id>`.
+User: Reject. Expected: State `rejected`, no Outcome line; `nota-2.txt`
+unchanged. Resumed, the specialist runs the identical command once and it is
+blocked again under a new id -- the rejected signature is not reusable;
+withdraw that new one with `gaia approvals reject <new_id>`.
 
 **Test 3 -- Details, then Approve.** File `nota-3.txt`. Asks: rename it to
 `nota-3-ok.txt`. User: Details first. Expected: the Details block shows what
 the command does, its impact, rollback, 30 min, ID and fingerprint; State is
-still `pending` and `nota-3.txt` is unchanged. Ask again with
-`gaia approvals question <approval_id>` (Details itself is
-`gaia approvals question --details`); user: Approve.
-Expected: State `executed`; only `nota-3-ok.txt` exists.
+still `pending`, no Outcome line, and `nota-3.txt` is unchanged. Ask again
+with `gaia approvals question <approval_id>` (Details itself is
+`gaia approvals question --details`); user: Approve. Expected: State
+`approved`, Outcome `executed`; only `nota-3-ok.txt` exists.
 
 **Test 4 -- Two commands, one signature.** File `nota-4.txt`. Asks one set:
 1 rename `nota-4.txt` to `nota-4-a.txt`, 2 rename `nota-4-a.txt` to
 `nota-4-b.txt`. User: one Approve. Expected: both run with no second
-signature; State `executed` with both commands; only `nota-4-b.txt` exists.
+signature; State `approved`, Outcome `executed`; only `nota-4-b.txt` exists.
 
 **Test 5 -- Another folder.** File `otra/nota-5.txt`. Asks: rename
 `nota-5.txt` to `nota-5-ok.txt` with `--cwd <folder>/otra` and relative names.
 User: Approve. Expected: the block shows `en <folder>/otra` with the command on
-the next line; it runs as `cd <folder>/otra && <command>`; State `executed`;
-only `otra/nota-5-ok.txt` exists.
+the next line; it runs as `cd <folder>/otra && <command>`; State `approved`,
+Outcome `executed`; only `otra/nota-5-ok.txt` exists.
 
 **Test 6 -- Several signatures in one question.** Two specialists, files
 `nota-6a.txt` and `nota-6b.txt`, each asks to rename its file to `-ok`. Ask
 both: in Claude Code one `gaia approvals question <id-6a> <id-6b>`; in
 OpenCode, which asks one signature per call, two questions one after another.
 User: Approve 6a, Reject 6b. Expected: each answer decides only its own
-signature -- 6a State `executed` and renamed, 6b State `rejected` and
-unchanged.
+signature -- 6a State `approved`, Outcome `executed`, renamed; 6b State
+`rejected`, no Outcome line, unchanged.
 
 **Test 7 -- Typed answer.** File `nota-7.txt`. Asks: rename it to
 `nota-7-ok.txt`. User: types an answer ("sí, aprobado") instead of choosing an
-option. Expected: nothing activates; State `pending`; `nota-7.txt`
-unchanged. Withdraw it with `gaia approvals reject <approval_id>`.
+option. Expected: nothing activates; State `pending`, no Outcome line;
+`nota-7.txt` unchanged. After 30 minutes with no activity from the requester
+(likely in OpenCode, whose sessions do not heartbeat) the same request reads
+State `orphaned`: accept it as the same result -- still undecided, no Outcome
+line, file unchanged -- because only an Approve would read `approved`.
+Withdraw it with `gaia approvals reject <approval_id>`.
 
 **Test 8 -- How it looks.** File `nota-8.txt`. Asks: rename it to
 `nota-8-ok.txt`. User: confirms the block reads `Solicitud de aprobación ·
@@ -98,7 +105,8 @@ on one line, with no validity; and that the question has at most 60
 characters with Approve / Reject / Details. Then Details, and confirms that
 block keeps what it does, impact, rollback, 30 min, ID and fingerprint without
 the command. Then Reject. Expected: the user says both look right; State
-`rejected`; `nota-8.txt` unchanged.
+`rejected`, no Outcome line; `nota-8.txt` unchanged.
 
 Running the catalog is tests 1 to 8 in order, reporting per test: the answer
-given, the State from `gaia approvals show`, the file listing, pass or fail.
+given, the State and Outcome from `gaia approvals show`, the file listing,
+pass or fail.

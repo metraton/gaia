@@ -68,11 +68,35 @@ def test_d28_live_test_catalog_each_test_is_complete(skill_text, number):
     assert "Expected:" in section and "State `" in section
 
 
+_STATE = re.compile(r"State (?:is )?(?:still )?`(\w+)`")
+_OUTCOME = re.compile(r"Outcome `(\w+)`")
+# A test that runs its command is approved and then executed: two lines of show.
+_RUNS = {1: True, 2: False, 3: True, 4: True, 5: True, 6: True, 7: False, 8: False}
+
+
 @pytest.mark.parametrize("number", TESTS)
 def test_d28_live_test_catalog_expects_states_the_reader_emits(skill_text, number):
-    states = set(re.findall(r"State (?:is )?(?:still )?`(\w+)`", _test_section(skill_text, number)))
-    real = {reading.PENDING, reading.EXECUTED, reading.REJECTED}
-    assert states and states <= real
+    section = _test_section(skill_text, number)
+    states = set(_STATE.findall(section))
+    decisions = {reading.PENDING, reading.ORPHANED, reading.APPROVED, reading.REJECTED}
+    assert states and states <= decisions, "State is the decision, never the outcome"
+    outcomes = set(_OUTCOME.findall(section))
+    if _RUNS[number]:
+        assert reading.APPROVED in states and outcomes == {reading.EXECUTED}
+    else:
+        assert reading.APPROVED not in states and not outcomes
+
+
+def test_d28_live_test_catalog_reads_show_as_two_lines(skill_text):
+    display = (ROOT / "gaia" / "approvals" / "display.py").read_text(encoding="utf-8")
+    assert '"  State       : {state}"' in display and "Outcome     :" in display
+    assert "State and Outcome are separate lines" in skill_text
+
+
+def test_d28_live_test_catalog_typed_answer_accepts_orphaned(skill_text):
+    section = _test_section(skill_text, 7)
+    assert {reading.PENDING, reading.ORPHANED} <= set(_STATE.findall(section))
+    assert "30 minutes" in section
 
 
 def test_d28_live_test_catalog_evidence_and_cleanup_apply_to_every_test(skill_text):
