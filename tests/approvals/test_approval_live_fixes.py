@@ -1,10 +1,10 @@
 """The four fixes the first live test found (plan 76, task 14; brief D23 and D24, PD13).
 
-(1) In Claude Code the signature travels inside AskUserQuestion's question as
-the renderer's single string (text, a blank line, the short question), checked
-byte for byte by PreToolUse; no hook answers through ``systemMessage``, which
-the desktop app does not show; Details comes back inside the re-asked question;
-commands are shown exactly. (2) An item sealed in another directory runs as the
+(1) In Claude Code AskUserQuestion asks only the short question, the object
+checked byte for byte by PreToolUse, whose ``allow`` reason shows the block
+(D29, which replaced D23's text inside the question); no hook answers through
+``systemMessage``, which the desktop app does not show; Details comes back as
+its own block with the re-asked question; commands are shown exactly. (2) An item sealed in another directory runs as the
 exact ``cd <sealed directory> && <sealed command>`` on both hosts, the only
 compound accepted, and ``request-set`` refuses a directory that does not exist.
 (3) One presentation records one SHOWN. (4) The orchestrator may withdraw with
@@ -142,25 +142,29 @@ def _denied(output) -> bool:
 # (1) Claude Code: the signature inside the question, exact commands
 # --------------------------------------------------------------------------- #
 
-def test_approval_live_fixes_question_is_the_renderer_single_string(host):
+def test_approval_live_fixes_question_asks_only_the_short_question_and_the_hook_shows_the_block(host):
     approval_id = _request(host["repo"])
     rendered = _rendered(approval_id)
 
     [question] = _question_cli(approval_id)
+    specific = _ask_pre([question], "toolu_block")["hookSpecificOutput"]
 
-    assert question["question"] == rendered.text + "\n\n¿Publico la rama?"
-    assert question["question"] == rendered.asked
-    assert question["question"].startswith("Solicitud de aprobación · gaia-system\n")
+    assert question["question"] == "¿Publico la rama?"
+    assert specific["permissionDecision"] == "allow"
+    assert specific["permissionDecisionReason"] == rendered.block
+    assert rendered.block.startswith("```\nSolicitud de aprobación · gaia-system\n")
 
 
-def test_approval_live_fixes_pre_accepts_only_the_single_string_byte_for_byte(host):
+def test_approval_live_fixes_pre_accepts_only_the_printed_object_byte_for_byte(host):
     approval_id = _request(host["repo"])
+    rendered = _rendered(approval_id)
     [question] = _question_cli(approval_id)
 
-    short_only = {**question, "question": "¿Publico la rama?"}
-    one_byte_off = {**question, "question": question["question"].replace("·", "-", 1)}
-    for impostor in (short_only, one_byte_off):
+    text_inside = {**question, "question": rendered.text + "\n\n¿Publico la rama?"}
+    one_byte_off = {**question, "question": question["question"].replace("¿", "", 1)}
+    for impostor in (text_inside, one_byte_off):
         assert _denied(_ask_pre([impostor], "toolu_impostor")), impostor["question"]
+    assert _events(approval_id, "SHOWN") == []
 
     output = _ask_pre([question], "toolu_exact")
     assert not _denied(output)
@@ -185,7 +189,7 @@ def test_approval_live_fixes_no_hook_response_uses_system_message(host):
         assert "systemMessage" not in json.dumps(output), output
 
 
-def test_approval_live_fixes_details_comes_back_inside_the_reasked_question(host):
+def test_approval_live_fixes_details_block_comes_back_with_the_reasked_question(host):
     approval_id = _request(host["repo"])
     rendered = _rendered(approval_id)
     [question] = _question_cli(approval_id)
@@ -196,9 +200,10 @@ def test_approval_live_fixes_details_comes_back_inside_the_reasked_question(host
     context = output["hookSpecificOutput"]["additionalContext"]
     assert f"gaia approvals question --details {approval_id}" in context
     [again] = _question_cli(approval_id, details=True)
-    assert again["question"] == rendered.details + "\n\n¿Publico la rama?"
-    assert again["question"] == rendered.asked_details
-    assert not _denied(_ask_pre([again], "toolu_details"))
+    assert again == {**question, "header": "Detalles"}
+    specific = _ask_pre([again], "toolu_details")["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "allow"
+    assert specific["permissionDecisionReason"] == rendered.details_block
     _ask_post([again], {again["question"]: "Approve"}, "toolu_details")
     assert [event["event_type"] for event in _events(approval_id)].count("APPROVED") == 1
 
@@ -213,13 +218,13 @@ def test_approval_live_fixes_renderer_shows_every_command_exactly(host):
         assert token in rendered.text, token
 
 
-def test_approval_live_fixes_question_limit_applies_only_to_the_short_question(host):
+def test_approval_live_fixes_question_is_the_short_question_within_its_limit(host):
     from gaia.approvals import surface
 
     approval_id = _request(host["repo"], question="x" * 60, what="y" * 120)
     rendered = _rendered(approval_id)
 
-    assert len(rendered.question["question"]) > surface.QUESTION_MAX
+    assert rendered.question["question"] == "x" * 60
     surface.check_question(rendered.question)
     with pytest.raises(surface.SurfaceLimitError, match="60"):
         _request(host["repo"], question="x" * 61)

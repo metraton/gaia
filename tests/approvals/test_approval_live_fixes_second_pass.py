@@ -7,7 +7,7 @@ is refused with what to do instead; ``gaia approvals question`` refuses to run
 in an OpenCode shell. (What OpenCode shows for a signature is D26's, in
 ``test_approval_live_fixes_opencode_block.py``.)
 (2) A command sealed outside the requester's shell folder shows that folder.
-(3) A long command wraps at token boundaries with the continuation indent.
+(3) A long command stays exact on one line (D27/D29 replaced the wrapping).
 (4) A refused sensitive read is not called irreversible.
 (5) The installed CLI takes ``revoke --reason`` and records it.
 """
@@ -99,10 +99,8 @@ def _rendered(approval_id):
 
 
 def _command_block(text):
-    """The lines under ``Comandos (N)``: every command line the user reads."""
-    lines = text.split("\n")
-    start = next(i for i, line in enumerate(lines) if line.startswith("Comandos ("))
-    return lines[start + 1:]
+    """The lines after the heading, description and blank line: every command line the user reads."""
+    return text.split("\n")[3:]
 
 
 # --------------------------------------------------------------------------- #
@@ -233,8 +231,8 @@ def test_approval_live_fixes_opencode_leaves_an_ordinary_question_to_the_policy(
 def test_approval_live_fixes_signature_names_the_folder_of_a_command_run_elsewhere(host):
     elsewhere = _rendered(_request_set(cwd=host["other"]))
 
-    assert any(host["other"] in line for line in _command_block(elsewhere.text)), elsewhere.text
-    assert host["other"] in elsewhere.question["question"]
+    assert _command_block(elsewhere.text)[0] == f"1  en {host['other']}", elsewhere.text
+    assert host["other"] not in elsewhere.question["question"]
 
 
 def test_approval_live_fixes_signature_omits_the_folder_the_requester_runs_in(host):
@@ -244,33 +242,11 @@ def test_approval_live_fixes_signature_omits_the_folder_the_requester_runs_in(ho
 
 
 # --------------------------------------------------------------------------- #
-# (3) A long command keeps its continuation indent
+# (3) A long command stays exact on one line (D27/D29; the host wraps it)
 # --------------------------------------------------------------------------- #
 
-LONG_TARGETS = [
-    f"/home/jorge/ws/me/.project-worktrees/gaia/e811c2894a09cdf63697b03f7b1f5702/tests/fixture-{n}.json"
-    for n in range(3)
-]
-LONG_COMMAND = "chmod 600 " + " ".join(LONG_TARGETS)
-
-
-def test_approval_live_fixes_long_command_wraps_with_its_continuation_indent(host):
-    block = _command_block(_rendered(_request_set(command=LONG_COMMAND)).text)
-    first, *rest = block
-
-    assert first.startswith("  1  chmod 600")
-    assert rest, block
-    for line in block:
-        overlong = [token for token in line.split() if len(token) > 80 - 9 - 2]
-        assert len(line) <= 80 or len(overlong) == 1, line
-    assert all(line.startswith(" " * 9) and not line.startswith(" " * 10) for line in rest), block
-    assert all(line.endswith(" \\") for line in block[:-1]), block
-    tokens = [token for line in block for token in line.removesuffix(" \\").split()]
-    assert tokens == ["1", *LONG_COMMAND.split(" ")]
-
-
-# The command of the Claude Code live test (P-8a94e99b...): its two paths shared
-# one line past the host's width, and the host wrapped the second with no indent.
+# The command of the Claude Code live test (P-8a94e99b...), whose Gaia-made
+# breaks and the host's own wrap together broke it apart; D27 keeps it whole.
 # The folder keeps the live one's length off Gaia's scratch, where cp is not T3.
 LIVE_SCRATCH = "/home/jorge/ws/me/pruebas/a1fc9164405433383.b2455ec1105e"
 LIVE_CP = (
@@ -279,33 +255,13 @@ LIVE_CP = (
 )
 
 
-def _layout(command):
-    """Each command line as read, without its indent or trailing continuation."""
-    block = _command_block(_rendered(_request_set(command=command)).text)
-    return [line.strip().removesuffix(" \\") for line in block]
-
-
-def test_approval_live_fixes_wrapped_command_gives_each_positional_its_own_line(host):
-    assert _layout(LIVE_CP) == [
-        "1  cp",
-        "--verbose",
-        "--no-dereference",
-        "--preserve=mode,timestamps",
-        f"{LIVE_SCRATCH}/movido.txt",
-        f"{LIVE_SCRATCH}/copia-de-prueba.txt",
-    ]
-
-
-def test_approval_live_fixes_wrapped_flag_keeps_one_value_and_short_command_one_line(host):
-    wrapped = f"cp -S .anterior {LIVE_SCRATCH}/origen {LIVE_SCRATCH}/destino"
-
-    assert _layout(wrapped) == [
-        "1  cp",
-        "-S .anterior",
-        f"{LIVE_SCRATCH}/origen",
-        f"{LIVE_SCRATCH}/destino",
-    ]
-    assert _layout("mv muestra.txt movido.txt") == ["1  mv muestra.txt movido.txt"]
+@pytest.mark.parametrize("command", [
+    LIVE_CP,
+    f"cp -S .anterior {LIVE_SCRATCH}/origen {LIVE_SCRATCH}/destino",
+    "mv muestra.txt movido.txt",
+])
+def test_approval_live_fixes_long_command_stays_exact_on_one_line(host, command):
+    assert _command_block(_rendered(_request_set(command=command)).text) == [f"1  {command}"]
 
 
 # --------------------------------------------------------------------------- #

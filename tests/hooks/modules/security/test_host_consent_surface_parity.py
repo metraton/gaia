@@ -217,10 +217,10 @@ def test_cli_consent_surface_is_the_signature_surface_without_an_id_label():
     assert presentation == {
         "approval_id": APPROVAL_ID,
         "text": rendered.text,
+        "block": rendered.block,
         "question": rendered.question,
         "details": rendered.details,
-        "asked": rendered.asked,
-        "asked_details": rendered.asked_details,
+        "details_block": rendered.details_block,
     }
     assert "approve_label" not in presentation
     assert all(APPROVAL_ID not in option["label"] for option in rendered.question["options"])

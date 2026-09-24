@@ -1982,7 +1982,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         searched for an approval id. An Approve that activates nothing is
         recorded (``decision_audit``) so a lost signature stays findable.
         Details asks the model to present that signature again with
-        ``--details``, whose question text carries the renderer's Details.
+        ``--details``, whose re-ask PreToolUse answers with the Details block.
         """
         from gaia.approvals import core, surface
 
@@ -2052,8 +2052,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                     "additionalContext": (
                         "The user chose Details. Ask again with "
                         f"`gaia approvals question --details {' '.join(details)}` and pass "
-                        "its output unchanged to AskUserQuestion: its question carries "
-                        "the Details. Print nothing about the signature yourself."
+                        "its output unchanged to AskUserQuestion: Gaia shows the Details "
+                        "block when that question opens. Print nothing about the "
+                        "signature yourself."
                     ),
                 },
             },

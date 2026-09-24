@@ -1,10 +1,10 @@
 """Claude Code signs on the question Gaia builds, each answer bound to its own signature (plan 76, task 4).
 
-PD4, PD9 and D23: the orchestrator asks AskUserQuestion with the exact object
-``gaia approvals question`` prints for 1 to 4 pending signatures, each question
-text being the renderer's single string (text, a blank line, the short
-question). PreToolUse compares that object with the batch Gaia renders byte for
-byte and records SHOWN per signature under the call's tool_use_id and position;
+PD4, PD9 and D29: the orchestrator asks AskUserQuestion with the exact object
+``gaia approvals question`` prints for 1 to 4 pending signatures, each asking
+only its short question. PreToolUse compares that object with the batch Gaia
+renders byte for byte, records SHOWN per signature under the call's tool_use_id
+and position, and answers ``allow`` whose reason is each signature's block;
 no hook answers through ``systemMessage``, which the desktop app does not show.
 A question that differs, or a signature without its requester's phrases, is
 denied with a reason. PostToolUse maps each chosen label of the SAME
@@ -165,26 +165,35 @@ def test_question_verb_prints_only_the_ask_user_question_input(db):
     assert out == {"questions": [_surfaces(first)[0].question]}
 
 
-def test_pre_one_signature_asks_the_renderer_single_string_and_records_shown(db):
+def _allowed_with(output, *blocks):
+    """PreToolUse let the question open (``allow``, no ``updatedInput``) showing ``blocks``."""
+    return output == {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "allow",
+        "permissionDecisionReason": "\n\n".join(blocks),
+    }}
+
+
+def test_pre_one_signature_asks_the_short_question_shows_its_block_and_records_shown(db):
     first = _request(1)
     _, asked = _question_cli(first)
     rendered = _surfaces(first)[0]
-    assert asked["questions"][0]["question"] == rendered.text + "\n\n¿Publico la rama 1?"
+    assert asked["questions"][0]["question"] == "¿Publico la rama 1?"
 
     output = _pre(asked["questions"], "toolu_one")
 
-    assert output == {}
+    assert _allowed_with(output, rendered.block), output
     assert _shown(db, first) == [{"native_ref": "toolu_one", "position": 0}]
     ordinary = REAL[0]["tool_response"]["questions"]
     assert _pre(ordinary, REAL[0]["tool_use_id"]) == {}
 
 
-def test_pre_accepts_only_the_single_string_byte_for_byte(db):
+def test_pre_accepts_only_the_printed_object_byte_for_byte(db):
     first = _request(1)
     _, asked = _question_cli(first)
     exact = asked["questions"][0]
+    text_inside = _surfaces(first)[0].text + "\n\n" + exact["question"]
 
-    for text in ("¿Publico la rama 1?", exact["question"] + " ", exact["question"].replace("\n\n", "\n")):
+    for text in (text_inside, exact["question"] + " ", exact["question"].replace("¿", "")):
         reason = _deny_reason(_pre([{**exact, "question": text}], "toolu_off_by_bytes"))
         assert "question 1" in reason
     assert _shown(db, first) == []
@@ -196,8 +205,10 @@ def test_pre_four_signatures_are_recorded_in_order_without_system_message(db):
 
     output = _pre(asked["questions"], "toolu_four")
 
-    assert [q["question"] for q in asked["questions"]] == [s.asked for s in _surfaces(*ids)]
-    assert output == {}
+    surfaces = _surfaces(*ids)
+    assert [q["question"] for q in asked["questions"]] == [s.short_question for s in surfaces]
+    assert _allowed_with(output, *[s.block for s in surfaces]), output
+    assert "systemMessage" not in output
     for position, approval_id in enumerate(ids):
         assert _shown(db, approval_id) == [{"native_ref": "toolu_four", "position": position}]
 
@@ -286,7 +297,7 @@ def test_post_label_with_an_approval_id_never_activates(db):
     assert _status(first) == "pending"
 
 
-def test_post_details_asks_that_signature_again_with_the_details_inside_the_question(db):
+def test_post_details_asks_that_signature_again_and_pre_shows_its_details_block(db):
     from bin.cli.approvals import cmd_question
 
     first, second = _request(1), _request(2)
@@ -304,8 +315,9 @@ def test_post_details_asks_that_signature_again_with_the_details_inside_the_ques
     with redirect_stdout(out):
         assert cmd_question(argparse.Namespace(approval_ids=[second], details=True, json=True)) == 0
     [again] = json.loads(out.getvalue())["questions"]
-    assert again["question"] == _surfaces(second)[0].details + "\n\n¿Publico la rama 2?"
-    assert _pre([again], "toolu_details_again") == {}
+    rendered = _surfaces(second)[0]
+    assert again == rendered.details_question and again["question"] == "¿Publico la rama 2?"
+    assert _allowed_with(_pre([again], "toolu_details_again"), rendered.details_block)
     assert _shown(db, second)[-1] == {"native_ref": "toolu_details_again", "position": 0}
 
 
