@@ -2400,8 +2400,10 @@ def register(subparsers) -> None:
         description=(
             "Print, as JSON, the exact AskUserQuestion input for the given pending\n"
             "approvals, one question per signature in the order given. Each\n"
-            "question text carries its signature. Pass it unchanged: the hook\n"
-            "checks it and binds each answer."
+            "question holds only its short question with Approve / Reject /\n"
+            "Details; Gaia shows each signature's block as the question opens\n"
+            "(D29: the hook in Claude Code, the plugin in OpenCode). Pass it\n"
+            "unchanged: Gaia checks it and binds each answer."
         ),
     )
     p_question.add_argument(
@@ -2410,7 +2412,7 @@ def register(subparsers) -> None:
     )
     p_question.add_argument(
         "--details", action="store_true",
-        help="Ask again with each signature's Details in its question text",
+        help="Ask again so Gaia shows each signature's Details block (D29)",
     )
     p_question.set_defaults(func=cmd_question, json=True)
 
