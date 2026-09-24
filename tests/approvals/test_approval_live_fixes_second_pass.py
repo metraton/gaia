@@ -299,6 +299,45 @@ def test_approval_live_fixes_long_command_wraps_with_its_continuation_indent(hos
     assert tokens == ["1", *LONG_COMMAND.split(" ")]
 
 
+# The command of the Claude Code live test (P-8a94e99b...): its two paths shared
+# one line past the host's width, and the host wrapped the second with no indent.
+# The folder keeps the live one's length off Gaia's scratch, where cp is not T3.
+LIVE_SCRATCH = "/home/jorge/ws/me/pruebas/a1fc9164405433383.b2455ec1105e"
+LIVE_CP = (
+    "cp --verbose --no-dereference --preserve=mode,timestamps "
+    f"{LIVE_SCRATCH}/movido.txt {LIVE_SCRATCH}/copia-de-prueba.txt"
+)
+
+
+def _layout(command):
+    """Each command line as read, without its indent or trailing continuation."""
+    block = _command_block(_rendered(_request_set(command=command)).text)
+    return [line.strip().removesuffix(" \\") for line in block]
+
+
+def test_approval_live_fixes_wrapped_command_gives_each_positional_its_own_line(host):
+    assert _layout(LIVE_CP) == [
+        "1  cp",
+        "--verbose",
+        "--no-dereference",
+        "--preserve=mode,timestamps",
+        f"{LIVE_SCRATCH}/movido.txt",
+        f"{LIVE_SCRATCH}/copia-de-prueba.txt",
+    ]
+
+
+def test_approval_live_fixes_wrapped_flag_keeps_one_value_and_short_command_one_line(host):
+    wrapped = f"cp -S .anterior {LIVE_SCRATCH}/origen {LIVE_SCRATCH}/destino"
+
+    assert _layout(wrapped) == [
+        "1  cp",
+        "-S .anterior",
+        f"{LIVE_SCRATCH}/origen",
+        f"{LIVE_SCRATCH}/destino",
+    ]
+    assert _layout("mv muestra.txt movido.txt") == ["1  mv muestra.txt movido.txt"]
+
+
 # --------------------------------------------------------------------------- #
 # (4) A refused sensitive read is categorical, not irreversible
 # --------------------------------------------------------------------------- #

@@ -135,20 +135,31 @@ def _tokens(command: str) -> Optional[list[str]]:
 def _command_lines(command: str, width: int) -> list[str]:
     """Lay one command out as D12 shows it, every token exact (D23).
 
-    Each flag, with its values, starts its own line, and a line that would pass
-    ``width`` continues on the next one between tokens. A token longer than
-    ``width`` is never split: it stays on a line that has not yet passed
-    ``width``, so a line overruns only by that one token.
+    Each flag, with its values, starts its own line. A command longer than
+    ``width`` also gives every positional argument its own line, because the
+    host wraps a line past its width with no continuation indent: there a flag
+    keeps one value (none when written ``--flag=value``), and the words after
+    the program join the first line only while it fits. A token is never split,
+    so a line overruns ``width`` only by a token longer than it.
     """
     tokens = None if "\n" in command else _tokens(command)
     if not tokens:
         return command.split("\n")
+    wraps = len(" ".join(tokens)) > width
     lines: list[str] = []
+    takes_value = False
     for token in tokens:
-        starts_flag = token.startswith("-") and token != "-"
-        fits = bool(lines) and len(lines[-1]) + 1 + len(token) <= width
-        overlong = bool(lines) and len(token) > width and len(lines[-1]) <= width
-        if not starts_flag and (fits or overlong):
+        if token.startswith("-") and token != "-":
+            lines.append(token)
+            takes_value = "=" not in token
+            continue
+        joins = bool(lines) and (
+            not wraps
+            or takes_value
+            or (len(lines) == 1 and len(lines[0]) + 1 + len(token) <= width)
+        )
+        takes_value = False
+        if joins:
             lines[-1] += " " + token
         else:
             lines.append(token)

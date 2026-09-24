@@ -56,7 +56,8 @@ Solicitud de aprobación · gaia-system
 Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.
 
 Comandos (1)
-  1  python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia \
+  1  python3 \
+         /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia \
          dev \
          --workspace /home/jorge/ws/me \
          --ref bbc2f09 \
