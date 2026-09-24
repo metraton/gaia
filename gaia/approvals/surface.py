@@ -59,9 +59,12 @@ class Surface:
     line, the short question. Details re-asks the signature with
     ``asked_details`` (``details``, a blank line, the short question).
     ``question`` and ``details_question`` are the AskUserQuestion objects that
-    carry those two strings. ``asked_line`` and ``asked_details_line`` say the
-    same on one line, for OpenCode: its desktop app shows the question text
-    with collapsing white space, so line breaks and indents do not survive.
+    carry those two strings.
+
+    OpenCode shows a question's text on one line, so there (D26) ``block`` or
+    ``details_block`` -- ``text`` or ``details`` as a Markdown code block -- is
+    posted into the session before a question that asks only
+    ``short_question``.
     """
 
     approval_id: str
@@ -71,8 +74,9 @@ class Surface:
     asked_details: str
     question: dict
     details_question: dict
-    asked_line: str
-    asked_details_line: str
+    short_question: str
+    block: str
+    details_block: str
 
 
 # --------------------------------------------------------------------------- #
@@ -262,36 +266,11 @@ def _details(
     return "\n".join(lines)
 
 
-def _listed(items: Sequence[Mapping[str, Any]], line: Any) -> str:
-    return " · ".join(f"[{position}] {line(item)}" for position, item in enumerate(items, start=1))
-
-
-def _text_line(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> str:
-    """``_text`` on one line: the same parts, joined by separators instead of line breaks."""
-    def command(item: Mapping[str, Any]) -> str:
-        folder = _folder(payload, item)
-        return _target(item) + (f" ({folder})" if folder else "")
-
-    return " — ".join([
-        _heading(payload),
-        payload.get("what") or _NO_TITLE,
-        f"{_noun(items)} ({len(items)}): {_listed(items, command)}",
-    ])
-
-
-def _details_line(
-    payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]], approval_id: str
-) -> str:
-    """``_details`` on one line: the same parts, joined by separators instead of line breaks."""
-    exact = "Comando exacto" if len(items) == 1 else "Comandos exactos"
-    return " — ".join([
-        _listed(items, lambda item: (
-            f"{item.get('does') or _NO_DOES} Impacto: {item.get('impact') or _NO_IMPACT}"
-        )),
-        f"Rollback: {payload.get('rollback_hint') or _NO_ROLLBACK}",
-        f"{exact}: {_listed(items, _target)}",
-        _validity(payload, items, approval_id),
-    ])
+def _code_block(text: str) -> str:
+    """``text`` as a Markdown code block whose fence no backtick run inside it can close."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{text}\n{fence}"
 
 
 def _short_question(payload: Mapping[str, Any]) -> str:
@@ -328,8 +307,9 @@ def _render(payload: Mapping[str, Any], approval_id: str, header: str) -> Surfac
         asked_details=asked_details,
         question=_question(asked, header),
         details_question=_question(asked_details, header),
-        asked_line=f"{_text_line(payload, items)} — {short}",
-        asked_details_line=f"{_details_line(payload, items, approval_id)} — {short}",
+        short_question=short,
+        block=_code_block(text),
+        details_block=_code_block(details),
     )
 
 

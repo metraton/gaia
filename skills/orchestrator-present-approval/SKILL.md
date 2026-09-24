@@ -32,10 +32,12 @@ without resuming anyone:
 
 1. Run `gaia approvals question <approval_id>`, one id per call: in OpenCode
    it prints a question that carries only that id.
-2. Call the question tool with that output unchanged. Gaia writes the signature
-   into your call before the user sees it and binds the answer to that
-   approval. Only approvals your own specialists requested are accepted; ask
-   several one after another. A signature you type or copy is refused.
+2. Call the question tool with that output unchanged, and print nothing about
+   the signature. OpenCode shows a question on one line, so Gaia posts the
+   signature (or its Details) in your session as a block just before the
+   question, fills your call with the short question, and binds the answer to
+   that approval. Only approvals your own specialists requested are accepted;
+   ask several one after another. A signature you type or copy is refused.
 3. Your call's result says what Gaia did with the answer. Details: run
    `gaia approvals question --details <approval_id>` and ask again the same
    way. Approved: resume the specialist session it names (`task_id`) with

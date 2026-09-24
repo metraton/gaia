@@ -1842,10 +1842,10 @@ def _opencode_binding(
 def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dict:
     """Build what OpenCode asks for one pending approval, composed by Gaia alone.
 
-    ``signature`` is the renderer's surface as the native question carries it:
-    the one-line string, the one-line Details re-ask string, the header and the
-    options. One line, because the OpenCode app collapses the question text's
-    white space.
+    ``signature`` is the renderer's surface as OpenCode shows it (D26): the
+    ``block`` (or ``details_block`` on a Details re-ask) the plugin posts into
+    the session, and a question of the short question, header and options,
+    because OpenCode shows a question's text on one line.
     ``metadata`` binds the retry to the sealed commands. A payload that cannot
     be rendered returns ``presentation_error`` instead: the SHOWN record still
     stands, and the plugin opens no question it cannot fill in full.
@@ -1872,8 +1872,9 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
         rendered = surface.render(sealed_payload, approval_id)
         return {
             "signature": {
-                "question": rendered.asked_line,
-                "details": rendered.asked_details_line,
+                "block": rendered.block,
+                "details_block": rendered.details_block,
+                "question": rendered.short_question,
                 "header": rendered.question["header"],
                 "options": rendered.question["options"],
             },

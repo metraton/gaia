@@ -3,8 +3,9 @@
 The orchestrator runs ``gaia approvals question <id>``, which in OpenCode prints
 a question carrying only the approval id, and calls the question tool with it.
 The real plugin (``opencode/plugin.ts`` under bun, real bridge, real
-``opencode-present`` / ``opencode-decide``) replaces those arguments with the
-renderer's one-line string, records SHOWN, and binds the answer to that
+``opencode-present`` / ``opencode-decide``) posts the renderer's text before
+the question (D26), replaces those arguments with the short question, records
+SHOWN, and binds the answer to that
 approval; the grant stays bound to the requesting session and agent (D6), and
 the same specialist executes it.
 
@@ -89,7 +90,7 @@ def test_approval_live_fixes_opencode_orchestrator_presents_and_the_specialist_e
 
     asked = _step(driven, "ask")
     assert asked["allowed"] is True, driven
-    assert asked["question"]["question"] == _rendered(approval_id).asked_line
+    assert asked["question"]["question"] == "¿Publico la rama y la imagen?"
     assert [option["label"] for option in asked["question"]["options"]] == ["Approve", "Reject", "Details"]
     # The model only opened the question: no control prompt went to any session.
     assert driven["controlPrompts"] == []
@@ -128,7 +129,8 @@ def test_approval_live_fixes_opencode_orchestrator_details_is_asked_again_with_t
 
     assert _approval_status(db_path, approval_id) == "pending"
     assert f"gaia approvals question --details {approval_id}" in _step(driven, "ask")["output"]
-    assert _step(driven, "details")["question"]["question"] == _rendered(approval_id).asked_details_line
+    [_, details_block] = [event for event in driven["hostEvents"] if event["type"] == "message"]
+    assert details_block["text"] == f"```\n{_rendered(approval_id).details}\n```"
 
 
 @pytest.mark.parametrize("who", ["foreign requester", "specialist session"])

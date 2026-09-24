@@ -4,8 +4,8 @@
 ``request-file-write`` opens Gaia's own question in the requester's session with
 no attempt of the sealed command; a signature-shaped question Gaia did not open
 is refused with what to do instead; ``gaia approvals question`` refuses to run
-in an OpenCode shell; the string OpenCode asks reads on one line, because the
-desktop app renders the question text with collapsing white space.
+in an OpenCode shell. (What OpenCode shows for a signature is D26's, in
+``test_approval_live_fixes_opencode_block.py``.)
 (2) A command sealed outside the requester's shell folder shows that folder.
 (3) A long command wraps at token boundaries with the continuation indent.
 (4) A refused sensitive read is not called irreversible.
@@ -224,22 +224,6 @@ def test_approval_live_fixes_opencode_leaves_an_ordinary_question_to_the_policy(
     }])
 
     assert "Gaia did not open this question" not in str(output.get("reason", "")), output
-
-
-def test_approval_live_fixes_opencode_signature_reads_on_one_line(host):
-    from bin.cli.approvals import _opencode_presentation
-
-    approval_id = _request_set(cwd=host["other"])
-
-    signature = _opencode_presentation(_row(approval_id), SESSION, "call-one-line")["signature"]
-
-    for text in (signature["question"], signature["details"]):
-        assert "\n" not in text, text
-        assert "  " not in text, text
-        assert text.endswith(SHORT_QUESTION), text
-    assert COMMAND in signature["question"]
-    assert host["other"] in signature["question"]
-    assert COMMAND in signature["details"] and approval_id in signature["details"]
 
 
 # --------------------------------------------------------------------------- #

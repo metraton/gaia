@@ -76,6 +76,8 @@ const exchanges: Exchange[] = []
 /** Each approval a blocked step handed to the plugin's question, in order. */
 const presentations: Record<string, unknown>[] = []
 const controlPrompts: Record<string, any>[] = []
+/** Messages posted with session.prompt and question.asked deliveries, in the order the host saw them. */
+const hostEvents: Record<string, unknown>[] = []
 const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
 
@@ -254,11 +256,30 @@ const client = {
       }
       return { data: undefined, response: { ok: true, status: 204 } }
     },
+    async prompt(request: any) {
+      assertPromptAsyncBody(request)
+      const part = request.body.parts[0]
+      hostEvents.push({
+        type: "message", sessionID: request.path.id, noReply: request.body.noReply,
+        partCount: request.body.parts.length, synthetic: part?.synthetic, text: part?.text,
+      })
+      if (scenario.rejectMessages === true) {
+        return { error: { name: "BadRequest" }, response: { ok: false, status: 400 } }
+      }
+      return { data: { info: { role: "user" } }, response: { ok: true, status: 200 } }
+    },
   },
 }
 
 const directory = process.env.WORKSPACE ?? process.cwd()
 plugin = await GaiaOpenCodePlugin({ gaiaBridge, client, directory })
+const deliverEvent = plugin.event
+plugin.event = async (input: any) => {
+  if (input?.event?.type === "question.asked") {
+    hostEvents.push({ type: "question.asked", sessionID: input.event.properties?.sessionID })
+  }
+  return deliverEvent(input)
+}
 const argsByCall = new Map<string, any>()
 
 /** The approval the policy bridge named for this call; concurrent steps share no global. */
@@ -614,6 +635,7 @@ console.log(JSON.stringify({
   exchanges: scenario.redactIdentityRecords ? exchanges.map(redactIdentity) : exchanges,
   presentations,
   controlPrompts,
+  hostEvents,
   permissionTransitions,
   sessionPermissions: Object.fromEntries(sessionPermissions),
   observations,

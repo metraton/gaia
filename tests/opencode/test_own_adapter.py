@@ -267,6 +267,9 @@ def driven_env(tmp_path, monkeypatch, bootstrapped_db_template):
     return env, db_path
 
 
+SHORT_QUESTION = "¿Publico la rama y la imagen?"
+
+
 def _rendered(approval_id):
     from gaia.approvals.store import get_by_id
     from gaia.approvals.surface import render
@@ -274,10 +277,21 @@ def _rendered(approval_id):
     return render(json.loads(get_by_id(approval_id)["payload_json"]), approval_id)
 
 
-def _asked(rendered, text):
+def _posted(driven):
+    """The texts Gaia posted into the specialist's session with session.prompt, in order."""
+    from tests.integration.test_opencode_consent_retry_e2e import SESSION_ID
+
+    return [
+        event["text"] for event in driven["hostEvents"]
+        if event["type"] == "message" and event["sessionID"] == SESSION_ID
+    ]
+
+
+def _asked(rendered):
+    """The OpenCode question: only the short question; the signature text is posted before it (D26)."""
     return {
         "header": rendered.question["header"],
-        "question": text,
+        "question": SHORT_QUESTION,
         "options": rendered.question["options"],
         "multiple": False,
         "custom": False,
@@ -320,7 +334,8 @@ def test_own_adapter_asks_the_renderer_single_string_and_closes_on_execute_after
 
     decision = e2e._step(driven, "approve")
     assert driven["presentations"][0]["approvalID"] == approval_id, driven["presentations"]
-    assert decision["question"] == _asked(rendered, rendered.asked_line)
+    assert decision["question"] == _asked(rendered)
+    assert _posted(driven) == [f"```\n{rendered.text}\n```"]
     instruction = driven["controlPrompts"][0]["body"]["parts"][0]["text"]
     assert decision["modelQuestion"]["question"] == "Gaia"
     assert rendered.text.splitlines()[0] not in instruction and approval_id not in instruction
@@ -343,8 +358,9 @@ def test_own_adapter_details_reasks_the_same_signature_with_the_renderer_details
         _decision("approve", "approve", "question-details"),
     ])
 
-    assert e2e._step(driven, "details")["question"] == _asked(rendered, rendered.asked_line)
-    assert e2e._step(driven, "approve")["question"] == _asked(rendered, rendered.asked_details_line)
+    assert e2e._step(driven, "details")["question"] == _asked(rendered)
+    assert e2e._step(driven, "approve")["question"] == _asked(rendered)
+    assert _posted(driven) == [f"```\n{rendered.text}\n```", f"```\n{rendered.details}\n```"]
     assert e2e._step(driven, "approve")["modelQuestion"]["question"] == "Gaia"
     assert e2e._step(driven, "after-details")["controlPromptCount"] == 2
     assert e2e._control_closures(db_path) == [
@@ -463,8 +479,9 @@ def test_own_adapter_asks_a_batch_one_signature_after_another(driven_env):
     ], auto_safe_idle=False)
 
     assert [item["approvalID"] for item in driven["presentations"]] == [first, second]
-    assert e2e._step(driven, "reject-first")["question"]["question"] == _rendered(first).asked_line
-    assert e2e._step(driven, "approve-second")["question"]["question"] == _rendered(second).asked_line
+    assert e2e._step(driven, "reject-first")["question"]["question"] == SHORT_QUESTION
+    assert e2e._step(driven, "approve-second")["question"]["question"] == SHORT_QUESTION
+    assert _posted(driven) == [f"```\n{_rendered(item).text}\n```" for item in (first, second)]
     control_prompts = [p for p in driven["controlPrompts"] if p["path"]["id"] == e2e.SESSION_ID]
     assert len(control_prompts) == 2
     assert e2e._control_closures(db_path) == [("decided", first), ("decided", second)]

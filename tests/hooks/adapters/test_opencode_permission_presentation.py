@@ -120,10 +120,12 @@ def _renderer_signature(approval_id):
     """The signature the shared renderer produces for the persisted payload."""
     from gaia.approvals import surface
 
-    rendered = surface.render(_stored_payload(approval_id), approval_id)
+    payload = _stored_payload(approval_id)
+    rendered = surface.render(payload, approval_id)
     return {
-        "question": rendered.asked_line,
-        "details": rendered.asked_details_line,
+        "block": f"```\n{rendered.text}\n```",
+        "details_block": f"```\n{rendered.details}\n```",
+        "question": payload["question"],
         "header": rendered.question["header"],
         "options": rendered.question["options"],
     }
@@ -228,8 +230,8 @@ def test_cli_presentation_emits_the_renderer_signature_and_the_sealed_metadata(d
     envelope = _expected_envelope(approval_id)
 
     assert emitted["signature"] == _renderer_signature(approval_id)
-    assert PHRASES["what"] in emitted["signature"]["question"]
-    assert emitted["signature"]["question"].endswith(PHRASES["question"])
+    assert PHRASES["what"] in emitted["signature"]["block"]
+    assert emitted["signature"]["question"] == PHRASES["question"]
     assert emitted["metadata"] == consent_presentation.native_metadata(envelope)
     assert json.loads(emitted["metadata"]["canonical_payload"]) == json.loads(
         envelope.canonical_payload()

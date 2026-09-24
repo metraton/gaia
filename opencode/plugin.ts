@@ -66,6 +66,8 @@ export type SignatureRequest = {
   approvalID: string
   correlationID: string
   mode: SignatureMode
+  /** The renderer's text for `mode`, posted into the session right before the question. */
+  block: string
   metadata: Record<string, unknown>
   question: {
     header: string
@@ -430,6 +432,7 @@ export type ControlCloseReason =
   | "decision_duplicate"
   | "retry_conflict"
   | "prompt_rejected"
+  | "block_rejected"
   | "session_ended"
   | "drifted_tool_call"
   | "drifted_tool_result"
@@ -638,8 +641,9 @@ export function gaiaFailureCause(result: { stdout: string; stderr: string }): st
 
 /** The renderer's signature for one approval, exactly as `opencode-present` emitted it. */
 export type SignatureSurface = {
+  block: string
+  detailsBlock: string
   question: string
-  details: string
   header: string
   options: Array<{ label: string; description: string }>
   metadata: Record<string, unknown>
@@ -909,9 +913,11 @@ export function evaluateConsentRetry(
 }
 
 /**
- * The question that asks one signature: the renderer's string for `mode`
- * placed as-is, with the renderer's header and options. The plugin composes no
- * text of its own; it only chooses which of Gaia's two strings is asked.
+ * The question that asks one signature and the renderer's block that precedes
+ * it (D26): OpenCode shows a question's text on one line, so the question asks
+ * only the short question and the block for `mode` carries the signature. The
+ * plugin composes no text of its own; it only chooses which of Gaia's blocks
+ * is posted.
  */
 export function signatureRequest(
   approval: PendingApproval,
@@ -925,10 +931,11 @@ export function signatureRequest(
     approvalID: approval.approvalID,
     correlationID: retry.correlationID,
     mode,
+    block: mode === "details" ? surface.detailsBlock : surface.block,
     metadata: { ...surface.metadata },
     question: {
       header: surface.header,
-      question: mode === "details" ? surface.details : surface.question,
+      question: surface.question,
       options: surface.options.map((option) => ({ ...option })),
       multiple: false,
       custom: false,
@@ -1025,7 +1032,8 @@ export function readConsentPresentation(stdout: string): SignatureSurface {
   const options = signature?.options
   if (
     typeof signature?.question !== "string" || !signature.question
-    || typeof signature?.details !== "string" || !signature.details
+    || typeof signature?.block !== "string" || !signature.block
+    || typeof signature?.details_block !== "string" || !signature.details_block
     || typeof signature?.header !== "string" || !signature.header
     || !Array.isArray(options) || options.length !== SIGNATURE_ANSWERS.length || !options.every(isOption)
     || !metadata || typeof metadata !== "object"
@@ -1037,8 +1045,9 @@ export function readConsentPresentation(stdout: string): SignatureSurface {
     )
   }
   return {
+    block: signature.block,
+    detailsBlock: signature.details_block,
     question: signature.question,
-    details: signature.details,
     header: signature.header,
     options: options.map((option: { label: string; description: string }) => ({
       label: option.label, description: option.description,
@@ -1782,6 +1791,34 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       || "host resolved with an error carrying no detail"
   }
 
+  /** Post the signature's block into the session its question opens in, right before that question (D26).
+   *
+   * `session.prompt` with `noReply` saves the message without a model turn and
+   * resolves once it is saved, so the block lands before the question;
+   * `promptAsync` would return first. The part is not synthetic, because
+   * OpenCode hides synthetic parts from the user. Throws when the host refuses:
+   * a question asked without its signature would ask the user to approve text
+   * they never saw.
+   */
+  async function postSignatureBlock(request: SignatureRequest): Promise<void> {
+    const session = input?.client?.session
+    if (typeof session?.prompt !== "function") {
+      throw new Error(`OpenCode offers no session.prompt to show signature ${request.approvalID}`)
+    }
+    let refused: string | undefined
+    try {
+      refused = hostRejection(await session.prompt({
+        path: { id: request.sessionID },
+        body: { noReply: true, parts: [{ type: "text", text: request.block }] },
+      }))
+    } catch (error) {
+      refused = error instanceof Error ? error.message : String(error)
+    }
+    if (refused) {
+      throw new Error(`Gaia could not show signature ${request.approvalID} before its question: ${refused}`)
+    }
+  }
+
   /** Release a control whose question never reached the host. */
   async function abandonControl(control: ControlDecision, cause: string): Promise<void> {
     await releaseControl(control, "prompt_rejected", cause)
@@ -1803,8 +1840,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     control.presenting = true
     // The model only opens the question: OpenCode offers a plugin no route to
     // open one itself (1.18.32 exposes list/reply/reject), so a model's
-    // question-tool call is the opener, and tool.execute.before replaces its
-    // arguments with Gaia's signature before the host asks anything.
+    // question-tool call is the opener, and tool.execute.before posts Gaia's
+    // block and replaces its arguments before the host asks anything.
     const instruction = [
       "You are a mechanical consent control plane.",
       "Invoke the question tool exactly once with the placeholder JSON below and do nothing else.",
@@ -1976,7 +2013,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    *
    * OpenCode 1.18.32 gives a plugin no way to open a question, only to rewrite
    * a model's question-tool call, so the orchestrator's call carrying the
-   * approval id is the opener and its arguments become the renderer's string.
+   * approval id is the opener: Gaia's block is posted in the orchestrator's
+   * session and the call's arguments become the short question (D26).
    * The presentation, the decision and the grant stay the requester's: SHOWN
    * names the requesting session, and `opencode-decide` binds the grant to
    * that session and agent. Only the attested orchestrator that dispatched the
@@ -2027,11 +2065,19 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       approvalID: ask.approvalID, sessionID, callID: call.callID, role, token,
       surface: readConsentPresentation(presented.stdout),
     }
+    const request = signatureRequest(approval, call.sessionID, ask.mode)
+    try {
+      await postSignatureBlock(request)
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error)
+      await reportUncorrelatedDenial(sessionID, call.callID, { approvalID: ask.approvalID, cause })
+      throw error
+    }
     let settle!: (notice: string) => void
     const notice = new Promise<string>((resolve) => { settle = resolve })
     const control: ControlDecision = {
       approval,
-      request: signatureRequest(approval, call.sessionID, ask.mode),
+      request,
       retry: boundRetry(approval),
       questionCallID: call.callID,
       awaitingSafeIdle: false,
@@ -2270,8 +2316,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           await clearControl(control, "drifted_tool_call", `${tool} ${call.callID}`)
           throw new Error("Gaia consent control plane permits one signature question")
         }
+        try {
+          await postSignatureBlock(control.request)
+        } catch (error) {
+          await clearControl(control, "block_rejected", error instanceof Error ? error.message : String(error))
+          throw error
+        }
         // Whatever the model passed is replaced: the user is asked Gaia's
-        // signature, never a copy a model typed.
+        // question, never a copy a model typed.
         applyUpdatedInput(output, { questions: [structuredClone(control.request.question)] })
         control.questionCallID = call.callID
         return

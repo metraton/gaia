@@ -222,13 +222,17 @@ def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
 def _drive(
     env, steps, *, initial_permissions=None,
     question_during_prompt=False, duplicate_question_when_prompt_races=False,
-    racing_duplicate_delay_ms=20_000, auto_safe_idle=True,
+    racing_duplicate_delay_ms=20_000, auto_safe_idle=True, reject_messages=False,
 ):
-    """Run the real plugin under bun over the dispatch chain plus these steps."""
+    """Run the real plugin under bun over the dispatch chain plus these steps.
+
+    ``reject_messages`` makes the host refuse every ``session.prompt`` post.
+    """
     scenario = {
         "sessionID": SESSION_ID,
         "steps": DISPATCH_STEPS + list(steps),
         "autoSafeIdle": auto_safe_idle,
+        "rejectMessages": reject_messages,
     }
     if initial_permissions is not None:
         scenario["initialPermissions"] = {SESSION_ID: initial_permissions}
@@ -408,9 +412,10 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     assert decision["allowed"] is True, driven
     assert decision["controlSessionID"] == SESSION_ID
     question = decision["question"]
-    visible = question["question"]
+    [block] = [event for event in driven["hostEvents"] if event["type"] == "message"]
     for command in (FIRST_COMMAND, SECOND_COMMAND):
-        assert command in visible
+        assert command in block["text"]
+        assert command not in question["question"]
     assert [option["label"] for option in question["options"]] == ["Approve", "Reject", "Details"]
     prompt = driven["controlPrompts"][0]["body"]
     assert "tools" not in prompt
