@@ -105,7 +105,7 @@ que capturar.
 |------|---------|
 | Patch one field | `gaia brief edit <name> --headless --field=<objective\|context\|approach\|out_of_scope\|description\|title\|surface_type> --content="..."` |
 | Edit an AC in place | `gaia brief ac edit <name> --id=AC-1 --description="..."` |
-| Change status | `gaia brief set-status <name> <status>` (`draft -> open -> in-progress -> closed -> {archived, open}`; illegal transitions are refused) |
+| Change status | `gaia brief set-status <name> <status>` (`draft -> {open, closed, archived}` -- the last two are the shortcut for a brief small enough to skip planning -- then `open -> in-progress -> closed -> {archived, open}`; `archived` is terminal; illegal transitions are refused) |
 | Read | `gaia brief list`, `gaia brief show <name> [--json]`, `gaia brief search <query>`, `gaia brief decision list <name>` |
 | Delete | dispatch gaia-operator for `gaia brief delete <name> --yes` (cascades to ACs, plan, tasks; no undo) -- prefer `archived` |
 
