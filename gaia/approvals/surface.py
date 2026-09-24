@@ -226,9 +226,24 @@ def _question(text: str, header: str) -> dict:
     return question
 
 
-def batch_header(position: int, total: int, *, details: bool = False) -> str:
-    """The header of the question, or of its Details re-ask, at 1-based ``position`` among ``total`` asked in one call."""
-    return f"{'Detalle' if details else 'Firma'} {position}/{total}"
+def batch_header(
+    position: int, total: int, *, details: bool = False, signature: Optional[str] = None,
+) -> str:
+    """The header of a question, or of its Details re-ask: ``Firma 1/2``, or ``Firma A 1/2`` inside signature ``A`` (D38).
+
+    ``Detalle A1/2`` drops the space ``Firma A 1/2`` keeps: with it the header
+    would run to 13 characters, one past the host's :data:`HEADER_MAX`.
+    """
+    if signature is None:
+        return f"{'Detalle' if details else 'Firma'} {position}/{total}"
+    if details:
+        return f"Detalle {signature}{position}/{total}"
+    return f"Firma {signature} {position}/{total}"
+
+
+def signature_letter(index: int) -> str:
+    """The letter naming the 0-based ``index``-th signature of a mixed call: ``A``, ``B``..."""
+    return chr(ord("A") + index)
 
 
 def question_count(payload: Mapping[str, Any]) -> int:
@@ -238,8 +253,13 @@ def question_count(payload: Mapping[str, Any]) -> int:
 
 def render_at(
     payload: Mapping[str, Any], approval_id: str, start: int, total: int,
+    *, signature: Optional[str] = None,
 ) -> Surface:
-    """Render one request whose first question sits at 1-based ``start`` among ``total`` asked in one call."""
+    """Render one request whose first question sits at 1-based ``start`` among ``total``.
+
+    Without ``signature`` the positions count the whole call; with it they
+    count only this request's commands, headed by its letter.
+    """
     items = _items(payload)
     if not items:
         raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
@@ -255,11 +275,11 @@ def render_at(
         text="\n".join(texts),
         details="\n".join(details),
         questions=tuple(
-            _question(text, batch_header(start + offset, total))
+            _question(text, batch_header(start + offset, total, signature=signature))
             for offset, text in enumerate(texts)
         ),
         details_questions=tuple(
-            _question(text, batch_header(start + offset, total, details=True))
+            _question(text, batch_header(start + offset, total, details=True, signature=signature))
             for offset, text in enumerate(details)
         ),
     )
@@ -279,7 +299,7 @@ def is_signature_question(question: Mapping[str, Any]) -> bool:
     ]
     return (
         header in (HEADER, DETAILS_HEADER)
-        or re.fullmatch(r"(Firma|Aprob\.|Detalle) \d+/\d+", header) is not None
+        or re.fullmatch(r"(Firma|Aprob\.|Detalle)( [A-Z] ?| )\d+/\d+", header) is not None
         or labels == [label for label, _ in OPTIONS]
     )
 
@@ -304,9 +324,11 @@ def render_batch(
 ) -> list[Surface]:
     """Render the requests asked in one question call: one question per command, at most BATCH_MAX in all.
 
-    Each header names the question's position in the call, ``Firma N/M``.
-    Question texts must differ: the host indexes each answer by its question
-    text.
+    A call asking one signature heads each question with its position in the
+    call, ``Firma N/M``; a call mixing signatures names each one by a letter
+    and counts inside it, ``Firma A 1/2``, ``Firma A 2/2``, ``Firma B 1/1``
+    (D38). Question texts must differ: the host indexes each answer by its
+    question text.
     """
     counts = [question_count(payload) for payload, _ in requests]
     total = sum(counts)
@@ -315,11 +337,14 @@ def render_batch(
             f"a question call asks 1 to {BATCH_MAX} questions, one per command, "
             f"and these signatures carry {total}; ask fewer signatures per call"
         )
-    surfaces = []
-    start = 1
-    for (payload, approval_id), count in zip(requests, counts):
-        surfaces.append(render_at(payload, approval_id, start, total))
-        start += count
+    if len(requests) == 1:
+        (payload, approval_id), = requests
+        surfaces = [render_at(payload, approval_id, 1, total)]
+    else:
+        surfaces = [
+            render_at(payload, approval_id, 1, count, signature=signature_letter(index))
+            for index, ((payload, approval_id), count) in enumerate(zip(requests, counts))
+        ]
     for kind in ("questions", "details_questions"):
         texts = [q["question"] for s in surfaces for q in getattr(s, kind)]
         if len(set(texts)) != len(texts):

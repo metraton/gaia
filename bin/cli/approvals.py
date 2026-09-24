@@ -735,10 +735,52 @@ def _reject_live_grant(args, approval_id: str) -> int:
         return 1
 
     if len(live) != 1:
-        _print_error(f"Cannot reject {approval_id}: no exact live grant exists", args)
-        return 1
+        return _report_already_withdrawn(args, approval_id)
 
     return _revoke_grant(args, live[0]["approval_id"], verb="reject")
+
+
+#: Terminal states in which an approval can no longer run: reject has nothing left to do.
+_WITHDRAWN_STATES = frozenset({"rejected", "revoked", "expired"})
+
+
+def _report_already_withdrawn(args, approval_id: str) -> int:
+    """Succeed on an approval already withdrawn -- say how and by what -- and fail on anything else.
+
+    An automatic pending is withdrawn the moment its requester's own
+    request replaces it (D38), so a later reject finds it closed; the intent,
+    that it never runs, already holds. An approval that ran, or an unknown id,
+    still fails.
+    """
+    row = _import_approval_store().get_by_id(approval_id)
+    status = (row or {}).get("status")
+    if status not in _WITHDRAWN_STATES:
+        _print_error(
+            f"Cannot reject {approval_id}: it is {status or 'unknown'}, "
+            "with no pending request and no live grant to withdraw",
+            args,
+        )
+        return 1
+    replaced = _replacement_of(approval_id)
+    detail = f"replaced by {replaced}" if replaced else status
+    if getattr(args, "json", False):
+        print(json.dumps({"status": status, "approval_id": approval_id, "already_withdrawn": True,
+                          "replaced_by": replaced}))
+    else:
+        print(f"Already withdrawn {approval_id} ({detail}); it can no longer run, nothing to reject")
+    return 0
+
+
+def _replacement_of(approval_id: str) -> str | None:
+    """The request that replaced ``approval_id``, read from its withdrawal event, if any."""
+    for event in _import_approval_store().get_history(approval_id):
+        try:
+            metadata = json.loads(event.get("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(metadata, dict) and metadata.get("replaced_by"):
+            return metadata["replaced_by"]
+    return None
 
 
 def cmd_reject(args) -> int:
@@ -1722,14 +1764,10 @@ def cmd_request_set(args) -> int:
     requester is the explicit ``--session-id``/``--agent-id`` or the dispatch
     environment.
 
-    ``--verification`` and ``--rollback`` are sealed into the payload rather
-    than left for the consent surface to fill in: the requesting agent already
-    owes both on the ``approval_request`` block it will emit (verification
-    blocking, rollback advisory -- see
-    ``modules.agents.contract_validator._APPROVAL_REQUIRED_FIELDS``), so the
-    value the user is shown is the one its author wrote and not a sentence
-    composed downstream. Omitted, the surface states the field was never
-    declared; it never invents one.
+    ``--rollback`` is required too (D38): how to undo the set, or a sentence
+    saying it cannot be undone. ``--verification`` stays optional; omitted,
+    the surface states it was never declared and never invents one. The
+    requester's automatic pendings the set covers are withdrawn and listed.
     """
     try:
         from gaia.approvals import core
@@ -1747,15 +1785,19 @@ def cmd_request_set(args) -> int:
             requested_from=os.getcwd(),
         )
         sealed = json.loads(_import_approval_store().get_by_id(approval_id)["payload_json"])
+        replaced = core.replaced_by(approval_id)
     except Exception as exc:
         _print_error(f"COMMAND_SET request rejected: {exc}", args)
         return 1
     items = sealed["command_set"]
-    result = {"status": "pending", "approval_id": approval_id, "command_set": items}
+    result = {
+        "status": "pending", "approval_id": approval_id, "command_set": items, "replaced": replaced,
+    }
     if args.json:
         print(json.dumps(result))
     else:
         print(f"Requested {approval_id} for {len(items)} ordered T3 commands")
+        _print_replaced(replaced)
     return 0
 
 
@@ -1763,8 +1805,8 @@ def cmd_request_file_write(args) -> int:
     """Proactively seal the phrases, rollback and verification for a protected-path write.
 
     Mints through gaia.approvals.core.request_file_write, which refuses the
-    request when ``--what``, ``--question``, ``--does`` or ``--impact`` is
-    missing and names it. The later attempt by the same session and agent
+    request when ``--what``, ``--question``, ``--does``, ``--impact`` or
+    ``--rollback`` is missing and names it. The later attempt by the same session and agent
     reuses THIS pending, and it replaces the phraseless request a reactive
     Write/Edit block sealed for the same path.
     """
@@ -1788,15 +1830,23 @@ def cmd_request_file_write(args) -> int:
             rollback=args.rollback,
             verification=args.verification,
         )
+        replaced = core.replaced_by(approval_id)
     except Exception as exc:
         _print_error(f"File-write request rejected: {exc}", args)
         return 1
-    result = {"status": "pending", "approval_id": approval_id, "path": path}
+    result = {"status": "pending", "approval_id": approval_id, "path": path, "replaced": replaced}
     if args.json:
         print(json.dumps(result))
     else:
         print(f"Requested {approval_id} for file write: {path}")
+        _print_replaced(replaced)
     return 0
+
+
+def _print_replaced(replaced: list[str]) -> None:
+    """Tell the requester which automatic pendings its request withdrew, so none is withdrawn twice (D38)."""
+    for old in replaced:
+        print(f"Withdrew {old}: the automatic request left by the block, replaced by this one")
 
 
 def _opencode_binding(
@@ -2514,8 +2564,8 @@ def register(subparsers) -> None:
     p_request_set.add_argument(
         "--rollback",
         help=(
-            "How the set is undone, as a human sentence in the user's language, "
-            "not a command; sealed and shown verbatim under ROLLBACK in Details"
+            "Required: how the set is undone, or that it cannot be undone, as a human "
+            "sentence in the user's language, not a command; shown under ROLLBACK in Details"
         ),
     )
     p_request_set.add_argument("--agent-id")
@@ -2549,8 +2599,8 @@ def register(subparsers) -> None:
     p_request_file_write.add_argument(
         "--rollback",
         help=(
-            "How the edit is undone, as a human sentence in the user's language, "
-            "not a command; sealed and shown verbatim under ROLLBACK in Details"
+            "Required: how the edit is undone, or that it cannot be undone, as a human "
+            "sentence in the user's language, not a command; shown under ROLLBACK in Details"
         ),
     )
     p_request_file_write.add_argument(

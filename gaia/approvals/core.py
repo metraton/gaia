@@ -50,6 +50,8 @@ _MAX_EXIT_CODE = 255
 #: The withdrawal reason of a phraseless request its requester's phrased one
 #: replaced; readers tell it from a user's rejection and from an expiry by it.
 REPLACED_REASON = "reemplazada"
+#: The flag a requester owes on every request: how to undo it, or that it cannot be undone (D38).
+ROLLBACK_FLAG = "--rollback"
 
 
 class SealError(ValueError):
@@ -65,9 +67,14 @@ class NotPresentableError(SealError):
 
     def __init__(self, missing: list[str]):
         self.missing = missing
-        super().__init__(
-            "a signature is shown only with its requester's phrases; missing: " + ", ".join(missing)
-        )
+        message = "a signature is shown only with its requester's phrases; missing: " + ", ".join(missing)
+        if ROLLBACK_FLAG in missing:
+            message += (
+                f". {ROLLBACK_FLAG} is required: one sentence, in the user's language, saying how "
+                "to undo the change, or saying plainly that it cannot be undone "
+                "(e.g. 'No se puede deshacer: la versión publicada queda publicada.')"
+            )
+        super().__init__(message)
 
 
 class WithdrawError(ValueError):
@@ -327,13 +334,39 @@ def request_line(payload: Mapping[str, Any]) -> str:
             "--does", shlex.quote(f"<what item {position} does, 100 max>"),
             "--impact", shlex.quote(f"<impact of item {position}, 100 max>"),
         ]
+    words += [ROLLBACK_FLAG, shlex.quote("<how to undo it, or that it cannot be undone>")]
     return " ".join(words)
 
 
-def _require_phrases(what: object, question: object, items: list[Mapping[str, Any]]) -> None:
+def _require_phrases(
+    what: object, question: object, items: list[Mapping[str, Any]], rollback: object,
+) -> None:
+    """Refuse a new request lacking a phrase, its rollback sentence included (D38).
+
+    The rollback is owed only when a request is made, not when one is shown,
+    so a signature sealed before D38 stays presentable.
+    """
     missing = _missing(what, question, items)
+    if _optional_text(rollback) is None:
+        missing.append(ROLLBACK_FLAG)
     if missing:
         raise NotPresentableError(missing)
+
+
+def replaced_by(approval_id: str) -> list[str]:
+    """The phraseless requests that sealing ``approval_id`` withdrew as replaced, oldest first."""
+    from gaia.approvals.store import _open_db
+
+    con = _open_db()
+    try:
+        rows = con.execute(
+            "SELECT approval_id FROM approval_events WHERE event_type = 'REVOKED' "
+            "AND json_extract(metadata_json, '$.replaced_by') = ? ORDER BY id",
+            (approval_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    return [row[0] for row in rows]
 
 
 def _own_pendings(requester: Mapping[str, str]) -> list[tuple[dict, dict]]:
@@ -436,7 +469,7 @@ def request_command_set(
         validate_request_set(commands)
     except CommandSetValidationError as exc:
         raise SealError(str(exc)) from exc
-    _require_phrases(what, question, items)
+    _require_phrases(what, question, items, rollback)
     payload = seal_request(
         "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, rationale=rationale,
@@ -486,7 +519,7 @@ def request_file_write(
     path is reused; a phraseless reactive one is replaced.
     """
     item = {"path": path, "does": does, "impact": impact}
-    _require_phrases(what, question, [item])
+    _require_phrases(what, question, [item], rollback)
     payload = seal_request(
         _FILE_KIND, [item], what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, impact=impact,
@@ -703,13 +736,23 @@ def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
         for approval_id, payload in pending:
             if approval_id in approval_ids:
                 continue
+            # The call may ask this signature alone (positions count the call)
+            # or mixed with others (positions count the signature, D38).
             try:
-                rendered = surface.render_at(payload, approval_id, position + 1, total)
+                renderings = [
+                    surface.render_at(payload, approval_id, position + 1, total),
+                    surface.render_at(
+                        payload, approval_id, 1, surface.question_count(payload),
+                        signature=surface.signature_letter(len(approval_ids)),
+                    ),
+                ]
             except (SealError, TypeError, ValueError, AttributeError):
                 continue
-            pairs = list(zip(rendered.questions, rendered.details_questions))
-            if _asks(pairs, asked_all[position:position + len(pairs)]):
-                matches.append((approval_id, len(pairs)))
+            for rendered in renderings:
+                pairs = list(zip(rendered.questions, rendered.details_questions))
+                if _asks(pairs, asked_all[position:position + len(pairs)]):
+                    matches.append((approval_id, len(pairs)))
+                    break
         if not matches:
             raise SealError(f"question {position + 1} is not the one Gaia rendered for a pending approval")
         if len(matches) > 1:

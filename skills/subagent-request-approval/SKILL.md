@@ -22,14 +22,19 @@ full spelling (accents included), for someone who does not read commands.
 | `--question` | The short question the user answers. | 60 characters |
 | `--does` | Once per `--command`, in order: what that command does. | 100 characters |
 | `--impact` | Once per `--command`, in order: what changes for the user, and whether it can be undone. | 100 characters |
+| `--rollback` | Once per request: how to undo it, as a sentence, not a command -- or, when it cannot be undone, a sentence that says so plainly. | one line |
 
-`--does` and `--impact` are what the user reads when they press Details;
-`--what` and `--question` stay with the signature for whoever reviews it later,
-but the question itself shows only you and the command.
+`--does`, `--impact` and `--rollback` are what the user reads when they press
+Details; `--what` and `--question` stay with the signature for whoever reviews
+it later, but the question itself shows only you and the command.
 
-Optional, per request: `--rollback` -- how to undo it, written as a sentence in
-the user's language, not as a command; the user reads it in Details -- and
-`--verification` (how you will confirm the result). Optional, per command:
+The rollback is never optional. If the change can be undone, say how
+("Borrar la rama del remoto."). If it cannot, write that it cannot and why
+("No se puede deshacer: la versión publicada queda publicada."). A request
+without `--rollback` is refused, and the refusal says what to write.
+
+Optional, per request: `--verification` (how you will confirm the result).
+Optional, per command:
 `--cwd` (the existing directory it must run in, once for all or once per
 command; the default is where you run the request) and
 `--expect-exit POSITION=CODES` (non-zero exits that still let the set go on,
@@ -71,8 +76,8 @@ your phrases under fixed English labels:
 ```
 
 A protected-path write is requested the same way with
-`gaia approvals request-file-write --path <absolute path>` and one `--does` and
-`--impact` for the edit.
+`gaia approvals request-file-write --path <absolute path>`, one `--does` and
+`--impact` for the edit, and its `--rollback`.
 
 Pass no `--session-id` or `--agent-id`; the request refuses them. It is sealed
 to the session and agent that ran it, read from the dispatch environment on
@@ -83,8 +88,10 @@ both hosts, and only that agent in that session can use the signature.
 A T3 command you ran without asking comes back denied, and the denial carries
 a `gaia approvals request-set` (or `request-file-write`) line with the exact
 command or path already in it. Replace each `<...>` with your phrases and run
-that line. Your request replaces the one the block sealed without phrases. Do
-not retry the command, reword it, or reach its effect another way.
+that line. Your request replaces the one the block sealed without phrases:
+Gaia withdraws that automatic one by itself and prints `Withdrew <id>` for it,
+so you do not reject it. Do not retry the command, reword it, or reach its
+effect another way.
 
 ## How many requests
 
@@ -111,7 +118,8 @@ gaia approvals request-set \
   --does 'Sube la rama principal al repositorio remoto.' \
   --impact 'Los demás ven los cambios; se revierte con otro commit.' \
   --does 'Publica la etiqueta v1.4.0.' \
-  --impact 'Dispara la publicación del paquete; no se deshace.'
+  --impact 'Dispara la publicación del paquete; no se deshace.' \
+  --rollback 'La rama se revierte con otro commit; la versión publicada no se puede deshacer.'
 ```
 
 ### Batches in sequence
@@ -133,7 +141,8 @@ gaia approvals request-set \
   --does 'Sube la rama feature/demo-login al repositorio remoto.' \
   --impact 'Otros ven la rama; se puede borrar del remoto.' \
   --does 'Abre el pull request de la rama hacia main.' \
-  --impact 'Queda visible en GitHub; se puede cerrar sin fusionar.'
+  --impact 'Queda visible en GitHub; se puede cerrar sin fusionar.' \
+  --rollback 'Cerrar el pull request sin fusionar y borrar la rama del remoto.'
 ```
 
 The user gets two questions, `Firma 1/2` and `Firma 2/2`, one per command.
@@ -141,8 +150,12 @@ Only the push's Details names its folder, because only the push runs
 elsewhere:
 
 ```
-[GAIA-SECURITY] [ DETAILS ] [ developer ] [ COMMAND: git push origin feature/demo-login ] [ DOES: Sube la rama feature/demo-login al repositorio remoto. ] [ IMPACT: Otros ven la rama; se puede borrar del remoto. ] [ ROLLBACK: no declarado; no supongas que se puede deshacer ] [ CWD: /home/jorge/ws/me/demo-repo ]
+[GAIA-SECURITY] [ DETAILS ] [ developer ] [ COMMAND: git push origin feature/demo-login ] [ DOES: Sube la rama feature/demo-login al repositorio remoto. ] [ IMPACT: Otros ven la rama; se puede borrar del remoto. ] [ ROLLBACK: Cerrar el pull request sin fusionar y borrar la rama del remoto. ] [ CWD: /home/jorge/ws/me/demo-repo ]
 ```
+
+When one question call asks several signatures, each header names its
+signature by a letter and counts inside it: `Firma A 1/2`, `Firma A 2/2`,
+`Firma B 1/1`, and behind Details `Detalle A1/2`...
 
 ## After requesting
 
