@@ -61,21 +61,23 @@ type BoundRetry = PendingApproval & {
 /** Which of the renderer's strings a signature question carries. */
 export type SignatureMode = "signature" | "details"
 
+/** One of Gaia's one-line questions, as the host's question tool takes it. */
+export type SignatureQuestion = {
+  header: string
+  question: string
+  options: Array<{ label: string; description: string }>
+  multiple: false
+  custom: false
+}
+
 export type SignatureRequest = {
   sessionID: string
   approvalID: string
   correlationID: string
   mode: SignatureMode
-  /** The renderer's text for `mode`, posted into the session right before the question. */
-  block: string
   metadata: Record<string, unknown>
-  question: {
-    header: string
-    question: string
-    options: Array<{ label: string; description: string }>
-    multiple: false
-    custom: false
-  }
+  /** One question per sealed command, Gaia's text for `mode` (D33). */
+  questions: SignatureQuestion[]
 }
 
 /** A user's answer to a signature question, by the option's position. */
@@ -432,7 +434,7 @@ export type ControlCloseReason =
   | "decision_duplicate"
   | "retry_conflict"
   | "prompt_rejected"
-  | "block_rejected"
+  | "shown_not_recorded"
   | "session_ended"
   | "drifted_tool_call"
   | "drifted_tool_result"
@@ -639,13 +641,12 @@ export function gaiaFailureCause(result: { stdout: string; stderr: string }): st
   return result.stderr.trim() || "gaia exited non-zero without reporting a cause"
 }
 
+type GaiaQuestion = { question: string; header: string; options: Array<{ label: string; description: string }> }
+
 /** The renderer's signature for one approval, exactly as `opencode-present` emitted it. */
 export type SignatureSurface = {
-  block: string
-  detailsBlock: string
-  question: string
-  header: string
-  options: Array<{ label: string; description: string }>
+  questions: GaiaQuestion[]
+  detailsQuestions: GaiaQuestion[]
   metadata: Record<string, unknown>
 }
 
@@ -913,11 +914,10 @@ export function evaluateConsentRetry(
 }
 
 /**
- * The question that asks one signature and the renderer's block that precedes
- * it (D26): OpenCode shows a question's text on one line, so the question asks
- * only the short question and the block for `mode` carries the signature. The
- * plugin composes no text of its own; it only chooses which of Gaia's blocks
- * is posted.
+ * The questions that ask one signature (D33): one one-line question per
+ * command, each carrying who asks and the exact command, or on a Details
+ * re-ask that command's Details line. The plugin composes no text of its own;
+ * it only chooses which of Gaia's question sets is asked.
  */
 export function signatureRequest(
   approval: PendingApproval,
@@ -931,15 +931,14 @@ export function signatureRequest(
     approvalID: approval.approvalID,
     correlationID: retry.correlationID,
     mode,
-    block: mode === "details" ? surface.detailsBlock : surface.block,
     metadata: { ...surface.metadata },
-    question: {
-      header: surface.header,
-      question: surface.question,
-      options: surface.options.map((option) => ({ ...option })),
+    questions: (mode === "details" ? surface.detailsQuestions : surface.questions).map((question) => ({
+      header: question.header,
+      question: question.question,
+      options: question.options.map((option) => ({ ...option })),
       multiple: false,
       custom: false,
-    },
+    })),
   }
 }
 
@@ -956,53 +955,66 @@ export function signatureRequest(
  */
 export function matchesSignatureQuestion(
   questions: unknown,
-  expected: SignatureRequest["question"],
+  expected: SignatureQuestion[],
 ): boolean {
-  if (!Array.isArray(questions) || questions.length !== 1) return false
-  const question = questions[0] as Record<string, unknown> | null
-  if (!question || typeof question !== "object") return false
-  if (question.header !== expected.header || question.question !== expected.question) return false
-  if (question.multiple !== expected.multiple || question.custom !== expected.custom) return false
-  const options = question.options
-  if (!Array.isArray(options) || options.length !== expected.options.length) return false
-  return expected.options.every((option, index) => {
-    const candidate = options[index] as Record<string, unknown> | null
-    return Boolean(candidate) && typeof candidate === "object"
-      && candidate.label === option.label
-      && candidate.description === option.description
+  if (!Array.isArray(questions) || questions.length !== expected.length) return false
+  return expected.every((wanted, position) => {
+    const question = questions[position] as Record<string, unknown> | null
+    if (!question || typeof question !== "object") return false
+    if (question.header !== wanted.header || question.question !== wanted.question) return false
+    if (question.multiple !== wanted.multiple || question.custom !== wanted.custom) return false
+    const options = question.options
+    if (!Array.isArray(options) || options.length !== wanted.options.length) return false
+    return wanted.options.every((option, index) => {
+      const candidate = options[index] as Record<string, unknown> | null
+      return Boolean(candidate) && typeof candidate === "object"
+        && candidate.label === option.label
+        && candidate.description === option.description
+    })
   })
 }
 
-/** Match OpenCode's event copy of the question Gaia wrote into the validated call. */
+/** Match OpenCode's event copy of the questions Gaia wrote into the validated call. */
 export function matchesHostSignatureQuestionEvent(
   questions: unknown,
-  expected: SignatureRequest["question"],
+  expected: SignatureQuestion[],
   questionCallWritten: boolean,
 ): boolean {
-  if (!questionCallWritten || !Array.isArray(questions) || questions.length !== 1) return false
-  const question = questions[0] as Record<string, unknown> | null
-  if (!question || typeof question !== "object" || question.multiple !== false) return false
-  if (question.custom !== undefined && question.custom !== false) return false
-  return matchesSignatureQuestion([{ ...question, custom: false }], expected)
+  if (!questionCallWritten || !Array.isArray(questions) || questions.length !== expected.length) return false
+  const normalized = []
+  for (const entry of questions) {
+    const question = entry as Record<string, unknown> | null
+    if (!question || typeof question !== "object" || question.multiple !== false) return false
+    if (question.custom !== undefined && question.custom !== false) return false
+    normalized.push({ ...question, custom: false })
+  }
+  return matchesSignatureQuestion(normalized, expected)
 }
 
 const SIGNATURE_ANSWERS: SignatureAnswer[] = ["once", "reject", "details"]
 
 /**
- * Map the one selected label to the option it names, by position: Approve,
- * Reject, Details. Anything else -- no answer, several, or text typed in the
- * host's free-text row -- decides nothing.
+ * Fold the label selected at each of the signature's questions into one
+ * answer (D33): a Reject on any question rejects the whole signature, Approve
+ * on every question approves it, and otherwise a Details asks again. A
+ * question left without exactly one of the three labels -- no answer,
+ * several, or text typed in the host's free-text row -- decides nothing.
  */
 export function readSignatureAnswer(
   request: SignatureRequest,
   answers: unknown,
 ): SignatureAnswer | undefined {
-  if (!Array.isArray(answers) || answers.length !== 1 || !Array.isArray(answers[0])) {
-    return undefined
+  if (!Array.isArray(answers) || answers.length !== request.questions.length) return undefined
+  const chosen: SignatureAnswer[] = []
+  for (const [position, answer] of answers.entries()) {
+    if (!Array.isArray(answer) || answer.length !== 1) return undefined
+    const index = request.questions[position].options.findIndex((option) => option.label === answer[0])
+    if (index === -1) return undefined
+    chosen.push(SIGNATURE_ANSWERS[index])
   }
-  if (answers[0].length !== 1) return undefined
-  const index = request.question.options.findIndex((option) => option.label === answers[0][0])
-  return index === -1 ? undefined : SIGNATURE_ANSWERS[index]
+  if (chosen.includes("reject")) return "reject"
+  if (chosen.every((answer) => answer === "once")) return "once"
+  return "details"
 }
 
 function isOption(value: unknown): value is { label: string; description: string } {
@@ -1029,13 +1041,18 @@ export function readConsentPresentation(stdout: string): SignatureSurface {
   }
   const signature = emitted?.signature
   const metadata = emitted?.metadata
-  const options = signature?.options
+  const isGaiaQuestion = (value: any): boolean => (
+    typeof value?.question === "string" && Boolean(value.question)
+    && typeof value?.header === "string" && Boolean(value.header)
+    && Array.isArray(value?.options) && value.options.length === SIGNATURE_ANSWERS.length
+    && value.options.every(isOption)
+  )
+  const isQuestionSet = (value: unknown): boolean => (
+    Array.isArray(value) && value.length > 0 && value.every(isGaiaQuestion)
+  )
   if (
-    typeof signature?.question !== "string" || !signature.question
-    || typeof signature?.block !== "string" || !signature.block
-    || typeof signature?.details_block !== "string" || !signature.details_block
-    || typeof signature?.header !== "string" || !signature.header
-    || !Array.isArray(options) || options.length !== SIGNATURE_ANSWERS.length || !options.every(isOption)
+    !isQuestionSet(signature?.questions) || !isQuestionSet(signature?.details_questions)
+    || signature.questions.length !== signature.details_questions.length
     || !metadata || typeof metadata !== "object"
   ) {
     throw new Error(
@@ -1044,14 +1061,16 @@ export function readConsentPresentation(stdout: string): SignatureSurface {
         : "Gaia returned no complete signature for this approval",
     )
   }
-  return {
-    block: signature.block,
-    detailsBlock: signature.details_block,
-    question: signature.question,
-    header: signature.header,
-    options: options.map((option: { label: string; description: string }) => ({
+  const copy = (questions: any[]): GaiaQuestion[] => questions.map((question) => ({
+    question: question.question,
+    header: question.header,
+    options: question.options.map((option: { label: string; description: string }) => ({
       label: option.label, description: option.description,
     })),
+  }))
+  return {
+    questions: copy(signature.questions),
+    detailsQuestions: copy(signature.details_questions),
     metadata,
   }
 }
@@ -1584,7 +1603,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       await clearControl(control, "question_mismatch", `second question ${requestID} for one control`)
       return
     }
-    if (!matchesHostSignatureQuestionEvent(questions, control.request.question, control.questionCallID !== undefined)) {
+    if (!matchesHostSignatureQuestionEvent(questions, control.request.questions, control.questionCallID !== undefined)) {
       await clearControl(control, "question_mismatch", `host asked ${JSON.stringify(questions)}`)
       return
     }
@@ -1789,34 +1808,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const detail = typeof error === "string" ? error : error === undefined ? "" : JSON.stringify(error)
     return [status === undefined ? "" : `HTTP ${status}`, detail].filter(Boolean).join(" ")
       || "host resolved with an error carrying no detail"
-  }
-
-  /** Post the signature's block into the session its question opens in, right before that question (D26).
-   *
-   * `session.prompt` with `noReply` saves the message without a model turn and
-   * resolves once it is saved, so the block lands before the question;
-   * `promptAsync` would return first. The part is not synthetic, because
-   * OpenCode hides synthetic parts from the user. Throws when the host refuses:
-   * a question asked without its signature would ask the user to approve text
-   * they never saw.
-   */
-  async function postSignatureBlock(request: SignatureRequest): Promise<void> {
-    const session = input?.client?.session
-    if (typeof session?.prompt !== "function") {
-      throw new Error(`OpenCode offers no session.prompt to show signature ${request.approvalID}`)
-    }
-    let refused: string | undefined
-    try {
-      refused = hostRejection(await session.prompt({
-        path: { id: request.sessionID },
-        body: { noReply: true, parts: [{ type: "text", text: request.block }] },
-      }))
-    } catch (error) {
-      refused = error instanceof Error ? error.message : String(error)
-    }
-    if (refused) {
-      throw new Error(`Gaia could not show signature ${request.approvalID} before its question: ${refused}`)
-    }
   }
 
   /** Release a control whose question never reached the host. */
@@ -2076,7 +2067,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const approval: PendingApproval = { ...binding, surface: readConsentPresentation(presented.stdout) }
     const request = signatureRequest(approval, call.sessionID, ask.mode)
     try {
-      await postSignatureBlock(request)
       await recordShown(approval, call.sessionID)
     } catch (error) {
       const cause = error instanceof Error ? error.message : String(error)
@@ -2098,7 +2088,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
     controlsBySession.set(call.sessionID, [...(controlsBySession.get(call.sessionID) ?? []), control])
     presenterControlsByCall.set(`${call.sessionID}:${call.callID}`, control)
-    applyUpdatedInput(output, { questions: [structuredClone(control.request.question)] })
+    applyUpdatedInput(output, { questions: structuredClone(control.request.questions) })
     await reportControlOpened(approval, call.sessionID)
   }
 
@@ -2327,15 +2317,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           throw new Error("Gaia consent control plane permits one signature question")
         }
         try {
-          await postSignatureBlock(control.request)
           await recordShown(control.approval)
         } catch (error) {
-          await clearControl(control, "block_rejected", error instanceof Error ? error.message : String(error))
+          await clearControl(control, "shown_not_recorded", error instanceof Error ? error.message : String(error))
           throw error
         }
         // Whatever the model passed is replaced: the user is asked Gaia's
-        // question, never a copy a model typed.
-        applyUpdatedInput(output, { questions: [structuredClone(control.request.question)] })
+        // questions, never a copy a model typed.
+        applyUpdatedInput(output, { questions: structuredClone(control.request.questions) })
         control.questionCallID = call.callID
         return
       }

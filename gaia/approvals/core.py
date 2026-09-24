@@ -586,7 +586,7 @@ def _row_payload(row: Mapping[str, Any]) -> dict:
 
 
 def question_batch(approval_ids: list[str]) -> list:
-    """Render the 1 to 4 pending requests one host question call asks, in order.
+    """Render the pending requests one host question call asks, in order: at most 4 questions in all.
 
     Each must be pending and presentable (:func:`check_presentable`); the
     renderer rejects a batch whose question texts repeat.
@@ -660,64 +660,66 @@ def _handouts() -> list[list[str]]:
     ]
 
 
-def _renders_each(
-    approval_ids: list[str], asked: list[dict], payloads: Mapping[str, dict],
-) -> bool:
-    from gaia.approvals import surface
-
-    total = len(asked)
-    for position, (approval_id, question) in enumerate(zip(approval_ids, asked), start=1):
-        try:
-            rendered = surface.batch_questions(payloads[approval_id], approval_id, position, total)
-        except (KeyError, SealError, TypeError, ValueError, AttributeError):
-            return False
-        if question not in rendered:
-            return False
-    return True
+def _asks(pairs: list[tuple[dict, dict]], asked: list[dict]) -> bool:
+    """Whether each asked object is, byte for byte, its slot's question or its Details re-ask."""
+    return len(pairs) == len(asked) and all(
+        question in pair for pair, question in zip(pairs, asked)
+    )
 
 
 def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
-    """Return the batch whose question objects are exactly ``questions``, in order.
+    """Return the signatures whose questions are exactly ``questions``, in order.
 
-    The newest hand-out of ``gaia approvals question`` (:func:`hand_out_question`)
-    whose signatures render exactly these objects, as signatures or as Details
-    re-asks, decides which signature each slot asks (D31): two pending requests
-    with the same short question render the same object, and only that record
-    tells them apart. Without such a hand-out each position is matched against
-    every pending request rendered for it; a question no pending request
-    renders, or one two render alike, raises :class:`SealError` naming the position.
+    Every command of a signature is one question (D33), so a signature spans
+    consecutive slots. The newest hand-out of ``gaia approvals question``
+    (:func:`hand_out_question`) whose signatures render exactly these objects,
+    as questions or as Details re-asks, decides which signature each slot asks
+    (D31). Without such a hand-out the slots are walked in order, matching at
+    each one the pending request whose questions render there; a question no
+    pending request renders, or one two render alike, raises
+    :class:`SealError` naming the position.
     """
     from gaia.approvals import store, surface
 
     total = len(questions)
     if not 1 <= total <= surface.BATCH_MAX:
-        raise SealError(f"a question call presents 1 to {surface.BATCH_MAX} signatures, not {total}")
-    pending = [(row["id"], _row_payload(row)) for row in store.list_pending(all_sessions=True)]
+        raise SealError(f"a question call asks 1 to {surface.BATCH_MAX} questions, not {total}")
     asked_all = [
         {"multiSelect": False, **asked} if isinstance(asked, Mapping) else {}
         for asked in questions
     ]
     for handed in _handouts():
-        if len(handed) == total and _renders_each(handed, asked_all, dict(pending)):
-            return question_batch(handed)
-    approval_ids = []
-    for position, asked in enumerate(asked_all, start=1):
+        try:
+            surfaces = question_batch(handed)
+        except SealError:
+            continue
+        if _asks([(q, d) for _, q, d in surface.slots(surfaces)], asked_all):
+            return surfaces
+    pending = [(row["id"], _row_payload(row)) for row in store.list_pending(all_sessions=True)]
+    approval_ids: list[str] = []
+    position = 0
+    while position < total:
         matches = []
         for approval_id, payload in pending:
+            if approval_id in approval_ids:
+                continue
             try:
-                rendered = surface.batch_questions(payload, approval_id, position, total)
+                rendered = surface.render_at(payload, approval_id, position + 1, total)
             except (SealError, TypeError, ValueError, AttributeError):
                 continue
-            if asked in rendered:
-                matches.append(approval_id)
+            pairs = list(zip(rendered.questions, rendered.details_questions))
+            if _asks(pairs, asked_all[position:position + len(pairs)]):
+                matches.append((approval_id, len(pairs)))
         if not matches:
-            raise SealError(f"question {position} is not the one Gaia rendered for a pending approval")
+            raise SealError(f"question {position + 1} is not the one Gaia rendered for a pending approval")
         if len(matches) > 1:
             raise SealError(
-                f"question {position} is rendered alike by {', '.join(matches)}; "
+                f"question {position + 1} is rendered alike by "
+                f"{', '.join(approval_id for approval_id, _ in matches)}; "
                 "withdraw the stale one before asking"
             )
-        approval_ids.append(matches[0])
+        approval_ids.append(matches[0][0])
+        position += matches[0][1]
     return question_batch(approval_ids)
 
 
@@ -801,6 +803,43 @@ def decide(
     if not result.success:
         return DecisionResult("no_decision", approval_id, result.reason)
     return DecisionResult("activated", approval_id)
+
+
+def signature_decision(option_keys: list[Optional[str]]) -> Optional[str]:
+    """The one decision a signature takes from the answers to its questions (D33).
+
+    A Reject on any question rejects the whole signature; it is approved only
+    when every question got Approve; otherwise a Details asks again, and
+    anything else decides nothing.
+    """
+    if "reject" in option_keys:
+        return "reject"
+    if option_keys and all(key == "approve" for key in option_keys):
+        return "approve"
+    if "details" in option_keys:
+        return "details"
+    return None
+
+
+def decide_signatures(
+    *, native_ref: str, session_id: str, option_keys: Mapping[int, Optional[str]],
+) -> list[tuple[str, Optional[str], DecisionResult]]:
+    """Decide every signature shown under ``native_ref`` from the option chosen at each of its positions.
+
+    Returns ``(approval_id, decision, result)`` per signature, in the order shown.
+    """
+    positions: dict[str, list[int]] = {}
+    for position, approval_id in presented(native_ref):
+        positions.setdefault(approval_id, []).append(position)
+    decided = []
+    for approval_id, shown_at in positions.items():
+        decision = signature_decision([option_keys.get(position) for position in shown_at])
+        result = decide(
+            native_ref=native_ref, session_id=session_id,
+            option_key=decision, position=shown_at[0],
+        )
+        decided.append((approval_id, decision, result))
+    return decided
 
 
 # --------------------------------------------------------------------------- #

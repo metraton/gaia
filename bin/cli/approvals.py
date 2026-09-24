@@ -1349,10 +1349,9 @@ def _signature_surface(payload: dict, approval_id: str) -> dict:
     return {
         "approval_id": approval_id,
         "text": rendered.text,
-        "block": rendered.block,
-        "question": rendered.question,
+        "questions": list(rendered.questions),
         "details": rendered.details,
-        "details_block": rendered.details_block,
+        "details_questions": list(rendered.details_questions),
     }
 
 
@@ -1373,13 +1372,13 @@ def _opencode_question(approval_id: str, details: bool) -> dict:
 def cmd_question(args) -> int:
     """Print the question-tool input that asks pending signatures, and nothing else.
 
-    In Claude Code it asks 1 to 4 signatures, each by its short question, and
-    records which it handed out at which slot, so the PreToolUse hook tells
-    apart two pending signatures with the same short question (D31); the hook
-    shows each signature's block, or with ``--details`` its Details block, when
-    the question opens (D29). In an OpenCode shell, marked
-    by ``GAIA_HOST_SESSION_ID``, it asks one signature and carries only its id,
-    because there the plugin writes the signature into the call itself.
+    In Claude Code it asks one question per command of the given signatures,
+    at most 4 in all (D33), or with ``--details`` each command's Details
+    question, and records which signature it handed out at which slot, so the
+    PreToolUse hook tells apart two pending signatures that render alike (D31).
+    In an OpenCode shell, marked by ``GAIA_HOST_SESSION_ID``, it asks one
+    signature and carries only its id, because there the plugin writes the
+    signature's questions into the call itself.
     """
     from gaia.approvals import core
 
@@ -1409,7 +1408,11 @@ def cmd_question(args) -> int:
     if opencode:
         questions = [_opencode_question(approval_ids[0], details)]
     else:
-        questions = [s.details_question if details else s.question for s in surfaces]
+        questions = [
+            question
+            for s in surfaces
+            for question in (s.details_questions if details else s.questions)
+        ]
     print(json.dumps({"questions": questions}, ensure_ascii=False))
     return 0
 
@@ -1633,12 +1636,26 @@ def cmd_approve(args) -> int:
 
 
 def _requester_identity(args) -> tuple[str, str]:
-    """Resolve the requesting session and agent: explicit flags, else the dispatch env.
+    """Resolve the requesting session and agent: the dispatch env, else explicit flags.
 
     The OpenCode plugin exports ``GAIA_HOST_SESSION_ID`` to a dispatched
     shell, Claude Code exports ``CLAUDE_CODE_SESSION_ID``, and both hosts
-    inject ``GAIA_DISPATCH_AGENT``; neither is guessed.
+    inject ``GAIA_DISPATCH_AGENT``; neither is guessed. In a dispatched shell
+    ``--agent-id``/``--session-id`` are refused: the hook matches the retry
+    against the dispatch identity, so a grant sealed under a flag's identity
+    could never be consumed.
     """
+    dispatch_agent = os.environ.get("GAIA_DISPATCH_AGENT")
+    flags = [
+        flag for flag, attr in (("--agent-id", "agent_id"), ("--session-id", "session_id"))
+        if getattr(args, attr, None)
+    ]
+    if dispatch_agent and flags:
+        raise ValueError(
+            f"drop {' and '.join(flags)}: this shell already runs as {dispatch_agent!r} "
+            "(GAIA_DISPATCH_AGENT), and Gaia seals the request under that identity "
+            "so the retry can consume it"
+        )
     session_id = (
         getattr(args, "session_id", None)
         or os.environ.get("GAIA_HOST_SESSION_ID")
@@ -1847,10 +1864,9 @@ def _opencode_binding(
 def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dict:
     """Build what OpenCode asks for one pending approval, composed by Gaia alone.
 
-    ``signature`` is the renderer's surface as OpenCode shows it (D26): the
-    ``block`` (or ``details_block`` on a Details re-ask) the plugin posts into
-    the session, and a question of the short question, header and options,
-    because OpenCode shows a question's text on one line.
+    ``signature`` is the renderer's surface as OpenCode shows it (D33): one
+    one-line question per command, and its Details re-ask, each with its
+    header and options; nothing is posted outside the question.
     ``metadata`` binds the retry to the sealed commands. A payload that cannot
     be rendered returns ``presentation_error`` instead, and the plugin opens no
     question it cannot fill in full.
@@ -1875,13 +1891,13 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
             binding=binding,
         )
         rendered = surface.render(sealed_payload, approval_id)
+        strip = ("question", "header", "options")
         return {
             "signature": {
-                "block": rendered.block,
-                "details_block": rendered.details_block,
-                "question": rendered.short_question,
-                "header": rendered.question["header"],
-                "options": rendered.question["options"],
+                "questions": [{key: q[key] for key in strip} for q in rendered.questions],
+                "details_questions": [
+                    {key: q[key] for key in strip} for q in rendered.details_questions
+                ],
             },
             "metadata": presentation.native_metadata(envelope),
         }

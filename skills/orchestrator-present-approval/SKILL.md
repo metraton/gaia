@@ -5,27 +5,32 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 
 # Present Approval — Orchestrator Branch
 
-Gaia builds and shows every signature: a block with who asks, what for, and
-the exact commands, and on Details a block with what each command does, its
-impact, the rollback, the validity, the ID and the fingerprint. No model writes
-it. You never print, copy, summarise or translate any part of it; you only run
-`gaia approvals question` and open the short question it gives you, unchanged.
-You can run it again at any time for the approvals still pending -- for
-example when several specialists return signatures.
+Gaia builds every signature, and each of its commands is one question on one
+line: who asks and the exact command, written as a request for review in the
+user's language, plus the folder only when the command runs somewhere other
+than the project. Details turns each question into one line with what that
+command does, its impact, the rollback, how long the approval lasts and its
+ID. Only the Approve / Reject / Details labels stay in English. No model writes
+any of it. You never print, copy, summarise or translate any part of it; you
+only run `gaia approvals question` and open what it gives you, unchanged. You
+can run it again at any time for the approvals still pending -- for example
+when several specialists return signatures.
+
+A signature is approved only when every one of its questions gets Approve; a
+Reject on any of them rejects the whole signature. One call asks at most 4
+questions, so a signature carries at most 4 commands.
 
 ## Claude Code
 
 1. Run `gaia approvals question <approval_id> [<approval_id> ...]` with the
-   pending ids -- up to 4 in one question, one signature each.
-2. Call AskUserQuestion with that output unchanged. It holds only each short
-   question with Approve / Reject / Details; Gaia's hook shows each
-   signature's block as the question opens. Print nothing about the
+   pending ids -- up to 4 questions in all, one per command.
+2. Call AskUserQuestion with that output unchanged. Gaia's hook checks it is
+   exactly what Gaia wrote before the questions open. Print nothing about the
    signature.
 3. Details: the hook names the command to run,
    `gaia approvals question --details <approval_id> ...`. Pass its output to
-   AskUserQuestion the same way; the hook shows the Details block. If the hook
-   refuses a question, run `gaia approvals question` again for the ids it
-   names.
+   AskUserQuestion the same way. If the hook refuses a question, run
+   `gaia approvals question` again for the ids it names.
 
 ## OpenCode
 
@@ -37,14 +42,14 @@ anyone:
 
 1. Run `gaia approvals question <approval_id>`, one id per call.
 2. Call the question tool with that output unchanged, and print nothing about
-   the signature. Gaia's plugin posts the signature's block in your session
-   just before the question, fills your call with the short question, and
-   binds the answer to that approval. Only approvals your own specialists
-   requested are accepted; ask several one after another.
-3. Your call's result says what Gaia did with the answer. Details: run
+   the signature. Gaia's plugin fills your call with that signature's
+   questions, one per command, and binds the answers to that approval. Only
+   approvals your own specialists requested are accepted; ask several one
+   after another.
+3. Your call's result says what Gaia did with the answers. Details: run
    `gaia approvals question --details <approval_id>` and ask again the same
-   way; the plugin posts the Details block. Approved: resume the specialist
-   session it names (`task_id`) with `execution`.
+   way. Approved: resume the specialist session it names (`task_id`) with
+   `execution`.
 
 ## After the answer
 
