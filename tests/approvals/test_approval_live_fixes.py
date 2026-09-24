@@ -291,25 +291,29 @@ def test_approval_live_fixes_claude_runs_an_item_sealed_elsewhere_as_the_cd_form
     assert json.loads(executed["payload_json"])["command"] == COMMAND
 
 
-@pytest.mark.parametrize("variant", [
-    "another directory", "another command", "semicolon", "longer chain", "no cd",
-])
-def test_approval_live_fixes_claude_matches_only_the_sealed_directory_and_command(host, variant):
-    adapter = _claude()
-    approval_id = _request(host["other"])
-    _approve(approval_id)
-    invocation = {
-        "another directory": _cd_form(host["repo"]),
-        "another command": _cd_form(host["other"], "git push origin feat/otra"),
-        "semicolon": f"cd {shlex.quote(host['other'])}; {COMMAND}",
-        "longer chain": _cd_form(host["other"]) + " && true",
-        "no cd": COMMAND,
-    }[variant]
+CLOUD_COMMAND = "kubectl apply -f deploy.yaml"
 
-    _, allowed = _bash_pre(adapter, invocation, f"toolu_{variant}", host["repo"])
 
-    assert not allowed
-    con = sqlite3.connect(host["db"])
+def _variants(other: str, command: str) -> dict:
+    """Spellings that name the sealed directory and command but are not the exact sealed form."""
+    parent, name = str(Path(other).parent), Path(other).name
+    return {
+        "another command": _cd_form(other, "git push origin feat/otra"),
+        "semicolon": f"cd {shlex.quote(other)}; {command}",
+        "longer chain": _cd_form(other, command) + " && true",
+        "double quotes": f'cd "{other}" && {command}',
+        "trailing slash": f"cd {shlex.quote(other + '/')} && {command}",
+        "doubled space after cd": f"cd  {shlex.quote(other)} && {command}",
+        "doubled space before the command": f"cd {shlex.quote(other)} &&  {command}",
+        "cd --": f"cd -- {shlex.quote(other)} && {command}",
+        "relative path": f"cd {shlex.quote(name)} && {command}",
+        "command substitution": f"cd $(printf %s {shlex.quote(other)}) && {command}",
+        "dot-dot": f"cd {shlex.quote(f'{parent}/{name}/../{name}')} && {command}",
+    }
+
+
+def _grant_untouched(db, approval_id):
+    con = sqlite3.connect(db)
     try:
         row = con.execute(
             "SELECT next_index, reservation_tool_use_id FROM approval_grants WHERE approval_id = ?",
@@ -317,7 +321,85 @@ def test_approval_live_fixes_claude_matches_only_the_sealed_directory_and_comman
         ).fetchone()
     finally:
         con.close()
-    assert row == (0, None)
+    return row == (0, None)
+
+
+def test_approval_live_fixes_claude_runs_a_cloud_command_sealed_elsewhere_as_the_cd_form(host):
+    """The chain rule for cloud commands yields only to the exact sealed form."""
+    adapter = _claude()
+    approval_id = _request(host["other"], command=CLOUD_COMMAND)
+    invocation = _cd_form(host["other"], CLOUD_COMMAND)
+
+    output, allowed = _bash_pre(adapter, invocation, "toolu_cloud_before", host["repo"])
+    assert not allowed and approval_id in json.dumps(output), output
+
+    _approve(approval_id)
+    _, allowed = _bash_pre(adapter, invocation, "toolu_cloud_run", host["repo"])
+    assert allowed
+    adapter.adapt_post_tool_use(_bash_event(
+        adapter, "PostToolUse", invocation, "toolu_cloud_run", host["repo"], duration_ms=40,
+        tool_response={"stdout": "", "stderr": "", "interrupted": False, "isImage": False},
+    ))
+    [executed] = _events(approval_id, "EXECUTED")
+    assert json.loads(executed["payload_json"])["command"] == CLOUD_COMMAND
+
+    _, allowed = _bash_pre(adapter, _cd_form(host["other"], CLOUD_COMMAND) + " | tee x", "toolu_pipe", host["repo"])
+    assert not allowed
+
+
+def test_approval_live_fixes_sealed_form_keeps_every_single_command_check(host):
+    """The sealed command is checked as if run alone in its folder: a permanently blocked one stays blocked."""
+    from modules.tools.bash_validator import BashValidator
+
+    blocked = "kubectl delete namespace kube-system"
+    payload = core_seal_directly(host["other"], blocked)
+    result = BashValidator().validate(
+        _cd_form(host["other"], blocked), is_subagent=True, session_id=SESSION, agent_type=AGENT,
+        hook_payload={"cwd": host["repo"], "tool_use_id": "toolu_blocked", "session_id": SESSION},
+    )
+    assert payload and not result.allowed
+
+
+def core_seal_directly(cwd, command):
+    """Persist a phrased pending request without the request-set T3 check, as a stale or forged row would be."""
+    from gaia.approvals import core, store
+
+    payload = core.seal_request(
+        "command_set", [{"command": command, "cwd": cwd, "does": "Borra.", "impact": "Se pierde."}],
+        what="Borrar.", question="¿Borro?", session_id=SESSION, agent_id=AGENT,
+    )
+    return store.insert_requested(payload, agent_id=AGENT, session_id=SESSION)
+
+
+@pytest.mark.parametrize("variant", sorted(_variants("/x/sealed dir", COMMAND)) + [
+    "another directory", "no cd", "another requester",
+])
+def test_approval_live_fixes_claude_matches_only_the_sealed_directory_and_command(host, variant):
+    from gaia.approvals import core
+
+    adapter = _claude()
+    approval_id = _request(host["other"])
+    _approve(approval_id)
+    invocation = {
+        **_variants(host["other"], COMMAND),
+        "another directory": _cd_form(host["repo"]),
+        "no cd": COMMAND,
+        "another requester": _cd_form(host["other"]),
+    }[variant]
+    if variant == "another requester":
+        assert core.sealed_elsewhere(invocation, session_id=SESSION, agent_id="developer") is None
+        event = _bash_event(
+            adapter, "PreToolUse", invocation, "toolu_other_agent", host["repo"], agent_type="developer",
+        )
+        output = adapter.adapt_pre_tool_use(event).output
+        allowed = output.get("hookSpecificOutput", {}).get("permissionDecision", "allow") == "allow"
+    else:
+        assert variant in ("another directory", "no cd") or core.sealed_elsewhere(
+            invocation, session_id=SESSION, agent_id=AGENT) is None
+        _, allowed = _bash_pre(adapter, invocation, f"toolu_{variant}", host["repo"])
+
+    assert not allowed
+    assert _grant_untouched(host["db"], approval_id)
 
 
 @pytest.fixture()
@@ -383,6 +465,51 @@ def test_approval_live_fixes_opencode_runs_an_item_sealed_elsewhere_as_the_cd_fo
     executed = [json.loads(payload)["command"] for kind, payload in events if kind == "EXECUTED"]
     assert executed == [e2e.FIRST_COMMAND]
     assert [kind for kind, _ in events].count("SHOWN") == 1, events
+
+
+def test_approval_live_fixes_opencode_runs_a_cloud_command_sealed_elsewhere_and_no_variant(driven_env):
+    """OpenCode receives the directory as workdir and the command from the plugin: same verdicts as the core."""
+    from tests.integration import test_opencode_consent_retry_e2e as e2e
+
+    env, db_path = driven_env
+    other = Path(env["WORKSPACE"]).parent / "sealed cloud"
+    other.mkdir()
+    requested = _request_set_cli(env, str(other), CLOUD_COMMAND)
+    assert requested.returncode == 0, requested.stdout + requested.stderr
+    approval_id = json.loads(requested.stdout.strip().splitlines()[-1])["approval_id"]
+    invocation = _cd_form(str(other), CLOUD_COMMAND)
+    variants = _variants(str(other), CLOUD_COMMAND)
+
+    driven = e2e._drive(env, [
+        e2e._before("blocked", invocation),
+        {"kind": "control-decision", "label": "approve", "answer": "approve",
+         "requestID": "question-cloud"},
+        *[
+            e2e._before(f"variant {name}", text, call_id=f"call-variant-{index}")
+            for index, (name, text) in enumerate(sorted(variants.items()))
+        ],
+        e2e._before("retry", invocation, call_id=e2e.RETRY_CALL_ID),
+        {"kind": "after", "label": "settle", "sessionID": e2e.SESSION_ID,
+         "callID": e2e.RETRY_CALL_ID, "tool": "bash", "command": invocation,
+         "metadata": {"exitCode": 0}},
+    ])
+
+    assert driven["presentations"][0]["approvalID"] == approval_id, driven["presentations"]
+    refused_variants = [name for name in variants if e2e._step(driven, f"variant {name}")["allowed"] is False]
+    assert sorted(refused_variants) == sorted(variants), driven["steps"]
+    assert e2e._step(driven, "retry")["allowed"] is True, driven["steps"]
+    con = sqlite3.connect(db_path)
+    try:
+        executed = [
+            json.loads(payload)["command"]
+            for (payload,) in con.execute(
+                "SELECT payload_json FROM approval_events WHERE approval_id = ? "
+                "AND event_type = 'EXECUTED' ORDER BY id", (approval_id,),
+            )
+        ]
+    finally:
+        con.close()
+    assert executed == [CLOUD_COMMAND]
 
 
 def test_approval_live_fixes_request_set_refuses_a_directory_that_does_not_exist(host):

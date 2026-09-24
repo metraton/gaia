@@ -686,6 +686,13 @@ class BashValidator:
 
         command = command.strip()
 
+        sealed = self._sealed_elsewhere(command, session_id, agent_type, hook_payload)
+        if sealed is not None:
+            return self._validate_sealed_elsewhere(
+                sealed, is_subagent=is_subagent, session_id=session_id,
+                agent_type=agent_type, hook_payload=hook_payload,
+            )
+
         # ================================================================
         # EARLY NORMALIZATION: Strip AI attribution footers before any
         # other processing.  This ensures the same normalized command
@@ -1085,23 +1092,10 @@ class BashValidator:
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
-        from gaia.approvals.core import sealed_elsewhere
-        sealed = (
-            sealed_elsewhere(command, session_id=session_id, agent_id=agent_type)
-            if has_operators else None
-        )
         if not has_operators:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
-            )
-        elif sealed is not None:
-            # The one compound accepted (D24): its command runs in its sealed
-            # directory, reserved or refused exactly as that command alone.
-            sealed_cwd, sealed_command = sealed
-            result = self._validate_single_command(
-                sealed_command, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type, tool_use_id=tool_use_id, cwd=sealed_cwd,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
@@ -1171,6 +1165,50 @@ class BashValidator:
             return None
         if command_was_modified:
             result.modified_input = {"command": command}
+        return result
+
+    @staticmethod
+    def _sealed_elsewhere(
+        command: str, session_id: str, agent_type: str, hook_payload: Optional[Dict[str, Any]],
+    ) -> Optional[tuple]:
+        """The ``(cwd, command)`` of an exact sealed-directory form (D24), else ``None``.
+
+        Only a live host event qualifies: without its payload there is no
+        requester to bind the form to and no directory to run the command in.
+        """
+        if hook_payload is None or " && " not in command:
+            return None
+        from gaia.approvals.core import sealed_elsewhere
+
+        return sealed_elsewhere(command, session_id=session_id, agent_id=agent_type)
+
+    def _validate_sealed_elsewhere(
+        self,
+        sealed: tuple,
+        *,
+        is_subagent: bool,
+        session_id: str,
+        agent_type: str,
+        hook_payload: Dict[str, Any],
+    ) -> BashValidationResult:
+        """Validate the one compound accepted as its sealed command run alone in its sealed directory.
+
+        The chain rules never see it, and every check a single command gets
+        applies to the sealed command. A rewrite of that command keeps the
+        ``cd`` so the host still runs it where it was sealed.
+        """
+        from gaia.approvals.core import sealed_invocation
+
+        sealed_cwd, sealed_command = sealed
+        result = self.validate(
+            sealed_command, is_subagent=is_subagent, session_id=session_id,
+            agent_type=agent_type, hook_payload={**hook_payload, "cwd": sealed_cwd},
+        )
+        if result.modified_input and "command" in result.modified_input:
+            result.modified_input = {
+                **result.modified_input,
+                "command": sealed_invocation(sealed_cwd, result.modified_input["command"]),
+            }
         return result
 
     def _validate_single_command(
