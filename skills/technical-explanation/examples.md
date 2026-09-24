@@ -2,7 +2,9 @@
 
 Three worked explanations in the DevOps register, each showing the four
 decisions of `SKILL.md` Step 1 being taken and the fixed order of Step 2 being
-followed, then every anti-pattern shown before and after. The component names
+followed, then every anti-pattern shown before and after. Every fenced picture
+here stays within 80 columns (Step 4); where a level-2 picture would not fit in
+one row it is drawn top-down instead. The component names
 below are illustrative: they name the shape of a typical setup, not a file in
 this repository.
 
@@ -52,21 +54,22 @@ with both would have to untangle which arrow is "tells" and which is "sends".
 ```
 control flow
 
-  Git repository (deploy/ overlays) ──HelmRelease, Kustomization──► Flux controllers
-                                                                          │
-                                                             apply to the API server
-                                                                          ▼
-                                                              Deployment ──► ReplicaSet
-                                                                                 │
-                                                                                 ▼
-                                                                               Pods
+  Git repository (deploy/ overlays)
+        │
+        │ declares HelmRelease + Kustomization
+        ▼
+  Flux controllers
+        │
+        │ apply to the API server
+        ▼
+  Deployment ──creates──► ReplicaSet ──creates──► Pods
 ```
 
 ```
 traffic flow
 
-  client ──► cloud load balancer ──► Ingress (nginx) ──► Service (ClusterIP) ──► Pods
-                                     host + path rule    endpoints = ready Pods only
+  client ──► cloud load balancer ──► Ingress (nginx) ──► Service ──► Pods
+                                     host + path rule    ready Pods only
 ```
 
 **Detail** (reached on request): the Flux `Kustomization` interval and the
@@ -100,8 +103,12 @@ verified, and nothing rolls out that was not published.
 **Level 2.** The same five stages, real components on the boxes level 1 placed.
 
 ```
-  pull request ──► GitHub Actions: build job ──► test job ──► push to the registry ──► Flux picks the new tag
-                   (container image)             (unit + lint)  (image:sha tag)         (HelmRelease values bump)
+  pull request ──► GitHub Actions: build job ──► test job
+                   (container image)             (unit + lint)
+                                                      │
+                                                      ▼
+                   push to the registry ──► Flux picks the new tag
+                   (image:sha tag)          (HelmRelease values bump)
 ```
 
 Where a change waits: the PR until review; the test job until green; the
@@ -135,14 +142,14 @@ force the routing refresh. The rollout itself is fine and is not rolled back.
 
 ```
   errors on checkout?
-        │
-        ├── copies not ready ──► control-flow fault: look at the reconciler
-        │
-        └── copies ready ──► traffic-flow fault
-                                  │
-                                  ├── all edges stale ──► refresh routing everywhere
-                                  │
-                                  └── one edge stale ──► drain that edge, then refresh
+    │
+    ├── copies not ready ──► control-flow fault: look at the reconciler
+    │
+    └── copies ready ──► traffic-flow fault
+                           │
+                           ├── all edges stale ──► refresh routing everywhere
+                           │
+                           └── one edge stale ──► drain that edge, then refresh
 ```
 
 Nothing below this line is read during the incident: the technical detail (the

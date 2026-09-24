@@ -184,6 +184,11 @@ Step 5 are reached on request.
   tree marks `└── ├──`. No invented glyphs, no colour codes in text, no symbol
   whose meaning the reader has to be told. If a notation needs a legend it is
   not notation, it is a second thing to learn.
+- **A fenced picture stays within 80 columns.** That is what makes it read
+  identically on the web, in a terminal, and in a diff: a wider one wraps or
+  scrolls in the terminal and the picture the reader sees is not the one you
+  drew. A picture that needs more width is at the wrong level (lower it) or is
+  two pictures.
 - **If a sentence says it faster, write the sentence.** Two parts and one
   relation is a sentence, not a diagram.
 - **No decorative diagram.** A picture that repeats the paragraph beside it
@@ -199,7 +204,11 @@ common nouns; the level-2 picture is the same shape with real names.
 An explanation written by this skill is complete as text. Two lanes render it
 when someone asks for a rendered artifact; neither is entered automatically,
 and the request is what opens them -- an explanation that would "look better as
-a deck" stays text until the user asks for the deck.
+a deck" stays text until the user asks for the deck. The writer may OFFER the
+lane, in one line, when a rendered picture would teach more than the text
+("this reads as a deck; say so and I build it"): offering names a capability
+the user did not ask for, entering it is the user's call, and nothing is built
+until they make it.
 
 - **`diagram-builder`** -- a deck of nested sections and components, authored in
   YAML. The explanation lowers into it by a fixed correspondence: a **phase**
