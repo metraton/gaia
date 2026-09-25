@@ -36,6 +36,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
+from gaia.agent_identity import dispatch_agent_from_env
+
 if TYPE_CHECKING:  # annotation-only; runtime imports of gaia.state stay lazy
     from gaia.state.task_closure import GateVerdict
 
@@ -1984,14 +1986,14 @@ def _assert_dispatch_can_write_memory() -> None:
     (developer, platform-architect, gitops-operator, ...) record episodic
     events via the audit pipeline; they do not author the curated layer.
     """
-    raw = os.environ.get("GAIA_DISPATCH_AGENT")
-    if not raw:
+    agent = dispatch_agent_from_env()
+    if not agent:
         return
-    if raw in _MEMORY_CURATOR_AGENTS:
+    if agent in _MEMORY_CURATOR_AGENTS:
         return
     raise MemoryWriteForbidden(
         f"Curated memory writes are forbidden from subagent dispatches "
-        f"(current GAIA_DISPATCH_AGENT={raw!r}). Memory is owned by the "
+        f"(current GAIA_DISPATCH_AGENT={agent!r}). Memory is owned by the "
         f"orchestrator-operator pair."
     )
 
@@ -4632,7 +4634,7 @@ def set_task_status(
             # the same resolver the audit record uses, so a human caller is a
             # known identity and not a blank), and WHO the task was dispatched
             # to. Everything downstream of these two values is pure.
-            caller_agent = resolve_actor(os.environ.get("GAIA_DISPATCH_AGENT"))
+            caller_agent = resolve_actor(dispatch_agent_from_env())
             decision = decide_closure_under_identity(
                 verdict=derive_gate_verdict(
                     _read_task_gate_rows(con, task_row["id"])
@@ -5696,7 +5698,7 @@ def write_task_close_override_event(
     """
     from gaia.state.task_closure_event import build_override_event
 
-    actor_source = actor if actor is not None else os.environ.get("GAIA_DISPATCH_AGENT")
+    actor_source = actor if actor is not None else dispatch_agent_from_env()
     event = build_override_event(
         brief_name=brief_name,
         task_order_num=task_order_num,
@@ -5746,7 +5748,7 @@ def write_task_close_override_divergence_event(
             con.commit()
             return existing_id
 
-        actor_source = actor if actor is not None else os.environ.get("GAIA_DISPATCH_AGENT")
+        actor_source = actor if actor is not None else dispatch_agent_from_env()
         event = build_override_divergence_event(
             brief_name=brief_name,
             task_order_num=task_order_num,
@@ -6185,7 +6187,7 @@ def _apply_derived_task_closure(
             producer_agent_names,
         )
 
-        caller_agent = resolve_actor(os.environ.get("GAIA_DISPATCH_AGENT"))
+        caller_agent = resolve_actor(dispatch_agent_from_env())
         verdict = derive_gate_verdict(gate_rows)
         outcome["gate_count"] = verdict.gate_count
         outcome["verdict_approving"] = verdict.approving
@@ -8723,17 +8725,14 @@ def _assert_dispatch_can_write_handoff() -> None:
     """
     from gaia.state.permissions import handoff_writer_fleet, is_handoff_writer
 
-    raw = os.environ.get("GAIA_DISPATCH_AGENT")
-    if not raw:
-        return
-    agent = raw.strip()
+    agent = dispatch_agent_from_env().strip()
     if not agent:
         return
     if is_handoff_writer(agent):
         return
     raise HandoffWriteForbidden(
         f"agent_contract_handoffs writes are forbidden from '{agent}': it is not "
-        f"a seeded fleet agent (GAIA_DISPATCH_AGENT={raw!r}). Only agents declared "
+        f"a seeded fleet agent (GAIA_DISPATCH_AGENT={agent!r}). Only agents declared "
         f"under agents/ with `contract_handoff_writer: true` may finalize a "
         f"handoff row. Seeded fleet: {sorted(handoff_writer_fleet())}."
     )

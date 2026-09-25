@@ -1682,7 +1682,9 @@ def _requester_identity(args) -> tuple[str, str]:
     against the dispatch identity, so a grant sealed under a flag's identity
     could never be consumed.
     """
-    dispatch_agent = os.environ.get("GAIA_DISPATCH_AGENT")
+    from gaia.agent_identity import canonical_agent_name, dispatch_agent_from_env
+
+    dispatch_agent = dispatch_agent_from_env()
     flags = [
         flag for flag, attr in (("--agent-id", "agent_id"), ("--session-id", "session_id"))
         if getattr(args, attr, None)
@@ -1700,7 +1702,7 @@ def _requester_identity(args) -> tuple[str, str]:
         or os.environ.get("CLAUDE_SESSION_ID")
         or ""
     )
-    agent_id = getattr(args, "agent_id", None) or os.environ.get("GAIA_DISPATCH_AGENT") or ""
+    agent_id = canonical_agent_name(getattr(args, "agent_id", None)) or dispatch_agent
     return session_id, agent_id
 
 

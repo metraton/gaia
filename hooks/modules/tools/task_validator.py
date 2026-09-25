@@ -22,8 +22,10 @@ from ..security.mutative_verbs import (
 
 logger = logging.getLogger(__name__)
 
-# Available agents for Task invocation — both bare and plugin-namespaced forms
-_BASE_AGENTS = [
+# Available agents for Task invocation, by canonical (bare) name. A plugin
+# install dispatches them as "gaia:<name>"; validate() canonicalizes the
+# requested name before the membership check.
+AVAILABLE_AGENTS = [
     "platform-architect",
     "gitops-operator",
     "cloud-troubleshooter",
@@ -37,10 +39,6 @@ _BASE_AGENTS = [
     "claude-code-guide",
     "general-purpose",
 ]
-# Support both "cloud-troubleshooter" and "gaia:cloud-troubleshooter" -- the
-# plugin ships as the single unified "gaia" bundle, so the namespaced form
-# uses that prefix.
-AVAILABLE_AGENTS = _BASE_AGENTS + [f"gaia:{a}" for a in _BASE_AGENTS]
 
 # Native Claude Code agent types — utility subagents built into the harness,
 # not gaia domain specialists. They don't require context_provider and don't
@@ -219,7 +217,12 @@ class TaskValidator:
         Returns:
             TaskValidationResult with validation details
         """
-        agent_name = parameters.get("subagent_type", "unknown")
+        from gaia.agent_identity import canonical_agent_name
+
+        # The canonical name is what the dispatch row, the kernel and the
+        # permission lookups are keyed by; the host's own tool_input keeps the
+        # spelling it dispatches.
+        agent_name = canonical_agent_name(parameters.get("subagent_type", "unknown"))
         prompt = parameters.get("prompt", "")
         description = parameters.get("description", "")
 

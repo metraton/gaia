@@ -1015,7 +1015,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         - tool_name: str        (PreToolUse / PostToolUse)
         - tool_input: dict      (PreToolUse / PostToolUse)
         - tool_response: dict    (PostToolUse only)
-        - agent_type: str       (PreToolUse for subagent dispatches; also SubagentStop)
+        - agent_type: str       (PreToolUse for subagent dispatches; also SubagentStop;
+                                 "gaia:<name>" under a plugin install, canonicalized
+                                 to "<name>" by parse_event)
         - agent_id: str         (PreToolUse for subagent dispatches; also SubagentStop)
         - agent_transcript_path: str  (SubagentStop only)
         - last_assistant_message: str (SubagentStop only)
@@ -1063,6 +1065,14 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             raise ValueError(f"Unknown hook event type: {event_name}")
 
         session_id = raw.get("session_id", "")
+
+        # A plugin install reports agent_type as "gaia:<name>"; every consumer
+        # of the payload compares the bare name, so it is canonicalized here,
+        # once, before any of them reads it.
+        if "agent_type" in raw:
+            from gaia.agent_identity import canonical_agent_name
+
+            raw["agent_type"] = canonical_agent_name(raw["agent_type"])
 
         return HookEvent(
             event_type=event_type,

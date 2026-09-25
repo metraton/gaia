@@ -25,9 +25,10 @@ curator-only tables (T5.2 milestones). The table name is the discriminator.
 from __future__ import annotations
 
 import functools
-import os
 import re
 from pathlib import Path
+
+from gaia.agent_identity import canonical_agent_name, dispatch_agent_from_env
 
 # ---------------------------------------------------------------------------
 # Permission matrix (D1)
@@ -87,13 +88,9 @@ def _assert_dispatch_can_advance_state(table: str) -> None:
         table: Name of the DB table being mutated (e.g. ``'tasks'``,
                ``'milestones'``).
     """
-    raw = os.environ.get("GAIA_DISPATCH_AGENT")
-    if not raw:
-        # Human CLI caller or env var not set: always allowed.
-        return
-
-    agent = raw.strip()
+    agent = dispatch_agent_from_env().strip()
     if not agent:
+        # Human CLI caller or env var not set: always allowed.
         return
 
     if agent in _CURATOR_AGENTS:
@@ -165,10 +162,7 @@ def _assert_dispatch_can_write_content(table: str) -> None:
     Args:
         table: Target table -- ``'briefs'`` or ``'plans'``.
     """
-    raw = os.environ.get("GAIA_DISPATCH_AGENT")
-    if not raw:
-        return
-    agent = raw.strip()
+    agent = dispatch_agent_from_env().strip()
     if not agent:
         return
     authors = CONTENT_AUTHOR_PERMISSIONS.get(table)
@@ -323,7 +317,7 @@ def is_handoff_writer(agent: str) -> bool:
     """
     if not agent:
         return False
-    return agent.strip() in handoff_writer_fleet()
+    return canonical_agent_name(agent.strip()) in handoff_writer_fleet()
 
 
 __all__ = [
