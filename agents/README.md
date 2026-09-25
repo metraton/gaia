@@ -58,14 +58,14 @@ Agent executes, closing its agent_contract_handoffs row with
 
 ```
 agents/
-├── gaia-orchestrator.md   # Routing + governance layer (no file tools, no domain)
-├── gaia-operator.md       # Personal workspace: Gmail, calendar, operator tasks
-├── gaia-system.md         # Meta-agent: Gaia internals, agents, skills, hooks
-├── gaia-planner.md        # Feature planning: briefs, task decomposition
-├── developer.md           # Application code: Node.js, Python, TypeScript
-├── cloud-troubleshooter.md # Live cloud diagnostics: GCP, AWS, Azure
-├── gitops-operator.md     # Kubernetes, Flux, HelmReleases, GitOps
-├── platform-architect.md  # Infrastructure-as-code (tool-agnostic): Terraform, Pulumi, CloudFormation, OpenTofu, CDK
+├── gaia-orchestrator.md   # Routing + governance layer (no file tools, no domain); its capabilities table is `## What I can offer`
+├── gaia-operator.md       # Workspace materializer: loads a technique on demand (gmail, blog, ticket, diagram deck, explanation) and closes on the technique's own verdict
+├── gaia-system.md         # Meta-agent: builds and audits Gaia's own machinery — agents, skills, hooks, CLI, build manifests, routing
+├── gaia-planner.md        # Feature planning: audits feasibility against live code, decomposes a settled brief into outcome-defined tasks with gates
+├── developer.md           # Application code, CI/CD pipelines, developer tooling — turns a goal into working, proven code
+├── cloud-troubleshooter.md # Live-state diagnostics: pods, services, cloud resources, drift against desired state — read-only on production
+├── gitops-operator.md     # Kubernetes desired state in Git: Flux/Argo HelmReleases, manifests, Kustomizations — never touches the live cluster
+├── platform-architect.md  # Infrastructure-as-code (tool-agnostic): Terraform, Terragrunt, Pulumi, CloudFormation, OpenTofu, CDK
 └── gaia-verifier.md       # Clean-context verifier: consumes task_gates, promotes NEEDS_VERIFICATION to COMPLETE
 ```
 
