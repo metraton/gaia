@@ -698,7 +698,7 @@ class TestCheckWorkspaceRoots:
         con.close()
         monkeypatch.setenv("GAIA_DB", str(db_path))
 
-    def test_unrooted_workspace_warns_with_the_scan_that_fills_it(
+    def test_unrooted_workspace_is_info_with_the_scan_that_fills_it(
         self, tmp_path, monkeypatch, bootstrapped_db_template,
     ):
         self._db_with_workspaces(tmp_path, monkeypatch, bootstrapped_db_template, [
@@ -708,9 +708,24 @@ class TestCheckWorkspaceRoots:
 
         r = doctor_mod.check_workspace_roots()
 
-        assert r["severity"] == "warning"
+        assert r["severity"] == "info"
         assert "never-scanned" in r["detail"]
         assert r["fix"] == "gaia scan <workspace root> --workspace never-scanned"
+
+    def test_fresh_install_workspace_row_does_not_degrade_doctor(
+        self, tmp_path, monkeypatch, bootstrapped_db_template,
+    ):
+        # The row a fresh install leaves (bootstrap_database.py and the release
+        # sandbox register the workspace without a root). Warning here made the
+        # release gate's `gaia doctor` exit 1 on every clean install.
+        self._db_with_workspaces(tmp_path, monkeypatch, bootstrapped_db_template, [
+            ("gaia-sandbox-1700000000-42", "active", None),
+        ])
+
+        r = doctor_mod.check_workspace_roots()
+
+        assert r["severity"] != "warning"
+        assert r["ok"] is True
 
     def test_rooted_and_missing_workspaces_do_not_warn(
         self, tmp_path, monkeypatch, bootstrapped_db_template,
@@ -2438,10 +2453,10 @@ class TestCheckExecutedCopyAlignment:
         assert "aligned" in r["detail"]
         assert str(checkout.resolve()) in r["detail"]
 
-    def test_divergent_when_pinned_tarball_replaced_the_link(self, tmp_path):
-        # The measured class: a previous dev link is gone, node_modules now
-        # holds a materialized (non-checkout) copy, and the pin is still the
-        # local tarball spec that produced it.
+    def test_materialized_tarball_copy_is_info_naming_what_resolved(self, tmp_path):
+        # Every tarball install looks like this: a materialized (non-checkout)
+        # copy pinned by a local tarball spec. A replaced source link is
+        # indistinguishable on disk, so the check reports, never warns.
         ws = tmp_path / "ws"
         nm = ws / "node_modules" / "@jaguilar87" / "gaia"
         nm.mkdir(parents=True)
@@ -2449,11 +2464,25 @@ class TestCheckExecutedCopyAlignment:
         self._pin_tarball(ws, "file:../../.gaia/cache/dev-pack/me/jaguilar87-gaia-5.4.0-rc.1+e1c4f7b5.tgz")
 
         r = doctor_mod.check_executed_copy_alignment(ws)
-        assert r["severity"] == "warning"
-        assert "divergent" in r["detail"]
+        assert r["severity"] == "info"
+        assert "materialized" in r["detail"]
         assert str(nm.resolve()) in r["detail"]
         assert "e1c4f7b5.tgz" in r["detail"]
         assert "gaia dev --workspace" in r["fix"]
+
+    def test_npm_tarball_install_does_not_degrade_doctor(self, tmp_path):
+        # The shape `npm install /abs/jaguilar87-gaia-X.tgz` leaves -- the
+        # release sandbox gate's install. Warning here made that gate fail on
+        # every clean install, so publish.yml would stop before npm publish.
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm.mkdir(parents=True)
+        (nm / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.5.0-rc.1"}))
+        self._pin_tarball(ws, "file:../jaguilar87-gaia-5.5.0-rc.1.tgz")
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] != "warning"
+        assert r["ok"] is True
 
     def test_non_tarball_spec_with_no_checkout_is_info_not_divergent(self, tmp_path):
         # A registry install has no link to have lost -- this check's object

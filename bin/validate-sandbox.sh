@@ -437,9 +437,31 @@ install_package() {
 # merge_local_hooks in _install_helpers.py), so the sandbox's
 # settings-preservation check (check 8) still passes -- the user sentinel
 # keys survive the merge.
+#
+# The sandbox passes --no-path: the PATH launcher is a machine-global surface
+# (~/.local/bin/gaia), and a throwaway sandbox must never become the gaia the
+# user's shells run.
 wire_workspace() {
-  echo "[install] wiring workspace: gaia install --workspace ${WORKSPACE}"
-  gaia install --workspace "${WORKSPACE}"
+  local install_args=(--workspace "${WORKSPACE}")
+  if [[ "${TARGET}" == "sandbox" ]]; then
+    install_args+=(--no-path)
+  fi
+  echo "[install] wiring workspace: gaia install ${install_args[*]}"
+  gaia install "${install_args[@]}"
+}
+
+# Sandbox only: every `gaia` call after this point sees a HOME inside the
+# sandbox, so home-anchored state (~/.gaia/last-install-error.json, the PATH
+# launcher, anything a future install writes under ~) lands in the throwaway
+# dir instead of the user's. PYTHONUSERBASE keeps the user's site-packages
+# importable, since Python derives that path from HOME.
+isolate_sandbox_home() {
+  local user_base
+  user_base="$(python3 -m site --user-base)"
+  export PYTHONUSERBASE="${user_base}"
+  export HOME="${WORKSPACE}/.home"
+  mkdir -p "${HOME}"
+  echo "[sandbox] HOME isolated at ${HOME}"
 }
 
 # ---------------------------------------------------------------------------
@@ -593,6 +615,7 @@ export PATH="${WORKSPACE}/node_modules/.bin:${PATH}"
 # the isolated sandbox DB (via the GAIA_DATA_DIR seed_sandbox_db exports),
 # never in the user's global ~/.gaia/gaia.db.
 if [[ "${TARGET}" == "sandbox" ]]; then
+  isolate_sandbox_home
   seed_sandbox_db
 fi
 
