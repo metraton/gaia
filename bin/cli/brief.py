@@ -1003,6 +1003,24 @@ def register(subparsers) -> None:
     m_rm.add_argument("--json", action="store_true", default=False,
                       help="Emit JSON.")
 
+    history_p = actions.add_parser(
+        "history",
+        help="Change history of a brief: AC edits, decisions, plan versions (read-only)",
+        description=(
+            "Lists brief_events oldest first: brief created/edited, AC added/edited/"
+            "removed (with before/after in --json), decisions added, plan versions "
+            "replaced. Recorded by database triggers since schema v58; rows marked "
+            "(reconstructed) were inferred by the v58 migration from rows that "
+            "already existed. NOT covered: AC edits made before v58 -- they left no "
+            "trace in the database."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia brief history my-brief --workspace=century-inc --json\n",
+    )
+    history_p.add_argument("name", help="Brief slug.")
+    history_p.add_argument("--workspace", default=None, metavar="W", help="Workspace identity.")
+    history_p.add_argument("--json", action="store_true", default=False, help="Emit JSON.")
+
     # -- decision <add|list> ----------------------------------------------------
     decision_p = actions.add_parser(
         "decision",
@@ -1308,10 +1326,46 @@ def _cmd_ac(args) -> int:
     return 0
 
 
+def _cmd_history(args) -> int:
+    from gaia.briefs import get_brief
+    from gaia.store.writer import _connect
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    brief = get_brief(workspace, args.name)
+    if brief is None:
+        return _err(f"brief '{args.name}' not found in workspace '{workspace}'", as_json=as_json)
+    con = _connect()
+    try:
+        cur = con.execute(
+            "SELECT occurred_at, kind, subject, source, before, after FROM brief_events "
+            "WHERE brief_id = ? ORDER BY occurred_at, id",
+            (brief["id"],),
+        )
+        events = [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
+    finally:
+        con.close()
+    if as_json:
+        for event in events:
+            for field in ("before", "after"):
+                event[field] = json.loads(event[field]) if event[field] else None
+        print(json.dumps({"brief": args.name, "workspace": workspace, "events": events},
+                         indent=2, default=str))
+        return 0
+    if not events:
+        print(f"no history recorded for brief '{args.name}'")
+        return 0
+    for event in events:
+        mark = " (reconstructed)" if event["source"] == "reconstructed" else ""
+        print(f"{event['occurred_at']}  {event['kind']:<22} {event['subject'] or ''}{mark}")
+    return 0
+
+
 def cmd_brief(args) -> int:
     """Dispatch handler for `gaia brief`."""
     action = getattr(args, "brief_action", None)
     handlers = {
+        "history": _cmd_history,
         "new": _cmd_new,
         "edit": _cmd_edit,
         "show": _cmd_show,
