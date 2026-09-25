@@ -1,7 +1,7 @@
 {
   "plugin_name": "gaia",
   "version": "from:package.json",
-  "description": "GAIA — Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code. Agents span the full lifecycle; commands are risk-classified — reads run free, state changes need approval, irreversible ops blocked.",
+  "description": "GAIA — Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code. Risk-classified commands: reads run free, state changes need approval, irreversible ops blocked.",
   "hooks": {
     "entries": [
       "hooks/pre_tool_use.py",
