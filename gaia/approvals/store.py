@@ -909,10 +909,11 @@ def activate_command_set_atomically(
 
         # The event is inserted before the status update because the schema
         # trigger requires an APPROVED event to exist in the same transaction.
-        record_event(
-            approval_id, "SHOWN", agent_id=agent_id, session_id=approver_session,
-            payload_json=canonical_payload(shown_payload), con=connection,
-        )
+        if not _already_shown(connection, approval_id):
+            record_event(
+                approval_id, "SHOWN", agent_id=agent_id, session_id=approver_session,
+                payload_json=canonical_payload(shown_payload), con=connection,
+            )
         record_event(
             approval_id, "APPROVED", agent_id=agent_id, session_id=approver_session,
             con=connection,
@@ -945,6 +946,14 @@ def activate_command_set_atomically(
     finally:
         if owned:
             connection.close()
+
+
+def _already_shown(connection: sqlite3.Connection, approval_id: str) -> bool:
+    """Whether a presentation already recorded SHOWN: a decision then adds none of its own."""
+    return connection.execute(
+        "SELECT 1 FROM approval_events WHERE approval_id = ? AND event_type = 'SHOWN' LIMIT 1",
+        (approval_id,),
+    ).fetchone() is not None
 
 
 def activate_approval_atomically(
@@ -1274,14 +1283,15 @@ def activate_approval_atomically(
             if isinstance(shown_payload, str)
             else canonical_payload(shown_payload or payload)
         )
-        record_event(
-            approval_id,
-            "SHOWN",
-            agent_id=agent_id or stored_agent,
-            session_id=approver_session,
-            payload_json=shown_json,
-            con=connection,
-        )
+        if not _already_shown(connection, approval_id):
+            record_event(
+                approval_id,
+                "SHOWN",
+                agent_id=agent_id or stored_agent,
+                session_id=approver_session,
+                payload_json=shown_json,
+                con=connection,
+            )
         record_event(
             approval_id,
             "APPROVED",

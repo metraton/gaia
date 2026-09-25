@@ -2,7 +2,7 @@
 Actionable BLOCKED message formatter for permanently blocked commands.
 
 When the hook blocks a T3 command (exit 2), this module produces messages that:
-- Line 1: What domain was blocked and why (irreversible)
+- Line 1: What was blocked and why (irreversible, for a blocked-command pattern)
 - Line 2: The specific suggestion (from BLOCKED_COMMAND_SUGGESTIONS if available)
 - Line 3: Which agent to dispatch to (mapped from command category)
 
@@ -46,8 +46,11 @@ def format_blocked_message(result) -> str:
     # Extract category from reason (format: "Command blocked by security policy: <category>")
     category = _extract_category(result.reason)
 
-    # Line 1: What was blocked and why
-    msg = f"[BLOCKED] {result.reason} (irreversible operation)\n"
+    # Line 1: What was blocked and why. Only a blocked-command pattern is an
+    # irreversible operation; a categorical guard (a sensitive read, a
+    # protected path, a shell writer) states its own reason.
+    irreversible = " (irreversible operation)" if category else ""
+    msg = f"[BLOCKED] {result.reason}{irreversible}\n"
 
     # Line 2: Specific suggestion
     suggestion = _get_suggestion(result, category)

@@ -647,10 +647,11 @@ def _record_grant_revoked(args, approval_id: str, verb: str) -> None:
     if store.get_by_id(approval_id) is None:
         return
     session_id, agent_id = _withdrawer(args)
+    reason = getattr(args, "reason", None) or "grant revoked"
     store.record_event(
         approval_id, "REVOKED", agent_id=agent_id, session_id=session_id,
         metadata_json=json.dumps(
-            {"reason": "grant revoked", "source": f"gaia approvals {verb}"}, sort_keys=True,
+            {"reason": reason, "source": f"gaia approvals {verb}"}, sort_keys=True,
         ),
     )
 
@@ -734,10 +735,52 @@ def _reject_live_grant(args, approval_id: str) -> int:
         return 1
 
     if len(live) != 1:
-        _print_error(f"Cannot reject {approval_id}: no exact live grant exists", args)
-        return 1
+        return _report_already_withdrawn(args, approval_id)
 
     return _revoke_grant(args, live[0]["approval_id"], verb="reject")
+
+
+#: Terminal states in which an approval can no longer run: reject has nothing left to do.
+_WITHDRAWN_STATES = frozenset({"rejected", "revoked", "expired"})
+
+
+def _report_already_withdrawn(args, approval_id: str) -> int:
+    """Succeed on an approval already withdrawn -- say how and by what -- and fail on anything else.
+
+    An automatic pending is withdrawn the moment its requester's own
+    request replaces it (D38), so a later reject finds it closed; the intent,
+    that it never runs, already holds. An approval that ran, or an unknown id,
+    still fails.
+    """
+    row = _import_approval_store().get_by_id(approval_id)
+    status = (row or {}).get("status")
+    if status not in _WITHDRAWN_STATES:
+        _print_error(
+            f"Cannot reject {approval_id}: it is {status or 'unknown'}, "
+            "with no pending request and no live grant to withdraw",
+            args,
+        )
+        return 1
+    replaced = _replacement_of(approval_id)
+    detail = f"replaced by {replaced}" if replaced else status
+    if getattr(args, "json", False):
+        print(json.dumps({"status": status, "approval_id": approval_id, "already_withdrawn": True,
+                          "replaced_by": replaced}))
+    else:
+        print(f"Already withdrawn {approval_id} ({detail}); it can no longer run, nothing to reject")
+    return 0
+
+
+def _replacement_of(approval_id: str) -> str | None:
+    """The request that replaced ``approval_id``, read from its withdrawal event, if any."""
+    for event in _import_approval_store().get_history(approval_id):
+        try:
+            metadata = json.loads(event.get("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(metadata, dict) and metadata.get("replaced_by"):
+            return metadata["replaced_by"]
+    return None
 
 
 def cmd_reject(args) -> int:
@@ -1341,27 +1384,49 @@ def cmd_show_v2(args) -> int:
 
 
 def _signature_surface(payload: dict, approval_id: str) -> dict:
-    """Return the signature a host shows: text, question, Details and OpenCode's single string."""
+    """Return the signature both hosts show: one question per command and its Details re-ask (D37), with their texts."""
     from gaia.approvals import surface
 
     rendered = surface.render(payload, approval_id)
     return {
         "approval_id": approval_id,
         "text": rendered.text,
-        "question": rendered.question,
+        "questions": list(rendered.questions),
         "details": rendered.details,
-        "opencode": rendered.opencode,
+        "details_questions": list(rendered.details_questions),
+    }
+
+
+def _opencode_question(approval_id: str, details: bool) -> dict:
+    """The question-tool input the OpenCode plugin replaces with one signature's questions.
+
+    It carries only the approval id, plus `` details`` for the Details re-ask:
+    the form ``orchestratorAsks`` in ``opencode/plugin.ts`` recognises. Header
+    and option only satisfy the host's question schema; the plugin discards them.
+    """
+    return {
+        "question": f"{approval_id} details" if details else approval_id,
+        "header": "Gaia",
+        "options": [{"label": "OK", "description": "Gaia fills this question in"}],
     }
 
 
 def cmd_question(args) -> int:
-    """Print the AskUserQuestion input that asks 1 to 4 pending signatures, and nothing else.
+    """Print the question-tool input that asks pending signatures, and nothing else.
 
-    The orchestrator passes it unchanged; the PreToolUse hook recognises it and
-    shows each signature's text itself, so no model prints a signature.
+    In Claude Code it asks one question per command of the given signatures,
+    at most 4 in all (D33), or with ``--details`` each command's Details
+    question, and records which signature it handed out at which slot, so the
+    PreToolUse hook tells apart two pending signatures that render alike (D31).
+    In an OpenCode shell, marked by ``GAIA_HOST_SESSION_ID``, the same batch
+    is checked but each signature is carried only by its id, one placeholder
+    per signature, because there the plugin writes every signature's
+    questions into the call itself (D39); like the plugin, it refuses two
+    signatures requested by the same specialist session in one call.
     """
     from gaia.approvals import core
 
+    opencode = bool(os.environ.get("GAIA_HOST_SESSION_ID"))
     approval_ids = []
     for raw_id in args.approval_ids:
         approval_id = _require_canonical_approval_id(raw_id, args)
@@ -1369,11 +1434,23 @@ def cmd_question(args) -> int:
             return 1
         approval_ids.append(approval_id)
     try:
-        surfaces = core.question_batch(approval_ids)
+        if opencode:
+            surfaces = core.question_batch(approval_ids, one_per_session=True)
+        else:
+            surfaces = core.hand_out_question(approval_ids, session_id="", agent_id="")
     except core.SealError as exc:
         _print_error(str(exc), args)
         return 1
-    print(json.dumps({"questions": [s.question for s in surfaces]}, ensure_ascii=False))
+    details = getattr(args, "details", False)
+    if opencode:
+        questions = [_opencode_question(approval_id, details) for approval_id in approval_ids]
+    else:
+        questions = [
+            question
+            for s in surfaces
+            for question in (s.details_questions if details else s.questions)
+        ]
+    print(json.dumps({"questions": questions}, ensure_ascii=False))
     return 0
 
 
@@ -1498,7 +1575,7 @@ def cmd_revoke(args) -> int:
             return 0
 
     try:
-        _withdraw(args, raw_id, "revoke", verb="revoke")
+        _withdraw(args, raw_id, "revoke", verb="revoke", reason=getattr(args, "reason", None))
     except ValueError as exc:
         _print_error(str(exc), args)
         return 1
@@ -1596,12 +1673,26 @@ def cmd_approve(args) -> int:
 
 
 def _requester_identity(args) -> tuple[str, str]:
-    """Resolve the requesting session and agent: explicit flags, else the dispatch env.
+    """Resolve the requesting session and agent: the dispatch env, else explicit flags.
 
     The OpenCode plugin exports ``GAIA_HOST_SESSION_ID`` to a dispatched
     shell, Claude Code exports ``CLAUDE_CODE_SESSION_ID``, and both hosts
-    inject ``GAIA_DISPATCH_AGENT``; neither is guessed.
+    inject ``GAIA_DISPATCH_AGENT``; neither is guessed. In a dispatched shell
+    ``--agent-id``/``--session-id`` are refused: the hook matches the retry
+    against the dispatch identity, so a grant sealed under a flag's identity
+    could never be consumed.
     """
+    dispatch_agent = os.environ.get("GAIA_DISPATCH_AGENT")
+    flags = [
+        flag for flag, attr in (("--agent-id", "agent_id"), ("--session-id", "session_id"))
+        if getattr(args, attr, None)
+    ]
+    if dispatch_agent and flags:
+        raise ValueError(
+            f"drop {' and '.join(flags)}: this shell already runs as {dispatch_agent!r} "
+            "(GAIA_DISPATCH_AGENT), and Gaia seals the request under that identity "
+            "so the retry can consume it"
+        )
     session_id = (
         getattr(args, "session_id", None)
         or os.environ.get("GAIA_HOST_SESSION_ID")
@@ -1626,16 +1717,20 @@ def _per_command(args, flag: str, commands: list) -> list:
 def _request_set_items(args) -> list[dict]:
     """Pair each --command with its --cwd, --expect-exit, --does and --impact declarations.
 
-    One --cwd applies to every command; N --cwd flags align with N commands.
+    One --cwd applies to every command; N --cwd flags align with N commands,
+    and each must be an existing directory, or no call could ever run there.
     --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions.
     --does and --impact, when given, come once per command.
     """
     commands = list(args.command)
-    cwds = list(getattr(args, "cwd", None) or [os.getcwd()])
+    cwds = [os.path.abspath(cwd) for cwd in getattr(args, "cwd", None) or [os.getcwd()]]
     if len(cwds) == 1:
         cwds = cwds * len(commands)
     if len(cwds) != len(commands):
         raise ValueError("pass one --cwd for all commands or one per --command")
+    missing = [cwd for cwd in cwds if not os.path.isdir(cwd)]
+    if missing:
+        raise ValueError(f"--cwd {missing[0]} is not an existing directory")
     does = _per_command(args, "does", commands)
     impacts = _per_command(args, "impact", commands)
     expected: dict[int, list[int]] = {}
@@ -1646,7 +1741,7 @@ def _request_set_items(args) -> list[dict]:
         expected[int(position) - 1] = [int(code) for code in codes.split(",")]
     return [
         {
-            "command": command, "cwd": os.path.abspath(cwd),
+            "command": command, "cwd": cwd,
             "expect_exit": expected.get(index, []),
             "does": does[index], "impact": impacts[index],
         }
@@ -1664,14 +1759,10 @@ def cmd_request_set(args) -> int:
     requester is the explicit ``--session-id``/``--agent-id`` or the dispatch
     environment.
 
-    ``--verification`` and ``--rollback`` are sealed into the payload rather
-    than left for the consent surface to fill in: the requesting agent already
-    owes both on the ``approval_request`` block it will emit (verification
-    blocking, rollback advisory -- see
-    ``modules.agents.contract_validator._APPROVAL_REQUIRED_FIELDS``), so the
-    value the user is shown is the one its author wrote and not a sentence
-    composed downstream. Omitted, the surface states the field was never
-    declared; it never invents one.
+    ``--rollback`` is required too (D38): how to undo the set, or a sentence
+    saying it cannot be undone. ``--verification`` stays optional; omitted,
+    the surface states it was never declared and never invents one. The
+    requester's automatic pendings the set covers are withdrawn and listed.
     """
     try:
         from gaia.approvals import core
@@ -1686,17 +1777,22 @@ def cmd_request_set(args) -> int:
             rollback=getattr(args, "rollback", None),
             verification=getattr(args, "verification", None),
             rationale=args.rationale,
+            requested_from=os.getcwd(),
         )
         sealed = json.loads(_import_approval_store().get_by_id(approval_id)["payload_json"])
+        replaced = core.replaced_by(approval_id)
     except Exception as exc:
         _print_error(f"COMMAND_SET request rejected: {exc}", args)
         return 1
     items = sealed["command_set"]
-    result = {"status": "pending", "approval_id": approval_id, "command_set": items}
+    result = {
+        "status": "pending", "approval_id": approval_id, "command_set": items, "replaced": replaced,
+    }
     if args.json:
         print(json.dumps(result))
     else:
         print(f"Requested {approval_id} for {len(items)} ordered T3 commands")
+        _print_replaced(replaced)
     return 0
 
 
@@ -1704,8 +1800,8 @@ def cmd_request_file_write(args) -> int:
     """Proactively seal the phrases, rollback and verification for a protected-path write.
 
     Mints through gaia.approvals.core.request_file_write, which refuses the
-    request when ``--what``, ``--question``, ``--does`` or ``--impact`` is
-    missing and names it. The later attempt by the same session and agent
+    request when ``--what``, ``--question``, ``--does``, ``--impact`` or
+    ``--rollback`` is missing and names it. The later attempt by the same session and agent
     reuses THIS pending, and it replaces the phraseless request a reactive
     Write/Edit block sealed for the same path.
     """
@@ -1729,15 +1825,23 @@ def cmd_request_file_write(args) -> int:
             rollback=args.rollback,
             verification=args.verification,
         )
+        replaced = core.replaced_by(approval_id)
     except Exception as exc:
         _print_error(f"File-write request rejected: {exc}", args)
         return 1
-    result = {"status": "pending", "approval_id": approval_id, "path": path}
+    result = {"status": "pending", "approval_id": approval_id, "path": path, "replaced": replaced}
     if args.json:
         print(json.dumps(result))
     else:
         print(f"Requested {approval_id} for file write: {path}")
+        _print_replaced(replaced)
     return 0
+
+
+def _print_replaced(replaced: list[str]) -> None:
+    """Tell the requester which automatic pendings its request withdrew, so none is withdrawn twice (D38)."""
+    for old in replaced:
+        print(f"Withdrew {old}: the automatic request left by the block, replaced by this one")
 
 
 def _opencode_binding(
@@ -1802,14 +1906,19 @@ def _opencode_binding(
     return None, "No matching OpenCode permission presentation exists"
 
 
-def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dict:
+def _opencode_presentation(
+    approval: dict, session_id: str, call_id: str, *, signature: str | None = None,
+) -> dict:
     """Build what OpenCode asks for one pending approval, composed by Gaia alone.
 
-    ``signature`` is the renderer's surface as the native question carries it:
-    the single string, the Details re-ask string, the header and the options.
+    ``signature`` is the renderer's surface as OpenCode shows it (D33): one
+    one-line question per command, and its Details re-ask, each with its
+    header and options; nothing is posted outside the question. The
+    ``signature`` letter names this approval inside a call that mixes several
+    (D38), exactly as ``surface.render_batch`` heads them.
     ``metadata`` binds the retry to the sealed commands. A payload that cannot
-    be rendered returns ``presentation_error`` instead: the SHOWN record still
-    stands, and the plugin opens no question it cannot fill in full.
+    be rendered returns ``presentation_error`` instead, and the plugin opens no
+    question it cannot fill in full.
     """
     approval_id = approval.get("id") or ""
     try:
@@ -1830,13 +1939,17 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
             approval_id=approval_id,
             binding=binding,
         )
-        rendered = surface.render(sealed_payload, approval_id)
+        rendered = surface.render_at(
+            sealed_payload, approval_id, 1, surface.question_count(sealed_payload),
+            signature=signature,
+        )
+        strip = ("question", "header", "options")
         return {
             "signature": {
-                "question": rendered.opencode,
-                "details": rendered.opencode_details,
-                "header": rendered.question["header"],
-                "options": rendered.question["options"],
+                "questions": [{key: q[key] for key in strip} for q in rendered.questions],
+                "details_questions": [
+                    {key: q[key] for key in strip} for q in rendered.details_questions
+                ],
             },
             "metadata": presentation.native_metadata(envelope),
         }
@@ -1847,13 +1960,13 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
 def _opencode_presentation_refusal(args) -> str | None:
     """Why this presentation may not record SHOWN, or ``None`` when it may.
 
-    The requester is sealed when the request is made (PD6), so a question is
-    opened only by the call of that same session and agent: the plugin runs
-    this from the requester's own tool call, so the requester is live by
-    construction, and a session resumed after a host restart presents again on
-    its next attempt. A pending with no requester is never adopted -- it is
-    only shown by the readers -- and a request lacking its requester's phrases
-    is never shown at all.
+    The requester is sealed when the request is made (PD6), so a presentation
+    must name that same session and agent. Only the orchestrator opens the
+    question (D39): the plugin runs this from the orchestrator's question call,
+    naming the sealed requester and passing the orchestrator's session as the
+    presenter. A pending with no requester is never adopted -- it is only
+    shown by the readers -- and a request lacking its requester's phrases is
+    never shown at all.
     """
     approval_id = _resolve_approval_id(args.approval_id)
     try:
@@ -1886,12 +1999,24 @@ def cmd_opencode_present(args) -> int:
     """Record an OpenCode-native presentation before requesting user consent.
 
     Refused, with no SHOWN recorded, whenever
-    :func:`_opencode_presentation_refusal` names a reason.
+    :func:`_opencode_presentation_refusal` names a reason. ``--preview`` passes
+    the same checks and prints the presentation without recording SHOWN: the
+    plugin puts its questions into the orchestrator's call, and records SHOWN
+    only once the host has asked them.
     """
     refusal = _opencode_presentation_refusal(args)
     if refusal is not None:
         _print_error(refusal, args)
         return 1
+    if getattr(args, "preview", False):
+        approval_id = _resolve_approval_id(args.approval_id)
+        approval = _import_approval_store().get_by_id(approval_id)
+        print(json.dumps({
+            "status": "previewed",
+            "approval_id": approval_id,
+            **_opencode_presentation(approval, args.session_id.strip(), args.call_id.strip()),
+        }))
+        return 0
     approval, error = _opencode_binding(args)
     if approval is not None:
         # A matching event already exists. Presentation is idempotent so plugin
@@ -1923,19 +2048,20 @@ def cmd_opencode_present(args) -> int:
                 raise ValueError(f"Approval {approval_id} is not pending")
             if approval.get("session_id") != session_id:
                 raise ValueError("OpenCode presentation must come from the requesting session")
+            shown = {
+                "host": "opencode",
+                "call_id": call_id,
+                "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+            }
+            presenter = (getattr(args, "presenter_session_id", None) or "").strip()
+            if presenter:
+                shown["presenter_session_id"] = presenter
             store.record_event(
                 approval_id,
                 "SHOWN",
                 agent_id="opencode-plugin",
                 session_id=session_id,
-                metadata_json=json.dumps(
-                    {
-                        "host": "opencode",
-                        "call_id": call_id,
-                        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
-                    },
-                    sort_keys=True,
-                ),
+                metadata_json=json.dumps(shown, sort_keys=True),
                 con=con,
             )
             con.commit()
@@ -1951,7 +2077,9 @@ def cmd_opencode_present(args) -> int:
         print(json.dumps({
             "status": "presented",
             "approval_id": approval_id,
-            **_opencode_presentation(approval, session_id, call_id),
+            **_opencode_presentation(
+                approval, session_id, call_id, signature=getattr(args, "signature", None),
+            ),
         }))
     return 0
 
@@ -2335,8 +2463,8 @@ def register(subparsers) -> None:
         "--consent-surface",
         action="store_true",
         help=(
-            "JSON signature surface: the text to print, the question to ask "
-            "(Approve / Reject / Details), its Details and OpenCode's single string"
+            "JSON signature surface: the text, the question object to ask "
+            "(Approve / Reject / Details), its Details and the single strings both hosts ask"
         ),
     )
     p_show.set_defaults(func=cmd_show_v2)
@@ -2346,13 +2474,20 @@ def register(subparsers) -> None:
         help="Print the AskUserQuestion input that asks 1 to 4 pending signatures",
         description=(
             "Print, as JSON, the exact AskUserQuestion input for the given pending\n"
-            "approvals, one question per signature in the order given. Pass it\n"
-            "unchanged: the hook shows each signature's text and binds each answer."
+            "approvals, one question per signature in the order given. Each\n"
+            "question holds only its short question with Approve / Reject /\n"
+            "Details; Gaia shows each signature's block as the question opens\n"
+            "(D29: the hook in Claude Code, the plugin in OpenCode). Pass it\n"
+            "unchanged: Gaia checks it and binds each answer."
         ),
     )
     p_question.add_argument(
         "approval_ids", nargs="+", metavar="APPROVAL_ID",
         help="Full canonical approval_id P-<32 lowercase hex>, 1 to 4",
+    )
+    p_question.add_argument(
+        "--details", action="store_true",
+        help="Ask again so Gaia shows each signature's Details block (D29)",
     )
     p_question.set_defaults(func=cmd_question, json=True)
 
@@ -2372,6 +2507,10 @@ def register(subparsers) -> None:
         help="Full approval_id (P-{uuid4hex}) of the approval to revoke",
     )
     p_revoke.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    p_revoke.add_argument(
+        "--reason", default=None,
+        help="Why it is revoked; recorded on the REVOKED event of a pending approval",
+    )
     p_revoke.set_defaults(func=cmd_revoke)
 
     # approve (T3.3) -- cross-session grant
@@ -2428,7 +2567,10 @@ def register(subparsers) -> None:
     )
     p_request_set.add_argument(
         "--rollback",
-        help="How the set is undone; sealed and shown verbatim",
+        help=(
+            "Required: how the set is undone, or that it cannot be undone, as a human "
+            "sentence in the user's language, not a command; shown under ROLLBACK in Details"
+        ),
     )
     p_request_set.add_argument("--agent-id")
     p_request_set.add_argument("--session-id")
@@ -2460,7 +2602,10 @@ def register(subparsers) -> None:
     )
     p_request_file_write.add_argument(
         "--rollback",
-        help="How the edit is undone; sealed and shown verbatim",
+        help=(
+            "Required: how the edit is undone, or that it cannot be undone, as a human "
+            "sentence in the user's language, not a command; shown under ROLLBACK in Details"
+        ),
     )
     p_request_file_write.add_argument(
         "--impact",
@@ -2485,6 +2630,18 @@ def register(subparsers) -> None:
             p_opencode.add_argument(
                 "--agent-id", required=True,
                 help="The agent of the calling session; must be the approval's requester",
+            )
+            p_opencode.add_argument(
+                "--presenter-session-id",
+                help="The orchestrator session whose question shows it; recorded on SHOWN only",
+            )
+            p_opencode.add_argument(
+                "--signature", metavar="LETTER",
+                help="This approval's letter in a call asking several (D38 headers)",
+            )
+            p_opencode.add_argument(
+                "--preview", action="store_true",
+                help="Print the presentation after the same checks, recording no SHOWN",
             )
         if name == "opencode-decide":
             p_opencode.add_argument("--reply", choices=("once", "always", "reject"), required=True)
@@ -2692,6 +2849,7 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_revoke = subparsers.add_parser("revoke", help="Revoke a pending approval")
     p_revoke.add_argument("approval_id", metavar="APPROVAL_ID")
     p_revoke.add_argument("--yes", action="store_true")
+    p_revoke.add_argument("--reason", default=None, help="Why it is revoked; recorded on the REVOKED event")
     p_revoke.set_defaults(func=cmd_revoke)
 
     p_history = subparsers.add_parser("history", help="Show approval history")

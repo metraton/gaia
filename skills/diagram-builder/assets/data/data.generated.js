@@ -2151,6 +2151,150 @@ window.__DOC__ = {
       "order": 9
     },
     {
+      "id": "p10-flow-phases",
+      "layout": "grid",
+      "form": "flow",
+      "columns": 3,
+      "filters": [
+        {
+          "key": "path",
+          "label": "The path",
+          "steps": [
+            "Click the chip to light every step of the path, across the three phase-sections at once.",
+            "There is no arrow: the direction is carried by the phase <code>order</code>, the step <code>order</code>, and the kicker <code>STEP n OF 6</code>.",
+            "A step belongs to the path because it declares the key, which is why one chip can cross a section boundary."
+          ]
+        }
+      ],
+      "sections": [
+        {
+          "id": "p10-phase-1",
+          "title": "Phase one",
+          "subtitle": "a section, first in reading order",
+          "variant": "neutral",
+          "order": 1,
+          "span": 1,
+          "columns": 1,
+          "children": [
+            {
+              "id": "p10-s1",
+              "order": 1,
+              "kicker": "STEP 1 OF 6",
+              "title": "A phase is a section",
+              "description": [
+                "distinct phases are distinct",
+                "sections, in reading order"
+              ],
+              "detail": "A phase is a distinct thing with steps of its own, so it is a section — principle 7, structure as the assertion. Its <code>order</code> among its siblings is the reading order of the path, and there is no other coordinate: change the orders and the phases swap places on the canvas and in the collapsed stack alike.",
+              "variant": "neutral",
+              "filters": [
+                "path"
+              ]
+            },
+            {
+              "id": "p10-s2",
+              "order": 2,
+              "kicker": "STEP 2 OF 6",
+              "title": "A step is a component",
+              "description": [
+                "ordered inside its phase,",
+                "top to bottom"
+              ],
+              "detail": "A step is a part of one phase, so it is a component inside that phase's section, placed by its own <code>order</code>. Inside a single-column phase the steps read top to bottom; the path therefore reads down each phase and then across to the next, which is the order the chip lights them in.",
+              "variant": "neutral",
+              "filters": [
+                "path"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p10-phase-2",
+          "title": "Phase two",
+          "subtitle": "the same shape, one step further",
+          "variant": "neutral",
+          "order": 2,
+          "span": 1,
+          "columns": 1,
+          "children": [
+            {
+              "id": "p10-s3",
+              "order": 1,
+              "kicker": "STEP 3 OF 6",
+              "title": "The path is a chip",
+              "description": [
+                "one key, declared by every",
+                "step in every phase"
+              ],
+              "detail": "The path is ONE relation, so it is ONE chip: every step lists the key <code>path</code> in its <code>filters</code>, and the engine's inverse index finds them across all three sections. Nothing structural joins the phases — no span, no nesting, no line. The relation crosses the section boundary because membership is a shared name, not a shared position.",
+              "variant": "accent",
+              "filters": [
+                "path"
+              ]
+            },
+            {
+              "id": "p10-s4",
+              "order": 2,
+              "kicker": "STEP 4 OF 6",
+              "title": "The kicker is the index",
+              "description": [
+                "STEP n OF m is a convention",
+                "the engine does not render"
+              ],
+              "detail": "The kicker is open vocabulary — no enum gates it and nothing validates the count — so <code>STEP 4 OF 6</code> is a convention the author keeps true by hand. The engine renders no progress affordance of any kind: no bar, no counter, no arrowhead. The index is text in the small slot, and that is the whole mechanism.",
+              "variant": "neutral",
+              "filters": [
+                "path"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p10-phase-3",
+          "title": "Phase three",
+          "subtitle": "where the path ends",
+          "variant": "neutral",
+          "order": 3,
+          "span": 1,
+          "columns": 1,
+          "children": [
+            {
+              "id": "p10-s5",
+              "order": 1,
+              "kicker": "STEP 5 OF 6",
+              "title": "The level is the page",
+              "description": [
+                "zoom in by opening the",
+                "next page, not a nested box"
+              ],
+              "detail": "Progressive disclosure maps to PAGES: the level-1 picture is one page, the level-2 picture with the real components is another. No manifest field declares one page the zoom of another; the convention is a filter <code>key</code> reused on both pages, which projects the same relation across them (page 3 and page 6 of this deck share <code>packing</code> the same way).",
+              "variant": "neutral",
+              "filters": [
+                "path"
+              ]
+            },
+            {
+              "id": "p10-s6",
+              "order": 2,
+              "kicker": "STEP 6 OF 6",
+              "title": "No arrow is drawn",
+              "description": [
+                "an arrow of the sketch becomes",
+                "order plus membership"
+              ],
+              "detail": "The inline sketch this page was lowered from had labelled arrows between its boxes. None survives: the engine draws no edges, so each arrow became chip membership plus <code>order</code>, and the label of each arrow moved into the description or detail of the step it left from. A relation only an arrowhead could say is stated here in words — which is the last step of the path, and the reason it is the last.",
+              "variant": "neutral",
+              "filters": [
+                "path"
+              ]
+            }
+          ]
+        }
+      ],
+      "name": "Flow · phases as sections",
+      "order": 10
+    },
+    {
       "id": "overview",
       "layout": "grid",
       "columns": 2,
@@ -2888,7 +3032,7 @@ window.__DOC__ = {
         }
       ],
       "name": "Compositions & edge cases",
-      "order": 10
+      "order": 11
     }
   ]
 };

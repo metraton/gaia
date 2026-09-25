@@ -9,6 +9,7 @@ type BridgeResponse = {
   action: "allow" | "ask" | "deny"
   reason?: string
   approval_id?: string
+  presentable?: boolean
   updated_input?: Record<string, unknown>
   attestation?: string
   shell_env?: { session_id: string; call_id: string; agent_type: string }
@@ -60,19 +61,23 @@ type BoundRetry = PendingApproval & {
 /** Which of the renderer's strings a signature question carries. */
 export type SignatureMode = "signature" | "details"
 
+/** One of Gaia's one-line questions, as the host's question tool takes it. */
+export type SignatureQuestion = {
+  header: string
+  question: string
+  options: Array<{ label: string; description: string }>
+  multiple: false
+  custom: false
+}
+
 export type SignatureRequest = {
   sessionID: string
   approvalID: string
   correlationID: string
   mode: SignatureMode
   metadata: Record<string, unknown>
-  question: {
-    header: string
-    question: string
-    options: Array<{ label: string; description: string }>
-    multiple: false
-    custom: false
-  }
+  /** One question per sealed command, Gaia's text for `mode` (D33). */
+  questions: SignatureQuestion[]
 }
 
 /** A user's answer to a signature question, by the option's position. */
@@ -82,18 +87,14 @@ type ControlDecision = {
   approval: PendingApproval
   request: SignatureRequest
   retry: BoundRetry
-  questionCallID?: string
+  questionCallID: string
   questionID?: string
-  awaitingSafeIdle: boolean
-  presenting: boolean
   presented: boolean
   closed: boolean
-}
-
-type DeferredActivation = {
-  control: ControlDecision
-  lane: DecisionLane
-  retry: BoundRetry
+  /** The orchestrator's question call that asks it: resolves to what that call's result tells it. */
+  presenter: { notice: Promise<string>; settle: (notice: string) => void }
+  /** Every control one orchestrator question call asks, in question order; each answers its own slice. */
+  group?: ControlDecision[]
 }
 
 type RoleCapabilityContext = {
@@ -381,37 +382,6 @@ export const CONTROL_CLOSED_EVENT = "control.closed"
 export const DECISION_APPLIED_EVENT = "decision.applied"
 export const CONSENT_RETRY_REFUSED_EVENT = "retry.refused"
 
-/** The schema-valid arguments the control-plane model is asked to pass; Gaia overwrites them. */
-export const CONTROL_PLACEHOLDER_QUESTION = {
-  question: "Gaia",
-  header: "Gaia",
-  options: [{ label: "OK", description: "Gaia fills this question in" }],
-}
-
-/**
- * The one message the plugin puts in the orchestrator's session once the user
- * activated an approval. Deterministic so the orchestrator can match it, and
- * addressed to the ROOT session because the specialist's turn is already over:
- * its blocked attempt was a tool error that ended the turn, so nobody is left
- * in that session to retry, and a prompt sent there would run the specialist
- * with no dispatch, no contract row and no coordinator reading the result.
- * The orchestrator re-dispatches with task_id = the specialist session, which
- * is the only shape the plugin's retry accounting accepts.
- */
-export function activationNotice(
-  approvalID: string,
-  specialistSessionID: string,
-  operation: RetryOperation,
-): string {
-  const retry = operation.kind === "COMMAND_SET"
-    ? `command [${operation.expectedIndex}]`
-    : operation.kind === "SCOPE_SEMANTIC_SIGNATURE"
-      ? "the exact approved Bash command"
-      : `the exact granted file target with ${operation.toolFamily.join("/")}`
-  return `Gaia: approval ${approvalID} has an executable ${operation.kind} grant and typed retry descriptor. `
-    + `Resume the specialist session ${specialistSessionID} (task_id) so it retries ${retry} now.`
-}
-
 /**
  * Why a consent control was released. Recorded verbatim by the bridge, so a
  * reader of harness_events can tell which exit the control took; `decided` is
@@ -426,10 +396,63 @@ export type ControlCloseReason =
   | "details_requested"
   | "decision_duplicate"
   | "retry_conflict"
-  | "prompt_rejected"
   | "session_ended"
   | "drifted_tool_call"
   | "drifted_tool_result"
+
+/**
+ * What the orchestrator's question call returns once Gaia settled its answer.
+ * The orchestrator asked, so it is the actor: approved means resuming the
+ * requesting specialist, which alone holds the grant (D6).
+ */
+export function presenterNotice(approval: PendingApproval, reason: ControlCloseReason, detail?: string): string {
+  const id = approval.approvalID
+  if (reason === "decided" && detail === "once") {
+    return `Gaia: approval ${id} is approved and bound to ${approval.role} in session ${approval.sessionID}. `
+      + `Resume that specialist (task_id ${approval.sessionID}) with execution so it runs the approved commands; do not run them yourself.`
+  }
+  if (reason === "decided") return `Gaia: approval ${id} is rejected; nothing runs.`
+  if (reason === "details_requested") {
+    return `Gaia: the user asked for Details. Run gaia approvals question --details ${id} and call the question tool with its output unchanged.`
+  }
+  return `Gaia: approval ${id} was not decided (${reason}${detail ? `: ${detail}` : ""}) and is unchanged; read it with gaia approvals show ${id}.`
+}
+
+/**
+ * How long the orchestrator's question result waits for its answer to settle.
+ * The host delivers question.replied, which applies the answer through a Gaia
+ * subprocess, independently of tool.execute.after.
+ */
+const PRESENTER_NOTICE_WAIT_MS = 30_000
+
+const ORCHESTRATOR_ASK = /^(P-[0-9a-f]{32})( details)?$/
+
+/** The host's limit on questions in one call, and so on commands asked at once (D33). */
+const SIGNATURE_BATCH_MAX = 4
+
+export type OrchestratorAsk = { approvalID: string; mode: SignatureMode }
+
+/**
+ * The approvals an orchestrator's question-tool call asks Gaia to present, in
+ * order, or undefined for any other question. The arguments are what `gaia
+ * approvals question` prints in OpenCode (`_opencode_question` in
+ * bin/cli/approvals.py): one question per approval whose whole text is the
+ * canonical id, plus " details" for the Details re-ask. A change to that form
+ * on one side alone turns the orchestrator's call back into an ordinary question.
+ */
+export function orchestratorAsks(tool: string, args: unknown): OrchestratorAsk[] | undefined {
+  if (canonicalBridgeToolName(tool) !== "AskUserQuestion") return undefined
+  const questions = (args as { questions?: unknown } | undefined)?.questions
+  if (!Array.isArray(questions) || questions.length === 0) return undefined
+  const asks: OrchestratorAsk[] = []
+  for (const question of questions) {
+    const text = (question as { question?: unknown } | null)?.question
+    const matched = typeof text === "string" ? ORCHESTRATOR_ASK.exec(text) : null
+    if (!matched) return undefined
+    asks.push({ approvalID: matched[1], mode: matched[2] ? "details" : "signature" })
+  }
+  return asks
+}
 
 export type LaneAdmission = {
   lane: DecisionLane
@@ -551,6 +574,7 @@ async function bridge(event: Record<string, unknown>, cwd: string | undefined): 
     console.error(`[gaia-opencode-bridge:response] ${JSON.stringify({
       action: response.action,
       approval_id: response.approval_id,
+      presentable: response.presentable,
       has_updated_input: Boolean(response.updated_input),
     })}`)
   }
@@ -587,12 +611,12 @@ export function gaiaFailureCause(result: { stdout: string; stderr: string }): st
   return result.stderr.trim() || "gaia exited non-zero without reporting a cause"
 }
 
+type GaiaQuestion = { question: string; header: string; options: Array<{ label: string; description: string }> }
+
 /** The renderer's signature for one approval, exactly as `opencode-present` emitted it. */
 export type SignatureSurface = {
-  question: string
-  details: string
-  header: string
-  options: Array<{ label: string; description: string }>
+  questions: GaiaQuestion[]
+  detailsQuestions: GaiaQuestion[]
   metadata: Record<string, unknown>
 }
 
@@ -860,9 +884,10 @@ export function evaluateConsentRetry(
 }
 
 /**
- * The question that asks one signature: the renderer's string for `mode`
- * placed as-is, with the renderer's header and options. The plugin composes no
- * text of its own; it only chooses which of Gaia's two strings is asked.
+ * The questions that ask one signature (D33): one one-line question per
+ * command, each carrying who asks and the exact command, or on a Details
+ * re-ask that command's Details line. The plugin composes no text of its own;
+ * it only chooses which of Gaia's question sets is asked.
  */
 export function signatureRequest(
   approval: PendingApproval,
@@ -877,13 +902,13 @@ export function signatureRequest(
     correlationID: retry.correlationID,
     mode,
     metadata: { ...surface.metadata },
-    question: {
-      header: surface.header,
-      question: mode === "details" ? surface.details : surface.question,
-      options: surface.options.map((option) => ({ ...option })),
+    questions: (mode === "details" ? surface.detailsQuestions : surface.questions).map((question) => ({
+      header: question.header,
+      question: question.question,
+      options: question.options.map((option) => ({ ...option })),
       multiple: false,
       custom: false,
-    },
+    })),
   }
 }
 
@@ -900,53 +925,66 @@ export function signatureRequest(
  */
 export function matchesSignatureQuestion(
   questions: unknown,
-  expected: SignatureRequest["question"],
+  expected: SignatureQuestion[],
 ): boolean {
-  if (!Array.isArray(questions) || questions.length !== 1) return false
-  const question = questions[0] as Record<string, unknown> | null
-  if (!question || typeof question !== "object") return false
-  if (question.header !== expected.header || question.question !== expected.question) return false
-  if (question.multiple !== expected.multiple || question.custom !== expected.custom) return false
-  const options = question.options
-  if (!Array.isArray(options) || options.length !== expected.options.length) return false
-  return expected.options.every((option, index) => {
-    const candidate = options[index] as Record<string, unknown> | null
-    return Boolean(candidate) && typeof candidate === "object"
-      && candidate.label === option.label
-      && candidate.description === option.description
+  if (!Array.isArray(questions) || questions.length !== expected.length) return false
+  return expected.every((wanted, position) => {
+    const question = questions[position] as Record<string, unknown> | null
+    if (!question || typeof question !== "object") return false
+    if (question.header !== wanted.header || question.question !== wanted.question) return false
+    if (question.multiple !== wanted.multiple || question.custom !== wanted.custom) return false
+    const options = question.options
+    if (!Array.isArray(options) || options.length !== wanted.options.length) return false
+    return wanted.options.every((option, index) => {
+      const candidate = options[index] as Record<string, unknown> | null
+      return Boolean(candidate) && typeof candidate === "object"
+        && candidate.label === option.label
+        && candidate.description === option.description
+    })
   })
 }
 
-/** Match OpenCode's event copy of the question Gaia wrote into the validated call. */
+/** Match OpenCode's event copy of the questions Gaia wrote into the validated call. */
 export function matchesHostSignatureQuestionEvent(
   questions: unknown,
-  expected: SignatureRequest["question"],
+  expected: SignatureQuestion[],
   questionCallWritten: boolean,
 ): boolean {
-  if (!questionCallWritten || !Array.isArray(questions) || questions.length !== 1) return false
-  const question = questions[0] as Record<string, unknown> | null
-  if (!question || typeof question !== "object" || question.multiple !== false) return false
-  if (question.custom !== undefined && question.custom !== false) return false
-  return matchesSignatureQuestion([{ ...question, custom: false }], expected)
+  if (!questionCallWritten || !Array.isArray(questions) || questions.length !== expected.length) return false
+  const normalized = []
+  for (const entry of questions) {
+    const question = entry as Record<string, unknown> | null
+    if (!question || typeof question !== "object" || question.multiple !== false) return false
+    if (question.custom !== undefined && question.custom !== false) return false
+    normalized.push({ ...question, custom: false })
+  }
+  return matchesSignatureQuestion(normalized, expected)
 }
 
 const SIGNATURE_ANSWERS: SignatureAnswer[] = ["once", "reject", "details"]
 
 /**
- * Map the one selected label to the option it names, by position: Approve,
- * Reject, Details. Anything else -- no answer, several, or text typed in the
- * host's free-text row -- decides nothing.
+ * Fold the label selected at each of the signature's questions into one
+ * answer (D33): a Reject on any question rejects the whole signature, Approve
+ * on every question approves it, and otherwise a Details asks again. A
+ * question left without exactly one of the three labels -- no answer,
+ * several, or text typed in the host's free-text row -- decides nothing.
  */
 export function readSignatureAnswer(
   request: SignatureRequest,
   answers: unknown,
 ): SignatureAnswer | undefined {
-  if (!Array.isArray(answers) || answers.length !== 1 || !Array.isArray(answers[0])) {
-    return undefined
+  if (!Array.isArray(answers) || answers.length !== request.questions.length) return undefined
+  const chosen: SignatureAnswer[] = []
+  for (const [position, answer] of answers.entries()) {
+    if (!Array.isArray(answer) || answer.length !== 1) return undefined
+    const index = request.questions[position].options.findIndex((option) => option.label === answer[0])
+    if (index === -1) return undefined
+    chosen.push(SIGNATURE_ANSWERS[index])
   }
-  if (answers[0].length !== 1) return undefined
-  const index = request.question.options.findIndex((option) => option.label === answers[0][0])
-  return index === -1 ? undefined : SIGNATURE_ANSWERS[index]
+  if (chosen.includes("reject")) return "reject"
+  if (chosen.every((answer) => answer === "once")) return "once"
+  return "details"
 }
 
 function isOption(value: unknown): value is { label: string; description: string } {
@@ -973,12 +1011,18 @@ export function readConsentPresentation(stdout: string): SignatureSurface {
   }
   const signature = emitted?.signature
   const metadata = emitted?.metadata
-  const options = signature?.options
+  const isGaiaQuestion = (value: any): boolean => (
+    typeof value?.question === "string" && Boolean(value.question)
+    && typeof value?.header === "string" && Boolean(value.header)
+    && Array.isArray(value?.options) && value.options.length === SIGNATURE_ANSWERS.length
+    && value.options.every(isOption)
+  )
+  const isQuestionSet = (value: unknown): boolean => (
+    Array.isArray(value) && value.length > 0 && value.every(isGaiaQuestion)
+  )
   if (
-    typeof signature?.question !== "string" || !signature.question
-    || typeof signature?.details !== "string" || !signature.details
-    || typeof signature?.header !== "string" || !signature.header
-    || !Array.isArray(options) || options.length !== SIGNATURE_ANSWERS.length || !options.every(isOption)
+    !isQuestionSet(signature?.questions) || !isQuestionSet(signature?.details_questions)
+    || signature.questions.length !== signature.details_questions.length
     || !metadata || typeof metadata !== "object"
   ) {
     throw new Error(
@@ -987,13 +1031,16 @@ export function readConsentPresentation(stdout: string): SignatureSurface {
         : "Gaia returned no complete signature for this approval",
     )
   }
-  return {
-    question: signature.question,
-    details: signature.details,
-    header: signature.header,
-    options: options.map((option: { label: string; description: string }) => ({
+  const copy = (questions: any[]): GaiaQuestion[] => questions.map((question) => ({
+    question: question.question,
+    header: question.header,
+    options: question.options.map((option: { label: string; description: string }) => ({
       label: option.label, description: option.description,
     })),
+  }))
+  return {
+    questions: copy(signature.questions),
+    detailsQuestions: copy(signature.details_questions),
     metadata,
   }
 }
@@ -1093,8 +1140,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   const controlsBySession = new Map<string, ControlDecision[]>()
   const controlByQuestion = new Map<string, ControlDecision>()
   const releasedControlCalls = new Set<string>()
-  const controlsAwaitingIdle = new Set<string>()
-  const deferredRetryBySession = new Map<string, DeferredActivation>()
+  const presenterControlsByCall = new Map<string, ControlDecision[]>()
   const retryBySession = new Map<string, BoundRetry>()
   const retryByCall = new Map<string, BoundRetry>()
   const agentBySession = new Map<string, string>()
@@ -1164,13 +1210,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     // unidentifiable session is never handed the unrestricted subagent lane.
     if (primarySessions.size === 0 || isPrimarySession(sessionID)) return undefined
     return dispatchBySession.get(sessionID) ?? sessionID
-  }
-
-  /** The primary session an approval's specialist answers to, or undefined when none is known. */
-  function primaryFor(sessionID: string): string | undefined {
-    if (isPrimarySession(sessionID)) return sessionID
-    const parent = childBindings.get(sessionID)?.parentSessionID
-    return parent !== undefined && isPrimarySession(parent) ? parent : undefined
   }
 
   /** The host's own record of the session's parent; the host, not this edge, says what is a root. */
@@ -1461,6 +1500,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<void> {
     if (control.closed) return
     control.closed = true
+    control.presenter.settle(presenterNotice(control.approval, reason, detail))
     if (control.questionID && controlByQuestion.get(control.questionID) === control) {
       controlByQuestion.delete(control.questionID)
     }
@@ -1491,7 +1531,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
 
   function owningControl(sessionID: string): ControlDecision | undefined {
     const control = activeControl(sessionID)
-    return control && (control.presenting || control.presented) ? control : undefined
+    return control?.presented ? control : undefined
   }
 
   async function correlateQuestionEvent(
@@ -1499,91 +1539,50 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     requestID: string,
     questions: unknown,
   ): Promise<void> {
-    if (control.questionCallID === undefined) {
-      await clearControl(control, "question_mismatch", `question ${requestID} preceded the validated Gaia call`)
-      return
+    const members = control.group ?? [control]
+    const mismatch = async (detail: string): Promise<void> => {
+      for (const member of members) await clearControl(member, "question_mismatch", detail)
     }
     if (control.questionID || controlByQuestion.has(requestID)) {
-      await clearControl(control, "question_mismatch", `second question ${requestID} for one control`)
+      await mismatch(`second question ${requestID} for one control`)
       return
     }
-    if (!matchesHostSignatureQuestionEvent(questions, control.request.question, control.questionCallID !== undefined)) {
-      await clearControl(control, "question_mismatch", `host asked ${JSON.stringify(questions)}`)
+    const expected = members.flatMap((member) => member.request.questions)
+    if (!matchesHostSignatureQuestionEvent(questions, expected, true)) {
+      await mismatch(`host asked ${JSON.stringify(questions)}`)
       return
     }
-    control.questionID = requestID
+    for (const member of members) member.questionID = requestID
     controlByQuestion.set(requestID, control)
   }
 
-  async function presentNextControl(sessionID: string, propagateError = false): Promise<void> {
-    if (
-      retryBySession.has(sessionID)
-      || deferredRetryBySession.has(sessionID)
-      || controlsAwaitingIdle.has(sessionID)
-    ) return
-    const control = activeControl(sessionID)
-    if (!control || control.closed || control.awaitingSafeIdle || control.presenting || control.presented) return
-    try {
-      await presentControl(control)
-    } catch (error) {
-      if (propagateError) throw error
-      console.error(`[gaia-opencode:control] queued control for ${control.approval.approvalID} failed: ${error}`)
+  /** Apply one signature's answers: the slice of the call's answers at its own questions. */
+  async function applySignatureAnswers(control: ControlDecision, answers: unknown): Promise<void> {
+    if (control.closed) return
+    const reply = readSignatureAnswer(control.request, answers)
+    if (!reply) {
+      await clearControl(control, "reply_unreadable", JSON.stringify(answers))
+      return
     }
+    if (reply === "details") {
+      // The orchestrator re-asks with the Details itself: prompting its
+      // session would put a control-plane turn into the user's conversation.
+      await clearControl(control, "details_requested")
+      return
+    }
+    await applyDecision(control, reply, "control")
   }
 
-  async function releaseControl(
-    control: ControlDecision,
-    reason: ControlCloseReason,
-    detail?: string,
-    advance = true,
-  ): Promise<void> {
+  async function clearControl(control: ControlDecision, reason: ControlCloseReason, detail?: string): Promise<void> {
     await closeControl(control, reason, detail)
     const sessionID = control.request.sessionID
     const controls = controlsBySession.get(sessionID)
-    const wasActive = controls?.[0] === control
     if (controls) {
       const index = controls.indexOf(control)
       if (index !== -1) controls.splice(index, 1)
       if (controls.length === 0) controlsBySession.delete(sessionID)
     }
-    if (control.questionCallID) releasedControlCalls.add(`${sessionID}:${control.questionCallID}`)
-    if (advance && wasActive) {
-      if (control.presented) controlsAwaitingIdle.add(sessionID)
-      else await presentNextControl(sessionID)
-    }
-  }
-
-  async function clearControl(
-    control: ControlDecision,
-    reason: ControlCloseReason,
-    detail?: string,
-    advance = true,
-  ): Promise<void> {
-    await releaseControl(control, reason, detail, advance)
-  }
-
-  /** Ask the same signature again, next in its session, carrying the renderer's Details.
-   *
-   * Details decides nothing: the approval, its presentation token and its
-   * bound retry carry over unchanged, so the answer to the re-asked question
-   * reaches Gaia exactly as an answer to the first one would have.
-   */
-  async function reaskWithDetails(control: ControlDecision): Promise<void> {
-    const sessionID = control.request.sessionID
-    const details: ControlDecision = {
-      approval: control.approval,
-      request: signatureRequest(control.approval, sessionID, "details"),
-      retry: control.retry,
-      awaitingSafeIdle: false,
-      presenting: false,
-      presented: false,
-      closed: false,
-    }
-    const controls = controlsBySession.get(sessionID) ?? []
-    const position = controls.indexOf(control)
-    controls.splice(position === -1 ? 0 : position + 1, 0, details)
-    controlsBySession.set(sessionID, controls)
-    await clearControl(control, "details_requested")
+    releasedControlCalls.add(`${sessionID}:${control.questionCallID}`)
   }
 
   async function applyDecision(
@@ -1607,7 +1606,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         await clearControl(control, "decide_failed", "activation returned no typed retry descriptor")
         return false
       }
-      deferredRetryBySession.set(control.approval.sessionID, { control, lane, retry: decided.retry })
+      // The requester's turn is long over, so no idle is awaited there; the
+      // orchestrator that asked resumes it.
+      retryBySession.set(control.approval.sessionID, {
+        ...decided.retry,
+        usedCallIDs: new Set(decided.retry.usedCallIDs),
+      })
+      await recordActivation(control, lane, decided.retry)
     }
     // Cleared on a refused decision too: the question is consumed and the
     // lane admitted, so nothing left here could carry a second reply to Gaia.
@@ -1622,41 +1627,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return decided.ok
   }
 
-  /** Give the user's "yes" an actor: tell the orchestrator, and record that it was told.
+  /** Trace the user's "yes"; the orchestrator that asked reads the outcome in its own call's result.
    *
-   * The grant is armed by then; neither the notice nor its trace can undo it,
-   * so both failures are logged and the activation stands. The trace carries
-   * which session was notified (or none), because a grant nobody resumes is
-   * exactly the state that used to look like a command never attempted.
+   * The grant is armed by then and the trace cannot undo it, so a failure is
+   * logged and the activation stands.
    */
-  async function announceActivation(
+  async function recordActivation(
     control: ControlDecision,
     lane: DecisionLane,
     retry: BoundRetry,
   ): Promise<void> {
     const { approvalID, sessionID, callID } = control.approval
-    if (!retry.operation) throw new Error("Gaia cannot announce activation without a typed retry descriptor")
-    let notifiedSessionID: string | undefined
-    let notifyFailure: string | undefined
-    const session = input?.client?.session
-    const primarySessionID = primaryFor(sessionID)
-    if (typeof session?.promptAsync !== "function" || !primarySessionID) {
-      notifyFailure = "no primary session or host prompt API to notify"
-    } else {
-      try {
-        const prompted = await session.promptAsync({
-          path: { id: primarySessionID },
-          body: { parts: [{ type: "text", text: activationNotice(approvalID, sessionID, retry.operation) }] },
-        })
-        notifyFailure = hostRejection(prompted)
-        if (!notifyFailure) notifiedSessionID = primarySessionID
-      } catch (error) {
-        notifyFailure = error instanceof Error ? error.message : String(error)
-      }
-    }
-    if (notifyFailure) {
-      console.error(`[gaia-opencode:control] activation of ${approvalID} was not announced to the orchestrator: ${notifyFailure}`)
-    }
+    if (!retry.operation) throw new Error("Gaia cannot record activation without a typed retry descriptor")
     try {
       await send({
         event: DECISION_APPLIED_EVENT,
@@ -1667,8 +1649,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         reply: "once",
         lane,
         nextIndex: retry.expectedIndex,
-        ...(notifiedSessionID ? { notifiedSessionID } : {}),
-        ...(notifyFailure ? { notifyFailure } : {}),
       })
     } catch (error) {
       console.error(`[gaia-opencode:control] activation of ${approvalID} went unaudited: ${error}`)
@@ -1692,95 +1672,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       || "host resolved with an error carrying no detail"
   }
 
-  /** Release a control whose question never reached the host. */
-  async function abandonControl(control: ControlDecision, cause: string): Promise<void> {
-    await releaseControl(control, "prompt_rejected", cause)
-  }
-
-  async function presentControl(control: ControlDecision): Promise<void> {
-    const approval = control.approval
-    const session = input?.client?.session
-    if (typeof session?.promptAsync !== "function") {
-      throw new Error("OpenCode control plane cannot open a signature question")
-    }
-    const failClosed = async (cause: string): Promise<Error> => {
-      await reportUncorrelatedDenial(approval.sessionID, approval.callID, {
-        approvalID: approval.approvalID, cause, stage: "control-plane",
-      })
-      return new Error(`Gaia could not open the consent control plane for ${approval.approvalID}: ${cause}`)
-    }
-    const controlSessionID = control.request.sessionID
-    control.presenting = true
-    // The model only opens the question: OpenCode offers a plugin no route to
-    // open one itself (1.18.32 exposes list/reply/reject), so a model's
-    // question-tool call is the opener, and tool.execute.before replaces its
-    // arguments with Gaia's signature before the host asks anything.
-    const instruction = [
-      "You are a mechanical consent control plane.",
-      "Invoke the question tool exactly once with the placeholder JSON below and do nothing else.",
-      "Gaia fills the question in before the user sees it. Do not answer it, infer consent, or emit approval prose.",
-      JSON.stringify({ questions: [CONTROL_PLACEHOLDER_QUESTION] }),
-    ].join("\n")
-    let prompted: unknown
-    try {
-      prompted = await session.promptAsync({
-        path: { id: controlSessionID },
-        body: {
-          system: "Only the question tool is available. Free text has no decision authority.",
-          parts: [{ type: "text", text: instruction }],
-        },
-      })
-    } catch (error) {
-      const cause = `control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`
-      control.presenting = false
-      await abandonControl(control, cause)
-      throw await failClosed(cause)
-    }
-    const promptRejected = hostRejection(prompted)
-    if (promptRejected) {
-      const cause = `control-plane prompt rejected: ${promptRejected}`
-      control.presenting = false
-      await abandonControl(control, cause)
-      throw await failClosed(cause)
-    }
-    control.presenting = false
-    if (control.closed) {
-      throw new Error(`Gaia consent control ${approval.approvalID} closed before promptAsync resolved`)
-    }
-    control.presented = true
-    await reportControlOpened(approval, controlSessionID)
-  }
-
-  async function openSignatureQuestion(approval: PendingApproval): Promise<ControlDecision> {
-    const primarySessionID = primaryFor(approval.sessionID)
-    if (!primarySessionID || approval.sessionID === primarySessionID) {
-      throw new Error("OpenCode control plane requires an approval session bound to an active primary")
-    }
-    const controlSessionID = approval.sessionID
-    const control: ControlDecision = {
-      approval,
-      request: signatureRequest(approval, controlSessionID),
-      retry: boundRetry(approval),
-      awaitingSafeIdle: false,
-      presenting: false,
-      presented: false,
-      closed: false,
-    }
-    const controls = controlsBySession.get(controlSessionID) ?? []
-    control.awaitingSafeIdle = controls.length === 0
-      && !controlsAwaitingIdle.has(controlSessionID)
-      && !deferredRetryBySession.has(controlSessionID)
-      && !retryBySession.has(controlSessionID)
-    controls.push(control)
-    controlsBySession.set(controlSessionID, controls)
-    return control
-  }
-
   /** Trace that the host accepted the consent question for this approval.
    *
-   * `gaia approvals opencode-present` writes SHOWN before the prompt is
-   * attempted, so SHOWN alone only says the presentation was registered. This
-   * record is what says the question reached the host, and in which session.
+   * SHOWN is recorded only once the signature's block is posted, when the
+   * question call arrives; this record is what says the control prompt reached
+   * the host, and in which session.
    * The opened control never depends on this call succeeding.
    */
   async function reportControlOpened(approval: PendingApproval, controlSessionID: string) {
@@ -1823,25 +1719,164 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
   }
 
-  async function requestApproval(response: BridgeResponse, sessionID: string, callID: string, role: string) {
-    const id = approvalID(response)
-    if (!id) return
-    const approval = { approvalID: id, sessionID, callID, role, token: crypto.randomUUID() }
-    const presented = await gaia([
-      "approvals", "opencode-present", id,
-      "--session-id", sessionID,
-      "--agent-id", role,
-      "--call-id", callID,
+  /** `gaia approvals opencode-present` for one approval: a preview renders it, otherwise SHOWN is recorded. */
+  async function opencodePresent(
+    approval: Omit<PendingApproval, "surface">,
+    options: { presenterSessionID?: string; preview?: boolean; signature?: string } = {},
+  ) {
+    return gaia([
+      "approvals", "opencode-present", approval.approvalID,
+      "--session-id", approval.sessionID,
+      "--agent-id", approval.role,
+      ...(options.presenterSessionID ? ["--presenter-session-id", options.presenterSessionID] : []),
+      ...(options.signature ? ["--signature", options.signature] : []),
+      "--call-id", approval.callID,
       "--token", approval.token,
+      ...(options.preview ? ["--preview"] : []),
       "--json",
     ])
-    if (!presented.ok) {
-      const cause = gaiaFailureCause(presented)
-      await reportUncorrelatedDenial(sessionID, callID, { approvalID: id, cause })
-      throw new Error(`Gaia could not present approval ${id}: ${cause}`)
+  }
+
+  /** Record SHOWN once the host has accepted the signature's block, and not before:
+   * a block the host refused was never seen, so it leaves no SHOWN.
+   */
+  async function recordShown(approval: PendingApproval, presenterSessionID?: string): Promise<void> {
+    const recorded = await opencodePresent(approval, { presenterSessionID })
+    if (!recorded.ok) {
+      throw new Error(`Gaia could not record that ${approval.approvalID} was shown: ${gaiaFailureCause(recorded)}`)
     }
-    const surface = readConsentPresentation(presented.stdout)
-    await openSignatureQuestion({ ...approval, surface })
+  }
+
+  /** The session that dispatched `sessionID`: this edge's binding first, then the host's own record. */
+  async function parentOf(sessionID: string): Promise<string | undefined> {
+    const bound = childBindings.get(sessionID)?.parentSessionID
+    if (bound) return bound
+    try {
+      const fetched = await input.client?.session?.get?.({ path: { id: sessionID } })
+      const record = fetched?.data as { id?: unknown; parentID?: unknown } | undefined
+      if (hostRejection(fetched) || record?.id !== sessionID) return undefined
+      return typeof record.parentID === "string" && record.parentID ? record.parentID : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Ask, in the orchestrator's own question call, the pending signatures its specialists requested (D39).
+   *
+   * OpenCode 1.18.32 gives a plugin no way to open a question, only to rewrite
+   * a model's question-tool call, so the orchestrator's call carrying the
+   * approval ids is the opener, and its arguments become every signature's
+   * questions, one per command, at most 4 in all, each signature lettered as
+   * `surface.render_batch` letters a mixed call (D37, D38).
+   * The presentation, the decision and the grant stay each requester's: SHOWN
+   * names the requesting session, and `opencode-decide` binds the grant to
+   * that session and agent. Only the attested orchestrator that dispatched a
+   * requester may ask, because only this edge knows OpenCode's session tree.
+   * Two signatures of one specialist session are refused in one call: the
+   * session holds one bound retry at a time, so the second approval would
+   * not activate.
+   */
+  async function presentForOrchestrator(
+    call: { sessionID: string; callID: string },
+    output: { args?: Record<string, unknown> },
+    asks: OrchestratorAsk[],
+  ): Promise<void> {
+    await identify(call.sessionID)
+    const context = roleContext(call.sessionID)
+    const ids = asks.map((ask) => ask.approvalID).join(" ")
+    if (!call.callID || !isPrimarySession(call.sessionID)
+      || context?.role !== "gaia-orchestrator" || !context.attestation) {
+      throw new Error(`Gaia opens ${ids} only from the attested orchestrator session`)
+    }
+    if (new Set(asks.map((ask) => ask.approvalID)).size !== asks.length) {
+      throw new Error(`Gaia asks each signature once per question call: ${ids}`)
+    }
+    const prepared: Array<{ approval: PendingApproval; request: SignatureRequest }> = []
+    for (const [index, ask] of asks.entries()) {
+      const shown = await gaia(["approvals", "show", ask.approvalID, "--json"])
+      let requester: { session_id?: unknown; agent_id?: unknown } | undefined
+      try {
+        requester = JSON.parse(shown.stdout)?.approval
+      } catch {
+        requester = undefined
+      }
+      const sessionID = requester?.session_id
+      const role = requester?.agent_id
+      if (!shown.ok || typeof sessionID !== "string" || !sessionID || typeof role !== "string" || !role) {
+        throw new Error(`Gaia found no requesting session and agent for ${ask.approvalID}`)
+      }
+      if (await parentOf(sessionID) !== call.sessionID) {
+        throw new Error(`Gaia opens ${ask.approvalID} only from the orchestrator that dispatched its requester ${sessionID}`)
+      }
+      if (prepared.some((entry) => entry.approval.sessionID === sessionID)) {
+        throw new Error(
+          `Gaia asks one signature per specialist session in a call: ask ${ask.approvalID} after ${sessionID} ran the other one`,
+        )
+      }
+      const binding = { approvalID: ask.approvalID, sessionID, callID: call.callID, role, token: crypto.randomUUID() }
+      const presented = await opencodePresent(binding, {
+        presenterSessionID: call.sessionID,
+        preview: true,
+        signature: asks.length > 1 ? String.fromCharCode("A".charCodeAt(0) + index) : undefined,
+      })
+      if (!presented.ok) {
+        const cause = gaiaFailureCause(presented)
+        await reportUncorrelatedDenial(sessionID, call.callID, { approvalID: ask.approvalID, cause })
+        throw new Error(`Gaia could not present approval ${ask.approvalID}: ${cause}`)
+      }
+      const approval: PendingApproval = { ...binding, surface: readConsentPresentation(presented.stdout) }
+      prepared.push({ approval, request: signatureRequest(approval, call.sessionID, ask.mode) })
+    }
+    const questions = prepared.flatMap((entry) => entry.request.questions)
+    if (questions.length > SIGNATURE_BATCH_MAX || new Set(questions.map((q) => q.question)).size !== questions.length) {
+      throw new Error(
+        `Gaia asks 1 to ${SIGNATURE_BATCH_MAX} distinct questions per call and ${ids} carry ${questions.length}; ask fewer signatures per call`,
+      )
+    }
+    for (const { approval } of prepared) {
+      try {
+        await recordShown(approval, call.sessionID)
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error)
+        await reportUncorrelatedDenial(approval.sessionID, call.callID, { approvalID: approval.approvalID, cause })
+        throw error
+      }
+    }
+    const controls: ControlDecision[] = prepared.map(({ approval, request }) => {
+      let settle!: (notice: string) => void
+      const notice = new Promise<string>((resolve) => { settle = resolve })
+      return {
+        approval,
+        request,
+        retry: boundRetry(approval),
+        questionCallID: call.callID,
+        presented: true,
+        closed: false,
+        presenter: { notice, settle },
+      }
+    })
+    for (const control of controls) control.group = controls
+    controlsBySession.set(call.sessionID, [...(controlsBySession.get(call.sessionID) ?? []), ...controls])
+    presenterControlsByCall.set(`${call.sessionID}:${call.callID}`, controls)
+    applyUpdatedInput(output, { questions: structuredClone(questions) })
+    for (const control of controls) await reportControlOpened(control.approval, call.sessionID)
+  }
+
+  /** The presenter notice, or a pointer to the approval if the answer is still being applied. */
+  async function settledPresenterNotice(control: ControlDecision): Promise<string> {
+    const id = control.approval.approvalID
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<string>((resolve) => {
+      timer = setTimeout(
+        () => resolve(`Gaia: the answer to ${id} is still being applied; read it with gaia approvals show ${id}.`),
+        PRESENTER_NOTICE_WAIT_MS,
+      )
+    })
+    try {
+      return await Promise.race([control.presenter.notice, late])
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /** Leave a durable trace of a denial that otherwise only reached stderr.
@@ -1854,15 +1889,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    *
    * A presentation Gaia refused travels on the same channel with the approval
    * it named and the cause Gaia returned, so the bridge records it under its
-   * own reason instead of as an uncorrelated request. A control plane the HOST
-   * refused after the presentation carries `stage: "control-plane"`, and a
-   * reply Gaia refused after the user gave it carries `stage: "decide"`, so
-   * the bridge can tell the three refusals apart.
+   * own reason instead of as an uncorrelated request, and a reply Gaia refused
+   * after the user gave it carries `stage: "decide"`, so the bridge can tell
+   * the refusals apart.
    */
   async function reportUncorrelatedDenial(
     sessionID: unknown,
     callID: unknown,
-    failure?: { approvalID: string; cause: string; stage?: "control-plane" | "decide" },
+    failure?: { approvalID: string; cause: string; stage?: "decide" },
   ) {
     try {
       await send({
@@ -1883,8 +1917,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       controlByQuestion.clear()
       controlsBySession.clear()
       releasedControlCalls.clear()
-      controlsAwaitingIdle.clear()
-      deferredRetryBySession.clear()
+      presenterControlsByCall.clear()
       retryByCall.clear()
       retryBySession.clear()
     },
@@ -1900,24 +1933,34 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (event.type === "question.rejected") {
         const requestID = event.properties?.requestID ?? event.properties?.id
         const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
-        if (control) await clearControl(control, "question_rejected")
+        for (const member of control?.group ?? (control ? [control] : [])) {
+          await clearControl(member, "question_rejected")
+        }
         return
       }
       if (event.type === "question.replied") {
         const requestID = event.properties?.requestID
         const sessionID = event.properties?.sessionID
         const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
-        if (!control || control.closed || control.request.sessionID !== sessionID) return
-        const reply = readSignatureAnswer(control.request, event.properties?.answers)
-        if (!reply) {
-          await clearControl(control, "reply_unreadable", JSON.stringify(event.properties?.answers))
+        if (!control || control.request.sessionID !== sessionID) return
+        // One requestID answers the whole call; each signature decides on its
+        // own questions only, so one Reject never reaches another signature.
+        // A reply that does not carry exactly one answer per asked question
+        // cannot be sliced by position, so it decides nothing for any of them.
+        const answers = event.properties?.answers
+        const members = control.group ?? [control]
+        const asked = members.reduce((count, member) => count + member.request.questions.length, 0)
+        if (!Array.isArray(answers) || answers.length !== asked) {
+          const detail = `${Array.isArray(answers) ? answers.length : "no"} answers for ${asked} questions: ${JSON.stringify(answers)}`
+          for (const member of members) await clearControl(member, "reply_unreadable", detail)
           return
         }
-        if (reply === "details") {
-          await reaskWithDetails(control)
-          return
+        let offset = 0
+        for (const member of members) {
+          const count = member.request.questions.length
+          await applySignatureAnswers(member, answers.slice(offset, offset + count))
+          offset += count
         }
-        await applyDecision(control, reply, "control")
         return
       }
       if (event.type === "message.updated") {
@@ -1969,10 +2012,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           const retried = retryByCall.get(key)
           if (retried) {
             retryByCall.delete(key)
-            if (retryBySession.get(part.sessionID) === retried) {
-              retryBySession.delete(part.sessionID)
-              await presentNextControl(part.sessionID)
-            }
+            if (retryBySession.get(part.sessionID) === retried) retryBySession.delete(part.sessionID)
             await reportConsentRetryRefused(retried, { sessionID: part.sessionID, callID: part.callID }, {
               reason: "host_gate_refused",
               expected: `host execution of allowed command [${retried.expectedIndex}]`,
@@ -1985,45 +2025,16 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
         const sessionID = event.properties?.sessionID
         if (typeof sessionID === "string") {
-          const controlWaitingForIdle = activeControl(sessionID)
-          if (event.type === "session.idle" && controlWaitingForIdle?.awaitingSafeIdle) {
-            controlWaitingForIdle.awaitingSafeIdle = false
-            await presentNextControl(sessionID, true)
-            shellIdentities.clearSession(sessionID)
-            await send({ event: event.type, sessionID })
-            return
-          }
-          if (event.type === "session.idle" && controlsAwaitingIdle.delete(sessionID)) {
-            const activation = deferredRetryBySession.get(sessionID)
-            if (activation) {
-              deferredRetryBySession.delete(sessionID)
-              retryBySession.set(sessionID, {
-                ...activation.retry,
-                usedCallIDs: new Set(activation.retry.usedCallIDs),
-              })
-              await announceActivation(activation.control, activation.lane, activation.retry)
-            } else {
-              await presentNextControl(sessionID)
-            }
-            shellIdentities.clearSession(sessionID)
-            await send({ event: event.type, sessionID })
-            return
-          }
           if (event.type === "session.idle") {
             const control = activeControl(sessionID)
-            if (control) {
-              await clearControl(control, "session_ended", event.type, false)
-              await presentNextControl(sessionID)
-            }
+            if (control) await clearControl(control, "session_ended", event.type)
             shellIdentities.clearSession(sessionID)
             await send({ event: event.type, sessionID })
             return
           }
           const controls = [...(controlsBySession.get(sessionID) ?? [])]
           if (controls.length > 0) {
-            for (const control of controls) await clearControl(control, "session_ended", event.type, false)
-            controlsAwaitingIdle.delete(sessionID)
-            deferredRetryBySession.delete(sessionID)
+            for (const control of controls) await clearControl(control, "session_ended", event.type)
             return
           }
           shellIdentities.clearSession(sessionID)
@@ -2043,14 +2054,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           throw new Error("Gaia consent control plane is already closed")
         }
         const tool = canonicalBridgeToolName(call.tool)
-        if (tool !== "AskUserQuestion" || control.questionCallID !== undefined) {
-          await clearControl(control, "drifted_tool_call", `${tool} ${call.callID}`)
-          throw new Error("Gaia consent control plane permits one signature question")
-        }
-        // Whatever the model passed is replaced: the user is asked Gaia's
-        // signature, never a copy a model typed.
-        applyUpdatedInput(output, { questions: [structuredClone(control.request.question)] })
-        control.questionCallID = call.callID
+        await clearControl(control, "drifted_tool_call", `${tool} ${call.callID}`)
+        throw new Error("Gaia consent control plane permits one signature question")
+      }
+      const asks = orchestratorAsks(call.tool, output.args)
+      if (asks) {
+        await presentForOrchestrator(call, output, asks)
         return
       }
       shellIdentities.forget(call.sessionID, call.callID)
@@ -2074,7 +2083,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (retry && verdict?.refusal) {
         await reportConsentRetryRefused(retry, call, verdict.refusal)
         if (retryBySession.get(call.sessionID) === retry) retryBySession.delete(call.sessionID)
-        await presentNextControl(call.sessionID)
         const { reason, expected, received } = verdict.refusal
         throw new Error(
           `Gaia refused consent retry for ${retry.approvalID}: ${reason} (expected ${expected}, received ${received})`,
@@ -2137,17 +2145,24 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         }
         return
       }
-      if (retry && retryProof && retryBySession.get(call.sessionID) === retry) {
-        retryBySession.delete(call.sessionID)
-        await presentNextControl(call.sessionID)
-      }
+      if (retry && retryProof && retryBySession.get(call.sessionID) === retry) retryBySession.delete(call.sessionID)
+      // A blocked specialist is asked nothing here: its denial carries the
+      // request line, it returns the approval id in its contract, and only
+      // the orchestrator opens the question, when it decides (D39).
       if (approvalID(response)) {
-        await requestApproval(response, call.sessionID, call.callID, agent ?? "")
         throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
       }
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },
     "tool.execute.after": async (call, output) => {
+      const presenters = presenterControlsByCall.get(`${call.sessionID}:${call.callID}`)
+      if (presenters) {
+        presenterControlsByCall.delete(`${call.sessionID}:${call.callID}`)
+        releasedControlCalls.delete(`${call.sessionID}:${call.callID}`)
+        const notices = await Promise.all(presenters.map(settledPresenterNotice))
+        if (typeof output.output === "string") output.output = `${output.output.trimEnd()}\n${notices.join("\n")}\n`
+        return
+      }
       if (releasedControlCalls.delete(`${call.sessionID}:${call.callID}`)) return
       const control = owningControl(call.sessionID)
       if (control) {
@@ -2194,15 +2209,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           if (retried.operation?.kind === "COMMAND_SET") {
             retried.operation.expectedIndex = retried.expectedIndex
           }
-          if (retried.expectedIndex >= retried.commands.length) {
-            if (retryBySession.get(call.sessionID) === retried) {
-              retryBySession.delete(call.sessionID)
-              await presentNextControl(call.sessionID)
-            }
+          if (retried.expectedIndex >= retried.commands.length && retryBySession.get(call.sessionID) === retried) {
+            retryBySession.delete(call.sessionID)
           }
         } else if (retryBySession.get(call.sessionID) === retried) {
           retryBySession.delete(call.sessionID)
-          await presentNextControl(call.sessionID)
         }
       }
     },

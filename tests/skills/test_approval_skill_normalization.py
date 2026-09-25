@@ -22,7 +22,7 @@ TEACHING_MAP = (
         "bin/cli/approvals.py", 'os.environ.get("GAIA_HOST_SESSION_ID")',
     ),
     (
-        "subagent-request-approval/SKILL.md", "read from the dispatch environment on both hosts",
+        "subagent-request-approval/SKILL.md", "read from the dispatch environment",
         "opencode/plugin.ts", "output.env.GAIA_HOST_SESSION_ID = call.sessionID",
     ),
     (
@@ -34,12 +34,12 @@ TEACHING_MAP = (
         "bin/cli/approvals.py", "def cmd_question",
     ),
     (
-        "orchestrator-present-approval/SKILL.md", "The hook shows each signature's text",
-        "hooks/adapters/claude_code.py", "def _adapt_ask_user_question",
+        "orchestrator-present-approval/SKILL.md", "Details: Gaia names the command to run",
+        "hooks/adapters/claude_code.py", "`gaia approvals question --details",
     ),
     (
-        "orchestrator-present-approval/SKILL.md", "Gaia posts a notice in your session",
-        "opencode/plugin.ts", "export function activationNotice",
+        "orchestrator-present-approval/SKILL.md", "Only you open the question",
+        "opencode/plugin.ts", "export function orchestratorAsks",
     ),
     (
         "execution/SKILL.md", "recorded as no result",

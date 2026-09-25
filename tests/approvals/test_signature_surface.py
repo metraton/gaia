@@ -1,9 +1,12 @@
-"""The one signature-surface renderer (plan 76, task 2; brief decisions D12, D14, D17).
+"""The one signature-surface renderer (plan 76, tasks 2 and 16; brief decisions D12, D14, D17, D37, D38).
 
-Gaia composes the visible text, the question and Details of every signature
-from the phrases a requester seals; hosts only show them. The D12 example,
-read with the full orthography D17 requires, is the golden test. Length limits are enforced when the request is made, so an
-over-long phrase never reaches a presentation.
+Gaia composes every question of a signature from the phrases a requester
+seals; hosts only show them. Since D37 each command is its own one-line
+question in the machine format, the same text in both hosts: the signature
+question names the agent and the exact command, the Details question adds what
+it does, its impact and the rollback, with no validity and no approval id. The
+D12 example is the golden test. Length limits are enforced when the request is
+made, so an over-long phrase never reaches a presentation.
 """
 
 from __future__ import annotations
@@ -33,6 +36,11 @@ D12_QUESTION = "¿Reinstalo Gaia?"
 D12_DOES = "gaia dev: instala en tu espacio de trabajo la versión nueva de main."
 D12_IMPACT = "actualiza tu base de datos; ese cambio no se deshace."
 D12_ROLLBACK = "volver al código anterior con --ref c1d8b89; la base queda actualizada."
+OPTIONS = [
+    {"label": "Approve", "description": "Autoriza exactamente este comando"},
+    {"label": "Reject", "description": "Rechaza la firma; no se ejecuta nada"},
+    {"label": "Details", "description": "Qué hace, impacto y cómo deshacerlo"},
+]
 
 
 @pytest.fixture
@@ -46,14 +54,14 @@ def db(tmp_path, monkeypatch):
     return tmp_path / "gaia.db"
 
 
-def _seal(items, *, what=D12_TITLE, question=D12_QUESTION, rollback=D12_ROLLBACK):
+def _seal(items, *, what=D12_TITLE, question=D12_QUESTION, rollback=D12_ROLLBACK, requested_from=None):
     from gaia.approvals import core
 
     return core.seal_request(
         "command_set",
         [{"cwd": REPO, **item} for item in items],
         what=what, question=question, rollback=rollback,
-        session_id=SESSION, agent_id=AGENT,
+        session_id=SESSION, agent_id=AGENT, requested_from=requested_from,
     )
 
 
@@ -61,14 +69,22 @@ def _d12_payload():
     return _seal([{"command": D12_COMMAND, "does": D12_DOES, "impact": D12_IMPACT}])
 
 
-def _fingerprint(command):
-    from gaia.approvals.command_set import command_fingerprint
+def _asks(command):
+    return f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ gaia-system ] [ COMMAND ] [ {command} ]"
 
-    return command_fingerprint(command)
+
+@pytest.mark.parametrize("prefix", ["[ GAIA-SECURITY ]", "[GAIA-SECURITY ]", "[  GAIA-SECURITY  ]"])
+def test_a_model_typed_marker_reads_as_a_signature_however_it_is_spaced(prefix):
+    from gaia.approvals import surface
+
+    typed = {"header": "Pregunta", "question": f"{prefix} [ COMMAND ] [ git push ]", "options": []}
+
+    assert surface.looks_like_signature(typed)
+    assert not surface.looks_like_signature({**typed, "question": "GAIA-SECURITY git push"})
 
 
 # --------------------------------------------------------------------------- #
-# Golden: the D12 example, literally
+# Golden: the D12 example, literally (D37 machine format)
 # --------------------------------------------------------------------------- #
 
 def test_signature_surface_golden_d12_example():
@@ -76,74 +92,41 @@ def test_signature_surface_golden_d12_example():
 
     rendered = surface.render(_d12_payload(), APPROVAL_ID)
 
-    assert rendered.text == "\n".join([
-        "Solicitud de aprobación · gaia-system",
-        "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.",
-        "",
-        "Comandos (1)",
-        "  1  python3 .../0ac7481a.../bin/gaia dev \\",
-        "         --workspace /home/jorge/ws/me \\",
-        "         --ref bbc2f09 \\",
-        "         --host all",
-    ])
-    assert rendered.question == {
-        "question": "¿Reinstalo Gaia?",
-        "header": "Aprobación",
-        "options": [
-            {"label": "Approve", "description": "Autoriza exactamente lo que se muestra arriba"},
-            {"label": "Reject", "description": "Rechaza la solicitud; no se ejecuta nada"},
-            {"label": "Details", "description": "Ver qué hace cada paso y su impacto"},
-        ],
-        "multiSelect": False,
-    }
-    assert rendered.details == "\n".join([
-        "1  gaia dev: instala en tu espacio de trabajo la versión nueva de main.",
-        "   Impacto: actualiza tu base de datos; ese cambio no se deshace.",
-        "Rollback: volver al código anterior con --ref c1d8b89; la base queda actualizada.",
-        "Comando exacto:",
-        f"  1  {D12_COMMAND}",
-        f"Vale 30 min · ID {APPROVAL_ID} · huella {_fingerprint(D12_COMMAND)}",
-    ])
-
-
-def test_signature_surface_opencode_string_is_text_blank_line_question():
-    """OpenCode asks one string: the visible text, a blank line, then the short question."""
-    from gaia.approvals import surface
-
-    rendered = surface.render(_d12_payload(), APPROVAL_ID)
-
-    assert rendered.opencode == rendered.text + "\n\n¿Reinstalo Gaia?"
-    assert rendered.opencode.startswith("Solicitud de aprobación · gaia-system\n")
-
-
-def test_signature_surface_opencode_string_is_not_held_to_the_question_limit():
-    from gaia.approvals import surface
-
-    payload = _seal(
-        [{"command": f"git push origin feat/{index}"} for index in range(3)],
-        what="x" * 120, question="x" * 60,
+    details = (
+        f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {D12_COMMAND} ] "
+        f"[ DOES: {D12_DOES} ] [ IMPACT: {D12_IMPACT} ] [ ROLLBACK: {D12_ROLLBACK} ]"
     )
+    assert rendered.questions == (
+        {"question": _asks(D12_COMMAND), "header": "Firma 1/1", "options": OPTIONS, "multiSelect": False},
+    )
+    assert rendered.details_questions == (
+        {"question": details, "header": "Detalle 1/1", "options": OPTIONS, "multiSelect": False},
+    )
+    assert (rendered.text, rendered.details) == (_asks(D12_COMMAND), details)
+    assert "..." not in rendered.text
 
-    rendered = surface.render(payload, APPROVAL_ID)
 
-    assert len(rendered.opencode) > 60
-    assert rendered.opencode.endswith("\n\n" + "x" * 60)
-
-
-def test_signature_surface_options_carry_no_approval_id():
+def test_signature_surface_shows_no_validity_and_no_approval_id():
+    """The ID and the validity stay in the approval, never in what the user reads (D37)."""
     from gaia.approvals import surface
 
     rendered = surface.render(_d12_payload(), APPROVAL_ID)
 
-    assert [option["label"] for option in rendered.question["options"]] == [
-        "Approve", "Reject", "Details",
-    ]
-    assert APPROVAL_ID not in json.dumps(rendered.question)
-    assert APPROVAL_ID not in rendered.text
+    shown = json.dumps([rendered.questions, rendered.details_questions], ensure_ascii=False)
+    assert APPROVAL_ID not in shown
+    assert "30 min" not in shown and "Vale" not in shown
+
+
+def test_signature_surface_question_phrase_is_held_to_its_limit():
+    from gaia.approvals import surface
+
+    _seal([{"command": "git push origin main"}], question="x" * 60)
+    with pytest.raises(surface.SurfaceLimitError, match="60"):
+        _seal([{"command": "git push origin main"}], question="x" * 61)
 
 
 # --------------------------------------------------------------------------- #
-# One template for 1 and N commands (D14)
+# One question per command, one template for 1 and N commands (D14, D33)
 # --------------------------------------------------------------------------- #
 
 def test_signature_surface_same_template_for_n_commands():
@@ -160,31 +143,21 @@ def test_signature_surface_same_template_for_n_commands():
 
     rendered = surface.render(payload, APPROVAL_ID)
 
-    assert rendered.text == "\n".join([
-        "Solicitud de aprobación · gaia-system",
-        "Publicar la rama y abrir su PR.",
-        "",
-        "Comandos (2)",
-        "  1  git push origin feat/x",
-        "  2  gh pr create \\",
-        "         --base main \\",
-        "         --fill",
-    ])
-    assert rendered.details == "\n".join([
-        "1  Sube la rama al remoto.",
-        "   Impacto: La rama queda publicada.",
-        "2  Abre el PR contra main.",
-        "   Impacto: Queda un PR abierto.",
-        "Rollback: no declarado; no supongas que se puede deshacer.",
-        "Comandos exactos:",
-        f"  1  {first}",
-        f"  2  {second}",
-        f"Vale 30 min · ID {APPROVAL_ID} · huellas 1 {_fingerprint(first)} · 2 {_fingerprint(second)}",
-    ])
+    assert [q["question"] for q in rendered.questions] == [_asks(first), _asks(second)]
+    assert [q["question"] for q in rendered.details_questions] == [
+        f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {first} ] "
+        "[ DOES: Sube la rama al remoto. ] [ IMPACT: La rama queda publicada. ] "
+        "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]",
+        f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {second} ] "
+        "[ DOES: Abre el PR contra main. ] [ IMPACT: Queda un PR abierto. ] "
+        "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]",
+    ]
+    assert [q["header"] for q in rendered.questions] == ["Firma 1/2", "Firma 2/2"]
+    assert rendered.text.splitlines() == [q["question"] for q in rendered.questions]
 
 
 def test_signature_surface_undeclared_phrases_are_stated_not_invented():
-    """A reactive block seals no question or per-command phrases; the surface says so."""
+    """A reactive block seals no per-command phrases; its Details says so."""
     from gaia.approvals import surface
     from modules.tools.bash_validator import _build_sealed_payload
 
@@ -194,19 +167,34 @@ def test_signature_surface_undeclared_phrases_are_stated_not_invented():
 
     rendered = surface.render(payload, APPROVAL_ID)
 
-    assert rendered.question["question"] == "¿Apruebo esta solicitud?"
-    assert "1  (sin descripción declarada)" in rendered.details
-    assert "   Impacto: no declarado." in rendered.details
+    assert "[ DOES: (sin descripción declarada) ]" in rendered.details
+    assert "[ IMPACT: no declarado ]" in rendered.details
 
 
-# --------------------------------------------------------------------------- #
-# Batches of up to 4 signatures with distinct questions (D14, PD4)
-# --------------------------------------------------------------------------- #
+def test_signature_surface_a_relative_path_brings_its_folder_into_details():
+    """The folder shows only when a command reads a relative path or runs outside the requester's (D37)."""
+    from gaia.approvals import surface
 
-def _batch_entry(index, question=None):
     payload = _seal(
-        [{"command": f"git push origin feat/{index}"}],
-        what=f"Publicar la rama {index}.", question=question or f"¿Publico la rama {index}?",
+        [{"command": "mv muestra.txt movido.txt", "does": "Renombra.", "impact": "Cambia el nombre."},
+         {"command": "git push origin feature/demo-login", "does": "Sube.", "impact": "Publica."}],
+        requested_from=REPO,
+    )
+
+    relative, branch = (q["question"] for q in surface.render(payload, APPROVAL_ID).details_questions)
+
+    assert relative.endswith(f"[ CWD: {REPO} ]")
+    assert "[ CWD:" not in branch
+
+
+# --------------------------------------------------------------------------- #
+# Batches of up to 4 questions (D14, PD4, D38)
+# --------------------------------------------------------------------------- #
+
+def _batch_entry(index, commands=1):
+    payload = _seal(
+        [{"command": f"git push origin feat/{index}-{n}"} for n in range(commands)],
+        what=f"Publicar la rama {index}.", question=f"¿Publico la rama {index}?",
     )
     return payload, "P-" + f"{index:x}" * 32
 
@@ -219,26 +207,37 @@ def test_signature_surface_batch_of_four_keeps_each_signature_apart():
     batch = surface.render_batch(entries)
 
     assert [item.approval_id for item in batch] == [approval_id for _, approval_id in entries]
-    assert [item.question["question"] for item in batch] == [
-        f"¿Publico la rama {index}?" for index in range(1, 5)
+    assert [item.questions[0]["question"] for item in batch] == [
+        _asks(f"git push origin feat/{index}-0") for index in range(1, 5)
     ]
 
 
 @pytest.mark.parametrize(
-    "count, headers",
+    "shape, headers, details_headers",
     [
-        (1, ["Aprobación"]),
-        (2, ["Aprob. 1/2", "Aprob. 2/2"]),
-        (4, ["Aprob. 1/4", "Aprob. 2/4", "Aprob. 3/4", "Aprob. 4/4"]),
+        ([1], ["Firma 1/1"], ["Detalle 1/1"]),
+        ([4], ["Firma 1/4", "Firma 2/4", "Firma 3/4", "Firma 4/4"],
+         ["Detalle 1/4", "Detalle 2/4", "Detalle 3/4", "Detalle 4/4"]),
+        ([1, 2], ["Firma A 1/1", "Firma B 1/2", "Firma B 2/2"],
+         ["Detalle A1/1", "Detalle B1/2", "Detalle B2/2"]),
+        ([1, 1, 1, 1], ["Firma A 1/1", "Firma B 1/1", "Firma C 1/1", "Firma D 1/1"],
+         ["Detalle A1/1", "Detalle B1/1", "Detalle C1/1", "Detalle D1/1"]),
     ],
 )
-def test_signature_surface_batch_header_names_each_position(count, headers):
+def test_signature_surface_batch_header_names_each_position(shape, headers, details_headers):
+    """One signature counts the call; a call mixing signatures letters each one (D38)."""
     from gaia.approvals import surface
 
-    batch = surface.render_batch([_batch_entry(index) for index in range(1, count + 1)])
+    batch = surface.render_batch(
+        [_batch_entry(index, commands) for index, commands in enumerate(shape, start=1)]
+    )
 
-    assert [item.question["header"] for item in batch] == headers
-    assert all(len(header) <= surface.HEADER_MAX for header in headers)
+    assert [q["header"] for item in batch for q in item.questions] == headers
+    assert [q["header"] for item in batch for q in item.details_questions] == details_headers
+    for item in batch:
+        for question in (*item.questions, *item.details_questions):
+            assert len(question["header"]) <= surface.HEADER_MAX
+            assert surface.is_signature_question(question)
 
 
 @pytest.mark.parametrize("count", [0, 5])
@@ -250,12 +249,13 @@ def test_signature_surface_batch_rejects_outside_one_to_four(count):
 
 
 def test_signature_surface_batch_rejects_repeated_question_text():
+    """The host indexes each answer by its question text, so one call never asks one command twice."""
     from gaia.approvals import surface
 
-    entries = [_batch_entry(1, "¿Publico la rama?"), _batch_entry(2, "¿Publico la rama?")]
+    same = _seal([{"command": "git push origin main"}], what="Publicar.", question="¿Publico?")
 
-    with pytest.raises(surface.SurfaceLimitError, match="distinct"):
-        surface.render_batch(entries)
+    with pytest.raises(surface.SurfaceLimitError, match="read the same"):
+        surface.render_batch([(same, "P-" + "1" * 32), (same, "P-" + "2" * 32)])
 
 
 # --------------------------------------------------------------------------- #
@@ -312,7 +312,7 @@ def test_signature_surface_protected_write_on_a_deep_path_still_seals(db):
 def _question(**overrides):
     from gaia.approvals import surface
 
-    question = surface.render(_d12_payload(), APPROVAL_ID).question
+    question = surface.render(_d12_payload(), APPROVAL_ID).questions[0]
     question = {**question, "options": [dict(option) for option in question["options"]]}
     for key, value in overrides.items():
         if key == "description":
@@ -333,7 +333,6 @@ def test_signature_surface_question_within_host_limits_passes():
     [
         ({"header": "x" * 13}, "header.*12"),
         ({"description": " ".join(["palabra"] * 9)}, "8 words"),
-        ({"question": "x" * 61}, "question.*60"),
     ],
 )
 def test_signature_surface_question_rejects_each_host_limit(override, match):
@@ -365,10 +364,12 @@ def _run(handler, args):
     return code, out.getvalue()
 
 
-def test_signature_surface_request_set_rejects_before_persisting(db):
+def test_signature_surface_request_set_rejects_before_persisting(db, tmp_path):
     from bin.cli.approvals import cmd_request_set
 
-    code, _ = _run(cmd_request_set, _request_set_args(question="x" * 61))
+    code, _ = _run(
+        cmd_request_set, _request_set_args(cwd=[str(tmp_path)], question="x" * 61)
+    )
 
     assert code == 1
     con = sqlite3.connect(db)
@@ -378,11 +379,32 @@ def test_signature_surface_request_set_rejects_before_persisting(db):
         con.close()
 
 
-def test_signature_surface_cli_presents_the_d12_surface(db):
+def test_signature_surface_request_set_without_rollback_is_refused_with_what_to_write(
+    db, tmp_path
+):
+    """D38: a request names how to undo it, or says plainly it cannot be undone."""
+    from bin.cli.approvals import cmd_request_set
+
+    code, out = _run(
+        cmd_request_set, _request_set_args(cwd=[str(tmp_path)], rollback=None)
+    )
+
+    assert code == 1
+    assert "--rollback is required" in out, out
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+def test_signature_surface_cli_presents_the_d12_surface(db, tmp_path, monkeypatch):
     from bin.cli.approvals import cmd_request_set, cmd_show_v2
     from gaia.approvals import surface
 
-    code, out = _run(cmd_request_set, _request_set_args())
+    # Requested from the folder it runs in: the D12 surface names no folder.
+    monkeypatch.chdir(tmp_path)
+    code, out = _run(cmd_request_set, _request_set_args(cwd=[str(tmp_path)]))
     assert code == 0, out
     approval_id = json.loads(out)["approval_id"]
 
@@ -397,7 +419,7 @@ def test_signature_surface_cli_presents_the_d12_surface(db):
     assert shown == {
         "approval_id": approval_id,
         "text": expected.text,
-        "question": expected.question,
+        "questions": list(expected.questions),
         "details": expected.details,
-        "opencode": expected.opencode,
+        "details_questions": list(expected.details_questions),
     }

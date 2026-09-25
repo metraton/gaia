@@ -1,6 +1,6 @@
 ---
 name: pending-approvals
-description: Use when the user asks to list, inspect, approve, reject, or revoke pending approvals
+description: Use when the user asks to list, inspect, approve, reject, or revoke pending approvals -- "qué aprobaciones tengo pendientes", "aprueba esto", "rechaza esa aprobación", "revoca el permiso", "show pending approvals", "approve this".
 ---
 
 # Pending Approvals
@@ -34,7 +34,8 @@ it creates the grant exactly as Approve on the question does.
 The orchestrator withdraws but never approves. It may run
 `gaia approvals reject <approval_id>` (a pending request becomes `rejected`) and
 `gaia approvals revoke <approval_id>` (an armed grant can no longer be used) --
-for example to retire an orphaned request. Approving, replaying, and the bulk
+for example to retire an orphaned request. Both accept `--reason <text>`, which
+the withdrawal event records. Approving, replaying, and the bulk
 verbs (`reject --all`, `reject-all`, `clean`) are the user's, or a specialist's
 when the user asks for them.
 

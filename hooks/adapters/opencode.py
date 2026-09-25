@@ -139,6 +139,23 @@ def _fail_closed(output: Dict[str, Any], exit_code: int) -> HookResponse:
     )
 
 
+def _carries_requester_phrases(approval_id: str) -> bool:
+    """Whether ``approval_id`` passes the check `gaia approvals opencode-present` runs before showing it.
+
+    An approval that cannot be read counts as phraseless: the plugin then
+    delivers the denial itself instead of a presentation Gaia would refuse.
+    """
+    from gaia.approvals.core import missing_phrases
+    from gaia.approvals.store import get_by_id
+
+    try:
+        row = get_by_id(approval_id) or {}
+        return not missing_phrases(json.loads(row.get("payload_json") or "{}"))
+    except Exception as exc:
+        logger.warning("approval %s unreadable for presentation: %s", approval_id, exc)
+        return False
+
+
 class OpenCodeAdapter(HookAdapter):
     """Translate OpenCode plugin events into Gaia's normalized hook contract."""
 
@@ -415,6 +432,9 @@ class OpenCodeAdapter(HookAdapter):
         """
         payload = dict(event.payload)
         original_tool = str(payload.get("tool_name", "")).lower()
+        lookalike = self._signature_lookalike_refusal(original_tool, payload.get("tool_input"))
+        if lookalike is not None:
+            return HookResponse(output={"action": "deny", "reason": lookalike}, exit_code=2)
         rejection = self._identity_rejection(event, original_tool)
         if rejection is not None:
             rejection = self._with_identity_gap(rejection, payload)
@@ -484,6 +504,31 @@ class OpenCodeAdapter(HookAdapter):
                 "agent_type": env_identity.role,
             }
         return translated
+
+    @staticmethod
+    def _signature_lookalike_refusal(tool_name: str, tool_input: object) -> str | None:
+        """Refuse a question that reads as a Gaia signature: the plugin's own never reaches here.
+
+        The plugin writes every signature question itself -- in the requester's
+        control session, or in the orchestrator's call that carries only the
+        approval id -- and returns before the bridge, so any signature-shaped
+        question arriving is a model's copy, whose answer would decide nothing.
+        """
+        if tool_name not in {"askuserquestion", "question"} or not isinstance(tool_input, dict):
+            return None
+        from gaia.approvals.surface import looks_like_signature
+
+        questions = tool_input.get("questions")
+        if not isinstance(questions, list) or not any(
+            isinstance(question, dict) and looks_like_signature(question) for question in questions
+        ):
+            return None
+        return (
+            "Gaia did not open this question: it copies an approval signature, and its "
+            "answer would decide nothing. Do not type or copy a signature: run "
+            "`gaia approvals question <approval_id>` and call the question tool with its "
+            "output unchanged; Gaia writes the signature into that call."
+        )
 
     @classmethod
     def _bash_command(cls, event: HookEvent, tool_name: str) -> str | None:
@@ -1093,7 +1138,10 @@ class OpenCodeAdapter(HookAdapter):
         A consent request with a pending approval becomes a denial naming it,
         since that signature is asked out of band; one without becomes an ask
         of the host's own prompt. The approval id travels as a field, so the
-        plugin never reads it back out of the reason.
+        plugin never reads it back out of the reason. ``presentable`` marks a
+        named approval that already carries its requester's phrases: only that
+        one is presented, while a phraseless reactive placeholder reaches the
+        specialist as the denial's request line (PD10).
         """
         if verdict.refusal is not None:
             return HookResponse(
@@ -1112,6 +1160,8 @@ class OpenCodeAdapter(HookAdapter):
             output["updated_input"] = updated_input
         if verdict.approval_id:
             output["approval_id"] = verdict.approval_id
+            if decision == "deny" and _carries_requester_phrases(verdict.approval_id):
+                output["presentable"] = True
         return _fail_closed(output, 0)
 
     @classmethod

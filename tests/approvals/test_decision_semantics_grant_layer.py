@@ -76,9 +76,9 @@ def _reply_from_the_real_plugin(label: str) -> tuple[str, str]:
     """
     from gaia.approvals.surface import OPTIONS
 
-    request = {"question": {"options": [
+    request = {"questions": [{"options": [
         {"label": option_label, "description": text} for option_label, text in OPTIONS
-    ]}}
+    ]}]}
     script = (
         f"import {{ readSignatureAnswer }} from {json.dumps(str(_PLUGIN))};"
         f"console.log(JSON.stringify(readSignatureAnswer({json.dumps(request)}, [[{json.dumps(label)}]])));"
@@ -164,6 +164,7 @@ def _seed_presented_file_path_approval(file_path: Path) -> str:
         str(file_path.resolve()), session_id=_SESSION, agent_id=_AGENT,
         what="Modificar un archivo protegido.", question="¿Modifico el archivo?",
         does="Reescribe el archivo.", impact="Cambia un archivo de hooks.",
+        rollback="Restaurar el archivo desde git.",
     )
     assert cmd_opencode_present(_present_args(approval_id)) == 0
     return approval_id

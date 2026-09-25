@@ -85,6 +85,7 @@ from ..security.fail_open import clear_classification, note_mutative_classificat
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.data_heredoc import data_heredoc_header
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
+from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
 )
@@ -687,6 +688,31 @@ class BashValidator:
         command = command.strip()
 
         # ================================================================
+        # HOST CONSENT VERB GUARD
+        # The verbs that record SHOWN and apply a reply are the OpenCode
+        # plugin's, run from its own spawn; from a shell they would let a
+        # requester approve itself. Categorical for every role and host, and
+        # ahead of the sealed-retry lane so no signature can carry them.
+        # ================================================================
+        consent_verb_allowed, consent_verb_reason = check_host_consent_verb(
+            command, cwd=(hook_payload or {}).get("cwd") or None,
+        )
+        if not consent_verb_allowed:
+            logger.warning("BLOCKED host consent verb from a shell: %s", command[:120])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=consent_verb_reason,
+            )
+
+        sealed = self._sealed_elsewhere(command, session_id, agent_type, hook_payload)
+        if sealed is not None:
+            return self._validate_sealed_elsewhere(
+                sealed, is_subagent=is_subagent, session_id=session_id,
+                agent_type=agent_type, hook_payload=hook_payload,
+            )
+
+        # ================================================================
         # EARLY NORMALIZATION: Strip AI attribution footers before any
         # other processing.  This ensures the same normalized command
         # string is used for blocked-command checks, compound parsing,
@@ -1084,12 +1110,11 @@ class BashValidator:
         # case is unaffected.
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
+        tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
         if not has_operators:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type,
-                tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
-                cwd=payload_cwd,
+                agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
@@ -1159,6 +1184,50 @@ class BashValidator:
             return None
         if command_was_modified:
             result.modified_input = {"command": command}
+        return result
+
+    @staticmethod
+    def _sealed_elsewhere(
+        command: str, session_id: str, agent_type: str, hook_payload: Optional[Dict[str, Any]],
+    ) -> Optional[tuple]:
+        """The ``(cwd, command)`` of an exact sealed-directory form (D24), else ``None``.
+
+        Only a live host event qualifies: without its payload there is no
+        requester to bind the form to and no directory to run the command in.
+        """
+        if hook_payload is None or " && " not in command:
+            return None
+        from gaia.approvals.core import sealed_elsewhere
+
+        return sealed_elsewhere(command, session_id=session_id, agent_id=agent_type)
+
+    def _validate_sealed_elsewhere(
+        self,
+        sealed: tuple,
+        *,
+        is_subagent: bool,
+        session_id: str,
+        agent_type: str,
+        hook_payload: Dict[str, Any],
+    ) -> BashValidationResult:
+        """Validate the one compound accepted as its sealed command run alone in its sealed directory.
+
+        The chain rules never see it, and every check a single command gets
+        applies to the sealed command. A rewrite of that command keeps the
+        ``cd`` so the host still runs it where it was sealed.
+        """
+        from gaia.approvals.core import sealed_invocation
+
+        sealed_cwd, sealed_command = sealed
+        result = self.validate(
+            sealed_command, is_subagent=is_subagent, session_id=session_id,
+            agent_type=agent_type, hook_payload={**hook_payload, "cwd": sealed_cwd},
+        )
+        if result.modified_input and "command" in result.modified_input:
+            result.modified_input = {
+                **result.modified_input,
+                "command": sealed_invocation(sealed_cwd, result.modified_input["command"]),
+            }
         return result
 
     def _validate_single_command(

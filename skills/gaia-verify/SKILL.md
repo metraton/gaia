@@ -1,6 +1,6 @@
 ---
 name: gaia-verify
-description: Use when the user wants to verify a Gaia installation -- "probemos", "verify", "test installation", "gaia-verify"
+description: Use when the user wants to verify a Gaia installation -- "probemos la instalación", "verifiquemos que Gaia funcione", "verify", "test installation", "gaia-verify"
 ---
 
 # Gaia Verify

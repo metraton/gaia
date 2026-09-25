@@ -176,28 +176,42 @@ a background job.
 
 ### SessionStart announcement blocks
 
-`hooks/modules/session/session_manifest.py::build_schedule_suspension_block`
-is DETECT-ONLY (T0) and zero-noise, and renders up to two headers, LAPSED
-first because it is the one that changed what is running:
+`hooks/modules/session/session_manifest.py::build_recurring_work_block`
+collapses four independently-triggered notices under one shared header,
+`## Recurring work and what it left me`, emitted only when at least one of
+them fires (zero-noise otherwise). Each sub-builder keeps its own trigger
+condition exactly as it computes it and its own standalone `## ...` header
+for direct/unit use; `_demote_recurring_headers` turns that header into a
+bold label (`**...**`) when it renders inside the umbrella. Order is
+severity, not build order -- LAPSED first because it is the one notice that
+changed what is actually running, unread notifications last because whatever
+needed consent already resolved through `claude --resume`:
 
-- `## Scheduled Tasks — SUSPENSION LAPSED (running again)` -- one line per
-  lapsed suspension, with how long ago the deadline passed, which tasks came
-  back, and the exact `gaia schedule resume ...` command that acknowledges
-  THAT entry. Does NOT self-clear; it repeats every SessionStart until that
-  command runs. The command is scope-specific, not a generic
-  `<name>|--all`: a task-scope suspension prints `resume <name>`, a
-  workspace-wide one prints `resume --all` -- the other form is a no-op on
-  it (verified live: `resume <name>` on a global lapse returns
-  `{"status": "not_suspended"}` and the notice keeps repeating). `status`,
-  `list`, and `show` print the same scope-correct hint.
-- `## Scheduled Tasks (suspended)` -- one line per LIVE suspension, with the
-  remaining time (or "indefinitely"), the `--reason` if any, and the same
-  scope-correct `resume` hint to lift it early.
+- **`SUSPENSION LAPSED (running again)`** (`build_schedule_suspension_block`,
+  DETECT-ONLY, T0) -- one line per lapsed suspension, with how long ago the
+  deadline passed, which tasks came back, and the exact `gaia schedule
+  resume ...` command that acknowledges THAT entry. Does NOT self-clear; it
+  repeats every SessionStart until that command runs. The command is
+  scope-specific, not a generic `<name>|--all`: a task-scope suspension
+  prints `resume <name>`, a workspace-wide one prints `resume --all` -- the
+  other form is a no-op on it (verified live: `resume <name>` on a global
+  lapse returns `{"status": "not_suspended"}` and the notice keeps
+  repeating). `status`, `list`, and `show` print the same scope-correct hint.
+- **`Schedule suspended`** (`build_schedule_suspension_block`) -- one line
+  per LIVE suspension, with the remaining time (or "indefinitely"), the
+  `--reason` if any, and the same scope-correct `resume` hint to lift it
+  early.
+- **`Schedule drift on <machine>`** (`build_schedule_reconciliation_block`,
+  DETECT-ONLY, T0) -- desired state (`gaia.db`) vs. this machine's crontab;
+  unrelated to suspensions. Reconciled with `gaia schedule sync` (T3);
+  inspected with `gaia schedule status`.
+- **`Unread task notifications`** (`build_task_notifications_block`) --
+  purely informational, one line per unread headless-task report (task +
+  headline + time + `session_id`); read with `gaia notifications show <id>`,
+  cleared with `gaia notifications ack`.
 
-A separate, pre-existing block, `build_schedule_reconciliation_block`
-(`## Scheduled Tasks (drift on <machine>)`), covers desired state vs. this
-machine's crontab and is unrelated to suspensions -- both are detect-only and
-never install, reactivate, or sync anything on their own.
+All four sub-builders are detect-only and never install, reactivate, or sync
+anything on their own -- a SessionStart hook cannot obtain T3 consent.
 
 ### Live-verified worked example
 

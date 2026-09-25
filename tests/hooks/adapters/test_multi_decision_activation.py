@@ -46,7 +46,7 @@ def _request(n: int) -> str:
         [{"command": f"git push origin feat/multi-{n}", "cwd": REPO,
           "does": f"git push: sube la rama {n}.", "impact": "La rama queda publicada."}],
         what=f"Publicar la rama {n}.", question=f"¿Publico la rama {n}?",
-        session_id=SESSION, agent_id=REQUESTER,
+        session_id=SESSION, agent_id=REQUESTER, rollback="Borrar la rama remota.",
     )
 
 
@@ -65,7 +65,7 @@ def _ask_and_answer(approval_ids: list[str], labels: list) -> dict:
     from adapters.claude_code import ClaudeCodeAdapter
     from gaia.approvals import core
 
-    questions = [s.question for s in core.question_batch(approval_ids)]
+    questions = [q for s in core.question_batch(approval_ids) for q in s.questions]
     adapter = ClaudeCodeAdapter()
     adapter.adapt_pre_tool_use(_event("PreToolUse", {"tool_input": {"questions": questions}}))
     answers = {q["question"]: label for q, label in zip(questions, labels) if label is not None}
@@ -112,7 +112,7 @@ def test_an_approve_that_activates_nothing_is_recorded_and_withholds_no_other():
     from gaia.approvals import core, store
 
     first, second = _request(1), _request(2)
-    questions = [s.question for s in core.question_batch([first, second])]
+    questions = [q for s in core.question_batch([first, second]) for q in s.questions]
     ClaudeCodeAdapter().adapt_pre_tool_use(
         _event("PreToolUse", {"tool_input": {"questions": questions}})
     )

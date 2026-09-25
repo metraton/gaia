@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,8 @@ _MAX_EXIT_CODE = 255
 #: The withdrawal reason of a phraseless request its requester's phrased one
 #: replaced; readers tell it from a user's rejection and from an expiry by it.
 REPLACED_REASON = "reemplazada"
+#: The flag a requester owes on every request: how to undo it, or that it cannot be undone (D38).
+ROLLBACK_FLAG = "--rollback"
 
 
 class SealError(ValueError):
@@ -64,9 +67,14 @@ class NotPresentableError(SealError):
 
     def __init__(self, missing: list[str]):
         self.missing = missing
-        super().__init__(
-            "a signature is shown only with its requester's phrases; missing: " + ", ".join(missing)
-        )
+        message = "a signature is shown only with its requester's phrases; missing: " + ", ".join(missing)
+        if ROLLBACK_FLAG in missing:
+            message += (
+                f". {ROLLBACK_FLAG} is required: one sentence, in the user's language, saying how "
+                "to undo the change, or saying plainly that it cannot be undone "
+                "(e.g. 'No se puede deshacer: la versión publicada queda publicada.')"
+            )
+        super().__init__(message)
 
 
 class WithdrawError(ValueError):
@@ -183,13 +191,15 @@ def seal_request(
     rationale: Optional[str] = None,
     operation: Optional[str] = None,
     risk_level: str = "medium",
+    requested_from: Optional[str] = None,
 ) -> dict:
     """Build the sealed payload for any request kind: ``command``, ``command_set`` or ``file_write``.
 
     ``what`` is the signature's title and ``question`` its question; each item
     may carry ``does`` and ``impact``. All four are checked against the
     signature surface limits here, when the request is made
-    (``surface.SurfaceLimitError``).
+    (``surface.SurfaceLimitError``). ``requested_from`` is the requester's shell
+    folder: the surface names an item's folder only when it differs (D3).
 
     ``operation`` is required for ``command`` (the reactive Bash block): it is
     the ``<CATEGORY> command intercepted: <verb>`` line activation reads to
@@ -224,6 +234,10 @@ def seal_request(
         "rationale": _optional_text(rationale) or what_text,
         "risk_level": risk_level,
     }
+    if requested_from is not None:
+        if not os.path.isabs(requested_from):
+            raise SealError("requested_from must be an absolute directory")
+        payload["requested_from"] = requested_from
     if kind == "command_set":
         payload.update(
             request_type="COMMAND_SET",
@@ -320,13 +334,39 @@ def request_line(payload: Mapping[str, Any]) -> str:
             "--does", shlex.quote(f"<what item {position} does, 100 max>"),
             "--impact", shlex.quote(f"<impact of item {position}, 100 max>"),
         ]
+    words += [ROLLBACK_FLAG, shlex.quote("<how to undo it, or that it cannot be undone>")]
     return " ".join(words)
 
 
-def _require_phrases(what: object, question: object, items: list[Mapping[str, Any]]) -> None:
+def _require_phrases(
+    what: object, question: object, items: list[Mapping[str, Any]], rollback: object,
+) -> None:
+    """Refuse a new request lacking a phrase, its rollback sentence included (D38).
+
+    The rollback is owed only when a request is made, not when one is shown,
+    so a signature sealed before D38 stays presentable.
+    """
     missing = _missing(what, question, items)
+    if _optional_text(rollback) is None:
+        missing.append(ROLLBACK_FLAG)
     if missing:
         raise NotPresentableError(missing)
+
+
+def replaced_by(approval_id: str) -> list[str]:
+    """The phraseless requests that sealing ``approval_id`` withdrew as replaced, oldest first."""
+    from gaia.approvals.store import _open_db
+
+    con = _open_db()
+    try:
+        rows = con.execute(
+            "SELECT approval_id FROM approval_events WHERE event_type = 'REVOKED' "
+            "AND json_extract(metadata_json, '$.replaced_by') = ? ORDER BY id",
+            (approval_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    return [row[0] for row in rows]
 
 
 def _own_pendings(requester: Mapping[str, str]) -> list[tuple[dict, dict]]:
@@ -414,12 +454,13 @@ def request_command_set(
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
     rationale: Optional[str] = None,
+    requested_from: Optional[str] = None,
 ) -> str:
     """Validate a plan-first set, seal it and persist the pending request; return its approval_id.
 
     Every phrase is required (:class:`NotPresentableError` names each one
     missing), and the requester's phraseless reactive requests the set covers
-    are replaced.
+    are replaced. ``requested_from`` is the requester's shell folder.
     """
     from gaia.approvals.command_set import CommandSetValidationError, validate_request_set
 
@@ -428,10 +469,11 @@ def request_command_set(
         validate_request_set(commands)
     except CommandSetValidationError as exc:
         raise SealError(str(exc)) from exc
-    _require_phrases(what, question, items)
+    _require_phrases(what, question, items, rollback)
     payload = seal_request(
         "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, rationale=rationale,
+        requested_from=requested_from,
     )
     return _persist_replacing(payload)
 
@@ -477,7 +519,7 @@ def request_file_write(
     path is reused; a phraseless reactive one is replaced.
     """
     item = {"path": path, "does": does, "impact": impact}
-    _require_phrases(what, question, [item])
+    _require_phrases(what, question, [item], rollback)
     payload = seal_request(
         _FILE_KIND, [item], what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, impact=impact,
@@ -576,60 +618,164 @@ def _row_payload(row: Mapping[str, Any]) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def question_batch(approval_ids: list[str]) -> list:
-    """Render the 1 to 4 pending requests one host question call asks, in order.
+def question_batch(approval_ids: list[str], *, one_per_session: bool = False) -> list:
+    """Render the pending requests one host question call asks, in order: at most 4 questions in all.
 
     Each must be pending and presentable (:func:`check_presentable`); the
-    renderer rejects a batch whose question texts repeat.
+    renderer rejects a batch whose question texts repeat. ``one_per_session``
+    refuses two signatures requested by the same session, the refusal the
+    OpenCode plugin applies in ``presentForOrchestrator``: there a session
+    holds one bound retry at a time, so the second approval would not activate.
     """
     from gaia.approvals import store, surface
 
     if len(set(approval_ids)) != len(approval_ids):
         raise SealError("a signature appears more than once in one question call")
     requests = []
+    requester_of: dict[str, str] = {}
     for approval_id in approval_ids:
         row = store.get_by_id(approval_id)
         if row is None or row.get("status") != "pending":
             raise SealError(f"{approval_id} is not a pending approval")
+        session_id = row.get("session_id") or ""
+        if one_per_session and session_id and session_id in requester_of:
+            raise SealError(
+                f"{requester_of[session_id]} and {approval_id} were requested by the same "
+                f"specialist session {session_id}, which holds one approved retry at a time: "
+                f"ask them in separate calls, {approval_id} after that session has run "
+                f"{requester_of[session_id]}"
+            )
+        requester_of[session_id] = approval_id
         payload = _row_payload(row)
         check_presentable(payload)
         requests.append((payload, approval_id))
     return surface.render_batch(requests)
 
 
-def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
-    """Return the batch whose question objects are exactly ``questions``, in order.
+#: ``metadata_json.kind`` of the NOOP event recording that ``gaia approvals
+#: question`` handed a signature out at a slot (D31). NOOP because a hand-out
+#: changes no status and the ``approval_events`` CHECK stays closed.
+HANDOUT_KIND = "question_handed_out"
 
-    Each position is matched against every pending request rendered for that
-    position, so only the object Gaia produced is recognised; a question no
-    pending request renders, or one two requests render alike, raises
+
+def hand_out_question(approval_ids: list[str], *, session_id: str, agent_id: str) -> list:
+    """Render the question for ``approval_ids`` and record each one as handed out at its slot."""
+    import uuid
+
+    from gaia.approvals import store
+
+    surfaces = question_batch(approval_ids)
+    handout = uuid.uuid4().hex
+    for position, approval_id in enumerate(approval_ids):
+        store.record_event(
+            approval_id, "NOOP", agent_id=agent_id, session_id=session_id,
+            metadata_json=json.dumps(
+                {"kind": HANDOUT_KIND, "handout": handout,
+                 "position": position, "total": len(approval_ids)},
+                sort_keys=True,
+            ),
+        )
+    return surfaces
+
+
+def _handouts() -> list[list[str]]:
+    """Every recorded hand-out whose signatures are all still pending, newest first, in slot order."""
+    from gaia.approvals.store import _open_db
+
+    con = _open_db()
+    try:
+        rows = con.execute(
+            "SELECT e.metadata_json, e.approval_id FROM approval_events e "
+            "JOIN approvals a ON a.id = e.approval_id "
+            "WHERE e.event_type = 'NOOP' AND a.status = 'pending' "
+            "AND json_extract(e.metadata_json, '$.kind') = ? ORDER BY e.id DESC",
+            (HANDOUT_KIND,),
+        ).fetchall()
+    finally:
+        con.close()
+    slots: dict[str, dict[int, str]] = {}
+    totals: dict[str, int] = {}
+    for metadata_json, approval_id in rows:
+        metadata = json.loads(metadata_json)
+        slots.setdefault(metadata["handout"], {})[metadata["position"]] = approval_id
+        totals[metadata["handout"]] = metadata["total"]
+    return [
+        [by_slot[position] for position in sorted(by_slot)]
+        for handout, by_slot in slots.items()
+        if len(by_slot) == totals[handout]
+    ]
+
+
+def _asks(pairs: list[tuple[dict, dict]], asked: list[dict]) -> bool:
+    """Whether each asked object is, byte for byte, its slot's question or its Details re-ask."""
+    return len(pairs) == len(asked) and all(
+        question in pair for pair, question in zip(pairs, asked)
+    )
+
+
+def match_question_batch(questions: list[Mapping[str, Any]]) -> list:
+    """Return the signatures whose questions are exactly ``questions``, in order.
+
+    Every command of a signature is one question (D33), so a signature spans
+    consecutive slots. The newest hand-out of ``gaia approvals question``
+    (:func:`hand_out_question`) whose signatures render exactly these objects,
+    as questions or as Details re-asks, decides which signature each slot asks
+    (D31). Without such a hand-out the slots are walked in order, matching at
+    each one the pending request whose questions render there; a question no
+    pending request renders, or one two render alike, raises
     :class:`SealError` naming the position.
     """
     from gaia.approvals import store, surface
 
     total = len(questions)
     if not 1 <= total <= surface.BATCH_MAX:
-        raise SealError(f"a question call presents 1 to {surface.BATCH_MAX} signatures, not {total}")
+        raise SealError(f"a question call asks 1 to {surface.BATCH_MAX} questions, not {total}")
+    asked_all = [
+        {"multiSelect": False, **asked} if isinstance(asked, Mapping) else {}
+        for asked in questions
+    ]
+    for handed in _handouts():
+        try:
+            surfaces = question_batch(handed)
+        except SealError:
+            continue
+        if _asks([(q, d) for _, q, d in surface.slots(surfaces)], asked_all):
+            return surfaces
     pending = [(row["id"], _row_payload(row)) for row in store.list_pending(all_sessions=True)]
-    approval_ids = []
-    for position, asked in enumerate(questions, start=1):
-        asked = {"multiSelect": False, **asked} if isinstance(asked, Mapping) else {}
+    approval_ids: list[str] = []
+    position = 0
+    while position < total:
         matches = []
         for approval_id, payload in pending:
-            try:
-                rendered = surface.batch_question(payload, position, total)
-            except SealError:
+            if approval_id in approval_ids:
                 continue
-            if rendered == asked:
-                matches.append(approval_id)
+            # The call may ask this signature alone (positions count the call)
+            # or mixed with others (positions count the signature, D38).
+            try:
+                renderings = [
+                    surface.render_at(payload, approval_id, position + 1, total),
+                    surface.render_at(
+                        payload, approval_id, 1, surface.question_count(payload),
+                        signature=surface.signature_letter(len(approval_ids)),
+                    ),
+                ]
+            except (SealError, TypeError, ValueError, AttributeError):
+                continue
+            for rendered in renderings:
+                pairs = list(zip(rendered.questions, rendered.details_questions))
+                if _asks(pairs, asked_all[position:position + len(pairs)]):
+                    matches.append((approval_id, len(pairs)))
+                    break
         if not matches:
-            raise SealError(f"question {position} is not the one Gaia rendered for a pending approval")
+            raise SealError(f"question {position + 1} is not the one Gaia rendered for a pending approval")
         if len(matches) > 1:
             raise SealError(
-                f"question {position} is rendered alike by {', '.join(matches)}; "
+                f"question {position + 1} is rendered alike by "
+                f"{', '.join(approval_id for approval_id, _ in matches)}; "
                 "withdraw the stale one before asking"
             )
-        approval_ids.append(matches[0])
+        approval_ids.append(matches[0][0])
+        position += matches[0][1]
     return question_batch(approval_ids)
 
 
@@ -715,6 +861,43 @@ def decide(
     return DecisionResult("activated", approval_id)
 
 
+def signature_decision(option_keys: list[Optional[str]]) -> Optional[str]:
+    """The one decision a signature takes from the answers to its questions (D33).
+
+    A Reject on any question rejects the whole signature; it is approved only
+    when every question got Approve; otherwise a Details asks again, and
+    anything else decides nothing.
+    """
+    if "reject" in option_keys:
+        return "reject"
+    if option_keys and all(key == "approve" for key in option_keys):
+        return "approve"
+    if "details" in option_keys:
+        return "details"
+    return None
+
+
+def decide_signatures(
+    *, native_ref: str, session_id: str, option_keys: Mapping[int, Optional[str]],
+) -> list[tuple[str, Optional[str], DecisionResult]]:
+    """Decide every signature shown under ``native_ref`` from the option chosen at each of its positions.
+
+    Returns ``(approval_id, decision, result)`` per signature, in the order shown.
+    """
+    positions: dict[str, list[int]] = {}
+    for position, approval_id in presented(native_ref):
+        positions.setdefault(approval_id, []).append(position)
+    decided = []
+    for approval_id, shown_at in positions.items():
+        decision = signature_decision([option_keys.get(position) for position in shown_at])
+        result = decide(
+            native_ref=native_ref, session_id=session_id,
+            option_key=decision, position=shown_at[0],
+        )
+        decided.append((approval_id, decision, result))
+    return decided
+
+
 # --------------------------------------------------------------------------- #
 # Consume and close
 # --------------------------------------------------------------------------- #
@@ -727,12 +910,74 @@ def match_command(
     agent_id: Optional[str],
     tool_use_id: str,
 ) -> Optional[dict]:
-    """Reserve ``command`` if it is exactly the next sealed item for this directory and requester."""
+    """Reserve ``command`` if it is exactly the next sealed item for this directory and requester.
+
+    The reservation carries ``command``, the sealed bytes its EXECUTED or
+    FAILED event records whatever form the call took (:func:`sealed_elsewhere`).
+    """
     from gaia.store.writer import reserve_plan_command
 
-    return reserve_plan_command(
+    reserved = reserve_plan_command(
         command, session_id=session_id, tool_use_id=tool_use_id, cwd=cwd, agent_id=agent_id,
     )
+    return None if reserved is None else {**reserved, "command": command}
+
+
+def sealed_invocation(cwd: str, command: str) -> str:
+    """The only compound accepted (D24): the one that runs an item sealed in another directory."""
+    return f"cd {shlex.quote(cwd)} && {command}"
+
+
+def _sealed_items_of(requester: Mapping[str, str]) -> Iterable[Mapping[str, Any]]:
+    """Every command item the requester's pending requests and live set grants carry."""
+    from gaia.approvals.store import _open_db
+
+    for _, payload in _own_pendings(requester):
+        yield from _payload_items(payload)
+    con = _open_db()
+    try:
+        rows = con.execute(
+            "SELECT command_set_json FROM approval_grants WHERE scope = 'COMMAND_SET' "
+            "AND source = 'plan-first' AND status = 'PENDING' AND session_id = ? AND agent_id = ?",
+            (requester["session_id"], requester["agent_id"]),
+        ).fetchall()
+    finally:
+        con.close()
+    for (items_json,) in rows:
+        yield from json.loads(items_json or "[]")
+
+
+def sealed_elsewhere(
+    invocation: str, *, session_id: object, agent_id: object,
+) -> Optional[tuple[str, str]]:
+    """Return ``(cwd, command)`` when ``invocation`` is the cd form of an item this requester sealed.
+
+    It qualifies only byte for byte as :func:`sealed_invocation` writes it, and
+    only for an item one of the requester's pending requests or live set
+    grants carries with that directory and that command; any other compound is
+    left to the ordinary refusal.
+    """
+    head, joined, command = invocation.partition(" && ")
+    if not joined or not head.startswith("cd "):
+        return None
+    try:
+        target = shlex.split(head[len("cd "):])
+        requester = resolve_requester(session_id, agent_id)
+    except (ValueError, RequesterError):
+        return None
+    if len(target) != 1 or not os.path.isabs(target[0]):
+        return None
+    cwd = target[0]
+    if sealed_invocation(cwd, command) != invocation:
+        return None
+    try:
+        items = list(_sealed_items_of(requester))
+    except sqlite3.Error:
+        return None
+    for item in items:
+        if item.get("command") == command and item.get("cwd") == cwd:
+            return cwd, command
+    return None
 
 
 def close_command(approval_id: str, *, session_id: str, tool_use_id: str, exit_code: int) -> str:

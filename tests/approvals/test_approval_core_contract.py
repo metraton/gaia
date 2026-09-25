@@ -15,19 +15,23 @@ import json
 import re
 import sqlite3
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import pytest
 
 from gaia.store import writer
 
 COMMANDS = ["git push origin feat/x", "gh pr create --base main --fill"]
-REPO = "/tmp/approval-core-repo"
+#: An existing directory: request-set refuses a --cwd that does not exist (D24).
+REPO = str(Path(__file__).resolve().parent)
 SESSION = "ses-requester"
 AGENT = "gaia-system"
 #: Every requested signature carries its requester's phrases (plan 76 PD10).
 QUESTION = "¿Publico la rama?"
 DOES = "Publica un paso del cambio."
 IMPACT = "Queda visible en el remoto."
+#: A request is refused without its rollback sentence (D38).
+ROLLBACK = "Borrar la rama remota."
 
 
 @pytest.fixture
@@ -69,7 +73,7 @@ def _approved_set(db_path, *, expect_exit=None):
 
     approval_id = core.request_command_set(
         _set_items(expect_exit), what="Publish the branch and open the PR",
-        question=QUESTION, session_id=SESSION, agent_id=AGENT,
+        question=QUESTION, session_id=SESSION, agent_id=AGENT, rollback=ROLLBACK,
     )
     core.record_presentation(approval_id, native_ref="toolu_present", session_id="ses-orch", agent_id="orchestrator")
     result = core.decide(native_ref="toolu_present", option_key="approve", session_id="ses-orch")
@@ -155,7 +159,7 @@ def test_approval_core_contract_every_request_kind_is_sealed_alike(db, tmp_path)
     args = argparse.Namespace(
         command=list(COMMANDS), cwd=[REPO], expect_exit=["2=1"], what="Publish the branch",
         question=QUESTION, does=[DOES, DOES], impact=[IMPACT, IMPACT],
-        rationale=None, verification=None, rollback=None,
+        rationale=None, verification=None, rollback=ROLLBACK,
         agent_id=AGENT, session_id=SESSION, json=True,
     )
     out = io.StringIO()
@@ -187,7 +191,7 @@ def test_approval_core_contract_decision_needs_a_recorded_presentation(db):
     from gaia.approvals import core
 
     approval_id = core.request_command_set(
-        _set_items(), what="Publish", question=QUESTION, session_id=SESSION, agent_id=AGENT,
+        _set_items(), what="Publish", question=QUESTION, session_id=SESSION, agent_id=AGENT, rollback=ROLLBACK,
     )
     unbound = core.decide(native_ref="toolu_never_shown", option_key="approve", session_id="ses-orch")
     assert unbound.status == "no_decision"
@@ -207,12 +211,12 @@ def test_approval_core_contract_reject_answer_rejects_only_its_request(db):
     from gaia.approvals import core
 
     first = core.request_command_set(
-        _set_items(), what="Publish", question=QUESTION, session_id=SESSION, agent_id=AGENT,
+        _set_items(), what="Publish", question=QUESTION, session_id=SESSION, agent_id=AGENT, rollback=ROLLBACK,
     )
     second = core.request_command_set(
         [{"command": "git push origin feat/y", "cwd": REPO, "expect_exit": [],
           "does": DOES, "impact": IMPACT}],
-        what="Publish y", question=QUESTION, session_id=SESSION, agent_id=AGENT,
+        what="Publish y", question=QUESTION, session_id=SESSION, agent_id=AGENT, rollback=ROLLBACK,
     )
     core.record_presentation(first, native_ref="toolu_batch", position=0, session_id="ses-orch", agent_id="orchestrator")
     core.record_presentation(second, native_ref="toolu_batch", position=1, session_id="ses-orch", agent_id="orchestrator")
@@ -231,7 +235,7 @@ def test_approval_core_contract_command_matches_only_in_its_sealed_directory(db)
     approval_id = _approved_set(db)
     assert core.match_command(COMMANDS[0], cwd="/elsewhere", session_id=SESSION, agent_id=AGENT, tool_use_id="t1") is None
     assert core.match_command(COMMANDS[0], cwd=REPO, session_id=SESSION, agent_id=AGENT, tool_use_id="t2") == {
-        "approval_id": approval_id, "index": 0,
+        "approval_id": approval_id, "index": 0, "command": COMMANDS[0],
     }
 
 
@@ -291,7 +295,7 @@ def test_approval_core_contract_orchestrator_withdraws_but_never_approves(db):
     )
 
     pending = core.request_command_set(
-        _set_items(), what="Publish", question=QUESTION, session_id=SESSION, agent_id=AGENT,
+        _set_items(), what="Publish", question=QUESTION, session_id=SESSION, agent_id=AGENT, rollback=ROLLBACK,
     )
     with pytest.raises(core.WithdrawError):
         core.withdraw(pending, action="approve", session_id="ses-orch")
@@ -345,7 +349,7 @@ def test_approval_core_contract_request_set_under_opencode_seals_the_exported_se
     result = subprocess.run(
         [sys.executable, str(e2e.GAIA_CLI), "approvals", "request-set", "--command", COMMANDS[0],
          "--cwd", env["WORKSPACE"], "--what", "Publish the branch", "--question", QUESTION,
-         "--does", DOES, "--impact", IMPACT, "--json"],
+         "--does", DOES, "--impact", IMPACT, "--rollback", ROLLBACK, "--json"],
         cwd=env["WORKSPACE"], env=shell, capture_output=True, text=True, timeout=180,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -473,11 +477,11 @@ def test_approval_core_contract_blocked_command_is_not_named_under_a_foreign_pen
 
     foreign_set = core.request_command_set(
         _set_items(), what="Publish the branch and open the PR", question=QUESTION,
-        session_id="ses-foreign", agent_id=AGENT,
+        session_id="ses-foreign", agent_id=AGENT, rollback=ROLLBACK,
     )
     own_set = core.request_command_set(
         _set_items(), what="Publish the branch and open the PR", question=QUESTION,
-        session_id=SESSION, agent_id="developer",
+        session_id=SESSION, agent_id="developer", rollback=ROLLBACK,
     )
     assert _blocked_approval_id(SESSION, AGENT) not in {foreign_set, own_set}
     assert _blocked_approval_id(SESSION, "developer") == own_set

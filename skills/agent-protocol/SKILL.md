@@ -9,7 +9,7 @@ Every agent turn writes one contract -- what it was asked, what it found, what i
 
 ## 1. Your contract is the delivery; your final message is only the signal that the turn ended
 
-The gate validates only your persisted contract: one found unfinalized -- or no row at all -- rejects the close however complete your message reads (`_resolve_subagent_stop_gate_full`). The message carries no copy.
+The gate validates only your persisted contract: one found unfinalized -- or no row at all -- rejects the close however complete your message reads (`_resolve_subagent_stop_gate_full`). The message carries no copy. Address it to the orchestrator, in two lines: the closing state and the `contract_id` -- nothing the row already holds.
 
 ## 2. You were born with a contract -- adopt it, do not create another
 
@@ -42,6 +42,8 @@ that the original decision still authorizes it.
 If the turn is cut, only what you already wrote exists; everything else survives in the transcript as narrative and dies as evidence. Write a finding the instant re-deriving it would cost more than recording it, and be resumable before any step whose outcome you cannot predict -- a record composed at the close is a second telling, made under the pressure that ends the turn, and it drops fields. Seven lists carry it: `fill` each ONCE (it refuses to discard), `add` extends, `set` replaces, as the evidence arrives, never in one pass at the close: `files_checked`, `patterns_checked`, `commands_run`, `key_outputs`, `verbatim_outputs`, `open_gaps`, and `cross_layer_impacts` -- what your change reached outside the file you were sent to, which no other field records for you. `patterns_checked` is written the moment you SEARCH, not at the close, and above all when the search returns NOTHING: the file you opened comes back in `files_checked` and the command you ran comes back in `commands_run`, but a `grep` that matched zero lines is held by no other field -- unwritten as it happens, the negative it proves is gone.
 
 `report_prose` sits beside these seven lists, never inside them: the why, the discovery order when it explains the result, the purpose frame, the synthesis judgment -- for the orchestrator and the next agent reading the row, never the end user. No evidence here, and no re-narrating a list.
+
+Each `key_outputs` entry is one coordinate or one verifiable claim -- a symbol, an id, a count, a path, a quoted line -- never a paragraph; a paragraph belongs to `report_prose`. `user_facing_summary` is the only channel that reaches the user's display (`agent-contract-handoff`); write it in the plain register when a human will read the result.
 
 ## 6. The phase is declared before doing that phase's work
 

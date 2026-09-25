@@ -958,13 +958,14 @@ class ToolPolicy:
                 else:
                     from gaia.approvals.core import close_call
 
+                    reservation = pre_state.metadata.get("command_set_reservation") or {}
                     outcome = close_call(
                         consumed_approval_id,
-                        command=pre_state.command,
+                        command=reservation.get("command") or pre_state.command,
                         session_id=post_session_id,
                         tool_use_id=tool_use_id,
                         exit_code=tool_result.exit_code,
-                        reserved=bool(pre_state.metadata.get("command_set_reservation")),
+                        reserved=bool(reservation),
                         terminal_event=str(hook_data.get("hook_event_name") or ""),
                         error="" if success else str(output),
                     )

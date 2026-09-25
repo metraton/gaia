@@ -5,28 +5,41 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 
 # Present Approval — Orchestrator Branch
 
-Gaia builds and shows every signature. You never print, summarise, translate
-or rebuild any part of it; you only open the question.
+Gaia builds every signature, and each of its commands is one question on one
+line, marked `[ GAIA-SECURITY ]` so the user reads it as Gaia's check and not as
+your question: who asks and the exact command; Details adds what it does, its
+impact and the rollback. No model writes any of it.
+You never print, copy, summarise or translate any part of it; you
+only run `gaia approvals question` and open what it gives you, unchanged. You
+can run it again at any time for the approvals still pending -- for example
+when several specialists return signatures.
 
-## Claude Code
+A signature is approved only when every one of its questions gets Approve; a
+Reject on any of them rejects the whole signature. One call asks at most 4
+questions, so a signature carries at most 4 commands.
+
+## Presenting
+
+The flow is the same in Claude Code and OpenCode. Only you open the question:
+a specialist that asks for a signature, or is blocked on a command, asks the
+user nothing. It ends its turn and returns `APPROVAL_REQUEST` with the
+approval id in its contract. You decide when to ask.
 
 1. Run `gaia approvals question <approval_id> [<approval_id> ...]` with the
-   pending ids the specialists returned -- up to 4 in one question, one
-   signature each.
-2. Call AskUserQuestion with that output exactly as printed, and print nothing
-   about the signature, before or after. The hook shows each signature's text
-   to the user, and its Details when the user chooses Details.
-3. When the hook asks for it (Details was chosen, or it did not recognise the
-   question), run `gaia approvals question` again for the ids it names and pass
-   the new output unchanged.
-
-## OpenCode
-
-The question opens in the specialist's own session, at its attempt. Resume the
-requesting specialist (`task_id`) with `execution` so it attempts the
-requested command; its turn ends there and the user answers in that session, one signature after
-another. When the user approves, Gaia posts a notice in your session naming
-the specialist session: resume that session (`task_id`) with `execution`.
+   pending ids -- up to 4 questions in all, one per command.
+2. Call your question tool (AskUserQuestion in Claude Code, question in
+   OpenCode) with that output unchanged, and print nothing about the
+   signature. Gaia checks the call before the questions open -- the hook in
+   Claude Code, the plugin in OpenCode, which fills the call with every
+   signature's questions -- and ties each answer to its own signature. Only
+   approvals your own specialists requested are accepted. In OpenCode, ask
+   two signatures of the same specialist in separate calls: that specialist
+   runs one approval at a time.
+3. Details: Gaia names the command to run -- the hook's message in Claude
+   Code, your call's result in OpenCode --
+   `gaia approvals question --details <approval_id> ...`. Pass its output to
+   the question tool the same way. If Gaia refuses a question, run
+   `gaia approvals question` again for the ids it names.
 
 ## After the answer
 
