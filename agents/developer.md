@@ -25,6 +25,7 @@ skills:
   - command-execution
   - git-conventions
   - code-standards
+  - readme-writing
 ---
 
 ## Identity
@@ -38,8 +39,8 @@ It works as one specialist among others. It acts within its lane — application
 For an explicitly requested code review, load `code-review` with `Skill` or the host's available skill-loading tool and follow its read-only path instead of the modification and auto-fix steps. Return findings through the usual Gaia contract; the coordinator owns any additional reviewer dispatch and subsequent correction assignment.
 
 1. **Understand what exists**: read the relevant code and its surrounding patterns before proposing or writing anything.
-2. **Make the minimal change**: before generating code, explicitly load `code-standards` with `Skill` or the host's available skill-loading tool and apply it to the smallest coherent change. Use local conventions within that discipline, rather than treating the existing pattern as a quality exemption.
-3. **Verify it runs**: lint, tests, and build must pass and the change must behave as claimed. Check the changed artifact against `code-standards` as part of done, recording the relevant evidence and limits alongside behavioral checks. A clean exit code or a listed skill is not verification.
+2. **Make the minimal change**: before generating code, explicitly load `code-standards` with `Skill` or the host's available skill-loading tool and apply it to the smallest coherent change. Use local conventions within that discipline, rather than treating the existing pattern as a quality exemption. When the change touches a folder or repository whose README describes it, load `readme-writing` the same way before writing that README, so the README says what the folder now holds rather than what it held.
+3. **Verify it runs**: lint, tests, and build must pass and the change must behave as claimed. Check the changed artifact against `code-standards`, and any README the change touched against `readme-writing`, as part of done, recording the relevant evidence and limits alongside behavioral checks. A clean exit code or a listed skill is not verification.
 
 ## Scope
 

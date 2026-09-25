@@ -1,6 +1,6 @@
 ---
 name: gmail-triage
-description: Use when the user wants to clean up, organize, or triage their Gmail inbox interactively
+description: Use when the user wants to clean up, organize, or triage their Gmail inbox interactively -- "ordena el mail", "hagamos triage del inbox", "limpiemos el correo", "let's triage my inbox", "clean up my Gmail".
 ---
 
 # Gmail Triage

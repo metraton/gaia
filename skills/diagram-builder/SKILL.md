@@ -1,6 +1,6 @@
 ---
 name: diagram-builder
-description: Use when the user wants to build or extend a diagram deck of nested sections and components authored in plain YAML — an architecture map, a timeline diagram, a planner board, a process-flow diagram, a slide-style presentation, a side-by-side comparison, or a mind-map. Not for charts, plots, or numeric/data visualization — route those to the dataviz skill. Triggers — "build a diagram", "architecture diagram", "diagram deck", "timeline diagram", "flow diagram", "planner board", "comparison diagram", "add a page/section/component to the diagram".
+description: Use when the user wants to build or extend a diagram deck of nested sections and components authored in plain YAML — an architecture map, a timeline diagram, a planner board, a process-flow diagram, a slide-style presentation, a side-by-side comparison, or a mind-map. Not for charts, plots, or numeric/data visualization — route those to the dataviz skill. Triggers — "build a diagram", "architecture diagram", "diagram deck", "timeline diagram", "flow diagram", "planner board", "comparison diagram", "add a page/section/component to the diagram", "arma un diagrama", "diagrama de arquitectura", "haz un timeline", "diagrama de flujo", "tablero de planificación".
 ---
 
 # Diagram Builder
@@ -11,7 +11,10 @@ board — as nested boxes authored in plain YAML and rendered by a generic engin
 no framework, no server, opens under `file://`. Its whole material is two
 primitives — a recursive **section** that ARRANGES and a **component** that
 CARRIES — and its work is to find the form that teaches THIS idea best and lower
-it into that geometry. Everything domain-specific lives in the data; nothing
+it into that geometry. How the idea is explained before it is drawn — the four
+decisions, the fixed order, the two registers — is the shared discipline of
+`technical-explanation`; this skill lowers that explanation into a deck and does
+not restate it. Everything domain-specific lives in the data; nothing
 about a domain lives in the engine. Everything on the canvas invites the reader
 toward the centre: the layout centres its content, a click opens a bottom-centre
 panel, a chip spotlights a relation.
@@ -206,6 +209,17 @@ mapping is never stylistic — it is the meaning:
   only when it ENCODES an intention; when it does not, it is a defect. Never
   fold, drop, or distort a semantic distinction to make a rectangle come out
   full — the geometry serves the idea, never the reverse.
+- **When the idea MOVES, the layout is the path.** Phases are sections in
+  reading `order`; steps are ordered components inside their phase; the path is
+  ONE chip whose members sit in every phase-section, so the relation crosses
+  the section boundaries; the disclosure level is the page; and the kicker
+  carries the step index (`STEP n OF m`) as a convention — the engine renders no
+  progress affordance, no counter and no arrowhead, so the count is text the
+  author keeps true. Whether the idea moves, and what its phases, steps, path
+  and levels are, is decided in `technical-explanation` before the deck exists;
+  this doctrine only fixes where each lands. The shape is in the seed
+  (`p10-flow-phases`) and in the "flow — phases as sections" skeleton in
+  `reference.md`.
 
 ## The conversational cycle and the handoff to the builder
 
@@ -306,9 +320,10 @@ of that:
 `assets/data/` carries a domain-free seed deck whose only job is to EXERCISE
 every tool the engine offers: inline sections side by side, nesting, the
 structural leaves, height-as-magnitude, a partial merge, the collapse cascade at
-a wide column count, span-weighted zones, and — twice — the deliberate mixing of
-cells and zones that principle 2 warns about. It is the fastest path from "is
-this possible?" to seeing it rendered.
+a wide column count, span-weighted zones, a flow whose phases are sections
+crossed by one chip, and — across two pages — the deliberate mixing of cells and
+zones that principle 2 warns about. It is the fastest path from "is this
+possible?" to seeing it rendered.
 
 **Open it.** A capability read in a seed that renders is worth more than the same
 capability described in prose, and the seed is where a claim gets falsified.

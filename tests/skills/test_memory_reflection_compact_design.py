@@ -15,8 +15,14 @@ def _flat(text: str) -> str:
 
 
 def test_main_skills_fit_progressive_disclosure_budgets() -> None:
+    """Each main SKILL.md stays inside its line budget so the body remains a
+    progressive-disclosure entry point and mechanics keep going to reference.md.
+    The memory ceiling was re-baselined from 150 to 160 when the host-scoped
+    emptiness rule (an empty `gaia memory get-relevant --initiative` read is
+    complete for `gaia_system`) was added to its step 2.
+    """
     limits = {
-        "skills/memory/SKILL.md": (100, 150),
+        "skills/memory/SKILL.md": (100, 160),
         "skills/session-reflection/SKILL.md": (80, 120),
         "skills/gaia-compact/SKILL.md": (50, 70),
     }

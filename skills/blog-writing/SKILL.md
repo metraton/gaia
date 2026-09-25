@@ -1,6 +1,6 @@
 ---
 name: blog-writing
-description: Use when writing, drafting, or publishing a blog article for metraton.github.io
+description: Use when writing, drafting, or publishing a blog article for metraton.github.io -- "escribe un post para el blog", "publica un artículo", "write a blog post", "draft an article for the blog".
 ---
 
 # Blog Writing

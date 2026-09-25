@@ -1,6 +1,6 @@
 ---
 name: readme-writing
-description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a folder that holds one kind of thing (modules, migrations, components, services, scripts, environments, workloads; Gaia's own agents/, skills/ and hooks/ are one instance of that same shape), or the README shipped inside a template or scaffold handed to someone else. Triggers -- "escribí el README", "actualizá el README", "limpiá el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
+description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a folder that holds one kind of thing (modules, migrations, components, services, scripts, environments, workloads; Gaia's own agents/, skills/ and hooks/ are one instance of that same shape), or the README shipped inside a template or scaffold handed to someone else. Triggers -- "escribe el README", "actualiza el README", "limpia el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
 ---
 
 # README Writing
@@ -35,7 +35,7 @@ A repo root and one of its folders are two separate passes, each through its own
 ### Repository root -- seven sections
 
 1. **Title and one line** -- what this is, under 120 characters.
-2. **What it is and why it exists** -- the problem it solves, who uses it, what it produces.
+2. **What it is and why it exists** -- the problem it solves, who uses it, what it produces. This section explains, so `technical-explanation` governs it: the fixed order (what exists, how it connects, what happens, why) and the plain register are that skill's, not restated here.
 3. **Flow** -- one plain-text flow, and what it interacts with. One, not several.
 4. **Requirements** -- tools with their versions, permissions, credentials.
 5. **How it is used** -- the real invocation, with the output it is expected to produce.

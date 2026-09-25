@@ -1,6 +1,6 @@
 ---
 name: gaia-research
-description: Use when the user points at one or more GitHub repos -- starred, bookmarked, or just named -- and asks whether there is anything in them worth taking for Gaia: "mirá estos repos y decime si hay algo", "analizá este repo, ¿sirve para Gaia?", "¿hay algo acá que le sirva?". Also use when the user names a capability they want and asks which projects solve it well ("quiero mi memoria y mi contexto en un grafo, ¿quién lo hace bien?"). Not for reclassifying or ordering a whole favorites corpus.
+description: Use when the user points at one or more GitHub repos -- starred, bookmarked, or just named -- and asks whether there is anything in them worth taking for Gaia: "mira estos repos y dime si hay algo", "analiza este repo, ¿sirve para Gaia?", "¿hay algo acá que le sirva?". Also use when the user names a capability they want and asks which projects solve it well ("quiero mi memoria y mi contexto en un grafo, ¿quién lo hace bien?"). Not for reclassifying or ordering a whole favorites corpus.
 ---
 
 # Gaia Research

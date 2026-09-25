@@ -116,8 +116,10 @@ on demand rather than being interrupted:
 
 1. **Per-prompt counter** -- while there are unread reports, each prompt gets a
    cheap one-line `🔔 N task notifications sin ver` (nothing when N=0).
-2. **SessionStart list** -- a compact `## Task Notifications (unread)` block,
-   one line per report (task + headline + time + `session_id`).
+2. **SessionStart list** -- a compact `Unread task notifications` block, one
+   line per report (task + headline + time + `session_id`), rendered under
+   the shared `## Recurring work and what it left me` header (see
+   `reference.md`, "SessionStart announcement blocks").
 3. **Detail on demand** -- `gaia notifications show <id>` prints the full body,
    including the pending `approval_id`s and the resume line
    `claude --resume <session_id>`. The user resumes that session to grant the

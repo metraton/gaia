@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Use when the user explicitly requests a code review of a module, branch, change, or pull request.
+description: Use when the user explicitly requests a code review of a module, branch, change, or pull request -- "revisa este código", "haz code review de esto", "review this PR", "review this branch".
 ---
 
 # Code Review
