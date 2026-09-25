@@ -759,10 +759,12 @@ def check_episodes_growth() -> dict:
 
 @register_check("Workspace roots", order=49)
 def check_workspace_roots() -> dict:
-    """Warn about active workspaces whose root is unrecorded, naming the scan that records it.
+    """Report active workspaces whose root is unrecorded, naming the scan that records it.
 
     ``gaia worktree create`` refuses every repository of such a workspace, and
     install never scans, so the root stays empty until the user runs the scan.
+    The finding is info, not a warning: a fresh install creates exactly these
+    rows, and they limit worktree creation, not the health of the install.
     """
     from gaia.paths import db_path  # noqa: PLC0415
 
@@ -786,7 +788,7 @@ def check_workspace_roots() -> dict:
         return _result("Workspace roots", "pass", "every active workspace has a recorded root")
     return _result(
         "Workspace roots",
-        "warning",
+        "info",
         f"no recorded root for {', '.join(missing)}; "
         "`gaia worktree create` refuses their repositories",
         "; ".join(
@@ -1625,11 +1627,15 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
 
     ALIGNED (pass): the resolved entry carries gaia.source_parity.SOURCE_MARKER
     -- whatever runs today IS the live checkout.
-    DIVERGENT (warning): the resolved entry is a materialized, non-checkout
-    copy while package.json pins a local tarball -- the pin-restored-over-a-
-    link shape. The realpath actually resolved is always named in the detail,
-    so the verdict is checked against the literal filesystem state that
-    produced it, never merely asserted.
+    MATERIALIZED (info): the resolved entry is a non-checkout copy while
+    package.json pins a local tarball. That is the normal state of every
+    tarball install (`gaia dev`, `npm install <tgz>`, the release sandbox),
+    since the package ships without SOURCE_MARKER. A replaced source link
+    leaves the same filesystem state and no trace of the link, so this check
+    cannot tell the two apart; check_install_provenance diagnoses a diverged
+    source link wherever `gaia dev` recorded one. The realpath actually
+    resolved is always named in the detail.
+    BROKEN (warning): the entry does not resolve at all.
 
     Out of scope (info): no local node_modules entry at all (plugin-mode), or
     a non-tarball spec (a registry install, or a `file:` dir spec already
@@ -1672,14 +1678,12 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
         )
 
     return _result(
-        name, "warning",
-        f"divergent: node_modules/@jaguilar87/gaia -> {resolved} (a materialized copy, "
-        f"NOT the source checkout) while package.json pins the tarball {spec} -- a "
-        "previous source link was replaced by its pinned, possibly-stale package",
-        f"Run `gaia dev --workspace {project_root}` to repack and reinstall from "
-        "source, or confirm this materialized copy is the build you intend to run. "
-        "Gaia has no source-linking install mode -- a live checkout entry must have "
-        "been created outside `gaia dev`.",
+        name, "info",
+        f"materialized: node_modules/@jaguilar87/gaia -> {resolved} is the copy "
+        f"installed from the pinned tarball {spec} (the normal tarball install); "
+        "whether a source link was replaced is not recorded here -- see Install provenance",
+        f"If you expected this workspace to run a live source checkout, run "
+        f"`gaia dev --workspace {project_root}` to repack and reinstall from source.",
     )
 
 
