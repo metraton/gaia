@@ -24,7 +24,6 @@
 # one row — mixing done on purpose, which is legal, not forbidden.
 
 id: p2-cells-or-zones
-layout: grid
 form: comparison
 # Four root columns, read in pairs: the two sides of the comparison take 2 tracks
 # each on row 1 (the halves they have always been), row 2 is a 3+1 PARTIAL split,

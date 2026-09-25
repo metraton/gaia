@@ -153,6 +153,9 @@ palette: neutral             # optional — the deck SKIN; omitted == neutral.
                              #   neutral | rose-pine | rose-pine-moon | contrast
                              # The semantic roles are identical in every palette, so
                              # this changes how the deck LOOKS, never what it MEANS.
+palette_overrides:           # optional — the deck's own colour for a palette token
+  light: { hue-blue: "#1f4e8c" }   # per theme (light | dark); see "Palette overrides"
+  dark:  { hue-blue: "#8ab4f8" }
 tokens:                      # optional — design tokens over the defaults (see "Tokens")
   viewport: { w: 1920, h: 1080 }  # the PRESENTATION viewport, in px
 filters:                     # optional — the CORE chips, inherited by every page
@@ -166,6 +169,23 @@ pages:
     file: pages/overview.yaml   # required — path relative to data/
     omit_filters: [gate]     # optional — core chips this page does not carry
 ```
+
+**Palette overrides.** `palette_overrides` replaces a colour token of the
+chosen palette, per theme, without forking `index.html`. The keys are a closed
+set, written without the leading `--`: `bg`, `surface`, `surface2`, `zone`,
+`ink`, `body`, `muted`, `line`, `zone-line`, `crit`, `crit-soft`, `warn`,
+`warn-soft`, `olive`, `olive-soft`, `strong`, `strong-soft`, `clay`,
+`clay-soft`, and `hue-{blue,violet,gold,clay}` with their `-soft` tints. A value
+is `#rgb`, `#rrggbb`, `rgb()` or `rgba()`. The build refuses an unknown theme,
+a key outside the set (with the nearest key as a hint) and a value that is not
+a colour, then emits the overrides as CSS variables that outrank the palette
+blocks by specificity. `npm run contrast` reads them from
+`data/data.generated.js` and re-measures every pair an overridden token enters:
+those pairs gate `primary` and `accent` text even on `neutral`, whose own
+shortfalls stay report-only, because an override is a new colour and inherits
+no exemption. `nontext` gates only where the palette itself gates it. The key
+set is exactly the tokens the audit's pairs read, so no override ships
+unmeasured.
 
 **Core chips.** `filters:` here are validated like a page's chips, then
 `engine/chips.cjs` (`resolvePageFilters`, shared by the build and the census)

@@ -25,7 +25,6 @@
 # pair of framed zones against one flat zone holding the same cells.
 
 id: p7-structure
-layout: grid
 form: comparison
 # Two root columns: the folded block and the split block sit side by side on row
 # 1, and the band beneath them carries the consequence.

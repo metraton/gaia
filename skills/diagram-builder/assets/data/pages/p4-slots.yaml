@@ -25,7 +25,6 @@
 # once in the whole seed, here, so it can be judged before it is kept.
 
 id: p4-slots
-layout: grid
 form: planner
 # Two root columns: the two inventories sit side by side on row 1, and the
 # "say less" band takes a full row of its own beneath them.

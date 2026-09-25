@@ -34,7 +34,6 @@
 # Section A indexes all five, so the page states its own remit.
 
 id: overview
-layout: grid
 # Root: a 2-column canvas. Section A and Section B are span 1 (inline), so they
 # sit side by side on row 1; Sections C/D/E are span 2 (== columns), so each is a
 # full-width band on its own row beneath them.
@@ -48,7 +47,7 @@ filters:
   - key: all
     label: "All"
   - key: flow
-    label: "Example flow"
+    label: "What does a chip light?"
     steps:
       - "Chips are flows: click one to spotlight every component that declares it and dim the rest."
       - "A component joins a flow by listing the filter key in its own <code>filters</code>."

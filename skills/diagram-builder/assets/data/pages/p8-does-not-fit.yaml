@@ -20,12 +20,12 @@
 #
 # WHAT IT EXERCISES: the fixed slot stated against the four moves · a REAL
 # partial merge that IS the move it names (span 2 of 3, with the siblings that
-# create the third track) · `variant_extra`, the second colour role — the move
-# that keeps one thing one cell · `treatment: [vertical]` on a BOX, the rotated
-# label that is the single documented exemption from the word-fit floor.
+# create the third track) · a second claim carried by the KICKER instead of a
+# second colour role — the move that keeps one thing one cell ·
+# `treatment: [vertical]` on a BOX, the rotated label that is the single
+# documented exemption from the word-fit floor.
 
 id: p8-does-not-fit
-layout: grid
 form: dashboard
 # Two root columns: the rule and the moves sit side by side on row 1 (both two
 # cell-rows tall, so the row needs no stretch), and the legibility band takes a
@@ -125,14 +125,13 @@ sections:
         variant: neutral
       - id: p8-m-extra
         order: 4
-        kicker: MOVE 4
-        title: "A second role"
+        kicker: MOVE 4 · RETIRED
+        title: "A second claim"
         description:
-          - "a second claim"
-          - "on the same cell"
-        detail: "<code>variant_extra</code> is a LIST carrying extra colour roles from the same enum, for a thing that is a KIND and a STATE at once. This cell is <code>variant: bad</code> plus <code>variant_extra: [muted]</code>: the second role takes the fill (<code>.box.muted</code> sets background only, and it is later in the stylesheet), while the first keeps the frame and the mark. Splitting the cell in two to carry the second claim would halve both widths — that is the squeeze, wearing the costume of a structural fix."
+          - "one colour role,"
+          - "the other in words"
+        detail: "A thing that is a KIND and a STATE at once keeps ONE <code>variant</code>, the claim the colour is for, and says the other in the kicker, a treatment or a legend band. This cell is <code>variant: bad</code> with its second claim, RETIRED, in the kicker. Two colour roles on one frame (the deprecated <code>variant_extra</code>) put two claims in one channel; splitting the cell in two to carry the second claim would halve both widths — that is the squeeze, wearing the costume of a structural fix."
         variant: bad
-        variant_extra: [muted]
       - id: p8-m-cost
         order: 5
         kicker: COST

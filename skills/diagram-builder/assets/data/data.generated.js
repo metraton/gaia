@@ -151,7 +151,6 @@ window.__DOC__ = {
   "pages": [
     {
       "id": "p1-merged-cell",
-      "layout": "grid",
       "form": "dashboard",
       "columns": 2,
       "sections": [
@@ -429,7 +428,6 @@ window.__DOC__ = {
     },
     {
       "id": "p2-cells-or-zones",
-      "layout": "grid",
       "form": "comparison",
       "columns": 4,
       "sections": [
@@ -777,13 +775,12 @@ window.__DOC__ = {
     },
     {
       "id": "p3-sequence",
-      "layout": "grid",
       "form": "flow",
       "columns": 2,
       "filters": [
         {
           "key": "packing",
-          "label": "The packing order",
+          "label": "In what order does it pack?",
           "steps": [
             "Click the chip to light the three cells that carry an explicit <code>order</code>.",
             "That one number is the whole positional vocabulary — there is no row or column to set.",
@@ -947,7 +944,6 @@ window.__DOC__ = {
     },
     {
       "id": "p4-slots",
-      "layout": "grid",
       "form": "planner",
       "columns": 2,
       "sections": [
@@ -1138,7 +1134,6 @@ window.__DOC__ = {
     },
     {
       "id": "p5-channels",
-      "layout": "grid",
       "form": "mindmap",
       "columns": 2,
       "sections": [
@@ -1399,13 +1394,12 @@ window.__DOC__ = {
     },
     {
       "id": "p6-relations",
-      "layout": "grid",
       "form": "flow",
       "columns": 2,
       "filters": [
         {
           "key": "packing",
-          "label": "The packing order",
+          "label": "In what order does it pack?",
           "steps": [
             "Click the chip to light the three cells of the flow, in the order they are authored.",
             "There is no arrowhead: the direction is carried by <code>order</code> and by the kickers 1 · 2 · 3.",
@@ -1414,7 +1408,7 @@ window.__DOC__ = {
         },
         {
           "key": "crosscut",
-          "label": "A cross-cutting concept",
+          "label": "What crosses the sections?",
           "steps": [
             "Click the chip to light members in THREE different sections at once.",
             "A concept chip is not a path: nothing about it reads in an order, and it never leaves a section out.",
@@ -1609,7 +1603,6 @@ window.__DOC__ = {
     },
     {
       "id": "p7-structure",
-      "layout": "grid",
       "form": "comparison",
       "columns": 2,
       "sections": [
@@ -1807,7 +1800,6 @@ window.__DOC__ = {
     },
     {
       "id": "p8-does-not-fit",
-      "layout": "grid",
       "form": "dashboard",
       "columns": 2,
       "sections": [
@@ -1919,17 +1911,14 @@ window.__DOC__ = {
             {
               "id": "p8-m-extra",
               "order": 4,
-              "kicker": "MOVE 4",
-              "title": "A second role",
+              "kicker": "MOVE 4 · RETIRED",
+              "title": "A second claim",
               "description": [
-                "a second claim",
-                "on the same cell"
+                "one colour role,",
+                "the other in words"
               ],
-              "detail": "<code>variant_extra</code> is a LIST carrying extra colour roles from the same enum, for a thing that is a KIND and a STATE at once. This cell is <code>variant: bad</code> plus <code>variant_extra: [muted]</code>: the second role takes the fill (<code>.box.muted</code> sets background only, and it is later in the stylesheet), while the first keeps the frame and the mark. Splitting the cell in two to carry the second claim would halve both widths — that is the squeeze, wearing the costume of a structural fix.",
-              "variant": "bad",
-              "variant_extra": [
-                "muted"
-              ]
+              "detail": "A thing that is a KIND and a STATE at once keeps ONE <code>variant</code>, the claim the colour is for, and says the other in the kicker, a treatment or a legend band. This cell is <code>variant: bad</code> with its second claim, RETIRED, in the kicker. Two colour roles on one frame (the deprecated <code>variant_extra</code>) put two claims in one channel; splitting the cell in two to carry the second claim would halve both widths — that is the squeeze, wearing the costume of a structural fix.",
+              "variant": "bad"
             },
             {
               "id": "p8-m-cost",
@@ -2009,7 +1998,6 @@ window.__DOC__ = {
     },
     {
       "id": "p9-the-hole",
-      "layout": "grid",
       "form": "timeline",
       "columns": 2,
       "sections": [
@@ -2295,13 +2283,12 @@ window.__DOC__ = {
     },
     {
       "id": "p10-flow-phases",
-      "layout": "grid",
       "form": "flow",
       "columns": 3,
       "filters": [
         {
           "key": "path",
-          "label": "The path",
+          "label": "Which way does the flow run?",
           "steps": [
             "Click the chip to light every step of the path, across the three phase-sections at once.",
             "There is no arrow: the direction is carried by the phase <code>order</code>, the step <code>order</code>, and the kicker <code>STEP n OF 6</code>.",
@@ -2820,7 +2807,6 @@ window.__DOC__ = {
     },
     {
       "id": "overview",
-      "layout": "grid",
       "columns": 2,
       "filters": [
         {
@@ -2829,7 +2815,7 @@ window.__DOC__ = {
         },
         {
           "key": "flow",
-          "label": "Example flow",
+          "label": "What does a chip light?",
           "steps": [
             "Chips are flows: click one to spotlight every component that declares it and dim the rest.",
             "A component joins a flow by listing the filter key in its own <code>filters</code>.",

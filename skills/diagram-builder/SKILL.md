@@ -264,6 +264,9 @@ up to four peers apart. Colour earns its place when it saves the reader a word:
   whose title says what the hue means, right after the lead band.
 - **A verdict colour only for a verdict.** `good` and `bad` assert safe and
   dangerous; borrowed for grouping, they assert a verdict the content never made.
+- **A brand colour through `palette_overrides`.** `document.yaml` may replace a
+  palette's colour tokens per theme; `npm run contrast` fails the override that
+  misses WCAG AA (see `reference.md`).
 
 ## Telling it across a deck
 

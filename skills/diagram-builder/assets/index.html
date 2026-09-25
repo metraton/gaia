@@ -555,6 +555,12 @@
      rail must not each balloon into a full slice. (At the stacked tier every
      child is reset to flex:0 0 auto anyway.) */
   .sec-grid.sec-compound > .box { flex:0 0 auto; align-self:start; height:var(--cell-h); }
+  /* The LEAD band is the one box authored to span its root. In a columns:1 root
+     (a column flex) the card rule's align-self:start sizes it to its content;
+     stretch fills the cross axis instead. It must stay on the CROSS axis: a
+     flex-basis of 100% maps to height in a column and balloons the cell (G, U).
+     In a row or grid root the lead is already a .msp band, where this is inert. */
+  .sec-grid.sec-compound > .box.lead { align-self:stretch; }
   .sec-grid.sec-compound > .sep,
   .sec-grid.sec-compound > .rail,
   .sec-grid.sec-compound > .spacer { flex:0 0 auto; }

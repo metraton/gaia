@@ -269,6 +269,10 @@ function staticCensus(root = DEFAULT_ROOT) {
 
   if ((manifest.palette ?? 'neutral') !== (gen.palette ?? 'neutral'))
     problems.push(`palette: document.yaml "${manifest.palette ?? 'neutral'}" != generated "${gen.palette ?? 'neutral'}"`);
+  const authoredOverrides = Object.fromEntries(Object.entries(manifest.palette_overrides || {})
+    .map(([theme, vars]) => [theme, Object.fromEntries(Object.entries(vars || {}).map(([k, v]) => [`--${k}`, String(v).trim()]))]));
+  if (JSON.stringify(authoredOverrides) !== JSON.stringify(gen.palette_overrides || {}))
+    problems.push('palette_overrides: document.yaml differs from the generated data — the deck ships stale colours');
   problems.push(...tokenProblems(manifest, deck.pages, Array.isArray(gen.pages) ? gen.pages : [], gen));
   if ((manifest.title ?? null) !== (gen.title ?? null))
     problems.push(`title: document.yaml "${manifest.title}" != generated "${gen.title}"`);

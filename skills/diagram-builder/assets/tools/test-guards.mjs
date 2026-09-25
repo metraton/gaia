@@ -440,6 +440,22 @@ function rebuild(dir) {
     `fill 60% -> ${fillBad.ok} | fill 0.1% -> ${fillOk.ok} | txt cut -> ${txtBad.ok} | txt clean -> ${txtOk.ok}`);
 }
 
+// ── 3k. LEAD — a lead band narrower than its root fails ────────────────────
+// The measured defect: a lead in a columns:1 root drew 496px of a 1280px root
+// while FILL (zones only) stayed green. Both directions, and the tolerance edge.
+{
+  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+  const LEAD = INVARIANTS.find(inv => inv.id === 'LEAD');
+  const shrunk = LEAD.check({ leadFill: [{ id: 'lead', w: 496, inner: 1280 }] });
+  const edgeOut = LEAD.check({ leadFill: [{ id: 'lead', w: 1277, inner: 1280 }] });
+  const edgeIn = LEAD.check({ leadFill: [{ id: 'lead', w: 1278, inner: 1280 }] });
+  const full = LEAD.check({ leadFill: [{ id: 'lead', w: 1280, inner: 1280 }] });
+  const none = LEAD.check({ leadFill: [] });
+  const ok = !!LEAD && shrunk.ok === false && edgeOut.ok === false && edgeIn.ok === true && full.ok === true && none.ok === true;
+  report('LEAD: a lead band shrunk below its root fails, a full-width one passes', ok,
+    `496/1280 -> ${shrunk.ok} | 1277/1280 -> ${edgeOut.ok} | 1278/1280 -> ${edgeIn.ok} | 1280/1280 -> ${full.ok} | none -> ${none.ok}`);
+}
+
 // ── 4. control positive — the intact owned fixture must pass ───────────────
 {
   const dir = mkDeck();
@@ -1125,6 +1141,45 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
     && !out.includes('ALL PASS');
   report('CSS/mirror: an absent stylesheet is NOT ASSERTED, never a pass', ok,
     `exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+
+// ── 13. PALETTE OVERRIDES — built, emitted, audited from the generated data ──
+// A legible override passes the contrast audit and reaches the generated CSS; a
+// muted token washed out to near-white fails it even on `neutral`, which gates
+// nothing of its own; a misspelled key, a non-colour value and an unknown theme
+// are refused by the build.
+{
+  const dir = mkDeck();
+  fs.mkdirSync(path.join(dir, 'tools'));
+  for (const f of ['contrast-audit.cjs', 'static-census.cjs'])
+    fs.copyFileSync(path.join(ROOT, 'tools', f), path.join(dir, 'tools', f));
+  const audit = () => runNode([path.join(dir, 'tools', 'contrast-audit.cjs')]);
+  const build = () => runNode([path.join(dir, 'engine', 'build-data.mjs')]);
+  const misses = [];
+  writeDocument(dir, { palette_overrides: { light: { ink: '#000000' } } });
+  const goodBuild = build();
+  const gen = fs.readFileSync(path.join(dir, 'data', 'data.generated.js'), 'utf8');
+  const good = audit();
+  if (goodBuild.code !== 0 || !gen.includes('html:not(.dark)[data-palette]:root { --ink:#000000; }')
+      || good.code !== 0 || !good.out.includes('neutral · light + palette_overrides (--ink)'))
+    misses.push(`legible override (build=${goodBuild.code} audit=${good.code}) ${good.out.slice(-400)}`);
+  writeDocument(dir, { palette_overrides: { light: { muted: '#eeeeee' } } });
+  build();
+  const bad = audit();
+  if (bad.code === 0 || !bad.out.includes('neutral/light+overrides muted-on-surface'))
+    misses.push(`washed-out override (exit=${bad.code}) ${bad.out.slice(-400)}`);
+  for (const [overrides, needle] of [
+    [{ light: { 'hue-blu': '#123456' } }, 'did you mean "hue-blue"'],
+    [{ dark: { ink: 'blue' } }, 'is not a colour'],
+    [{ dusk: { ink: '#000' } }, 'unknown theme "dusk"'],
+  ]) {
+    writeDocument(dir, { palette_overrides: overrides });
+    const r = build();
+    if (r.code === 0 || !r.out.includes(needle)) misses.push(`${needle} (exit=${r.code}) ${r.out.slice(0, 300)}`);
+  }
+  report('PALETTE/overrides: a legible override ships and passes, a contrast miss fails, bad keys are refused',
+    misses.length === 0, misses.join('\n'));
   rmDeck(dir);
 }
 

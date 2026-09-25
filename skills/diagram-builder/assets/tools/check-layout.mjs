@@ -65,7 +65,12 @@
 //          with a single member does not express a relation, and since an active
 //          chip dims everything it does not name, a one-member chip switches the
 //          deck off. Supersedes K, which only closed the join.
-//   LIT    a filter declared on a leaf type the engine never lights (separator,
+//   CHIP-X a chip key carries one label on every page: a core chip (declared in
+//          document.yaml) is inherited first, and a page chip reusing a key agrees.
+//   HARMONY opt-in: every box and rail belongs to at least one chip, the lead
+//          band exempt. The lead's own shape is refused at build (checkLead);
+//          that it is DRAWN full-width is render invariant LEAD in validate.
+//   LIT   a filter declared on a leaf type the engine never lights (separator,
 //          spacer): the CHIP join closes and the render cannot show it.
 //   RAILT  a thin rail's title past its two-line ceiling: the rail row is `auto`
 //          and `.rail-title` has no clamp, so a third line GROWS the row.

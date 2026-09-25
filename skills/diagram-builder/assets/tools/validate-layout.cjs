@@ -179,6 +179,10 @@
 //                            `text_fit: advisory`: a root span fills its declared tracks,
 //                            an N-slice compound row renders as N slices on one
 //                            line, and no text block is clamped in the browser.
+//   LEAD  lead band spans    — a `lead: true` box is drawn at its root grid's inner
+//                            width (2px tolerance) on every page: FILL measures
+//                            root zones only, so a lead shrunk to its content in a
+//                            columns:1 root passed every other row.
 // ─────────────────────────────────────────────────────────────────────────
 // PLAYWRIGHT IS RESOLVED LAZILY, AND ITS ABSENCE IS NOT A FAILURE.
 // This used to be a top-level `require('playwright')`, which made the optional
@@ -268,6 +272,7 @@ const SPAN_TOL_PCT = 15;  // % a compound section child's rendered width may
                           // deviate from its AUTHORED-span share (Q). Absorbs the
                           // min-content floor (~3% on the reference 2:1 split); a
                           // regression to equal shares is 25%+ off and so fails.
+const LEAD_TOL = 2;       // px sub-pixel slack between a lead band and its root's inner width
 const SPAN_FILL_TOL_PCT = 3; // % a ROOT section's rendered width may deviate from
                           // its declared share of the PLANE (FILL). Tighter than
                           // SPAN_TOL_PCT because this is not a proportion between
@@ -628,6 +633,13 @@ const INVARIANTS = [
         ? bad.map(it => `${it.id}:span${it.span}/${it.cols} rendered ${it.w}px vs ${it.expected}px of the plane ` +
             `(${it.offPct}% off, tol ${SPAN_FILL_TOL_PCT}% — the declared span is not reaching the canvas)`).join(', ')
         : items.map(it => `${it.id}:s${it.span}/${it.cols}@${it.w}px(=${it.expected})`).join(' ') }; } },
+  { id: 'LEAD', name: 'a lead band spans its root', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
+    when: () => true, superseded: null,
+    check: (m) => { const items = m.leadFill || [];
+      const bad = items.filter(it => it.inner - it.w > LEAD_TOL);
+      return { ok: bad.length === 0, detail: bad.length
+        ? bad.map(it => `${it.id}: lead drawn ${it.w}px inside a ${it.inner}px root (tol ${LEAD_TOL}px — the band shrank to its content)`).join(', ')
+        : items.length ? items.map(it => `${it.id}@${it.w}px/${it.inner}px`).join(' ') : 'no lead band on this page' }; } },
   { id: 'SLICE', name: 'an N-slice row renders as N slices on one line', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: (c) => ratcheted(c) && c.w > BP.two, superseded: null,
     check: (m) => { const rows = (m.compoundRows || []).filter(r => !r.column);
@@ -1338,6 +1350,20 @@ function measure() {
     }
   }
 
+  // LEAD BANDS (invariant LEAD). FILL skips a leaf root child, so a lead box that
+  // shrank to its content inside a compound root passed every row; the lead is
+  // compared to the root grid's inner width, the band it was authored to span.
+  const leadFill = [];
+  if (rootGrid) {
+    const cs = getComputedStyle(rootGrid);
+    const inner = rootGrid.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    for (const kid of rootGrid.children) {
+      if (!kid.classList.contains('lead')) continue;
+      leadFill.push({ id: kid.getAttribute('data-k') || '?', w: Math.round(kid.getBoundingClientRect().width),
+        inner: Math.round(inner) });
+    }
+  }
+
   // SLICE ROWS (invariant SLICE). A compound row authored as N slices must
   // render as N slices on ONE line. Wrapping is a legitimate collapse at a
   // narrow tier, so the check is tier-gated; at a wide tier a wrap means the row
@@ -1465,7 +1491,7 @@ function measure() {
 
   return { singleWidths, heights, clipped, maxRowCount, overflowX,
     leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, wordFit,
-    halfSlots, rowTracks, filterRefs, census, spanFill, compoundRows, clamps, nBoxes: boxes.length,
+    halfSlots, rowTracks, filterRefs, census, spanFill, leadFill, compoundRows, clamps, nBoxes: boxes.length,
     canvasScrollHeight: canvas.scrollHeight, canvasClientWidth: cw };
 }
 

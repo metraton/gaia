@@ -21,7 +21,6 @@
 # is already the strong divider.
 
 id: p10-flow-phases
-layout: grid
 form: flow
 # Three root columns for three phases. Every root child is a section, so the
 # root is a compound row of zones: `span: 1` on each phase is an equal weight,
@@ -31,7 +30,7 @@ columns: 3
 
 filters:
   - key: path
-    label: "The path"
+    label: "Which way does the flow run?"
     steps:
       - "Click the chip to light every step of the path, across the three phase-sections at once."
       - "There is no arrow: the direction is carried by the phase <code>order</code>, the step <code>order</code>, and the kicker <code>STEP n OF 6</code>."

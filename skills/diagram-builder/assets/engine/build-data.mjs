@@ -57,7 +57,7 @@ function readYaml(path) {
 //     and in order (engine/chips.cjs); a page's manifest entry drops one only by
 //     naming it in `omit_filters`, so the deck's chip coverage reads in one file.
 //     `harmony: true` opts the deck into the static gate's HARMONY check.
-const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'tokens', 'filters', 'harmony', 'pages']);
+const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'palette_overrides', 'tokens', 'filters', 'harmony', 'pages']);
 const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file', 'omit_filters']);
 const PAGE_FIELDS = new Set([
   'id', 'layout', 'columns', 'filters', 'sections', 'form', 'text_fit',
@@ -577,6 +577,57 @@ if (!PALETTES.has(palette)) {
     `\n  valid palettes: ${[...PALETTES].join(', ')}`);
 }
 
+// PALETTE OVERRIDES — a deck's own colour for a palette token, per theme. The key
+// set is exactly the tokens tools/contrast-audit.cjs pairs read (the audit refuses
+// an override it has no pair for), so every override a deck ships is measured
+// against WCAG; the value syntax is the one that audit parses.
+const PALETTE_OVERRIDE_KEYS = new Set([
+  'bg', 'surface', 'surface2', 'zone', 'ink', 'body', 'muted', 'line', 'zone-line',
+  'crit', 'crit-soft', 'warn', 'warn-soft', 'olive', 'olive-soft', 'strong', 'strong-soft',
+  'clay', 'clay-soft',
+  ...['blue', 'violet', 'gold', 'clay'].flatMap(h => [`hue-${h}`, `hue-${h}-soft`]),
+]);
+const COLOUR_VALUE = /^(#[0-9a-f]{3}|#[0-9a-f]{6}|rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(,\s*[\d.]+\s*)?\))$/i;
+function readPaletteOverrides(raw) {
+  if (raw === undefined) return undefined;
+  const where = '[strict-schema] document.yaml: `palette_overrides`';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error(`${where} is a map of \`light\` and/or \`dark\`, got ${JSON.stringify(raw)}`);
+  const out = {};
+  for (const [theme, tokensOf] of Object.entries(raw)) {
+    if (theme !== 'light' && theme !== 'dark')
+      throw new Error(`${where}: unknown theme "${theme}" — write \`light\` or \`dark\``);
+    if (!tokensOf || typeof tokensOf !== 'object' || Array.isArray(tokensOf))
+      throw new Error(`${where}.${theme} is a map of token: colour, got ${JSON.stringify(tokensOf)}`);
+    out[theme] = {};
+    for (const [key, value] of Object.entries(tokensOf)) {
+      if (!PALETTE_OVERRIDE_KEYS.has(key)) {
+        const hint = suggest(String(key), PALETTE_OVERRIDE_KEYS);
+        throw new Error(`${where}.${theme}: "${key}" is not an overridable colour token` +
+          (hint ? ` — did you mean "${hint}"?` : '') + `\n  overridable: ${[...PALETTE_OVERRIDE_KEYS].join(', ')}`);
+      }
+      if (typeof value !== 'string' || !COLOUR_VALUE.test(value.trim()))
+        throw new Error(`${where}.${theme}.${key}: "${value}" is not a colour — write #rgb, #rrggbb, rgb() or rgba()`);
+      out[theme][`--${key}`] = value.trim();
+    }
+  }
+  return out;
+}
+const paletteOverrides = readPaletteOverrides(manifest.palette_overrides);
+
+// The override rules outrank the palette blocks in index.html by specificity
+// (0,3,1 against 0,2,1), not by source order: the generated script inserts them at
+// load, and where it lands in <head> relative to the inline <style> is not fixed.
+function paletteOverrideCss(overrides) {
+  const rule = (sel, vars) => `${sel} { ${Object.entries(vars).map(([k, v]) => `${k}:${v};`).join(' ')} }`;
+  const rules = [];
+  if (overrides?.light && Object.keys(overrides.light).length)
+    rules.push(rule('html:not(.dark)[data-palette]:root', overrides.light));
+  if (overrides?.dark && Object.keys(overrides.dark).length)
+    rules.push(rule('html.dark[data-palette]:root', overrides.dark));
+  return rules.join('\n');
+}
+
 const pages = manifest.pages
   .filter(p => p.visible !== false)
   .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
@@ -615,6 +666,7 @@ const doc = {
   // engine.js's `if (barVer && doc.version)` guard skips rendering cleanly.
   version: manifest.version,
   palette,
+  palette_overrides: paletteOverrides,
   // The resolved tokens are what both gates read; `css_vars` is the projection
   // engine.js applies to :root. Per-node overrides ride on the node itself.
   tokens,
@@ -675,13 +727,21 @@ writeFileSync(join(DATA_DIR, 'breakpoints.generated.css'), breakpointsCss(tokens
 // loaded by a <script src> in <head>-order ahead of engine.js and before any
 // content paints, so setting `data-palette` here avoids the flash of neutral that
 // waiting for engine.js's mount would cause. Guarded so the file stays harmless if
-// it is ever loaded outside a browser.
+// it is ever loaded outside a browser. The palette overrides ride the same early
+// path, as one inserted <style>, for the same reason.
+const overrideCss = paletteOverrideCss(paletteOverrides);
 const out = `// GENERATED FILE — do not edit by hand.
 // Produced by build-data.mjs from data/document.yaml + data/pages/*.yaml.
 window.__DOC__ = ${JSON.stringify(doc, null, 2)};
 if (typeof document !== 'undefined' && document.documentElement)
   document.documentElement.setAttribute('data-palette', window.__DOC__.palette || 'neutral');
-`;
+${overrideCss ? `if (typeof document !== 'undefined' && document.head) {
+  const s = document.createElement('style');
+  s.setAttribute('data-palette-overrides', '');
+  s.textContent = ${JSON.stringify(overrideCss)};
+  document.head.appendChild(s);
+}
+` : ''}`;
 
 writeFileSync(join(DATA_DIR, 'data.generated.js'), out, 'utf8');
 console.log(`Wrote data/data.generated.js + data/breakpoints.generated.css — palette "${palette}", ${pages.length} visible page(s): ${pages.map(p => p.id).join(', ')}`);
