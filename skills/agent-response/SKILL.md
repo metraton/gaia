@@ -18,7 +18,9 @@ WHOLE row (expensive) and nothing (free), and free wins every time; the narrow `
 makes reading the row cheaper than skipping it. `contract list --state DISPATCHED` lists turns still
 open; `contract list --cut` lists every turn that did not close cleanly, naming the specialist and the
 lane; `contract view --harness-id <agentId>`, with the id the dispatch returned, gives that turn's own
-partial evidence.
+partial evidence. Before re-dispatching or judging where a plan's spend went, `usage show --plan <id>`
+gives its tokens per session and per agent, split into bound, unbound and main (main is an upper bound);
+`brief history <slug>` shows how the brief's ACs, decisions and plan versions changed.
 
 ## Reading order
 
