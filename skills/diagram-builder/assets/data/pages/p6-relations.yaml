@@ -38,8 +38,9 @@ filters:
   # active page — so reusing it makes no cross-page mess; what it does is
   # project one page onto the other: the reader who lit `packing` on p3 finds the
   # same relation named here, on the page that explains why it is directional.
+  # One relation, so one label: CHIP-X fails a key whose label differs by page.
   - key: packing
-    label: "A directional flow"
+    label: "The packing order"
     steps:
       - "Click the chip to light the three cells of the flow, in the order they are authored."
       - "There is no arrowhead: the direction is carried by <code>order</code> and by the kickers 1 · 2 · 3."

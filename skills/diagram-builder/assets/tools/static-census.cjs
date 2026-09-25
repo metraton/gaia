@@ -36,6 +36,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 const path = require('path');
 const fs = require('fs');
+const { resolvePageFilters } = require('../engine/chips.cjs');
 
 // The deck root: tools/ lives directly under it.
 const DEFAULT_ROOT = path.join(__dirname, '..');
@@ -190,6 +191,11 @@ function loadAuthoredDeck(root = DEFAULT_ROOT) {
     if (!page || typeof page !== 'object') {
       problems.push(`page "${entry.id}": ${entry.file} did not parse to a mapping`); continue;
     }
+    // The page as BUILT: the deck's core chips first, as the build writes them.
+    try {
+      const filters = resolvePageFilters(manifest.filters, entry.omit_filters, page.filters, entry.id);
+      if (filters.length || page.filters !== undefined) page.filters = filters;
+    } catch (e) { problems.push(e.message); }
     pages.push({ entry, page });
   }
   return { ok: problems.length === 0, problems, manifest, entries, pages, dataDir };

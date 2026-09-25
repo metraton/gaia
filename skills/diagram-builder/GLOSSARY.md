@@ -37,11 +37,15 @@ and WCAG QA, not layout gates.
 
 | Term | Where | Meaning |
 |------|-------|---------|
-| `document` | top level (`data/document.yaml`) | The whole deck: `title`, `subtitle`, `version`, `palette`, `pages` (`MANIFEST_FIELDS`). There is **no** document-level `filters` — chips are page-scoped. Each `pages[]` entry carries `id`/`name`/`order`/`visible`/`file` (`MANIFEST_PAGE_FIELDS`). |
-| `page` | `document.pages[]` | One act/slide. It IS the root section: owns `columns` (root grid width), `filters`, `sections` (the root's children), and `form` (the layout form the guardrail scopes its invariants by) — plus the manifest-owned `name`/`order`/`visible` (`PAGE_FIELDS`). `layout: grid` is the only value the engine renders (`LAYOUTS`). |
-| `section` | any node with `children` | A grid zone: `id`, `title`, `subtitle`, `variant`, `treatment`, `order`, `span`, `rowspan`, `columns`, and `children` (`SECTION_FIELDS`). Its children auto-flow across `columns` and wrap down. A child may itself be a section — this is how nesting happens (a grid of grids). |
-| `component` | any leaf (no `children`) | The unit inside a grid cell. Chooses a `type`: `box` (default) · `separator` · `rail` · `spacer` (`COMPONENT_TYPES`). Whitelist (`COMPONENT_FIELDS`): `id`, `type`, `variant`, `variant_extra`, `treatment`, `kicker`, `title`, `description`, `detail`, `note`, `order`, `span`, `rowspan`, `filters`, `style`, `text`. A `spacer` is narrower: `SPACER_FIELDS` admits only `id`, `type`, `order`, `span`, `rowspan`. |
-| `filter` | `page.filters[]` | A highlight chip that expresses a **RELATION**: `key`, `label`, `steps` (`FILTER_FIELDS`). It **groups** every component that declares its `key` — components that share either a directional **FLOW** (the substitute for an arrow, since a grid cannot draw edges) OR a cross-cutting **CONCEPT / state / theme**. Clicking the chip spotlights that relation's membership across the whole canvas. `validateFilters` guarantees the SHAPE at build time; the chip↔component join (both directions) plus ARITY is asserted by **CHIP** in `npm run model` — the render-time invariant **K** that only closed the join is retired. |
+| `document` | top level (`data/document.yaml`) | The whole deck: `title`, `subtitle`, `version`, `palette`, `tokens`, `filters` (the core chips), `harmony`, `pages` (`MANIFEST_FIELDS`). Each `pages[]` entry carries `id`/`name`/`order`/`visible`/`file`, and `omit_filters` (`MANIFEST_PAGE_FIELDS`). |
+| `page` | `document.pages[]` | One act/slide. It IS the root section: owns `columns` (root grid width), `filters` (its page chips), `sections` (the root's children), `form` (the layout form the guardrail scopes its invariants by) and `text_fit` — plus the manifest-owned `name`/`order`/`visible` (`PAGE_FIELDS`). `layout` is **deprecated**: `grid` is its only value, so it selects nothing, and the build warns where it appears. |
+| `section` | any node with `children` | A grid zone: `id`, `title`, `subtitle`, `variant`, `treatment`, `order`, `span`, `rowspan`, `columns`, `tokens`, and `children` (`SECTION_FIELDS`). Its children auto-flow across `columns` and wrap down. A child may itself be a section — this is how nesting happens (a grid of grids). |
+| `component` | any leaf (no `children`) | The unit inside a grid cell. Chooses a `type`: `box` (default) · `separator` · `rail` · `spacer` (`COMPONENT_TYPES`). Whitelist (`COMPONENT_FIELDS`): `id`, `type`, `variant`, `variant_extra` (deprecated), `treatment`, `kicker`, `title`, `description`, `detail`, `note`, `order`, `span`, `rowspan`, `filters`, `style`, `text`, `copy`, `tokens`, `lead`. A `rail` has its own whitelist (`RAIL_FIELDS`); a `spacer` admits only `id`, `type`, `order`, `span`, `rowspan` (`SPACER_FIELDS`). |
+| `filter` | `document.filters[]` · `page.filters[]` | A highlight chip that expresses a **RELATION**: `key`, `label`, `steps` (`FILTER_FIELDS`). It **groups** every box and rail that declares its `key` — a directional **FLOW** (the substitute for an arrow) OR a cross-cutting **CONCEPT / state / theme**. `validateFilters` guarantees the SHAPE at build time; the join in both directions plus ARITY is **CHIP** in `npm run model`, which retired the render-time **K**. |
+| core chip | `document.filters[]` | A chip every page inherits, first and in declared order, with one label (`engine/chips.cjs`). A page drops one only through its manifest entry's `omit_filters`; redeclaring its key with another label or steps is a build error. |
+| page chip | `page.filters[]` | A chip local to one page, listed after the core chips. **CHIP-X** fails a key that carries two labels across pages. |
+| `harmony` | `document.harmony` | Opt-in switch (`true`/`false`, default off): **HARMONY** in `npm run model` fails any box or rail in no chip, the lead band exempt. |
+| lead band | `lead: true` on a box | The page's claim: the first root child, spanning every root column, title = the claim, kicker = its place in the arc. The build refuses a nested, later, narrower or non-box lead. |
 
 **The root/canvas is itself the invisible base section.** `page.columns` is the
 root section's column count and `page.sections` are its children — the engine
@@ -53,9 +57,9 @@ frame of its own.
 
 | `type` | Renders | Props |
 |--------|---------|-------|
-| `box` (default) | The standard clickable card | `kicker`, `title`, `description`, `detail`, `note`, `variant`, `variant_extra`, `treatment`, `span`, `rowspan`, `filters`. Omit `type` and you get a box. |
+| `box` (default) | The standard clickable card | `kicker`, `title`, `description`, `detail`, `note`, `variant` (a semantic role or a hue), `treatment`, `span`, `rowspan`, `filters`, `copy` (a copy-to-clipboard button: `true` copies the title, a string copies that string), `tokens`, `lead`. Omit `type` and you get a box. |
 | `separator` | A thin divider LINE (not a card) | `treatment: [vertical]` for a vertical rule (horizontal is the default), `style` (`solid` default · `dotted`), optional `text` (an inline centered label). Honors `span`/`rowspan`. Not clickable. |
-| `rail` | A title-only swimlane LABEL banner | `title`, `treatment: [vertical]` (rotates the text). Honors `span`/`rowspan` (a vertical rail with `rowspan` labels a lane down several rows). Not clickable. |
+| `rail` | A title-only LABEL banner: a lane label, or one word of a tree | `title`; `treatment: [vertical]` (rotates the text) or `[centered]`; `variant`, one of the four hues only; `indent` 0..3 (the frame moves onto the title, one step per tree level, while the cell fills its track); `filters` (a chip lights the rail). Honors `span`/`rowspan`. A horizontal rail without `rowspan` is a thin row (33..48px). Not clickable. |
 | `spacer` | Nothing at all — the **declared hole**: it occupies its cell and draws no frame, no ink, no text (`buildSpacer` → `.spacer`) | `span`/`rowspan` only (plus `id`/`type`/`order`) — `SPACER_FIELDS`. Every other field is refused BY NAME by `checkSpacer`, ahead of the colour/treatment enums: a payload key means the cell was meant to CARRY something, and then it is a box. It is not an empty card. Not clickable. |
 
 > The former `orientation: horizontal|vertical` field is **gone**: it was the same
@@ -116,7 +120,8 @@ never ran · `HOLE` interior holes by coordinate · `TRACK` dead track · `ROW`
 orphan row · `LANE` unequal rail-led swimlanes (hard) + unequal parallel stacks
 (advisory) · `BAND` band placement / span never exceeds its columns · `TIER`
 tracks-per-tier table + cascade monotonicity · `CHIP` filter integrity both
-directions + arity · `ORDER` duplicate effective `order` among siblings · `CSS`
+directions + arity · `CHIP-X` one label per chip key across pages · `HARMONY`
+(opt-in) every box and rail in a chip, the lead band exempt · `ORDER` duplicate effective `order` among siblings · `CSS`
 the mirrored breakpoints (640/1000/1440) match the `@container stage` queries in
 `index.html` · `CENSUS` (pre-flight) `data/*.yaml` vs `data/data.generated.js`,
 the stale-build detector shared with `validate` via `tools/static-census.cjs` —
@@ -177,7 +182,7 @@ build error that names the axis it belongs to, and vice versa.
 > expected, not a bug: author the ROLE, read the TOKEN only as CSS evidence.
 
 **Component** (`COMPONENT_VARIANTS`: `neutral` · `good` · `warn` · `bad` ·
-`accent` · `muted`):
+`accent` · `muted`, and the four hues `blue` · `violet` · `gold` · `clay`):
 
 | value | role | CSS evidence (`index.html`) |
 |-------|------|------------------------------|
@@ -187,6 +192,7 @@ build error that names the axis it belongs to, and vice versa.
 | `good` | olive/green — hardened / correct | `background:var(--olive-soft); border-color:var(--olive)` |
 | `accent` | marked green 2px border — a highlighted new component | `background:var(--strong-soft); border-color:var(--strong); border-width:2px` |
 | `muted` | secondary fill — background / secondary | `background:var(--surface2)` |
+| `blue` · `violet` · `gold` · `clay` | the four CATEGORICAL hues: no risk, no state, only "these are peers of one kind". Also the only rail variants. The page says what each means, and the deck keeps that meaning on every page (SKILL, "Colour that earns its place") | `.box.<hue>`, `.rail.<hue>`: `--hue-<name>` and `--hue-<name>-soft` |
 
 **Section** (`SECTION_VARIANTS`: `neutral` · `good` · `bad` — only three; a
 section has no `warn`/`accent`/`muted`):
@@ -197,12 +203,11 @@ section has no `warn`/`accent`/`muted`):
 | `bad` | red fill/border — high-risk zone | `.zone.bad { background:var(--crit-soft); border-color:var(--crit) }` |
 | `good` | green fill/border — hardened zone | `.zone.good { background:var(--olive-soft); border-color:var(--olive) }` |
 
-`variant_extra` is a **list** carrying an optional SECOND colour role, for the one
-case a single value cannot express: a box that is both a *kind* and a *state*
-(`variant: bad` + `variant_extra: [muted]` — a secondary element at risk). Each
-entry is validated by `checkVariantValue` against the SAME colour enum as
-`variant`, which is what closes the old hole: a structural value can no longer
-hide in it.
+`variant_extra` is **deprecated**. It carried a SECOND colour role, but two roles
+on one frame compete for one fill and one border, where principle 5 wants one
+claim per channel. It still builds, with a warning naming every use, so old
+decks keep rendering; say the second claim in the kicker, a treatment or a
+legend band instead.
 
 ### `treatment` — structural modifiers (a list)
 
@@ -216,13 +221,15 @@ hide in it.
 | `half` | DIVIDES a slot: a **pair** of consecutive halves stacks inside ONE full-height cell (never shrinks a cell). **Title-only**, and mutually exclusive with `rowspan` (`checkTreatmentCombinations`); runs of halves must be EVEN and a pair must agree on `span` (`checkHalfPairing`) | `.half-slot` flex column; `.box.half` 1-line title |
 | `vertical` | runs the text down the block axis (a rotated lane label). Also title-only | `writing-mode:vertical-rl; transform:rotate(180deg)` |
 
-**Section** (`SECTION_TREATMENTS` — exactly two; `half` on a section is rejected
+**Section** (`SECTION_TREATMENTS` — exactly four; `half` on a section is rejected
 by `checkTreatment`, which names the axis and the owning node kind):
 
 | value | what it does | CSS evidence |
 |-------|--------------|--------------|
 | `envelope` | no fill, dashed border — a borderless container frame, useful as the wrapper around nested sections | `background:none; border-color:var(--line); border-style:dashed` |
 | `plain` | no frame at all — a pure structural wrapper that stacks its children with nothing drawn around them | `background:none; border:none; padding:0; min-height:0` |
+| `middle` | centres the grid vertically in the height its compound row stretches the section to, so a short section beside a tall one leaves no gap below | `.zone.middle` |
+| `compact` | shortens the rows of ONE leaf grid (`tokens.row.compact_h`) for a rowspan staircase; its boxes lose the description clamp. Children must all be components; **U** accepts the short row only here, and **INK** measures the whole description against it | `.zone.compact` |
 
 > `envelope` and `plain` are **style values**, not layout modes. Any section can
 > nest other sections regardless of them. Author every value in **English**.

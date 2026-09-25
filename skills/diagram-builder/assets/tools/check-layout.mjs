@@ -1835,6 +1835,42 @@ function main() {
   const pages = [];
   for (const { page } of deck.pages) pages.push(checkPage(page));
 
+  // CHIP-X — a key means one thing on every page (principle 6: the same key on
+  // two pages projects one onto the other), so it carries one label everywhere.
+  // Core chips hold by construction; this catches two page chips sharing a key.
+  const labelsByKey = new Map();
+  for (const { page } of deck.pages)
+    for (const f of page.filters || []) {
+      if (!f || typeof f.key !== 'string' || f.key === RESET_CHIP) continue;
+      if (!labelsByKey.has(f.key)) labelsByKey.set(f.key, new Map());
+      labelsByKey.get(f.key).set(f.label, [...(labelsByKey.get(f.key).get(f.label) || []), page.id ?? '(no id)']);
+    }
+  for (const [key, labels] of labelsByKey) {
+    asserted++;
+    if (labels.size > 1)
+      fail('CHIP-X', `chip "${key}"`, `carries ${labels.size} labels across pages: ` +
+        [...labels].map(([l, ids]) => `"${l}" on [${ids.join(', ')}]`).join(' vs ') +
+        '. A key the reader meets on two pages must mean one thing: give it one label, or split it into two keys.');
+  }
+
+  // HARMONY — opt-in (`harmony: true` in document.yaml): every box and rail
+  // belongs to at least one chip, so a chip-driven deck leaves nothing the
+  // reader cannot spotlight. The lead band states the page and is exempt.
+  const harmony = deck.manifest.harmony === true;
+  if (harmony)
+    for (const { page } of deck.pages)
+      for (const leaf of leavesOf(page)) {
+        const t = leaf.type ?? 'box';
+        if ((t !== 'box' && t !== 'rail') || leaf.lead === true) continue;
+        asserted++;
+        if (!(Array.isArray(leaf.filters) && leaf.filters.length))
+          fail('HARMONY', `page "${page.id ?? '(no id)'}" ${t} "${leaf.id ?? '(no id)'}"`,
+            'belongs to no chip, and the deck declares `harmony: true`. Add it to the chip it serves, ' +
+            'or, if it states the page, make it the `lead` band.');
+      }
+  const harmonyHeadline = () => harmony ? 'every box and rail belongs to a chip (lead bands exempt)'
+    : 'off — document.yaml does not declare `harmony: true`';
+
   // HEIGHT — each page's predicted full height at the presentation viewport.
   // ADVISORY: a deck may mean to scroll; the finding says by how much it does.
   const heights = [];
@@ -1900,6 +1936,8 @@ function main() {
     ['BAND', 'band placement and declared span within the grid'],
     ['TIER', 'collapse cascade is monotone across the container tiers'],
     ['CHIP', 'filter referential integrity (both directions) + chip arity'],
+    ['CHIP-X', 'a chip key carries one label on every page (core chips are inherited, page chips must agree)'],
+    ['HARMONY', 'opt-in: every box and rail belongs to at least one chip, the lead band exempt', harmonyHeadline],
     ['LIT', 'no filter on a leaf type the engine cannot light (separator/spacer ' +
       'carry no data-filters, so their chip membership passes the join and never renders)'],
     ['RAILT', 'rail titles within the two-line ceiling (a thin rail row is `auto` and ' +

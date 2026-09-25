@@ -128,6 +128,7 @@
       const ev = COMPONENT_VARIANT[extra] ?? '';
       if (ev && !parts.includes(ev)) parts.push(ev);
     }
+    if (comp.lead === true) parts.push('lead');
     for (const t of treatmentsOf(comp)) {
       const tv = COMPONENT_TREATMENT[t] ?? '';
       if (tv && !parts.includes(tv)) parts.push(tv);

@@ -91,6 +91,7 @@ function mkDeck() {
   fs.mkdirSync(path.join(dir, 'engine'));
   fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
   fs.copyFileSync(TOKENS_MODULE, path.join(dir, 'engine', 'tokens.mjs'));
+  fs.copyFileSync(path.join(ROOT, 'engine', 'chips.cjs'), path.join(dir, 'engine', 'chips.cjs'));
   // The real stylesheet, so the CSS MIRROR is actually asserted in every case.
   // Without it every fixture here ran with the mirror unread — the guard quiet in
   // the whole suite whose reason for existing is that a quiet guard is the silent
@@ -867,6 +868,137 @@ const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
     && pageHeightAdvisory(small.totalPx, vp) === null;
   report('HEIGHT: a 12-row page is predicted past 1080, a 2-row page fits', ok,
     `tall=${Math.round(tall.totalPx)} small=${Math.round(small.totalPx)} note=${note}`);
+}
+
+// ── 12. CORE CHIPS, CHIP-X, HARMONY, LEAD — the deck-level chip rules ──────
+// A second page lets a chip cross pages. Its two boxes close a 2-track row, and
+// its `flow` chip matches the fixture's label unless a case changes it.
+const CORE = { key: 'core', label: 'Is it core?' };
+function withSecondPage(dir, { entry = {}, flowLabel = 'Fixture flow', core = true } = {}) {
+  fs.writeFileSync(path.join(dir, 'data', 'pages', 'second.yaml'), yaml.dump({
+    id: 'second', columns: 1, filters: [{ key: 'flow', label: flowLabel }],
+    sections: [{ id: 'second-s', title: 'Second page', columns: 2, children: [
+      { id: 'second-a', title: 'A', filters: ['flow'] }, { id: 'second-b', title: 'B', filters: ['flow'] }] }],
+  }), 'utf8');
+  writeDocument(dir, { ...(core ? { filters: [CORE] } : {}), pages: [...FIXTURE_DOCUMENT.pages,
+    { id: 'second', name: 'Second', order: 2, visible: true, file: 'pages/second.yaml', ...entry }] });
+}
+function chipCore(doc) { for (const id of ['item-a', 'item-b']) findNode(doc, id).filters = ['core']; }
+const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs')).loadGenerated(dir).doc.pages
+  .map(p => `${p.id}:${(p.filters || []).map(f => f.key).join('+')}`).join(' ');
+{
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  chipCore(doc);
+  saveOverview(p, doc);
+  withSecondPage(dir, { entry: { omit_filters: ['core'] } });
+  const built = runNode([path.join(dir, 'engine', 'build-data.mjs')]);
+  const keys = built.code === 0 ? bundleKeys(dir) : '';
+  const quiet = runNode([CHECK, dir]);
+  const ok = built.code === 0 && keys === 'overview:core+flow second:flow'
+    && quiet.code === 0 && quiet.out.includes('ALL PASS');
+  report('CORE/inherit: core chips come first on every page, an omitted one is gone, the deck passes', ok,
+    `build exit=${built.code} keys="${keys}" check exit=${quiet.code}\n${built.out}\n${quiet.out.slice(-1500)}`);
+  rmDeck(dir);
+}
+{
+  const dir = mkDeck();
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  const { p, doc } = loadOverview(dir);
+  chipCore(doc);
+  const misses = [];
+  const expect = (needle, setup) => { setup(); const r = runNode([buildInDir]);
+    if (!(r.code !== 0 && r.out.includes(needle))) misses.push(`${needle} (exit=${r.code}) ${r.out.slice(0, 300)}`); };
+  expect('redeclares the core chip with a different label', () => {
+    saveOverview(p, { ...doc, filters: [...doc.filters, { key: 'core', label: 'Core?' }] });
+    withSecondPage(dir, { entry: { omit_filters: ['core'] } }); });
+  expect('which is not a core chip', () => {
+    saveOverview(p, doc); withSecondPage(dir, { entry: { omit_filters: ['flow'] } }); });
+  saveOverview(p, { ...doc, filters: [...doc.filters, { ...CORE }] });
+  withSecondPage(dir, { entry: { omit_filters: ['core'] } });
+  const same = runNode([buildInDir]);
+  if (same.code !== 0) misses.push(`an identical redeclaration must build (exit=${same.code}) ${same.out.slice(0, 300)}`);
+  saveOverview(p, doc);
+  withSecondPage(dir);
+  rebuild(dir);
+  const unomitted = runNode([CHECK, dir]);
+  if (!(unomitted.code !== 0 && unomitted.out.includes('page "second" chip "core"')))
+    misses.push(`an inherited chip with no member must fail CHIP (exit=${unomitted.code})`);
+  report('CORE/refuse: a changed redeclaration and a non-core omission are refused; an unused core chip fails CHIP',
+    misses.length === 0, misses.join('\n'));
+  rmDeck(dir);
+}
+{
+  const dir = mkDeck();
+  withSecondPage(dir, { flowLabel: 'Another flow', core: false });
+  rebuild(dir);
+  const split = runNode([CHECK, dir]);
+  withSecondPage(dir, { core: false });
+  rebuild(dir);
+  const agreed = runNode([CHECK, dir]);
+  const ok = split.code !== 0 && split.out.includes('[FAIL] chip "flow": carries 2 labels across pages')
+    && agreed.code === 0 && !agreed.out.includes('[FAIL] chip "flow"');
+  report('CHIP-X: one key with two labels across pages fails, one label passes', ok,
+    `split exit=${split.code} agreed exit=${agreed.code}\n${split.out.slice(-1200)}`);
+  rmDeck(dir);
+}
+{
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  writeDocument(dir, { harmony: true });
+  rebuild(dir);
+  const loose = runNode([CHECK, dir]);
+  for (const id of ['item-a', 'item-b', 'item-c', 'item-2']) findNode(doc, id).filters = ['flow'];
+  doc.sections.unshift({ id: 'lead', lead: true, order: 0, title: 'The fixture claim' });
+  saveOverview(p, doc);
+  rebuild(dir);
+  const tight = runNode([CHECK, dir]);
+  writeDocument(dir, { harmony: 'yes' });
+  const badSwitch = runNode([path.join(dir, 'engine', 'build-data.mjs')]);
+  const ok = loose.code !== 0 && loose.out.includes('[FAIL] page "overview" box "item-a": belongs to no chip')
+    && tight.code === 0 && !tight.out.includes('box "lead"')
+    && badSwitch.code !== 0 && badSwitch.out.includes('`harmony` is true or false');
+  report('HARMONY: an unchipped box fails when the deck opts in, the lead band is exempt, the switch is closed', ok,
+    `loose exit=${loose.code} tight exit=${tight.code} bad exit=${badSwitch.code}\n${tight.out.slice(-1500)}`);
+  rmDeck(dir);
+}
+{
+  const dir = mkDeck();
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  const { p, doc } = loadOverview(dir);
+  const lead = { id: 'lead', lead: true, title: 'The fixture claim' };
+  const misses = [];
+  const probe = (sections, columns, needle) => { saveOverview(p, { ...doc, columns, sections });
+    const r = runNode([buildInDir]);
+    const hit = needle ? r.code !== 0 && r.out.includes(needle) : r.code === 0;
+    if (!hit) misses.push(`${needle || 'valid lead'} (exit=${r.code}) ${r.out.slice(0, 300)}`); };
+  const se = doc.sections[0];
+  probe([{ ...lead, order: 0 }, se], 1, null);
+  probe([{ ...se, order: 1 }, { ...lead, order: 2 }], 1, "the page's FIRST band");
+  probe([{ ...lead, order: 0 }, { ...se, span: 2 }], 2, 'write `span: 2`');
+  probe([{ ...lead, order: 0, type: 'separator' }, se], 1, 'only a box can be the lead band');
+  probe([{ ...se, children: [{ ...lead }, ...se.children.slice(1)] }], 1, "the page's FIRST band");
+  report('LEAD: a first full-width root box builds; a later, narrower, nested or non-box lead is refused',
+    misses.length === 0, misses.join('\n'));
+  rmDeck(dir);
+}
+{
+  const dir = mkDeck();
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'item-a').variant_extra = ['muted'];
+  saveOverview(p, doc);
+  const old = runNode([buildInDir]);
+  delete findNode(doc, 'item-a').variant_extra;
+  delete doc.layout;
+  saveOverview(p, doc);
+  const clean = runNode([buildInDir]);
+  const ok = old.code === 0 && old.out.includes('[deprecated] `layout` on 1 page(s) (overview)')
+    && old.out.includes('[deprecated] `variant_extra` on 1 component(s) (overview > item-a)')
+    && clean.code === 0 && !clean.out.includes('[deprecated]');
+  report('DEPRECATED: layout and variant_extra still build and warn by name; a deck without them is quiet', ok,
+    `old exit=${old.code} clean exit=${clean.code}\n${old.out}\n${clean.out}`);
+  rmDeck(dir);
 }
 
 // ── 9. CSS MIRROR — the guard that can go QUIET, in both directions ────────

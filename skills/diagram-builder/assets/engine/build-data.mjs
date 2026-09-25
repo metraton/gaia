@@ -13,6 +13,9 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveDocTokens, resolveNodeTokens, cssVars } from './tokens.mjs';
+import chips from './chips.cjs';
+
+const { resolvePageFilters } = chips;
 
 // This script lives in engine/; the data lives in ../data.
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -50,8 +53,12 @@ function readYaml(path) {
 //   • `tokens` (manifest, section, box): the design tokens of engine/tokens.mjs.
 //     The manifest may set any of them; a section or a box only the few in
 //     NODE_TOKEN_KEYS. The presentation viewport is `tokens.viewport`.
-const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'tokens', 'pages']);
-const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file']);
+//   • core chips: the manifest's `filters:` are inherited by every page, first
+//     and in order (engine/chips.cjs); a page's manifest entry drops one only by
+//     naming it in `omit_filters`, so the deck's chip coverage reads in one file.
+//     `harmony: true` opts the deck into the static gate's HARMONY check.
+const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'tokens', 'filters', 'harmony', 'pages']);
+const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file', 'omit_filters']);
 const PAGE_FIELDS = new Set([
   'id', 'layout', 'columns', 'filters', 'sections', 'form', 'text_fit',
   'name', 'order', 'visible']);
@@ -67,7 +74,7 @@ const SECTION_FIELDS = new Set([
 const COMPONENT_FIELDS = new Set([
   'id', 'type', 'variant', 'variant_extra', 'treatment', 'kicker', 'title',
   'description', 'detail', 'note', 'order', 'span', 'rowspan', 'filters',
-  'style', 'text', 'copy', 'tokens']);
+  'style', 'text', 'copy', 'tokens', 'lead']);
 const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 
 // ── THE TWO ORTHOGONAL AXES ────────────────────────────────────────────────
@@ -429,6 +436,7 @@ function validateNode(node, pageId, where) {
     // it must go on `treatment`.
     for (const extra of node.variant_extra || [])
       checkVariantValue(extra, kind, pageId, `${label} variant_extra`);
+    if (node.variant_extra !== undefined) deprecated.variant_extra.push(`${pageId} > ${id}`);
     checkTreatmentCombinations(node, treatments, pageId, label);
     // `copy` opts a box into a copy-to-clipboard button: `true` copies its title
     // verbatim, a string copies that string. Only buildBox draws the button.
@@ -491,8 +499,43 @@ function validateFilters(filters, pageId, where) {
   });
 }
 
+// THE LEAD BAND. `lead: true` marks the box that states the page's claim: a
+// plain box, so every gate already measures it, placed as the page's first band
+// (a direct root child, first in `order`, spanning every root column). The
+// marker is what makes it the one box the HARMONY check exempts.
+function checkLead(page) {
+  const leads = [];
+  (function walk(list, atRoot) {
+    for (const n of list || []) {
+      if (n && n.lead !== undefined) leads.push({ n, atRoot });
+      if (Array.isArray(n && n.children)) walk(n.children, false);
+    }
+  })(page.sections, true);
+  const where = id => `[strict-schema] page "${page.id}" lead "${id || '(no id)'}"`;
+  const first = [...(page.sections || [])].map((c, i) => ({ c, eff: c.order ?? (i + 1), i }))
+    .sort((a, b) => a.eff - b.eff || a.i - b.i)[0];
+  const cols = page.columns ?? tokens.default_columns;
+  for (const { n, atRoot } of leads) {
+    if (n.lead !== true) throw new Error(`${where(n.id)}: \`lead\` is \`true\` or absent, got ${JSON.stringify(n.lead)}`);
+    if (Array.isArray(n.children) || (n.type ?? 'box') !== 'box')
+      throw new Error(`${where(n.id)}: only a box can be the lead band`);
+    if (!atRoot || first.c !== n)
+      throw new Error(`${where(n.id)}: the lead band is the page's FIRST band — a direct child of the page root, first in \`order\``);
+    if ((n.span ?? 1) !== cols)
+      throw new Error(`${where(n.id)}: the lead band spans the whole page — write \`span: ${cols}\` (the root's columns)`);
+    const t = n.treatment || [];
+    if (t.includes('half') || t.includes('vertical'))
+      throw new Error(`${where(n.id)}: a lead band is a horizontal band; "half" and "vertical" do not apply`);
+  }
+}
+
+// Fields kept only for old decks: collected while validating and reported once
+// per build, so an author sees every use without the build failing.
+const deprecated = { layout: [], variant_extra: [] };
+
 function validatePageSchema(page) {
   checkFields(page, PAGE_FIELDS, 'page', page.id, 'root');
+  if (page.layout !== undefined) deprecated.layout.push(page.id);
   // `form` SCOPES the guardrail's invariant table by membership, so an undeclared
   // value silently reduced the page's applicable invariant set to the EMPTY set —
   // a page reported as "ALL PASS — 0 checks" with exit 0. `layout` gates whether
@@ -504,6 +547,7 @@ function validatePageSchema(page) {
   validateFilters(page.filters, page.id, 'root');
   checkHalfPairing(page.sections, page.id, 'root');
   for (const sec of page.sections || []) validateNode(sec, page.id, 'root >');
+  checkLead(page);
 }
 
 const manifest = readYaml(join(DATA_DIR, 'document.yaml'));
@@ -517,6 +561,11 @@ manifest.pages.forEach((p, i) =>
 // TOKENS — document.yaml `tokens:` over DEFAULT_TOKENS, validated. Resolved
 // before any page, because a node override is validated against it.
 const tokens = resolveDocTokens(manifest.tokens, suggest);
+
+// CORE CHIPS — validated like a page's chips, then inherited by every page.
+validateFilters(manifest.filters, '(document.yaml)', 'root');
+if (manifest.harmony !== undefined && typeof manifest.harmony !== 'boolean')
+  throw new Error(`[strict-schema] document.yaml: \`harmony\` is true or false, got ${JSON.stringify(manifest.harmony)}`);
 
 // PALETTE — document-level skin selector. Absent means `neutral`, which is the
 // palette every pre-2.1 deck renders with, so omitting it is a no-op.
@@ -541,9 +590,22 @@ const pages = manifest.pages
     // components, or its filters BEFORE the engine silently drops it. Runs on the
     // raw page file.
     validatePageSchema(page);
+    const filters = resolvePageFilters(manifest.filters, entry.omit_filters, page.filters, page.id);
+    if (filters.length || page.filters !== undefined) page.filters = filters;
     // manifest owns name/order/visible; page file owns everything else.
     return { ...page, name: entry.name, order: entry.order };
   });
+
+// `layout` has one value the engine renders, so it selects nothing; and a second
+// colour role puts two claims on one frame's fill and border, where principle 5
+// wants one claim per channel. Both still build, so old decks keep rendering.
+if (deprecated.layout.length)
+  console.warn(`[deprecated] \`layout\` on ${deprecated.layout.length} page(s) (${deprecated.layout.join(', ')}): ` +
+    'the engine renders one page layout, so the field selects nothing. Delete it; a later version will refuse it.');
+if (deprecated.variant_extra.length)
+  console.warn(`[deprecated] \`variant_extra\` on ${deprecated.variant_extra.length} component(s) ` +
+    `(${deprecated.variant_extra.join(', ')}): a second colour role puts two claims on one frame. Keep one ` +
+    '`variant` and say the other in the kicker, a treatment or a legend band; a later version will refuse it.');
 
 const doc = {
   title: manifest.title,

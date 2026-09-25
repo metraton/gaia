@@ -1405,7 +1405,7 @@ window.__DOC__ = {
       "filters": [
         {
           "key": "packing",
-          "label": "A directional flow",
+          "label": "The packing order",
           "steps": [
             "Click the chip to light the three cells of the flow, in the order they are authored.",
             "There is no arrowhead: the direction is carried by <code>order</code> and by the kickers 1 · 2 · 3.",
@@ -2438,6 +2438,387 @@ window.__DOC__ = {
       "order": 10
     },
     {
+      "id": "p11-colour-and-rails",
+      "form": "dashboard",
+      "columns": 2,
+      "filters": [
+        {
+          "key": "gate",
+          "label": "Which boxes are the gates?",
+          "steps": [
+            "A core chip: declared once in document.yaml, inherited first by every page that does not omit it.",
+            "It lights the two gates wherever they appear, with the same label on every page."
+          ]
+        },
+        {
+          "key": "tree",
+          "label": "Which rails draw the tree?",
+          "steps": [
+            "Four rails, one per level of the dialect, each inset one <code>indent</code> step deeper than its parent.",
+            "The indent moves the drawn frame, not the cell, so every cell gate still measures a full track."
+          ]
+        }
+      ],
+      "sections": [
+        {
+          "id": "p11-lead",
+          "order": 1,
+          "span": 2,
+          "lead": true,
+          "kicker": "FEATURES · COLOUR AND RAILS",
+          "title": "A hue names an actor",
+          "description": [
+            "the lead band states the page: one full-width first box, exempt from harmony"
+          ],
+          "detail": "A <b>lead band</b> is the page's first band: a box with <code>lead: true</code>, a direct child of the page root, first in <code>order</code>, spanning every root column. Its title is the claim the page makes, and its kicker places the page in the deck. The build refuses a lead that is nested, later or narrower."
+        },
+        {
+          "id": "p11-legend",
+          "title": "The legend band",
+          "subtitle": "four hues, four actors, the same on every page",
+          "order": 2,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "p11-blue",
+              "order": 1,
+              "variant": "blue",
+              "kicker": "BLUE",
+              "title": "The author",
+              "description": [
+                "writes the YAML"
+              ],
+              "detail": "The four categorical hues carry no risk or state, so they are free to name peers. Here each one names an ACTOR of the build loop, and a deck that uses the same hue for the same actor on every page lets the reader recognise it before reading a word."
+            },
+            {
+              "id": "p11-violet",
+              "order": 2,
+              "variant": "violet",
+              "kicker": "VIOLET",
+              "title": "The build",
+              "description": [
+                "refuses unknown fields"
+              ],
+              "detail": "<code>npm run build</code> is the strict schema: every field is on a whitelist and every closed value on an enum, so a typo fails loudly instead of rendering nothing."
+            },
+            {
+              "id": "p11-gold",
+              "order": 3,
+              "variant": "gold",
+              "kicker": "GOLD",
+              "title": "The static gate",
+              "description": [
+                "computes the layout"
+              ],
+              "detail": "<code>npm run check</code> is the MODELLED evidence: arithmetic over the authored YAML, no browser. It is a member of the deck's core chip.",
+              "filters": [
+                "gate"
+              ]
+            },
+            {
+              "id": "p11-clay",
+              "order": 4,
+              "variant": "clay",
+              "kicker": "CLAY",
+              "title": "The render gate",
+              "description": [
+                "observes the pixels"
+              ],
+              "detail": "<code>npm run validate</code> is the MEASURED evidence: the real render in Chromium. It is a member of the deck's core chip.",
+              "filters": [
+                "gate"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p11-tree",
+          "title": "Rails as a tree",
+          "subtitle": "one indent step per level",
+          "order": 3,
+          "span": 1,
+          "columns": 1,
+          "children": [
+            {
+              "id": "p11-r0",
+              "order": 1,
+              "type": "rail",
+              "variant": "blue",
+              "indent": 0,
+              "title": "document",
+              "filters": [
+                "tree"
+              ]
+            },
+            {
+              "id": "p11-r1",
+              "order": 2,
+              "type": "rail",
+              "variant": "violet",
+              "indent": 1,
+              "title": "page",
+              "filters": [
+                "tree"
+              ]
+            },
+            {
+              "id": "p11-r2",
+              "order": 3,
+              "type": "rail",
+              "variant": "gold",
+              "indent": 2,
+              "title": "section",
+              "filters": [
+                "tree"
+              ]
+            },
+            {
+              "id": "p11-r3",
+              "order": 4,
+              "type": "rail",
+              "variant": "clay",
+              "indent": 3,
+              "title": "component",
+              "filters": [
+                "tree"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p11-copy",
+          "title": "Boxes you paste from",
+          "subtitle": "centred beside a taller neighbour",
+          "order": 4,
+          "span": 1,
+          "columns": 2,
+          "treatment": [
+            "middle"
+          ],
+          "children": [
+            {
+              "id": "p11-cmd-build",
+              "order": 1,
+              "kicker": "COPY · BUILD",
+              "title": "npm run build",
+              "copy": true,
+              "description": [
+                "the corner button copies it"
+              ],
+              "detail": "<code>copy: true</code> puts a button on the box that copies its title; a string copies that string instead. Use it when the title IS the thing the reader pastes: a command, a path, an identifier."
+            },
+            {
+              "id": "p11-cmd-gate",
+              "order": 2,
+              "kicker": "COPY · BOTH GATES",
+              "title": "npm run gate",
+              "copy": true,
+              "description": [
+                "check, then validate"
+              ],
+              "detail": "The section carries <code>treatment: [middle]</code>: its compound row stretches it to the tree's height, and <code>middle</code> centres its grid in that height instead of leaving the gap below.",
+              "filters": [
+                "gate"
+              ]
+            }
+          ]
+        }
+      ],
+      "name": "Features · colour and rails",
+      "order": 11
+    },
+    {
+      "id": "p12-shapes",
+      "form": "flow",
+      "columns": 1,
+      "filters": [
+        {
+          "key": "gate",
+          "label": "Which boxes are the gates?",
+          "steps": [
+            "A core chip: declared once in document.yaml, inherited first by every page that does not omit it.",
+            "It lights the two gates wherever they appear, with the same label on every page."
+          ]
+        },
+        {
+          "key": "loop",
+          "label": "Which steps close the loop?",
+          "steps": [
+            "Six steps in two legs. The outbound leg runs 1 to 3; the return leg runs 4 to 6 in its own section.",
+            "Both legs keep their natural <code>order</code>, so one column still reads 1 to 6. The direction is in the kicker: step 6 says <b>back to 1</b>."
+          ]
+        }
+      ],
+      "sections": [
+        {
+          "id": "p12-lead",
+          "order": 1,
+          "lead": true,
+          "kicker": "FEATURES · SHAPES",
+          "title": "A ring and a staircase, from plain fields",
+          "description": [
+            "each leg is its own section; each stair rests on a declared hole"
+          ],
+          "detail": "The grid cannot draw a curve or an arrow, so a shape is built from what it can do: sections in <code>order</code>, a chip that crosses them, rowspans and spacers. The shapes a page can take are named in the skill with the fields that produce each one."
+        },
+        {
+          "id": "p12-out",
+          "title": "Outbound leg · steps 1 to 3",
+          "order": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p12-s1",
+              "order": 1,
+              "kicker": "STEP 1 OF 6 →",
+              "title": "Edit the YAML",
+              "description": [
+                "the diagram is decided here"
+              ],
+              "filters": [
+                "loop"
+              ],
+              "detail": "The loop starts in the data. Nothing about the domain lives in the engine."
+            },
+            {
+              "id": "p12-s2",
+              "order": 2,
+              "kicker": "STEP 2 OF 6 →",
+              "title": "Build",
+              "description": [
+                "the strict schema runs"
+              ],
+              "filters": [
+                "loop"
+              ],
+              "detail": "<code>npm run build</code> writes the bundle and refuses any unknown field."
+            },
+            {
+              "id": "p12-s3",
+              "order": 3,
+              "kicker": "STEP 3 OF 6 ↓",
+              "title": "Check",
+              "description": [
+                "the layout, computed"
+              ],
+              "filters": [
+                "loop",
+                "gate"
+              ],
+              "detail": "<code>npm run check</code>: the static gate. The kicker's arrow turns the corner into the return leg."
+            }
+          ]
+        },
+        {
+          "id": "p12-back",
+          "title": "Return leg · steps 4 to 6",
+          "order": 3,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p12-s4",
+              "order": 1,
+              "kicker": "STEP 4 OF 6",
+              "title": "Validate",
+              "description": [
+                "the layout, observed"
+              ],
+              "filters": [
+                "loop",
+                "gate"
+              ],
+              "detail": "<code>npm run validate</code>: the render gate. The return leg is its own section, so it never needs a reversed <code>order</code>."
+            },
+            {
+              "id": "p12-s5",
+              "order": 2,
+              "kicker": "STEP 5 OF 6",
+              "title": "Look at it",
+              "description": [
+                "what no gate can see"
+              ],
+              "filters": [
+                "loop"
+              ],
+              "detail": "SEEN is the only evidence for slot character, channel meaning and structure."
+            },
+            {
+              "id": "p12-s6",
+              "order": 3,
+              "kicker": "STEP 6 OF 6 · BACK TO 1",
+              "title": "Adjust",
+              "description": [
+                "recalculate, never nudge"
+              ],
+              "filters": [
+                "loop"
+              ],
+              "detail": "The ring closes in text: the kicker says where the path goes next, and the chip's steps say it again."
+            }
+          ]
+        },
+        {
+          "id": "p12-stairs",
+          "title": "A staircase on one floor",
+          "order": 4,
+          "columns": 3,
+          "treatment": [
+            "compact"
+          ],
+          "children": [
+            {
+              "id": "p12-t3",
+              "order": 1,
+              "rowspan": 3,
+              "kicker": "COST 3",
+              "title": "Seen on screen",
+              "description": [
+                "the latest, dearest find"
+              ],
+              "detail": "Height is magnitude: the later a defect is found, the more it costs. A <code>compact</code> grid runs a short row, so three rows stay small."
+            },
+            {
+              "id": "p12-gap-1",
+              "order": 2,
+              "type": "spacer"
+            },
+            {
+              "id": "p12-gap-2",
+              "order": 3,
+              "type": "spacer",
+              "rowspan": 2
+            },
+            {
+              "id": "p12-t2",
+              "order": 4,
+              "rowspan": 2,
+              "kicker": "COST 2",
+              "title": "Measured",
+              "detail": "The spacer above it is a declared hole: filling runs top-down, so without it the step would hang from the ceiling."
+            },
+            {
+              "id": "p12-t1",
+              "order": 5,
+              "kicker": "COST 1",
+              "title": "Modelled",
+              "detail": "One compact row holds a kicker and a title. Every step ends on the same bottom row."
+            }
+          ],
+          "tokens": {
+            "row": {
+              "cell_h": 74
+            }
+          },
+          "css_vars": {
+            "--cell-h": "74px"
+          }
+        }
+      ],
+      "name": "Features · shapes",
+      "order": 12
+    },
+    {
       "id": "overview",
       "layout": "grid",
       "columns": 2,
@@ -3175,7 +3556,7 @@ window.__DOC__ = {
         }
       ],
       "name": "Compositions & edge cases",
-      "order": 11
+      "order": 13
     }
   ]
 };

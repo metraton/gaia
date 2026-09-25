@@ -155,13 +155,27 @@ palette: neutral             # optional — the deck SKIN; omitted == neutral.
                              # this changes how the deck LOOKS, never what it MEANS.
 tokens:                      # optional — design tokens over the defaults (see "Tokens")
   viewport: { w: 1920, h: 1080 }  # the PRESENTATION viewport, in px
+filters:                     # optional — the CORE chips, inherited by every page
+  - { key: gate, label: "Which boxes are the gates?" }
+harmony: false               # optional — true: HARMONY fails a box/rail in no chip
 pages:
   - id: overview             # required — must match page.id in the file
     name: "Overview"         # required — visible label (rename without breaking refs)
     order: 1                 # required — decknav position
     visible: true            # required — false omits from build without deleting
     file: pages/overview.yaml   # required — path relative to data/
+    omit_filters: [gate]     # optional — core chips this page does not carry
 ```
+
+**Core chips.** `filters:` here are validated like a page's chips, then
+`engine/chips.cjs` (`resolvePageFilters`, shared by the build and the census)
+writes each page's list as the core chips first, in their order, minus the
+entry's `omit_filters`, then the page's own chips. The build refuses an
+`omit_filters` key that is not a core chip, a page chip that redeclares a core
+key with another label or steps, and a page chip that reuses an omitted core
+key; an identical redeclaration is dropped. An inherited chip with no member on
+the page fails CHIP, so omission is always explicit. `harmony` is a boolean;
+anything else is refused.
 
 The manifest is the single source of **which** pages exist, in what order, and
 whether they show. `name` / `order` / `visible` live **only** here — the page
@@ -187,7 +201,7 @@ the deck is presented on.
 
 ```yaml
 id: overview            # required — matches the manifest entry
-layout: grid            # engine selector — only `grid` is supported
+layout: grid            # DEPRECATED — `grid` is its only value; the build warns
 columns: 2              # ROOT grid width (default 2) — the page is a section
 form: dashboard         # optional — scopes the guardrail's invariants:
                         # dashboard (default) | timeline | flow | comparison |
@@ -261,8 +275,9 @@ The two section treatments added after `envelope` and `plain`, and why each exis
   variant: neutral       # THE COLOUR AXIS — one value:
                          #   neutral | good | warn | bad | accent | muted
                          #   | blue | violet | gold | clay   (categorical)
-  variant_extra: [muted] # optional SECOND colour role (same enum), for a box that
-                         #   is both a kind and a state (bad + muted)
+  variant_extra: [muted] # DEPRECATED — a second colour role on one frame; the
+                         #   build warns. Say the second claim in text instead.
+  lead: true             # optional — this box is the page's LEAD band (below)
   treatment: [centered]  # THE STRUCTURAL AXIS — a list, composable:
                          #   centered | half | vertical | outside
   span: 2               # occupy M of the section's columns (default 1);
@@ -284,6 +299,20 @@ each hue means. Each hue is a tint, a border and a kicker colour
 a tint in the dark skins. Every palette block in `index.html` declares
 `--hue-<name>` and `--hue-<name>-soft`, and `npm run contrast` measures four
 pairs per hue (title, description, kicker, border).
+
+**`lead: true`** marks the page's lead band, the full-width first box whose
+title is the page's claim. `checkLead` in the build refuses it unless it is a
+box, a direct child of the page root, first in effective `order`, with `span`
+equal to the root's `columns`, and neither `half` nor `vertical`. HARMONY
+exempts it. Skeleton:
+
+```yaml
+columns: 2
+sections:
+  - { id: lead, order: 1, span: 2, lead: true, kicker: "PART 2 OF 5",
+      title: "The claim this page makes", description: ["one line of context"] }
+  - { id: first-zone, order: 2, span: 2, title: "…", columns: 4, children: [ … ] }
+```
 
 **`copy`** puts a small corner button on the box that copies text to the
 clipboard (engine.js `buildCopyButton`): `copy: true` copies the title verbatim,

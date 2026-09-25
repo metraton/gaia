@@ -825,6 +825,10 @@
     padding-left:calc(var(--indent) * var(--indent-step)); }
   .rail.indented .rail-title { display:inline-block; max-width:100%; padding:7px var(--s-3);
     background:var(--rail-fill); border:1px solid var(--rail-line); border-radius:10px; }
+  /* A hue title is set smaller, so at 7px its indented row measured 30px, under
+     the band validate U holds; 9px keeps a hue tree inside it. */
+  .rail.indented.blue .rail-title, .rail.indented.violet .rail-title,
+  .rail.indented.gold .rail-title, .rail.indented.clay .rail-title { padding-block:9px; }
   /* min-height 0 for the same reason as .sep-v: in a leaf grid the row height is
      the contract, and a --zone-min-h floor overflowed it by 50px. */
   /* A vertical rail keeps both centrings unconditionally: a rotated lane label
