@@ -85,7 +85,7 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 ## Requirements
 
 - One host: Claude Code >= 2.1.0 (the floor declared in [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)) or OpenCode.
-- Node.js >= 18 and Python >= 3.12 (the `engines` in [`package.json`](./package.json)). The CLI is Python; npm is the delivery channel.
+- Python >= 3.12 on `PATH` (the `engines` in [`package.json`](./package.json)); the CLI and the hooks are Python. Node.js >= 18 only for the npm route below.
 - git, for the per-turn worktrees.
 - Nothing is installed behind your back: there is no `postinstall`, and the database is created lazily on the first `gaia` command (`_ensure_db_bootstrapped` in [`bin/gaia`](./bin/gaia)).
 
@@ -98,9 +98,9 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 /plugin install gaia@gaia-marketplace      # terminal: claude plugin install gaia@gaia-marketplace
 ```
 
-That route loads the agents, skills and hooks only. The `gaia` CLI on your terminal and the workspace wiring still come from npm plus `gaia install` below, and the hooks need `python3` >= 3.12 on `PATH`. Auto-update is off for third-party marketplaces; to take a new release run `/plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace`.
+For Claude Code that is the whole install; no npm step is needed. The plugin carries its own CLI at `bin/gaia`, and each session publishes that absolute path to the orchestrator, which runs it from there. On the first session Gaia merges its permission set into `.claude/settings.local.json` and asks you to run `/reload-plugins` (or restart) to activate it. Auto-update is off for third-party marketplaces; to take a new release run `/plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace`.
 
-Through npm, for either host (and for the CLI on the plugin route):
+Through npm -- the route for OpenCode, and the alternative for Claude Code when you want `gaia` on your own terminal and the workspace wiring below instead of the plugin. Pick one route per Claude Code workspace: the plugin and `gaia install` together register every hook twice.
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
@@ -117,7 +117,7 @@ claude          # or: opencode
 > what is Gaia, and what can you do for me?
 ```
 
-The orchestrator answers with the picture above and the table of what it can offer. Then `gaia scan` indexes the repositories under the workspace so every later dispatch carries the project's shape, and `gaia status` shows what is wired.
+The orchestrator answers with the picture above and the table of what it can offer. Then `gaia scan` (run by the orchestrator on a plugin-only install, or from your terminal on the npm route) indexes the repositories under the workspace so every later dispatch carries the project's shape, and `gaia status` shows what is wired.
 
 ## Structure
 

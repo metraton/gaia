@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -535,6 +537,111 @@ def setup_project_hooks() -> bool:
     return True
 
 
+_GAIA_HOOK_SCRIPT_RE = re.compile(
+    r"(?:\.claude|\$\{CLAUDE_PLUGIN_ROOT\})/hooks/([A-Za-z0-9_]+\.py)\b"
+)
+
+
+def _gaia_hook_entrypoints() -> frozenset[str]:
+    """File names of the hook entrypoints this package ships (``hooks/*.py``)."""
+    hooks_dir = Path(__file__).resolve().parents[2]
+    return frozenset(p.name for p in hooks_dir.glob("*.py"))
+
+
+def _is_gaia_hook_command(command: object, entrypoints: frozenset[str]) -> bool:
+    """True when *command* runs one of Gaia's own hook entrypoints.
+
+    Both shapes a Gaia writer ever left in workspace settings qualify: the
+    rewritten ``<workspace>/.claude/hooks/<entrypoint>.py`` and the raw
+    ``${CLAUDE_PLUGIN_ROOT}/hooks/<entrypoint>.py``. The entrypoint name must
+    be one this package ships, so a user script that merely lives in a
+    ``.claude/hooks`` directory is never matched.
+    """
+    if not isinstance(command, str):
+        return False
+    match = _GAIA_HOOK_SCRIPT_RE.search(command.replace("\\", "/"))
+    return match is not None and match.group(1) in entrypoints
+
+
+def remove_merged_gaia_hooks() -> bool:
+    """Strip Gaia hook entries from the workspace ``settings.local.json``.
+
+    A plugin install registers its hooks through the plugin's own hooks.json;
+    any Gaia entry also present in workspace settings makes every hook fire
+    twice. Removes only commands :func:`_is_gaia_hook_command` recognises,
+    prunes the matcher entries and events that end up empty, and drops the
+    ``hooks`` key only when nothing is left in it. User entries are kept as
+    they were. Returns True if the file was rewritten.
+    """
+    settings_path = Path.cwd() / ".claude" / "settings.local.json"
+    if not settings_path.is_file():
+        return False
+    try:
+        settings = json.loads(settings_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        logger.warning("settings.local.json is unreadable, skipping hook cleanup")
+        return False
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+
+    entrypoints = _gaia_hook_entrypoints()
+    kept_hooks: dict = {}
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            kept_hooks[event] = entries
+            continue
+        kept_entries = []
+        for entry in entries:
+            handlers = entry.get("hooks") if isinstance(entry, dict) else None
+            if not isinstance(handlers, list):
+                kept_entries.append(entry)
+                continue
+            kept_handlers = [
+                h for h in handlers
+                if not _is_gaia_hook_command(
+                    h.get("command") if isinstance(h, dict) else None, entrypoints
+                )
+            ]
+            if kept_handlers:
+                kept_entries.append({**entry, "hooks": kept_handlers})
+        if kept_entries:
+            kept_hooks[event] = kept_entries
+
+    if kept_hooks == hooks:
+        return False
+    if kept_hooks:
+        settings["hooks"] = kept_hooks
+    else:
+        del settings["hooks"]
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    logger.info("Removed Gaia hook entries merged into %s", settings_path)
+    return True
+
+
+def _installed_under_node_modules() -> bool:
+    """True when this copy's real path is inside an npm or pnpm install."""
+    return "node_modules" in Path(__file__).resolve().parts
+
+
+def _sync_workspace_hooks() -> bool:
+    """Bring workspace hook registration in line with how this copy was launched.
+
+    A plugin launch (``CLAUDE_PLUGIN_ROOT`` set) owns its hooks through the
+    plugin's hooks.json, so workspace entries are stripped. An npm/pnpm copy
+    is read by Claude Code from settings files, so hooks.json is merged there.
+    Any other launch writes nothing. That includes the workspace-registered
+    copy an earlier plugin version left behind, which runs out of the plugin
+    cache through the ``.claude/hooks`` link without ``CLAUDE_PLUGIN_ROOT``:
+    merging from there would undo the plugin's cleanup on every event.
+    """
+    if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip():
+        return remove_merged_gaia_hooks()
+    if _installed_under_node_modules():
+        return setup_project_hooks()
+    return False
+
+
 def run_first_time_setup(mark_done: bool = True) -> str | None:
     """Run setup. Returns a reload message if permissions were written.
 
@@ -546,7 +653,7 @@ def run_first_time_setup(mark_done: bool = True) -> str | None:
     # Always ensure registry, permissions, and hooks exist (even on subsequent runs)
     ensure_plugin_registry()
     reload_needed = setup_project_permissions()
-    hooks_changed = setup_project_hooks()
+    hooks_changed = _sync_workspace_hooks()
     reload_needed = reload_needed or hooks_changed
 
     if not is_first_run():
