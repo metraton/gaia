@@ -6,7 +6,7 @@ This guide will help you install and configure Gaia in your project. The process
 
 Gaia is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
 
-Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (declared in `.claude-plugin/marketplace.json` with `source: github`, repo `metraton/gaia`, ref `v5.2.0`), so there is no separate `dist/` bundle.
+Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (declared in `.claude-plugin/marketplace.json` with `source: github`, repo `metraton/gaia`, and `ref` pinned to the tag of the current release, `v<version>`), so there is no separate `dist/` bundle.
 
 ---
 
@@ -16,7 +16,7 @@ Gaia reaches a workspace through **two surfaces**. Pick the one that matches how
 
 ### Surface 1: npm / pnpm
 
-Install the package, then wire the workspace with `gaia install`:
+Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). Install the package, then wire the workspace with `gaia install`:
 
 ```bash
 npm install @jaguilar87/gaia
@@ -34,14 +34,23 @@ After install, `gaia doctor` verifies the result. If a bootstrap or wire-up step
 
 ### Surface 2: Claude Code plugin
 
-Claude Code consumes the plugin from GitHub (`source: github`, repo `metraton/gaia`, ref `v5.2.0`, per `.claude-plugin/marketplace.json`) — it clones the tagged repo into its plugin cache. Add the marketplace and install the single plugin:
+Claude Code consumes the plugin from GitHub (`source: github`, repo `metraton/gaia`, `ref` = the tag of the current release, per `.claude-plugin/marketplace.json`) — it clones that tag into its plugin cache. Add the marketplace (`gaia-marketplace`) and install the single plugin:
 
 ```bash
 # Add the marketplace
 /plugin marketplace add metraton/gaia
 
-# Install the unified plugin
-/plugin install gaia
+# Install the unified plugin (from a terminal: claude plugin install gaia@gaia-marketplace)
+/plugin install gaia@gaia-marketplace
+```
+
+The marketplace route loads the agents, skills and hooks. It does **not** put the `gaia` CLI on your terminal's `PATH` and does not wire the workspace (`.claude/` links, `settings.local.json` permissions, `opencode.json`): those still come from Surface 1, `npm install @jaguilar87/gaia` followed by `gaia install`. The hooks run as `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/...`, so `python3` >= 3.12 must be on `PATH` on this route too.
+
+Auto-update is off by default for third-party marketplaces, so a new release does not reach you on its own. Refresh the marketplace, then update the plugin:
+
+```bash
+/plugin marketplace update gaia-marketplace
+claude plugin update gaia@gaia-marketplace
 ```
 
 For a pre-release dry-run of the plugin surface without publishing, pack the exact tarball and validate the extracted root headless:
@@ -91,12 +100,13 @@ User runs: gaia install    (or the SessionStart hook wires the workspace)
    - Seeds agent rows and permissions
         ↓
 [Install] creates .claude/ structure
-   Creates 5 directory symlinks to the gaia package:
-     .claude/agents  → node_modules/.../agents
-     .claude/tools   → node_modules/.../tools
-     .claude/hooks   → node_modules/.../hooks
-     .claude/config  → node_modules/.../config
-     .claude/skills  → node_modules/.../skills
+   Creates 6 directory symlinks to the gaia package:
+     .claude/agents   → node_modules/.../agents
+     .claude/tools    → node_modules/.../tools
+     .claude/hooks    → node_modules/.../hooks
+     .claude/config   → node_modules/.../config
+     .claude/skills   → node_modules/.../skills
+     .claude/opencode → node_modules/.../opencode
    Plus a file link:
      .claude/CHANGELOG.md → node_modules/.../CHANGELOG.md
         ↓
@@ -123,8 +133,8 @@ Example: Install + scan in a project with GitOps and Terraform
 2. User: gaia install
    ✅ ~/.gaia/gaia.db bootstrapped (lazy, on first `gaia` use)
    ✅ .claude/ created
-   ✅ 5 directory symlinks + CHANGELOG.md link created
-      (agents, tools, hooks, config, skills)
+   ✅ 6 directory symlinks + CHANGELOG.md link created
+      (agents, tools, hooks, config, skills, opencode)
    ✅ settings.local.json merged
    ✅ plugin-registry.json written (name: gaia)
    ↓
@@ -204,6 +214,7 @@ your-project/
 │   ├── tools/ (symlink)           → Orchestration tools
 │   ├── hooks/ (symlink)           → Security validations
 │   ├── config/ (symlink)          → Configuration (contracts, rules)
+│   ├── opencode/ (symlink)        → OpenCode plugin
 │   ├── CHANGELOG.md (file link)    → Package changelog
 │   ├── logs/                      ← Audit logs
 │   ├── approvals/                 ← Pending T3 approval files
@@ -278,8 +289,8 @@ claude
 "Show me GKE clusters"
 "List deployments in production namespace"
 
-# Or use slash commands:
-/scan-project
+# Or, from the terminal, refresh the project context:
+gaia scan
 ```
 
 ---
@@ -461,6 +472,6 @@ A: `npm update @jaguilar87/gaia` then `gaia update` - symlinks point to the new 
 
 ---
 
-**Version:** 5.2.0
-**Last updated:** 2026-07-01
+**Version:** the current release (`version` in `package.json`)
+**Last updated:** 2026-09-24
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)

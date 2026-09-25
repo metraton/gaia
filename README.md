@@ -91,14 +91,16 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 
 ## How it is used
 
-**Install.** In Claude Code, as a plugin -- the host clones the tagged repository named in [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) and reads its hooks from `hooks/hooks.json`:
+**Install.** In Claude Code, as a plugin -- the host clones the repository at the tag of the current release, as pinned by `source.ref` in [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json), and reads its hooks from `hooks/hooks.json`:
 
 ```
 /plugin marketplace add metraton/gaia
-/plugin install gaia
+/plugin install gaia@gaia-marketplace      # terminal: claude plugin install gaia@gaia-marketplace
 ```
 
-Or through npm, for either host:
+That route loads the agents, skills and hooks only. The `gaia` CLI on your terminal and the workspace wiring still come from npm plus `gaia install` below, and the hooks need `python3` >= 3.12 on `PATH`. Auto-update is off for third-party marketplaces; to take a new release run `/plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace`.
+
+Through npm, for either host (and for the CLI on the plugin route):
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
@@ -106,7 +108,7 @@ gaia install                      # Claude Code; or --host opencode / --host all
 gaia doctor                       # one line per check, PASS or FAIL
 ```
 
-`gaia install` bootstraps `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, and merges the twelve hook events and the permission set into `.claude/settings.local.json` without removing what you already had there. With `--host opencode` it writes `opencode.json` in the workspace pointing at the packaged plugin instead of touching `.claude/`. Run `gaia doctor` from the workspace, or pass `--workspace <path>`; the full walk-through, the manual symlink equivalent and the troubleshooting table are in [INSTALL.md](./INSTALL.md).
+`gaia install` bootstraps `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, and merges the twelve hook events and the permission set into `.claude/settings.local.json` without removing what you already had there. With `--host opencode` it writes `opencode.json` in the workspace pointing at the packaged plugin instead of touching `.claude/`. Run `gaia doctor` from the workspace, or pass `--workspace <path>`; the full walk-through and the troubleshooting table are in [INSTALL.md](./INSTALL.md).
 
 **First turn.** Start the host in the workspace and ask:
 
