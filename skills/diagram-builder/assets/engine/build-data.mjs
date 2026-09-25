@@ -12,6 +12,7 @@ import yaml from 'js-yaml';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveDocTokens, resolveNodeTokens, cssVars } from './tokens.mjs';
 
 // This script lives in engine/; the data lives in ../data.
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -46,7 +47,10 @@ function readYaml(path) {
 //   • filter (an entry of `filters[]`): the chip's key/label/steps. Filters used
 //     to bypass this gate entirely — a typo in a `key` produced no error, just a
 //     chip that silently dimmed the whole canvas because nothing matched it.
-const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'viewport', 'pages']);
+//   • `tokens` (manifest, section, box): the design tokens of engine/tokens.mjs.
+//     The manifest may set any of them; a section or a box only the few in
+//     NODE_TOKEN_KEYS. The presentation viewport is `tokens.viewport`.
+const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'tokens', 'pages']);
 const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file']);
 const PAGE_FIELDS = new Set([
   'id', 'layout', 'columns', 'filters', 'sections', 'form', 'text_fit',
@@ -57,19 +61,13 @@ const PAGE_FIELDS = new Set([
 // (advisory). The gates read the value from the bundle, so it is validated here.
 const TEXT_FIT = new Set(['strict', 'advisory']);
 
-// The presentation viewport: the tier where text fit is a verdict and the
-// height a page is compared against. DEFAULT_VIEWPORT in tools/static-census.cjs
-// must equal this one — CENSUS compares the manifest resolved there against the
-// `viewport` this build writes, so a divergence fails the static gate.
-const DEFAULT_VIEWPORT = { w: 1920, h: 1080 };
-const VIEWPORT_BOUNDS = { w: [320, 7680], h: [240, 4320] };
 const SECTION_FIELDS = new Set([
   'id', 'title', 'subtitle', 'variant', 'treatment',
-  'order', 'span', 'rowspan', 'columns', 'children']);
+  'order', 'span', 'rowspan', 'columns', 'children', 'tokens']);
 const COMPONENT_FIELDS = new Set([
   'id', 'type', 'variant', 'variant_extra', 'treatment', 'kicker', 'title',
   'description', 'detail', 'note', 'order', 'span', 'rowspan', 'filters',
-  'style', 'text', 'copy']);
+  'style', 'text', 'copy', 'tokens']);
 const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 
 // ── THE TWO ORTHOGONAL AXES ────────────────────────────────────────────────
@@ -449,6 +447,20 @@ function validateNode(node, pageId, where) {
     checkHalfPairing(node.children, pageId, label);
     node.children.forEach(c => validateNode(c, pageId, `${label} >`));
   }
+  resolveNodeOverride(node, kind, pageId, label);
+}
+
+// A node's `tokens:` is replaced IN THE BUNDLE by its resolved override delta
+// (a `compact` preset included) and the CSS properties the engine sets inline.
+// Only a box reads the two clamps, so a separator or a rail carrying `tokens`
+// is refused rather than ignored.
+function resolveNodeOverride(node, kind, pageId, label) {
+  const isBox = kind === 'component' && (node.type === undefined || node.type === 'box');
+  if (node.tokens !== undefined && kind === 'component' && !isBox)
+    throw new Error(`[strict-schema] page "${pageId}" ${label}: \`tokens\` applies to a box or a section, not a ${node.type}`);
+  const delta = resolveNodeTokens(node, kind, tokens, `page "${pageId}" ${label}`, suggest);
+  if (delta) { node.tokens = delta; node.css_vars = cssVars(delta, { delta: true }); }
+  else delete node.tokens;
 }
 
 // Validate the chips of a `filters[]` list. Previously NOT validated at all: a
@@ -502,24 +514,9 @@ checkFields(manifest, MANIFEST_FIELDS, 'manifest', '(document.yaml)', 'root');
 manifest.pages.forEach((p, i) =>
   checkFields(p, MANIFEST_PAGE_FIELDS, 'manifest page', '(document.yaml)', `pages[${i}] "${(p && p.id) || '?'}"`));
 
-function resolveViewport(raw) {
-  if (raw === undefined || raw === null) return { ...DEFAULT_VIEWPORT };
-  if (typeof raw !== 'object' || Array.isArray(raw))
-    throw new Error('[strict-schema] document.yaml: `viewport` must be a mapping `{ w, h }` in px');
-  const extra = Object.keys(raw).filter(k => k !== 'w' && k !== 'h');
-  if (extra.length)
-    throw new Error(`[strict-schema] document.yaml: unknown viewport field(s) ${extra.map(k => `"${k}"`).join(', ')} — only \`w\` and \`h\``);
-  const out = {};
-  for (const axis of ['w', 'h']) {
-    const v = raw[axis] ?? DEFAULT_VIEWPORT[axis];
-    const [lo, hi] = VIEWPORT_BOUNDS[axis];
-    if (!Number.isInteger(v) || v < lo || v > hi)
-      throw new Error(`[strict-schema] document.yaml: viewport \`${axis}\` must be an integer ${lo}..${hi} px, got ${JSON.stringify(v)}`);
-    out[axis] = v;
-  }
-  return out;
-}
-const viewport = resolveViewport(manifest.viewport);
+// TOKENS — document.yaml `tokens:` over DEFAULT_TOKENS, validated. Resolved
+// before any page, because a node override is validated against it.
+const tokens = resolveDocTokens(manifest.tokens, suggest);
 
 // PALETTE — document-level skin selector. Absent means `neutral`, which is the
 // palette every pre-2.1 deck renders with, so omitting it is a no-op.
@@ -556,9 +553,61 @@ const doc = {
   // engine.js's `if (barVer && doc.version)` guard skips rendering cleanly.
   version: manifest.version,
   palette,
-  viewport,
+  // The resolved tokens are what both gates read; `css_vars` is the projection
+  // engine.js applies to :root. Per-node overrides ride on the node itself.
+  tokens,
+  css_vars: cssVars(tokens),
   pages
 };
+
+// ── THE BREAKPOINTS, GENERATED ─────────────────────────────────────────────
+// A container query cannot read var(), so the three collapse tiers are the one
+// part of the stylesheet the build writes (data/breakpoints.generated.css, linked
+// by index.html). Every rule inside still spends tokens through var().
+//   stack — compound grids stop laying sections side by side: they fold into a
+//           column and every child keeps its content height (a flex-basis would
+//           size the HEIGHT in column direction), stretched to the full width.
+//           align-content:stretch is needed beside align-items: in a
+//           column-direction wrap flex the single line otherwise shrink-wraps.
+//   two   — every multi-column leaf grid steps to the 2-track intermediate; a
+//           partial span keeps its proportion (--span2) and the separator rows
+//           are re-derived for that track count (--row-tracks-2).
+//   one   — the endpoint: every leaf grid is one track, a partial span becomes a
+//           full band, every separator row is thin (--row-tracks-1), and the
+//           canvas chrome shrinks to the narrow frame. The :not(.sec-c1) twins
+//           match the 1000px tier's specificity so they win by source order.
+function breakpointsCss(bp) {
+  return `/* GENERATED FILE — do not edit by hand.
+   Produced by engine/build-data.mjs from tokens.breakpoints (${bp.stack} / ${bp.two} / ${bp.one}px). */
+@container stage (max-width: ${bp.stack}px) {
+  .sec-grid.sec-compound { flex-direction:column; align-items:stretch; align-content:stretch; }
+  .sec-plane > .sec-grid.sec-compound { align-items:stretch; align-content:stretch; }
+  .sec-grid.sec-compound > * { flex:0 0 auto; }
+  .sec-grid.sec-compound > .msp { flex:0 0 auto; }
+  .sec-grid.sec-compound > .zone { flex:0 0 auto; }
+  .sec-grid.sec-compound > .box { align-self:stretch; }
+  .sec-plane > .sec-grid.sec-compound:has(> .msp) {
+    display:flex; flex-direction:column; align-items:stretch; align-content:stretch;
+    grid-template-columns:none; }
+  .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
+    align-self:stretch; }
+}
+@container stage (max-width: ${bp.two}px) {
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:span var(--span2, 1); }
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-auto-rows:var(--row-tracks-2, var(--cell-h, 130px)); }
+}
+@container stage (max-width: ${bp.one}px) {
+  .canvas { left:var(--frame-narrow, 8px); right:var(--frame-narrow, 8px); padding:var(--frame-narrow, 8px); }
+  .sec-grid:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:minmax(0,1fr); }
+  .sec-grid:not(.sec-compound) > .mspan { grid-column:1 / -1; }
+  .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:1 / -1; }
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-auto-rows:var(--row-tracks-1, var(--cell-h, 130px)); }
+}
+`;
+}
+writeFileSync(join(DATA_DIR, 'breakpoints.generated.css'), breakpointsCss(tokens.breakpoints), 'utf8');
 
 // The generated file APPLIES THE PALETTE ITSELF, before the deck renders. It is
 // loaded by a <script src> in <head>-order ahead of engine.js and before any
@@ -573,4 +622,4 @@ if (typeof document !== 'undefined' && document.documentElement)
 `;
 
 writeFileSync(join(DATA_DIR, 'data.generated.js'), out, 'utf8');
-console.log(`Wrote data/data.generated.js — palette "${palette}", ${pages.length} visible page(s): ${pages.map(p => p.id).join(', ')}`);
+console.log(`Wrote data/data.generated.js + data/breakpoints.generated.css — palette "${palette}", ${pages.length} visible page(s): ${pages.map(p => p.id).join(', ')}`);

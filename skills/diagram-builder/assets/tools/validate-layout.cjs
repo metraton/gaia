@@ -202,29 +202,37 @@ const os = require('os');
 // otherwise keep two copies of. See tools/static-census.cjs for why they live
 // there — it also mirrors the collapse breakpoints, which this file only refers
 // to by name (the widths it renders at are its own).
-const { staticCensus, nodeCensus, pageCensus, loadAuthoredDeck, resolveViewport, isTextFitStrict,
+const { staticCensus, nodeCensus, pageCensus, loadAuthoredDeck, loadGenerated, isTextFitStrict,
   DEFAULT_FORM, GRID_DENSE, WORDFIT } = require('./static-census.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = process.env.DIAGRAM_SHOTS_DIR || path.join(os.tmpdir(), 'diagram-deck-layout');
-// --cell-h is the FIXED row height (must match the design token in index.html).
-// --cell-w is no longer a track width in the fill model (cells stretch to equal
-// fr widths) — kept only as a documented reference for the readability step-down.
-const CELL_W = 232, CELL_H = 130;
-// --sep-row-h — the row height for a thin row of separators / declared holes
-// (must match the design token in index.html). A row whose only occupants are
-// HORIZONTAL separators is reduced to it: a 1px rule no longer costs a 130px
-// cell. This is the third height family invariant U recognises (see the
-// U/height row below).
-const SEP_ROW_H = 40;
-// A thin row that holds a HORIZONTAL no-rowspan RAIL is `auto` (content
-// height), not SEP_ROW_H — the engine's rowTrackList emits it that way because
-// a rail is a bordered banner whose content IS the row. Its band: one title
-// line (15px + 2×8px pad + 2×1px border = 33) up to the two-line ceiling the
-// static gate's RAILT enforces (30px title block = 48). A track outside the
-// band is a defect in either direction: 130 means the auto track was never
-// applied, above 48 means a third title line the static estimate missed.
-const RAIL_ROW_MIN = 33, RAIL_ROW_MAX = 48;
+// THE EXPECTATIONS, FROM THE TOKENS. The render gate holds no copy of a design
+// number: applyTokens() sets these from the bundle's `__DOC__.tokens` (main()
+// does it after the census; a test passes DEFAULT_TOKENS). Every one is a
+// height family invariant U or a floor M asserts:
+//   CELL_H       the fixed row (`row.cell_h`), unless a section DECLARES its own
+//   SEP_ROW_H    a thin row of separators / declared holes (`row.sep_h`)
+//   RAIL_ROW_*   a thin row holding a rail is `auto`: one title line + 2 × --s-2
+//                padding + 2 borders, up to the two-line ceiling RAILT enforces.
+//                Outside the band is a defect either way: CELL_H means the auto
+//                track was never applied, above MAX a third line slipped past.
+//                The line box is RAIL_LINE_EM × the rail font, the same factor
+//                check-layout.mjs uses for its railRowH floor.
+//   MIN_LEGIBLE  the readable leaf-cell floor (`cell_min_w`)
+//   BP           the collapse breakpoints (`breakpoints`)
+const RAIL_LINE_EM = 1.15;
+let CELL_H, SEP_ROW_H, RAIL_ROW_MIN, RAIL_ROW_MAX, MIN_LEGIBLE, BP, TOKENS;
+function renderExpectations(t) {
+  const line = Math.ceil(t.type.rail.px * RAIL_LINE_EM);
+  const chrome = 2 * t.space.base * t.space.scale[1] + 2;
+  return { CELL_H: t.row.cell_h, SEP_ROW_H: t.row.sep_h, RAIL_ROW_MIN: line + chrome,
+    RAIL_ROW_MAX: 2 * line + chrome, MIN_LEGIBLE: t.cell_min_w, BP: { ...t.breakpoints } };
+}
+function applyTokens(t) {
+  TOKENS = t;
+  ({ CELL_H, SEP_ROW_H, RAIL_ROW_MIN, RAIL_ROW_MAX, MIN_LEGIBLE, BP } = renderExpectations(t));
+}
 // ── ONE WIDTH, THE WIDEST. ────────────────────────────────────────────────
 // This was a FIVE-width sweep (600/900/1200/1920/2560) whose job was to prove the
 // …→2→1 collapse cascade while that cascade was being BUILT. It is stable now, and
@@ -255,9 +263,6 @@ const SB_GUARD = 17;     // widest classic vertical scrollbar to be robust again
 const MAX_FULL_H = 12000; // hard cap on the grown full-page viewport height (px)
 const FULL_MARGIN = 160;  // px slack below the last content row in the full-page capture
 const CELLW_TOL = 2;      // px spread allowed among a grid's equal fr cells (U)
-const MIN_LEGIBLE = 120;  // px — the readable floor for a leaf cell (M). Kept in
-                          // sync with --cell-min-w in index.html. Below this a
-                          // short title can only show ~1 char per line.
 const LEGIBLE_TOL = 6;    // px sub-pixel slack under MIN_LEGIBLE before M fires
 const SPAN_TOL_PCT = 15;  // % a compound section child's rendered width may
                           // deviate from its AUTHORED-span share (Q). Absorbs the
@@ -443,10 +448,13 @@ const INVARIANTS = [
         // A grid's own row height: CELL_H unless it declares `compact`. A
         // measurement that predates the cellH field reads as CELL_H. Only a grid
         // that DECLARES `compact` may run a row other than CELL_H.
+        // The row a grid may run: its section's DECLARED override (data-cell-h,
+        // stamped by the engine from a `tokens.row.cell_h` or the `compact`
+        // preset), else CELL_H.
         const cellH = g.cellH ?? CELL_H;
-        const rowH = g.compact ? cellH : CELL_H;
-        if (!g.compact && cellH !== CELL_H)
-          badTracks.push(`${g.zone}: --cell-h=${cellH}px without the \`compact\` treatment (expect ${CELL_H})`);
+        const rowH = g.declaredCellH ?? CELL_H;
+        if (cellH !== rowH)
+          badTracks.push(`${g.zone}: --cell-h=${cellH}px without a declared row override (\`compact\` or \`tokens.row.cell_h\`; expect ${rowH})`);
         g.tracks.forEach((h, i) => {
           const row = g.rows[i];
           const thin = row.n > 0 && row.sepH + (row.hole || 0) + (row.railH || 0) === row.n;
@@ -495,7 +503,7 @@ const INVARIANTS = [
   // measurement, quantifies: a gap makes the sum short by exactly its own area, and
   // the hole is named by coordinate rather than inferred from a right-edge delta.
   { id: 'L', name: 'cells fill width (no right gap)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
-    when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run model)' },
+    when: (c) => c.w > BP.two, superseded: 'RECT/HOLE (npm run model)' },
   // E — RETIRED into arithmetic. A dead track is a track no slot's (column, span)
   // ever covers, which is a set operation on the authored data, not a rendered
   // measurement (TRACK in check-layout.mjs). It also guards the same thing more
@@ -508,7 +516,7 @@ const INVARIANTS = [
   // row (ROW), carrying over P's exact scope — grid-dense forms, >1 track, and rows
   // a rowspan touches exempt.
   { id: 'P', name: 'no orphan cell', cls: 'geometry', sev: 'dura', forms: GRID_DENSE,
-    when: (c) => c.w > 1000, superseded: 'ROW (npm run model)' },
+    when: (c) => c.w > BP.two, superseded: 'ROW (npm run model)' },
   { id: 'M', name: 'cells legible (min readable width)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
     when: () => true, superseded: null,
     check: (m) => {
@@ -590,13 +598,13 @@ const INVARIANTS = [
           `seps=${c.rendered.seps} rails=${c.rendered.rails} spacers=${c.rendered.spacers} ` +
           `half-slots=${c.rendered.halfSlots} leaf-grids=${c.rendered.leafGrids} — all match the authored census` }; } },
   { id: 'Y', name: 'band content fills band (no dead margin)', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.w >= 1200, superseded: null,
+    when: (c) => c.w > BP.two, superseded: null,
     check: (m) => { const FILL_MARGIN_TOL = 48, SYM_TOL = 16; const bands = m.topZones.filter(z => z.band);
       const bad = bands.filter(z => z.leftGap > FILL_MARGIN_TOL || z.rightGap > FILL_MARGIN_TOL || Math.abs(z.leftGap - z.rightGap) > SYM_TOL);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(z => `${z.zone}:not-filled(L${z.leftGap}/R${z.rightGap})`).join(', ')
         : bands.map(z => `${z.zone}(L${z.leftGap}/R${z.rightGap})`).join(' ') }; } },
   { id: 'Q', name: 'compound section widths follow authored span', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.w >= 1200, superseded: null,
+    when: (c) => c.w > BP.two, superseded: null,
     check: (m) => { const items = m.spanRatios || [];
       const bad = items.filter(it => it.errPct > SPAN_TOL_PCT);
       return { ok: bad.length === 0, detail: bad.length
@@ -613,7 +621,7 @@ const INVARIANTS = [
   // PAGE-SCOPED, not form-scoped: they hold on every page unless it declares
   // `text_fit: advisory`, the one opt-out a deck authored before them uses.
   { id: 'FILL', name: 'root span fills its declared tracks', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => ratcheted(c) && c.w >= 1200, superseded: null,
+    when: (c) => ratcheted(c) && c.w > BP.two, superseded: null,
     check: (m) => { const items = m.spanFill || [];
       const bad = items.filter(it => it.offPct > SPAN_FILL_TOL_PCT);
       return { ok: bad.length === 0, detail: bad.length
@@ -621,7 +629,7 @@ const INVARIANTS = [
             `(${it.offPct}% off, tol ${SPAN_FILL_TOL_PCT}% — the declared span is not reaching the canvas)`).join(', ')
         : items.map(it => `${it.id}:s${it.span}/${it.cols}@${it.w}px(=${it.expected})`).join(' ') }; } },
   { id: 'SLICE', name: 'an N-slice row renders as N slices on one line', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => ratcheted(c) && c.w >= 1200, superseded: null,
+    when: (c) => ratcheted(c) && c.w > BP.two, superseded: null,
     check: (m) => { const rows = (m.compoundRows || []).filter(r => !r.column);
       const expected = r => r.expectedLines || 1;
       const wrapped = rows.filter(r => r.lines > expected(r));
@@ -878,9 +886,12 @@ function measure() {
       }
     }
     const zoneEl = grid.closest('.zone[data-zone]');
-    const cellH = Math.round(parseFloat(cs.getPropertyValue('--cell-h'))) || 130;
+    // No fallback: the engine always sets --cell-h, so a missing one reads 0 and fails U.
+    const cellH = Math.round(parseFloat(cs.getPropertyValue('--cell-h'))) || 0;
     const compact = !!(zoneEl && zoneEl.classList.contains('compact'));
-    return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)', tracks, rows, overflow, cellH, compact };
+    const declared = grid.closest('[data-cell-h]');
+    const declaredCellH = declared ? Number(declared.getAttribute('data-cell-h')) : undefined;
+    return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)', tracks, rows, overflow, cellH, compact, declaredCellH };
   });
 
   // FILTER REFERENTIAL INTEGRITY (invariant K). The chips and the components that
@@ -1016,7 +1027,7 @@ function measure() {
     // lower rows.
     const colGap = parseFloat(getComputedStyle(g).columnGap) || 0;
     const rowGap = parseFloat(getComputedStyle(g).rowGap) || 0;
-    const cellH = parseFloat(getComputedStyle(g).getPropertyValue('--cell-h')) || 130;   // a compact grid's own row
+    const cellH = parseFloat(getComputedStyle(g).getPropertyValue('--cell-h')) || 0;   // the grid's own row (engine-set)
     const rowPitch = cellH + rowGap;   // top-to-top distance between grid rows
     // `.half-slot` counts as a grid cell here — it IS the cell a `half` pair
     // occupies (the two boxes inside it are NOT direct children of the grid). Omit
@@ -1519,6 +1530,10 @@ async function main() {
     process.exit(1);
   }
   console.log(`    [PASS] generated data matches the authored YAML — ${sc.summary}\n`);
+  // The census just proved the bundle carries the authored tokens.
+  applyTokens(loadGenerated(ROOT).doc.tokens);
+  console.log(`    [PASS] expectations from __DOC__.tokens — row ${CELL_H}px, thin row ${SEP_ROW_H}px, ` +
+    `rail row ${RAIL_ROW_MIN}..${RAIL_ROW_MAX}px, legible cell >= ${MIN_LEGIBLE}px, viewport ${TOKENS.viewport.w}x${TOKENS.viewport.h}\n`);
 
   // ── DEGRADATION: NO BROWSER IS A SKIP, NOT A FAILURE. ──
   // This gate is MANDATORY (`npm run render`, the MEASURED half) and it still exits
@@ -1724,7 +1739,7 @@ async function main() {
   // chip row) + its scroll height + the frame below it. Advisory, because a
   // deck may mean to scroll; the finding says by how much it does, and the
   // chrome it prints is the number the static prediction assumes.
-  const VIEWPORT = resolveViewport(loadAuthoredDeck(ROOT).manifest);
+  const VIEWPORT = TOKENS.viewport;
   const pageHeights = [];
   for (const pg of discovery) {
     const ctx = await browser.newContext({ viewport: { width: VIEWPORT.w, height: VIEWPORT.h }, deviceScaleFactor: 1 });
@@ -1811,7 +1826,7 @@ function reportVerdict(results, failed, advisories) {
 // That is what lets a harness exercise the pure decision logic — the invariant
 // table, the undeclared-form guard, the verdict, the static census — in an
 // environment with no browser at all.
-module.exports = { INVARIANTS, FORMS, ALL_FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE,
+module.exports = { applyTokens, renderExpectations, INVARIANTS, FORMS, ALL_FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE,
   WORDFIT, runInvariants, reportVerdict, staticCensus, nodeCensus, pageCensus };
 
 if (require.main === module) main();

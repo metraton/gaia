@@ -43,9 +43,9 @@ while the render proves the stylesheet drew it.
 
 ### Fill geometry (what replaced the width math)
 
-There is no fixed cell width anymore — `--cell-w` (232px) survives only as a
-documented readability reference, and the guardrail's retired **W** invariant
-(`superseded: 'U'` in `tools/validate-layout.cjs`) records the supersession.
+There is no fixed cell width anymore — the old `--cell-w` (232px) is gone, and
+the guardrail's retired **W** invariant (`superseded: 'U'` in
+`tools/validate-layout.cjs`) records the supersession.
 
 - **Leaf grid** — `repeat(columns, minmax(var(--cell-min-w),1fr))` tracks,
   `gap: 8px`, fixed `--cell-h: 130px` rows.
@@ -153,8 +153,8 @@ palette: neutral             # optional — the deck SKIN; omitted == neutral.
                              #   neutral | rose-pine | rose-pine-moon | contrast
                              # The semantic roles are identical in every palette, so
                              # this changes how the deck LOOKS, never what it MEANS.
-viewport: { w: 1920, h: 1080 }  # optional — the PRESENTATION viewport, in px;
-                             #   omitted == 1920x1080. w 320..7680, h 240..4320.
+tokens:                      # optional — design tokens over the defaults (see "Tokens")
+  viewport: { w: 1920, h: 1080 }  # the PRESENTATION viewport, in px
 pages:
   - id: overview             # required — must match page.id in the file
     name: "Overview"         # required — visible label (rename without breaking refs)
@@ -175,9 +175,9 @@ header (`if (barVer && doc.version)`) after the subtitle. Omit it and the `.ver`
 node stays empty; `:empty` collapses it in index.html, so a deck with no
 `version` degrades with zero visible change.
 
-`viewport` is the size the deck is SHOWN at. The build validates it and writes
-the resolved value onto `window.__DOC__.viewport`; CENSUS fails if the gates'
-default and the build's disagree. It decides two things: the tier where a
+`tokens.viewport` is the size the deck is SHOWN at. The build validates it and
+writes the resolved value onto `window.__DOC__.tokens.viewport`; CENSUS fails if
+the bundle does not carry what the YAML authored. It decides two things: the tier where a
 title, description or section header that overflows its lines FAILS the static
 gate (every other tier only advises — see TEXT below), and the height each page
 is compared against (HEIGHT statically, VH on the render). Set it to the screen
@@ -520,6 +520,76 @@ sections:
       - { id: card-2, kicker: DOING, title: "Card 2", filters: [plan-1] }
       - { id: card-3, kicker: DONE, title: "Card 3" }
 ```
+
+## Tokens
+
+Every visual number a deck may tune is a **token**. `engine/tokens.mjs` holds
+the defaults (`DEFAULT_TOKENS`) and the schema; `document.yaml` `tokens:` is
+merged over them by the build, which refuses an unknown key (with a near-miss
+hint), a value outside its range, and a broken relation (`breakpoints` must be
+`one < two < stack`; a `min_px` must not exceed its `max_px`). The resolved set
+is written to `window.__DOC__.tokens`, and its CSS projection to
+`window.__DOC__.css_vars`, which `engine.js` sets on `<html>`. Both gates read
+`__DOC__.tokens`; none keeps a copy. Change a value in the YAML, rebuild, and
+the engine, `check`, `validate` and `test` all follow.
+
+```yaml
+tokens:
+  row: { cell_h: 120 }            # document-wide
+  type: { desc: { lines: 2 } }
+```
+
+A **section** may override `row.cell_h`, `type.title.lines` and
+`type.desc.lines`; a **box** may override the two `lines`. Nothing else is
+per-node: a per-cell font or spacing would let one cell stop matching its
+neighbours. An override inherits down the subtree, like the CSS property it
+becomes, and a section that sets `row.cell_h` is held to that row by validate U.
+`treatment: [compact]` is sugar for the section override
+`row.cell_h: <row.compact_h>` plus its structural rules (a `--s-1` row gap and
+box padding, no description clamp).
+
+The breakpoints are the one exception to "every rule reads var()": a container
+query cannot, so the build writes the three `@container` tiers into
+`data/breakpoints.generated.css` (committed, like `data.generated.js`), which
+`index.html` links. The `:root` declarations and `var()` fallbacks in
+`index.html` are the defaults a deck opened without its bundle draws; `check`
+fails if any of them differs from `DEFAULT_TOKENS`.
+
+| Key | Default | Range | Where | Why it is a token |
+|-----|---------|-------|-------|-------------------|
+| `row.cell_h` | 130 | 60..400 px | doc, section | the fixed row every cell fills: title + clamped description |
+| `row.sep_h` | 40 | 16..120 px | doc | a divider row: a break, not a missing cell |
+| `row.zone_min_h` | 180 | 0..600 px | doc | a framed zone's floor, so a short zone is not a sliver |
+| `row.compact_h` | 74 | 40..400 px | doc | the row `compact` presets, for a staircase that ends level |
+| `space.base` | 8 | 2..16 px | doc | the grid step every gap and padding is a multiple of |
+| `space.scale` | [0.5,1,2,3,4,6,8] | 7 increasing, 0.25..16 | doc | `--s-1`..`--s-7` = base × scale |
+| `frame.v` / `frame.h` / `frame.top` | 28 / 40 / 35 | 0..200 px | doc | the stage's breathing room; `top` matches the header→chips rhythm |
+| `frame.narrow` | 8 | 0..64 px | doc | the frame and canvas padding at the one-track tier |
+| `plane_max` | 1280 | 640..7680 px | doc | the content block's cap; wider screens get side margins |
+| `cell_min_w` | 120 | 100..400 px | doc | the legibility floor: columns collapse before a cell goes below it |
+| `type.title.min_px` / `vw` / `max_px` | 15 / 1 / 17 | 11..32 px / 0..5 vw / 11..40 px | doc | box title `clamp()` |
+| `type.title.lines` | 2 | 1..4 | doc, section, box | the title clamp |
+| `type.desc.px` / `lh` | 12 / 1.4 | 10..24 px / 1..2.4 | doc | description line size |
+| `type.desc.lines` | 3 | 1..8 | doc, section, box | the description clamp (a fixed box height) |
+| `type.kicker.px` / `track_em` | 10.5 / 0.09 | 9..20 px / 0..0.3 em | doc | the machine name above the title; tracking counts in the budget |
+| `type.section_title.*` | 13 / 0.85 / 14.5 px, 0.1 em, 2 lines | as title, lines 1..4 | doc | section header `clamp()` and clamp |
+| `type.section_sub.px` / `lines` | 12 / 3 | 10..24 px / 1..6 | doc | section subtitle |
+| `type.rail.px` / `track_em` | 13 / 0.09 | 10..24 px / 0..0.3 em | doc | a lane label |
+| `type.rail_hue.px` / `track_em` / `pad_y` | 10.5 / 0 / 10 | 9..24 px / 0..0.3 em / 0..24 px | doc | a hue rail is a word, set tight to fit a narrow cell |
+| `type.panel.*` | title 19, summary 15, kicker 13 px, 0.08 em | 12..48 / 11..32 / 9..24 px | doc | the detail card |
+| `indent_step` | 32 | 8..96 px | doc | one rail tree level (depth stays 0..3) |
+| `dim.box` / `dim.label` | 0.18 / 0.34 | 0.05..0.9 | doc | how far a chip dims the rest |
+| `panel.dock` | bottom-left | 4 corners | doc | where the detail card docks |
+| `panel.inset` / `aspect` / `width_cols` | 24 / 1.25 / 2 | 0..96 px / 0.5..3 / 1..4 | doc | card inset, height:width, width in narrowest-root-section units |
+| `breakpoints.stack` / `two` / `one` | 1440 / 1000 / 640 | 320..7680 px | doc | the collapse tiers (generated CSS) |
+| `viewport.w` / `h` | 1920 / 1080 | 320..7680 / 240..4320 px | doc | the presentation tier: text fit fails there; page height is compared with it |
+| `default_columns` | 2 | 1..12 | doc | a section's columns when it declares none |
+
+**Fixed, not tokens:** box chrome (border 1.5, radius, inner gap 2, title margin
+1), the half-title clamp of 1, the rail indent depth, the monospace advance and
+line factors the gates assume, WCAG thresholds, measurement tolerances, and the
+pan threshold. They are craft values, structural definitions or facts about the
+instrument; `check` still reads the chrome back out of `index.html`.
 
 ## The strict authoring schema
 

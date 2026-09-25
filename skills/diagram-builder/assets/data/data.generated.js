@@ -5,9 +5,148 @@ window.__DOC__ = {
   "subtitle": "A portable, data-driven diagram — edit data/ and run npm run build",
   "version": "0.2.0",
   "palette": "rose-pine",
-  "viewport": {
-    "w": 1920,
-    "h": 1080
+  "tokens": {
+    "row": {
+      "cell_h": 130,
+      "sep_h": 40,
+      "zone_min_h": 180,
+      "compact_h": 74
+    },
+    "space": {
+      "base": 8,
+      "scale": [
+        0.5,
+        1,
+        2,
+        3,
+        4,
+        6,
+        8
+      ]
+    },
+    "frame": {
+      "v": 28,
+      "h": 40,
+      "top": 35,
+      "narrow": 8
+    },
+    "plane_max": 1280,
+    "cell_min_w": 120,
+    "type": {
+      "title": {
+        "min_px": 15,
+        "vw": 1,
+        "max_px": 17,
+        "lines": 2
+      },
+      "desc": {
+        "px": 12,
+        "lh": 1.4,
+        "lines": 3
+      },
+      "kicker": {
+        "px": 10.5,
+        "track_em": 0.09
+      },
+      "section_title": {
+        "min_px": 13,
+        "vw": 0.85,
+        "max_px": 14.5,
+        "track_em": 0.1,
+        "lines": 2
+      },
+      "section_sub": {
+        "px": 12,
+        "lines": 3
+      },
+      "rail": {
+        "px": 13,
+        "track_em": 0.09
+      },
+      "rail_hue": {
+        "px": 10.5,
+        "track_em": 0,
+        "pad_y": 10
+      },
+      "panel": {
+        "title_px": 19,
+        "summary_px": 15,
+        "kicker_px": 13,
+        "kicker_track_em": 0.08
+      }
+    },
+    "indent_step": 32,
+    "dim": {
+      "box": 0.18,
+      "label": 0.34
+    },
+    "panel": {
+      "dock": "bottom-left",
+      "inset": 24,
+      "aspect": 1.25,
+      "width_cols": 2
+    },
+    "breakpoints": {
+      "stack": 1440,
+      "two": 1000,
+      "one": 640
+    },
+    "viewport": {
+      "w": 1920,
+      "h": 1080
+    },
+    "default_columns": 2
+  },
+  "css_vars": {
+    "--cell-h": "130px",
+    "--sep-row-h": "40px",
+    "--zone-min-h": "180px",
+    "--frame-v": "28px",
+    "--frame-h": "40px",
+    "--frame-top": "35px",
+    "--frame-narrow": "8px",
+    "--plane-max": "1280px",
+    "--cell-min-w": "120px",
+    "--title-min": "15px",
+    "--title-vw": "1vw",
+    "--title-max": "17px",
+    "--title-lines": "2",
+    "--desc-px": "12px",
+    "--desc-lh": "1.4",
+    "--desc-lines": "3",
+    "--kicker-px": "10.5px",
+    "--kicker-track": "0.09em",
+    "--ztitle-min": "13px",
+    "--ztitle-vw": "0.85vw",
+    "--ztitle-max": "14.5px",
+    "--ztitle-track": "0.1em",
+    "--ztitle-lines": "2",
+    "--zsub-px": "12px",
+    "--zsub-lines": "3",
+    "--rail-px": "13px",
+    "--rail-track": "0.09em",
+    "--rail-hue-px": "10.5px",
+    "--rail-hue-track": "0em",
+    "--rail-hue-pad-y": "10px",
+    "--panel-title-px": "19px",
+    "--panel-summary-px": "15px",
+    "--panel-kicker-px": "13px",
+    "--panel-kicker-track": "0.08em",
+    "--indent-step": "32px",
+    "--dim-box": "0.18",
+    "--dim-label": "0.34",
+    "--panel-inset": "24px",
+    "--s-1": "4px",
+    "--s-2": "8px",
+    "--s-3": "16px",
+    "--s-4": "24px",
+    "--s-5": "32px",
+    "--s-6": "48px",
+    "--s-7": "64px",
+    "--panel-left": "24px",
+    "--panel-right": "auto",
+    "--panel-top": "auto",
+    "--panel-bottom": "24px"
   },
   "pages": [
     {

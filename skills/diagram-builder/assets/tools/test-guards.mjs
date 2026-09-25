@@ -19,12 +19,21 @@ import { widthAtTier, isBandAtTier, isBandClass, place,
   textBudget, capacityFor, MONO_ADVANCE_EM, isThinRowLeaf, inkBudget,
   railTitleFit, railTitleWidth, headerBudget, predictPageHeight, pageHeightAdvisory,
   CSS_TEXT } from './check-layout.mjs';
+import { DEFAULT_TOKENS } from '../engine/tokens.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK = path.join(ROOT, 'tools', 'check-layout.mjs');
 const BUILD = path.join(ROOT, 'engine', 'build-data.mjs');
+const TOKENS_MODULE = path.join(ROOT, 'engine', 'tokens.mjs');
 const INDEX = path.join(ROOT, 'index.html');
+// Every fixture number below derives from the defaults, so a moved default moves
+// the fixtures with it. The render gate's expectations are set from them too:
+// a case that calls an invariant directly runs against DEFAULT_TOKENS.
+const T = DEFAULT_TOKENS;
+const VALIDATE = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+VALIDATE.applyTokens(T);
+const RX = VALIDATE.renderExpectations(T);
 
 let failures = 0;
 function report(name, ok, detail) {
@@ -81,6 +90,7 @@ function mkDeck() {
   );
   fs.mkdirSync(path.join(dir, 'engine'));
   fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
+  fs.copyFileSync(TOKENS_MODULE, path.join(dir, 'engine', 'tokens.mjs'));
   // The real stylesheet, so the CSS MIRROR is actually asserted in every case.
   // Without it every fixture here ran with the mirror unread — the guard quiet in
   // the whole suite whose reason for existing is that a quiet guard is the silent
@@ -284,17 +294,17 @@ function rebuild(dir) {
   const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
   const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
   const mFor = tracks => ({
-    heights: [130], halfSlots: [],
+    heights: [T.row.cell_h], halfSlots: [],
     rowTracks: [{ zone: 'fixture', tracks,
       rows: tracks.map(() => ({ n: 1, sepH: 0, hole: 0, railH: 1 })), overflow: [] }],
   });
-  const notApplied = U.check(mFor([130]));
-  const threeLines = U.check(mFor([52]));
-  const inBand = U.check(mFor([33, 48]));
+  const notApplied = U.check(mFor([T.row.cell_h]));
+  const threeLines = U.check(mFor([RX.RAIL_ROW_MAX + 4]));
+  const inBand = U.check(mFor([RX.RAIL_ROW_MIN, RX.RAIL_ROW_MAX]));
   const ok = U && notApplied.ok === false && notApplied.detail.includes('rail row is auto')
     && threeLines.ok === false && inBand.ok === true;
-  report('U/rail: a rail row outside 33..48px fails the render gate, in-band passes', ok,
-    `130px -> ${notApplied && notApplied.ok} | 52px -> ${threeLines && threeLines.ok} | 33/48px -> ${inBand && inBand.ok}`);
+  report(`U/rail: a rail row outside ${RX.RAIL_ROW_MIN}..${RX.RAIL_ROW_MAX}px fails the render gate, in-band passes`, ok,
+    `cell -> ${notApplied && notApplied.ok} | over -> ${threeLines && threeLines.ok} | band -> ${inBand && inBand.ok}`);
 }
 
 // ── 3e. U/compact — a short row is legal ONLY in a grid that declares it ────
@@ -305,16 +315,18 @@ function rebuild(dir) {
 {
   const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
   const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
+  const short = T.row.compact_h;
   const mFor = (compact) => ({
-    heights: [130], halfSlots: [],
-    rowTracks: [{ zone: 'fixture', tracks: [74, 74], cellH: 74, compact,
+    heights: [T.row.cell_h], halfSlots: [],
+    rowTracks: [{ zone: 'fixture', tracks: [short, short], cellH: short, compact,
+      declaredCellH: compact ? short : undefined,
       rows: [0, 1].map(() => ({ n: 1, sepH: 0, hole: 0, railH: 0 })), overflow: [] }],
   });
   const undeclared = U.check(mFor(false));
   const declared = U.check(mFor(true));
-  const ok = U && undeclared.ok === false && undeclared.detail.includes('without the `compact` treatment')
+  const ok = U && undeclared.ok === false && undeclared.detail.includes('without a declared row override')
     && declared.ok === true;
-  report('U/compact: a 74px row fails without `compact`, passes with it', ok,
+  report(`U/compact: a ${short}px row fails without a declared override, passes with it`, ok,
     `undeclared -> ${undeclared && undeclared.ok} | declared -> ${declared && declared.ok}\n${undeclared && undeclared.detail}`);
 }
 
@@ -328,11 +340,12 @@ function rebuild(dir) {
   const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
   const thinRow = { n: 2, sepH: 1, hole: 1, railH: 0 };
   const boxRow = { n: 1, sepH: 0, hole: 0, railH: 0 };
-  const mFor = (tracks, rows) => ({ heights: [130], halfSlots: [],
+  const cell = T.row.cell_h, sep = T.row.sep_h, grown = T.row.sep_h + 32;
+  const mFor = (tracks, rows) => ({ heights: [cell], halfSlots: [],
     rowTracks: [{ zone: 'fixture', tracks, rows, overflow: [] }] });
-  const mixed = U.check(mFor([130, 40, 130], [boxRow, thinRow, boxRow]));
-  const trailing = U.check(mFor([130, 72], [boxRow, thinRow]));
-  const interior = U.check(mFor([130, 72, 130], [boxRow, thinRow, boxRow]));
+  const mixed = U.check(mFor([cell, sep, cell], [boxRow, thinRow, boxRow]));
+  const trailing = U.check(mFor([cell, grown], [boxRow, thinRow]));
+  const interior = U.check(mFor([cell, grown, cell], [boxRow, thinRow, boxRow]));
   const ok = mixed.ok === true && trailing.ok === true && interior.ok === false;
   report('U/thin: sep+spacer row is thin; only a TRAILING thin row may grow', ok,
     `mixed -> ${mixed.ok} | trailing 72 -> ${trailing.ok} | interior 72 -> ${interior.ok}`);
@@ -628,7 +641,7 @@ function thinCorpus() {
 // of them. N is pure over `m.wordFit`, which is why no browser is needed — the
 // same reason the placement cases above can lift the engine's own functions.
 const N_CELL_PX = 270.5;   // a span-1 cell of the seed's 4-track, 1246px band grid
-const N_FONT_PX = 17;      // .box .t at the two widest tiers
+const N_FONT_PX = T.type.title.max_px;   // .box .t at the two widest tiers
 
 // A measurement stub carrying only what the invariant table reads. Every other
 // invariant is free to come back red on it — only N's verdict is read.
@@ -752,7 +765,7 @@ const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
   saveOverview(p, doc);
   rebuild(dir);
   const atDefault = runNode([CHECK, dir]);
-  writeDocument(dir, { viewport: { w: 2560, h: 1440 } });
+  writeDocument(dir, { tokens: { viewport: { w: 2560, h: 1440 } } });
   rebuild(dir);
   const atWide = runNode([CHECK, dir]);
   const failLine = w => `[FAIL] overview:root > section-e > item-a @${w}px: description needs 4`;
@@ -782,11 +795,11 @@ const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
   const badFit = runNode([buildInDir]);
   doc.text_fit = 'strict';
   saveOverview(p, doc);
-  writeDocument(dir, { viewport: { w: 10, h: 1080 } });
+  writeDocument(dir, { tokens: { viewport: { w: 10, h: 1080 } } });
   const badViewport = runNode([buildInDir]);
   const ok = advised.code === 0 && advised.out.includes('[INFO] overview:root > section-e > item-a: description needs 4')
     && badFit.code !== 0 && badFit.out.includes('unknown page text_fit "loose"')
-    && badViewport.code !== 0 && badViewport.out.includes('viewport `w` must be an integer');
+    && badViewport.code !== 0 && badViewport.out.includes('tokens.viewport.w must be an integer 320..7680 px');
   report('TEXT/opt-out: text_fit advisory reports without failing; a bad text_fit or viewport is refused', ok,
     `advised exit=${advised.code} badFit exit=${badFit.code} badViewport exit=${badViewport.code}\n` +
     `${advised.out}\n${badFit.out}\n${badViewport.out}`);
@@ -872,18 +885,102 @@ const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
   const dir = mkDeck();
   const idx = path.join(dir, 'index.html');
   const src = fs.readFileSync(idx, 'utf8');
-  // `--frame-h:40px;` is declared EXACTLY ONCE and is read by the frameH probe,
-  // so removing that one substring is a stylesheet that still parses, still
-  // renders, and no longer answers one of the questions the mirror asks.
-  const probed = '--frame-h:40px;';
+  // `--frame-h:40px;` is the ONLY default of --frame-h (every use is a bare
+  // var()), so removing it leaves a stylesheet that still parses and renders
+  // with its bundle, and no longer says what a deck without one draws.
+  const probed = `--frame-h:${T.frame.h}px;`;
   const removed = src.includes(probed);
   fs.writeFileSync(idx, src.replace(probed, ''), 'utf8');
   const { code, out } = runNode([CHECK, dir]);
   const ok = removed && code !== 0
-    && out.includes('declares no readable [frameH]')
+    && out.includes('declares no readable [') && out.includes('default of --frame-h')
     && !out.includes('ALL PASS');
-  report('CSS/mirror: a deleted probed declaration FAILS the gate', ok,
+  report('CSS/mirror: a deleted token default FAILS the gate', ok,
     `probe-present=${removed} exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+// The DEFAULTS contract, the other direction: a :root fallback that disagrees
+// with DEFAULT_TOKENS fails by name, and so does a rule that stops spending its
+// token through var() (the shape probe) — a literal clamp no longer moves with
+// the data.
+{
+  const dir = mkDeck();
+  const idx = path.join(dir, 'index.html');
+  const src = fs.readFileSync(idx, 'utf8');
+  const def = `--cell-h:${T.row.cell_h}px;`, shape = '-webkit-line-clamp:var(--desc-lines, 3)';
+  fs.writeFileSync(idx, src.replace(def, `--cell-h:${T.row.cell_h - 10}px;`), 'utf8');
+  const drifted = runNode([CHECK, dir]);
+  fs.writeFileSync(idx, src.replace(shape, '-webkit-line-clamp:3'), 'utf8');
+  const literal = runNode([CHECK, dir]);
+  const ok = src.includes(def) && src.includes(shape)
+    && drifted.code !== 0 && drifted.out.includes(`--cell-h: stylesheet default ${T.row.cell_h - 10}px vs DEFAULT_TOKENS ${T.row.cell_h}px`)
+    && literal.code !== 0 && literal.out.includes('.box .desc clamps to var(--desc-lines)');
+  report('CSS/defaults: a drifted :root default and a literal clamp both FAIL the gate', ok,
+    `drift exit=${drifted.code} literal exit=${literal.code}\n${drifted.out.slice(-600)}\n${literal.out.slice(-600)}`);
+  rmDeck(dir);
+}
+
+// ── 11. TOKENS — the data is the only input ────────────────────────────────
+// THREE-LAYER AGREEMENT. One edit to document.yaml (row.cell_h 130 -> 110,
+// type.desc.lines 3 -> 2) must move the engine's CSS properties, the static
+// gate's model and the render gate's expectations together; each layer is
+// asserted by what it DOES with the value, and the case fails on the first one
+// that ignores it.
+{
+  const dir = mkDeck();
+  const three = ['first line', 'second line', 'third line'];
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'item-a').description = three;
+  saveOverview(p, doc);
+  rebuild(dir);
+  const before = runNode([CHECK, dir]);
+  writeDocument(dir, { tokens: { row: { cell_h: 110 }, type: { desc: { lines: 2 } } } });
+  rebuild(dir);
+  const after = runNode([CHECK, dir]);
+  const gen = require(path.join(ROOT, 'tools', 'static-census.cjs')).loadGenerated(dir).doc;
+  // engine: the bundle's :root projection, and the engine applies exactly it.
+  const engineOk = gen.css_vars['--cell-h'] === '110px' && gen.css_vars['--desc-lines'] === '2'
+    && ENGINE_SRC.includes('applyVars(document.documentElement, doc.css_vars)');
+  // static gate: the model prints the moved values and three lines now overflow.
+  const failDesc = '[FAIL] overview:root > section-e > item-a @1920px: description needs 3';
+  const staticOk = !before.out.includes(failDesc) && after.out.includes('row 110px')
+    && after.out.includes('desc 12px/2ln') && after.out.includes(failDesc);
+  // render gate: its expectations follow, and U holds a 110px grid to them.
+  const rx = VALIDATE.renderExpectations(gen.tokens);
+  const U = VALIDATE.INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
+  const mFor = h => ({ heights: [h], halfSlots: [],
+    rowTracks: [{ zone: 'fixture', tracks: [h], cellH: h, rows: [{ n: 1, sepH: 0, hole: 0, railH: 0 }], overflow: [] }] });
+  VALIDATE.applyTokens(gen.tokens);
+  const renderOk = rx.CELL_H === 110 && U.check(mFor(110)).ok === true && U.check(mFor(T.row.cell_h)).ok === false;
+  VALIDATE.applyTokens(T);
+  report('TOKENS/agree: cell_h 110 + desc.lines 2 move the engine vars, the static model and the render expectations',
+    engineOk && staticOk && renderOk,
+    `engine=${engineOk} static=${staticOk} render=${renderOk}\n${after.out.split('\n').filter(l => /TOKENS|row \d+px|item-a/.test(l)).join('\n')}`);
+  rmDeck(dir);
+}
+
+// RANGE. An out-of-range token, a value under the legibility floor, a typo and
+// a deck-wide key overridden on a section are each refused by the build, by name.
+{
+  const dir = mkDeck();
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  const refuse = (extra, needle) => { writeDocument(dir, extra); const r = runNode([buildInDir]);
+    return r.code !== 0 && r.out.includes(needle) ? null : `${needle} (exit=${r.code}) ${r.out.slice(0, 200)}`; };
+  const misses = [
+    refuse({ tokens: { row: { cell_h: 20 } } }, 'tokens.row.cell_h must be an integer 60..400 px'),
+    refuse({ tokens: { type: { desc: { px: 8 } } } }, 'tokens.type.desc.px must be a number 10..24 px'),
+    refuse({ tokens: { row: { cell_hh: 120 } } }, 'did you mean "row.cell_h"?'),
+    refuse({ tokens: { breakpoints: { two: 1500 } } }, 'one < two < stack'),
+  ];
+  writeDocument(dir, {});
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'section-e').tokens = { type: { desc: { px: 14 } } };
+  saveOverview(p, doc);
+  const node = runNode([buildInDir]);
+  if (!(node.code !== 0 && node.out.includes('tokens.type.desc.px is deck-wide and cannot be overridden here')))
+    misses.push(`section override (exit=${node.code}) ${node.out.slice(0, 200)}`);
+  report('TOKENS/range: out-of-range, sub-legible, misspelled and non-overridable tokens are refused',
+    misses.every(m => m === null), misses.filter(Boolean).join('\n'));
   rmDeck(dir);
 }
 {

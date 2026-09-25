@@ -96,8 +96,19 @@
   // A half LEAF: only a component can occupy (and therefore divide) a slot.
   const isHalfLeaf = c => c && !Array.isArray(c.children) && hasTreatment(c, 'half');
 
+  // The resolved design tokens (engine/tokens.mjs, merged by the build). The
+  // engine never holds a visual number of its own: it applies the build's CSS
+  // projection and reads the few values only JS consumes.
+  const TOKENS = doc.tokens;
+  if (!TOKENS || !doc.css_vars) {
+    console.error('[engine] window.__DOC__ carries no tokens; rebuild the deck (npm run build).');
+    return;
+  }
+  const applyVars = (node, vars) => { for (const k in vars || {}) node.style.setProperty(k, vars[k]); };
+  applyVars(document.documentElement, doc.css_vars);
+
   // Default column count for a section's grid when it omits `columns`.
-  const DEFAULT_SECTION_COLUMNS = 2;
+  const DEFAULT_SECTION_COLUMNS = TOKENS.default_columns;
 
   const el = (tag, cls, attrs) => {
     const n = document.createElement(tag);
@@ -143,6 +154,7 @@
   // is the small mark above the title — it names no state, it is just the mark.)
   function buildBox(comp, detailRegistry) {
     const box = el('div', componentClasses(comp), { 'data-k': comp.id });
+    applyVars(box, comp.css_vars);   // a per-box clamp override (tokens: on the component)
     if (comp.kicker) { const k = el('div', 'k'); k.textContent = comp.kicker; box.appendChild(k); }
     const t = el('div', 't'); t.textContent = comp.title || ''; box.appendChild(t);
     const rawDesc = comp.description;
@@ -602,6 +614,11 @@
     const classes = ['zone', SECTION_VARIANT[sec.variant] ?? ''];
     for (const t of treatmentsOf(sec)) classes.push(SECTION_TREATMENT[t] ?? '');
     const zone = el('section', classes.filter(Boolean).join(' '), { 'data-zone': sec.id });
+    // A section override (tokens: on the section, or the `compact` preset) is
+    // set inline and inherits down the subtree like the property it is.
+    // data-cell-h DECLARES the override row, which validate U holds the grid to.
+    applyVars(zone, sec.css_vars);
+    if (sec.tokens && sec.tokens.row && sec.tokens.row.cell_h) zone.setAttribute('data-cell-h', String(sec.tokens.row.cell_h));
     // Titleless container: draw no header when the section declares no
     // title/subtitle — so a pure structural wrapper (e.g. a `plain`
     // stack) shows only its children's frames, with no empty header line.
@@ -727,18 +744,19 @@
     }
 
     // One placement for both panel contents, a box's detail and a chip's
-    // relation. The card is twice as wide as the narrowest root section the deck
-    // can draw (this page's plane split by the widest page's root columns),
-    // floored at two readable cells, so it reads comfortably yet never spans more
-    // than two such sections. A dragged position is kept for the whole page.
+    // relation. The card is `panel.width_cols` times as wide as the narrowest
+    // root section the deck can draw (this page's plane split by the widest
+    // page's root columns), floored at that many readable cells, and
+    // `panel.aspect` times as tall as it is wide; both stay inside the stage
+    // less the dock inset on each side. A dragged position is kept for the page.
     let draggedTo = null;
     function placeCard() {
       const plane = act.querySelector('.sec-plane');
-      const cellFloor = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-min-w')) || 0;
-      const width = Math.min(stage.clientWidth - 48,
-        Math.max(2 * cellFloor, 2 * plane.clientWidth / widestRootColumns));
+      const { inset, aspect, width_cols: cols } = TOKENS.panel;
+      const width = Math.min(stage.clientWidth - 2 * inset,
+        Math.max(cols * TOKENS.cell_min_w, cols * plane.clientWidth / widestRootColumns));
       panelEl.style.width = width + 'px';
-      panelEl.style.minHeight = Math.min(1.25 * width, stage.clientHeight - 48) + 'px';
+      panelEl.style.minHeight = Math.min(aspect * width, stage.clientHeight - 2 * inset) + 'px';
       if (draggedTo) moveCardTo(draggedTo.left, draggedTo.top);
     }
     function moveCardTo(left, top) {
