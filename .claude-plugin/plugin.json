@@ -1,6 +1,6 @@
 {
   "name": "gaia",
-  "version": "5.5.0-rc.2",
+  "version": "5.5.0-rc.3",
   "description": "GAIA \u2014 Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code. Risk-classified commands: reads run free, state changes need approval, irreversible ops blocked.",
   "author": {
     "name": "jaguilar87",
