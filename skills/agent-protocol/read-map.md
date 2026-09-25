@@ -78,6 +78,7 @@ is pulled with exactly one verb.
 |---|---|---|
 | `gaia brief show\|list\|search\|deps\|verify` | brief slug (`search` takes a term) | The brief as markdown with its ACs; the index; FTS hits; the dependency graph; invariant violations one per line (`--json` for the structured report). |
 | `gaia brief decision list <brief>` | `--json` | The brief's current decisions, apart from the ones they superseded. |
+| `gaia brief history <brief>` | `--json` | The brief's change history, oldest first: AC added, edited or removed (with before/after in `--json`), decisions, replaced plan versions. Rows marked reconstructed predate v58. |
 | `gaia plan show\|list` | brief slug | The plan attached to that brief, with plan_id, status, version and pause reason; or every plan in the workspace. |
 | `gaia plan history <brief>` | `--content` | Every replaced version of the plan with the reason it was replaced. |
 | `gaia plan change list <brief>` | `--json` | The plan's managed changes: justification, status, and the proposed tasks with their reasons. |
@@ -97,6 +98,7 @@ is pulled with exactly one verb.
 | `gaia history` | `--today`, `--blocked`, `--agent`, `--limit` | Recent agent sessions: time, agent, truncated task, end status, approximate tokens. |
 | `gaia defects` | `--origin`, `--type`, `--severity`, `--agent`, `--since`, `--count` | Failures one row at a time, never aggregated -- subagent anomalies plus hook-log failures above `info`. |
 | `gaia metrics` | `--range`, `--since`/`--until`, `--agent` | The aggregate dashboard behind those rows: tier usage, commands, per-agent totals, anomalies. |
+| `gaia usage show --plan <id>` / `--session <id>` | `--since`/`--until`, `--json` | Tokens per session and agent, one row per API message from the transcripts; for a plan, split into bound, unbound and main (main is an upper bound). |
 | `gaia status` | `--json` | What Gaia has wired into this workspace: last agent, pending context updates, contract success rate. |
 | `gaia doctor` | `--workspace <path>`, `--json` | Health checks, read-only. `--fix` MUTATES and is a different verb in every sense that matters. |
 
