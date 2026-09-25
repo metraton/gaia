@@ -6,7 +6,7 @@ description: Use when presenting a returned APPROVAL_REQUEST for informed user c
 # Present Approval — Orchestrator Branch
 
 Gaia builds every signature, and each of its commands is one question on one
-line, marked `[GAIA-SECURITY]` so the user reads it as Gaia's check and not as
+line, marked `[ GAIA-SECURITY ]` so the user reads it as Gaia's check and not as
 your question: who asks and the exact command; Details adds what it does, its
 impact and the rollback. No model writes any of it.
 You never print, copy, summarise or translate any part of it; you

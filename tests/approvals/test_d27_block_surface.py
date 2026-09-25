@@ -41,8 +41,8 @@ def test_d27_block_surface_text_is_the_literal_example():
     rendered = surface.render(PAYLOAD, APPROVAL_ID)
 
     assert [q["question"] for q in rendered.questions] == [
-        f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PUSH} ]",
-        f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PR} ]",
+        f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PUSH} ]",
+        f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PR} ]",
     ]
     assert "Solicitud de aprobación" not in rendered.text and "```" not in rendered.text
 
@@ -62,12 +62,12 @@ def test_d27_block_surface_details_uses_the_block_format_without_the_command():
     rendered = surface.render(PAYLOAD, APPROVAL_ID)
 
     assert [q["question"] for q in rendered.details_questions] == [
-        f"[GAIA-SECURITY] [ DETAILS ] [ developer ] [ COMMAND: {PUSH} ] "
+        f"[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: {PUSH} ] "
         "[ DOES: git push: sube la rama de prueba al remoto. ] "
         "[ IMPACT: La rama queda visible para todo el equipo. ] "
         "[ ROLLBACK: borrar la rama remota y cerrar el PR. ] "
         f"[ CWD: {PROJECT}/demo-repo ]",
-        f"[GAIA-SECURITY] [ DETAILS ] [ developer ] [ COMMAND: {PR} ] "
+        f"[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: {PR} ] "
         "[ DOES: gh pr create: abre el pull request de la rama. ] "
         "[ IMPACT: El equipo recibe un aviso del PR nuevo. ] "
         "[ ROLLBACK: borrar la rama remota y cerrar el PR. ]",

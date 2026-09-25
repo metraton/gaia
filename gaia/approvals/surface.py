@@ -4,7 +4,7 @@ Gaia composes every line a user reads; the requester only seals short phrases
 (title, question, and per item what it does and its impact, plus the rollback)
 and a host only shows the result. Each command of a signature is its own
 question, on one line, the same text in both hosts, in the machine format of
-D37: bracketed fields under a ``[GAIA-SECURITY]`` prefix whose labels are fixed
+D37: bracketed fields under a ``[ GAIA-SECURITY ]`` prefix whose labels are fixed
 English, while the requester's phrases stay in the user's language. A Details
 re-ask replaces each command's question with its one-line Details text. Phrase
 limits are checked when a request is sealed (:func:`check_phrases`, called by
@@ -43,7 +43,9 @@ OPTIONS = (
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
 
 #: Opens every question Gaia asks, so the user reads it as Gaia's security and not the model's (D37).
-_PREFIX = "[GAIA-SECURITY]"
+_PREFIX = "[ GAIA-SECURITY ]"
+#: The prefix however a model spaced it, unspaced included: the user reads any spacing as Gaia's.
+_TYPED_PREFIX = re.compile(r"\[\s*GAIA-SECURITY\s*\]")
 _RELATIVE_START = re.compile(r"\.{1,2}(/|$)")
 _FILE_NAME = re.compile(r"[\w-]\.[A-Za-z][A-Za-z0-9]{0,7}$")
 _NO_AGENT = "agente sin identificar"
@@ -315,7 +317,7 @@ def looks_like_signature(question: Mapping[str, Any]) -> bool:
     return (
         is_signature_question(question)
         or re.match(r"(?i)(aprob|approv)", header) is not None
-        or str(question.get("question") or "").startswith(_PREFIX)
+        or _TYPED_PREFIX.match(str(question.get("question") or "")) is not None
     )
 
 

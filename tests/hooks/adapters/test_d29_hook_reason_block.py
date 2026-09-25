@@ -88,7 +88,7 @@ def test_d29_hook_reason_block_one_signature_allows_with_its_block(db):
     output = _pre(questions, "toolu_d29_one")
 
     assert questions[0]["question"] == (
-        "[GAIA-SECURITY] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ git push origin feat/d29-1 ]"
+        "[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ git push origin feat/d29-1 ]"
     )
     assert output == {}
     assert _presented("toolu_d29_one") == [(0, approval_id)]
@@ -109,7 +109,7 @@ def test_d29_hook_reason_block_details_re_ask_brings_the_details_block(db):
 
     output = _pre(questions, "toolu_d29_det")
 
-    assert questions[0]["question"].startswith("[GAIA-SECURITY] [ DETAILS ] [ developer ]")
+    assert questions[0]["question"].startswith("[ GAIA-SECURITY ] [ DETAILS ] [ developer ]")
     assert output == {}
     assert _presented("toolu_d29_det") == [(0, approval_id)]
 

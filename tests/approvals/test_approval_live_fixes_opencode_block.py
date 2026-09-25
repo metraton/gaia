@@ -45,8 +45,8 @@ def test_approval_live_fixes_opencode_presentation_emits_one_question_per_comman
     for question, details, command in zip(
         signature["questions"], signature["details_questions"], (FIRST_COMMAND, SECOND_COMMAND),
     ):
-        assert question["question"].startswith("[GAIA-SECURITY] [ AGENT-REQUEST ]")
-        assert details["question"].startswith("[GAIA-SECURITY] [ DETAILS ]")
+        assert question["question"].startswith("[ GAIA-SECURITY ] [ AGENT-REQUEST ]")
+        assert details["question"].startswith("[ GAIA-SECURITY ] [ DETAILS ]")
         assert command in question["question"] and command in details["question"]
         assert "\n" not in question["question"] and "\n" not in details["question"]
 

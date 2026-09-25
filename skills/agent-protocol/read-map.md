@@ -106,7 +106,7 @@ is pulled with exactly one verb.
 |---|---|
 | `gaia approvals pending` / `gaia approvals list` | Live requests awaiting a decision; `list` adds grant state and command count. |
 | `gaia approvals show <P-id>` | One approval: its derived State and Outcome, requester, window, directory, grant and sealed payload. `--json` returns the same as machine detail. |
-| `gaia approvals question <P-id> [<P-id> ...]` | The exact question-tool input for 1 to 4 pending commands, one `[GAIA-SECURITY]` line per command (`--details`: each command's Details line); it records which signature it handed out at which position, and the hook accepts only that object asked unchanged. Run it again at any time for the approvals still pending. |
+| `gaia approvals question <P-id> [<P-id> ...]` | The exact question-tool input for 1 to 4 pending commands, one `[ GAIA-SECURITY ]` line per command (`--details`: each command's Details line); it records which signature it handed out at which position, and the hook accepts only that object asked unchanged. Run it again at any time for the approvals still pending. |
 | `gaia approvals history [<P-id>]` | The N most recent approvals, or one approval's full event chain. |
 | `gaia approvals stats` | Totals by outcome and the pending verb breakdown. |
 | `gaia notifications list` / `gaia notifications show <id>` | The headless-task inbox: what a scheduled or detached run reported back. |

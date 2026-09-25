@@ -549,7 +549,7 @@ class TestCmdShow:
 
         agent = "agente sin identificar"
         assert output["text"].splitlines() == [
-            f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {agent} ] [ COMMAND ] [ {command} ]"
+            f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ {agent} ] [ COMMAND ] [ {command} ]"
             for command in commands
         ]
         details_lines = output["details"].splitlines()
@@ -558,7 +558,7 @@ class TestCmdShow:
         assert [q["header"] for q in output["questions"]] == ["Firma 1/2", "Firma 2/2"]
         assert [q["header"] for q in output["details_questions"]] == ["Detalle 1/2", "Detalle 2/2"]
         for command, line in zip(commands, details_lines):
-            assert line.startswith(f"[GAIA-SECURITY] [ DETAILS ] [ {agent} ] [ COMMAND: {command} ]")
+            assert line.startswith(f"[ GAIA-SECURITY ] [ DETAILS ] [ {agent} ] [ COMMAND: {command} ]")
             assert "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]" in line
         assert self.canonical_id not in output["text"] + output["details"]
         assert "block" not in output and "details_block" not in output

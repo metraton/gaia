@@ -256,7 +256,7 @@ LIVE_CP = (
 ])
 def test_approval_live_fixes_long_command_stays_exact_on_one_line(host, command):
     assert _rendered(_request_set(command=command)).text.splitlines() == [
-        f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {AGENT} ] [ COMMAND ] [ {command} ]"
+        f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ {AGENT} ] [ COMMAND ] [ {command} ]"
     ]
 
 

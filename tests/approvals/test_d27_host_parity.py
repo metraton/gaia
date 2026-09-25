@@ -72,14 +72,14 @@ def test_d27_host_parity_block_bytes_match(approval_id):
     opencode = _opencode_signature(approval_id)["questions"]
 
     assert _shown(_claude_code_questions(approval_id, details=False)) == opencode
-    assert opencode[0]["question"] == f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PUSH} ]"
+    assert opencode[0]["question"] == f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ {PUSH} ]"
 
 
 def test_d27_host_parity_details_bytes_match(approval_id):
     opencode = _opencode_signature(approval_id)["details_questions"]
 
     assert _shown(_claude_code_questions(approval_id, details=True)) == opencode
-    assert opencode[0]["question"].startswith("[GAIA-SECURITY] [ DETAILS ] [ developer ]")
+    assert opencode[0]["question"].startswith("[ GAIA-SECURITY ] [ DETAILS ] [ developer ]")
 
 
 def test_d27_host_parity_opencode_question_carries_only_the_short_question(approval_id):

@@ -104,9 +104,9 @@ line, file unchanged. After 30 minutes with no activity from the requester
 
 **Check 9 -- How it looks.** File `<p>nota-9.txt`. Task: rename it to
 `<p>nota-9-ok.txt`. User: confirms the question, headed `Firma 1/1`, is one
-line `[GAIA-SECURITY] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact command> ]`
+line `[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact command> ]`
 with Approve / Reject / Details; then Details, headed `Detalle 1/1`, one line
-`[GAIA-SECURITY] [ DETAILS ] [ <agent> ] [ COMMAND: ... ] [ DOES: ... ] [ IMPACT: ... ] [ ROLLBACK: ... ]`,
+`[ GAIA-SECURITY ] [ DETAILS ] [ <agent> ] [ COMMAND: ... ] [ DOES: ... ] [ IMPACT: ... ] [ ROLLBACK: ... ]`,
 labels in English, phrases in the user's language, no validity or ID; then
 Reject. Expected: the user says both look right; State `rejected`, no Outcome
 line.

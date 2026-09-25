@@ -8,7 +8,7 @@ import {
 // One D37 signature question: one line, the machine format, Gaia's three options.
 const asked = {
   header: "Firma 1/1",
-  question: "[GAIA-SECURITY] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ git push origin main ]",
+  question: "[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ developer ] [ COMMAND ] [ git push origin main ]",
   options: [
     { label: "Approve", description: "Approve this request" },
     { label: "Reject", description: "Reject this request" },

@@ -148,7 +148,7 @@ def test_approval_live_fixes_pre_accepts_only_the_printed_object_byte_for_byte(h
     [question] = _question_cli(approval_id)
 
     typed_phrase = {**question, "question": "¿Publico la rama?"}
-    one_byte_off = {**question, "question": question["question"].replace("[GAIA-SECURITY]", "[GAIA-SECURITY", 1)}
+    one_byte_off = {**question, "question": question["question"].replace("[ GAIA-SECURITY ]", "[ GAIA-SECURITY]", 1)}
     for impostor in (typed_phrase, one_byte_off):
         assert _denied(_ask_pre([impostor], "toolu_impostor")), impostor["question"]
     assert _events(approval_id, "SHOWN") == []
@@ -210,7 +210,7 @@ def test_approval_live_fixes_question_phrase_keeps_its_limit_and_stays_out_of_th
     approval_id = _request(host["repo"], question="x" * 60, what="y" * 120)
     [question] = _rendered(approval_id).questions
 
-    assert question["question"] == f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {AGENT} ] [ COMMAND ] [ {COMMAND} ]"
+    assert question["question"] == f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ {AGENT} ] [ COMMAND ] [ {COMMAND} ]"
     surface.check_question(question)
     with pytest.raises(surface.SurfaceLimitError, match="60"):
         _request(host["repo"], question="x" * 61)

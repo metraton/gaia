@@ -126,7 +126,7 @@ def test_d28_live_test_catalog_covers_d30_and_d40_minimum(skill_text):
     for number, marker in {
         1: "Approve", 2: "not reusable", 3: "Details", 4: "one signature",
         5: "whole signature is rejected", 6: "[ CWD: <folder>/otra ]",
-        7: "decides only its own", 8: "types an answer", 9: "[GAIA-SECURITY] [ AGENT-REQUEST ]",
+        7: "decides only its own", 8: "types an answer", 9: "[ GAIA-SECURITY ] [ AGENT-REQUEST ]",
     }.items():
         assert marker in _check_section(skill_text, number)
 

@@ -174,7 +174,7 @@ def test_pre_one_signature_asks_the_short_question_shows_its_block_and_records_s
     first = _request(1)
     _, asked = _question_cli(first)
     assert asked["questions"][0]["question"] == (
-        f"[GAIA-SECURITY] [ AGENT-REQUEST ] [ {REQUESTER} ] [ COMMAND ] [ git push origin feat/binding-1 ]"
+        f"[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ {REQUESTER} ] [ COMMAND ] [ git push origin feat/binding-1 ]"
     )
 
     output = _pre(asked["questions"], "toolu_one")
@@ -191,7 +191,7 @@ def test_pre_accepts_only_the_printed_object_byte_for_byte(db):
     exact = asked["questions"][0]
     text_inside = _surfaces(first)[0].text + "\n\n" + exact["question"]
 
-    for text in (text_inside, exact["question"] + " ", exact["question"].replace("[GAIA-SECURITY] ", "")):
+    for text in (text_inside, exact["question"] + " ", exact["question"].replace("[ GAIA-SECURITY ] ", "")):
         reason = _deny_reason(_pre([{**exact, "question": text}], "toolu_off_by_bytes"))
         assert "question 1" in reason
     assert _shown(db, first) == []
@@ -315,7 +315,7 @@ def test_post_details_asks_that_signature_again_and_pre_shows_its_details_block(
     [again] = json.loads(out.getvalue())["questions"]
     rendered = _surfaces(second)[0]
     assert again == rendered.details_questions[0]
-    assert again["question"].startswith(f"[GAIA-SECURITY] [ DETAILS ] [ {REQUESTER} ]")
+    assert again["question"].startswith(f"[ GAIA-SECURITY ] [ DETAILS ] [ {REQUESTER} ]")
     assert _opens_unchanged(_pre([again], "toolu_details_again"))
     assert _shown(db, second)[-1] == {"native_ref": "toolu_details_again", "position": 0}
 
