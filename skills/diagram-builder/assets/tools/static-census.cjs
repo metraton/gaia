@@ -42,15 +42,22 @@ const DEFAULT_ROOT = path.join(__dirname, '..');
 
 // ── THE SHARED FORM TAXONOMY ───────────────────────────────────────────────
 // A page declares its FORM (page YAML `form:`). Both gates scope checks by it,
-// so the default and the grid-dense subset are defined once here rather than
-// once per gate. The remaining sets (GRIDDED, WORDFIT) are consumed by the
-// render gate alone and stay there.
+// so the default and the shared subsets are defined once here rather than once
+// per gate. GRIDDED is still consumed by the render gate alone and stays there.
 const DEFAULT_FORM = 'dashboard';
 // The forms that should EARN a wide canvas by composing sections side by side
 // and grouping cells, so a lone cell stranded on its own row is worth failing
 // (render invariants P/V, static ROW). A timeline/flow/mindmap may legitimately
 // be sparse or linear, so those checks do not judge them.
 const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
+// WORDFIT — the narrative forms whose cells carry real SYMBOL text: a
+// human-language title, and the machine name above it. Those are the forms
+// where a token too long for its cell fractures mid-word and reads as a defect;
+// a planner's `TODO`/`DONE` code or a timeline's phase label is short by
+// construction and is not judged. Consumed by BOTH gates — the render gate's N
+// (title token) and the static gate's TEXT budget (title AND kicker token) — so
+// it lives here rather than in either one of them.
+const WORDFIT = new Set(['dashboard', 'flow']);
 
 // ── THE COLLAPSE BREAKPOINTS ───────────────────────────────────────────────
 // index.html declares three container queries on the `stage` container:
@@ -249,5 +256,5 @@ function staticCensus(root = DEFAULT_ROOT) {
     summary: `${wantIds.length} page(s), palette "${gen.palette ?? 'neutral'}"` };
 }
 
-module.exports = { DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, BREAKPOINTS, cssBreakpoints,
+module.exports = { DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, BREAKPOINTS, cssBreakpoints,
   loadAuthoredDeck, nodeCensus, pageCensus, staticCensus };

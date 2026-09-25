@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import { widthAtTier, isBandAtTier, isBandClass, place,
-  textBudget, capacityFor, MONO_ADVANCE_EM } from './check-layout.mjs';
+  textBudget, capacityFor, MONO_ADVANCE_EM, isThinRowLeaf, inkBudget } from './check-layout.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -124,6 +124,11 @@ function rmDeck(dir) {
   }
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
+// Rebuild after a mutation: that is the real flow (edit → build → check), and it
+// keeps the CENSUS and WORDS checks from reporting the edit as a stale bundle.
+function rebuild(dir) {
+  execFileSync('node', [path.join(dir, 'engine', 'build-data.mjs')], { cwd: dir, stdio: 'ignore' });
+}
 
 // ── 1. RECT — section-e short by exactly 1 cell after removing item-b ─────
 // NOT a section whose child count is what pins its track count: dropping a cell
@@ -166,6 +171,48 @@ function rmDeck(dir) {
   report('A/runInvariants: single check A, ok:false', ok, JSON.stringify(checks));
 }
 
+// ── 2c. SCHEMA — the fields a rail and a box gained, each refused BY NAME ──
+// `copy` is a box's copy-to-clipboard button, `indent` a rail's tree step, and a
+// rail's colour is one of the four categorical hues. Each rule is probed with a
+// value the schema must refuse, after a control that must build — without the
+// control a schema that refused every rail would pass the negatives.
+{
+  const dir = mkDeck();
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  const { p, doc } = loadOverview(dir);
+  const it = findNode(doc, 'item-2');
+
+  it.copy = true;
+  findNode(doc, 'item-a').copy = 'npm run model';
+  saveOverview(p, doc);
+  const control = runNode([buildInDir]);
+  report('SCHEMA/control: `copy` on a box (true and a string) builds', control.code === 0,
+    `exit=${control.code} ${control.out.trim().slice(0, 200)}`);
+
+  const probes = [
+    ['copy on a separator', n => { n.type = 'separator'; n.copy = true; delete n.title; },
+      '`copy` must be `true` or a non-empty string, and only on a box'],
+    ['rail indent 4', n => { n.type = 'rail'; delete n.copy; n.indent = 4; },
+      'rail `indent` must be an integer 0..3'],
+    ['rail variant good', n => { n.type = 'rail'; delete n.copy; n.variant = 'good'; },
+      'unknown rail variant "good"'],
+  ];
+  const leaked = [];
+  for (const [name, mutate, expect] of probes) {
+    const fresh = loadOverview(dir);
+    const node = findNode(fresh.doc, 'item-2');
+    for (const k of ['type', 'copy', 'indent', 'variant']) delete node[k];
+    node.title = 'Two';
+    mutate(node);
+    saveOverview(fresh.p, fresh.doc);
+    const { code, out } = runNode([buildInDir]);
+    if (!(code !== 0 && out.includes('[strict-schema]') && out.includes(expect))) leaked.push(`${name}(exit=${code})`);
+  }
+  report('SCHEMA: copy off a box, rail indent past 3, a non-hue rail variant are refused',
+    leaked.length === 0, `accepted: ${leaked.join(', ')}`);
+  rmDeck(dir);
+}
+
 // ── 3. CHIP — orphan chip, dangling key, arity-1 — one fixture, one run ────
 {
   const dir = mkDeck();
@@ -182,6 +229,180 @@ function rmDeck(dir) {
     && out.includes('chip "flow"') && out.includes('has exactly ONE member');
   report('CHIP: orphan + dangling key + arity-1', ok, `exit=${code}\n${out}`);
   rmDeck(dir);
+}
+
+// ── 3b. LIT — a filter on a separator passes CHIP and can never light ───────
+// The engine stamps `data-filters` only in buildBox and buildRail; a
+// separator/spacer node carries none, so its chip membership closes the CHIP
+// join while the render never spotlights that end. The strict schema
+// legitimately accepts `filters` on a separator — the defect is check-layout's
+// to catch.
+{
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  const it = findNode(doc, 'item-2');
+  it.type = 'separator';
+  it.filters = ['flow'];
+  saveOverview(p, doc);
+  rebuild(dir);
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = code !== 0 && out.includes('separator "item-2"') && out.includes('never lights');
+  report('LIT: filters on a separator cannot light', ok, `exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+
+// ── 3c. RAILT — a rail title past the two-line ceiling must FAIL the gate ───
+// A horizontal no-rowspan rail sits in an `auto` row and `.rail-title` has no
+// clamp, so an over-wrapped title does not clip — it grows the row and every
+// stack built on the thin-row arithmetic. The negative: a rail whose title
+// needs three lines in its 1-of-4 track must be a HARD RAILT fail.
+{
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  const it = findNode(doc, 'item-2');
+  it.type = 'rail';
+  it.title = 'Coordination handshake verification ledger reconciliation';
+  saveOverview(p, doc);
+  rebuild(dir);
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = code !== 0 && out.includes('RAILT') && out.includes('item-2')
+    && out.includes('ceiling is 2');
+  report('RAILT: a three-line rail title fails the static gate', ok, `exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+
+// ── 3d. U/rail — the render gate's rail-row band must SPEAK UP both ways ────
+// The render gate's U models the same thin-row rule the engine and the static
+// gate carry (the third copy — measured: teaching only two of the three turned
+// every rail row into a false 'must stay 130px' dura failure). A rail thin row
+// is `auto`, asserted as the band 33..48: a 130px track means the auto row was
+// never applied, a 52px track means a third title line slipped past RAILT's
+// static estimate. Both directions are exercised, plus the in-band positive.
+{
+  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+  const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
+  const mFor = tracks => ({
+    heights: [130], halfSlots: [],
+    rowTracks: [{ zone: 'fixture', tracks,
+      rows: tracks.map(() => ({ n: 1, sepH: 0, hole: 0, railH: 1 })), overflow: [] }],
+  });
+  const notApplied = U.check(mFor([130]));
+  const threeLines = U.check(mFor([52]));
+  const inBand = U.check(mFor([33, 48]));
+  const ok = U && notApplied.ok === false && notApplied.detail.includes('rail row is auto')
+    && threeLines.ok === false && inBand.ok === true;
+  report('U/rail: a rail row outside 33..48px fails the render gate, in-band passes', ok,
+    `130px -> ${notApplied && notApplied.ok} | 52px -> ${threeLines && threeLines.ok} | 33/48px -> ${inBand && inBand.ok}`);
+}
+
+// ── 3e. U/compact — a short row is legal ONLY in a grid that declares it ────
+// `compact` (index.html `.zone.compact`) gives one leaf grid a shorter row. The
+// render gate must fail a grid that runs that row WITHOUT declaring it, and
+// accept the same row once it does. Box rows (railH 0), so the band rule for
+// rails does not apply.
+{
+  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+  const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
+  const mFor = (compact) => ({
+    heights: [130], halfSlots: [],
+    rowTracks: [{ zone: 'fixture', tracks: [74, 74], cellH: 74, compact,
+      rows: [0, 1].map(() => ({ n: 1, sepH: 0, hole: 0, railH: 0 })), overflow: [] }],
+  });
+  const undeclared = U.check(mFor(false));
+  const declared = U.check(mFor(true));
+  const ok = U && undeclared.ok === false && undeclared.detail.includes('without the `compact` treatment')
+    && declared.ok === true;
+  report('U/compact: a 74px row fails without `compact`, passes with it', ok,
+    `undeclared -> ${undeclared && undeclared.ok} | declared -> ${declared && declared.ok}\n${undeclared && undeclared.detail}`);
+}
+
+// ── 3f. U/thin — a sep+spacer row is thin, a trailing thin row is a floor ───
+// The engine thins a row of rules and DECLARED HOLES alike, and lets a trailing
+// one absorb a stretched section's slack (minmax(--sep-row-h, 1fr)). U must hold
+// both: a mixed separator+spacer row at 40px passes, a trailing one at 72px
+// passes, the same 72px on a NON-trailing row fails.
+{
+  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+  const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
+  const thinRow = { n: 2, sepH: 1, hole: 1, railH: 0 };
+  const boxRow = { n: 1, sepH: 0, hole: 0, railH: 0 };
+  const mFor = (tracks, rows) => ({ heights: [130], halfSlots: [],
+    rowTracks: [{ zone: 'fixture', tracks, rows, overflow: [] }] });
+  const mixed = U.check(mFor([130, 40, 130], [boxRow, thinRow, boxRow]));
+  const trailing = U.check(mFor([130, 72], [boxRow, thinRow]));
+  const interior = U.check(mFor([130, 72, 130], [boxRow, thinRow, boxRow]));
+  const ok = mixed.ok === true && trailing.ok === true && interior.ok === false;
+  report('U/thin: sep+spacer row is thin; only a TRAILING thin row may grow', ok,
+    `mixed -> ${mixed.ok} | trailing 72 -> ${trailing.ok} | interior 72 -> ${interior.ok}`);
+}
+
+// ── 3g. SPAN — a stylesheet without the partial-span rules FAILS the gate ───
+// Every width the static gate reports assumes a span of M occupies M tracks, and
+// that assumption is four CSS rules. Remove the two `.mspan` rules and the model
+// stays internally consistent while the browser auto-places the section into one
+// track — so the gate, not a render, must say so.
+{
+  const dir = mkDeck();
+  const idx = path.join(dir, 'index.html');
+  const src = fs.readFileSync(idx, 'utf8');
+  const rule = 'grid-column:span var(--span, 1); }';
+  const had = src.split(rule).length - 1;
+  fs.writeFileSync(idx, src.split(rule).join('}'), 'utf8');
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = had >= 2 && code !== 0 && out.includes('SPAN') && out.includes('implements no')
+    && out.includes('a partial span occupies --span tracks');
+  report('SPAN: a stylesheet missing the partial-span rules fails the static gate', ok,
+    `rules-removed=${had} exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+
+// ── 3h. WORDS — a text-only edit without a rebuild FAILS the gate ───────────
+// CENSUS compares ids and counts, so rewording a title leaves it green while the
+// bundle still carries the old words. The fixture is edited and deliberately NOT
+// rebuilt: WORDS must name the page and the string it could not find.
+{
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'item-a').title = 'Reworded without a build';
+  saveOverview(p, doc);
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = code !== 0 && out.includes('page "overview"')
+    && out.includes('NOT in data/data.generated.js') && out.includes('Reworded without a build');
+  report('WORDS: a reworded title with a stale bundle fails the static gate', ok, `exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+
+// ── 3i. INK — the height budget reports an overflow and a fit, by slack ─────
+// INK runs only on the pages a deck lists in INK_PAGES, which the seed ships
+// empty, so the budget itself is exercised as a pure function: a `half` box
+// carrying a kicker, a title and three description lines cannot fit the ~63px
+// it gets (negative slack), while a title-only full box fits its 130px row.
+{
+  const ctx = { availPx: 200, fontPx: 17 };
+  const over = inkBudget({ id: 'x', kicker: 'K', title: 'Title', description: ['one', 'two', 'three'] },
+    { ...ctx, half: true });
+  const fits = inkBudget({ id: 'y', title: 'Title' }, { ...ctx, half: false });
+  const skip = inkBudget({ id: 'z', type: 'separator' }, { ...ctx, half: false });
+  const ok = over && over.slack < 0 && fits && fits.slack > 0 && skip === null;
+  report('INK: an overfull half box has negative slack, a title-only box fits, a separator is skipped', ok,
+    `over=${over && over.slack.toFixed(1)} fits=${fits && fits.slack.toFixed(1)} skip=${skip}`);
+}
+
+// ── 3j. FILL / TXT — the ratchet rows speak up on a pure measurement ────────
+// Both are page-scoped (RATCHET_PAGES, empty in the seed), so their `check` is
+// called directly: a root span rendered at 40% of its declared width and a
+// clamped description must fail, and the clean measurements must pass.
+{
+  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+  const FILL = INVARIANTS.find(inv => inv.id === 'FILL');
+  const TXT = INVARIANTS.find(inv => inv.id === 'TXT');
+  const fillBad = FILL.check({ spanFill: [{ id: 's', span: 5, cols: 6, w: 400, expected: 1000, offPct: 60 }] });
+  const fillOk = FILL.check({ spanFill: [{ id: 's', span: 5, cols: 6, w: 999, expected: 1000, offPct: 0.1 }] });
+  const txtBad = TXT.check({ clamps: [{ id: 'b', part: 'desc', over: 14, text: 'cut' }], nBoxes: 1 });
+  const txtOk = TXT.check({ clamps: [], nBoxes: 1 });
+  const ok = fillBad.ok === false && fillOk.ok === true && txtBad.ok === false && txtOk.ok === true;
+  report('FILL/TXT: a short root span and a clamped block fail, clean measurements pass', ok,
+    `fill 60% -> ${fillBad.ok} | fill 0.1% -> ${fillOk.ok} | txt cut -> ${txtBad.ok} | txt clean -> ${txtOk.ok}`);
 }
 
 // ── 4. control positive — the intact owned fixture must pass ───────────────
@@ -322,6 +543,57 @@ function shapeCorpus() {
     'a deliberately wrong width function was accepted as equal');
 }
 
+// ── 5b. AGREE/thin — the THIN-ROW predicate, engine vs gate ────────────────
+// isThinRowLeaf decides which rows escape --cell-h, and it exists twice for the
+// same CORS reason as the placement model. The corpus walks every leaf kind the
+// schema can author — separator / rail / spacer / box, each horizontal and
+// vertical, with and without rowspan — plus the non-leaves (a section, null):
+// the rail admission has three edges (vertical excluded, rowspan excluded,
+// horizontal-no-rowspan admitted) and each edge is a case here.
+function thinCorpus() {
+  const out = [null, undefined, { id: 'sec', children: [] },
+    { id: 'sec-rail', type: 'rail', children: [] }];
+  for (const type of [undefined, 'box', 'separator', 'rail', 'spacer'])
+    for (const treatment of [undefined, [], ['vertical'], ['centered']])
+      for (const rowspan of [undefined, 1, 2, '2']) {
+        const leaf = { id: 'x' };
+        if (type !== undefined) leaf.type = type;
+        if (treatment !== undefined) leaf.treatment = treatment;
+        if (rowspan !== undefined) leaf.rowspan = rowspan;
+        out.push(leaf);
+      }
+  return out;
+}
+
+{
+  let mismatch = null;
+  try {
+    const { isThinRowLeaf: engineThin } = liftFromEngine('isThinRowLeaf');
+    for (const leaf of thinCorpus()) {
+      const mine = !!isThinRowLeaf(leaf), theirs = !!engineThin(leaf);
+      if (mine !== theirs) {
+        mismatch = `${JSON.stringify(leaf)}: gate ${mine} vs engine ${theirs}`;
+        break;
+      }
+    }
+  } catch (e) { mismatch = e.message; }
+  report('AGREE/thin: gate isThinRowLeaf == engine isThinRowLeaf', mismatch === null, mismatch);
+}
+
+// The thin comparator is only worth its line if it would SPEAK UP. Feed it the
+// PRE-RAIL rule (separator/spacer only — the exact predicate the rail admission
+// replaced) and it must report a mismatch on the horizontal no-rowspan rail.
+{
+  const divergentThin = c => c && !Array.isArray(c.children) &&
+    (c.type === 'spacer' ||
+      (c.type === 'separator' && !(Array.isArray(c.treatment) ? c.treatment : []).includes('vertical')));
+  let caught = false;
+  for (const leaf of thinCorpus())
+    if (!!isThinRowLeaf(leaf) !== !!divergentThin(leaf)) { caught = true; break; }
+  report('AGREE/thin-teeth: the thin comparator reports a seeded divergence', caught,
+    'the pre-rail thin predicate was accepted as equal');
+}
+
 // ── 6/7. TEXT — the character budget AGREES IN DIRECTION with the render's N ─
 // The budget is the one APPROXIMATE check in the static gate, so the only thing
 // that earns it its line is DIRECTION: a title the render gate would fail must be
@@ -365,10 +637,10 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
   const budgetFlags = staticFlags(LONG), nOk = nVerdict(LONG);
 
   // …and the real gate says so on a real deck, naming the numbers. The line must
-  // be an [INFO]: the budget is an advisory, so it reports without failing. (The
-  // fabricated deck still exits non-zero on the CENSUS — data.generated.js is
-  // deliberately not copied — so the exit code cannot carry this assertion; that
-  // the budget never fails the gate is case 4's intact-seed ALL PASS.)
+  // be an [INFO]: the budget is an advisory, so it reports without failing. The
+  // mutation is not rebuilt, so the deck exits non-zero on WORDS and the exit code
+  // cannot carry this assertion; that the budget never fails the gate is case 4's
+  // intact-fixture ALL PASS.
   const dir = mkDeck();
   const { p, doc } = loadOverview(dir);
   findNode(doc, 'item-b').title = LONG;
@@ -448,7 +720,7 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
 // Every OTHER case here seeds a defect and asserts the gate speaks. This one
 // seeds a defect in the gate's own READING and asserts the gate does not stay
 // silent about it — the failure mode of a MIRRORED assertion, which no other
-// check in this suite has: 17 mirrored tokens sit behind brittle regexes over
+// check in this suite has: the mirrored tokens sit behind brittle regexes over
 // `.box { }` / `:root { }`, so one reordered or renamed declaration unasserts
 // them AND the whole TEXT budget derived from them, with nothing failing.
 // The two directions are asserted separately because they must NOT be the same

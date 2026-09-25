@@ -54,6 +54,9 @@
 //          holds two or more. Supersedes P.
 //   LANE   rail-led swimlanes of unequal length within one grid (hard), and
 //          parallel single-column stacks of unequal depth (advisory).
+//   FROZEN an undeclared hole UNDER an element that cannot grow: a `vertical`
+//          box (its height IS its authored rowspan) inside a stretched flex row
+//          that a taller sibling sets. Heights are floors, so it under-states.
 //   BAND   band placement: a band owns its whole row, and a declared span never
 //          exceeds the columns it is placed in.
 //   TIER   the derived tracks-per-tier table, and the monotonicity of the cascade
@@ -62,9 +65,21 @@
 //          with a single member does not express a relation, and since an active
 //          chip dims everything it does not name, a one-member chip switches the
 //          deck off. Supersedes K, which only closed the join.
+//   LIT    a filter declared on a leaf type the engine never lights (separator,
+//          spacer): the CHIP join closes and the render cannot show it.
+//   RAILT  a thin rail's title past its two-line ceiling: the rail row is `auto`
+//          and `.rail-title` has no clamp, so a third line GROWS the row.
 //   ORDER  a duplicate effective `order` among siblings — today resolved silently
 //          by the index tie-break, so the author's intended sequence is a
 //          coin flip that can change under an unrelated edit.
+//   TEXT   the character budget (ADVISORY): title token, kicker token, title
+//          clamp, description clamp.
+//   WORDS  every authored string is present verbatim in the generated bundle —
+//          the text-only staleness CENSUS cannot see.
+//   INK    the height budget of a box against its fixed row, on the pages that
+//          opt in (INK_PAGES).
+//   SPAN   the stylesheet implements the span→tracks rules every width here
+//          assumes.
 //   CENSUS data/*.yaml vs data/data.generated.js (shared with validate, via
 //          tools/static-census.cjs — one parse path, so the two gates cannot
 //          disagree about what the data says).
@@ -88,7 +103,7 @@ import { fileURLToPath } from 'node:url';
 import censusLib from './static-census.cjs';
 
 const { loadAuthoredDeck, staticCensus, cssBreakpoints,
-  DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, BREAKPOINTS } = censusLib;
+  DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, BREAKPOINTS } = censusLib;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The deck root: argv wins, then the env override, then the normal location.
@@ -118,8 +133,8 @@ const TIERS = [
 
 // engine.js: `const DEFAULT_SECTION_COLUMNS = 2`. It cannot be imported from
 // there (see THE PLACEMENT MODEL below), so it is mirrored and pinned by the
-// agreement test in tools/test-guards.mjs. GRID_DENSE and DEFAULT_FORM are NOT
-// mirrored — both gates take them from static-census.cjs.
+// agreement test in tools/test-guards.mjs. GRID_DENSE, WORDFIT and DEFAULT_FORM
+// are NOT mirrored — both gates take them from static-census.cjs.
 const DEFAULT_SECTION_COLUMNS = 2;
 // The engine's reserved "show everything" chip: legitimately has no members.
 const RESET_CHIP = 'all';
@@ -239,6 +254,21 @@ const rowspanOf = n => Math.max(1, Math.floor(Number(n && n.rowspan) || 1));
 // COMPOSE: this is the fast warning where no browser exists, N is the ruling.
 // This file never claims an authority the arithmetic does not have.
 //
+// THE KICKER TOKEN IS THE ONE ROLE WITH NO RULING ABOVE IT, AND IT IS STILL AN
+// ADVISORY. `kicker-token` (see textBudget) budgets `.box .k` exactly as `token`
+// budgets `.box .t`, and it was added because the eye caught a fracture the
+// budget could not see: it measured titles only. There is no render invariant
+// for the kicker — N covers the title alone — so unlike every other kind here,
+// this one has no verdict downstream of it. That is an argument for making it
+// [FAIL], and it is outweighed by the argument against: the measurement is the
+// SAME approximation as the others (one assumed constant, MONO_ADVANCE_EM, and
+// a chain of mirrored stylesheet numbers), and a check calibrated to
+// over-estimate demand must not be the thing that stops a build. Two severities
+// over one arithmetic would say the estimate is trustworthy for the kicker and
+// merely indicative for the title, which is false. So it reports as [INFO] with
+// the others, and the gap it leaves — no pixel ruling for the kicker — is a
+// stated limitation rather than one papered over with a harder verdict.
+//
 // WHY CHARACTERS AND NOT PIXELS. Both text roles are MONOSPACE (`--mono`), so a
 // token's width is its LENGTH times one advance — which means the cell can be
 // expressed as "how many characters fit". That is the author's own unit, and it
@@ -268,10 +298,45 @@ const CSS_TEXT = {
   boxBorder: 1.5,        // .box border-width
   titleMinPx: 15,        // .box .t font-size: clamp(15px, 1vw, 17px)
   titleMaxPx: 17,
+  kickerPx: 10.5,        // .box .k font-size — the machine name above the title
+  kickerTrackEm: 0.09,   // .box .k letter-spacing, in em. NOT optional slack: at
+                         //   10.5px it adds 0.945px to EVERY character, ~15% on
+                         //   top of the advance, so a budget that ignores it
+                         //   over-states the cell by roughly two characters.
   descPx: 12,            // .box .m font-size — one description line
   titleLines: 2,         // .box .t line-clamp
   descLines: 3,          // .box .desc line-clamp (the WHOLE description)
   halfTitleLines: 1,     // .box.half .t line-clamp
+  // THE HEIGHT CHAIN's three numbers, mirrored here because this is the table
+  // the CSS check asserts against index.html — a moved declaration must falsify
+  // the height arithmetic the same way it falsifies the character budget.
+  cellH: 130,            // --cell-h, the fixed row track
+  sepRowH: 40,           // --sep-row-h, the thin (separator/spacer) row track
+  zoneMinH: 180,         // --zone-min-h, a framed zone's vertical floor
+  // THE RAIL CHAIN, mirrored from index.html's `.rail` / `.rail-title` block.
+  // railRowH is the FLOOR of a rail's `auto` row — one 15px title line plus
+  // 2×8px padding plus 2×1px border — used by the height chain; a wrapped
+  // title grows the row (RAILT below caps that growth at railTitleLines).
+  railRowH: 33,          // one-line .rail content height (15 + 2×8 + 2×1)
+  railTitlePx: 13,       // .rail-title font-size (mono)
+  railTrackEm: 0.09,     // .rail-title letter-spacing, in em
+  railBorder: 1,         // .rail border-width
+  // A hue rail (.rail.blue/.violet/.gold/.clay in index.html) is set tighter:
+  // 10.5px, no tracking, 4px (--s-1) side padding instead of the box padding.
+  railHueTitlePx: 10.5,
+  railHueTrackEm: 0,
+  railHuePadX: 4,
+  railTitleLines: 2,     // RAILT's ceiling: .rail-title has NO clamp, so a
+                         //   third line silently grows the auto row and the
+                         //   stack it lives in — the gate owns that limit
+  // THE INK CHAIN. The width chain above answers "how many characters fit on a
+  // line"; these answer "how tall is the stack of those lines", which is the
+  // only way a box's demand can be compared against the fixed row it is given.
+  boxPadY: 8,            // .box vertical padding — var(--s-2)
+  halfPadY: 4,           // .box.half vertical padding — var(--s-1)
+  boxGap: 2,             // .box gap — the space between kicker, title and desc
+  titleMarginPx: 1,      // .box .t margin-bottom (0 on .box.half)
+  descLineEm: 1.4,       // .box .m line-height
 };
 
 // THE ONE ASSUMED CONSTANT. The stylesheet gives every width and every font
@@ -298,12 +363,21 @@ const CSS_TEXT_PROBES = [
   ['boxBorder', /\.box\s*\{[^}]*?border:\s*(\d+(?:\.\d+)?)px/],
   ['titleMinPx', /\.box \.t\s*\{[^}]*?font-size:\s*clamp\(\s*(\d+(?:\.\d+)?)px/],
   ['titleMaxPx', /\.box \.t\s*\{[^}]*?font-size:\s*clamp\([^)]*?,\s*(\d+(?:\.\d+)?)px\s*\)/],
+  ['kickerPx', /\.box \.k\s*\{[^}]*?font-size:\s*(\d+(?:\.\d+)?)px/],
+  ['kickerTrackEm', /\.box \.k\s*\{[^}]*?letter-spacing:\s*(\d+(?:\.\d+)?)em/],
   ['descPx', /\.box \.m\s*\{[^}]*?font-size:\s*(\d+(?:\.\d+)?)px/],
   ['titleLines', /\.box \.t\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
   ['descLines', /\.box \.desc\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
   ['halfTitleLines', /\.box\.half \.t\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
   ['frameHNarrow', /@container stage \(max-width: 640px\)[\s\S]*?\.canvas\s*\{[^}]*?left:\s*(\d+(?:\.\d+)?)px/],
   ['canvasPadNarrow', /@container stage \(max-width: 640px\)[\s\S]*?\.canvas\s*\{[^}]*?padding:\s*(\d+(?:\.\d+)?)px/],
+  ['cellH', /--cell-h:\s*(\d+(?:\.\d+)?)px/],
+  ['sepRowH', /--sep-row-h:\s*(\d+(?:\.\d+)?)px/],
+  ['zoneMinH', /--zone-min-h:\s*(\d+(?:\.\d+)?)px/],
+  ['halfPadY', /--s-1:\s*(\d+(?:\.\d+)?)px/],
+  ['boxGap', /\.box\s*\{[^}]*?gap:\s*(\d+(?:\.\d+)?)px/],
+  ['titleMarginPx', /\.box \.t\s*\{[^}]*?margin-bottom:\s*(\d+(?:\.\d+)?)px/],
+  ['descLineEm', /\.box \.m\s*\{[^}]*?line-height:\s*(\d+(?:\.\d+)?)/],
 ];
 // The two tokens no single declaration carries a number for: `.zone` and `.box`
 // spend --s-3 through a var(), so the value is asserted at --s-3 (canvasPad
@@ -312,7 +386,56 @@ const CSS_TEXT_SHAPES = [
   ['.zone padding is var(--s-3)', /\.zone\s*\{[^}]*?padding:\s*var\(--s-3\)/],
   ['.box lateral padding is var(--s-3)', /\.box\s*\{[^}]*?padding:\s*var\(--s-2\)\s+var\(--s-3\)/],
   ['leaf grid gap is var(--s-2)', /\.sec-grid:not\(\.sec-compound\)\s*\{[^}]*?gap:\s*var\(--s-2\)/],
+  // The three the HEIGHT chain rests on: a leaf grid's rows are the engine's
+  // track list falling back to --cell-h; a zone stacks its header above its grid
+  // with one --s-2 gap; and a `plain` zone pays no frame and no floor.
+  ['leaf grid rows are the --row-tracks list over --cell-h',
+    /\.sec-grid:not\(\.sec-compound\)\s*\{[^}]*?grid-auto-rows:\s*var\(--row-tracks,\s*var\(--cell-h\)\)/],
+  ['.zone stacks header over grid with a var(--s-2) gap',
+    /\.zone\s*\{[^}]*?display:\s*flex;\s*flex-direction:\s*column;\s*gap:\s*var\(--s-2\)/],
+  // The INK chain's two var()-spent numbers: a box pays --s-2 vertically (the
+  // same token as its gap) and a half pays --s-1.
+  ['.box.half vertical padding is var(--s-1)',
+    /\.box\.half\s*\{[^}]*?padding:\s*var\(--s-1\)\s+var\(--s-3\)/],
+  ['.box.half .t clamps to one line with no title margin',
+    /\.box\.half \.t\s*\{[^}]*?-webkit-line-clamp:\s*1;[^}]*?margin-bottom:\s*0/],
+  ['.zone.plain pays no frame and no min-height',
+    /\.zone\.plain\s*\{[^}]*?border:\s*none;\s*padding:\s*0;\s*min-height:\s*0/],
 ];
+
+// THE SPAN->TRACKS MAPPING, in BOTH grid shapes, and it is a HARD check of its
+// own rather than another entry in the mirror above. Everything in this file is
+// arithmetic over the authored data, and every width it reports assumes a span of
+// M occupies M tracks. That assumption is not self-evident — it is these four CSS
+// rules — and when one is ABSENT the model stays internally consistent and
+// reports a geometry the browser never draws. Measured: the root band grid
+// (display:grid, where the compound flex weighting is inert) carried a rule for
+// .msp and NONE for .mspan, so a section declared span 5 of 6 was auto-placed
+// into ONE track and rendered at 35% of the canvas while every assertion here
+// passed.
+//
+// SEPARATE because the mirror's arithmetic has a mirrored constant to compute
+// with even when a declaration moved; there is no fallback for a rule that does
+// not exist. A missing rule FAILS; an absent stylesheet is NOT ASSERTED.
+const CSS_SPAN_SHAPES = [
+  ['leaf grid: a full band spans every track',
+    /\.sec-grid:not\(\.sec-compound\)\s*>\s*\.msp\s*\{[^}]*?grid-column:\s*1\s*\/\s*-1/],
+  ['leaf grid: a partial span occupies --span tracks',
+    /\.sec-grid:not\(\.sec-compound\)\s*>\s*\.mspan\s*\{[^}]*?grid-column:\s*span\s*var\(--span/],
+  ['root band grid: a full band spans every track',
+    /:has\(>\s*\.msp\)\s*>\s*\.msp\s*\{[^}]*?grid-column:\s*1\s*\/\s*-1/],
+  ['root band grid: a partial span occupies --span tracks',
+    /:has\(>\s*\.msp\)\s*>\s*\.mspan\s*\{[^}]*?grid-column:\s*span\s*var\(--span/],
+];
+
+function cssSpanShapes(root) {
+  const file = path.join(root, 'index.html');
+  if (!fs.existsSync(file)) return { noFile: true, missing: [], present: [] };
+  const src = fs.readFileSync(file, 'utf8');
+  const missing = [], present = [];
+  for (const [name, re] of CSS_SPAN_SHAPES) (re.test(src) ? present : missing).push(name);
+  return { noFile: false, missing, present };
+}
 
 function cssTextTokens(root) {
   const file = path.join(root, 'index.html');
@@ -330,6 +453,7 @@ function cssTextTokens(root) {
   // .zone and .box both pay --s-3 laterally (asserted by CSS_TEXT_SHAPES).
   tokens.zonePad = tokens.canvasPad;
   tokens.boxPad = tokens.canvasPad;
+  tokens.boxPadY = tokens.gap;   // .box spends --s-2 vertically and as its gap
   return { ok: true, tokens };
 }
 
@@ -396,8 +520,13 @@ function cellTextWidth(gridW, tracks, w) {
 const titlePx = cw => Math.min(CSS_TEXT.titleMaxPx, Math.max(CSS_TEXT.titleMinPx, cw / 100));
 
 // How many monospace characters fit in `px` at `fontPx`. Floor, never round: a
-// partial character is not a character.
-const capacityFor = (px, fontPx) => Math.floor(px / (fontPx * MONO_ADVANCE_EM));
+// partial character is not a character. `trackingEm` is the role's own
+// `letter-spacing` in em (0 for a role that declares none): CSS adds it after
+// every character, so it widens the advance rather than sitting between words,
+// and a role that carries it (`.box .k`) is measurably narrower per character
+// than its font size alone suggests.
+const capacityFor = (px, fontPx, trackingEm = 0) =>
+  Math.floor(px / (fontPx * (MONO_ADVANCE_EM + trackingEm)));
 
 const tokensOf = text => String(text ?? '').trim().split(/\s+/).filter(Boolean);
 const longestToken = text => tokensOf(text).reduce((a, w) => (w.length > a.length ? w : a), '');
@@ -424,12 +553,13 @@ function wrapLines(text, cap) {
 }
 
 // One box's budget: the longest TITLE TOKEN against the cell, the TITLE against
-// its clamp, and the DESCRIPTION against its own. Returns how many assertions ran,
-// any advisory findings, and every MARGIN it measured — so a passing run can
-// report its tightest margin instead of a bare "holds", the way the render gate's
-// M reports its narrowest cell. Each finding carries the number MEASURED, the
-// number AVAILABLE and the exact CELL: a budget whose message is generic advice
-// teaches nothing and gets silenced by writing a structural value at random.
+// its clamp, the KICKER TOKEN against the cell, and the DESCRIPTION against its
+// own clamp. Returns how many assertions ran, any advisory findings, and every
+// MARGIN it measured — so a passing run can report its tightest margin instead of
+// a bare "holds", the way the render gate's M reports its narrowest cell. Each
+// finding carries the number MEASURED, the number AVAILABLE and the exact CELL: a
+// budget whose message is generic advice teaches nothing and gets silenced by
+// writing a structural value at random.
 // A separator, a rail and a spacer render no `.box` title; a `vertical` box is
 // exempt. The spacer is skipped BY TYPE rather than left to fall out of an empty
 // payload: it carries no text by schema, so budgeting it would only ever compare
@@ -465,6 +595,41 @@ function textBudget(leaf, ctx) {
       `${ctx.cell}. Shorten the title or widen the cell.`);
   }
 
+  // THE KICKER TOKEN. The exact analogue of the title-token check above, against
+  // `.box .k` instead of `.box .t`, and it exists because the eye caught what the
+  // budget could not: a machine-name kicker fracturing mid-word while every check
+  // ran green, because the budget only ever measured titles.
+  //
+  // Three things make it a DIFFERENT measurement rather than the same one reused:
+  //   • the font is smaller (10.5px vs 15-17px), so the cell holds MORE kicker
+  //     characters than title characters — a shared capacity would be wrong in
+  //     both directions;
+  //   • `.box .k` carries `letter-spacing: 0.09em`, which `.box .t` does not, and
+  //     that tracking is ~15% of the advance — ignoring it over-states the cell;
+  //   • `text-transform: uppercase` changes the GLYPHS and not the ADVANCE, since
+  //     every family behind `--mono` is fixed-pitch. So the rendered uppercase and
+  //     the authored lowercase measure identically and no case fold is needed.
+  //
+  // Only the TOKEN is budgeted, not the line count. `.box .k` declares no
+  // line-clamp, so there is no authored capacity a wrap could be measured
+  // against — a two-line kicker is a layout judgement the arithmetic cannot make,
+  // while a token wider than the cell is an unambiguous mid-word fracture.
+  //
+  // FORM-SCOPED to WORDFIT (dashboard / flow) for the same reason the render
+  // gate's N is: those are the forms whose kicker carries a real symbol name. A
+  // planner's `TODO` or a timeline's phase code is short by construction, and
+  // failing them would be judging a form on a constraint it does not have.
+  const kicker = String(leaf.kicker ?? '').trim();
+  if (kicker && WORDFIT.has(ctx.form)) {
+    const kickerCap = capacityFor(ctx.availPx, CSS_TEXT.kickerPx, CSS_TEXT.kickerTrackEm);
+    const token = longestToken(kicker);
+    measure('kicker-token', token.length, kickerCap,
+      `kicker token "${token}" is ${token.length} char(s) and the cell holds ${kickerCap} ` +
+      `at ${CSS_TEXT.kickerPx}px mono + ${CSS_TEXT.kickerTrackEm}em tracking — it fractures ` +
+      `mid-word. ${ctx.cell}. Use the SHORT form of the symbol (the function name ` +
+      `without its module) and put the full name in the detail, or widen the cell.`);
+  }
+
   const raw = leaf.description;
   const authored = Array.isArray(raw) ? raw : (raw === null || raw === undefined ? [] : [raw]);
   if (authored.length) {
@@ -489,11 +654,151 @@ function textBudget(leaf, ctx) {
 // the number the check reports when it passes. A gate that prints only "holds"
 // cannot be told apart from a gate that measured nothing.
 const textTightest = new Map();
-const TEXT_KIND = { token: 'title token', 'title-lines': 'title line(s)', 'desc-lines': 'description line(s)' };
+const TEXT_KIND = { token: 'title token', 'kicker-token': 'kicker token',
+  'title-lines': 'title line(s)', 'desc-lines': 'description line(s)' };
 function textHeadline() {
   if (!textTightest.size) return 'no leaf carried a title or a description to budget';
   return 'tightest margin — ' + [...textTightest.entries()].map(([kind, m]) =>
     `${TEXT_KIND[kind]} ${m.measured} of ${m.available} (${m.where} @${m.cw}px)`).join('; ');
+}
+
+// ── WORDS — the census's blind spot ────────────────────────────────────────
+// CENSUS compares page ids and NODE COUNTS, so a text-only edit — rewording a
+// description, decoding a piece of jargon, fixing a title — leaves the counts
+// identical and the census green while data.generated.js still holds the OLD
+// words. MEASURED: after nine wording edits the gate printed ALL PASS and the
+// bundle still carried the old sentences. That is the coupled-trio trap in its
+// quietest form: the browser renders the stale text and nothing fails.
+//
+// Every authored string must appear VERBATIM in the bundle, because the bundle
+// is generated FROM these strings — the comparison needs no model of the
+// generator beyond its JSON escaping.
+const TEXT_FIELDS = ['title', 'subtitle', 'kicker', 'detail', 'note', 'text', 'label'];
+
+function authoredStrings(node, out) {
+  if (!node || typeof node !== 'object') return out;
+  if (Array.isArray(node)) { for (const n of node) authoredStrings(n, out); return out; }
+  for (const f of TEXT_FIELDS) if (typeof node[f] === 'string' && node[f].trim()) out.push(node[f]);
+  const lists = [node.description, node.steps];
+  for (const l of lists)
+    for (const line of (Array.isArray(l) ? l : l == null ? [] : [l]))
+      if (typeof line === 'string' && line.trim()) out.push(line);
+  for (const key of ['children', 'sections', 'filters']) authoredStrings(node[key], out);
+  return out;
+}
+
+// A string is looked for in its JSON-escaped form: that is what the generator
+// wrote, so a quote or a backslash in the copy does not read as a drift.
+const escapeForBundle = s => JSON.stringify(s).slice(1, -1);
+
+// ── INK — the height half of the budget ────────────────────────────────────
+// TEXT asks whether a line of characters fits the cell's WIDTH. INK asks the
+// question one axis over: does the STACK of those lines fit the fixed row the
+// grid gives the box? Nothing else in either gate measures it, which is how a
+// `half` pair whose two titles each hold on one line can still overflow the 63px
+// it actually gets, and how a box left far shorter than its row leaves an
+// undeclared hole no hole check can see (the cell IS occupied).
+//
+// WHAT INK CANNOT SEE, stated because it was read as more than it is. The slot
+// is DERIVED from the authored spans through this file's width chain, so INK is a
+// claim about the cell the stylesheet OWES the box, never about the cell the
+// browser drew. When the two disagree INK reports the model and stays green:
+// measured, it passed a title at 47.4px of a 63.0px slot while Chromium clamped
+// that very title, because the real cell was 179.5px wide instead of the modelled
+// 236.6px. The arithmetic was right and the render was wrong. Real clamping is
+// `validate` TXT (scrollHeight vs clientHeight in the browser); the divergence
+// that produced it is now caught by the CSS span->tracks shapes above.
+//
+// PAGE-SCOPED, not form-scoped: only the page ids in INK_PAGES are asserted. The
+// three-line description clamp puts a full box at ~128 of 130px, so a page
+// authored before this check existed sits within a couple of pixels of the row by
+// design, and an unscoped INK would fail it on arithmetic slack rather than on a
+// defect. A page OPTS IN by listing its id here, and carries the constraint from
+// its first build. The seed ships the set EMPTY: a new deck lists its own pages
+// (the same set as RATCHET_PAGES in tools/validate-layout.cjs, whose TXT row is
+// the render-side ruling on the same text).
+const INK_PAGES = new Set([]);
+
+// The one assumed constant on this axis, and the analogue of MONO_ADVANCE_EM:
+// `.box .k` and `.box .t` declare no line-height, so they render at the family's
+// `normal`, which for every family --mono names sits near 1.2. 1.25 is the
+// CEILING of that range, so a line is never assumed SHORTER than it renders and
+// the estimated demand stays an upper bound.
+const NORMAL_LINE_EM = 1.25;
+
+// The void that stops being slack and starts being an undeclared hole: the
+// smallest CARD's worth of statement the cell could still have carried — a title
+// line and a two-line gloss, with the gaps around them. A single spare line is
+// the fixed row's own breathing room and flagging it would fire on the most
+// ordinary box there is; room for a whole statement the cell does not make is
+// the defect, and a `centered` treatment is what declares it on purpose.
+const INK_VOID_PX = CSS_TEXT.titleMinPx * NORMAL_LINE_EM
+  + 2 * CSS_TEXT.descPx * CSS_TEXT.descLineEm + 2 * CSS_TEXT.boxGap;
+
+// The slot a leaf is really given: K rows plus the row gaps it swallows, or —
+// for a `half` — its share of the ONE slot the pair occupies, less the pair's
+// own inner gap.
+function slotHeightPx(rowspan, half) {
+  const full = CSS_TEXT.cellH * rowspan + (rowspan - 1) * CSS_TEXT.gap;
+  return half ? (full - CSS_TEXT.boxGap * 2) / 2 : full;
+}
+
+// One box's ink: every block it renders, at the line count the width budget
+// already computed for it, plus the chrome between them. Returns the measured
+// demand and the slack against the slot, so a pass can report a number.
+function inkBudget(leaf, ctx) {
+  if (!leaf || leaf.type === 'separator' || leaf.type === 'rail' || leaf.type === 'spacer') return null;
+  // A SECTION is not a slot: its zone grows with its own grid and its header is
+  // not competing with a fixed row, so budgeting one compares ink against a
+  // height nothing enforces — a false positive by construction, the same reason
+  // the width budget only visits grids with a real track model.
+  if (isSection(leaf)) return null;
+  if (treatmentsOf(leaf).includes('vertical')) return null;   // rotated: width is the constraint
+
+  const titleCap = capacityFor(ctx.availPx, ctx.fontPx);
+  const descCap = capacityFor(ctx.availPx, CSS_TEXT.descPx);
+  const blocks = [];
+
+  const kicker = String(leaf.kicker ?? '').trim();
+  if (kicker) {
+    const cap = capacityFor(ctx.availPx, CSS_TEXT.kickerPx, CSS_TEXT.kickerTrackEm);
+    blocks.push(wrapLines(kicker, cap) * CSS_TEXT.kickerPx * NORMAL_LINE_EM);
+  }
+
+  const title = String(leaf.title ?? '').trim();
+  if (title) {
+    const clamp = ctx.half ? CSS_TEXT.halfTitleLines : CSS_TEXT.titleLines;
+    const lines = Math.min(wrapLines(title, titleCap), clamp);
+    blocks.push(lines * ctx.fontPx * NORMAL_LINE_EM + (ctx.half ? 0 : CSS_TEXT.titleMarginPx));
+  }
+
+  const raw = leaf.description;
+  const authored = Array.isArray(raw) ? raw : (raw === null || raw === undefined ? [] : [raw]);
+  if (authored.length) {
+    const total = authored.reduce((n, l) => n + wrapLines(l, descCap), 0);
+    const lines = Math.min(total, CSS_TEXT.descLines);
+    blocks.push(lines * CSS_TEXT.descPx * CSS_TEXT.descLineEm);
+  }
+  if (!blocks.length) return null;
+
+  const padY = ctx.half ? CSS_TEXT.halfPadY : CSS_TEXT.boxPadY;
+  const ink = blocks.reduce((n, x) => n + x, 0)
+    + 2 * padY + 2 * CSS_TEXT.boxBorder
+    + Math.max(0, blocks.length - 1) * CSS_TEXT.boxGap;
+  const slot = slotHeightPx(rowspanOf(leaf), !!ctx.half);
+  return { ink, slot, slack: slot - ink, blocks: blocks.length };
+}
+
+// The tightest and the loosest ink gap the run measured — a check that prints
+// only "holds" cannot be told apart from one that measured nothing, and on this
+// axis BOTH ends are the finding: no room left, or a room nobody claimed.
+const inkTightest = { slack: Infinity }, inkLoosest = { slack: -Infinity };
+function inkHeadline() {
+  if (!INK_PAGES.size) return 'no page opted in (INK_PAGES is empty)';
+  if (!Number.isFinite(inkTightest.slack)) return 'no scoped page carried a box to budget';
+  const fmt = m => `${m.ink.toFixed(1)}px of ${m.slot.toFixed(1)}px (${m.slack.toFixed(1)}px free) ` +
+    `at ${m.where} @${m.cw}px`;
+  return `scope [${[...INK_PAGES].join(', ')}] — tightest ${fmt(inkTightest)}; loosest ${fmt(inkLoosest)}`;
 }
 
 // ── CSS GRID SPARSE AUTO-PLACEMENT, SIMULATED ─────────────────────────────
@@ -552,7 +857,7 @@ function place(items, tracks) {
 //     breakpoint; below it the root becomes a vertical flex stack.
 // A NESTED compound grid is a flex-wrap row of sections: it has no tracks, so no
 // rectangle to close. It is still walked into (its children may be leaf grids)
-// and still checked for sibling-level defects (ORDER, LANE).
+// and still checked for sibling-level defects (ORDER, LANE, FROZEN).
 // `widthAt(containerWidth)` is threaded down the walk: the root's track area is
 // the content plane, and each nested section's is its share of its parent minus
 // its own zone frame (see THE WIDTH CHAIN). It is a FUNCTION, not a number,
@@ -567,7 +872,10 @@ function discoverGrids(page) {
     const cols = effectiveCols(authored, slots, compound);
     const hasBand = slots.some(s => isBandClass(Math.max(1, Math.min(s.node.span || 1, cols)), cols));
     const grid = {
-      label, isRoot, compound, children, slots, widthAt,
+      // `node` is the section (or page) this grid belongs to, so a check that
+      // starts from a CHILD — FROZEN walks a compound's children — can find the
+      // grid that child renders without re-deriving it.
+      node, label, isRoot, compound, children, slots, widthAt,
       authoredCols: Math.max(1, Number.isInteger(authored) && authored > 0 ? authored : DEFAULT_SECTION_COLUMNS),
       cols, hasBand,
       // Placeable = it is laid out as a CSS grid with tracks.
@@ -595,6 +903,80 @@ function leavesOf(page) {
   return out;
 }
 
+// ── THE HEIGHT CHAIN (the other axis, and it is arithmetic too) ───────────
+// Width is a negotiation between tracks; HEIGHT is not. A leaf grid's rows are
+// FIXED tracks (`grid-auto-rows: var(--row-tracks, var(--cell-h))`), so a grid's
+// height is a sum over rows the placement already knows: --cell-h each, or
+// --sep-row-h for a THIN row. Every number is a mirrored declaration the CSS
+// check asserts against index.html — none of it is estimated.
+//
+// THE ONE THING THIS CHAIN REFUSES TO GUESS is a zone HEADER's height: a clamped
+// mono title plus an optional three-line subtitle needs a line-height the
+// stylesheet never declares, and guessing it would drag the TEXT budget's
+// approximation into a geometric verdict. So the header is EXCLUDED and only the
+// gap it costs is counted. That makes every height below a FLOOR — the zone is
+// at LEAST this tall, never at most — and that direction is the whole
+// calibration of FROZEN.
+
+// Mirrors engine.js `isThinRowLeaf`: a row whose occupants are ALL thin leaves
+// — horizontal separators, DECLARED HOLES, or horizontal no-rowspan RAILS —
+// renders reduced: --sep-row-h for separators and holes, content height
+// (`auto`) for a row that holds a rail. Mirrored rather than imported for the
+// same reason the placement model is (an ES module is CORS-blocked from a
+// `file://` script), and ASSERTED against the engine's copy by the AGREE/thin
+// case in tools/test-guards.mjs. A wrong `false` here is the safe direction:
+// it only ever makes a reported hole smaller.
+// A thin separator row on the LAST row is emitted as minmax(--sep-row-h, 1fr)
+// so a declared hole absorbs the slack a stretched section leaves, which keeps
+// --sep-row-h a FLOOR there rather than the height — consistent with every
+// height in this chain already being a floor. A rail's exclusions mirror the
+// engine's: a VERTICAL rail's ink IS the row height, and a rail with `rowspan`
+// labels a lane down several rows.
+const isThinRowLeaf = c => c && !isSection(c) &&
+  (c.type === 'spacer'
+    || ((c.type === 'separator' || c.type === 'rail') && !treatmentsOf(c).includes('vertical')
+        && (c.type === 'separator' || Math.floor(Number(c.rowspan) || 1) <= 1)));
+const isRailLeaf = c => c && !isSection(c) && c.type === 'rail';
+const RAIL_HUES = new Set(['blue', 'violet', 'gold', 'clay']);
+
+// The height of one LEAF grid at a container width: each row at its own track
+// height, plus the row gaps. A COMPOUND grid is a flex row of sections with no
+// track model, so it has no arithmetic height and says null instead of guessing.
+function gridHeightPx(g, cw) {
+  if (!g || g.compound) return null;
+  const tracks = tracksFor(g.cols, cw);
+  const items = g.slots.map(s => {
+    const span = Math.max(1, Math.min(s.node.span || 1, g.cols));
+    return { node: s.node, w: widthAtTier(span, g.cols, tracks), h: rowspanOf(s.node) };
+  });
+  if (!items.length) return 0;
+  const { placed, rowCount } = place(items, tracks);
+  let h = 0;
+  for (let r = 0; r < rowCount; r++) {
+    const occupants = placed.filter(p => r >= p.r && r < p.r + p.h);
+    const thin = occupants.length > 0 && occupants.every(p => isThinRowLeaf(p.node));
+    // A rail row's track is `auto` (content height), so its FLOOR is the
+    // one-line rail: title line + 2×pad + 2×border (railRowH). Never sepRowH
+    // here — 40 would OVERSTATE a 33px row and break the floor direction.
+    h += !thin ? CSS_TEXT.cellH
+      : occupants.some(p => isRailLeaf(p.node)) ? CSS_TEXT.railRowH : CSS_TEXT.sepRowH;
+  }
+  return h + Math.max(0, rowCount - 1) * CSS_TEXT.gap;
+}
+
+// A section's rendered height, and whether that number is EXACT or a floor.
+// `plain` is a bare wrapper (no border, no padding, no min-height); every other
+// treatment pays the zone frame and the --zone-min-h floor. A section WITH a
+// header costs one more gap and an unknown header, so it is a floor only.
+function zoneHeightPx(sec, gridH) {
+  if (gridH === null) return null;
+  const plain = treatmentsOf(sec).includes('plain');
+  const chrome = plain ? 0 : 2 * (CSS_TEXT.zonePad + CSS_TEXT.zoneBorder);
+  const headed = !!(sec.title || sec.subtitle);
+  const h = gridH + chrome + (headed ? CSS_TEXT.gap : 0);
+  return { px: plain ? h : Math.max(h, CSS_TEXT.zoneMinH), exact: !headed };
+}
+
 // ── THE CHECK RUN ─────────────────────────────────────────────────────────
 // Findings are collected, never printed as they are found, so the report can be
 // grouped by CHECK (one line per check plus its failures) instead of interleaving
@@ -619,6 +1001,10 @@ function checkPage(page) {
   const trackTable = [];
   // The TEXT budget's worst finding per (box, kind) across the tier sweep.
   const textWorst = new Map();
+  // RAILT's worst finding per rail across the tier sweep — deduped like TEXT,
+  // but emitted as a HARD fail: a rail row is `auto`, so an over-wrapped title
+  // does not clip, it silently GROWS the row and the stack it lives in.
+  const railWorst = new Map();
 
   // ── data-level checks (tier-independent) ────────────────────────────────
 
@@ -681,6 +1067,25 @@ function checkPage(page) {
       fail('CHIP', `page "${pageId}" key "${k}"`,
         `referenced by component(s) [${(members.get(k) || []).join(', ')}] but NO chip declares it — ` +
         `it can never light.`);
+  }
+
+  // LIT — a filter declared on a leaf TYPE the engine cannot light. buildBox and
+  // buildRail are the only builders that stamp `data-filters` on their node;
+  // buildSeparator and buildSpacer emit bare structural nodes. So a `filters:`
+  // on a separator passes the strict schema (COMPONENT_FIELDS allows it there),
+  // counts as a CHIP member above — the join CLOSES — and the render can never
+  // spotlight that end: the relation is declared in the data and silently absent
+  // on screen.
+  for (const leaf of leaves) {
+    asserted++;
+    const t = leaf.type;
+    if ((t === 'separator' || t === 'spacer') &&
+        Array.isArray(leaf.filters) && leaf.filters.length) {
+      fail('LIT', `page "${pageId}" ${t} "${leaf.id ?? '(no id)'}"`,
+        `declares filters [${leaf.filters.join(', ')}] on a \`${t}\`, a leaf type the engine ` +
+        `never lights: only buildBox and buildRail emit \`data-filters\`, so this membership passes the CHIP ` +
+        `join and never renders. Move the filter to a box or a rail, or drop it.`);
+    }
   }
 
   // BAND — a declared span that EXCEEDS the columns it is placed in. The engine
@@ -841,7 +1246,7 @@ function checkPage(page) {
         const cell = `cell ${Math.round(availPx)}px = ${p.w} of ${tracks} track(s) in a ` +
           `${Math.round(gridW)}px grid, worst at the ${tier.w}px tier`;
         for (const leaf of (slot.half ? slot.pair : [slot.node])) {
-          const budget = textBudget(leaf, { availPx, fontPx, half: !!slot.half, cell });
+          const budget = textBudget(leaf, { availPx, fontPx, half: !!slot.half, cell, form });
           asserted += budget.asserted;
           const where = `${g.label} > ${leaf && leaf.id != null ? leaf.id : '(no id)'}`;
           for (const f of budget.findings) {
@@ -852,7 +1257,62 @@ function checkPage(page) {
             const prev = textTightest.get(m.kind);
             if (!prev || m.slack < prev.slack) textTightest.set(m.kind, { ...m, where, cw: tier.w });
           }
+
+          // INK — the height budget, on the pages that opted in. Run at every
+          // tier for the same reason TEXT is: the authored tier gives the most
+          // wrapped lines and the collapsed ones the tallest of them.
+          if (!INK_PAGES.has(pageId)) continue;
+          const ig = inkBudget(leaf, { availPx, fontPx, half: !!slot.half });
+          if (!ig) continue;
+          asserted++;
+          const stamp = { ...ig, where, cw: tier.w };
+          if (ig.slack < inkTightest.slack) Object.assign(inkTightest, stamp);
+          if (ig.slack > inkLoosest.slack) Object.assign(inkLoosest, stamp);
+          if (ig.slack < 0)
+            fail('INK', where, `${ig.blocks} ink block(s) need ${ig.ink.toFixed(1)}px and the slot ` +
+              `is ${ig.slot.toFixed(1)}px — ${(-ig.slack).toFixed(1)}px overflows and is clipped ` +
+              `(a cell never grows by content). Worst at the ${tier.w}px tier. Move a block into ` +
+              `the detail, or merge the cell down a row.`);
+          else if (ig.slack > INK_VOID_PX && !treatmentsOf(leaf).includes('centered'))
+            info('INK', where, `${ig.ink.toFixed(1)}px of ink in a ${ig.slot.toFixed(1)}px slot leaves ` +
+              `${ig.slack.toFixed(1)}px undeclared below it at the ${tier.w}px tier — the cell is ` +
+              `occupied, so no hole check can see it. Carry the void with \`treatment: [centered]\` ` +
+              `or give the cell something to say.`);
         }
+      }
+
+      // RAILT — the rail-title ceiling. A horizontal no-rowspan rail sits in an
+      // `auto` row (the thin-row rule in engine.js rowTrackList), and
+      // `.rail-title` declares NO line clamp — so where a box's third title line
+      // is CLIPPED (invariant C's territory), a rail's third line silently GROWS
+      // its row and every stack built on the thin-row arithmetic. Run at every
+      // tier like TEXT (the narrowest tier holds the fewest characters), deduped
+      // to the worst tier per rail, and emitted as a HARD fail: the two-line
+      // ceiling is the authored geometry of every thin-rail stack. A hue rail is
+      // measured at its own tighter metrics (railHue* above).
+      for (const p of placed) {
+        const slot = g.slots.find(s => (s.node.id ?? '(no id)') === p.id);
+        if (!slot || slot.pair) continue;
+        const leaf = slot.node;
+        if (!isRailLeaf(leaf) || !isThinRowLeaf(leaf)) continue;
+        const hue = RAIL_HUES.has(leaf.variant);
+        const titlePxRail = hue ? CSS_TEXT.railHueTitlePx : CSS_TEXT.railTitlePx;
+        const trackEm = hue ? CSS_TEXT.railHueTrackEm : CSS_TEXT.railTrackEm;
+        const track = (gridW - (tracks - 1) * CSS_TEXT.gap) / tracks;
+        const availPx = track * p.w + (p.w - 1) * CSS_TEXT.gap
+          - 2 * (CSS_TEXT.railBorder + (hue ? CSS_TEXT.railHuePadX : CSS_TEXT.boxPad));
+        const cap = capacityFor(availPx, titlePxRail, trackEm);
+        const lines = wrapLines(String(leaf.title ?? '').trim(), cap);
+        asserted++;
+        if (lines <= CSS_TEXT.railTitleLines) continue;
+        const where = `${g.label} > ${leaf.id ?? '(no id)'}`;
+        const prev = railWorst.get(where);
+        if (prev && prev.lines >= lines) continue;
+        railWorst.set(where, { lines, where: `${where} @${tier.w}px`, detail:
+          `rail title wraps to ${lines} line(s) of ${cap} char(s) at ` +
+          `${titlePxRail}px mono + ${trackEm}em tracking, and the rail ` +
+          `ceiling is ${CSS_TEXT.railTitleLines} — .rail-title has no clamp, so the extra line ` +
+          `GROWS the auto row and the stack it lives in. Shorten the title or widen the cell.` });
       }
 
       if (!authoredTier) continue;   // the checks below are authored-tier truths
@@ -931,6 +1391,99 @@ function checkPage(page) {
     trackTable.push(row);
   }
 
+  // FROZEN — an undeclared hole under something that CANNOT GROW.
+  //
+  // Above the stack breakpoint a compound grid is a flex ROW with
+  // align-items:stretch, so every section in it is as tall as the TALLEST one.
+  // The section stretches; the fixed rows inside it do not. For ordinary content
+  // that is the doctrine's "the hole speaks" — the author can close it with a
+  // row or declare it. For a `vertical` box it is neither: a rotated bar's
+  // LENGTH is its assertion (its height is authored as `rowspan`), so it cannot
+  // be grown to meet the row without saying something else — and nothing in the
+  // data ties that rowspan to the neighbour that sets the row height. The author
+  // did that arithmetic once, in their head; any later change to the neighbour
+  // reopens the hole in silence. This check IS the missing tie, and it is the
+  // defect the eye caught when a thin separator row grew back to --cell-h and
+  // pushed its neighbour 90px past a bar that could not follow.
+  //
+  // WHY IT FAILS WHERE TEXT ONLY INFORMS. TEXT rests on an ASSUMED constant and
+  // OVER-states demand, so it can flag text that is fine — an estimate must not
+  // stop a build. This rests on no assumed constant: every input is a mirrored
+  // declaration (asserted against index.html by the CSS check) or an exact
+  // structural count, and the one unknowable — the zone header's height — is
+  // EXCLUDED rather than estimated. So the arithmetic UNDER-states the hole and
+  // the error runs the other way: a finding is a real hole of AT LEAST the size
+  // reported. That is a verdict, like RECT's, not a warning.
+  //
+  // SCOPE, and therefore what it does not see:
+  //   • GRID_DENSE forms only, exactly as ROW is: "a hole under a frozen element
+  //     is a defect" is the compaction claim, and a timeline or a mind-map may
+  //     leave vertical air on purpose.
+  //   • only above the stack breakpoint — below it a compound is a COLUMN, so
+  //     there is no shared row height and no hole to open.
+  //   • only a frozen leaf inside a HEADERLESS LEAF-GRID section (the `plain`
+  //     wrapper idiom that gives a rotated box its vertical axis). With a header
+  //     the frozen side's own height stops being exact, and comparing two floors
+  //     could invent a hole that is not there.
+  //   • a frozen box sitting DIRECTLY in a compound is exempt for a different
+  //     reason: the stylesheet pins it (`flex:0 0 auto; align-self:start;
+  //     height:var(--cell-h)`), so its short height is DECLARED in the CSS
+  //     rather than left to a neighbour's arithmetic.
+  //   • a hole SMALLER than the header it declined to measure is invisible here.
+  //     That is the price of never crying wolf, and it is paid on purpose.
+  if (GRID_DENSE.has(form)) {
+    const gridOf = new Map(grids.map(g => [g.node, g]));
+    const frozenWorst = new Map();
+    for (const g of grids) {
+      // A `sec-c1` compound is flex-direction:column — a stack, not a row.
+      if (!g.compound || g.cols <= 1) continue;
+      const spanOf = n => Math.max(1, Math.min(Number(n && n.span) || 1, g.cols));
+      const inRow = g.children.filter(c => spanOf(c) < g.cols);   // a band owns its row
+      if (inRow.length < 2) continue;
+      for (const tier of TIERS) {
+        if (tier.w <= BP_STACK) continue;
+        for (const sec of inRow) {
+          if (!isSection(sec)) continue;
+          const frozen = (sec.children || [])
+            .filter(c => !isSection(c) && treatmentsOf(c).includes('vertical'));
+          if (!frozen.length) continue;
+          const mine = zoneHeightPx(sec, gridHeightPx(gridOf.get(sec), tier.w));
+          if (!mine || !mine.exact) continue;
+          let tallest = null;
+          for (const sib of inRow) {
+            if (sib === sec) continue;
+            const h = isSection(sib)
+              ? zoneHeightPx(sib, gridHeightPx(gridOf.get(sib), tier.w))
+              // A leaf directly in a compound is content-sized except a box (and
+              // a half-slot), which the stylesheet fixes at --cell-h. A rail, a
+              // separator or a spacer has no knowable height, so it contributes
+              // nothing — quieter, never louder.
+              : (!sib.type || sib.type === 'box' ? { px: CSS_TEXT.cellH } : null);
+            if (h && (!tallest || h.px > tallest.px))
+              tallest = { px: h.px, id: sib.id ?? '(no id)' };
+          }
+          asserted++;
+          if (!tallest || tallest.px <= mine.px) continue;
+          const key = `${g.label} > ${sec.id ?? '(no id)'}`;
+          const gap = tallest.px - mine.px;
+          const prev = frozenWorst.get(key);
+          if (prev && prev.gap >= gap) continue;
+          frozenWorst.set(key, { gap, where: `${key} @${tier.w}px`,
+            detail:
+              `"${frozen.map(c => c.id ?? '(no id)').join(', ')}" is FROZEN at ${mine.px}px ` +
+              `(a \`vertical\` box: its height is its authored rowspan, and a rotated bar cannot be ` +
+              `stretched without changing what it says), but its flex row is at least ${tallest.px}px ` +
+              `— sibling "${tallest.id}". align-items:stretch grows the section and NOT the fixed rows ` +
+              `inside it, so at least ${gap}px of UNDECLARED hole sits under an element that cannot grow. ` +
+              `The number is a floor: zone headers are excluded from the height chain, so the real hole ` +
+              `is larger. Either make the neighbour's height match the bar's rowspan, or give the bar the ` +
+              `rowspan the row actually needs — nothing in the data ties the two together.` });
+        }
+      }
+    }
+    for (const f of frozenWorst.values()) fail('FROZEN', f.where, f.detail);
+  }
+
   // LANE (advisory) — parallel single-column stacks of unequal depth. Sibling
   // sections that are all `columns: 1` read as parallel lanes, so unequal depth
   // shows as a ragged bottom edge once the row stretches them. It is often
@@ -950,6 +1503,7 @@ function checkPage(page) {
   }
 
   for (const f of textWorst.values()) info('TEXT', f.where, f.detail);
+  for (const f of railWorst.values()) fail('RAILT', f.where, f.detail);
 
   return { pageId, form, grids, trackTable, leaves: leavesOf(page).length };
 }
@@ -1024,6 +1578,23 @@ function main() {
       `${CSS_TEXT.descLines}ln, plane ${CSS_TEXT.planeMax}px — the mirror matches the stylesheet`);
   }
 
+  // SPAN — the span->tracks rules, a hard check with the same two-way split: no
+  // stylesheet is NOT ASSERTED, a stylesheet missing a rule FAILS.
+  const spanCss = cssSpanShapes(ROOT);
+  if (spanCss.noFile) {
+    notAsserted('SPAN', 'index.html', 'there is no index.html under the deck root, so the span->tracks ' +
+      'rules every width in this report assumes cannot be read.');
+  } else {
+    asserted += CSS_SPAN_SHAPES.length;
+    if (spanCss.missing.length)
+      fail('SPAN', 'index.html', `the stylesheet implements no [${spanCss.missing.join('; ')}]. ` +
+        `Every width in this report assumes a span of M occupies M tracks; with that rule absent the ` +
+        `section is auto-placed into ONE track and renders at its min-content, so the arithmetic below ` +
+        `describes a geometry the browser does not draw.`);
+  }
+  const spanHeadline = () =>
+    `all ${spanCss.present.length} rules present (band and partial span, in the leaf grid and the root band grid)`;
+
   const deck = loadAuthoredDeck(ROOT);
   if (!deck.manifest) {
     console.log('\n══════════════════════════════════════════════════════════════');
@@ -1035,6 +1606,27 @@ function main() {
 
   const pages = [];
   for (const { page } of deck.pages) pages.push(checkPage(page));
+
+  // WORDS — every authored string against the bundle the browser loads.
+  const bundleFile = path.join(ROOT, 'data', 'data.generated.js');
+  if (!fs.existsSync(bundleFile)) {
+    notAsserted('WORDS', 'data/data.generated.js', 'the bundle does not exist yet, so no authored string ' +
+      'could be looked for in it. Run the build.');
+  } else {
+    const bundle = fs.readFileSync(bundleFile, 'utf8');
+    for (const { page } of deck.pages) {
+      const missing = [];
+      for (const s of authoredStrings(page, [])) {
+        asserted++;
+        if (!bundle.includes(escapeForBundle(s))) missing.push(s);
+      }
+      if (missing.length)
+        fail('WORDS', `page "${page.id ?? '(no id)'}"`,
+          `${missing.length} authored string(s) are NOT in data/data.generated.js — the browser is ` +
+          `rendering the OLD words while the counts still match, so CENSUS cannot see it. ` +
+          `First: "${missing[0].slice(0, 60)}". Re-run the build.`);
+    }
+  }
 
   // ── report ──
   for (const p of pages) {
@@ -1058,15 +1650,31 @@ function main() {
     ['TRACK', 'no dead track (a declared column the content never reaches)'],
     ['ROW', 'no orphan row (a lone cell while a sibling row is grouped)'],
     ['LANE', 'swimlanes / parallel stacks of equal length'],
+    ['FROZEN', 'no undeclared hole under an element that cannot grow ' +
+      '(a `vertical` box in a flex row taller than itself)'],
     ['BAND', 'band placement and declared span within the grid'],
     ['TIER', 'collapse cascade is monotone across the container tiers'],
     ['CHIP', 'filter referential integrity (both directions) + chip arity'],
+    ['LIT', 'no filter on a leaf type the engine cannot light (separator/spacer ' +
+      'carry no data-filters, so their chip membership passes the join and never renders)'],
+    ['RAILT', 'rail titles within the two-line ceiling (a thin rail row is `auto` and ' +
+      '.rail-title has no clamp, so a third line grows the row instead of clipping)'],
     ['ORDER', 'no duplicate effective `order` among siblings'],
     // A third entry is an optional PASS DETAIL: what the check MEASURED when it
     // holds, so a pass reports a number instead of a bare "holds everywhere".
-    ['TEXT', 'character budget: title token, title clamp, description clamp ' +
-      '(ADVISORY — conservative arithmetic; `validate` N is the verdict)', textHeadline],
+    ['TEXT', 'character budget: title token, kicker token, title clamp, description clamp ' +
+      '(ADVISORY — conservative arithmetic; `validate` N is the verdict for the title)', textHeadline],
+    ['WORDS', 'every authored string is present verbatim in data/data.generated.js ' +
+      '(the text-only staleness CENSUS cannot see, because node counts do not move)'],
+    ['INK', 'ink height vs the MODELLED slot — overflow fails, an undeclared void advises ' +
+      '(PAGE-SCOPED: a page opts in through INK_PAGES. ARITHMETIC, NOT OBSERVED: the slot is the ' +
+      'one the model derives from the authored spans, so a PASS here says the text fits the cell the ' +
+      'stylesheet OWES the box — not that the browser drew that cell. `validate` TXT is the verdict ' +
+      'on real clamping)', inkHeadline],
     ['CSS', 'the mirrored breakpoints and text metrics match index.html'],
+    ['SPAN', 'index.html implements the span→tracks rules every width in this report assumes ' +
+      '(a missing rule FAILS: unlike a metric there is no mirrored constant to fall back to)',
+      spanHeadline],
   ];
   console.log('\n  ── CHECKS ─────────────────────────────────────────────────────');
   for (const [id, name, passDetail] of CHECKS) {
@@ -1132,4 +1740,5 @@ if (process.argv[1]?.endsWith(`${path.sep}check-layout.mjs`)) main();
 export { widthAtTier, isBandAtTier, isBandClass, place, tracksFor,
   orderedChildren, slotsOf, effectiveCols, DEFAULT_SECTION_COLUMNS,
   planeWidth, cellTextWidth, titlePx, capacityFor, wrapLines, longestToken,
-  textBudget, cssTextTokens, CSS_TEXT, MONO_ADVANCE_EM };
+  textBudget, cssTextTokens, CSS_TEXT, MONO_ADVANCE_EM, isThinRowLeaf,
+  inkBudget, slotHeightPx };

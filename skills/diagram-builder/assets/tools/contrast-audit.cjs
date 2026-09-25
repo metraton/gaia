@@ -163,8 +163,18 @@ const PAIRS = [
   { id: 'accent-kicker', what: 'accent kicker on an accent box (.box.accent .k)',    fg: '--strong', bg: ['--surface', '--strong-soft'], min: 4.5, kind: 'AA text', load: 'accent' },
   { id: 'bad-ztitle',    what: 'bad section title (.zone.bad .ztitle)',              fg: '--crit',   bg: ['--bg', '--crit-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
   { id: 'good-ztitle',   what: 'good section title (.zone.good .ztitle)',            fg: '--olive',  bg: ['--bg', '--olive-soft'],       min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'copy-icon',     what: 'copy button glyph on its own fill (.copy-btn)',      fg: '--body',   bg: ['--surface'],                  min: 3.0, kind: 'AA non-text', load: 'nontext' },
   { id: 'clay-kicker',   what: 'panel kicker / inline code (.p-kicker, code)',       fg: '--clay',   bg: ['--surface'],                  min: 4.5, kind: 'AA text', load: 'accent' },
   { id: 'chip-on-text',  what: 'active chip label (.chip.on)',                       fg: '--ink',    bg: ['--bg', '--clay-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
+
+  // the four categorical hues (.box.blue / .violet / .gold / .clay): the title
+  // and description sit on the tint, the kicker takes the hue, the border is the cue
+  ...['blue', 'violet', 'gold', 'clay'].flatMap(h => [
+    { id: `${h}-title`,  what: `title on a ${h} box (.box.${h} .t)`,         fg: '--ink',       bg: ['--surface', `--hue-${h}-soft`], min: 4.5, kind: 'AA text',     load: 'primary' },
+    { id: `${h}-desc`,   what: `description on a ${h} box (.box.${h} .m)`,   fg: '--body',      bg: ['--surface', `--hue-${h}-soft`], min: 4.5, kind: 'AA text',     load: 'primary' },
+    { id: `${h}-kicker`, what: `kicker on a ${h} box, title on a ${h} rail (.box.${h} .k, .rail.${h} .rail-title)`,       fg: `--hue-${h}`,  bg: ['--surface', `--hue-${h}-soft`], min: 4.5, kind: 'AA text',     load: 'accent' },
+    { id: `${h}-border`, what: `${h} box border against the box fill`,       fg: `--hue-${h}`,  bg: ['--surface'],                    min: 3.0, kind: 'AA non-text', load: 'nontext' },
+  ]),
 
   // non-text: component boundaries must be discernible (WCAG 1.4.11)
   { id: 'line-on-bg',      what: 'box / control border against the canvas (--line)', fg: '--line',      bg: ['--bg'],      min: 3.0, kind: 'AA non-text', load: 'nontext' },

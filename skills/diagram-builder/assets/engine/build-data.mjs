@@ -42,7 +42,7 @@ function readYaml(path) {
 //   • component (a leaf, no `children`): buildBox / buildSeparator / buildRail /
 //     buildSpacer + the per-child grid props + both vocabulary axes. A `spacer`
 //     is narrowed further by SPACER_FIELDS below — it is the one leaf that reads
-//     NO payload at all.
+//     NO payload at all — and a `rail` by RAIL_FIELDS.
 //   • filter (an entry of `filters[]`): the chip's key/label/steps. Filters used
 //     to bypass this gate entirely — a typo in a `key` produced no error, just a
 //     chip that silently dimmed the whole canvas because nothing matched it.
@@ -57,7 +57,7 @@ const SECTION_FIELDS = new Set([
 const COMPONENT_FIELDS = new Set([
   'id', 'type', 'variant', 'variant_extra', 'treatment', 'kicker', 'title',
   'description', 'detail', 'note', 'order', 'span', 'rowspan', 'filters',
-  'style', 'text']);
+  'style', 'text', 'copy']);
 const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 
 // ── THE TWO ORTHOGONAL AXES ────────────────────────────────────────────────
@@ -81,16 +81,25 @@ const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 // a silent translation, so a deck is either on the new vocabulary or it fails
 // loudly at the gate. (The legacy→new mapping is tabled in the skill's
 // reference.md, "Migrating a pre-2.1 deck".)
-const COMPONENT_VARIANTS = new Set(['neutral', 'good', 'warn', 'bad', 'accent', 'muted']);
+// blue / violet / gold / clay are CATEGORICAL: they tell peer groups apart and
+// carry no risk or state, so the page that uses them must say what each means.
+const COMPONENT_VARIANTS = new Set([
+  'neutral', 'good', 'warn', 'bad', 'accent', 'muted',
+  'blue', 'violet', 'gold', 'clay']);
 const SECTION_VARIANTS = new Set(['neutral', 'good', 'bad']);
 const COMPONENT_TREATMENTS = new Set(['centered', 'half', 'vertical', 'outside']);
-const SECTION_TREATMENTS = new Set(['plain', 'envelope']);
+// `middle` centres a section's grid vertically inside the height its compound
+// row stretches it to, so a short cell beside taller neighbours leaves no gap.
+// `compact` gives one leaf grid a shorter row (index.html `.zone.compact`), for
+// a staircase that must end level with a shorter neighbour; the uniform-row
+// gates (validate U) exempt only grids that declare it.
+const SECTION_TREATMENTS = new Set(['plain', 'envelope', 'middle', 'compact']);
 // Which axis a value belongs to, for the error message. A value that MOVED axes
 // gets a targeted "that is a treatment, not a variant" error instead of a bare
 // "unknown value", because the author's intent is unambiguous and the fix is one
 // mechanical edit.
 const TREATMENT_OWNER = {
-  plain: 'section', envelope: 'section',
+  plain: 'section', envelope: 'section', middle: 'section', compact: 'section',
   centered: 'component', half: 'component', vertical: 'component', outside: 'component',
 };
 
@@ -151,6 +160,16 @@ const COMPONENT_TYPES = new Set(['box', 'separator', 'rail', 'spacer']);
 // with an invisible end. A spacer carrying a title is not a spacer; it is an
 // empty card, which is the thing this type exists to stop being authored.
 const SPACER_FIELDS = new Set(['id', 'type', 'order', 'span', 'rowspan']);
+// A `rail` is a title-only label, so it keeps the geometry, its title and its
+// treatment. `filters` is its one membership field: buildRail stamps it as
+// `data-filters`, so a chip lights the rail exactly as it lights a box. Its
+// colour is limited to the four categorical hues, the only variants
+// `.rail.<hue>` draws in index.html. `indent` (0..RAIL_MAX_INDENT) insets the
+// drawn frame inside its cell, one step per tree level, so a tree reads by
+// indentation while the cell itself still fills its track.
+const RAIL_FIELDS = new Set(['id', 'type', 'order', 'span', 'rowspan', 'title', 'treatment', 'variant', 'filters', 'indent']);
+const RAIL_VARIANTS = new Set(['blue', 'violet', 'gold', 'clay']);
+const RAIL_MAX_INDENT = 3;
 // buildSeparator's line style. Only a `separator` reads it.
 const SEPARATOR_STYLES = new Set(['solid', 'dotted']);
 
@@ -280,7 +299,8 @@ function checkTreatment(node, kind, pageId, label) {
 //                         slots, `half` divides ONE slot. Together they have no
 //                         meaning.
 //   half on a section   → rejected by checkTreatment (section treatments are
-//                         plain/envelope); a section is not a slot occupant.
+//                         plain/envelope/middle/compact); a section is not a slot
+//                         occupant.
 function checkTreatmentCombinations(node, treatments, pageId, label) {
   const has = v => treatments.includes(v);
   const titleOnly = ['half', 'vertical'].filter(has);
@@ -366,11 +386,18 @@ function validateNode(node, pageId, where) {
   const kind = isSection ? 'section' : 'component';
   const id = (node && node.id) || '(no id)';
   const label = `${where} ${kind} "${id}"`;
-  checkFields(node, isSection ? SECTION_FIELDS : COMPONENT_FIELDS, kind, pageId, label);
+  const isRail = !isSection && node.type === 'rail';
+  checkFields(node, isSection ? SECTION_FIELDS : isRail ? RAIL_FIELDS : COMPONENT_FIELDS,
+    isRail ? 'rail' : kind, pageId, label);
   // A spacer's narrow whitelist is applied BEFORE the two vocabulary axes, so a
   // `variant` written on one is reported as "a spacer carries no variant" rather
   // than as a near-miss inside a colour enum it has no business reaching.
   if (!isSection && node.type === 'spacer') { checkSpacer(node, pageId, label); return; }
+  if (isRail) {
+    checkEnumValue(node.variant, RAIL_VARIANTS, 'rail variant', pageId, label);
+    if (node.indent !== undefined && !(Number.isInteger(node.indent) && node.indent >= 0 && node.indent <= RAIL_MAX_INDENT))
+      throw new Error(`[strict-schema] page "${pageId}" ${label}: rail \`indent\` must be an integer 0..${RAIL_MAX_INDENT}, got ${JSON.stringify(node.indent)}`);
+  }
   checkVariantValue(node.variant, kind, pageId, label);
   const treatments = checkTreatment(node, kind, pageId, label);
   if (!isSection) {
@@ -393,8 +420,20 @@ function validateNode(node, pageId, where) {
     for (const extra of node.variant_extra || [])
       checkVariantValue(extra, kind, pageId, `${label} variant_extra`);
     checkTreatmentCombinations(node, treatments, pageId, label);
+    // `copy` opts a box into a copy-to-clipboard button: `true` copies its title
+    // verbatim, a string copies that string. Only buildBox draws the button.
+    if (node.copy !== undefined) {
+      const isBox = node.type === undefined || node.type === 'box';
+      const valid = node.copy === true || (typeof node.copy === 'string' && node.copy.length > 0);
+      if (!isBox || !valid)
+        throw new Error(`[strict-schema] page "${pageId}" ${label}: \`copy\` must be \`true\` or a non-empty string, and only on a box; got ${JSON.stringify(node.copy)} on type "${node.type ?? 'box'}"`);
+      if (node.copy === true && !node.title)
+        throw new Error(`[strict-schema] page "${pageId}" ${label}: \`copy: true\` copies the title, and this box has none`);
+    }
   }
   if (isSection) {
+    if (treatments.includes('compact') && node.children.some(c => Array.isArray(c && c.children)))
+      throw new Error(`[strict-schema] page "${pageId}" ${label}: treatment "compact" shortens the rows of ONE leaf grid, so its children must all be components, not sections.`);
     checkHalfPairing(node.children, pageId, label);
     node.children.forEach(c => validateNode(c, pageId, `${label} >`));
   }

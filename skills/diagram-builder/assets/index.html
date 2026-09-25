@@ -22,12 +22,15 @@
     --warn:#C08A2E; --warn-soft:rgba(192,138,46,0.10);
     --gold:#C9A45C; --blue:#5B7E96;
     --strong:#2F7A3D; --strong-soft:rgba(47,122,61,0.14);
+    --hue-blue:#3F6E8C; --hue-blue-soft:rgba(63,110,140,0.10); --hue-violet:#7A5AA6; --hue-violet-soft:rgba(122,90,166,0.10);
+    --hue-gold:#8A6212; --hue-gold-soft:rgba(138,98,18,0.10); --hue-clay:#A84A30; --hue-clay-soft:rgba(168,74,48,0.10);
     --zone:rgba(20,20,19,0.022); --zone-line:#D1CFC5;
     --serif:Charter,"Bitstream Charter","Sitka Text",Cambria,Georgia,serif;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
     /* ── 8pt spacing scale (design tokens) ── */
     --s-1:4px; --s-2:8px; --s-3:16px; --s-4:24px; --s-5:32px; --s-6:48px; --s-7:64px;
+    --indent-step:32px;
   }
   html.dark {
     --bg:#141413; --surface:#1F1F1D; --surface2:#2A2A28;
@@ -39,6 +42,8 @@
     --warn:#E0AE55; --warn-soft:rgba(224,174,85,0.14);
     --gold:#D4B36F; --blue:#7FA3BC;
     --strong:#4ECB6B; --strong-soft:rgba(78,203,107,0.18);
+    --hue-blue:#7FB0D0; --hue-blue-soft:rgba(127,176,208,0.14); --hue-violet:#B79BE0; --hue-violet-soft:rgba(183,155,224,0.14);
+    --hue-gold:#D8AE55; --hue-gold-soft:rgba(216,174,85,0.14); --hue-clay:#E48A6E; --hue-clay-soft:rgba(228,138,110,0.14);
     --zone:rgba(250,249,245,0.028); --zone-line:#3D3D3A;
   }
 
@@ -92,6 +97,8 @@
     --warn:#815c1c; --warn-soft:rgba(129,92,28,0.12);
     --gold:#815c1c; --blue:#3f7885;
     --strong:#6d5a86; --strong-soft:rgba(109,90,134,0.14);
+    --hue-blue:#286983; --hue-blue-soft:rgba(40,105,131,0.10); --hue-violet:#6e5796; --hue-violet-soft:rgba(110,87,150,0.10);
+    --hue-gold:#815c1c; --hue-gold-soft:rgba(129,92,28,0.10); --hue-clay:#a1506a; --hue-clay-soft:rgba(161,80,106,0.10);
     --zone:rgba(87,82,121,0.030); --zone-line:#cecacd;
   }
   html.dark[data-palette="rose-pine"] {
@@ -104,6 +111,8 @@
     --warn:#f6c177; --warn-soft:rgba(246,193,119,0.14);
     --gold:#f6c177; --blue:#31748f;
     --strong:#c4a7e7; --strong-soft:rgba(196,167,231,0.16);
+    --hue-blue:#9ccfd8; --hue-blue-soft:rgba(156,207,216,0.14); --hue-violet:#c4a7e7; --hue-violet-soft:rgba(196,167,231,0.14);
+    --hue-gold:#f6c177; --hue-gold-soft:rgba(246,193,119,0.14); --hue-clay:#ebbcba; --hue-clay-soft:rgba(235,188,186,0.14);
     --zone:rgba(224,222,244,0.030); --zone-line:#524f67;
   }
   /* Rosé Pine MOON — the third upstream variant. Same light (DAWN) side, a
@@ -120,6 +129,8 @@
     --warn:#f6c177; --warn-soft:rgba(246,193,119,0.14);
     --gold:#f6c177; --blue:#3e8fb0;
     --strong:#c4a7e7; --strong-soft:rgba(196,167,231,0.16);
+    --hue-blue:#9ccfd8; --hue-blue-soft:rgba(156,207,216,0.14); --hue-violet:#c4a7e7; --hue-violet-soft:rgba(196,167,231,0.14);
+    --hue-gold:#f6c177; --hue-gold-soft:rgba(246,193,119,0.14); --hue-clay:#ea9a97; --hue-clay-soft:rgba(234,154,151,0.14);
     --zone:rgba(224,222,244,0.030); --zone-line:#56526e;
   }
 
@@ -138,6 +149,8 @@
     --warn:#7a4a00; --warn-soft:rgba(122,74,0,0.10);
     --gold:#6b4e00; --blue:#00457a;
     --strong:#006b22; --strong-soft:rgba(0,107,34,0.12);
+    --hue-blue:#00457a; --hue-blue-soft:rgba(0,69,122,0.10); --hue-violet:#5a2d91; --hue-violet-soft:rgba(90,45,145,0.10);
+    --hue-gold:#6b4e00; --hue-gold-soft:rgba(107,78,0,0.10); --hue-clay:#a03000; --hue-clay-soft:rgba(160,48,0,0.10);
     --zone:rgba(0,0,0,0.040); --zone-line:#000000;
   }
   html.dark[data-palette="contrast"] {
@@ -150,6 +163,8 @@
     --warn:#ffd166; --warn-soft:rgba(255,209,102,0.16);
     --gold:#ffde7a; --blue:#93d2ff;
     --strong:#7cf29a; --strong-soft:rgba(124,242,154,0.18);
+    --hue-blue:#93d2ff; --hue-blue-soft:rgba(147,210,255,0.16); --hue-violet:#d6b8ff; --hue-violet-soft:rgba(214,184,255,0.16);
+    --hue-gold:#ffde7a; --hue-gold-soft:rgba(255,222,122,0.16); --hue-clay:#ffb08a; --hue-clay-soft:rgba(255,176,138,0.16);
     --zone:rgba(255,255,255,0.050); --zone-line:#ffffff;
   }
 
@@ -324,14 +339,21 @@
   /* highlight (chip-driven) — no lines: chips light the relevant boxes/zones */
   .stage.flowing .zone { opacity:0.34; }
 
-  /* ── unified detail/flow panel (anchored bottom-center, shared by both uses) ── */
-  .panel { position:absolute; left:50%; bottom:24px; transform:translateX(-50%);
-    z-index:60; width:min(920px, 94%); max-width:920px;
-    padding:24px 40px 26px; border-radius:16px; background:var(--surface);
-    border:1px solid var(--line); border-left:4px solid var(--clay);
-    box-shadow:0 18px 52px rgba(0,0,0,0.24); text-align:center; display:none; }
+  /* ── the one panel: a box's detail and a chip's relation share it ──
+     A vertical, see-through, draggable card docked bottom-left (engine.js
+     placeCard sets its width, min-height and dragged position). */
+  .panel { position:absolute; left:24px; bottom:24px; z-index:60;
+    max-height:calc(100% - 48px); overflow-y:auto; padding:18px 22px 20px;
+    border-radius:16px; background:color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter:blur(2px); border:1px solid var(--line); border-left:4px solid var(--clay);
+    box-shadow:0 18px 52px rgba(0,0,0,0.24); text-align:left; display:none; }
   .panel.show { display:block; }
   html.dark .panel { box-shadow:0 18px 52px rgba(0,0,0,0.5); }
+  .panel .p-head { justify-content:flex-start; padding:0; cursor:grab;
+    touch-action:none; user-select:none; }
+  .panel .p-head.dragging { cursor:grabbing; }
+  .panel .p-head h3 { font-size:19px; }
+  .panel .p-summary { font-size:15px; line-height:1.6; }
   .p-head { display:flex; align-items:baseline; justify-content:center; gap:12px;
     flex-wrap:wrap; margin-bottom:12px; padding:0 32px; }
   .p-head .p-kicker { font-family:var(--mono); font-size:13px; letter-spacing:0.08em;
@@ -698,6 +720,16 @@
   /* plain: a bare structural wrapper — no frame, no background, no min-height.
      Used to stack sub-sections inside one parent column with no extra border. */
   .zone.plain { background:none; border:none; padding:0; min-height:0; }
+  /* middle: the section's grid sits vertically centred in the height its row stretches it to */
+  .zone.middle { justify-content:center; }
+  /* compact: one leaf grid with a shorter row (74px, 4px row gap) so a staircase
+     of rowspans ends level with a shorter neighbour. Its boxes drop the
+     description clamp: their height comes from rowspan, and the one single-row
+     box must carry a one-line description (validate C catches a clip). */
+  .zone.compact { --cell-h:74px; }
+  .zone.compact > .sec-grid { row-gap:4px; }
+  .zone.compact .box { padding:4px var(--s-3); }
+  .zone.compact .box .desc { display:block; -webkit-line-clamp:unset; line-clamp:none; }
 
   /* width:0 + min-width:100% keeps the header from DICTATING the section width:
      with width:0 the header contributes nothing to the zone's shrink-to-fit
@@ -731,6 +763,16 @@
     padding:var(--s-2) var(--s-3); display:flex; flex-direction:column; gap:2px;
     min-width:0; overflow:hidden; overflow-wrap:break-word; word-break:normal;
     transition:border-color .15s ease, box-shadow .15s ease, opacity .2s ease; }
+  /* copy-to-clipboard (engine.js buildCopyButton, `copy` in the YAML): a small
+     corner button; the box reserves its width on the right so text never runs
+     under it. Its glyph is --body on the box fill (contrast pair `copy-icon`). */
+  .box:has(> .copy-btn) { position:relative; padding-right:36px; }
+  .copy-btn { position:absolute; top:6px; right:6px; width:26px; height:26px; padding:0;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    font-family:var(--mono); font-size:15px; line-height:1; color:var(--body);
+    background:var(--surface); border:1px solid var(--line); border-radius:6px; }
+  .copy-btn:hover, .copy-btn:focus-visible { color:var(--ink); border-color:var(--body); outline:none; }
+  .copy-btn.copied { color:var(--ink); }
   .box:hover { border-color:var(--muted); }
   .box .k { font-family:var(--mono); font-size:10.5px; letter-spacing:0.09em; text-transform:uppercase; color:var(--muted); }
   /* title clamps to 2 lines so a long title can't push the box past --cell-h */
@@ -752,6 +794,19 @@
   .box.accent { background:var(--strong-soft); border-color:var(--strong); border-width:2px; }
   .box.accent .k { color:var(--strong); }
   .box.muted { background:var(--surface2); }
+  /* Categorical hues: four colours with NO fixed meaning, for a page that must
+     tell four peer groups apart. The page that uses them declares what each one
+     means in its own content (principle 5); none of them may stand for good/bad. */
+  .box.blue { background:var(--hue-blue-soft); border-color:var(--hue-blue); }
+  .box.blue .k { color:var(--hue-blue); }
+  .box.violet { background:var(--hue-violet-soft); border-color:var(--hue-violet); }
+  .box.violet .k { color:var(--hue-violet); }
+  .box.gold { background:var(--hue-gold-soft); border-color:var(--hue-gold); }
+  .box.gold .k { color:var(--hue-gold); }
+  .box.clay { background:var(--hue-clay-soft); border-color:var(--hue-clay); }
+  .box.clay .k { color:var(--hue-clay); }
+  /* --muted loses AA on a tint in the dark skins; the description takes --body. */
+  .box.blue .m, .box.violet .m, .box.gold .m, .box.clay .m { color:var(--body); }
 
   /* ── STRUCTURAL TREATMENTS (the second axis) ──────────────────────────────
      A `treatment` changes HOW a component is drawn, never WHAT it means. That is
@@ -838,15 +893,51 @@
   /* ── rail (component type: rail) ──
      A swimlane-style LABEL: styled like a component/box but title-only. Slim.
      `rail-v` rotates the title for a vertical swimlane label. Honors `span`. */
-  .rail { background:var(--surface2); border:1px solid var(--line); border-radius:10px;
-    padding:var(--s-2) var(--s-3); display:flex; align-items:center; justify-content:center;
+  .rail { --rail-fill:var(--surface2); --rail-line:var(--line);
+    background:var(--rail-fill); border:1px solid var(--rail-line); border-radius:10px;
+    padding:var(--s-2) var(--s-3); display:flex; align-items:center;
     min-width:0; }
   .rail-title { font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:0.09em;
-    text-transform:uppercase; color:var(--muted); text-align:center; }
+    text-transform:uppercase; color:var(--muted); }
+  /* `centered` mirrors `.box.centered`: the treatment centres, its ABSENCE means
+     start-aligned. Before these two rules .rail-title carried its own
+     text-align:center, so `centered` — a documented component treatment — was
+     silently a no-op on a rail. Text alignment only; no invariant reads it. */
+  .rail.centered { justify-content:center; }
+  .rail.centered .rail-title { text-align:center; }
+  /* The four categorical hues on a rail: the box's tint and border, the title
+     in the hue (the kicker pair `<hue>-kicker` in tools/contrast-audit.cjs). */
+  .rail.blue { --rail-fill:var(--hue-blue-soft); --rail-line:var(--hue-blue); }
+  .rail.blue .rail-title { color:var(--hue-blue); }
+  .rail.violet { --rail-fill:var(--hue-violet-soft); --rail-line:var(--hue-violet); }
+  .rail.violet .rail-title { color:var(--hue-violet); }
+  .rail.gold { --rail-fill:var(--hue-gold-soft); --rail-line:var(--hue-gold); }
+  .rail.gold .rail-title { color:var(--hue-gold); }
+  .rail.clay { --rail-fill:var(--hue-clay-soft); --rail-line:var(--hue-clay); }
+  .rail.clay .rail-title { color:var(--hue-clay); }
+  /* A hue rail is a word, not a lane label: it keeps its authored case, and it is
+     set tighter (10.5px, the kicker size, no tracking, 4px sides) so a word fits
+     a narrow cell on one line (mirrored as railHue* in tools/check-layout.mjs,
+     which RAILT measures against). The 10px vertical padding keeps the rail
+     inside the 33..48px rail-row band. */
+  .rail.blue, .rail.violet, .rail.gold, .rail.clay { padding:10px var(--s-1); }
+  .rail.blue .rail-title, .rail.violet .rail-title,
+  .rail.gold .rail-title, .rail.clay .rail-title { text-transform:none; font-size:10.5px; letter-spacing:0; }
+  /* An indented rail (engine.js buildRail, `indent` in the YAML) still fills its
+     cell, so every cell gate measures it unchanged; the drawn frame moves onto
+     the title, sized to the word and inset by --indent steps, so a tree reads
+     as a staircase. The title's vertical padding keeps the row at 33px. */
+  .rail.indented { background:none; border-color:transparent; padding-top:0; padding-bottom:0;
+    padding-left:calc(var(--indent) * var(--indent-step)); }
+  .rail.indented .rail-title { display:inline-block; max-width:100%; padding:7px var(--s-3);
+    background:var(--rail-fill); border:1px solid var(--rail-line); border-radius:10px; }
   /* min-height 0 for the same reason as .sep-v: in a leaf grid the row height is
      the contract, and a --zone-min-h floor overflowed it by 50px. */
-  .rail-v { align-self:stretch; min-height:0; }
-  .rail-v .rail-title { writing-mode:vertical-rl; transform:rotate(180deg); }
+  /* A vertical rail keeps both centrings unconditionally: a rotated lane label
+     has no start/centre text-axis to align, so the default flip above must not
+     move it. */
+  .rail-v { align-self:stretch; min-height:0; justify-content:center; }
+  .rail-v .rail-title { writing-mode:vertical-rl; transform:rotate(180deg); text-align:center; }
   /* COMPOUND rows are where the stretch floor actually earns its keep: a lane
      divider or a lane label sitting DIRECTLY beside nested sections has no row
      track to fill (a compound grid is a flex row, not a track grid), so without
@@ -883,6 +974,11 @@
   .stage.flowing .canvas .zone.lit .zone-header { opacity:1; }
   .stage.flowing .box { opacity:0.18; }
   .stage.flowing .box.lit { opacity:1; box-shadow:0 0 0 1px currentColor inset; }
+  /* a rail dims like a zone header, being a label; a rail that is a chip member lights like a box */
+  .stage.flowing .rail { opacity:0.34; }
+  .stage.flowing .rail.lit { opacity:1; box-shadow:0 0 0 1px currentColor inset; }
+  .stage.flowing .rail.indented.lit { box-shadow:none; }
+  .stage.flowing .rail.indented.lit .rail-title { box-shadow:0 0 0 1px currentColor inset; }
 
   /* ═══════════════ HELP / TUTORIAL HUD (modal) ═══════════════
      A global, static tutorial. It lives OUTSIDE .deck/.stage/.canvas (direct

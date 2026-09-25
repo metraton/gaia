@@ -193,7 +193,8 @@ sections: [ … ]         # required, ≥ 1 — the root section's children
   title: "Example system"
   subtitle: "…"         # optional
   variant: neutral      # THE COLOUR AXIS — one value: neutral | good | bad
-  treatment: [envelope] # THE STRUCTURAL AXIS — a list: envelope | plain
+  treatment: [envelope] # THE STRUCTURAL AXIS — a list:
+                        #   envelope | plain | middle | compact
   order: 3              # position among its siblings + collapse order
   span: 2               # occupy M of the PARENT's columns (default 1)
   rowspan: 1            # accepted by the schema; the vertical merge renders on
@@ -204,6 +205,24 @@ sections: [ … ]         # required, ≥ 1 — the root section's children
 
 A child of `children` is a **section** if it has its own `children`, otherwise a
 **component**. Mix them freely in one list.
+
+The two section treatments added after `envelope` and `plain`, and why each exists:
+
+- **`middle`** centres the section's grid vertically inside the height its
+  compound row stretches it to (`.zone.middle`). A compound row is
+  `align-items:stretch`, so a short section beside a taller neighbour otherwise
+  keeps its content at the top and leaves the gap below it. `middle` is how a
+  short cell sits balanced instead.
+- **`compact`** gives ONE leaf grid a shorter row: `--cell-h: 74px` and a 4px
+  row gap (`.zone.compact`), and its boxes drop the description clamp because
+  their height comes from `rowspan`. It exists for a staircase of rowspans that
+  must end level with a shorter neighbour. Rules: a `compact` section's children
+  must all be components (the build refuses a nested section, since the
+  treatment shortens the rows of one leaf grid); a single-row box inside it must
+  carry at most a one-line description, or `validate` C reports the clip; and
+  the render gate's U accepts a row other than 130px ONLY in a grid that
+  declares `compact`, reporting any other short row as
+  `--cell-h=…px without the compact treatment`.
 
 ### component — box (default `type`)
 
@@ -219,6 +238,7 @@ A child of `children` is a **section** if it has its own `children`, otherwise a
   note: "⚠ …"           # optional warning note, shown separately
   variant: neutral       # THE COLOUR AXIS — one value:
                          #   neutral | good | warn | bad | accent | muted
+                         #   | blue | violet | gold | clay   (categorical)
   variant_extra: [muted] # optional SECOND colour role (same enum), for a box that
                          #   is both a kind and a state (bad + muted)
   treatment: [centered]  # THE STRUCTURAL AXIS — a list, composable:
@@ -228,7 +248,30 @@ A child of `children` is a **section** if it has its own `children`, otherwise a
   rowspan: 2            # occupy K rows (default 1) — a vertical merge, K× the
                         # cell height (height as magnitude)
   filters: [flow]       # keys of the filters this component belongs to
+  copy: true            # optional copy-to-clipboard button: `true` copies the
+                        #   title, a string copies that string
 ```
+
+**The four categorical hues — `blue`, `violet`, `gold`, `clay`.** Every other
+variant carries a meaning of risk or state (`bad` is danger, `good` is safe).
+These four carry NONE: they exist for a page that must tell up to four peer
+groups apart, where borrowing `good`/`bad` would assert a verdict the content
+does not make. So the page that uses them must say, in its own content, what
+each hue means. Each hue is a tint, a border and a kicker colour
+(`.box.<hue>`), with its description on `--body` because `--muted` loses AA on
+a tint in the dark skins. Every palette block in `index.html` declares
+`--hue-<name>` and `--hue-<name>-soft`, and `npm run contrast` measures four
+pairs per hue (title, description, kicker, border).
+
+**`copy`** puts a small corner button on the box that copies text to the
+clipboard (engine.js `buildCopyButton`): `copy: true` copies the title verbatim,
+`copy: "<string>"` copies that string. It exists for a box whose title IS
+something the reader will paste: a command, a path, an identifier. The click
+stops at the button, so it never opens the detail card. Rules the build
+enforces: only a box may carry it (not a separator, rail or spacer), the value
+is `true` or a non-empty string, and `copy: true` needs a title. The Clipboard
+API needs a secure context, so under `file://` the engine falls back to a hidden
+textarea and `execCommand('copy')`. The glyph's contrast pair is `copy-icon`.
 
 ### component — separator (`type: separator`)
 
@@ -251,14 +294,47 @@ line. Not clickable, no detail.
 - id: lane
   type: rail
   title: "CI/CD"
-  treatment: [vertical]   # rotates the text; omit for a horizontal banner
+  treatment: [vertical]   # rotates the text; omit for a horizontal banner.
+                          #   [centered] centres the title; its absence is start-aligned
+  variant: blue           # optional: blue | violet | gold | clay — nothing else
+  indent: 1               # optional: 0..3 — inset the drawn frame one step per level
+  filters: [flow]         # optional: chip membership — a chip lights the rail
   span: 1
 ```
 
 A title-only swimlane LABEL banner (styled like a box but carrying only a
 title). `treatment: [vertical]` rotates it for labeling a vertical lane — the
 former `orientation` field is gone and is now rejected by the strict schema. Not
-clickable.
+clickable. A rail has its OWN whitelist (`RAIL_FIELDS`: id, type, order, span,
+rowspan, title, treatment, variant, filters, indent), so a payload key is
+refused by name. Its fields beyond the title, and why each exists:
+
+- **`treatment: [centered]`** centres the title (`.rail.centered`, mirroring
+  `.box.centered`); without it the title is start-aligned, as on a box. A
+  vertical rail keeps both centrings regardless, because a rotated lane label has
+  no start or centre text axis to choose.
+- **`filters`** makes the rail a chip member. `buildRail` stamps it as
+  `data-filters`, so a chip lights the rail exactly as it lights a box, and a
+  rail that is not a member dims like a section header while a chip is active.
+  Without it a relation that runs through a lane label could not show the label.
+- **`variant`** colours the rail with one of the four categorical hues, the only
+  variants `.rail.<hue>` draws; the build refuses any other value (`good`,
+  `bad`, ...) as `unknown rail variant`. A hue rail is a word rather than a lane
+  label: it keeps its authored case and is set tighter (10.5px, no tracking,
+  4px sides) so one word fits a narrow cell. The static gate's RAILT measures it
+  at those metrics.
+- **`indent`** (integer 0 to 3) moves the drawn frame onto the title and insets
+  it by `indent × --indent-step` (32px), so a column of rails reads as a tree by
+  indentation. The CELL still fills its track, so every cell gate measures it
+  unchanged; the build refuses a value outside 0 to 3.
+
+**A horizontal rail without `rowspan` is a THIN leaf.** Its row renders at the
+rail's own content height (`auto`, 33px for one title line) instead of 130px,
+the same reason a separator row is thin: one banner line should not cost a full
+cell. A vertical rail and a rail with `rowspan` stay full height, because their
+height IS what they draw. Because `.rail-title` has no clamp, a third title line
+would grow the row: the static gate's RAILT fails a thin rail whose title wraps
+past two lines, and the render gate's U asserts a rail row inside 33 to 48px.
 
 ### component — spacer (`type: spacer`)
 
@@ -863,6 +939,40 @@ Each new layout requirement becomes a new row in whichever layer can prove it �
 the RATCHET rule (`SKILL.md`, "The verdict"). Prefer the static gate when the
 requirement is a statement about the data: it runs everywhere, and the trap is
 trusting a metric that measures the wrong thing.
+
+### Checks added with the thin-row, rail and copy port
+
+The static gate (`npm run model`) also asserts, each with a negative case in
+`npm test`:
+
+| Check | What it fails | Why it exists |
+|---|---|---|
+| **FROZEN** | an undeclared hole under a `vertical` box whose flex row a taller sibling sets | a rotated bar's height is its authored rowspan, and nothing in the data ties that rowspan to the neighbour that sets the row |
+| **LIT** | `filters` on a separator or spacer | only boxes and rails emit `data-filters`, so that membership closes the CHIP join and never renders |
+| **RAILT** | a thin rail's title past two lines | the rail row is `auto` and `.rail-title` has no clamp, so a third line grows the row instead of clipping |
+| **WORDS** | an authored string missing from `data.generated.js` | CENSUS compares ids and counts, so a text-only edit without a rebuild stays green on the old words |
+| **SPAN** | a stylesheet missing one of the four span-to-tracks rules | every width the gate reports assumes a span of M occupies M tracks; without the rule the browser places the section in one track |
+| **INK** | a box whose stacked lines overflow its fixed row (advises on a large undeclared void) | TEXT measures width only; INK is the height half. Page-scoped: it runs only on the page ids listed in `INK_PAGES`, which the seed ships empty |
+| **TEXT** kicker token | a kicker token wider than its cell (advisory) | the title budget never measured `.box .k`, which has its own size and tracking |
+
+The render gate (`npm run render`) gains the rail-row band and the `compact`
+row in U, the `.msp` band-leaf exemption in G (a band separator or rail may be
+full width, and must fill its row), and three page-scoped RATCHET rows, FILL,
+SLICE and TXT, that run only on the page ids listed in `RATCHET_PAGES`. List a
+page in both `INK_PAGES` and `RATCHET_PAGES` from its first build: the sets are
+empty in the seed so that a deck authored before them cannot fail on arithmetic
+slack.
+
+**Chip coverage is NOT a gate in the seed.** A deck may require that every box
+and rail belongs to at least one chip, so that no component is left out of every
+question the page answers. That rule is deck policy, not a generic invariant:
+the seed's own teaching pages use chips for a subset of their components on
+purpose, and the rule fails 10 of its 11 pages. A deck that wants it adds the
+check to its own `tools/check-layout.mjs`.
+
+The engine's reset chip reads `all`, and the one detail and relation card is
+docked bottom-left, draggable by its header, and sized from the widest root
+grid in the deck (`placeCard`).
 
 ## Feasibility, transparency, capability
 
