@@ -1,7 +1,7 @@
 {
   "name": "@jaguilar87/gaia",
   "version": "5.5.0-rc.1",
-  "description": "Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
+  "description": "GAIA — Generative AI Interface for Agents. Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
   "main": "index.js",
   "type": "module",
   "bin": {

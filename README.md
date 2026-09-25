@@ -1,6 +1,6 @@
-# Gaia
+# GAIA
 
-Specialist agents for Claude Code and OpenCode, with a memory that outlives the session and a consent gate on everything that changes state.
+**Generative AI Interface for Agents.** Specialist agents for Claude Code and OpenCode, with a memory that outlives the session and a consent gate on everything that changes state.
 
 [![npm version](https://badge.fury.io/js/@jaguilar87%2Fgaia.svg)](https://www.npmjs.com/package/@jaguilar87/gaia)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
