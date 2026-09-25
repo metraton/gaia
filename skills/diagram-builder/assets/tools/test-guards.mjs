@@ -16,7 +16,9 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import { widthAtTier, isBandAtTier, isBandClass, place,
-  textBudget, capacityFor, MONO_ADVANCE_EM, isThinRowLeaf, inkBudget } from './check-layout.mjs';
+  textBudget, capacityFor, MONO_ADVANCE_EM, isThinRowLeaf, inkBudget,
+  railTitleFit, railTitleWidth, headerBudget, predictPageHeight, pageHeightAdvisory,
+  CSS_TEXT } from './check-layout.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -388,8 +390,27 @@ function rebuild(dir) {
     `over=${over && over.slack.toFixed(1)} fits=${fits && fits.slack.toFixed(1)} skip=${skip}`);
 }
 
+// ── 3k. SLICE — a grid root's row packing is not a wrap ────────────────────
+// A root with bands is a CSS grid: four span-1 sections in a 2-column root pack
+// into two rows BY DESIGN (expectedLines 2), while the same two lines in a flex
+// row (expectedLines 1), or a third line in the grid, is the wrap SLICE names.
+{
+  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+  const SLICE = INVARIANTS.find(inv => inv.id === 'SLICE');
+  const row = (lines, expectedLines) => ({ compoundRows: [{ zone: '(root)', n: 4, lines, expectedLines,
+    equalSpans: true, wSpread: 0, column: false,
+    slices: [0, 1, 2, 3].map(i => ({ id: `s${i}`, w: 600, top: i < 2 ? 0 : 300, span: 1 })) }] });
+  const packed = SLICE.check(row(2, 2));
+  const flexWrap = SLICE.check(row(2, 1));
+  const gridWrap = SLICE.check(row(3, 2));
+  const ok = packed.ok === true && flexWrap.ok === false && gridWrap.ok === false
+    && flexWrap.detail.includes('pack into 1');
+  report('SLICE: a grid root packing its spans into rows passes, a line beyond the packing fails', ok,
+    `packed=${packed.ok} flexWrap=${flexWrap.ok} gridWrap=${gridWrap.ok}`);
+}
+
 // ── 3j. FILL / TXT — the ratchet rows speak up on a pure measurement ────────
-// Both are page-scoped (RATCHET_PAGES, empty in the seed), so their `check` is
+// Both run on every page not declared `text_fit: advisory`; their `check` is
 // called directly: a root span rendered at 40% of its declared width and a
 // clamped description must fail, and the clean measurements must pass.
 {
@@ -714,6 +735,125 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
   report('SPACER: every payload key on a spacer is refused by name',
     leaked.length === 0, `accepted: ${leaked.join(', ')}`);
   rmDeck(dir);
+}
+
+// ── 10. TEXT FIT AT THE PRESENTATION VIEWPORT ──────────────────────────────
+// A description needing more lines than `.box .desc` clamps FAILS at the
+// document.yaml `viewport` width and stays advisory at every other tier; moving
+// the viewport moves the failing tier with it. The fixture's 4-track band gives
+// item-a a ~270px cell at every wide tier, so four authored lines always need 4.
+const writeDocument = (dir, extra) => fs.writeFileSync(path.join(dir, 'data', 'document.yaml'),
+  yaml.dump({ ...FIXTURE_DOCUMENT, ...extra }), 'utf8');
+const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
+{
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'item-a').description = FOUR_LINES;
+  saveOverview(p, doc);
+  rebuild(dir);
+  const atDefault = runNode([CHECK, dir]);
+  writeDocument(dir, { viewport: { w: 2560, h: 1440 } });
+  rebuild(dir);
+  const atWide = runNode([CHECK, dir]);
+  const failLine = w => `[FAIL] overview:root > section-e > item-a @${w}px: description needs 4`;
+  const ok = atDefault.code !== 0 && atDefault.out.includes(failLine(1920))
+    && atDefault.out.includes('presentation tier')
+    && atWide.code !== 0 && atWide.out.includes(failLine(2560)) && !atWide.out.includes(failLine(1920));
+  report('TEXT/viewport: desc-lines past the clamp fail at the viewport tier, and follow it', ok,
+    `default exit=${atDefault.code} wide exit=${atWide.code}\n${atDefault.out}\n${atWide.out}`);
+  rmDeck(dir);
+}
+
+// ── 10b. text_fit: advisory — the one opt-out, and a closed enum ───────────
+// The same overflow on a page declaring `text_fit: advisory` is reported and
+// passes; an unknown `text_fit` or an out-of-range viewport is refused by the
+// build, so an opt-out cannot be a typo.
+{
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'item-a').description = FOUR_LINES;
+  doc.text_fit = 'advisory';
+  saveOverview(p, doc);
+  rebuild(dir);
+  const advised = runNode([CHECK, dir]);
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  doc.text_fit = 'loose';
+  saveOverview(p, doc);
+  const badFit = runNode([buildInDir]);
+  doc.text_fit = 'strict';
+  saveOverview(p, doc);
+  writeDocument(dir, { viewport: { w: 10, h: 1080 } });
+  const badViewport = runNode([buildInDir]);
+  const ok = advised.code === 0 && advised.out.includes('[INFO] overview:root > section-e > item-a: description needs 4')
+    && badFit.code !== 0 && badFit.out.includes('unknown page text_fit "loose"')
+    && badViewport.code !== 0 && badViewport.out.includes('viewport `w` must be an integer');
+  report('TEXT/opt-out: text_fit advisory reports without failing; a bad text_fit or viewport is refused', ok,
+    `advised exit=${advised.code} badFit exit=${badFit.code} badViewport exit=${badViewport.code}\n` +
+    `${advised.out}\n${badFit.out}\n${badViewport.out}`);
+  rmDeck(dir);
+}
+
+// ── 10c. COMPACT — the short row and the released clamp are modelled ───────
+// A `compact` grid runs a 74px row with no description clamp, so the clamp
+// cannot hide a long description: the static gate reports no desc-lines finding
+// there, and INK measures the whole description against the short slot.
+{
+  const ctx = { availPx: 270, fontPx: 17 };
+  const three = { id: 'c', title: 'Title', description: ['one', 'two', 'three'] };
+  const four = { id: 'd', title: 'Title', description: FOUR_LINES };
+  const over = inkBudget(three, { ...ctx, compact: true });
+  const fits = inkBudget({ id: 'e', title: 'Title', description: ['one'] }, { ...ctx, compact: true });
+  const normal = inkBudget(three, ctx);
+  const clampKinds = b => b.findings.map(f => f.kind);
+  const ok = over.slot === CSS_TEXT.compactCellH && over.slack < 0 && fits.slack > 0 && normal.slack > 0
+    && !clampKinds(textBudget(four, { ...ctx, compact: true, form: 'dashboard', cell: 'c' })).includes('desc-lines')
+    && clampKinds(textBudget(four, { ...ctx, form: 'dashboard', cell: 'c' })).includes('desc-lines');
+  report('COMPACT: a 3-line description overflows the 74px row, one line fits, the clamp is released', ok,
+    `over=${over.slot}/${over.slack.toFixed(1)} fits=${fits.slack.toFixed(1)} normal=${normal.slack.toFixed(1)}`);
+}
+
+// ── 10d. RAILT/indent — the indent shrinks the width the title wraps in ────
+// An indented rail draws its frame on the title, inset by indent × --indent-step
+// and padded on both sides, so a title that fits two lines flat wraps past the
+// ceiling at indent 3 in the same cell.
+{
+  const title = 'Coordination handshake ledger';
+  const flat = railTitleFit(200, { type: 'rail', title, indent: 0 });
+  const deep = railTitleFit(200, { type: 'rail', title, indent: 3 });
+  const expectW = 200 - 2 * CSS_TEXT.railBorder - 2 * CSS_TEXT.indentStep - CSS_TEXT.boxPad
+    - 2 * (CSS_TEXT.railIndentTitlePadX + CSS_TEXT.railIndentTitleBorder);
+  const ok = flat.lines <= CSS_TEXT.railTitleLines && deep.lines > CSS_TEXT.railTitleLines
+    && railTitleWidth(200, { type: 'rail', indent: 2 }) === expectW;
+  report('RAILT/indent: a title that fits flat wraps past the ceiling at indent 3', ok,
+    `flat=${flat.lines}ln@${flat.px}px deep=${deep.lines}ln@${deep.px}px`);
+}
+
+// ── 10e. HEADER — section title and subtitle against their clamps ──────────
+{
+  const long = headerBudget({ title: 'Coordination handshake verification ledger reconciliation',
+    subtitle: 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen' },
+  200, 1920);
+  const short = headerBudget({ title: 'Short title', subtitle: 'A short subtitle' }, 200, 1920);
+  const kinds = long.findings.map(f => f.kind);
+  const ok = kinds.includes('header-title-lines') && kinds.includes('header-sub-lines')
+    && short.findings.length === 0 && short.titleLines === 1;
+  report('HEADER: a long section title and subtitle overflow their clamps, a short header fits', ok,
+    `long=${kinds.join(',')} (${long.titleLines}/${long.subLines} ln) short=${short.findings.length}`);
+}
+
+// ── 10f. HEIGHT — the predicted page height advises past the viewport ──────
+{
+  const boxes = n => [...Array(n).keys()].map(i => ({ id: `b${i}`, title: `Box ${i}` }));
+  const pageOf = n => ({ id: 'h', columns: 1, sections: [{ id: 's', title: 'S', columns: 1, children: boxes(n) }] });
+  const vp = { w: 1920, h: 1080 };
+  const tall = predictPageHeight(pageOf(12), vp.w);
+  const small = predictPageHeight(pageOf(2), vp.w);
+  const expected = 12 * CSS_TEXT.cellH + 11 * CSS_TEXT.gap;
+  const note = pageHeightAdvisory(tall.totalPx, vp);
+  const ok = tall.contentPx > expected && note && /^predicted \d+px > 1080 \(\+\d+\) at 1920$/.test(note)
+    && pageHeightAdvisory(small.totalPx, vp) === null;
+  report('HEIGHT: a 12-row page is predicted past 1080, a 2-row page fits', ok,
+    `tall=${Math.round(tall.totalPx)} small=${Math.round(small.totalPx)} note=${note}`);
 }
 
 // ── 9. CSS MIRROR — the guard that can go QUIET, in both directions ────────

@@ -175,8 +175,8 @@
 //                            in both directions AND adds ARITY (a one-member chip
 //                            still blacks out the deck to spotlight a single box),
 //                            a half this render-based row could never see.
-//   FILL / SLICE / TXT        — the three RATCHET rows, PAGE-SCOPED by
-//                            RATCHET_PAGES: a root span fills its declared tracks,
+//   FILL / SLICE / TXT        — the three RATCHET rows, on every page not declared
+//                            `text_fit: advisory`: a root span fills its declared tracks,
 //                            an N-slice compound row renders as N slices on one
 //                            line, and no text block is clamped in the browser.
 // ─────────────────────────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ const os = require('os');
 // otherwise keep two copies of. See tools/static-census.cjs for why they live
 // there — it also mirrors the collapse breakpoints, which this file only refers
 // to by name (the widths it renders at are its own).
-const { staticCensus, nodeCensus, pageCensus,
+const { staticCensus, nodeCensus, pageCensus, loadAuthoredDeck, resolveViewport, isTextFitStrict,
   DEFAULT_FORM, GRID_DENSE, WORDFIT } = require('./static-census.cjs');
 
 const ROOT = path.join(__dirname, '..');
@@ -269,11 +269,11 @@ const SPAN_FILL_TOL_PCT = 3; // % a ROOT section's rendered width may deviate fr
                           // siblings but an absolute track arithmetic the plane
                           // itself fixes: the only slack is sub-pixel rounding.
                           // The measured defect was 58% off.
-// The pages that opted into FILL / SLICE / TXT (see THE THREE RATCHET ROWS). The
-// seed ships it EMPTY; a deck lists its own page ids, and a new page should opt in
-// from its first build. Keep it the same set as INK_PAGES in tools/check-layout.mjs:
-// INK is the static estimate and TXT the rendered ruling on the same text.
-const RATCHET_PAGES = new Set([]);
+// FILL / SLICE / TXT (see THE THREE RATCHET ROWS) hold on every page that does
+// not declare `text_fit: advisory` — the same page field that scopes INK and the
+// presentation-tier TEXT failures in tools/check-layout.mjs, so the static
+// estimate and the rendered ruling on the same text always cover the same pages.
+const ratcheted = c => c.textFitStrict === true;
 const WORDFIT_TOL = 1.5;  // px sub-pixel slack between the canvas-measured token
                           // width and the cell's available width (N). Small: a
                           // token that needs >~1.5px more than its cell WILL wrap
@@ -610,11 +610,10 @@ const INVARIANTS = [
   // certified the geometry it MODELLED and could not see that index.html never
   // implemented it; every row already here measured something adjacent instead (Q
   // the proportion, Y and S bands only, C the box and not the text inside it).
-  // PAGE-SCOPED by `pageId`, not by form: they hold for a page that opted in
-  // (RATCHET_PAGES), so a deck authored before them cannot go red on arithmetic
-  // slack rather than on a defect. Extend the set to admit a page.
+  // PAGE-SCOPED, not form-scoped: they hold on every page unless it declares
+  // `text_fit: advisory`, the one opt-out a deck authored before them uses.
   { id: 'FILL', name: 'root span fills its declared tracks', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => RATCHET_PAGES.has(c.pageId) && c.w >= 1200, superseded: null,
+    when: (c) => ratcheted(c) && c.w >= 1200, superseded: null,
     check: (m) => { const items = m.spanFill || [];
       const bad = items.filter(it => it.offPct > SPAN_FILL_TOL_PCT);
       return { ok: bad.length === 0, detail: bad.length
@@ -622,19 +621,22 @@ const INVARIANTS = [
             `(${it.offPct}% off, tol ${SPAN_FILL_TOL_PCT}% — the declared span is not reaching the canvas)`).join(', ')
         : items.map(it => `${it.id}:s${it.span}/${it.cols}@${it.w}px(=${it.expected})`).join(' ') }; } },
   { id: 'SLICE', name: 'an N-slice row renders as N slices on one line', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => RATCHET_PAGES.has(c.pageId) && c.w >= 1200, superseded: null,
+    when: (c) => ratcheted(c) && c.w >= 1200, superseded: null,
     check: (m) => { const rows = (m.compoundRows || []).filter(r => !r.column);
-      const wrapped = rows.filter(r => r.lines > 1);
+      const expected = r => r.expectedLines || 1;
+      const wrapped = rows.filter(r => r.lines > expected(r));
       const uneven = rows.filter(r => r.lines === 1 && r.equalSpans && r.wSpread > CELLW_TOL);
       return { ok: wrapped.length === 0 && uneven.length === 0, detail:
         wrapped.length || uneven.length
-          ? [...wrapped.map(r => `${r.zone}: ${r.n} authored slice(s) wrapped onto ${r.lines} lines ` +
+          ? [...wrapped.map(r => `${r.zone}: ${r.n} authored slice(s) wrapped onto ${r.lines} lines where ` +
+                `their spans pack into ${expected(r)} ` +
                 `(${r.slices.map(s => `${s.id}@y${s.top}`).join(', ')}) — the row no longer reads left to right`),
              ...uneven.map(r => `${r.zone}: ${r.n} equal-span slice(s) differ in width by ${r.wSpread}px ` +
                 `(${r.slices.map(s => `${s.id}@${s.w}px`).join(', ')})`)].join(', ')
-          : rows.map(r => `${r.zone}:${r.n}slice/1line(spread ${r.wSpread}px)`).join(' ') || 'no compound slice rows' }; } },
+          : rows.map(r => `${r.zone}:${r.n}slice/${r.lines}line(s) of ${expected(r)}(spread ${r.wSpread}px)`)
+              .join(' ') || 'no compound slice rows' }; } },
   { id: 'TXT', name: 'no clamped text (browser-measured)', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => RATCHET_PAGES.has(c.pageId), superseded: null,
+    when: (c) => ratcheted(c), superseded: null,
     check: (m) => { const bad = m.clamps || [];
       return { ok: bad.length === 0, detail: bad.length
         ? bad.map(c => `${c.id}>${c.part} cut by ${c.over}px ("${c.text}")`).join(', ')
@@ -1339,11 +1341,28 @@ function measure() {
         return { id: k.getAttribute('data-zone') || '?', w: Math.round(r.width),
           top: Math.round(r.top / 4) * 4, span: authoredSpan[k.getAttribute('data-zone')] || 1 }; });
     const lines = new Set(slices.map(s => s.top));
+    // A ROOT WITH BANDS is a CSS grid of --cols tracks, not a flex row: its
+    // sections pack into as many rows as their authored spans need (a band closes
+    // the row it follows), so "one line" is the flex-row expectation only. The
+    // grid's expectation is that packing, and a wrap is a line BEYOND it.
+    let expectedLines = 1;
+    if (getComputedStyle(g).display === 'grid') {
+      const cols = getComputedStyle(g).gridTemplateColumns.split(' ').filter(Boolean).length || 1;
+      let rows = 0, used = 0;
+      for (const k of g.children) {
+        if (!k.classList.contains('zone')) continue;
+        if (k.classList.contains('msp')) { used = 0; continue; }
+        const span = Math.min(cols, authoredSpan[k.getAttribute('data-zone')] || 1);
+        if (used === 0 || used + span > cols) { rows++; used = 0; }
+        used += span;
+      }
+      expectedLines = Math.max(1, rows);
+    }
     const spans = slices.map(s => s.span);
     const equalSpans = slices.length > 0 && Math.max(...spans) === Math.min(...spans);
     const widths = slices.map(s => s.w);
     return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)', n: slices.length,
-      lines: lines.size, equalSpans, slices,
+      lines: lines.size, expectedLines, equalSpans, slices,
       wSpread: widths.length ? Math.max(...widths) - Math.min(...widths) : 0,
       column: getComputedStyle(g).flexDirection.startsWith('column') };
   }).filter(r => r.n > 0);
@@ -1580,6 +1599,7 @@ async function main() {
         return { pageId, resolved: !!dp,
           name: (dp && (dp.name || dp.id)) || pageId || `page${i}`,
           form: (dp && dp.form) || defForm,
+          textFit: dp ? dp.text_fit : undefined,
           tabIndex: i };
       });
     }, DEFAULT_FORM);
@@ -1683,7 +1703,8 @@ async function main() {
       // runInvariants filters the INVARIANTS table by (form, tier, not-retired) and
       // evaluates each check — no per-tier branching tree here anymore.
       const m = m0;
-      const invCtx = { form: pg.form, pageId: pg.pageId, tier, w, WIDE: WIDE_TIERS.has(tier), PASSES,
+      const invCtx = { form: pg.form, pageId: pg.pageId, textFitStrict: isTextFitStrict({ text_fit: pg.textFit }),
+        tier, w, WIDE: WIDE_TIERS.has(tier), PASSES,
         deterministic, uniqueSigs, sigs, robustOk, robustDetail, captureOk, captureDetail };
       const checks = runInvariants(m, invCtx);
       for (const c of checks) {
@@ -1695,6 +1716,29 @@ async function main() {
         maxRowCount: m.maxRowCount, wrap: m.wrap.join(' '), checks });
       await ctx.close();
     }
+  }
+
+  // ── VH: the page height MEASURED at the presentation viewport (ADVISORY) ──
+  // The render-side verdict on check-layout's HEIGHT prediction: each page at
+  // the document.yaml `viewport`, full height = the canvas's top offset (bar and
+  // chip row) + its scroll height + the frame below it. Advisory, because a
+  // deck may mean to scroll; the finding says by how much it does, and the
+  // chrome it prints is the number the static prediction assumes.
+  const VIEWPORT = resolveViewport(loadAuthoredDeck(ROOT).manifest);
+  const pageHeights = [];
+  for (const pg of discovery) {
+    const ctx = await browser.newContext({ viewport: { width: VIEWPORT.w, height: VIEWPORT.h }, deviceScaleFactor: 1 });
+    const page = await ctx.newPage();
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await settle(page, pg.tabIndex);
+    const f = await page.evaluate(() => {
+      const c = document.querySelector('.act.active .canvas');
+      const cr = c.getBoundingClientRect();
+      return { top: Math.max(0, Math.ceil(cr.top)), content: c.scrollHeight,
+               bottom: Math.max(0, Math.ceil(window.innerHeight - cr.bottom)) };
+    });
+    pageHeights.push({ name: pg.name, px: f.top + f.content + f.bottom, chrome: f.top + f.bottom, content: f.content });
+    await ctx.close();
   }
   await browser.close();
   srv.close();
@@ -1719,6 +1763,15 @@ async function main() {
     console.log('');
   }
   console.log('═══════════════════════════════════════');
+  console.log(`● page height at the presentation viewport ${VIEWPORT.w}x${VIEWPORT.h} (VH, ADVISORY — measured)`);
+  for (const h of pageHeights) {
+    const over = h.px - VIEWPORT.h;
+    if (over > 0) advisories++;
+    console.log(`    [${over > 0 ? 'ADVICE' : 'PASS'}] VH ${h.name}: measured ${h.px}px ` +
+      `${over > 0 ? `> ${VIEWPORT.h} (+${over})` : `<= ${VIEWPORT.h}`} at ${VIEWPORT.w} ` +
+      `(chrome ${h.chrome}px + canvas ${h.content}px)`);
+  }
+  console.log('');
   console.log(`Screenshots: ${OUT}`);
   const v = reportVerdict(results, failed, advisories);
   console.log(v.line + '\n');
@@ -1759,6 +1812,6 @@ function reportVerdict(results, failed, advisories) {
 // table, the undeclared-form guard, the verdict, the static census — in an
 // environment with no browser at all.
 module.exports = { INVARIANTS, FORMS, ALL_FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE,
-  WORDFIT, RATCHET_PAGES, runInvariants, reportVerdict, staticCensus, nodeCensus, pageCensus };
+  WORDFIT, runInvariants, reportVerdict, staticCensus, nodeCensus, pageCensus };
 
 if (require.main === module) main();

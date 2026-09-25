@@ -5,6 +5,10 @@ window.__DOC__ = {
   "subtitle": "A portable, data-driven diagram — edit data/ and run npm run build",
   "version": "0.2.0",
   "palette": "rose-pine",
+  "viewport": {
+    "w": 1920,
+    "h": 1080
+  },
   "pages": [
     {
       "id": "p1-merged-cell",

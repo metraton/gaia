@@ -72,6 +72,21 @@ const WORDFIT = new Set(['dashboard', 'flow']);
 // line in check-layout.mjs.
 const BREAKPOINTS = { stack: 1440, two: 1000, one: 640 };
 
+// ── THE PRESENTATION VIEWPORT ──────────────────────────────────────────────
+// `document.yaml` `viewport: { w, h }`: the tier where text fit is a verdict and
+// the height a page is compared against. Must equal DEFAULT_VIEWPORT in
+// engine/build-data.mjs, which validates the field and writes the resolved value
+// into the bundle; staticCensus compares the two resolutions, so a divergence
+// fails CENSUS instead of silently moving the verdict tier.
+const DEFAULT_VIEWPORT = { w: 1920, h: 1080 };
+const resolveViewport = manifest => {
+  const raw = manifest && manifest.viewport;
+  return { w: (raw && raw.w) ?? DEFAULT_VIEWPORT.w, h: (raw && raw.h) ?? DEFAULT_VIEWPORT.h };
+};
+// A page opts out of text-fit FAILURES with `text_fit: advisory`: every
+// finding is still reported, none fails. Absent means strict.
+const isTextFitStrict = page => (page && page.text_fit) !== 'advisory';
+
 // The `max-width` of every `@container stage (…)` block in index.html, descending.
 // Returns { ok, noFile, widths, problem }: a deck with no index.html (a data-only
 // fixture) is reported as `ok:false` with a problem, never guessed at. `noFile`
@@ -225,6 +240,9 @@ function staticCensus(root = DEFAULT_ROOT) {
 
   if ((manifest.palette ?? 'neutral') !== (gen.palette ?? 'neutral'))
     problems.push(`palette: document.yaml "${manifest.palette ?? 'neutral'}" != generated "${gen.palette ?? 'neutral'}"`);
+  const vp = resolveViewport(manifest), gvp = gen.viewport || {};
+  if (vp.w !== gvp.w || vp.h !== gvp.h)
+    problems.push(`viewport: document.yaml resolves ${vp.w}x${vp.h} != generated ${gvp.w}x${gvp.h}`);
   if ((manifest.title ?? null) !== (gen.title ?? null))
     problems.push(`title: document.yaml "${manifest.title}" != generated "${gen.title}"`);
 
@@ -257,4 +275,5 @@ function staticCensus(root = DEFAULT_ROOT) {
 }
 
 module.exports = { DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, BREAKPOINTS, cssBreakpoints,
+  DEFAULT_VIEWPORT, resolveViewport, isTextFitStrict,
   loadAuthoredDeck, nodeCensus, pageCensus, staticCensus };

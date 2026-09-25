@@ -46,11 +46,23 @@ function readYaml(path) {
 //   • filter (an entry of `filters[]`): the chip's key/label/steps. Filters used
 //     to bypass this gate entirely — a typo in a `key` produced no error, just a
 //     chip that silently dimmed the whole canvas because nothing matched it.
-const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'pages']);
+const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'viewport', 'pages']);
 const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file']);
 const PAGE_FIELDS = new Set([
-  'id', 'layout', 'columns', 'filters', 'sections', 'form',
+  'id', 'layout', 'columns', 'filters', 'sections', 'form', 'text_fit',
   'name', 'order', 'visible']);
+
+// `text_fit` decides whether text that overflows its cell at the presentation
+// viewport FAILS the static gate (strict, the default) or is only reported
+// (advisory). The gates read the value from the bundle, so it is validated here.
+const TEXT_FIT = new Set(['strict', 'advisory']);
+
+// The presentation viewport: the tier where text fit is a verdict and the
+// height a page is compared against. DEFAULT_VIEWPORT in tools/static-census.cjs
+// must equal this one — CENSUS compares the manifest resolved there against the
+// `viewport` this build writes, so a divergence fails the static gate.
+const DEFAULT_VIEWPORT = { w: 1920, h: 1080 };
+const VIEWPORT_BOUNDS = { w: [320, 7680], h: [240, 4320] };
 const SECTION_FIELDS = new Set([
   'id', 'title', 'subtitle', 'variant', 'treatment',
   'order', 'span', 'rowspan', 'columns', 'children']);
@@ -476,6 +488,7 @@ function validatePageSchema(page) {
   // Neither has any recoverable meaning when misspelled, so both fail at the door.
   checkEnumValue(page.form, FORMS, 'page form', page.id, 'root');
   checkEnumValue(page.layout, LAYOUTS, 'page layout', page.id, 'root');
+  checkEnumValue(page.text_fit, TEXT_FIT, 'page text_fit', page.id, 'root');
   validateFilters(page.filters, page.id, 'root');
   checkHalfPairing(page.sections, page.id, 'root');
   for (const sec of page.sections || []) validateNode(sec, page.id, 'root >');
@@ -488,6 +501,25 @@ if (!manifest || !Array.isArray(manifest.pages)) {
 checkFields(manifest, MANIFEST_FIELDS, 'manifest', '(document.yaml)', 'root');
 manifest.pages.forEach((p, i) =>
   checkFields(p, MANIFEST_PAGE_FIELDS, 'manifest page', '(document.yaml)', `pages[${i}] "${(p && p.id) || '?'}"`));
+
+function resolveViewport(raw) {
+  if (raw === undefined || raw === null) return { ...DEFAULT_VIEWPORT };
+  if (typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error('[strict-schema] document.yaml: `viewport` must be a mapping `{ w, h }` in px');
+  const extra = Object.keys(raw).filter(k => k !== 'w' && k !== 'h');
+  if (extra.length)
+    throw new Error(`[strict-schema] document.yaml: unknown viewport field(s) ${extra.map(k => `"${k}"`).join(', ')} — only \`w\` and \`h\``);
+  const out = {};
+  for (const axis of ['w', 'h']) {
+    const v = raw[axis] ?? DEFAULT_VIEWPORT[axis];
+    const [lo, hi] = VIEWPORT_BOUNDS[axis];
+    if (!Number.isInteger(v) || v < lo || v > hi)
+      throw new Error(`[strict-schema] document.yaml: viewport \`${axis}\` must be an integer ${lo}..${hi} px, got ${JSON.stringify(v)}`);
+    out[axis] = v;
+  }
+  return out;
+}
+const viewport = resolveViewport(manifest.viewport);
 
 // PALETTE — document-level skin selector. Absent means `neutral`, which is the
 // palette every pre-2.1 deck renders with, so omitting it is a no-op.
@@ -524,6 +556,7 @@ const doc = {
   // engine.js's `if (barVer && doc.version)` guard skips rendering cleanly.
   version: manifest.version,
   palette,
+  viewport,
   pages
 };
 

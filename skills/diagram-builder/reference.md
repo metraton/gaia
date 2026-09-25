@@ -153,6 +153,8 @@ palette: neutral             # optional — the deck SKIN; omitted == neutral.
                              #   neutral | rose-pine | rose-pine-moon | contrast
                              # The semantic roles are identical in every palette, so
                              # this changes how the deck LOOKS, never what it MEANS.
+viewport: { w: 1920, h: 1080 }  # optional — the PRESENTATION viewport, in px;
+                             #   omitted == 1920x1080. w 320..7680, h 240..4320.
 pages:
   - id: overview             # required — must match page.id in the file
     name: "Overview"         # required — visible label (rename without breaking refs)
@@ -173,6 +175,14 @@ header (`if (barVer && doc.version)`) after the subtitle. Omit it and the `.ver`
 node stays empty; `:empty` collapses it in index.html, so a deck with no
 `version` degrades with zero visible change.
 
+`viewport` is the size the deck is SHOWN at. The build validates it and writes
+the resolved value onto `window.__DOC__.viewport`; CENSUS fails if the gates'
+default and the build's disagree. It decides two things: the tier where a
+title, description or section header that overflows its lines FAILS the static
+gate (every other tier only advises — see TEXT below), and the height each page
+is compared against (HEIGHT statically, VH on the render). Set it to the screen
+the deck is presented on.
+
 ## The page file (`data/pages/<id>.yaml`)
 
 ```yaml
@@ -183,8 +193,16 @@ form: dashboard         # optional — scopes the guardrail's invariants:
                         # dashboard (default) | timeline | flow | comparison |
                         # mindmap | planner (see the invariant table below)
 filters: [ … ]          # optional — the relation chips for this page
+text_fit: strict        # optional — strict (default) | advisory
 sections: [ … ]         # required, ≥ 1 — the root section's children
 ```
+
+`text_fit` is the one opt-out from text-fit FAILURES. On a `strict` page a line
+overflow at the presentation viewport fails `check` (TEXT, INK) and the ratchet
+rows FILL / SLICE / TXT run on the render. `advisory` keeps every finding as
+`[INFO]` and skips the ratchet rows: use it for a page that is honestly
+scrolled or read in the detail panel, never to silence a cut sentence. Any
+other value is refused by the build.
 
 ### section (any node with `children`)
 
@@ -222,7 +240,11 @@ The two section treatments added after `envelope` and `plain`, and why each exis
   carry at most a one-line description, or `validate` C reports the clip; and
   the render gate's U accepts a row other than 130px ONLY in a grid that
   declares `compact`, reporting any other short row as
-  `--cell-h=…px without the compact treatment`.
+  `--cell-h=…px without the compact treatment`. The static gate models it too:
+  the grid's height uses the 74px row and 4px gap, TEXT does not apply the
+  description clamp there (there is none), and INK measures the WHOLE
+  description plus the 4px box padding against the short slot — so a
+  description that does not fit a compact row fails `check` before the render.
 
 ### component — box (default `type`)
 
@@ -326,7 +348,10 @@ refused by name. Its fields beyond the title, and why each exists:
 - **`indent`** (integer 0 to 3) moves the drawn frame onto the title and insets
   it by `indent × --indent-step` (32px), so a column of rails reads as a tree by
   indentation. The CELL still fills its track, so every cell gate measures it
-  unchanged; the build refuses a value outside 0 to 3.
+  unchanged; the build refuses a value outside 0 to 3. The TITLE, though, wraps
+  in less: RAILT measures it in the cell minus `indent × 32px`, the rail's right
+  padding, and the title frame's own 16px padding and 1px border on each side —
+  a title that fits two lines flat can need three at indent 3.
 
 **A horizontal rail without `rowspan` is a THIN leaf.** Its row renders at the
 rail's own content height (`auto`, 33px for one title line) instead of 130px,
@@ -890,6 +915,10 @@ names:
 | **BAND** | (a) a declared `span` that EXCEEDS the columns it sits in — the engine clamps it and nothing looks wrong, but the declaration is unsatisfiable as written, so it fails at the door; (b) a band owns its whole row (structurally guaranteed by the placement model, so a failure means the model and the data disagree about what a band is). An effective column count below the authored one is `[INFO]`, naming any partial merge the clamp PROMOTED to a full band |
 | **TIER** | the derived tracks-per-tier table, plus monotonicity: tracks may only GROW as the container grows. A violation means the breakpoint rules disagree with each other |
 | **CHIP** | referential integrity BOTH ways — every declared chip has a member, every referenced key is declared — plus **ARITY**, the half the retired **K** could never see: a chip with exactly ONE member closes the join and is still broken, because a relation needs two ends and an active chip dims everything it does not name. The reset key `all` is exempt |
+| **TEXT** | the character budget per box per tier: title token, kicker token, title lines vs its clamp (2, 1 for a `half`), description lines vs its clamp (3; none in a `compact` grid), and every SECTION HEADER — `.ztitle` (13–14.5px, 0.1em tracking, clamp 2) and `.zsub` (12px, clamp 3) at the zone's inner width. A LINE overflow FAILS at the presentation tier (`document.yaml` `viewport.w`, added to the sweep when it is not one of the five) on a page not declared `text_fit: advisory`; at the other tiers, and for a token, it is `[INFO]` |
+| **INK** | the ink height of a box against the slot the model gives it (a `compact` grid's 74px row included). An overflow FAILS at the presentation tier of a strict page and advises elsewhere; room for a whole statement left undeclared advises at the presentation tier |
+| **RAILT** | a thin rail's title past two lines — HARD, because `.rail-title` has no clamp and a third line grows the row. Measured at the rail's own metrics and, for an `indent`, in the narrower width the indented title frame leaves |
+| **HEIGHT** | ADVISORY: each page's full height predicted from the placement model (row tracks, zone frames and headers, compound rows as the tallest child above 1440px and the sum below, plus the chrome validate VH measures) against `viewport.h`, as `page X: predicted NNNNpx > 1080 (+NNN) at 1920`. A deck may mean to scroll; this says by how much |
 | **ORDER** | a duplicate EFFECTIVE order among siblings (`order ?? index+1`). The engine resolves the tie by list position, so the render is correct today and can flip under an unrelated edit that only MOVES a node in the file |
 | **CSS** | the mirror itself: the breakpoints and text metrics this gate computes with, against the `@container stage` queries and `.box`/`.zone`/`.canvas` declarations `index.html` actually declares (`cssBreakpoints` / `cssTextTokens` vs `BREAKPOINTS` / `CSS_TEXT`). Without it a stylesheet edit that moved a cut would leave every tracks-per-tier and character number describing a deck the browser no longer draws — green, and wrong. The two failures to read are OPPOSITE: no `index.html` at all is `[NOT ASSERTED]` (recorded, counted in the headline, never a pass), while an `index.html` that IS present and whose probe missed is a `[FAIL]` — the declaration moved past the probe, so every number derived from it is unverified, and "not asserted" there is exactly the silence that certifies the drift |
 | **CENSUS** | pre-flight, and printed FIRST: `data/*.yaml` vs `data/data.generated.js`. A stale build means everything below still describes the YAML correctly while the deck someone is LOOKING at is a different one. Shared with `validate` through `tools/static-census.cjs`, so the two gates cannot disagree about what the data says |
@@ -952,16 +981,18 @@ The static gate (`npm run model`) also asserts, each with a negative case in
 | **RAILT** | a thin rail's title past two lines | the rail row is `auto` and `.rail-title` has no clamp, so a third line grows the row instead of clipping |
 | **WORDS** | an authored string missing from `data.generated.js` | CENSUS compares ids and counts, so a text-only edit without a rebuild stays green on the old words |
 | **SPAN** | a stylesheet missing one of the four span-to-tracks rules | every width the gate reports assumes a span of M occupies M tracks; without the rule the browser places the section in one track |
-| **INK** | a box whose stacked lines overflow its fixed row (advises on a large undeclared void) | TEXT measures width only; INK is the height half. Page-scoped: it runs only on the page ids listed in `INK_PAGES`, which the seed ships empty |
+| **INK** | a box whose stacked lines overflow its fixed row (advises on a large undeclared void) | TEXT measures width only; INK is the height half. It runs on every page not declared `text_fit: advisory` and fails at the presentation viewport |
 | **TEXT** kicker token | a kicker token wider than its cell (advisory) | the title budget never measured `.box .k`, which has its own size and tracking |
 
 The render gate (`npm run render`) gains the rail-row band and the `compact`
 row in U, the `.msp` band-leaf exemption in G (a band separator or rail may be
-full width, and must fill its row), and three page-scoped RATCHET rows, FILL,
-SLICE and TXT, that run only on the page ids listed in `RATCHET_PAGES`. List a
-page in both `INK_PAGES` and `RATCHET_PAGES` from its first build: the sets are
-empty in the seed so that a deck authored before them cannot fail on arithmetic
-slack.
+full width, and must fill its row), and three RATCHET rows, FILL, SLICE and
+TXT, that run on every page not declared `text_fit: advisory` — the same page
+field that scopes INK and the TEXT failures, so the static estimate and the
+rendered ruling always cover the same pages. It also reports **VH**, an
+advisory: each page rendered at the `document.yaml` viewport, its measured full
+height against `viewport.h`, with the chrome (canvas offset and frame) it
+measured — the value the static HEIGHT prediction assumes.
 
 **Chip coverage is NOT a gate in the seed.** A deck may require that every box
 and rail belongs to at least one chip, so that no component is left out of every

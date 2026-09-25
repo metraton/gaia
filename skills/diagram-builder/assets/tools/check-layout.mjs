@@ -76,8 +76,11 @@
 //          clamp, description clamp.
 //   WORDS  every authored string is present verbatim in the generated bundle —
 //          the text-only staleness CENSUS cannot see.
-//   INK    the height budget of a box against its fixed row, on the pages that
-//          opt in (INK_PAGES).
+//   INK    the height budget of a box against its row (a `compact` grid's own
+//          shorter row included), on every page not declared `text_fit: advisory`.
+//   HEADER a section title/subtitle against its clamp at the zone's inner width.
+//   HEIGHT the page height predicted from the placement model against the
+//          `document.yaml` viewport (ADVISORY; validate VH measures it).
 //   SPAN   the stylesheet implements the span→tracks rules every width here
 //          assumes.
 //   CENSUS data/*.yaml vs data/data.generated.js (shared with validate, via
@@ -103,7 +106,8 @@ import { fileURLToPath } from 'node:url';
 import censusLib from './static-census.cjs';
 
 const { loadAuthoredDeck, staticCensus, cssBreakpoints,
-  DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, BREAKPOINTS } = censusLib;
+  DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, BREAKPOINTS,
+  DEFAULT_VIEWPORT, resolveViewport, isTextFitStrict } = censusLib;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The deck root: argv wins, then the env override, then the normal location.
@@ -130,6 +134,15 @@ const TIERS = [
   { name: 'min', w: 600 }, { name: 'medium', w: 900 }, { name: 'large', w: 1200 },
   { name: 'huge', w: 1920 }, { name: 'ultra', w: 2560 },
 ];
+
+// The presentation tier (`document.yaml` `viewport`), where a title, a
+// description or a section header that overflows its lines FAILS instead of
+// advising. main() resolves it before any page is checked; the sweep gains the
+// viewport width as a sixth tier when it is not one of the five above.
+let PRESENT = { ...DEFAULT_VIEWPORT };
+let SWEEP = TIERS;
+const sweepFor = w => (TIERS.some(t => t.w === w) ? TIERS
+  : [...TIERS, { name: 'present', w }].sort((a, b) => a.w - b.w));
 
 // engine.js: `const DEFAULT_SECTION_COLUMNS = 2`. It cannot be imported from
 // there (see THE PLACEMENT MODEL below), so it is mirrored and pinned by the
@@ -337,6 +350,26 @@ const CSS_TEXT = {
   boxGap: 2,             // .box gap — the space between kicker, title and desc
   titleMarginPx: 1,      // .box .t margin-bottom (0 on .box.half)
   descLineEm: 1.4,       // .box .m line-height
+  // THE COMPACT ROW (.zone.compact): a shorter row track and row gap, a tighter
+  // box padding, and NO description clamp — so its text is judged by INK
+  // against the short slot instead of by the clamp.
+  compactCellH: 74,
+  compactRowGap: 4,
+  compactBoxPadY: 4,
+  // THE INDENTED RAIL (.rail.indented): the frame moves onto the title, inset by
+  // indent × --indent-step, and the title pays its own padding and border.
+  indentStep: 32,
+  railIndentTitlePadX: 16, // .rail.indented .rail-title lateral padding (--s-3)
+  railIndentTitleBorder: 1,
+  // THE SECTION HEADER (.zone-header): .ztitle over .zsub, each clamped.
+  ztitleMinPx: 13,       // .ztitle font-size: clamp(13px, 0.85vw, 14.5px)
+  ztitleVw: 0.85,
+  ztitleMaxPx: 14.5,
+  ztitleTrackEm: 0.1,
+  ztitleLines: 2,
+  zsubPx: 12,
+  zsubLines: 3,
+  zheaderGap: 4,         // .zone-header gap (--s-1)
 };
 
 // THE ONE ASSUMED CONSTANT. The stylesheet gives every width and every font
@@ -378,6 +411,18 @@ const CSS_TEXT_PROBES = [
   ['boxGap', /\.box\s*\{[^}]*?gap:\s*(\d+(?:\.\d+)?)px/],
   ['titleMarginPx', /\.box \.t\s*\{[^}]*?margin-bottom:\s*(\d+(?:\.\d+)?)px/],
   ['descLineEm', /\.box \.m\s*\{[^}]*?line-height:\s*(\d+(?:\.\d+)?)/],
+  ['compactCellH', /\.zone\.compact\s*\{[^}]*?--cell-h:\s*(\d+(?:\.\d+)?)px/],
+  ['compactRowGap', /\.zone\.compact > \.sec-grid\s*\{[^}]*?row-gap:\s*(\d+(?:\.\d+)?)px/],
+  ['compactBoxPadY', /\.zone\.compact \.box\s*\{[^}]*?padding:\s*(\d+(?:\.\d+)?)px/],
+  ['indentStep', /--indent-step:\s*(\d+(?:\.\d+)?)px/],
+  ['railIndentTitleBorder', /\.rail\.indented \.rail-title\s*\{[^}]*?border:\s*(\d+(?:\.\d+)?)px/],
+  ['ztitleMinPx', /\.zone-header \.ztitle\s*\{[^}]*?font-size:\s*clamp\(\s*(\d+(?:\.\d+)?)px/],
+  ['ztitleVw', /\.zone-header \.ztitle\s*\{[^}]*?font-size:\s*clamp\([^,]*,\s*(\d+(?:\.\d+)?)vw/],
+  ['ztitleMaxPx', /\.zone-header \.ztitle\s*\{[^}]*?font-size:\s*clamp\([^)]*?,\s*(\d+(?:\.\d+)?)px\s*\)/],
+  ['ztitleTrackEm', /\.zone-header \.ztitle\s*\{[^}]*?letter-spacing:\s*(\d+(?:\.\d+)?)em/],
+  ['ztitleLines', /\.zone-header \.ztitle\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
+  ['zsubPx', /\.zone-header \.zsub\s*\{[^}]*?font-size:\s*(\d+(?:\.\d+)?)px/],
+  ['zsubLines', /\.zone-header \.zsub\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
 ];
 // The two tokens no single declaration carries a number for: `.zone` and `.box`
 // spend --s-3 through a var(), so the value is asserted at --s-3 (canvasPad
@@ -401,6 +446,14 @@ const CSS_TEXT_SHAPES = [
     /\.box\.half \.t\s*\{[^}]*?-webkit-line-clamp:\s*1;[^}]*?margin-bottom:\s*0/],
   ['.zone.plain pays no frame and no min-height',
     /\.zone\.plain\s*\{[^}]*?border:\s*none;\s*padding:\s*0;\s*min-height:\s*0/],
+  ['.zone.compact .box .desc drops the description clamp',
+    /\.zone\.compact \.box \.desc\s*\{[^}]*?line-clamp:\s*none/],
+  ['.rail.indented insets by --indent x --indent-step',
+    /\.rail\.indented\s*\{[^}]*?padding-left:\s*calc\(var\(--indent\)\s*\*\s*var\(--indent-step\)\)/],
+  ['.rail.indented .rail-title pads var(--s-3) laterally',
+    /\.rail\.indented \.rail-title\s*\{[^}]*?padding:\s*\d+px\s+var\(--s-3\)/],
+  ['.zone-header stacks title over subtitle with a var(--s-1) gap',
+    /\.zone-header\s*\{[^}]*?gap:\s*var\(--s-1\)/],
 ];
 
 // THE SPAN->TRACKS MAPPING, in BOTH grid shapes, and it is a HARD check of its
@@ -454,6 +507,8 @@ function cssTextTokens(root) {
   tokens.zonePad = tokens.canvasPad;
   tokens.boxPad = tokens.canvasPad;
   tokens.boxPadY = tokens.gap;   // .box spends --s-2 vertically and as its gap
+  tokens.railIndentTitlePadX = tokens.canvasPad;
+  tokens.zheaderGap = tokens.halfPadY;
   return { ok: true, tokens };
 }
 
@@ -632,7 +687,9 @@ function textBudget(leaf, ctx) {
 
   const raw = leaf.description;
   const authored = Array.isArray(raw) ? raw : (raw === null || raw === undefined ? [] : [raw]);
-  if (authored.length) {
+  // A `compact` grid releases the description clamp, so there is no line count
+  // to exceed: its text is judged by INK against the short slot instead.
+  if (authored.length && !ctx.compact) {
     // Each authored line is its own `.m` block, so it costs AT LEAST one visual
     // line and more when it wraps; the clamp counts the visual lines of the whole
     // `.desc`. That is the arithmetic behind "three lines of few words".
@@ -709,15 +766,13 @@ const escapeForBundle = s => JSON.stringify(s).slice(1, -1);
 // `validate` TXT (scrollHeight vs clientHeight in the browser); the divergence
 // that produced it is now caught by the CSS span->tracks shapes above.
 //
-// PAGE-SCOPED, not form-scoped: only the page ids in INK_PAGES are asserted. The
-// three-line description clamp puts a full box at ~128 of 130px, so a page
-// authored before this check existed sits within a couple of pixels of the row by
-// design, and an unscoped INK would fail it on arithmetic slack rather than on a
-// defect. A page OPTS IN by listing its id here, and carries the constraint from
-// its first build. The seed ships the set EMPTY: a new deck lists its own pages
-// (the same set as RATCHET_PAGES in tools/validate-layout.cjs, whose TXT row is
-// the render-side ruling on the same text).
-const INK_PAGES = new Set([]);
+// OPT-OUT, not opt-in: every page is asserted unless it declares
+// `text_fit: advisory`, which demotes its overflows to [INFO]. An overflow FAILS
+// only at the presentation tier (`document.yaml` `viewport.w`) — the width the
+// deck is shown at — and advises at the others. The three-line description clamp
+// puts a full box at ~128 of 130px, so a box that fails here is one whose text
+// the author should move into the detail. The render-side ruling on the same text
+// is validate's TXT row, scoped by the same page field.
 
 // The one assumed constant on this axis, and the analogue of MONO_ADVANCE_EM:
 // `.box .k` and `.box .t` declare no line-height, so they render at the family's
@@ -738,8 +793,8 @@ const INK_VOID_PX = CSS_TEXT.titleMinPx * NORMAL_LINE_EM
 // The slot a leaf is really given: K rows plus the row gaps it swallows, or —
 // for a `half` — its share of the ONE slot the pair occupies, less the pair's
 // own inner gap.
-function slotHeightPx(rowspan, half) {
-  const full = CSS_TEXT.cellH * rowspan + (rowspan - 1) * CSS_TEXT.gap;
+function slotHeightPx(rowspan, half, rows = { cellH: CSS_TEXT.cellH, rowGap: CSS_TEXT.gap }) {
+  const full = rows.cellH * rowspan + (rowspan - 1) * rows.rowGap;
   return half ? (full - CSS_TEXT.boxGap * 2) / 2 : full;
 }
 
@@ -776,16 +831,17 @@ function inkBudget(leaf, ctx) {
   const authored = Array.isArray(raw) ? raw : (raw === null || raw === undefined ? [] : [raw]);
   if (authored.length) {
     const total = authored.reduce((n, l) => n + wrapLines(l, descCap), 0);
-    const lines = Math.min(total, CSS_TEXT.descLines);
+    const lines = ctx.compact ? total : Math.min(total, CSS_TEXT.descLines);
     blocks.push(lines * CSS_TEXT.descPx * CSS_TEXT.descLineEm);
   }
   if (!blocks.length) return null;
 
-  const padY = ctx.half ? CSS_TEXT.halfPadY : CSS_TEXT.boxPadY;
+  const padY = ctx.half ? CSS_TEXT.halfPadY : ctx.compact ? CSS_TEXT.compactBoxPadY : CSS_TEXT.boxPadY;
   const ink = blocks.reduce((n, x) => n + x, 0)
     + 2 * padY + 2 * CSS_TEXT.boxBorder
     + Math.max(0, blocks.length - 1) * CSS_TEXT.boxGap;
-  const slot = slotHeightPx(rowspanOf(leaf), !!ctx.half);
+  const rows = ctx.compact ? { cellH: CSS_TEXT.compactCellH, rowGap: CSS_TEXT.compactRowGap } : undefined;
+  const slot = slotHeightPx(rowspanOf(leaf), !!ctx.half, rows);
   return { ink, slot, slack: slot - ink, blocks: blocks.length };
 }
 
@@ -794,11 +850,10 @@ function inkBudget(leaf, ctx) {
 // axis BOTH ends are the finding: no room left, or a room nobody claimed.
 const inkTightest = { slack: Infinity }, inkLoosest = { slack: -Infinity };
 function inkHeadline() {
-  if (!INK_PAGES.size) return 'no page opted in (INK_PAGES is empty)';
-  if (!Number.isFinite(inkTightest.slack)) return 'no scoped page carried a box to budget';
+  if (!Number.isFinite(inkTightest.slack)) return 'no strict page carried a box to budget';
   const fmt = m => `${m.ink.toFixed(1)}px of ${m.slot.toFixed(1)}px (${m.slack.toFixed(1)}px free) ` +
     `at ${m.where} @${m.cw}px`;
-  return `scope [${[...INK_PAGES].join(', ')}] — tightest ${fmt(inkTightest)}; loosest ${fmt(inkLoosest)}`;
+  return `every strict page — tightest ${fmt(inkTightest)}; loosest ${fmt(inkLoosest)}`;
 }
 
 // ── CSS GRID SPARSE AUTO-PLACEMENT, SIMULATED ─────────────────────────────
@@ -876,6 +931,8 @@ function discoverGrids(page) {
       // starts from a CHILD — FROZEN walks a compound's children — can find the
       // grid that child renders without re-deriving it.
       node, label, isRoot, compound, children, slots, widthAt,
+      // `.zone.compact` gives this leaf grid its own shorter row and row gap.
+      compactRows: !isRoot && !compound && treatmentsOf(node).includes('compact'),
       authoredCols: Math.max(1, Number.isInteger(authored) && authored > 0 ? authored : DEFAULT_SECTION_COLUMNS),
       cols, hasBand,
       // Placeable = it is laid out as a CSS grid with tracks.
@@ -942,8 +999,10 @@ const RAIL_HUES = new Set(['blue', 'violet', 'gold', 'clay']);
 // The height of one LEAF grid at a container width: each row at its own track
 // height, plus the row gaps. A COMPOUND grid is a flex row of sections with no
 // track model, so it has no arithmetic height and says null instead of guessing.
-function gridHeightPx(g, cw) {
+function gridHeightPx(g, cw, m = CSS_TEXT) {
   if (!g || g.compound) return null;
+  const cellH = g.compactRows ? m.compactCellH : m.cellH;
+  const rowGap = g.compactRows ? m.compactRowGap : m.gap;
   const tracks = tracksFor(g.cols, cw);
   const items = g.slots.map(s => {
     const span = Math.max(1, Math.min(s.node.span || 1, g.cols));
@@ -958,10 +1017,10 @@ function gridHeightPx(g, cw) {
     // A rail row's track is `auto` (content height), so its FLOOR is the
     // one-line rail: title line + 2×pad + 2×border (railRowH). Never sepRowH
     // here — 40 would OVERSTATE a 33px row and break the floor direction.
-    h += !thin ? CSS_TEXT.cellH
-      : occupants.some(p => isRailLeaf(p.node)) ? CSS_TEXT.railRowH : CSS_TEXT.sepRowH;
+    h += !thin ? cellH
+      : occupants.some(p => isRailLeaf(p.node)) ? m.railRowH : m.sepRowH;
   }
-  return h + Math.max(0, rowCount - 1) * CSS_TEXT.gap;
+  return h + Math.max(0, rowCount - 1) * rowGap;
 }
 
 // A section's rendered height, and whether that number is EXACT or a floor.
@@ -975,6 +1034,128 @@ function zoneHeightPx(sec, gridH) {
   const headed = !!(sec.title || sec.subtitle);
   const h = gridH + chrome + (headed ? CSS_TEXT.gap : 0);
   return { px: plain ? h : Math.max(h, CSS_TEXT.zoneMinH), exact: !headed };
+}
+
+// ── RAIL TITLE WIDTH ──────────────────────────────────────────────────────
+// The px a thin rail's title can wrap in, inside a cell `cellPx` wide. A hue
+// rail pads 4px instead of 16. An INDENTED rail (`.rail.indented`) moves its
+// frame onto the title: the title loses indent × --indent-step on the left, the
+// rail's right padding, and its own lateral padding and border on both sides —
+// measured against the whole cell, RAILT under-predicted exactly these wraps.
+function railTitleWidth(cellPx, leaf, m = CSS_TEXT) {
+  const hue = RAIL_HUES.has(leaf && leaf.variant);
+  const padX = hue ? m.railHuePadX : m.boxPad;
+  const indent = Math.max(0, Math.floor(Number(leaf && leaf.indent) || 0));
+  if (!indent) return cellPx - 2 * (m.railBorder + padX);
+  return cellPx - 2 * m.railBorder - indent * m.indentStep - padX
+    - 2 * (m.railIndentTitlePadX + m.railIndentTitleBorder);
+}
+
+// How a thin rail's title wraps in a cell `cellPx` wide, at the rail's own metrics.
+function railTitleFit(cellPx, leaf, m = CSS_TEXT) {
+  const hue = RAIL_HUES.has(leaf && leaf.variant);
+  const fontPx = hue ? m.railHueTitlePx : m.railTitlePx;
+  const trackEm = hue ? m.railHueTrackEm : m.railTrackEm;
+  const px = railTitleWidth(cellPx, leaf, m);
+  const cap = capacityFor(px, fontPx, trackEm);
+  return { px, cap, fontPx, trackEm, lines: wrapLines(String(leaf && leaf.title || '').trim(), cap) };
+}
+
+// ── SECTION HEADER BUDGET ─────────────────────────────────────────────────
+// `.zone-header .ztitle` is clamp(13px, 0.85vw, 14.5px) mono with 0.1em
+// tracking, clamped to 2 lines; `.zsub` is 12px, clamped to 3. Both wrap inside
+// the zone's inner width (the header is width:0 + min-width:100%, so it never
+// widens the zone), and a line past the clamp is cut with no ellipsis visible
+// in the cell — the same defect TEXT names for a box.
+const zoneTitlePx = (cw, m = CSS_TEXT) =>
+  Math.min(m.ztitleMaxPx, Math.max(m.ztitleMinPx, m.ztitleVw * cw / 100));
+
+function headerBudget(sec, innerPx, cw, m = CSS_TEXT) {
+  const out = { titleLines: 0, subLines: 0, findings: [] };
+  const title = String(sec && sec.title || '').trim();
+  const sub = String(sec && sec.subtitle || '').trim();
+  const where = `in a ${Math.round(innerPx)}px zone at the ${cw}px tier`;
+  if (title) {
+    const px = zoneTitlePx(cw, m);
+    const cap = capacityFor(innerPx, px, m.ztitleTrackEm);
+    out.titleLines = wrapLines(title, cap);
+    if (out.titleLines > m.ztitleLines)
+      out.findings.push({ kind: 'header-title-lines', deficit: out.titleLines - m.ztitleLines, detail:
+        `section title wraps to ${out.titleLines} line(s) of ${cap} char(s) at ${px}px mono + ` +
+        `${m.ztitleTrackEm}em tracking and .ztitle clamps to ${m.ztitleLines} — ` +
+        `${out.titleLines - m.ztitleLines} line(s) cut, ${where}. Shorten the title or widen the section.` });
+  }
+  if (sub) {
+    const cap = capacityFor(innerPx, m.zsubPx);
+    out.subLines = wrapLines(sub, cap);
+    if (out.subLines > m.zsubLines)
+      out.findings.push({ kind: 'header-sub-lines', deficit: out.subLines - m.zsubLines, detail:
+        `section subtitle wraps to ${out.subLines} line(s) of ${cap} char(s) at ${m.zsubPx}px mono and ` +
+        `.zsub clamps to ${m.zsubLines} — ${out.subLines - m.zsubLines} line(s) cut, ${where}. ` +
+        `Shorten the subtitle or move it into a box's detail.` });
+  }
+  return out;
+}
+
+// ── THE PAGE HEIGHT, PREDICTED ────────────────────────────────────────────
+// The full-page height at a container width, from the same placement model the
+// geometry checks use: a leaf grid is its row tracks plus gaps (a `compact` grid
+// at its own row), a zone adds its header lines, its frame and its --zone-min-h
+// floor, a compound row takes its TALLEST child above the stack breakpoint and
+// the SUM of its children below it, and the root-with-bands places its sections
+// into rows first. Header lines are counted at NORMAL_LINE_EM, the same upper
+// bound INK uses, and every value comes in as a parameter.
+//
+// `chromePx` is the page outside the canvas box — the canvas's top offset and
+// the frame below it — which no single declaration gives. validate's VH row
+// measures and prints it (`chrome NNpx`); 207 is the seed's measurement at
+// 1920x1080, and a deck whose VH chrome differs passes its own value in.
+const PAGE_CHROME_PX = 207;
+
+function predictPageHeight(page, cw, m = CSS_TEXT, chromePx = PAGE_CHROME_PX) {
+  const grids = discoverGrids(page);
+  const gridOf = new Map(grids.map(g => [g.node, g]));
+  const stacked = (hs, gap) => hs.reduce((a, b) => a + b, 0) + Math.max(0, hs.length - 1) * gap;
+
+  function headerPx(sec, innerPx) {
+    const hb = headerBudget(sec, innerPx, cw, m);
+    const t = Math.min(hb.titleLines, m.ztitleLines) * zoneTitlePx(cw, m) * NORMAL_LINE_EM;
+    const s = Math.min(hb.subLines, m.zsubLines) * m.zsubPx * NORMAL_LINE_EM;
+    return t + s + (t && s ? m.zheaderGap : 0);
+  }
+  function childPx(parent, n) {
+    if (!isSection(n)) return isThinRowLeaf(n) ? m.sepRowH : m.cellH;
+    const plain = treatmentsOf(n).includes('plain');
+    const header = (n.title || n.subtitle) ? headerPx(n, nestedTrackArea(parent, n, cw)) : 0;
+    const h = blockPx(gridOf.get(n)) + (header ? header + m.gap : 0)
+      + (plain ? 0 : 2 * (m.zonePad + m.zoneBorder));
+    return plain ? h : Math.max(h, m.zoneMinH);
+  }
+  function blockPx(g) {
+    if (!g) return 0;
+    if (!g.compound) return gridHeightPx(g, cw, m) ?? 0;
+    const kids = orderedChildren(g.children).map(x => x.c);
+    const hs = kids.map(n => childPx(g, n));
+    if (cw <= BP_STACK) return stacked(hs, m.gap);
+    if (g.isRoot && g.hasBand) {
+      const items = kids.map((n, i) => ({ i, w: Math.max(1, Math.min(Number(n.span) || 1, g.cols)), h: 1 }));
+      const { placed, rowCount } = place(items, g.cols);
+      const rows = [...Array(rowCount).keys()]
+        .map(r => Math.max(0, ...placed.filter(p => p.r === r).map(p => hs[p.i])));
+      return stacked(rows, m.gap);
+    }
+    return Math.max(0, ...hs);
+  }
+
+  const contentPx = blockPx(grids[0]);
+  const canvasPad = cw <= BP_ONE ? m.canvasPadNarrow : m.canvasPad;
+  return { contentPx, totalPx: contentPx + 2 * canvasPad + chromePx };
+}
+
+// The HEIGHT advisory for one page, or null when it fits the viewport.
+function pageHeightAdvisory(predictedPx, vp) {
+  const px = Math.round(predictedPx);
+  return px > vp.h ? `predicted ${px}px > ${vp.h} (+${px - vp.h}) at ${vp.w}` : null;
 }
 
 // ── THE CHECK RUN ─────────────────────────────────────────────────────────
@@ -999,8 +1180,23 @@ function checkPage(page) {
   const form = page.form ?? DEFAULT_FORM;
   const grids = discoverGrids(page);
   const trackTable = [];
-  // The TEXT budget's worst finding per (box, kind) across the tier sweep.
+  // The TEXT budget's worst finding per (box, kind) across the tier sweep, and
+  // the line overflows at the presentation tier, which FAIL on a strict page.
   const textWorst = new Map();
+  const textFail = new Map();
+  const strict = isTextFitStrict(page);
+  const FIT_KINDS = new Set(['title-lines', 'desc-lines', 'header-title-lines', 'header-sub-lines']);
+  const noteText = (where, f, tierW) => {
+    const key = `${where}|${f.kind}`;
+    if (strict && tierW === PRESENT.w && FIT_KINDS.has(f.kind)) {
+      if (!textFail.has(key)) textFail.set(key, { ...f, where: `${where} @${tierW}px` });
+      return;
+    }
+    const prev = textWorst.get(key);
+    if (!prev || f.deficit > prev.deficit) textWorst.set(key, { ...f, where });
+  };
+  // INK's worst overflow per box outside the fail tier, reported once.
+  const inkWorst = new Map();
   // RAILT's worst finding per rail across the tier sweep — deduped like TEXT,
   // but emitted as a HARD fail: a rail row is `auto`, so an over-wrapped title
   // does not clip, it silently GROWS the row and the stack it lives in.
@@ -1126,7 +1322,7 @@ function checkPage(page) {
     const row = { grid: g.label, authored: g.authoredCols, cols: g.cols, tracks: {}, kind: g.isRoot && g.compound ? 'root-with-bands' : (g.isRoot ? 'root-leaf' : 'leaf') };
 
     let prevTracks = null;
-    for (const tier of TIERS) {
+    for (const tier of SWEEP) {
       if (tier.w < g.minWidth) { row.tracks[tier.name] = '—'; continue; }
       const tracks = tracksFor(g.cols, tier.w);
       row.tracks[tier.name] = tracks;
@@ -1246,34 +1442,36 @@ function checkPage(page) {
         const cell = `cell ${Math.round(availPx)}px = ${p.w} of ${tracks} track(s) in a ` +
           `${Math.round(gridW)}px grid, worst at the ${tier.w}px tier`;
         for (const leaf of (slot.half ? slot.pair : [slot.node])) {
-          const budget = textBudget(leaf, { availPx, fontPx, half: !!slot.half, cell, form });
+          const compact = g.compactRows;
+          const budget = textBudget(leaf, { availPx, fontPx, half: !!slot.half, cell, form, compact });
           asserted += budget.asserted;
           const where = `${g.label} > ${leaf && leaf.id != null ? leaf.id : '(no id)'}`;
-          for (const f of budget.findings) {
-            const prev = textWorst.get(`${where}|${f.kind}`);
-            if (!prev || f.deficit > prev.deficit) textWorst.set(`${where}|${f.kind}`, { ...f, where });
-          }
+          for (const f of budget.findings) noteText(where, f, tier.w);
           for (const m of budget.margins) {
             const prev = textTightest.get(m.kind);
             if (!prev || m.slack < prev.slack) textTightest.set(m.kind, { ...m, where, cw: tier.w });
           }
 
-          // INK — the height budget, on the pages that opted in. Run at every
-          // tier for the same reason TEXT is: the authored tier gives the most
-          // wrapped lines and the collapsed ones the tallest of them.
-          if (!INK_PAGES.has(pageId)) continue;
-          const ig = inkBudget(leaf, { availPx, fontPx, half: !!slot.half });
+          // INK — the height budget. Run at every tier for the same reason TEXT
+          // is, but an overflow FAILS only at the presentation tier of a strict
+          // page; elsewhere the worst one per box advises.
+          const ig = inkBudget(leaf, { availPx, fontPx, half: !!slot.half, compact });
           if (!ig) continue;
           asserted++;
+          const atPresent = tier.w === PRESENT.w;
           const stamp = { ...ig, where, cw: tier.w };
           if (ig.slack < inkTightest.slack) Object.assign(inkTightest, stamp);
           if (ig.slack > inkLoosest.slack) Object.assign(inkLoosest, stamp);
-          if (ig.slack < 0)
-            fail('INK', where, `${ig.blocks} ink block(s) need ${ig.ink.toFixed(1)}px and the slot ` +
-              `is ${ig.slot.toFixed(1)}px — ${(-ig.slack).toFixed(1)}px overflows and is clipped ` +
-              `(a cell never grows by content). Worst at the ${tier.w}px tier. Move a block into ` +
-              `the detail, or merge the cell down a row.`);
-          else if (ig.slack > INK_VOID_PX && !treatmentsOf(leaf).includes('centered'))
+          const overflow = `${ig.blocks} ink block(s) need ${ig.ink.toFixed(1)}px and the slot ` +
+            `is ${ig.slot.toFixed(1)}px${compact ? ' (a `compact` row)' : ''} — ` +
+            `${(-ig.slack).toFixed(1)}px overflows and is clipped (a cell never grows by content), ` +
+            `at the ${tier.w}px tier. Move a block into the detail, or merge the cell down a row.`;
+          if (ig.slack < 0 && strict && atPresent) fail('INK', where, overflow);
+          else if (ig.slack < 0) {
+            const prev = inkWorst.get(where);
+            if (!prev || ig.slack < prev.slack) inkWorst.set(where, { slack: ig.slack, detail: overflow });
+          }
+          else if (atPresent && ig.slack > INK_VOID_PX && !treatmentsOf(leaf).includes('centered'))
             info('INK', where, `${ig.ink.toFixed(1)}px of ink in a ${ig.slot.toFixed(1)}px slot leaves ` +
               `${ig.slack.toFixed(1)}px undeclared below it at the ${tier.w}px tier — the cell is ` +
               `occupied, so no hole check can see it. Carry the void with \`treatment: [centered]\` ` +
@@ -1295,21 +1493,17 @@ function checkPage(page) {
         if (!slot || slot.pair) continue;
         const leaf = slot.node;
         if (!isRailLeaf(leaf) || !isThinRowLeaf(leaf)) continue;
-        const hue = RAIL_HUES.has(leaf.variant);
-        const titlePxRail = hue ? CSS_TEXT.railHueTitlePx : CSS_TEXT.railTitlePx;
-        const trackEm = hue ? CSS_TEXT.railHueTrackEm : CSS_TEXT.railTrackEm;
         const track = (gridW - (tracks - 1) * CSS_TEXT.gap) / tracks;
-        const availPx = track * p.w + (p.w - 1) * CSS_TEXT.gap
-          - 2 * (CSS_TEXT.railBorder + (hue ? CSS_TEXT.railHuePadX : CSS_TEXT.boxPad));
-        const cap = capacityFor(availPx, titlePxRail, trackEm);
-        const lines = wrapLines(String(leaf.title ?? '').trim(), cap);
+        const fit = railTitleFit(track * p.w + (p.w - 1) * CSS_TEXT.gap, leaf);
+        const { cap, lines, fontPx: titlePxRail, trackEm } = fit;
+        const indentNote = leaf.indent > 0 ? ` (indent ${leaf.indent}: ${Math.round(fit.px)}px left for the title)` : '';
         asserted++;
         if (lines <= CSS_TEXT.railTitleLines) continue;
         const where = `${g.label} > ${leaf.id ?? '(no id)'}`;
         const prev = railWorst.get(where);
         if (prev && prev.lines >= lines) continue;
         railWorst.set(where, { lines, where: `${where} @${tier.w}px`, detail:
-          `rail title wraps to ${lines} line(s) of ${cap} char(s) at ` +
+          `rail title wraps to ${lines} line(s) of ${cap} char(s)${indentNote} at ` +
           `${titlePxRail}px mono + ${trackEm}em tracking, and the rail ` +
           `ceiling is ${CSS_TEXT.railTitleLines} — .rail-title has no clamp, so the extra line ` +
           `GROWS the auto row and the stack it lives in. Shorten the title or widen the cell.` });
@@ -1502,7 +1696,26 @@ function checkPage(page) {
         `Deliberate in a tall-beside-short composition; a defect if they were meant to be lanes.`);
   }
 
-  for (const f of textWorst.values()) info('TEXT', f.where, f.detail);
+  // HEADER — every section's title and subtitle against its clamp, at the
+  // zone's inner width, at every tier. Compound grids included: a section's
+  // header is drawn whatever its parent's layout is.
+  for (const g of grids) {
+    for (const c of g.children || []) {
+      if (!isSection(c) || !(c.title || c.subtitle)) continue;
+      const where = `${g.label} > ${c.id ?? '(no id)'} (header)`;
+      for (const tier of SWEEP) {
+        const hb = headerBudget(c, nestedTrackArea(g, c, tier.w), tier.w);
+        asserted++;
+        for (const f of hb.findings) noteText(where, f, tier.w);
+      }
+    }
+  }
+
+  for (const [key, f] of textWorst) if (!textFail.has(key)) info('TEXT', f.where, f.detail);
+  for (const f of textFail.values())
+    fail('TEXT', f.where, `${f.detail} This is the presentation tier (document.yaml \`viewport\`); ` +
+      `a page that accepts it declares \`text_fit: advisory\`.`);
+  for (const [where, f] of inkWorst) info('INK', where, f.detail);
   for (const f of railWorst.values()) fail('RAILT', f.where, f.detail);
 
   return { pageId, form, grids, trackTable, leaves: leavesOf(page).length };
@@ -1604,8 +1817,27 @@ function main() {
     return;
   }
 
+  PRESENT = resolveViewport(deck.manifest);
+  SWEEP = sweepFor(PRESENT.w);
   const pages = [];
   for (const { page } of deck.pages) pages.push(checkPage(page));
+
+  // HEIGHT — each page's predicted full height at the presentation viewport.
+  // ADVISORY: a deck may mean to scroll; the finding says by how much it does.
+  const heights = [];
+  for (const { page } of deck.pages) {
+    const { totalPx } = predictPageHeight(page, PRESENT.w);
+    asserted++;
+    heights.push({ id: page.id ?? '(no id)', px: Math.round(totalPx) });
+    const note = pageHeightAdvisory(totalPx, PRESENT);
+    if (note) info('HEIGHT', `page ${page.id ?? '(no id)'}`, note);
+  }
+  const heightHeadline = () => {
+    const top = heights.reduce((a, b) => (b.px > a.px ? b : a), { id: '—', px: 0 });
+    const over = heights.filter(x => x.px > PRESENT.h).length;
+    return `predicted at ${PRESENT.w}x${PRESENT.h} — ${over} of ${heights.length} page(s) taller than the ` +
+      `viewport; tallest ${top.id} ${top.px}px`;
+  };
 
   // WORDS — every authored string against the bundle the browser loads.
   const bundleFile = path.join(ROOT, 'data', 'data.generated.js');
@@ -1636,12 +1868,12 @@ function main() {
       `${BP_ONE} / ${BP_TWO} / ${BP_STACK}px. This is a PURE FUNCTION of ` +
       '(effective columns, container width), which is why it replaces the browser width sweep:');
     const head = `    ${'grid'.padEnd(30)} ${'auth'.padStart(4)} ${'eff'.padStart(4)}  ` +
-      TIERS.map(t => String(t.w).padStart(5)).join(' ');
+      SWEEP.map(t => String(t.w).padStart(5)).join(' ');
     console.log(head);
-    console.log(`    ${'-'.repeat(30)} ${'-'.repeat(4)} ${'-'.repeat(4)}  ${TIERS.map(() => '-----').join(' ')}`);
+    console.log(`    ${'-'.repeat(30)} ${'-'.repeat(4)} ${'-'.repeat(4)}  ${SWEEP.map(() => '-----').join(' ')}`);
     for (const r of p.trackTable)
       console.log(`    ${r.grid.slice(-30).padEnd(30)} ${String(r.authored).padStart(4)} ${String(r.cols).padStart(4)}  ` +
-        TIERS.map(t => String(r.tracks[t.name]).padStart(5)).join(' '));
+        SWEEP.map(t => String(r.tracks[t.name]).padStart(5)).join(' '));
   }
 
   const CHECKS = [
@@ -1662,15 +1894,19 @@ function main() {
     ['ORDER', 'no duplicate effective `order` among siblings'],
     // A third entry is an optional PASS DETAIL: what the check MEASURED when it
     // holds, so a pass reports a number instead of a bare "holds everywhere".
-    ['TEXT', 'character budget: title token, kicker token, title clamp, description clamp ' +
-      '(ADVISORY — conservative arithmetic; `validate` N is the verdict for the title)', textHeadline],
+    ['TEXT', 'character budget: title token, kicker token, title clamp, description clamp, section ' +
+      'header clamps (a line overflow FAILS at the presentation tier of a page not declared ' +
+      '`text_fit: advisory`; everything else is ADVISORY — `validate` N/TXT are the render verdicts)', textHeadline],
     ['WORDS', 'every authored string is present verbatim in data/data.generated.js ' +
       '(the text-only staleness CENSUS cannot see, because node counts do not move)'],
     ['INK', 'ink height vs the MODELLED slot — overflow fails, an undeclared void advises ' +
-      '(PAGE-SCOPED: a page opts in through INK_PAGES. ARITHMETIC, NOT OBSERVED: the slot is the ' +
+      '(OPT-OUT: every page not declared `text_fit: advisory`, failing at the presentation tier. ' +
+      'A `compact` grid is budgeted at its own row. ARITHMETIC, NOT OBSERVED: the slot is the ' +
       'one the model derives from the authored spans, so a PASS here says the text fits the cell the ' +
       'stylesheet OWES the box — not that the browser drew that cell. `validate` TXT is the verdict ' +
       'on real clamping)', inkHeadline],
+    ['HEIGHT', 'page height predicted from the placement model vs the document.yaml viewport ' +
+      '(ADVISORY — `validate` VH measures it)', heightHeadline],
     ['CSS', 'the mirrored breakpoints and text metrics match index.html'],
     ['SPAN', 'index.html implements the span→tracks rules every width in this report assumes ' +
       '(a missing rule FAILS: unlike a metric there is no mirrored constant to fall back to)',
@@ -1714,13 +1950,13 @@ function main() {
   // the deck holds either.
   if (failed + censusFail === 0 && unasserted === 0) {
     console.log(`ALL PASS — ${asserted} assertions, 0 not-asserted, across ${pages.length} page(s) × ` +
-      `${TIERS.length} container tiers, no browser${adv}.\n`);
+      `${SWEEP.length} container tiers, no browser${adv}.\n`);
     process.exitCode = 0;
     return;
   }
   if (failed + censusFail === 0) {
     console.log(`NOT ASSERTED — ${asserted} assertions ran and ${unasserted} check(s) could NOT be made, ` +
-      `across ${pages.length} page(s) × ${TIERS.length} container tiers. Nothing failed, and this is not a ` +
+      `across ${pages.length} page(s) × ${SWEEP.length} container tiers. Nothing failed, and this is not a ` +
       `pass: see the [NOT ASSERTED] lines above${adv}.\n`);
     process.exitCode = 1;
     return;
@@ -1741,4 +1977,5 @@ export { widthAtTier, isBandAtTier, isBandClass, place, tracksFor,
   orderedChildren, slotsOf, effectiveCols, DEFAULT_SECTION_COLUMNS,
   planeWidth, cellTextWidth, titlePx, capacityFor, wrapLines, longestToken,
   textBudget, cssTextTokens, CSS_TEXT, MONO_ADVANCE_EM, isThinRowLeaf,
-  inkBudget, slotHeightPx };
+  inkBudget, slotHeightPx, railTitleWidth, railTitleFit, headerBudget, zoneTitlePx,
+  predictPageHeight, pageHeightAdvisory, PAGE_CHROME_PX };
