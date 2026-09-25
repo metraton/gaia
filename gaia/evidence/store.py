@@ -32,9 +32,9 @@ Public API::
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+from gaia.agent_identity import dispatch_agent_from_env
 from gaia.state.permissions import agent_fleet
 from gaia.store.writer import _connect
 
@@ -103,17 +103,17 @@ def _assert_dispatch_can_write_evidence(*, allow_producers: bool = True) -> None
     * Set to anything else -- including an identity that is not a declared
       agent at all -> raises ``EvidenceWriteForbidden``.
     """
-    raw = os.environ.get("GAIA_DISPATCH_AGENT")
-    if not raw:
+    agent = dispatch_agent_from_env()
+    if not agent:
         return
     allowed = _EVIDENCE_CURATOR_AGENTS
     if allow_producers:
         allowed = allowed | _evidence_producer_agents()
-    if raw in allowed:
+    if agent in allowed:
         return
     raise EvidenceWriteForbidden(
         f"Evidence writes are forbidden from this subagent dispatch "
-        f"(current GAIA_DISPATCH_AGENT={raw!r}). "
+        f"(current GAIA_DISPATCH_AGENT={agent!r}). "
         + (
             "Insert is open to any curator or to any declared agent under "
             "agents/; this identity is neither, so it is most likely a "
