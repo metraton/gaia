@@ -170,43 +170,68 @@ def _scan_live_gaia_installation() -> Optional[dict]:
         return None
 
 
+def _own_package_root() -> Path:
+    """Root of the package this module ships in, whatever the install layout."""
+    return Path(__file__).resolve().parents[3]
+
+
+def _plugin_root() -> Path:
+    """The plugin's real root: the one Claude Code declares, else our own package."""
+    declared = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    return Path(declared) if declared else _own_package_root()
+
+
+def _declared_cli_path(package_root: Path) -> Optional[str]:
+    """``package_root`` joined with its manifest's ``bin.gaia``, or None."""
+    manifest_path = package_root / "package.json"
+    if not manifest_path.is_file():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    bin_field = manifest.get("bin") if isinstance(manifest, dict) else None
+    bin_rel = bin_field.get("gaia") if isinstance(bin_field, dict) else None
+    if not isinstance(bin_rel, str) or not bin_rel.strip():
+        return None
+    return str(package_root / bin_rel)
+
+
 def _resolve_gaia_cli_path() -> Optional[str]:
     """Absolute path to the `gaia` CLI the orchestrator should invoke.
 
-    Publishes the workspace's own `node_modules/@jaguilar87/gaia/bin/gaia`
-    symlink path, not its realpath -- `gaia dev`/pnpm repoint that symlink at
-    a fresh store entry on every rebuild, so the symlink always resolves to
-    whatever is currently installed. Publishing a resolved snapshot instead
-    would keep pointing at a specific pnpm store attempt that a later
-    install can prune while the file itself stays executable (measured:
-    three coexisting store roots on this machine) -- silent staleness with
-    no error. Resolved from the manifest's own `bin` field rather than a
-    hardcoded "bin/gaia", and verified against the real trust guard before
-    being returned, never merely reasoned to be correct. None when no
-    npm-style install is found or the guard rejects the candidate.
+    The first guard-verified candidate wins, and PATH is never consulted:
+
+    1. The workspace alias ``node_modules/@jaguilar87/gaia`` -- published as
+       the symlink path, not its realpath, because `gaia dev`/pnpm repoint it
+       at a fresh store entry on every rebuild and prune the old one while the
+       file stays executable, so a resolved snapshot goes stale silently.
+    2. The package this hook ships in -- the only candidate a Claude Code
+       plugin install has (no node_modules, no `gaia` on PATH), and the same
+       package ``is_trusted_gaia_binary`` anchors its trust to.
+
+    None when no candidate passes the guard.
     """
+    try:
+        from ..security.gaia_cli_only_guard import is_trusted_gaia_binary
+    except Exception as exc:
+        logger.debug("_resolve_gaia_cli_path: trust guard unavailable: %s", exc)
+        return None
+
+    candidates = []
     try:
         from ..core.paths import find_claude_dir
         workspace_root = find_claude_dir().parent
-
-        gaia_dir = workspace_root / "node_modules" / "@jaguilar87" / "gaia"
-        manifest_path = gaia_dir / "package.json"
-        if not manifest_path.is_file():
-            return None
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        bin_field = manifest.get("bin") if isinstance(manifest, dict) else None
-        bin_rel = bin_field.get("gaia") if isinstance(bin_field, dict) else None
-        if not isinstance(bin_rel, str) or not bin_rel.strip():
-            return None
-        candidate = str(gaia_dir / bin_rel)
-
-        from ..security.gaia_cli_only_guard import is_trusted_gaia_binary
-        if not is_trusted_gaia_binary(candidate):
-            return None
-        return candidate
+        candidates.append(workspace_root / "node_modules" / "@jaguilar87" / "gaia")
     except Exception as exc:
-        logger.debug("_resolve_gaia_cli_path failed (non-fatal): %s", exc)
-        return None
+        logger.debug("_resolve_gaia_cli_path: no workspace alias: %s", exc)
+    candidates.append(_own_package_root())
+
+    for package_root in candidates:
+        try:
+            cli_path = _declared_cli_path(package_root)
+            if cli_path and is_trusted_gaia_binary(cli_path):
+                return cli_path
+        except Exception as exc:
+            logger.debug("_resolve_gaia_cli_path: %s rejected: %s", package_root, exc)
+    return None
 
 
 # Corpus-derived: every name below was measured with at least one mention in
@@ -287,14 +312,15 @@ def build_where_i_am_block() -> str:
         if not version:
             version = _read_gaia_version()
 
+        plugin_root = str(_plugin_root())
         # Data dir resolution can fail under headless tests with no .claude/
         # tree; treat as soft-missing.
         try:
             from ..core.paths import find_claude_dir, get_plugin_data_dir
-            plugin_root = str(find_claude_dir())
+            workspace_claude_dir = str(find_claude_dir())
             data_dir = str(get_plugin_data_dir())
         except Exception:
-            plugin_root = None
+            workspace_claude_dir = None
             data_dir = None
 
         lines = ["## Where I am"]
@@ -309,9 +335,10 @@ def build_where_i_am_block() -> str:
         if version:
             lines.append(f"- Gaia: {_describe_gaia_version(version)}")
         lines.append(f"- cwd: {cwd}")
-        if plugin_root:
-            lines.append(f"- Plugin root: {plugin_root}")
-        if data_dir and data_dir != plugin_root:
+        lines.append(f"- Plugin root: {plugin_root}")
+        if workspace_claude_dir:
+            lines.append(f"- Workspace .claude dir: {workspace_claude_dir}")
+        if data_dir and data_dir != workspace_claude_dir:
             lines.append(f"- Data dir: {data_dir}")
 
         # Drop the block entirely if it would only be a header -- pure

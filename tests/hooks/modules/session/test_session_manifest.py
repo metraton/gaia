@@ -229,12 +229,13 @@ class TestResolveGaiaCliPath:
         bin_path.write_text("#!/usr/bin/env node\n")
         return gaia_dir, bin_path
 
-    def test_returns_none_when_no_npm_marker(self, monkeypatch, tmp_path):
+    def test_returns_none_when_no_candidate_package_exists(self, monkeypatch, tmp_path):
         import modules.core.paths as core_paths_mod
 
         monkeypatch.setattr(
             core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
         )
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "empty")
         assert session_manifest._resolve_gaia_cli_path() is None
 
     def test_returns_none_when_guard_rejects_the_candidate(self, monkeypatch, tmp_path):
@@ -264,6 +265,130 @@ class TestResolveGaiaCliPath:
         monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _token: True)
 
         assert session_manifest._resolve_gaia_cli_path() == str(bin_path)
+
+
+def _make_gaia_package(root: Path) -> Path:
+    """A package the real trust guard accepts: same name as ours, bin.gaia declared."""
+    root.mkdir(parents=True)
+    (root / "package.json").write_text(
+        json.dumps({"name": "@jaguilar87/gaia", "bin": {"gaia": "bin/gaia"}})
+    )
+    bin_path = root / "bin" / "gaia"
+    bin_path.parent.mkdir()
+    bin_path.write_text("#!/usr/bin/env python3\n")
+    bin_path.chmod(0o755)
+    return bin_path
+
+
+class TestResolveGaiaCliPathByInstallLayout:
+    """Each supported layout publishes a path the real guard accepts; PATH is never read."""
+
+    @pytest.fixture
+    def layout(self, monkeypatch, tmp_path):
+        import modules.core.paths as core_paths_mod
+
+        workspace = tmp_path / "ws"
+        (workspace / ".claude").mkdir(parents=True)
+        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: workspace / ".claude")
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "no-package")
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        empty_path_dir = tmp_path / "empty-path"
+        empty_path_dir.mkdir()
+        monkeypatch.setenv("PATH", str(empty_path_dir))
+        return workspace, tmp_path
+
+    def _plugin(self, monkeypatch, tmp_path) -> Path:
+        plugin_root = tmp_path / "plugins" / "cache" / "gaia-marketplace" / "gaia" / "5.5.0"
+        bin_path = _make_gaia_package(plugin_root)
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: plugin_root)
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin_root))
+        return bin_path
+
+    def test_plugin_only_publishes_the_plugin_package_bin(self, layout, monkeypatch):
+        from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
+
+        workspace, tmp_path = layout
+        bin_path = self._plugin(monkeypatch, tmp_path)
+
+        cli_path = session_manifest._resolve_gaia_cli_path()
+
+        assert not (workspace / "node_modules").exists()
+        assert cli_path == str(bin_path)
+        assert is_trusted_gaia_binary(cli_path)
+
+    def test_plugin_only_capabilities_block_carries_the_cli_line(self, layout, monkeypatch):
+        _workspace, tmp_path = layout
+        bin_path = self._plugin(monkeypatch, tmp_path)
+
+        block = build_capabilities_block()
+        print("\n--- rendered capabilities block (plugin-only fixture) ---\n" + block)
+
+        assert f"- gaia CLI: {bin_path}" in block.splitlines()
+
+    def test_npm_only_publishes_the_workspace_alias(self, layout):
+        from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
+
+        workspace, _tmp_path = layout
+        alias_bin = _make_gaia_package(workspace / "node_modules" / "@jaguilar87" / "gaia")
+
+        cli_path = session_manifest._resolve_gaia_cli_path()
+
+        assert cli_path == str(alias_bin)
+        assert is_trusted_gaia_binary(cli_path)
+
+    def test_alias_wins_over_the_own_package_when_both_exist(self, layout, monkeypatch):
+        workspace, tmp_path = layout
+        self._plugin(monkeypatch, tmp_path)
+        alias_bin = _make_gaia_package(workspace / "node_modules" / "@jaguilar87" / "gaia")
+
+        results = {session_manifest._resolve_gaia_cli_path() for _ in range(3)}
+
+        assert results == {str(alias_bin)}
+
+    def test_untrusted_alias_falls_through_to_the_own_package(self, layout, monkeypatch):
+        workspace, tmp_path = layout
+        bin_path = self._plugin(monkeypatch, tmp_path)
+        impostor = workspace / "node_modules" / "@jaguilar87" / "gaia"
+        _make_gaia_package(impostor)
+        (impostor / "package.json").write_text(
+            json.dumps({"name": "not-gaia", "bin": {"gaia": "bin/gaia"}})
+        )
+
+        assert session_manifest._resolve_gaia_cli_path() == str(bin_path)
+
+    def test_a_trusted_gaia_on_path_alone_is_never_published(self, layout, monkeypatch):
+        _workspace, tmp_path = layout
+        on_path = _make_gaia_package(tmp_path / "elsewhere" / "gaia")
+        monkeypatch.setenv("PATH", str(on_path.parent))
+
+        assert session_manifest._resolve_gaia_cli_path() is None
+
+
+class TestWhereIAmPluginRoot:
+    @pytest.fixture(autouse=True)
+    def _quiet(self, monkeypatch):
+        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(session_manifest, "_scan_live_gaia_installation", lambda: None)
+
+    def test_plugin_root_is_the_declared_plugin_root(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
+
+        lines = build_where_i_am_block().splitlines()
+
+        assert f"- Plugin root: {tmp_path / 'plugin'}" in lines
+
+    def test_plugin_root_falls_back_to_the_own_package_not_the_cwd(self, monkeypatch, tmp_path):
+        import modules.core.paths as core_paths_mod
+
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "pkg")
+        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude")
+
+        lines = build_where_i_am_block().splitlines()
+
+        assert f"- Plugin root: {tmp_path / 'pkg'}" in lines
+        assert f"- Workspace .claude dir: {tmp_path / 'ws' / '.claude'}" in lines
 
 
 class TestScanAvailableTools:
