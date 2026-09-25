@@ -26,7 +26,6 @@
 # show that the same slug declared on two pages projects one onto the other.
 
 id: p6-relations
-layout: grid
 form: flow
 # Two root columns: the two bands each take a full row, and the two sections the
 # concept chip crosses share the row beneath them.
@@ -38,14 +37,15 @@ filters:
   # active page — so reusing it makes no cross-page mess; what it does is
   # project one page onto the other: the reader who lit `packing` on p3 finds the
   # same relation named here, on the page that explains why it is directional.
+  # One relation, so one label: CHIP-X fails a key whose label differs by page.
   - key: packing
-    label: "A directional flow"
+    label: "In what order does it pack?"
     steps:
       - "Click the chip to light the three cells of the flow, in the order they are authored."
       - "There is no arrowhead: the direction is carried by <code>order</code> and by the kickers 1 · 2 · 3."
       - "The same key is declared on page 3, where it traces the packing order — one slug, two pages."
   - key: crosscut
-    label: "A cross-cutting concept"
+    label: "What crosses the sections?"
     steps:
       - "Click the chip to light members in THREE different sections at once."
       - "A concept chip is not a path: nothing about it reads in an order, and it never leaves a section out."

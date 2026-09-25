@@ -20,7 +20,6 @@
 # a filter chip tracing a directional sequence.
 
 id: p3-sequence
-layout: grid
 form: flow
 # Two root columns, so each band is a full-width row: a sequence reads down the
 # page, one row at a time.
@@ -28,7 +27,7 @@ columns: 2
 
 filters:
   - key: packing
-    label: "The packing order"
+    label: "In what order does it pack?"
     steps:
       - "Click the chip to light the three cells that carry an explicit <code>order</code>."
       - "That one number is the whole positional vocabulary — there is no row or column to set."

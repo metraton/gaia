@@ -18,8 +18,24 @@ import { mkdirSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// The presentation viewport is the deck's own `tokens.viewport`, read from the
+// built bundle. The second asserted size is the laptop screen, below the stack
+// breakpoint, and the narrow one is a screenshot of the one-column endpoint.
+const { loadGenerated } = createRequire(import.meta.url)('./static-census.cjs');
+const built = loadGenerated(ROOT);
+if (!built.ok || !built.doc.tokens) {
+  console.error(`verify: ${built.problem || 'the bundle carries no tokens'} — run \`npm run build\` first.`);
+  process.exit(1);
+}
+const SIZES = [
+  { ...built.doc.tokens.viewport, assert: true },
+  { w: 1440, h: 900, assert: true },
+  { w: 600, h: 900, assert: false },
+];
 const FILE = pathToFileURL(join(ROOT, 'index.html')).href;
 const OUT = process.env.DIAGRAM_SHOTS_DIR || join(tmpdir(), 'diagram-deck-screenshots');
 mkdirSync(OUT, { recursive: true });
@@ -87,11 +103,7 @@ const browser = await launch();
 const problems = [];
 
 for (const theme of ['light', 'dark']) {
-  for (const { w, h, assert } of [
-    { w: 1920, h: 1080, assert: true },
-    { w: 1440, h: 900, assert: true },
-    { w: 600, h: 900, assert: false } // narrow: screenshot only (coarse stack)
-  ]) {
+  for (const { w, h, assert } of SIZES) {
     const ctx = await browser.newContext({ viewport: { width: w, height: h } });
     const page = await ctx.newPage();
     await page.addInitScript(t => localStorage.setItem('theme', t), theme);

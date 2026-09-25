@@ -259,6 +259,10 @@ READ -- changes nothing. The orchestrator runs these itself.
   status         workspace status: agents, hooks, contracts.
   history        recent agent sessions.
   metrics        dashboard: tiers, commands, agents, anomalies.
+  usage          show --plan N | --session ID
+                 tokens per session and per agent from Claude Code
+                 transcripts; for a plan, split bound / unbound / main.
+                 What a task or re-dispatch cost, where a plan's spend went.
   context        show | get | get-contract | project
                  `get-contract --section <s>` is the only verb that reads a
                  project-context contract row (the names an agent's
@@ -270,7 +274,7 @@ READ -- changes nothing. The orchestrator runs these itself.
   workspace      current | info
   evidence       show | list
   schedule       list | show | status
-  brief          show | list | deps | search | verify | decision list
+  brief          show | list | deps | search | verify | decision list | history
   plan           show | list | history | change list
   task           list | show | gate list
   memory         search | show | list | stats | get-relevant | conflicts |
@@ -302,7 +306,8 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
 WRITE a specialist owns -- DELEGATE; do not run it here.
   gaia-operator  context wipe|prune-workspaces|move-contracts|move-memory|
                  move-project (destructive surgery on the substrate) |
-                 workspace merge | schedule register|remove|sync
+                 workspace merge | schedule register|remove|sync |
+                 usage ingest (load transcripts into token_usage)
   gaia-system    install | update | uninstall | cleanup | dev | release
   consent flow   approvals approve|revoke|reject|reject-all|clean|replay|
                  request-set -- consent is granted by the user, not by a

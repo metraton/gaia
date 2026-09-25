@@ -442,6 +442,11 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "search"),
     ("brief", "verify"),
     ("brief", "decision", "list"),
+    # `brief history` and `usage show` only SELECT (bin/cli/brief.py::_cmd_history,
+    # bin/cli/usage.py::_cmd_show -> gaia.usage.plan_report/session_report).
+    # `usage ingest` writes token_usage and stays out: it belongs to gaia-operator.
+    ("brief", "history"),
+    ("usage", "show"),
     ("plan", "history"),
     ("plan", "change", "list"),
     ("notifications", "list"),

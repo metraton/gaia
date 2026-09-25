@@ -37,9 +37,12 @@ assets/
 ├── index.html            entry + template (design-system CSS inline, help HUD)
 ├── engine/
 │   ├── engine.js         render engine — dialect only, no domain knowledge (@version 2.0.0)
-│   └── build-data.mjs    build step: data/*.yaml → data/data.generated.js, plus
-│                         the STRICT SCHEMA — unknown fields are a loud build
-│                         error (with a did-you-mean suggestion), never a no-op
+│   ├── build-data.mjs    build step: data/*.yaml → data/data.generated.js and
+│   │                     data/breakpoints.generated.css, plus the STRICT SCHEMA —
+│   │                     unknown fields are a loud build error (with a
+│   │                     did-you-mean suggestion), never a no-op
+│   ├── tokens.mjs        the design tokens: defaults, schema and CSS projection
+│   └── chips.cjs         core-chip inheritance, shared by the build and the census
 ├── tools/
 │   ├── check-layout.mjs     the MODELLED gate, mandatory (`npm run model`) — proves
 │   │                        the grid CLOSES arithmetically over the authored YAML;
@@ -64,11 +67,13 @@ assets/
 │                         contrast · verify, plus check/validate kept as aliases
 │                         of model/render) + js-yaml + playwright devDeps
 └── data/                 ── the only part you edit ──
-    ├── document.yaml     manifest: title/subtitle/version + which pages, in order
-    ├── pages/overview.yaml   one starter page: two inline sections side by side
-    │                         (with nesting), a base band with a separator and a
-    │                         rail, a row-span bar chart, and a partial 2-of-4 merge
-    └── data.generated.js committed build output (window.__DOC__) — renders with zero tooling
+    ├── document.yaml     manifest: title/subtitle/version, tokens, core chips, and
+    │                     which pages, in order
+    ├── pages/*.yaml      the seed: one page per principle, a flow page, two
+    │                     feature pages and the edge-case page
+    ├── data.generated.js committed build output (window.__DOC__) — renders with zero tooling
+    └── breakpoints.generated.css  committed build output: the three @container
+                          collapse tiers, written from tokens.breakpoints
 ```
 
 ## Use

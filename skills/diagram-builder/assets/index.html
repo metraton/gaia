@@ -11,6 +11,9 @@
     document.documentElement.classList.toggle('dark', dark);
   })();
 </script>
+<!-- The collapse tiers: generated from tokens.breakpoints by engine/build-data.mjs,
+     because a container query cannot read var(). -->
+<link rel="stylesheet" href="data/breakpoints.generated.css?v={{DIAGRAM_DECK_VERSION}}">
 <style>
   :root {
     --bg:#FAF9F5; --surface:#FFFFFF; --surface2:#F0EEE6;
@@ -22,12 +25,15 @@
     --warn:#C08A2E; --warn-soft:rgba(192,138,46,0.10);
     --gold:#C9A45C; --blue:#5B7E96;
     --strong:#2F7A3D; --strong-soft:rgba(47,122,61,0.14);
+    --hue-blue:#3F6E8C; --hue-blue-soft:rgba(63,110,140,0.10); --hue-violet:#7A5AA6; --hue-violet-soft:rgba(122,90,166,0.10);
+    --hue-gold:#8A6212; --hue-gold-soft:rgba(138,98,18,0.10); --hue-clay:#A84A30; --hue-clay-soft:rgba(168,74,48,0.10);
     --zone:rgba(20,20,19,0.022); --zone-line:#D1CFC5;
     --serif:Charter,"Bitstream Charter","Sitka Text",Cambria,Georgia,serif;
     --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
     /* ── 8pt spacing scale (design tokens) ── */
     --s-1:4px; --s-2:8px; --s-3:16px; --s-4:24px; --s-5:32px; --s-6:48px; --s-7:64px;
+    --indent-step:32px;
   }
   html.dark {
     --bg:#141413; --surface:#1F1F1D; --surface2:#2A2A28;
@@ -39,6 +45,8 @@
     --warn:#E0AE55; --warn-soft:rgba(224,174,85,0.14);
     --gold:#D4B36F; --blue:#7FA3BC;
     --strong:#4ECB6B; --strong-soft:rgba(78,203,107,0.18);
+    --hue-blue:#7FB0D0; --hue-blue-soft:rgba(127,176,208,0.14); --hue-violet:#B79BE0; --hue-violet-soft:rgba(183,155,224,0.14);
+    --hue-gold:#D8AE55; --hue-gold-soft:rgba(216,174,85,0.14); --hue-clay:#E48A6E; --hue-clay-soft:rgba(228,138,110,0.14);
     --zone:rgba(250,249,245,0.028); --zone-line:#3D3D3A;
   }
 
@@ -92,6 +100,8 @@
     --warn:#815c1c; --warn-soft:rgba(129,92,28,0.12);
     --gold:#815c1c; --blue:#3f7885;
     --strong:#6d5a86; --strong-soft:rgba(109,90,134,0.14);
+    --hue-blue:#286983; --hue-blue-soft:rgba(40,105,131,0.10); --hue-violet:#6e5796; --hue-violet-soft:rgba(110,87,150,0.10);
+    --hue-gold:#815c1c; --hue-gold-soft:rgba(129,92,28,0.10); --hue-clay:#a1506a; --hue-clay-soft:rgba(161,80,106,0.10);
     --zone:rgba(87,82,121,0.030); --zone-line:#cecacd;
   }
   html.dark[data-palette="rose-pine"] {
@@ -104,6 +114,8 @@
     --warn:#f6c177; --warn-soft:rgba(246,193,119,0.14);
     --gold:#f6c177; --blue:#31748f;
     --strong:#c4a7e7; --strong-soft:rgba(196,167,231,0.16);
+    --hue-blue:#9ccfd8; --hue-blue-soft:rgba(156,207,216,0.14); --hue-violet:#c4a7e7; --hue-violet-soft:rgba(196,167,231,0.14);
+    --hue-gold:#f6c177; --hue-gold-soft:rgba(246,193,119,0.14); --hue-clay:#ebbcba; --hue-clay-soft:rgba(235,188,186,0.14);
     --zone:rgba(224,222,244,0.030); --zone-line:#524f67;
   }
   /* Rosé Pine MOON — the third upstream variant. Same light (DAWN) side, a
@@ -120,6 +132,8 @@
     --warn:#f6c177; --warn-soft:rgba(246,193,119,0.14);
     --gold:#f6c177; --blue:#3e8fb0;
     --strong:#c4a7e7; --strong-soft:rgba(196,167,231,0.16);
+    --hue-blue:#9ccfd8; --hue-blue-soft:rgba(156,207,216,0.14); --hue-violet:#c4a7e7; --hue-violet-soft:rgba(196,167,231,0.14);
+    --hue-gold:#f6c177; --hue-gold-soft:rgba(246,193,119,0.14); --hue-clay:#ea9a97; --hue-clay-soft:rgba(234,154,151,0.14);
     --zone:rgba(224,222,244,0.030); --zone-line:#56526e;
   }
 
@@ -138,6 +152,8 @@
     --warn:#7a4a00; --warn-soft:rgba(122,74,0,0.10);
     --gold:#6b4e00; --blue:#00457a;
     --strong:#006b22; --strong-soft:rgba(0,107,34,0.12);
+    --hue-blue:#00457a; --hue-blue-soft:rgba(0,69,122,0.10); --hue-violet:#5a2d91; --hue-violet-soft:rgba(90,45,145,0.10);
+    --hue-gold:#6b4e00; --hue-gold-soft:rgba(107,78,0,0.10); --hue-clay:#a03000; --hue-clay-soft:rgba(160,48,0,0.10);
     --zone:rgba(0,0,0,0.040); --zone-line:#000000;
   }
   html.dark[data-palette="contrast"] {
@@ -150,6 +166,8 @@
     --warn:#ffd166; --warn-soft:rgba(255,209,102,0.16);
     --gold:#ffde7a; --blue:#93d2ff;
     --strong:#7cf29a; --strong-soft:rgba(124,242,154,0.18);
+    --hue-blue:#93d2ff; --hue-blue-soft:rgba(147,210,255,0.16); --hue-violet:#d6b8ff; --hue-violet-soft:rgba(214,184,255,0.16);
+    --hue-gold:#ffde7a; --hue-gold-soft:rgba(255,222,122,0.16); --hue-clay:#ffb08a; --hue-clay-soft:rgba(255,176,138,0.16);
     --zone:rgba(255,255,255,0.050); --zone-line:#ffffff;
   }
 
@@ -265,11 +283,15 @@
        to fill the row, so paired sections are equal-width halves; at the
        stacked tier they go column-direction and `align-items:stretch` to fill
        the full width. `span` still merges cells (Excel-style); span == columns
-       is a full-width band spanning its own row edge-to-edge. --cell-w is kept
-       only as a documented reference/readability hint — it no longer sizes any
-       track. The whole block fills the canvas (no fit-content centering), so
-       there are no lateral voids even at 2560. */
-    --cell-w:232px; --cell-h:130px;
+       is a full-width band spanning its own row edge-to-edge. The whole block
+       fills the canvas (no fit-content centering), so there are no lateral
+       voids even at 2560.
+       TOKEN DEFAULTS. Every declaration in a :root block below that names a
+       design token is its FALLBACK: engine.js sets the resolved value of each on
+       <html> from window.__DOC__.css_vars, which wins over these. Each must equal
+       the projection of DEFAULT_TOKENS in engine/tokens.mjs — `npm run model`
+       (CSS line) fails on the first one that does not. */
+    --cell-h:130px;
     /* THE SEPARATOR ROW — the one row height that is NOT --cell-h.
        A `separator` is a leaf COMPONENT, so it occupies a full cell: a 1px rule
        was charged the whole --cell-h (130px), and with the grid's own 8px row
@@ -321,23 +343,29 @@
      actually has (works under split-screen / narrow panes), not the viewport. */
   .stage { container-type:inline-size; container-name:stage; }
 
-  /* highlight (chip-driven) — no lines: chips light the relevant boxes/zones */
-  .stage.flowing .zone { opacity:0.34; }
-
-  /* ── unified detail/flow panel (anchored bottom-center, shared by both uses) ── */
-  .panel { position:absolute; left:50%; bottom:24px; transform:translateX(-50%);
-    z-index:60; width:min(920px, 94%); max-width:920px;
-    padding:24px 40px 26px; border-radius:16px; background:var(--surface);
-    border:1px solid var(--line); border-left:4px solid var(--clay);
-    box-shadow:0 18px 52px rgba(0,0,0,0.24); text-align:center; display:none; }
+  /* ── the one panel: a box's detail and a chip's relation share it ──
+     A vertical, see-through, draggable card docked at the tokens.panel.dock
+     corner (engine.js placeCard sets its width, min-height and dragged
+     position; the --panel-<side> properties are `auto` off the dock). */
+  .panel { position:absolute; z-index:60;
+    left:var(--panel-left, 24px); bottom:var(--panel-bottom, 24px);
+    right:var(--panel-right, auto); top:var(--panel-top, auto);
+    max-height:calc(100% - 2 * var(--panel-inset, 24px)); overflow-y:auto; padding:18px 22px 20px;
+    border-radius:16px; background:color-mix(in srgb, var(--surface) 88%, transparent);
+    backdrop-filter:blur(2px); border:1px solid var(--line); border-left:4px solid var(--clay);
+    box-shadow:0 18px 52px rgba(0,0,0,0.24); text-align:left; display:none; }
   .panel.show { display:block; }
   html.dark .panel { box-shadow:0 18px 52px rgba(0,0,0,0.5); }
+  .panel .p-head { justify-content:flex-start; padding:0; cursor:grab;
+    touch-action:none; user-select:none; }
+  .panel .p-head.dragging { cursor:grabbing; }
   .p-head { display:flex; align-items:baseline; justify-content:center; gap:12px;
     flex-wrap:wrap; margin-bottom:12px; padding:0 32px; }
-  .p-head .p-kicker { font-family:var(--mono); font-size:13px; letter-spacing:0.08em;
-    text-transform:uppercase; color:var(--clay); }
-  .p-head h3 { font-family:var(--mono); font-weight:700; font-size:24px; color:var(--ink); letter-spacing:-0.01em; }
-  .p-summary { font-family:var(--mono); font-size:17px; line-height:1.65; color:var(--body); }
+  .p-head .p-kicker { font-family:var(--mono); font-size:var(--panel-kicker-px, 13px);
+    letter-spacing:var(--panel-kicker-track, 0.08em); text-transform:uppercase; color:var(--clay); }
+  .p-head h3 { font-family:var(--mono); font-weight:700; font-size:var(--panel-title-px, 19px);
+    color:var(--ink); letter-spacing:-0.01em; }
+  .p-summary { font-family:var(--mono); font-size:var(--panel-summary-px, 15px); line-height:1.6; color:var(--body); }
   .p-summary b { color:var(--ink); font-weight:600; }
   .p-summary code { font-family:var(--mono); font-size:15px; color:var(--clay); }
   .p-summary ol { list-style:none; margin:0; padding:0; }
@@ -369,7 +397,7 @@
      still keys off the FULL stage width (the container query owns collapse), so
      columns and side-by-side behave by real screen size while the content block
      stays capped and centered. */
-  .sec-plane { width:100%; max-width:1280px; margin-inline:auto; }
+  .sec-plane { width:100%; max-width:var(--plane-max, 1280px); margin-inline:auto; }
   /* The root grid FILLS the canvas width — no centering, no fit-content block,
      so there are no lateral voids even at 2560. A generic root without bands is
      a flex row whose sections grow equally (flex:1 1 0) to fill it edge-to-edge;
@@ -527,6 +555,12 @@
      rail must not each balloon into a full slice. (At the stacked tier every
      child is reset to flex:0 0 auto anyway.) */
   .sec-grid.sec-compound > .box { flex:0 0 auto; align-self:start; height:var(--cell-h); }
+  /* The LEAD band is the one box authored to span its root. In a columns:1 root
+     (a column flex) the card rule's align-self:start sizes it to its content;
+     stretch fills the cross axis instead. It must stay on the CROSS axis: a
+     flex-basis of 100% maps to height in a column and balloons the cell (G, U).
+     In a row or grid root the lead is already a .msp band, where this is inert. */
+  .sec-grid.sec-compound > .box.lead { align-self:stretch; }
   .sec-grid.sec-compound > .sep,
   .sec-grid.sec-compound > .rail,
   .sec-grid.sec-compound > .spacer { flex:0 0 auto; }
@@ -566,127 +600,10 @@
   .sec-grid.sec-compound.sec-c1 > * { flex:0 0 auto; }
 
   /* responsive column step-down (container-query on the stage): a multi-column
-     leaf grid collapses …→2→1 as width tightens. The "two-table" 2-column form
-     is the INTERMEDIATE step (medium widths); the ENDPOINT at the narrowest tier
-     is ONE column — every multi-column leaf grid drops to a single cell so the
-     whole diagram becomes one vertical stack (see the ≤640px tier below). A grid
-     authored with a single column (sec-c1) is 1 cell at every tier. The cells
-     always FILL the width (equal fr tracks); only the track count changes, so
-     the section is a filled rectangle at every tier. */
-  /* Compound STACK tier. Below this width a compound grid stops laying its
-     nested sections side by side (a flex ROW) and stacks them vertically (a
-     COLUMN), so a wide side-by-side arrangement folds top-to-bottom instead of
-     running off the right edge. The breakpoint is 1440px so a wide section
-     stacks before it overflows a medium (~1200px) viewport; above 1440px the
-     sections sit side by side. When stacked, every section FILLS the full width
-     (align-items:stretch) — a full-width filled rectangle, no centering. */
-  @container stage (max-width: 1440px) {
-    /* Stacked compound: fold the sections into a column and STRETCH each to the
-       full width, so every stacked section is a full-width filled rectangle.
-       align-content:stretch is REQUIRED alongside align-items:stretch — in a
-       column-direction WRAP flex the single line shrink-wraps to its content
-       cross-size under the inherited align-content:flex-start (pinning it left
-       with a right-hand gap), so align-items alone only stretches WITHIN that
-       shrunk line. align-content:stretch makes the line fill the container's
-       full cross-size (the DEUDAS banks stretched to 781/1044 without it). */
-    .sec-grid.sec-compound { flex-direction:column; align-items:stretch; align-content:stretch; }
-    /* the root stacks the same way and fills the canvas width. */
-    .sec-plane > .sec-grid.sec-compound { align-items:stretch; align-content:stretch; }
-    /* column direction: flex-basis maps to the vertical (MAIN) axis, so both the
-       row grow rule (flex:1 1 0) and the band full-row rule (flex:0 0 100%) must
-       be reset — a non-zero basis would size the child's HEIGHT. Reset every
-       stacked child to content height (flex:0 0 auto); its WIDTH is the CROSS
-       axis, filled by align-items:stretch above. */
-    .sec-grid.sec-compound > * { flex:0 0 auto; }
-    .sec-grid.sec-compound > .msp { flex:0 0 auto; }
-    /* the span-weighted section grow rule (.sec-grid.sec-compound > .zone,
-       specificity 0,3,0) is MORE specific than the `> *` reset (0,2,0), so it
-       would otherwise survive into this stacked tier and keep sections growing —
-       dividing the column height and spilling content. Reset .zone at matching
-       specificity so a stacked section keeps its CONTENT height. */
-    .sec-grid.sec-compound > .zone { flex:0 0 auto; }
-    /* a compound leaf box pins to the row TOP (align-self:start) at the wide
-       row tier so it reads as a card, not a stretched panel. Here in the STACKED
-       (column-direction) tier the cross axis is HORIZONTAL, so start would pin it
-       LEFT at a bare-box inset while its nested-section siblings inset deeper —
-       an asymmetric band (Y). Stretch it to the full width instead (its height
-       stays --cell-h), so the band edges stay symmetric. */
-    .sec-grid.sec-compound > .box { align-self:stretch; }
-    /* below the stack breakpoint the root-with-bands leaves the authored GRID
-       and becomes a vertical flex stack like every other compound, FILLING the
-       canvas width (align-items:stretch) — every section (bands and inline
-       alike) is a full-width filled rectangle. */
-    .sec-plane > .sec-grid.sec-compound:has(> .msp) {
-      display:flex; flex-direction:column; align-items:stretch; align-content:stretch;
-      grid-template-columns:none; }
-    /* a span BAND stays full-width via the same align-items:stretch (redundant
-       but explicit): the band fills the canvas width at medium/min just as at
-       max, and its inner leaf cells fill the band. */
-    .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
-      align-self:stretch; }
-  }
-  /* Leaf →2 collapse tier (the INTERMEDIATE "two-table" step): a 3-, 4- OR
-     5-column leaf grid steps to 2 EQUAL fr columns. Kept at 1000px so leaf grids
-     stay full-wide (all authored columns) through the medium-large range once
-     their section has stacked to full width — a 5-col Camino stays 5 filled
-     cells down to 1000px, only folding to 2 below it. This is NOT the endpoint —
-     the ≤640px tier below drops every leaf grid to 1 column. */
-  @container stage (max-width: 1000px) {
-    /* GENERAL step-down (ANY N): every MULTI-column leaf grid — matched by
-       :not(.sec-c1) instead of the old enumerated sec-c3/c4/c5 — drops to the
-       2-col "two-table" intermediate. The enumerated rules covered only 3/4/5
-       columns, so a leaf grid authored with 6+ columns stayed at its authored
-       width here and could OVERFLOW horizontally between ~640 and 1000px
-       (invariant O), with no intermediate collapse step. One selector now steps
-       c2, c3, … cN alike, so the cascade generalises to any column count. */
-    .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:repeat(2, minmax(0,1fr)); }
-    /* PARTIAL span keeps its PROPORTION at the 2-track "two-table" tier: --span2 =
-       round(M/N·2) clamped [1,2], so a span:2-of-4 becomes a single cell here
-       instead of staying 2-wide (which, in a 2-track grid, would already be a full
-       band). span2 <= 2 also guarantees no implicit extra track is created. */
-    .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:span var(--span2, 1); }
-    /* SEPARATOR ROWS re-derived for THIS track count. Fewer tracks means a
-       different placement, so which rows are separator-only changes with it —
-       the base --row-tracks list would land its thin entry on the wrong row (or
-       cycle, being shorter than the real row count) and thin a row of boxes.
-       A .sec-c1 grid is 1 track at every tier, so its base list is already
-       correct and it is deliberately not matched here. */
-    .sec-grid:not(.sec-compound):not(.sec-c1) { grid-auto-rows:var(--row-tracks-2, var(--cell-h)); }
-  }
-  /* Narrowest tier — the …→2→1 ENDPOINT: every leaf grid collapses to ONE fr
-     track that fills the width, so the whole diagram is a single vertical column
-     (sections stacked top-to-bottom, each a full-width filled rectangle). Rules:
-     the general one takes sec-c2 (and any other multi-col) to 1; the sec-c3/4/5
-     ones OVERRIDE the max-width:1000 rule above (same specificity, later in
-     source order). A columns:1 grid is already 1 track. Also shrink the canvas
-     chrome (outer frame + padding) so a 1-cell section fits a ~600px viewport
-     without horizontal scroll. */
-  @container stage (max-width: 640px) {
-    .canvas { left:8px; right:8px; padding:8px; }
-    .sec-grid:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
-    /* OVERRIDE the general medium-tier step-down: the 1000px rule
-       `.sec-grid:not(.sec-compound):not(.sec-c1)` (specificity 0,3,0) is more
-       specific than the plain `.sec-grid:not(.sec-compound)` (0,2,0) above, so
-       without an equally-specific rule here every multi-column leaf grid would
-       stay pinned at 2 columns at the narrowest tier instead of reaching the
-       1-track ENDPOINT. This matches the medium-tier selector's specificity and
-       sits later in source, so it wins — for ANY N. */
-    .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:minmax(0,1fr); }
-    /* 1-column ENDPOINT: a partial span becomes a full band (the one tier it
-       spans the whole row) per the collapse policy. Forcing 1/-1 also stops
-       `span var(--span/--span2)` from opening an implicit second track in the
-       single-track grid (which would break the 1-column endpoint). The
-       :not(.sec-c1) variant matches the medium-tier mspan rule's specificity
-       (0,4,0) so it wins over it here. */
-    .sec-grid:not(.sec-compound) > .mspan { grid-column:1 / -1; }
-    .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:1 / -1; }
-    /* SEPARATOR ROWS at the 1-track ENDPOINT. Every slot is alone in its row
-       here, so EVERY separator row is thin — the rule does not weaken as the
-       deck collapses. The :not(.sec-c1) variant matches the medium tier's
-       specificity (0,3,0) and sits later in source, so it wins over
-       --row-tracks-2; a .sec-c1 grid keeps its base list (already 1 track). */
-    .sec-grid:not(.sec-compound):not(.sec-c1) { grid-auto-rows:var(--row-tracks-1, var(--cell-h)); }
-  }
+     leaf grid collapses …→2→1 as width tightens, and compound grids stack below
+     the widest tier. The three tiers live in data/breakpoints.generated.css,
+     written by engine/build-data.mjs from tokens.breakpoints (a container query
+     cannot read var()); the WHY of each rule is documented there. */
 
   /* ── zones (a section's frame) ── */
   .zone { position:relative; min-height:var(--zone-min-h);
@@ -698,6 +615,18 @@
   /* plain: a bare structural wrapper — no frame, no background, no min-height.
      Used to stack sub-sections inside one parent column with no extra border. */
   .zone.plain { background:none; border:none; padding:0; min-height:0; }
+  /* middle: the section's grid sits vertically centred in the height its row stretches it to */
+  .zone.middle { justify-content:center; }
+  /* compact: one leaf grid with a shorter row so a staircase of rowspans ends
+     level with a shorter neighbour. The row itself is the preset override
+     `row.cell_h: <tokens.row.compact_h>`, set inline by the engine like any
+     section override; these rules are the structural rest (a --s-1 row gap and
+     box padding). Its boxes drop the description clamp: their height comes from
+     rowspan, and the one single-row box must carry a one-line description
+     (validate C catches a clip). */
+  .zone.compact > .sec-grid { row-gap:var(--s-1); }
+  .zone.compact .box { padding:var(--s-1) var(--s-3); }
+  .zone.compact .box .desc { display:block; -webkit-line-clamp:unset; line-clamp:none; }
 
   /* width:0 + min-width:100% keeps the header from DICTATING the section width:
      with width:0 the header contributes nothing to the zone's shrink-to-fit
@@ -705,12 +634,14 @@
      stretches the header back to that width for display — so a long subtitle
      WRAPS within the section instead of forcing it wider than its cells. */
   .zone-header { display:flex; flex-direction:column; gap:var(--s-1); width:0; min-width:100%; }
-  .zone-header .ztitle { font-family:var(--mono); font-size:clamp(13px,0.85vw,14.5px); letter-spacing:0.1em;
+  .zone-header .ztitle { font-family:var(--mono);
+    font-size:clamp(var(--ztitle-min, 13px), var(--ztitle-vw, 0.85vw), var(--ztitle-max, 14.5px));
+    letter-spacing:var(--ztitle-track, 0.1em);
     text-transform:uppercase; color:var(--muted); overflow-wrap:anywhere; word-break:break-word;
-    display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; }
-  .zone-header .zsub { font-family:var(--mono); font-size:12px; color:var(--muted); opacity:0.8;
+    display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:var(--ztitle-lines, 2); line-clamp:var(--ztitle-lines, 2); overflow:hidden; }
+  .zone-header .zsub { font-family:var(--mono); font-size:var(--zsub-px, 12px); color:var(--muted); opacity:0.8;
     overflow-wrap:anywhere; word-break:break-word;
-    display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; }
+    display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:var(--zsub-lines, 3); line-clamp:var(--zsub-lines, 3); overflow:hidden; }
   .zone.bad .ztitle, .zone.bad .zsub { color:var(--crit); }
   .zone.good .ztitle, .zone.good .zsub { color:var(--olive); }
   .zone.envelope .ztitle { color:var(--ink); opacity:0.75; }
@@ -731,18 +662,29 @@
     padding:var(--s-2) var(--s-3); display:flex; flex-direction:column; gap:2px;
     min-width:0; overflow:hidden; overflow-wrap:break-word; word-break:normal;
     transition:border-color .15s ease, box-shadow .15s ease, opacity .2s ease; }
+  /* copy-to-clipboard (engine.js buildCopyButton, `copy` in the YAML): a small
+     corner button; the box reserves its width on the right so text never runs
+     under it. Its glyph is --body on the box fill (contrast pair `copy-icon`). */
+  .box:has(> .copy-btn) { position:relative; padding-right:36px; }
+  .copy-btn { position:absolute; top:6px; right:6px; width:26px; height:26px; padding:0;
+    display:flex; align-items:center; justify-content:center; cursor:pointer;
+    font-family:var(--mono); font-size:15px; line-height:1; color:var(--body);
+    background:var(--surface); border:1px solid var(--line); border-radius:6px; }
+  .copy-btn:hover, .copy-btn:focus-visible { color:var(--ink); border-color:var(--body); outline:none; }
+  .copy-btn.copied { color:var(--ink); }
   .box:hover { border-color:var(--muted); }
-  .box .k { font-family:var(--mono); font-size:10.5px; letter-spacing:0.09em; text-transform:uppercase; color:var(--muted); }
-  /* title clamps to 2 lines so a long title can't push the box past --cell-h */
-  .box .t { font-family:var(--mono); font-size:clamp(15px,1vw,17px); font-weight:700; color:var(--ink);
-    letter-spacing:-0.01em; margin-bottom:1px;
-    display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; }
-  /* the whole description clamps to 3 visual lines, ellipsised — this is what
-     guarantees a FIXED box height no matter how many description lines the data
-     carries (the full text stays in the click-through detail panel). */
-  .box .desc { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3;
+  .box .k { font-family:var(--mono); font-size:var(--kicker-px, 10.5px); letter-spacing:var(--kicker-track, 0.09em);
+    text-transform:uppercase; color:var(--muted); }
+  /* title clamps to --title-lines so a long title can't push the box past --cell-h */
+  .box .t { font-family:var(--mono); font-size:clamp(var(--title-min, 15px), var(--title-vw, 1vw), var(--title-max, 17px));
+    font-weight:700; color:var(--ink); letter-spacing:-0.01em; margin-bottom:1px;
+    display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:var(--title-lines, 2); line-clamp:var(--title-lines, 2); overflow:hidden; }
+  /* the whole description clamps to --desc-lines visual lines, ellipsised — this
+     is what guarantees a FIXED box height no matter how many description lines
+     the data carries (the full text stays in the click-through detail panel). */
+  .box .desc { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:var(--desc-lines, 3); line-clamp:var(--desc-lines, 3);
     overflow:hidden; min-height:0; }
-  .box .m { font-family:var(--mono); font-size:12px; line-height:1.4; color:var(--muted); }
+  .box .m { font-family:var(--mono); font-size:var(--desc-px, 12px); line-height:var(--desc-lh, 1.4); color:var(--muted); }
   .box.bad { background:var(--crit-soft); border-color:var(--crit); }
   .box.bad .k { color:var(--crit); }
   .box.warn { background:var(--warn-soft); border-color:var(--warn); }
@@ -752,6 +694,19 @@
   .box.accent { background:var(--strong-soft); border-color:var(--strong); border-width:2px; }
   .box.accent .k { color:var(--strong); }
   .box.muted { background:var(--surface2); }
+  /* Categorical hues: four colours with NO fixed meaning, for a page that must
+     tell four peer groups apart. The page that uses them declares what each one
+     means in its own content (principle 5); none of them may stand for good/bad. */
+  .box.blue { background:var(--hue-blue-soft); border-color:var(--hue-blue); }
+  .box.blue .k { color:var(--hue-blue); }
+  .box.violet { background:var(--hue-violet-soft); border-color:var(--hue-violet); }
+  .box.violet .k { color:var(--hue-violet); }
+  .box.gold { background:var(--hue-gold-soft); border-color:var(--hue-gold); }
+  .box.gold .k { color:var(--hue-gold); }
+  .box.clay { background:var(--hue-clay-soft); border-color:var(--hue-clay); }
+  .box.clay .k { color:var(--hue-clay); }
+  /* --muted loses AA on a tint in the dark skins; the description takes --body. */
+  .box.blue .m, .box.violet .m, .box.gold .m, .box.clay .m { color:var(--body); }
 
   /* ── STRUCTURAL TREATMENTS (the second axis) ──────────────────────────────
      A `treatment` changes HOW a component is drawn, never WHAT it means. That is
@@ -838,15 +793,55 @@
   /* ── rail (component type: rail) ──
      A swimlane-style LABEL: styled like a component/box but title-only. Slim.
      `rail-v` rotates the title for a vertical swimlane label. Honors `span`. */
-  .rail { background:var(--surface2); border:1px solid var(--line); border-radius:10px;
-    padding:var(--s-2) var(--s-3); display:flex; align-items:center; justify-content:center;
+  .rail { --rail-fill:var(--surface2); --rail-line:var(--line);
+    background:var(--rail-fill); border:1px solid var(--rail-line); border-radius:10px;
+    padding:var(--s-2) var(--s-3); display:flex; align-items:center;
     min-width:0; }
-  .rail-title { font-family:var(--mono); font-size:13px; font-weight:700; letter-spacing:0.09em;
-    text-transform:uppercase; color:var(--muted); text-align:center; }
+  .rail-title { font-family:var(--mono); font-size:var(--rail-px, 13px); font-weight:700; letter-spacing:var(--rail-track, 0.09em);
+    text-transform:uppercase; color:var(--muted); }
+  /* `centered` mirrors `.box.centered`: the treatment centres, its ABSENCE means
+     start-aligned. Before these two rules .rail-title carried its own
+     text-align:center, so `centered` — a documented component treatment — was
+     silently a no-op on a rail. Text alignment only; no invariant reads it. */
+  .rail.centered { justify-content:center; }
+  .rail.centered .rail-title { text-align:center; }
+  /* The four categorical hues on a rail: the box's tint and border, the title
+     in the hue (the kicker pair `<hue>-kicker` in tools/contrast-audit.cjs). */
+  .rail.blue { --rail-fill:var(--hue-blue-soft); --rail-line:var(--hue-blue); }
+  .rail.blue .rail-title { color:var(--hue-blue); }
+  .rail.violet { --rail-fill:var(--hue-violet-soft); --rail-line:var(--hue-violet); }
+  .rail.violet .rail-title { color:var(--hue-violet); }
+  .rail.gold { --rail-fill:var(--hue-gold-soft); --rail-line:var(--hue-gold); }
+  .rail.gold .rail-title { color:var(--hue-gold); }
+  .rail.clay { --rail-fill:var(--hue-clay-soft); --rail-line:var(--hue-clay); }
+  .rail.clay .rail-title { color:var(--hue-clay); }
+  /* A hue rail is a word, not a lane label: it keeps its authored case, and it is
+     set tighter (tokens.type.rail_hue, --s-1 sides) so a word fits a narrow
+     cell on one line (RAILT in tools/check-layout.mjs measures it from the same
+     tokens). The vertical padding keeps the rail inside the rail-row band. */
+  .rail.blue, .rail.violet, .rail.gold, .rail.clay { padding:var(--rail-hue-pad-y, 10px) var(--s-1); }
+  .rail.blue .rail-title, .rail.violet .rail-title,
+  .rail.gold .rail-title, .rail.clay .rail-title { text-transform:none; font-size:var(--rail-hue-px, 10.5px);
+    letter-spacing:var(--rail-hue-track, 0em); }
+  /* An indented rail (engine.js buildRail, `indent` in the YAML) still fills its
+     cell, so every cell gate measures it unchanged; the drawn frame moves onto
+     the title, sized to the word and inset by --indent steps, so a tree reads
+     as a staircase. The title's vertical padding keeps the row at 33px. */
+  .rail.indented { background:none; border-color:transparent; padding-top:0; padding-bottom:0;
+    padding-left:calc(var(--indent) * var(--indent-step)); }
+  .rail.indented .rail-title { display:inline-block; max-width:100%; padding:7px var(--s-3);
+    background:var(--rail-fill); border:1px solid var(--rail-line); border-radius:10px; }
+  /* A hue title is set smaller, so at 7px its indented row measured 30px, under
+     the band validate U holds; 9px keeps a hue tree inside it. */
+  .rail.indented.blue .rail-title, .rail.indented.violet .rail-title,
+  .rail.indented.gold .rail-title, .rail.indented.clay .rail-title { padding-block:9px; }
   /* min-height 0 for the same reason as .sep-v: in a leaf grid the row height is
      the contract, and a --zone-min-h floor overflowed it by 50px. */
-  .rail-v { align-self:stretch; min-height:0; }
-  .rail-v .rail-title { writing-mode:vertical-rl; transform:rotate(180deg); }
+  /* A vertical rail keeps both centrings unconditionally: a rotated lane label
+     has no start/centre text-axis to align, so the default flip above must not
+     move it. */
+  .rail-v { align-self:stretch; min-height:0; justify-content:center; }
+  .rail-v .rail-title { writing-mode:vertical-rl; transform:rotate(180deg); text-align:center; }
   /* COMPOUND rows are where the stretch floor actually earns its keep: a lane
      divider or a lane label sitting DIRECTLY beside nested sections has no row
      track to fill (a compound grid is a flex row, not a track grid), so without
@@ -879,10 +874,15 @@
   /* zones nest their boxes, so we must NOT dim the container via opacity (that
      would cap lit children). Keep containers opaque; dim headers + boxes. */
   .stage.flowing .canvas .zone { opacity:1; }
-  .stage.flowing .canvas .zone-header { opacity:0.34; }
+  .stage.flowing .canvas .zone-header { opacity:var(--dim-label, 0.34); }
   .stage.flowing .canvas .zone.lit .zone-header { opacity:1; }
-  .stage.flowing .box { opacity:0.18; }
+  .stage.flowing .box { opacity:var(--dim-box, 0.18); }
   .stage.flowing .box.lit { opacity:1; box-shadow:0 0 0 1px currentColor inset; }
+  /* a rail dims like a zone header, being a label; a rail that is a chip member lights like a box */
+  .stage.flowing .rail { opacity:var(--dim-label, 0.34); }
+  .stage.flowing .rail.lit { opacity:1; box-shadow:0 0 0 1px currentColor inset; }
+  .stage.flowing .rail.indented.lit { box-shadow:none; }
+  .stage.flowing .rail.indented.lit .rail-title { box-shadow:0 0 0 1px currentColor inset; }
 
   /* ═══════════════ HELP / TUTORIAL HUD (modal) ═══════════════
      A global, static tutorial. It lives OUTSIDE .deck/.stage/.canvas (direct

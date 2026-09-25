@@ -28,7 +28,6 @@
 # colour vocabulary in text.
 
 id: p5-channels
-layout: grid
 form: mindmap
 # Two root columns: the core band and the declaration band each take a full
 # row, and the two branch sections share the row between them.

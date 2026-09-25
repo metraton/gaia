@@ -43,9 +43,9 @@ while the render proves the stylesheet drew it.
 
 ### Fill geometry (what replaced the width math)
 
-There is no fixed cell width anymore — `--cell-w` (232px) survives only as a
-documented readability reference, and the guardrail's retired **W** invariant
-(`superseded: 'U'` in `tools/validate-layout.cjs`) records the supersession.
+There is no fixed cell width anymore — the old `--cell-w` (232px) is gone, and
+the guardrail's retired **W** invariant (`superseded: 'U'` in
+`tools/validate-layout.cjs`) records the supersession.
 
 - **Leaf grid** — `repeat(columns, minmax(var(--cell-min-w),1fr))` tracks,
   `gap: 8px`, fixed `--cell-h: 130px` rows.
@@ -153,13 +153,49 @@ palette: neutral             # optional — the deck SKIN; omitted == neutral.
                              #   neutral | rose-pine | rose-pine-moon | contrast
                              # The semantic roles are identical in every palette, so
                              # this changes how the deck LOOKS, never what it MEANS.
+palette_overrides:           # optional — the deck's own colour for a palette token
+  light: { hue-blue: "#1f4e8c" }   # per theme (light | dark); see "Palette overrides"
+  dark:  { hue-blue: "#8ab4f8" }
+tokens:                      # optional — design tokens over the defaults (see "Tokens")
+  viewport: { w: 1920, h: 1080 }  # the PRESENTATION viewport, in px
+filters:                     # optional — the CORE chips, inherited by every page
+  - { key: gate, label: "Which boxes are the gates?" }
+harmony: false               # optional — true: HARMONY fails a box/rail in no chip
 pages:
   - id: overview             # required — must match page.id in the file
     name: "Overview"         # required — visible label (rename without breaking refs)
     order: 1                 # required — decknav position
     visible: true            # required — false omits from build without deleting
     file: pages/overview.yaml   # required — path relative to data/
+    omit_filters: [gate]     # optional — core chips this page does not carry
 ```
+
+**Palette overrides.** `palette_overrides` replaces a colour token of the
+chosen palette, per theme, without forking `index.html`. The keys are a closed
+set, written without the leading `--`: `bg`, `surface`, `surface2`, `zone`,
+`ink`, `body`, `muted`, `line`, `zone-line`, `crit`, `crit-soft`, `warn`,
+`warn-soft`, `olive`, `olive-soft`, `strong`, `strong-soft`, `clay`,
+`clay-soft`, and `hue-{blue,violet,gold,clay}` with their `-soft` tints. A value
+is `#rgb`, `#rrggbb`, `rgb()` or `rgba()`. The build refuses an unknown theme,
+a key outside the set (with the nearest key as a hint) and a value that is not
+a colour, then emits the overrides as CSS variables that outrank the palette
+blocks by specificity. `npm run contrast` reads them from
+`data/data.generated.js` and re-measures every pair an overridden token enters:
+those pairs gate `primary` and `accent` text even on `neutral`, whose own
+shortfalls stay report-only, because an override is a new colour and inherits
+no exemption. `nontext` gates only where the palette itself gates it. The key
+set is exactly the tokens the audit's pairs read, so no override ships
+unmeasured.
+
+**Core chips.** `filters:` here are validated like a page's chips, then
+`engine/chips.cjs` (`resolvePageFilters`, shared by the build and the census)
+writes each page's list as the core chips first, in their order, minus the
+entry's `omit_filters`, then the page's own chips. The build refuses an
+`omit_filters` key that is not a core chip, a page chip that redeclares a core
+key with another label or steps, and a page chip that reuses an omitted core
+key; an identical redeclaration is dropped. An inherited chip with no member on
+the page fails CHIP, so omission is always explicit. `harmony` is a boolean;
+anything else is refused.
 
 The manifest is the single source of **which** pages exist, in what order, and
 whether they show. `name` / `order` / `visible` live **only** here — the page
@@ -173,18 +209,34 @@ header (`if (barVer && doc.version)`) after the subtitle. Omit it and the `.ver`
 node stays empty; `:empty` collapses it in index.html, so a deck with no
 `version` degrades with zero visible change.
 
+`tokens.viewport` is the size the deck is SHOWN at. The build validates it and
+writes the resolved value onto `window.__DOC__.tokens.viewport`; CENSUS fails if
+the bundle does not carry what the YAML authored. It decides two things: the tier where a
+title, description or section header that overflows its lines FAILS the static
+gate (every other tier only advises — see TEXT below), and the height each page
+is compared against (HEIGHT statically, VH on the render). Set it to the screen
+the deck is presented on.
+
 ## The page file (`data/pages/<id>.yaml`)
 
 ```yaml
 id: overview            # required — matches the manifest entry
-layout: grid            # engine selector — only `grid` is supported
+layout: grid            # DEPRECATED — `grid` is its only value; the build warns
 columns: 2              # ROOT grid width (default 2) — the page is a section
 form: dashboard         # optional — scopes the guardrail's invariants:
                         # dashboard (default) | timeline | flow | comparison |
                         # mindmap | planner (see the invariant table below)
 filters: [ … ]          # optional — the relation chips for this page
+text_fit: strict        # optional — strict (default) | advisory
 sections: [ … ]         # required, ≥ 1 — the root section's children
 ```
+
+`text_fit` is the one opt-out from text-fit FAILURES. On a `strict` page a line
+overflow at the presentation viewport fails `check` (TEXT, INK) and the ratchet
+rows FILL / SLICE / TXT run on the render. `advisory` keeps every finding as
+`[INFO]` and skips the ratchet rows: use it for a page that is honestly
+scrolled or read in the detail panel, never to silence a cut sentence. Any
+other value is refused by the build.
 
 ### section (any node with `children`)
 
@@ -193,7 +245,8 @@ sections: [ … ]         # required, ≥ 1 — the root section's children
   title: "Example system"
   subtitle: "…"         # optional
   variant: neutral      # THE COLOUR AXIS — one value: neutral | good | bad
-  treatment: [envelope] # THE STRUCTURAL AXIS — a list: envelope | plain
+  treatment: [envelope] # THE STRUCTURAL AXIS — a list:
+                        #   envelope | plain | middle | compact
   order: 3              # position among its siblings + collapse order
   span: 2               # occupy M of the PARENT's columns (default 1)
   rowspan: 1            # accepted by the schema; the vertical merge renders on
@@ -204,6 +257,28 @@ sections: [ … ]         # required, ≥ 1 — the root section's children
 
 A child of `children` is a **section** if it has its own `children`, otherwise a
 **component**. Mix them freely in one list.
+
+The two section treatments added after `envelope` and `plain`, and why each exists:
+
+- **`middle`** centres the section's grid vertically inside the height its
+  compound row stretches it to (`.zone.middle`). A compound row is
+  `align-items:stretch`, so a short section beside a taller neighbour otherwise
+  keeps its content at the top and leaves the gap below it. `middle` is how a
+  short cell sits balanced instead.
+- **`compact`** gives ONE leaf grid a shorter row: `--cell-h: 74px` and a 4px
+  row gap (`.zone.compact`), and its boxes drop the description clamp because
+  their height comes from `rowspan`. It exists for a staircase of rowspans that
+  must end level with a shorter neighbour. Rules: a `compact` section's children
+  must all be components (the build refuses a nested section, since the
+  treatment shortens the rows of one leaf grid); a single-row box inside it must
+  carry at most a one-line description, or `validate` C reports the clip; and
+  the render gate's U accepts a row other than 130px ONLY in a grid that
+  declares `compact`, reporting any other short row as
+  `--cell-h=…px without the compact treatment`. The static gate models it too:
+  the grid's height uses the 74px row and 4px gap, TEXT does not apply the
+  description clamp there (there is none), and INK measures the WHOLE
+  description plus the 4px box padding against the short slot — so a
+  description that does not fit a compact row fails `check` before the render.
 
 ### component — box (default `type`)
 
@@ -219,8 +294,10 @@ A child of `children` is a **section** if it has its own `children`, otherwise a
   note: "⚠ …"           # optional warning note, shown separately
   variant: neutral       # THE COLOUR AXIS — one value:
                          #   neutral | good | warn | bad | accent | muted
-  variant_extra: [muted] # optional SECOND colour role (same enum), for a box that
-                         #   is both a kind and a state (bad + muted)
+                         #   | blue | violet | gold | clay   (categorical)
+  variant_extra: [muted] # DEPRECATED — a second colour role on one frame; the
+                         #   build warns. Say the second claim in text instead.
+  lead: true             # optional — this box is the page's LEAD band (below)
   treatment: [centered]  # THE STRUCTURAL AXIS — a list, composable:
                          #   centered | half | vertical | outside
   span: 2               # occupy M of the section's columns (default 1);
@@ -228,7 +305,44 @@ A child of `children` is a **section** if it has its own `children`, otherwise a
   rowspan: 2            # occupy K rows (default 1) — a vertical merge, K× the
                         # cell height (height as magnitude)
   filters: [flow]       # keys of the filters this component belongs to
+  copy: true            # optional copy-to-clipboard button: `true` copies the
+                        #   title, a string copies that string
 ```
+
+**The four categorical hues — `blue`, `violet`, `gold`, `clay`.** Every other
+variant carries a meaning of risk or state (`bad` is danger, `good` is safe).
+These four carry NONE: they exist for a page that must tell up to four peer
+groups apart, where borrowing `good`/`bad` would assert a verdict the content
+does not make. So the page that uses them must say, in its own content, what
+each hue means. Each hue is a tint, a border and a kicker colour
+(`.box.<hue>`), with its description on `--body` because `--muted` loses AA on
+a tint in the dark skins. Every palette block in `index.html` declares
+`--hue-<name>` and `--hue-<name>-soft`, and `npm run contrast` measures four
+pairs per hue (title, description, kicker, border).
+
+**`lead: true`** marks the page's lead band, the full-width first box whose
+title is the page's claim. `checkLead` in the build refuses it unless it is a
+box, a direct child of the page root, first in effective `order`, with `span`
+equal to the root's `columns`, and neither `half` nor `vertical`. HARMONY
+exempts it. Skeleton:
+
+```yaml
+columns: 2
+sections:
+  - { id: lead, order: 1, span: 2, lead: true, kicker: "PART 2 OF 5",
+      title: "The claim this page makes", description: ["one line of context"] }
+  - { id: first-zone, order: 2, span: 2, title: "…", columns: 4, children: [ … ] }
+```
+
+**`copy`** puts a small corner button on the box that copies text to the
+clipboard (engine.js `buildCopyButton`): `copy: true` copies the title verbatim,
+`copy: "<string>"` copies that string. It exists for a box whose title IS
+something the reader will paste: a command, a path, an identifier. The click
+stops at the button, so it never opens the detail card. Rules the build
+enforces: only a box may carry it (not a separator, rail or spacer), the value
+is `true` or a non-empty string, and `copy: true` needs a title. The Clipboard
+API needs a secure context, so under `file://` the engine falls back to a hidden
+textarea and `execCommand('copy')`. The glyph's contrast pair is `copy-icon`.
 
 ### component — separator (`type: separator`)
 
@@ -251,14 +365,50 @@ line. Not clickable, no detail.
 - id: lane
   type: rail
   title: "CI/CD"
-  treatment: [vertical]   # rotates the text; omit for a horizontal banner
+  treatment: [vertical]   # rotates the text; omit for a horizontal banner.
+                          #   [centered] centres the title; its absence is start-aligned
+  variant: blue           # optional: blue | violet | gold | clay — nothing else
+  indent: 1               # optional: 0..3 — inset the drawn frame one step per level
+  filters: [flow]         # optional: chip membership — a chip lights the rail
   span: 1
 ```
 
 A title-only swimlane LABEL banner (styled like a box but carrying only a
 title). `treatment: [vertical]` rotates it for labeling a vertical lane — the
 former `orientation` field is gone and is now rejected by the strict schema. Not
-clickable.
+clickable. A rail has its OWN whitelist (`RAIL_FIELDS`: id, type, order, span,
+rowspan, title, treatment, variant, filters, indent), so a payload key is
+refused by name. Its fields beyond the title, and why each exists:
+
+- **`treatment: [centered]`** centres the title (`.rail.centered`, mirroring
+  `.box.centered`); without it the title is start-aligned, as on a box. A
+  vertical rail keeps both centrings regardless, because a rotated lane label has
+  no start or centre text axis to choose.
+- **`filters`** makes the rail a chip member. `buildRail` stamps it as
+  `data-filters`, so a chip lights the rail exactly as it lights a box, and a
+  rail that is not a member dims like a section header while a chip is active.
+  Without it a relation that runs through a lane label could not show the label.
+- **`variant`** colours the rail with one of the four categorical hues, the only
+  variants `.rail.<hue>` draws; the build refuses any other value (`good`,
+  `bad`, ...) as `unknown rail variant`. A hue rail is a word rather than a lane
+  label: it keeps its authored case and is set tighter (10.5px, no tracking,
+  4px sides) so one word fits a narrow cell. The static gate's RAILT measures it
+  at those metrics.
+- **`indent`** (integer 0 to 3) moves the drawn frame onto the title and insets
+  it by `indent × --indent-step` (32px), so a column of rails reads as a tree by
+  indentation. The CELL still fills its track, so every cell gate measures it
+  unchanged; the build refuses a value outside 0 to 3. The TITLE, though, wraps
+  in less: RAILT measures it in the cell minus `indent × 32px`, the rail's right
+  padding, and the title frame's own 16px padding and 1px border on each side —
+  a title that fits two lines flat can need three at indent 3.
+
+**A horizontal rail without `rowspan` is a THIN leaf.** Its row renders at the
+rail's own content height (`auto`, 33px for one title line) instead of 130px,
+the same reason a separator row is thin: one banner line should not cost a full
+cell. A vertical rail and a rail with `rowspan` stay full height, because their
+height IS what they draw. Because `.rail-title` has no clamp, a third title line
+would grow the row: the static gate's RAILT fails a thin rail whose title wraps
+past two lines, and the render gate's U asserts a rail row inside 33 to 48px.
 
 ### component — spacer (`type: spacer`)
 
@@ -419,6 +569,76 @@ sections:
       - { id: card-2, kicker: DOING, title: "Card 2", filters: [plan-1] }
       - { id: card-3, kicker: DONE, title: "Card 3" }
 ```
+
+## Tokens
+
+Every visual number a deck may tune is a **token**. `engine/tokens.mjs` holds
+the defaults (`DEFAULT_TOKENS`) and the schema; `document.yaml` `tokens:` is
+merged over them by the build, which refuses an unknown key (with a near-miss
+hint), a value outside its range, and a broken relation (`breakpoints` must be
+`one < two < stack`; a `min_px` must not exceed its `max_px`). The resolved set
+is written to `window.__DOC__.tokens`, and its CSS projection to
+`window.__DOC__.css_vars`, which `engine.js` sets on `<html>`. Both gates read
+`__DOC__.tokens`; none keeps a copy. Change a value in the YAML, rebuild, and
+the engine, `check`, `validate` and `test` all follow.
+
+```yaml
+tokens:
+  row: { cell_h: 120 }            # document-wide
+  type: { desc: { lines: 2 } }
+```
+
+A **section** may override `row.cell_h`, `type.title.lines` and
+`type.desc.lines`; a **box** may override the two `lines`. Nothing else is
+per-node: a per-cell font or spacing would let one cell stop matching its
+neighbours. An override inherits down the subtree, like the CSS property it
+becomes, and a section that sets `row.cell_h` is held to that row by validate U.
+`treatment: [compact]` is sugar for the section override
+`row.cell_h: <row.compact_h>` plus its structural rules (a `--s-1` row gap and
+box padding, no description clamp).
+
+The breakpoints are the one exception to "every rule reads var()": a container
+query cannot, so the build writes the three `@container` tiers into
+`data/breakpoints.generated.css` (committed, like `data.generated.js`), which
+`index.html` links. The `:root` declarations and `var()` fallbacks in
+`index.html` are the defaults a deck opened without its bundle draws; `check`
+fails if any of them differs from `DEFAULT_TOKENS`.
+
+| Key | Default | Range | Where | Why it is a token |
+|-----|---------|-------|-------|-------------------|
+| `row.cell_h` | 130 | 60..400 px | doc, section | the fixed row every cell fills: title + clamped description |
+| `row.sep_h` | 40 | 16..120 px | doc | a divider row: a break, not a missing cell |
+| `row.zone_min_h` | 180 | 0..600 px | doc | a framed zone's floor, so a short zone is not a sliver |
+| `row.compact_h` | 74 | 40..400 px | doc | the row `compact` presets, for a staircase that ends level |
+| `space.base` | 8 | 2..16 px | doc | the grid step every gap and padding is a multiple of |
+| `space.scale` | [0.5,1,2,3,4,6,8] | 7 increasing, 0.25..16 | doc | `--s-1`..`--s-7` = base × scale |
+| `frame.v` / `frame.h` / `frame.top` | 28 / 40 / 35 | 0..200 px | doc | the stage's breathing room; `top` matches the header→chips rhythm |
+| `frame.narrow` | 8 | 0..64 px | doc | the frame and canvas padding at the one-track tier |
+| `plane_max` | 1280 | 640..7680 px | doc | the content block's cap; wider screens get side margins |
+| `cell_min_w` | 120 | 100..400 px | doc | the legibility floor: columns collapse before a cell goes below it |
+| `type.title.min_px` / `vw` / `max_px` | 15 / 1 / 17 | 11..32 px / 0..5 vw / 11..40 px | doc | box title `clamp()` |
+| `type.title.lines` | 2 | 1..4 | doc, section, box | the title clamp |
+| `type.desc.px` / `lh` | 12 / 1.4 | 10..24 px / 1..2.4 | doc | description line size |
+| `type.desc.lines` | 3 | 1..8 | doc, section, box | the description clamp (a fixed box height) |
+| `type.kicker.px` / `track_em` | 10.5 / 0.09 | 9..20 px / 0..0.3 em | doc | the machine name above the title; tracking counts in the budget |
+| `type.section_title.*` | 13 / 0.85 / 14.5 px, 0.1 em, 2 lines | as title, lines 1..4 | doc | section header `clamp()` and clamp |
+| `type.section_sub.px` / `lines` | 12 / 3 | 10..24 px / 1..6 | doc | section subtitle |
+| `type.rail.px` / `track_em` | 13 / 0.09 | 10..24 px / 0..0.3 em | doc | a lane label |
+| `type.rail_hue.px` / `track_em` / `pad_y` | 10.5 / 0 / 10 | 9..24 px / 0..0.3 em / 0..24 px | doc | a hue rail is a word, set tight to fit a narrow cell |
+| `type.panel.*` | title 19, summary 15, kicker 13 px, 0.08 em | 12..48 / 11..32 / 9..24 px | doc | the detail card |
+| `indent_step` | 32 | 8..96 px | doc | one rail tree level (depth stays 0..3) |
+| `dim.box` / `dim.label` | 0.18 / 0.34 | 0.05..0.9 | doc | how far a chip dims the rest |
+| `panel.dock` | bottom-left | 4 corners | doc | where the detail card docks |
+| `panel.inset` / `aspect` / `width_cols` | 24 / 1.25 / 2 | 0..96 px / 0.5..3 / 1..4 | doc | card inset, height:width, width in narrowest-root-section units |
+| `breakpoints.stack` / `two` / `one` | 1440 / 1000 / 640 | 320..7680 px | doc | the collapse tiers (generated CSS) |
+| `viewport.w` / `h` | 1920 / 1080 | 320..7680 / 240..4320 px | doc | the presentation tier: text fit fails there; page height is compared with it |
+| `default_columns` | 2 | 1..12 | doc | a section's columns when it declares none |
+
+**Fixed, not tokens:** box chrome (border 1.5, radius, inner gap 2, title margin
+1), the half-title clamp of 1, the rail indent depth, the monospace advance and
+line factors the gates assume, WCAG thresholds, measurement tolerances, and the
+pan threshold. They are craft values, structural definitions or facts about the
+instrument; `check` still reads the chrome back out of `index.html`.
 
 ## The strict authoring schema
 
@@ -814,6 +1034,10 @@ names:
 | **BAND** | (a) a declared `span` that EXCEEDS the columns it sits in — the engine clamps it and nothing looks wrong, but the declaration is unsatisfiable as written, so it fails at the door; (b) a band owns its whole row (structurally guaranteed by the placement model, so a failure means the model and the data disagree about what a band is). An effective column count below the authored one is `[INFO]`, naming any partial merge the clamp PROMOTED to a full band |
 | **TIER** | the derived tracks-per-tier table, plus monotonicity: tracks may only GROW as the container grows. A violation means the breakpoint rules disagree with each other |
 | **CHIP** | referential integrity BOTH ways — every declared chip has a member, every referenced key is declared — plus **ARITY**, the half the retired **K** could never see: a chip with exactly ONE member closes the join and is still broken, because a relation needs two ends and an active chip dims everything it does not name. The reset key `all` is exempt |
+| **TEXT** | the character budget per box per tier: title token, kicker token, title lines vs its clamp (2, 1 for a `half`), description lines vs its clamp (3; none in a `compact` grid), and every SECTION HEADER — `.ztitle` (13–14.5px, 0.1em tracking, clamp 2) and `.zsub` (12px, clamp 3) at the zone's inner width. A LINE overflow FAILS at the presentation tier (`document.yaml` `viewport.w`, added to the sweep when it is not one of the five) on a page not declared `text_fit: advisory`; at the other tiers, and for a token, it is `[INFO]` |
+| **INK** | the ink height of a box against the slot the model gives it (a `compact` grid's 74px row included). An overflow FAILS at the presentation tier of a strict page and advises elsewhere; room for a whole statement left undeclared advises at the presentation tier |
+| **RAILT** | a thin rail's title past two lines — HARD, because `.rail-title` has no clamp and a third line grows the row. Measured at the rail's own metrics and, for an `indent`, in the narrower width the indented title frame leaves |
+| **HEIGHT** | ADVISORY: each page's full height predicted from the placement model (row tracks, zone frames and headers, compound rows as the tallest child above 1440px and the sum below, plus the chrome validate VH measures) against `viewport.h`, as `page X: predicted NNNNpx > 1080 (+NNN) at 1920`. A deck may mean to scroll; this says by how much |
 | **ORDER** | a duplicate EFFECTIVE order among siblings (`order ?? index+1`). The engine resolves the tie by list position, so the render is correct today and can flip under an unrelated edit that only MOVES a node in the file |
 | **CSS** | the mirror itself: the breakpoints and text metrics this gate computes with, against the `@container stage` queries and `.box`/`.zone`/`.canvas` declarations `index.html` actually declares (`cssBreakpoints` / `cssTextTokens` vs `BREAKPOINTS` / `CSS_TEXT`). Without it a stylesheet edit that moved a cut would leave every tracks-per-tier and character number describing a deck the browser no longer draws — green, and wrong. The two failures to read are OPPOSITE: no `index.html` at all is `[NOT ASSERTED]` (recorded, counted in the headline, never a pass), while an `index.html` that IS present and whose probe missed is a `[FAIL]` — the declaration moved past the probe, so every number derived from it is unverified, and "not asserted" there is exactly the silence that certifies the drift |
 | **CENSUS** | pre-flight, and printed FIRST: `data/*.yaml` vs `data/data.generated.js`. A stale build means everything below still describes the YAML correctly while the deck someone is LOOKING at is a different one. Shared with `validate` through `tools/static-census.cjs`, so the two gates cannot disagree about what the data says |
@@ -863,6 +1087,42 @@ Each new layout requirement becomes a new row in whichever layer can prove it �
 the RATCHET rule (`SKILL.md`, "The verdict"). Prefer the static gate when the
 requirement is a statement about the data: it runs everywhere, and the trap is
 trusting a metric that measures the wrong thing.
+
+### Checks added with the thin-row, rail and copy port
+
+The static gate (`npm run model`) also asserts, each with a negative case in
+`npm test`:
+
+| Check | What it fails | Why it exists |
+|---|---|---|
+| **FROZEN** | an undeclared hole under a `vertical` box whose flex row a taller sibling sets | a rotated bar's height is its authored rowspan, and nothing in the data ties that rowspan to the neighbour that sets the row |
+| **LIT** | `filters` on a separator or spacer | only boxes and rails emit `data-filters`, so that membership closes the CHIP join and never renders |
+| **RAILT** | a thin rail's title past two lines | the rail row is `auto` and `.rail-title` has no clamp, so a third line grows the row instead of clipping |
+| **WORDS** | an authored string missing from `data.generated.js` | CENSUS compares ids and counts, so a text-only edit without a rebuild stays green on the old words |
+| **SPAN** | a stylesheet missing one of the four span-to-tracks rules | every width the gate reports assumes a span of M occupies M tracks; without the rule the browser places the section in one track |
+| **INK** | a box whose stacked lines overflow its fixed row (advises on a large undeclared void) | TEXT measures width only; INK is the height half. It runs on every page not declared `text_fit: advisory` and fails at the presentation viewport |
+| **TEXT** kicker token | a kicker token wider than its cell (advisory) | the title budget never measured `.box .k`, which has its own size and tracking |
+
+The render gate (`npm run render`) gains the rail-row band and the `compact`
+row in U, the `.msp` band-leaf exemption in G (a band separator or rail may be
+full width, and must fill its row), and three RATCHET rows, FILL, SLICE and
+TXT, that run on every page not declared `text_fit: advisory` — the same page
+field that scopes INK and the TEXT failures, so the static estimate and the
+rendered ruling always cover the same pages. It also reports **VH**, an
+advisory: each page rendered at the `document.yaml` viewport, its measured full
+height against `viewport.h`, with the chrome (canvas offset and frame) it
+measured — the value the static HEIGHT prediction assumes.
+
+**Chip coverage is NOT a gate in the seed.** A deck may require that every box
+and rail belongs to at least one chip, so that no component is left out of every
+question the page answers. That rule is deck policy, not a generic invariant:
+the seed's own teaching pages use chips for a subset of their components on
+purpose, and the rule fails 10 of its 11 pages. A deck that wants it adds the
+check to its own `tools/check-layout.mjs`.
+
+The engine's reset chip reads `all`, and the one detail and relation card is
+docked bottom-left, draggable by its header, and sized from the widest root
+grid in the deck (`placeCard`).
 
 ## Feasibility, transparency, capability
 

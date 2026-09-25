@@ -36,50 +36,108 @@
 // ─────────────────────────────────────────────────────────────────────────
 const path = require('path');
 const fs = require('fs');
+const { resolvePageFilters } = require('../engine/chips.cjs');
 
 // The deck root: tools/ lives directly under it.
 const DEFAULT_ROOT = path.join(__dirname, '..');
 
 // ── THE SHARED FORM TAXONOMY ───────────────────────────────────────────────
 // A page declares its FORM (page YAML `form:`). Both gates scope checks by it,
-// so the default and the grid-dense subset are defined once here rather than
-// once per gate. The remaining sets (GRIDDED, WORDFIT) are consumed by the
-// render gate alone and stay there.
+// so the default and the shared subsets are defined once here rather than once
+// per gate. GRIDDED is still consumed by the render gate alone and stays there.
 const DEFAULT_FORM = 'dashboard';
 // The forms that should EARN a wide canvas by composing sections side by side
 // and grouping cells, so a lone cell stranded on its own row is worth failing
 // (render invariants P/V, static ROW). A timeline/flow/mindmap may legitimately
 // be sparse or linear, so those checks do not judge them.
 const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
+// WORDFIT — the narrative forms whose cells carry real SYMBOL text: a
+// human-language title, and the machine name above it. Those are the forms
+// where a token too long for its cell fractures mid-word and reads as a defect;
+// a planner's `TODO`/`DONE` code or a timeline's phase label is short by
+// construction and is not judged. Consumed by BOTH gates — the render gate's N
+// (title token) and the static gate's TEXT budget (title AND kicker token) — so
+// it lives here rather than in either one of them.
+const WORDFIT = new Set(['dashboard', 'flow']);
 
-// ── THE COLLAPSE BREAKPOINTS ───────────────────────────────────────────────
-// index.html declares three container queries on the `stage` container:
-//   stack  sections STOP sitting side by side (the root leaves its authored grid
-//          and becomes a vertical flex stack)
-//   two    every MULTI-column leaf grid steps down to the 2-track intermediate
-//   one    the ENDPOINT: every leaf grid collapses to ONE track
-// The CSS is the ONLY thing the browser obeys, so it is the source of truth and
-// these are its MIRROR, kept here because a data-only fixture (no index.html)
-// must still be checkable. `cssBreakpoints` reads the real declarations back out
-// so the mirror can be ASSERTED against them instead of trusted — see the CSS
-// line in check-layout.mjs.
-const BREAKPOINTS = { stack: 1440, two: 1000, one: 640 };
+// ── THE TOKENS BOTH GATES COMPUTE WITH ─────────────────────────────────────
+// Every size, clamp, breakpoint and the presentation viewport come from the
+// resolved `window.__DOC__.tokens` the build writes (engine/tokens.mjs is their
+// schema and defaults). No gate keeps a mirror of them; staticCensus proves the
+// bundle carries every value the YAML authored, so a stale bundle cannot move a
+// verdict silently.
 
-// The `max-width` of every `@container stage (…)` block in index.html, descending.
-// Returns { ok, noFile, widths, problem }: a deck with no index.html (a data-only
-// fixture) is reported as `ok:false` with a problem, never guessed at. `noFile`
-// separates the ABSENT file from a stylesheet that is present and unreadable,
-// which the consumer treats as opposite outcomes.
+// A page opts out of text-fit FAILURES with `text_fit: advisory`: every
+// finding is still reported, none fails. Absent means strict.
+const isTextFitStrict = page => (page && page.text_fit) !== 'advisory';
+
+// data/data.generated.js is a JS file whose payload is a JSON literal
+// (`window.__DOC__ = { ... };`). Sliced out and JSON.parsed — no eval, no module
+// load. Returns { ok, doc, problem }.
+function loadGenerated(root = DEFAULT_ROOT) {
+  const genPath = path.join(root, 'data', 'data.generated.js');
+  if (!fs.existsSync(genPath))
+    return { ok: false, problem: 'data/data.generated.js does not exist — run `npm run build` first (validate never generates it).' };
+  const src = fs.readFileSync(genPath, 'utf8');
+  const MARK = 'window.__DOC__ = ';
+  const at = src.indexOf(MARK);
+  if (at < 0) return { ok: false, problem: `data/data.generated.js has no \`${MARK}\` assignment — it is not a generated deck file. Run \`npm run build\`.` };
+  const body = src.slice(at + MARK.length);
+  const end = body.indexOf('\n};');
+  try { return { ok: true, doc: JSON.parse(end >= 0 ? body.slice(0, end + 2) : body.replace(/;\s*$/, '')) }; }
+  catch (e) { return { ok: false, problem: `data/data.generated.js payload is not parseable JSON (${e.message}). Run \`npm run build\`.` }; }
+}
+
+// The `max-width` of every `@container stage (…)` block the build generated
+// (data/breakpoints.generated.css), descending. Returns { ok, noFile, widths,
+// problem }: an absent file is reported, never guessed at.
 function cssBreakpoints(root = DEFAULT_ROOT) {
-  const file = path.join(root, 'index.html');
+  const file = path.join(root, 'data', 'breakpoints.generated.css');
   if (!fs.existsSync(file))
-    return { ok: false, noFile: true, widths: [], problem: `index.html does not exist under "${root}"` };
+    return { ok: false, noFile: true, widths: [], problem: `data/breakpoints.generated.css does not exist under "${root}" — run \`npm run build\`` };
   const src = fs.readFileSync(file, 'utf8');
   const widths = [...src.matchAll(/@container\s+stage\s*\(\s*max-width:\s*(\d+)px\s*\)/g)]
     .map(m => Number(m[1]));
   if (!widths.length)
-    return { ok: false, widths: [], problem: 'index.html declares no `@container stage (max-width: …)` query' };
+    return { ok: false, widths: [], problem: 'data/breakpoints.generated.css declares no `@container stage (max-width: …)` query' };
   return { ok: true, widths: [...new Set(widths)].sort((a, b) => b - a) };
+}
+
+// Every leaf value an authored `tokens:` mapping sets, as [path, value].
+function authoredTokenLeaves(raw, prefix = '') {
+  const out = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [k, v] of Object.entries(raw)) {
+    const p = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === 'object' && !Array.isArray(v)) out.push(...authoredTokenLeaves(v, p));
+    else out.push([p, v]);
+  }
+  return out;
+}
+const tokenAt = (obj, p) => p.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// Every token the YAML authors — on the manifest and on each node — must be the
+// value the bundle carries, or the gates would judge a deck nobody built.
+function tokenProblems(manifest, deckPages, genPages, gen) {
+  const out = [];
+  if (!gen.tokens || !gen.css_vars) return ['data/data.generated.js carries no `tokens` — run `npm run build`'];
+  for (const [p, v] of authoredTokenLeaves(manifest.tokens))
+    if (!sameValue(tokenAt(gen.tokens, p), v))
+      out.push(`tokens.${p}: document.yaml ${JSON.stringify(v)} != generated ${JSON.stringify(tokenAt(gen.tokens, p))}`);
+  const byId = list => { const m = new Map(); (function walk(ns) { for (const n of ns || []) {
+    if (n && n.id != null) m.set(String(n.id), n); if (n && Array.isArray(n.children)) walk(n.children); } })(list); return m; };
+  for (const { entry, page } of deckPages) {
+    const got = genPages.find(p => p && String(p.id) === String(entry.id));
+    if (!got) continue;
+    const genNodes = byId(got.sections);
+    for (const [id, n] of byId(page.sections)) for (const [p, v] of authoredTokenLeaves(n.tokens)) {
+      const g = genNodes.get(id);
+      if (!g || !sameValue(tokenAt(g.tokens, p), v))
+        out.push(`page "${entry.id}" node "${id}" tokens.${p}: yaml ${JSON.stringify(v)} != generated ${JSON.stringify(g && tokenAt(g.tokens, p))}`);
+    }
+  }
+  return out;
 }
 
 // js-yaml is resolved LAZILY and its absence is reported as a PROBLEM, never
@@ -133,6 +191,11 @@ function loadAuthoredDeck(root = DEFAULT_ROOT) {
     if (!page || typeof page !== 'object') {
       problems.push(`page "${entry.id}": ${entry.file} did not parse to a mapping`); continue;
     }
+    // The page as BUILT: the deck's core chips first, as the build writes them.
+    try {
+      const filters = resolvePageFilters(manifest.filters, entry.omit_filters, page.filters, entry.id);
+      if (filters.length || page.filters !== undefined) page.filters = filters;
+    } catch (e) { problems.push(e.message); }
     pages.push({ entry, page });
   }
   return { ok: problems.length === 0, problems, manifest, entries, pages, dataDir };
@@ -196,21 +259,9 @@ function staticCensus(root = DEFAULT_ROOT) {
   // the generated file against, and guessing would be worse than saying so.
   if (!deck.manifest) return { ok: false, problems: deck.problems };
 
-  if (!fs.existsSync(genPath))
-    return { ok: false, problems: [`data/data.generated.js does not exist — run \`npm run build\` first (validate never generates it).`] };
-
-  // `data.generated.js` is a JS file whose payload is a JSON literal:
-  //   window.__DOC__ = { ... };
-  // Slice the literal out and JSON.parse it — no eval, no module load.
-  const src = fs.readFileSync(genPath, 'utf8');
-  const MARK = 'window.__DOC__ = ';
-  const at = src.indexOf(MARK);
-  if (at < 0) return { ok: false, problems: [`data/data.generated.js has no \`${MARK}\` assignment — it is not a generated deck file. Run \`npm run build\`.`] };
-  const body = src.slice(at + MARK.length);
-  const end = body.indexOf('\n};');
-  let gen;
-  try { gen = JSON.parse(end >= 0 ? body.slice(0, end + 2) : body.replace(/;\s*$/, '')); }
-  catch (e) { return { ok: false, problems: [`data/data.generated.js payload is not parseable JSON (${e.message}). Run \`npm run build\`.`] }; }
+  const loaded = loadGenerated(root);
+  if (!loaded.ok) return { ok: false, problems: [loaded.problem] };
+  const gen = loaded.doc;
 
   const manifest = deck.manifest;
   // Any page that could not be read at all is a census problem in its own right.
@@ -218,6 +269,11 @@ function staticCensus(root = DEFAULT_ROOT) {
 
   if ((manifest.palette ?? 'neutral') !== (gen.palette ?? 'neutral'))
     problems.push(`palette: document.yaml "${manifest.palette ?? 'neutral'}" != generated "${gen.palette ?? 'neutral'}"`);
+  const authoredOverrides = Object.fromEntries(Object.entries(manifest.palette_overrides || {})
+    .map(([theme, vars]) => [theme, Object.fromEntries(Object.entries(vars || {}).map(([k, v]) => [`--${k}`, String(v).trim()]))]));
+  if (JSON.stringify(authoredOverrides) !== JSON.stringify(gen.palette_overrides || {}))
+    problems.push('palette_overrides: document.yaml differs from the generated data — the deck ships stale colours');
+  problems.push(...tokenProblems(manifest, deck.pages, Array.isArray(gen.pages) ? gen.pages : [], gen));
   if ((manifest.title ?? null) !== (gen.title ?? null))
     problems.push(`title: document.yaml "${manifest.title}" != generated "${gen.title}"`);
 
@@ -249,5 +305,5 @@ function staticCensus(root = DEFAULT_ROOT) {
     summary: `${wantIds.length} page(s), palette "${gen.palette ?? 'neutral'}"` };
 }
 
-module.exports = { DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, BREAKPOINTS, cssBreakpoints,
-  loadAuthoredDeck, nodeCensus, pageCensus, staticCensus };
+module.exports = { DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, cssBreakpoints,
+  isTextFitStrict, loadGenerated, loadAuthoredDeck, nodeCensus, pageCensus, staticCensus };

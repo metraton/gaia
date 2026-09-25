@@ -163,8 +163,18 @@ const PAIRS = [
   { id: 'accent-kicker', what: 'accent kicker on an accent box (.box.accent .k)',    fg: '--strong', bg: ['--surface', '--strong-soft'], min: 4.5, kind: 'AA text', load: 'accent' },
   { id: 'bad-ztitle',    what: 'bad section title (.zone.bad .ztitle)',              fg: '--crit',   bg: ['--bg', '--crit-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
   { id: 'good-ztitle',   what: 'good section title (.zone.good .ztitle)',            fg: '--olive',  bg: ['--bg', '--olive-soft'],       min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'copy-icon',     what: 'copy button glyph on its own fill (.copy-btn)',      fg: '--body',   bg: ['--surface'],                  min: 3.0, kind: 'AA non-text', load: 'nontext' },
   { id: 'clay-kicker',   what: 'panel kicker / inline code (.p-kicker, code)',       fg: '--clay',   bg: ['--surface'],                  min: 4.5, kind: 'AA text', load: 'accent' },
   { id: 'chip-on-text',  what: 'active chip label (.chip.on)',                       fg: '--ink',    bg: ['--bg', '--clay-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
+
+  // the four categorical hues (.box.blue / .violet / .gold / .clay): the title
+  // and description sit on the tint, the kicker takes the hue, the border is the cue
+  ...['blue', 'violet', 'gold', 'clay'].flatMap(h => [
+    { id: `${h}-title`,  what: `title on a ${h} box (.box.${h} .t)`,         fg: '--ink',       bg: ['--surface', `--hue-${h}-soft`], min: 4.5, kind: 'AA text',     load: 'primary' },
+    { id: `${h}-desc`,   what: `description on a ${h} box (.box.${h} .m)`,   fg: '--body',      bg: ['--surface', `--hue-${h}-soft`], min: 4.5, kind: 'AA text',     load: 'primary' },
+    { id: `${h}-kicker`, what: `kicker on a ${h} box, title on a ${h} rail (.box.${h} .k, .rail.${h} .rail-title)`,       fg: `--hue-${h}`,  bg: ['--surface', `--hue-${h}-soft`], min: 4.5, kind: 'AA text',     load: 'accent' },
+    { id: `${h}-border`, what: `${h} box border against the box fill`,       fg: `--hue-${h}`,  bg: ['--surface'],                    min: 3.0, kind: 'AA non-text', load: 'nontext' },
+  ]),
 
   // non-text: component boundaries must be discernible (WCAG 1.4.11)
   { id: 'line-on-bg',      what: 'box / control border against the canvas (--line)', fg: '--line',      bg: ['--bg'],      min: 3.0, kind: 'AA non-text', load: 'nontext' },
@@ -225,8 +235,44 @@ for (const pal of PALETTES) {
   }
 }
 
+// ── the deck's own palette_overrides ─────────────────────────────────────
+// Read from the GENERATED data, so the audit measures what the deck ships, not
+// what the YAML says. Only the pairs an override touches are re-measured, and
+// they gate primary + accent even on `neutral`: an override is the author's new
+// colour, so it cannot inherit neutral's frozen exemption. `nontext` gates only
+// where the palette itself gates it (Rosé Pine hairlines stay its identity).
+const { loadGenerated } = require('./static-census.cjs');
+const gen = loadGenerated(ROOT);
+const overrides = gen.ok ? gen.doc.palette_overrides : undefined;
+let overridePairs = 0;
+if (overrides) {
+  const pal = PALETTES.find(p => p.name === (gen.doc.palette || 'neutral'));
+  const gates = new Set(['primary', 'accent', ...pal.gates]);
+  const audited = new Set(PAIRS.flatMap(p => [p.fg, ...p.bg]));
+  for (const theme of THEMES) {
+    const own = overrides[theme] || {};
+    const keys = Object.keys(own);
+    if (!keys.length) continue;
+    const unaudited = keys.filter(k => !audited.has(k));
+    if (unaudited.length) throw new Error(`palette_overrides.${theme}: no audited pair reads ${unaudited.join(', ')} — add its pair to PAIRS`);
+    const t = { ...tokens(pal.name, theme), ...own };
+    console.log(`● ${pal.name} · ${theme} + palette_overrides (${keys.join(', ')})`);
+    for (const p of PAIRS.filter(p => [p.fg, ...p.bg].some(k => keys.includes(k)))) {
+      let bg = parseColor(t[p.bg[0]]);
+      for (const layer of p.bg.slice(1)) bg = over(parseColor(t[layer]), bg);
+      const r = ratio(over(parseColor(t[p.fg]), bg), bg);
+      const ok = r >= p.min, gated = gates.has(p.load);
+      checked++; overridePairs++;
+      if (!ok) { shortfalls++; if (gated) { failures++; failLines.push(`${pal.name}/${theme}+overrides ${p.id} ${r.toFixed(2)}:1 < ${p.min}`); } }
+      console.log(`    [${ok ? 'PASS' : gated ? 'FAIL' : 'LOW '}] ${r.toFixed(2)}:1  (min ${p.min.toFixed(1)} ${p.kind}, ${p.load}${gated ? ', gated' : ''})  ${p.id} — ${p.what}`);
+    }
+    console.log('');
+  }
+}
+
 console.log('═══════════════════════════════════════════════════════');
-console.log(`${checked} pairs measured across ${PALETTES.length} palettes × ${THEMES.length} themes.`);
+console.log(`${checked} pairs measured across ${PALETTES.length} palettes × ${THEMES.length} themes` +
+  (overridePairs ? `, ${overridePairs} of them re-measured under the deck's palette_overrides.` : '.'));
 if (failures === 0) {
   console.log(`ALL GATED PAIRS PASS${shortfalls ? ` — ${shortfalls} ungated shortfall(s) reported above (frozen neutral + Rosé Pine hairline borders).` : '.'}\n`);
   process.exit(0);

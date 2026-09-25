@@ -716,56 +716,40 @@ def test_the_channels_own_sources_declare_no_ddl():
         assert "CREATE INDEX" not in upper
 
 
-def test_the_expected_schema_version_matches_the_channels_authored_baseline():
-    # This channel was authored against v37 and needed no migration of its
-    # own (asserted structurally above, against the live schema -- not this
-    # number). v38 (plan_task_id index) through v47 landed afterward for
-    # unrelated work; v48 (injection_count/deliberate_count/last_injected_at/
-    # last_deliberate_at on `memory`, scripts/migrations/v47_to_v48.sql), v49
-    # (memory_au recreated with its WHEN clause on installations that
-    # stamped v48 before that DDL existed, scripts/migrations/v48_to_v49.sql),
-    # v50 (created_at/kernel_count/last_kernel_at on `memory`, plus the new
-    # memory_deliberate_capture_v50 table, scripts/migrations/v49_to_v50.sql)
-    # and v51 (drops memory_deliberate_capture_v50 again, scripts/migrations/
-    # v50_to_v51.sql) touch only memory. v52 adds current override provenance to
-    # tasks and deliberately leaves harness_events unchanged. v53 and v54 only
-    # add columns to agent_contract_handoffs and approval_grants; v55 only adds
-    # root_path to workspaces; v56 touches task_gates, evidence and three new
-    # plan-structure tables, and `grep -i harness_events` on v55_to_v56.sql
-    # returns zero matches (reviewed 2026-09-22); v57 touches plans and adds
-    # three plan-history tables, and the same grep on v56_to_v57.sql returns
-    # zero matches (reviewed 2026-09-23).
-    # Reviewed 2026-08-14: `grep -i harness_events` against both
-    # v49_to_v50.sql and v50_to_v51.sql returned zero matches in either file.
-    # v41-v51 are the actual current floor -- tracked dynamically by
-    # tests/cli/test_schema_version_lockstep.py, which is the real drift
-    # guard. This assertion only pins the number this test module itself
-    # depends on: it is a deliberate, reviewed bump, not a mechanical one --
-    # every future migration must be checked against `harness_events` before
-    # this number moves again, the same as every other caller of
-    # EXPECTED_SCHEMA_VERSION.
+# This channel was authored against v37 and needs harness_events exactly as
+# v37 left it. The two tests below used to pin the newest migration number and
+# were bumped by hand after someone grepped each new migration for
+# harness_events; they now run that check themselves on every migration, so a
+# later migration passes only if its SQL (comments aside -- v52 names the
+# table in a comment to say it leaves it alone) never touches the table.
+_CHANNEL_BASELINE_VERSION = 37
+
+
+def _migrations_after_the_channel_baseline():
+    found = {}
+    for path in (_REPO_ROOT / "scripts" / "migrations").glob("v*_to_v*.sql"):
+        m = re.fullmatch(r"v\d+_to_v(\d+)", path.stem)
+        if m and int(m.group(1)) > _CHANNEL_BASELINE_VERSION:
+            found[int(m.group(1))] = path
+    return found
+
+
+def test_the_expected_schema_version_is_covered_by_the_harness_events_check():
     doctor_py = (_REPO_ROOT / "bin" / "cli" / "doctor.py").read_text(encoding="utf-8")
     match = re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", doctor_py,
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 57
+    assert int(match.group(1)) == max(_migrations_after_the_channel_baseline())
 
 
-def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
-    # Same baseline as the test above, same reason it can go stale: v38
-    # through v51 are real, reviewed-and-unrelated migrations, not drift in
-    # this channel (v51 reviewed 2026-08-14, see the sibling test above for
-    # the exact check and its zero-match result). The actual lockstep
-    # invariant (EXPECTED_SCHEMA_VERSION == migration floor) lives in
-    # tests/cli/test_schema_version_lockstep.py -- this only pins what this
-    # module itself was written against, and it must move again only after
-    # the next migration is checked against `harness_events`.
-    migrations = sorted(
-        int(m.group(1))
-        for path in (_REPO_ROOT / "scripts" / "migrations").glob("v*_to_v*.sql")
-        if (m := re.fullmatch(r"v\d+_to_v(\d+)", path.stem))
-    )
+def test_no_migration_after_the_channels_authored_baseline_touches_harness_events():
+    migrations = _migrations_after_the_channel_baseline()
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 57
+    for version, path in sorted(migrations.items()):
+        sql = re.sub(r"--[^\n]*", "", path.read_text(encoding="utf-8"))
+        assert "harness_events" not in sql.lower(), (
+            f"{path.name} touches harness_events, which the close-override "
+            f"channel was written against at v{_CHANNEL_BASELINE_VERSION}"
+        )

@@ -12,6 +12,10 @@ import yaml from 'js-yaml';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveDocTokens, resolveNodeTokens, cssVars } from './tokens.mjs';
+import chips from './chips.cjs';
+
+const { resolvePageFilters } = chips;
 
 // This script lives in engine/; the data lives in ../data.
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -42,22 +46,35 @@ function readYaml(path) {
 //   • component (a leaf, no `children`): buildBox / buildSeparator / buildRail /
 //     buildSpacer + the per-child grid props + both vocabulary axes. A `spacer`
 //     is narrowed further by SPACER_FIELDS below — it is the one leaf that reads
-//     NO payload at all.
+//     NO payload at all — and a `rail` by RAIL_FIELDS.
 //   • filter (an entry of `filters[]`): the chip's key/label/steps. Filters used
 //     to bypass this gate entirely — a typo in a `key` produced no error, just a
 //     chip that silently dimmed the whole canvas because nothing matched it.
-const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'pages']);
-const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file']);
+//   • `tokens` (manifest, section, box): the design tokens of engine/tokens.mjs.
+//     The manifest may set any of them; a section or a box only the few in
+//     NODE_TOKEN_KEYS. The presentation viewport is `tokens.viewport`.
+//   • core chips: the manifest's `filters:` are inherited by every page, first
+//     and in order (engine/chips.cjs); a page's manifest entry drops one only by
+//     naming it in `omit_filters`, so the deck's chip coverage reads in one file.
+//     `harmony: true` opts the deck into the static gate's HARMONY check.
+const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'palette_overrides', 'tokens', 'filters', 'harmony', 'pages']);
+const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file', 'omit_filters']);
 const PAGE_FIELDS = new Set([
-  'id', 'layout', 'columns', 'filters', 'sections', 'form',
+  'id', 'layout', 'columns', 'filters', 'sections', 'form', 'text_fit',
   'name', 'order', 'visible']);
+
+// `text_fit` decides whether text that overflows its cell at the presentation
+// viewport FAILS the static gate (strict, the default) or is only reported
+// (advisory). The gates read the value from the bundle, so it is validated here.
+const TEXT_FIT = new Set(['strict', 'advisory']);
+
 const SECTION_FIELDS = new Set([
   'id', 'title', 'subtitle', 'variant', 'treatment',
-  'order', 'span', 'rowspan', 'columns', 'children']);
+  'order', 'span', 'rowspan', 'columns', 'children', 'tokens']);
 const COMPONENT_FIELDS = new Set([
   'id', 'type', 'variant', 'variant_extra', 'treatment', 'kicker', 'title',
   'description', 'detail', 'note', 'order', 'span', 'rowspan', 'filters',
-  'style', 'text']);
+  'style', 'text', 'copy', 'tokens', 'lead']);
 const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 
 // ── THE TWO ORTHOGONAL AXES ────────────────────────────────────────────────
@@ -81,16 +98,25 @@ const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 // a silent translation, so a deck is either on the new vocabulary or it fails
 // loudly at the gate. (The legacy→new mapping is tabled in the skill's
 // reference.md, "Migrating a pre-2.1 deck".)
-const COMPONENT_VARIANTS = new Set(['neutral', 'good', 'warn', 'bad', 'accent', 'muted']);
+// blue / violet / gold / clay are CATEGORICAL: they tell peer groups apart and
+// carry no risk or state, so the page that uses them must say what each means.
+const COMPONENT_VARIANTS = new Set([
+  'neutral', 'good', 'warn', 'bad', 'accent', 'muted',
+  'blue', 'violet', 'gold', 'clay']);
 const SECTION_VARIANTS = new Set(['neutral', 'good', 'bad']);
 const COMPONENT_TREATMENTS = new Set(['centered', 'half', 'vertical', 'outside']);
-const SECTION_TREATMENTS = new Set(['plain', 'envelope']);
+// `middle` centres a section's grid vertically inside the height its compound
+// row stretches it to, so a short cell beside taller neighbours leaves no gap.
+// `compact` gives one leaf grid a shorter row (index.html `.zone.compact`), for
+// a staircase that must end level with a shorter neighbour; the uniform-row
+// gates (validate U) exempt only grids that declare it.
+const SECTION_TREATMENTS = new Set(['plain', 'envelope', 'middle', 'compact']);
 // Which axis a value belongs to, for the error message. A value that MOVED axes
 // gets a targeted "that is a treatment, not a variant" error instead of a bare
 // "unknown value", because the author's intent is unambiguous and the fix is one
 // mechanical edit.
 const TREATMENT_OWNER = {
-  plain: 'section', envelope: 'section',
+  plain: 'section', envelope: 'section', middle: 'section', compact: 'section',
   centered: 'component', half: 'component', vertical: 'component', outside: 'component',
 };
 
@@ -151,6 +177,16 @@ const COMPONENT_TYPES = new Set(['box', 'separator', 'rail', 'spacer']);
 // with an invisible end. A spacer carrying a title is not a spacer; it is an
 // empty card, which is the thing this type exists to stop being authored.
 const SPACER_FIELDS = new Set(['id', 'type', 'order', 'span', 'rowspan']);
+// A `rail` is a title-only label, so it keeps the geometry, its title and its
+// treatment. `filters` is its one membership field: buildRail stamps it as
+// `data-filters`, so a chip lights the rail exactly as it lights a box. Its
+// colour is limited to the four categorical hues, the only variants
+// `.rail.<hue>` draws in index.html. `indent` (0..RAIL_MAX_INDENT) insets the
+// drawn frame inside its cell, one step per tree level, so a tree reads by
+// indentation while the cell itself still fills its track.
+const RAIL_FIELDS = new Set(['id', 'type', 'order', 'span', 'rowspan', 'title', 'treatment', 'variant', 'filters', 'indent']);
+const RAIL_VARIANTS = new Set(['blue', 'violet', 'gold', 'clay']);
+const RAIL_MAX_INDENT = 3;
 // buildSeparator's line style. Only a `separator` reads it.
 const SEPARATOR_STYLES = new Set(['solid', 'dotted']);
 
@@ -280,7 +316,8 @@ function checkTreatment(node, kind, pageId, label) {
 //                         slots, `half` divides ONE slot. Together they have no
 //                         meaning.
 //   half on a section   → rejected by checkTreatment (section treatments are
-//                         plain/envelope); a section is not a slot occupant.
+//                         plain/envelope/middle/compact); a section is not a slot
+//                         occupant.
 function checkTreatmentCombinations(node, treatments, pageId, label) {
   const has = v => treatments.includes(v);
   const titleOnly = ['half', 'vertical'].filter(has);
@@ -366,11 +403,18 @@ function validateNode(node, pageId, where) {
   const kind = isSection ? 'section' : 'component';
   const id = (node && node.id) || '(no id)';
   const label = `${where} ${kind} "${id}"`;
-  checkFields(node, isSection ? SECTION_FIELDS : COMPONENT_FIELDS, kind, pageId, label);
+  const isRail = !isSection && node.type === 'rail';
+  checkFields(node, isSection ? SECTION_FIELDS : isRail ? RAIL_FIELDS : COMPONENT_FIELDS,
+    isRail ? 'rail' : kind, pageId, label);
   // A spacer's narrow whitelist is applied BEFORE the two vocabulary axes, so a
   // `variant` written on one is reported as "a spacer carries no variant" rather
   // than as a near-miss inside a colour enum it has no business reaching.
   if (!isSection && node.type === 'spacer') { checkSpacer(node, pageId, label); return; }
+  if (isRail) {
+    checkEnumValue(node.variant, RAIL_VARIANTS, 'rail variant', pageId, label);
+    if (node.indent !== undefined && !(Number.isInteger(node.indent) && node.indent >= 0 && node.indent <= RAIL_MAX_INDENT))
+      throw new Error(`[strict-schema] page "${pageId}" ${label}: rail \`indent\` must be an integer 0..${RAIL_MAX_INDENT}, got ${JSON.stringify(node.indent)}`);
+  }
   checkVariantValue(node.variant, kind, pageId, label);
   const treatments = checkTreatment(node, kind, pageId, label);
   if (!isSection) {
@@ -392,12 +436,39 @@ function validateNode(node, pageId, where) {
     // it must go on `treatment`.
     for (const extra of node.variant_extra || [])
       checkVariantValue(extra, kind, pageId, `${label} variant_extra`);
+    if (node.variant_extra !== undefined) deprecated.variant_extra.push(`${pageId} > ${id}`);
     checkTreatmentCombinations(node, treatments, pageId, label);
+    // `copy` opts a box into a copy-to-clipboard button: `true` copies its title
+    // verbatim, a string copies that string. Only buildBox draws the button.
+    if (node.copy !== undefined) {
+      const isBox = node.type === undefined || node.type === 'box';
+      const valid = node.copy === true || (typeof node.copy === 'string' && node.copy.length > 0);
+      if (!isBox || !valid)
+        throw new Error(`[strict-schema] page "${pageId}" ${label}: \`copy\` must be \`true\` or a non-empty string, and only on a box; got ${JSON.stringify(node.copy)} on type "${node.type ?? 'box'}"`);
+      if (node.copy === true && !node.title)
+        throw new Error(`[strict-schema] page "${pageId}" ${label}: \`copy: true\` copies the title, and this box has none`);
+    }
   }
   if (isSection) {
+    if (treatments.includes('compact') && node.children.some(c => Array.isArray(c && c.children)))
+      throw new Error(`[strict-schema] page "${pageId}" ${label}: treatment "compact" shortens the rows of ONE leaf grid, so its children must all be components, not sections.`);
     checkHalfPairing(node.children, pageId, label);
     node.children.forEach(c => validateNode(c, pageId, `${label} >`));
   }
+  resolveNodeOverride(node, kind, pageId, label);
+}
+
+// A node's `tokens:` is replaced IN THE BUNDLE by its resolved override delta
+// (a `compact` preset included) and the CSS properties the engine sets inline.
+// Only a box reads the two clamps, so a separator or a rail carrying `tokens`
+// is refused rather than ignored.
+function resolveNodeOverride(node, kind, pageId, label) {
+  const isBox = kind === 'component' && (node.type === undefined || node.type === 'box');
+  if (node.tokens !== undefined && kind === 'component' && !isBox)
+    throw new Error(`[strict-schema] page "${pageId}" ${label}: \`tokens\` applies to a box or a section, not a ${node.type}`);
+  const delta = resolveNodeTokens(node, kind, tokens, `page "${pageId}" ${label}`, suggest);
+  if (delta) { node.tokens = delta; node.css_vars = cssVars(delta, { delta: true }); }
+  else delete node.tokens;
 }
 
 // Validate the chips of a `filters[]` list. Previously NOT validated at all: a
@@ -428,8 +499,43 @@ function validateFilters(filters, pageId, where) {
   });
 }
 
+// THE LEAD BAND. `lead: true` marks the box that states the page's claim: a
+// plain box, so every gate already measures it, placed as the page's first band
+// (a direct root child, first in `order`, spanning every root column). The
+// marker is what makes it the one box the HARMONY check exempts.
+function checkLead(page) {
+  const leads = [];
+  (function walk(list, atRoot) {
+    for (const n of list || []) {
+      if (n && n.lead !== undefined) leads.push({ n, atRoot });
+      if (Array.isArray(n && n.children)) walk(n.children, false);
+    }
+  })(page.sections, true);
+  const where = id => `[strict-schema] page "${page.id}" lead "${id || '(no id)'}"`;
+  const first = [...(page.sections || [])].map((c, i) => ({ c, eff: c.order ?? (i + 1), i }))
+    .sort((a, b) => a.eff - b.eff || a.i - b.i)[0];
+  const cols = page.columns ?? tokens.default_columns;
+  for (const { n, atRoot } of leads) {
+    if (n.lead !== true) throw new Error(`${where(n.id)}: \`lead\` is \`true\` or absent, got ${JSON.stringify(n.lead)}`);
+    if (Array.isArray(n.children) || (n.type ?? 'box') !== 'box')
+      throw new Error(`${where(n.id)}: only a box can be the lead band`);
+    if (!atRoot || first.c !== n)
+      throw new Error(`${where(n.id)}: the lead band is the page's FIRST band — a direct child of the page root, first in \`order\``);
+    if ((n.span ?? 1) !== cols)
+      throw new Error(`${where(n.id)}: the lead band spans the whole page — write \`span: ${cols}\` (the root's columns)`);
+    const t = n.treatment || [];
+    if (t.includes('half') || t.includes('vertical'))
+      throw new Error(`${where(n.id)}: a lead band is a horizontal band; "half" and "vertical" do not apply`);
+  }
+}
+
+// Fields kept only for old decks: collected while validating and reported once
+// per build, so an author sees every use without the build failing.
+const deprecated = { layout: [], variant_extra: [] };
+
 function validatePageSchema(page) {
   checkFields(page, PAGE_FIELDS, 'page', page.id, 'root');
+  if (page.layout !== undefined) deprecated.layout.push(page.id);
   // `form` SCOPES the guardrail's invariant table by membership, so an undeclared
   // value silently reduced the page's applicable invariant set to the EMPTY set —
   // a page reported as "ALL PASS — 0 checks" with exit 0. `layout` gates whether
@@ -437,9 +543,11 @@ function validatePageSchema(page) {
   // Neither has any recoverable meaning when misspelled, so both fail at the door.
   checkEnumValue(page.form, FORMS, 'page form', page.id, 'root');
   checkEnumValue(page.layout, LAYOUTS, 'page layout', page.id, 'root');
+  checkEnumValue(page.text_fit, TEXT_FIT, 'page text_fit', page.id, 'root');
   validateFilters(page.filters, page.id, 'root');
   checkHalfPairing(page.sections, page.id, 'root');
   for (const sec of page.sections || []) validateNode(sec, page.id, 'root >');
+  checkLead(page);
 }
 
 const manifest = readYaml(join(DATA_DIR, 'document.yaml'));
@@ -450,6 +558,15 @@ checkFields(manifest, MANIFEST_FIELDS, 'manifest', '(document.yaml)', 'root');
 manifest.pages.forEach((p, i) =>
   checkFields(p, MANIFEST_PAGE_FIELDS, 'manifest page', '(document.yaml)', `pages[${i}] "${(p && p.id) || '?'}"`));
 
+// TOKENS — document.yaml `tokens:` over DEFAULT_TOKENS, validated. Resolved
+// before any page, because a node override is validated against it.
+const tokens = resolveDocTokens(manifest.tokens, suggest);
+
+// CORE CHIPS — validated like a page's chips, then inherited by every page.
+validateFilters(manifest.filters, '(document.yaml)', 'root');
+if (manifest.harmony !== undefined && typeof manifest.harmony !== 'boolean')
+  throw new Error(`[strict-schema] document.yaml: \`harmony\` is true or false, got ${JSON.stringify(manifest.harmony)}`);
+
 // PALETTE — document-level skin selector. Absent means `neutral`, which is the
 // palette every pre-2.1 deck renders with, so omitting it is a no-op.
 const palette = manifest.palette ?? 'neutral';
@@ -458,6 +575,57 @@ if (!PALETTES.has(palette)) {
     `[strict-schema] document.yaml: unknown palette "${palette}"` +
     (suggest(String(palette), PALETTES) ? ` — did you mean "${suggest(String(palette), PALETTES)}"?` : '') +
     `\n  valid palettes: ${[...PALETTES].join(', ')}`);
+}
+
+// PALETTE OVERRIDES — a deck's own colour for a palette token, per theme. The key
+// set is exactly the tokens tools/contrast-audit.cjs pairs read (the audit refuses
+// an override it has no pair for), so every override a deck ships is measured
+// against WCAG; the value syntax is the one that audit parses.
+const PALETTE_OVERRIDE_KEYS = new Set([
+  'bg', 'surface', 'surface2', 'zone', 'ink', 'body', 'muted', 'line', 'zone-line',
+  'crit', 'crit-soft', 'warn', 'warn-soft', 'olive', 'olive-soft', 'strong', 'strong-soft',
+  'clay', 'clay-soft',
+  ...['blue', 'violet', 'gold', 'clay'].flatMap(h => [`hue-${h}`, `hue-${h}-soft`]),
+]);
+const COLOUR_VALUE = /^(#[0-9a-f]{3}|#[0-9a-f]{6}|rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(,\s*[\d.]+\s*)?\))$/i;
+function readPaletteOverrides(raw) {
+  if (raw === undefined) return undefined;
+  const where = '[strict-schema] document.yaml: `palette_overrides`';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error(`${where} is a map of \`light\` and/or \`dark\`, got ${JSON.stringify(raw)}`);
+  const out = {};
+  for (const [theme, tokensOf] of Object.entries(raw)) {
+    if (theme !== 'light' && theme !== 'dark')
+      throw new Error(`${where}: unknown theme "${theme}" — write \`light\` or \`dark\``);
+    if (!tokensOf || typeof tokensOf !== 'object' || Array.isArray(tokensOf))
+      throw new Error(`${where}.${theme} is a map of token: colour, got ${JSON.stringify(tokensOf)}`);
+    out[theme] = {};
+    for (const [key, value] of Object.entries(tokensOf)) {
+      if (!PALETTE_OVERRIDE_KEYS.has(key)) {
+        const hint = suggest(String(key), PALETTE_OVERRIDE_KEYS);
+        throw new Error(`${where}.${theme}: "${key}" is not an overridable colour token` +
+          (hint ? ` — did you mean "${hint}"?` : '') + `\n  overridable: ${[...PALETTE_OVERRIDE_KEYS].join(', ')}`);
+      }
+      if (typeof value !== 'string' || !COLOUR_VALUE.test(value.trim()))
+        throw new Error(`${where}.${theme}.${key}: "${value}" is not a colour — write #rgb, #rrggbb, rgb() or rgba()`);
+      out[theme][`--${key}`] = value.trim();
+    }
+  }
+  return out;
+}
+const paletteOverrides = readPaletteOverrides(manifest.palette_overrides);
+
+// The override rules outrank the palette blocks in index.html by specificity
+// (0,3,1 against 0,2,1), not by source order: the generated script inserts them at
+// load, and where it lands in <head> relative to the inline <style> is not fixed.
+function paletteOverrideCss(overrides) {
+  const rule = (sel, vars) => `${sel} { ${Object.entries(vars).map(([k, v]) => `${k}:${v};`).join(' ')} }`;
+  const rules = [];
+  if (overrides?.light && Object.keys(overrides.light).length)
+    rules.push(rule('html:not(.dark)[data-palette]:root', overrides.light));
+  if (overrides?.dark && Object.keys(overrides.dark).length)
+    rules.push(rule('html.dark[data-palette]:root', overrides.dark));
+  return rules.join('\n');
 }
 
 const pages = manifest.pages
@@ -473,9 +641,22 @@ const pages = manifest.pages
     // components, or its filters BEFORE the engine silently drops it. Runs on the
     // raw page file.
     validatePageSchema(page);
+    const filters = resolvePageFilters(manifest.filters, entry.omit_filters, page.filters, page.id);
+    if (filters.length || page.filters !== undefined) page.filters = filters;
     // manifest owns name/order/visible; page file owns everything else.
     return { ...page, name: entry.name, order: entry.order };
   });
+
+// `layout` has one value the engine renders, so it selects nothing; and a second
+// colour role puts two claims on one frame's fill and border, where principle 5
+// wants one claim per channel. Both still build, so old decks keep rendering.
+if (deprecated.layout.length)
+  console.warn(`[deprecated] \`layout\` on ${deprecated.layout.length} page(s) (${deprecated.layout.join(', ')}): ` +
+    'the engine renders one page layout, so the field selects nothing. Delete it; a later version will refuse it.');
+if (deprecated.variant_extra.length)
+  console.warn(`[deprecated] \`variant_extra\` on ${deprecated.variant_extra.length} component(s) ` +
+    `(${deprecated.variant_extra.join(', ')}): a second colour role puts two claims on one frame. Keep one ` +
+    '`variant` and say the other in the kicker, a treatment or a legend band; a later version will refuse it.');
 
 const doc = {
   title: manifest.title,
@@ -485,20 +666,82 @@ const doc = {
   // engine.js's `if (barVer && doc.version)` guard skips rendering cleanly.
   version: manifest.version,
   palette,
+  palette_overrides: paletteOverrides,
+  // The resolved tokens are what both gates read; `css_vars` is the projection
+  // engine.js applies to :root. Per-node overrides ride on the node itself.
+  tokens,
+  css_vars: cssVars(tokens),
   pages
 };
+
+// ── THE BREAKPOINTS, GENERATED ─────────────────────────────────────────────
+// A container query cannot read var(), so the three collapse tiers are the one
+// part of the stylesheet the build writes (data/breakpoints.generated.css, linked
+// by index.html). Every rule inside still spends tokens through var().
+//   stack — compound grids stop laying sections side by side: they fold into a
+//           column and every child keeps its content height (a flex-basis would
+//           size the HEIGHT in column direction), stretched to the full width.
+//           align-content:stretch is needed beside align-items: in a
+//           column-direction wrap flex the single line otherwise shrink-wraps.
+//   two   — every multi-column leaf grid steps to the 2-track intermediate; a
+//           partial span keeps its proportion (--span2) and the separator rows
+//           are re-derived for that track count (--row-tracks-2).
+//   one   — the endpoint: every leaf grid is one track, a partial span becomes a
+//           full band, every separator row is thin (--row-tracks-1), and the
+//           canvas chrome shrinks to the narrow frame. The :not(.sec-c1) twins
+//           match the 1000px tier's specificity so they win by source order.
+function breakpointsCss(bp) {
+  return `/* GENERATED FILE — do not edit by hand.
+   Produced by engine/build-data.mjs from tokens.breakpoints (${bp.stack} / ${bp.two} / ${bp.one}px). */
+@container stage (max-width: ${bp.stack}px) {
+  .sec-grid.sec-compound { flex-direction:column; align-items:stretch; align-content:stretch; }
+  .sec-plane > .sec-grid.sec-compound { align-items:stretch; align-content:stretch; }
+  .sec-grid.sec-compound > * { flex:0 0 auto; }
+  .sec-grid.sec-compound > .msp { flex:0 0 auto; }
+  .sec-grid.sec-compound > .zone { flex:0 0 auto; }
+  .sec-grid.sec-compound > .box { align-self:stretch; }
+  .sec-plane > .sec-grid.sec-compound:has(> .msp) {
+    display:flex; flex-direction:column; align-items:stretch; align-content:stretch;
+    grid-template-columns:none; }
+  .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
+    align-self:stretch; }
+}
+@container stage (max-width: ${bp.two}px) {
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:span var(--span2, 1); }
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-auto-rows:var(--row-tracks-2, var(--cell-h, 130px)); }
+}
+@container stage (max-width: ${bp.one}px) {
+  .canvas { left:var(--frame-narrow, 8px); right:var(--frame-narrow, 8px); padding:var(--frame-narrow, 8px); }
+  .sec-grid:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:minmax(0,1fr); }
+  .sec-grid:not(.sec-compound) > .mspan { grid-column:1 / -1; }
+  .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:1 / -1; }
+  .sec-grid:not(.sec-compound):not(.sec-c1) { grid-auto-rows:var(--row-tracks-1, var(--cell-h, 130px)); }
+}
+`;
+}
+writeFileSync(join(DATA_DIR, 'breakpoints.generated.css'), breakpointsCss(tokens.breakpoints), 'utf8');
 
 // The generated file APPLIES THE PALETTE ITSELF, before the deck renders. It is
 // loaded by a <script src> in <head>-order ahead of engine.js and before any
 // content paints, so setting `data-palette` here avoids the flash of neutral that
 // waiting for engine.js's mount would cause. Guarded so the file stays harmless if
-// it is ever loaded outside a browser.
+// it is ever loaded outside a browser. The palette overrides ride the same early
+// path, as one inserted <style>, for the same reason.
+const overrideCss = paletteOverrideCss(paletteOverrides);
 const out = `// GENERATED FILE — do not edit by hand.
 // Produced by build-data.mjs from data/document.yaml + data/pages/*.yaml.
 window.__DOC__ = ${JSON.stringify(doc, null, 2)};
 if (typeof document !== 'undefined' && document.documentElement)
   document.documentElement.setAttribute('data-palette', window.__DOC__.palette || 'neutral');
-`;
+${overrideCss ? `if (typeof document !== 'undefined' && document.head) {
+  const s = document.createElement('style');
+  s.setAttribute('data-palette-overrides', '');
+  s.textContent = ${JSON.stringify(overrideCss)};
+  document.head.appendChild(s);
+}
+` : ''}`;
 
 writeFileSync(join(DATA_DIR, 'data.generated.js'), out, 'utf8');
-console.log(`Wrote data/data.generated.js — palette "${palette}", ${pages.length} visible page(s): ${pages.map(p => p.id).join(', ')}`);
+console.log(`Wrote data/data.generated.js + data/breakpoints.generated.css — palette "${palette}", ${pages.length} visible page(s): ${pages.map(p => p.id).join(', ')}`);

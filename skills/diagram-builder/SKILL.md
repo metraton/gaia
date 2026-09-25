@@ -21,11 +21,11 @@ panel, a chip spotlights a relation.
 
 ```
 idea
- └─ document        the deck: title, subtitle, version, palette, pages
+ └─ document        the deck: title, palette, tokens, core chips, pages
      └─ page        one act/view (also the ROOT section: its columns + sections)
          └─ section     a grid zone; nests other sections freely (a grid of grids)
              └─ component   a leaf: a card, a divider, a lane label, a declared hole
-   filters (page-level only) light a relation across components
+   filters light a relation: core chips on the document, page chips after them
 ```
 
 ## The governing definition (the anchor)
@@ -91,15 +91,16 @@ and distorts the grid — a section that needs a heading has one.
 **5 · Every visual channel carries one claim.** Position, size, colour, border
 style, kicker — independent of each other. Double them to reinforce (a bar that
 grows and turns red says magnitude twice) or split them to say two things. A
-channel's meaning is PER PAGE and declaring it is obligatory — but no schema
-field holds it: you declare it in the CONTENT, as a legend band, a section
-heading, or a box that spells the code out. An undeclared channel is decoration.
+channel's meaning is declared on the page and holds for the whole DECK, and
+declaring it is obligatory — but no schema field holds it: you declare it in
+the CONTENT, as a legend band, a section heading, or a box that spells the code
+out. An undeclared channel is decoration.
 
 **6 · The grid does not draw relations: it lights them.** There are no arrows.
 Every relation is shared membership in a chip — a directed path, which `order`
 makes readable, or a concept that cuts across sections. A relation needs two
 ends; a chip with a single member dims the page and lights nothing. The same key
-on two pages projects one onto the other.
+on two pages projects one onto the other, so it carries one label everywhere.
 
 ### What judges it
 
@@ -221,6 +222,111 @@ mapping is never stylistic — it is the meaning:
   (`p10-flow-phases`) and in the "flow — phases as sections" skeleton in
   `reference.md`.
 
+## The fields that carry the story
+
+Each capability is a field, and each exists for one reason. The schema, value
+sets and gate consequences are in `reference.md`; the terms in `GLOSSARY.md`.
+
+- **Rails are labels, first-class.** A `rail` is a title-only banner: a lane
+  label, or one word of a tree. It joins a chip through `filters`, takes one of
+  the four hues, sits `centered`, and steps into a tree with `indent: 0..3` —
+  the frame moves onto the title while the cell still fills its track, so every
+  cell gate measures it unchanged. A heading is a section title or the lead
+  band, never a rail (principle 4).
+- **`compact`** shortens the rows of one leaf grid, so a rowspan staircase stays
+  small; its boxes lose the description clamp because their height is the
+  rowspan. **`middle`** centres a short section's grid inside the height its
+  compound row stretches it to. **`copy`** puts a copy button on a box whose
+  title IS what the reader pastes: a command, a path, an identifier.
+- **Tokens** are every tunable number — row height, clamps, type, breakpoints,
+  the viewport — set once in `document.yaml` `tokens:` and read by the engine and
+  both gates alike (`reference.md`, "Tokens").
+- **Text fit, viewport and page height.** `tokens.viewport` is the screen the deck
+  is shown on. At that width a title, description or section header past its
+  clamp FAILS `check`, because that is where a cut sentence costs the reader;
+  at every other width it advises. Each page's height is predicted against the
+  viewport and reported, never failed, because a deck may mean to scroll.
+  `text_fit: advisory` is the one per-page opt-out, for a page honestly read in
+  the detail panel.
+
+## Colour that earns its place
+
+Two families. The six semantic variants (`neutral`, `good`, `warn`, `bad`,
+`accent`, `muted`) carry a verdict of risk or state. The four categorical hues
+(`blue`, `violet`, `gold`, `clay`, on boxes and on rails) carry none: they tell
+up to four peers apart. Colour earns its place when it saves the reader a word:
+
+- **A hue per actor, across pages.** Give each recurring actor one hue and keep
+  it on every page: the reader recognises the actor before reading its title.
+- **A hue per phase.** In a flow, a hue per phase makes the path's segments
+  legible at a glance, and it survives collapse because it travels with the box.
+- **A legend band.** Declare the mapping once, as a band with one box per hue
+  whose title says what the hue means, right after the lead band.
+- **A verdict colour only for a verdict.** `good` and `bad` assert safe and
+  dangerous; borrowed for grouping, they assert a verdict the content never made.
+- **A brand colour through `palette_overrides`.** `document.yaml` may replace a
+  palette's colour tokens per theme; `npm run contrast` fails the override that
+  misses WCAG AA (see `reference.md`).
+
+## Telling it across a deck
+
+**The lead band.** A page opens with one full-width box whose title is the
+page's CLAIM and whose kicker places it in the arc (`PART 2 OF 5`). Mark it
+`lead: true`: the build checks that it is a box, the first root child and as wide
+as the root, and HARMONY exempts it. It is a marker on a box, not a page field,
+because a box already has every slot a heading needs and every gate already
+measures it; a page field would need its own render path and its own geometry
+in both gates for no new capability.
+
+**Core chips and page chips.** The deck's recurring actors or concerns are CORE
+chips, declared once in `document.yaml` `filters:`; every page inherits them
+first, in their order, with one label. A page adds its own PAGE chips after
+them, few and local. Label a chip as the question it answers ("Which boxes are
+the gates?"): clicking it is the reader asking. A page that does not carry a core actor names it in its
+manifest entry's `omit_filters`, so the deck's coverage reads in one file; an
+inherited chip with no member fails CHIP like any empty chip. The build refuses
+a page that redeclares a core key with another label or steps, and CHIP-X fails
+a page-chip key that carries two labels across pages: a key the reader meets
+twice must mean one thing.
+
+**The harmony switch.** `harmony: true` in `document.yaml` makes `check` fail any
+box or rail that belongs to no chip, the lead band exempt. It is opt-in: a
+chip-driven deck, where a relation reaches every element, turns it on; a deck
+that uses chips partially, as the seed's teaching pages do, leaves it off.
+
+**The four sequence channels.** Choosing among them is the storytelling decision:
+
+| Channel | What it is | Survives collapse? |
+|---------|------------|--------------------|
+| `order` | geometry: the packing order and the one-column stacking order | it IS the collapse |
+| kicker `STEP n OF m` | the story index, as text | yes, the text travels with its box |
+| a chip | membership to spotlight, on click | yes |
+| `steps` | the chip's narration | yes |
+
+`order` is the only channel that moves boxes, so it must always read as the true
+sequence; the other three carry what it cannot: direction, grouping, narration.
+
+**The return-leg rule.** Never encode direction by a reversed `order`: a leg laid
+right to left by descending `order` reads backwards the moment the page collapses
+to one column. Put each leg in its own row or section, give it the `order` after
+the outbound leg, and carry the direction in the kicker (`STEP 4 OF 6`,
+`BACK TO 1`) and in the chip's `steps`.
+
+**The shapes a page can take.** The grid cannot radiate or draw an arrow; these
+four shapes come from its fields:
+
+| Shape | Fields that produce it | Seed |
+|-------|------------------------|------|
+| ring | two legs, each a section in natural `order`; one chip across both; the last kicker says where the path returns | `p12-shapes` |
+| staircase | `rowspan` for each step's height, `spacer`s above each step so all rest on one floor, `compact` to keep the rows short — or rail `indent` for a tree | `p12-shapes`, `p11-colour-and-rails` |
+| ladder | phases as sibling sections in `order`, steps inside each, one chip crossing them | `p10-flow-phases` |
+| lanes | a `rail` leading each row, every lane the same length (LANE fails unequal ones) | `overview` |
+
+**Deck-level harmony.** A hue or a chip means the same on every page: the reader
+who learned on page 2 that gold is the static gate reads gold on page 7 the same
+way. Keep a recurring anchor — the same core section, the same hue for the same
+actor — in the same place, and open with an overview before the drill-downs.
+
 ## The conversational cycle and the handoff to the builder
 
 The cycle is generic: whoever HOLDS the idea drives it, person or agent, and it
@@ -284,8 +390,8 @@ of that:
   a third of its width.
 - **SEEN is required on a first build, a change of form or of model, or any
   intention no invariant covers — and it names a command.**
-  `DIAGRAM_SHOTS_DIR=<a readable path> npm run verify` renders every page at 1920
-  and 1440 in both themes and writes the PNGs where you can open them; then load
+  `DIAGRAM_SHOTS_DIR=<a readable path> npm run verify` renders every page at the
+  deck's `tokens.viewport` and at 1440 in both themes and writes the PNGs where you can open them; then load
   `visual-verify` for the looking discipline. Do NOT write a browser probe:
   `verify.mjs` already resolves a Chromium that is on disk (no download) and
   handles the capture trap — `.canvas` is `position:absolute` with
@@ -321,9 +427,12 @@ of that:
 every tool the engine offers: inline sections side by side, nesting, the
 structural leaves, height-as-magnitude, a partial merge, the collapse cascade at
 a wide column count, span-weighted zones, a flow whose phases are sections
-crossed by one chip, and — across two pages — the deliberate mixing of cells and
-zones that principle 2 warns about. It is the fastest path from "is this
-possible?" to seeing it rendered.
+crossed by one chip, the deliberate mixing of cells and zones that principle 2
+warns about, and two feature pages: `p11-colour-and-rails` (a lead band, a
+legend of the four hues, a rail tree by `indent`, `copy` boxes in a `middle`
+section) and `p12-shapes` (a ring with its return leg, a `compact` staircase),
+both carrying the deck's core chip beside a page chip. It is the fastest path
+from "is this possible?" to seeing it rendered.
 
 **Open it.** A capability read in a seed that renders is worth more than the same
 capability described in prose, and the seed is where a claim gets falsified.

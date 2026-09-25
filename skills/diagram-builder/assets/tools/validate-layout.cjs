@@ -80,12 +80,14 @@
 //                            slot, `half` a FRACTION (two components share one) — so
 //                            both are excluded from the component-height set and the
 //                            `.half-slot` wrapper is asserted at --cell-h directly.
-//                            A THIRD family joins them: the SEPARATOR ROW. A row whose
-//                            only occupants are HORIZONTAL separators is --sep-row-h,
-//                            not --cell-h (one pixel of ink no longer costs a 130px
-//                            cell), so U asserts every leaf grid's resolved row TRACK
-//                            against what its occupants entitle it to — thin exactly
-//                            where the ink is thin, both directions. That track pass
+//                            A THIRD family joins them: the THIN ROW. A row whose
+//                            only occupants are thin leaves (horizontal separators,
+//                            declared holes, horizontal no-rowspan rails) is thinner
+//                            than --cell-h, so U asserts every leaf grid's resolved
+//                            row TRACK against what its occupants entitle it to —
+//                            thin exactly where the ink is thin, both directions. A
+//                            grid that declares `compact` runs its own shorter
+//                            --cell-h, and only such a grid may. That track pass
 //                            also finally covers `.sep`/`.rail` height, which the
 //                            .box-only height set never saw.
 //                            The old fixed-232 width rule is gone: cells now STRETCH
@@ -139,16 +141,18 @@
 //                            DIRECTLY in a compound ROW must be content-sized
 //                            (flex-grow 0) — never grow to an equal slice (a lone
 //                            box or a divider line ballooning); a sep/rail is also
-//                            checked to stay thin in absolute width. (b) a nested
-//                            section stacked in a columns:1 compound must keep its
-//                            CONTENT height (flex-grow 0, scrollHeight<=clientH) —
-//                            never be given a divided share shorter than its
-//                            content that spills onto the next section. This is
-//                            the hard guard for the compound-flex exemptions
-//                            (sep/rail + box exemption and the sec-c1 reset): it
-//                            reads the CAUSE on the live render, so it goes red
-//                            BEFORE a spill grows large enough for X to see an
-//                            actual box overlap.
+//                            checked to stay thin in absolute width, EXCEPT a
+//                            `.msp` band sep/rail, whose full-row width is
+//                            authored — and which must instead FILL its row.
+//                            (b) a nested section stacked in a columns:1 compound
+//                            must keep its CONTENT height (flex-grow 0,
+//                            scrollHeight<=clientH) — never be given a divided
+//                            share shorter than its content that spills onto the
+//                            next section. This is the hard guard for the
+//                            compound-flex exemptions (sep/rail + box exemption
+//                            and the sec-c1 reset): it reads the CAUSE on the live
+//                            render, so it goes red BEFORE a spill grows large
+//                            enough for X to see an actual box overlap.
 //   Y  band fill             — a full-width BAND must FILL its width: its content
 //                            spans the band edge-to-edge so each side gap is the
 //                            zone padding only (small AND equal) — not a big dead
@@ -171,6 +175,14 @@
 //                            in both directions AND adds ARITY (a one-member chip
 //                            still blacks out the deck to spotlight a single box),
 //                            a half this render-based row could never see.
+//   FILL / SLICE / TXT        — the three RATCHET rows, on every page not declared
+//                            `text_fit: advisory`: a root span fills its declared tracks,
+//                            an N-slice compound row renders as N slices on one
+//                            line, and no text block is clamped in the browser.
+//   LEAD  lead band spans    — a `lead: true` box is drawn at its root grid's inner
+//                            width (2px tolerance) on every page: FILL measures
+//                            root zones only, so a lead shrunk to its content in a
+//                            columns:1 root passed every other row.
 // ─────────────────────────────────────────────────────────────────────────
 // PLAYWRIGHT IS RESOLVED LAZILY, AND ITS ABSENCE IS NOT A FAILURE.
 // This used to be a top-level `require('playwright')`, which made the optional
@@ -194,20 +206,37 @@ const os = require('os');
 // otherwise keep two copies of. See tools/static-census.cjs for why they live
 // there — it also mirrors the collapse breakpoints, which this file only refers
 // to by name (the widths it renders at are its own).
-const { staticCensus, nodeCensus, pageCensus,
-  DEFAULT_FORM, GRID_DENSE } = require('./static-census.cjs');
+const { staticCensus, nodeCensus, pageCensus, loadAuthoredDeck, loadGenerated, isTextFitStrict,
+  DEFAULT_FORM, GRID_DENSE, WORDFIT } = require('./static-census.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = process.env.DIAGRAM_SHOTS_DIR || path.join(os.tmpdir(), 'diagram-deck-layout');
-// --cell-h is the FIXED row height (must match the design token in index.html).
-// --cell-w is no longer a track width in the fill model (cells stretch to equal
-// fr widths) — kept only as a documented reference for the readability step-down.
-const CELL_W = 232, CELL_H = 130;
-// --sep-row-h — the ONE row height that is not CELL_H (must match the design
-// token in index.html). A row whose only occupants are HORIZONTAL separators is
-// reduced to it: a 1px rule no longer costs a 130px cell. This is the third
-// height family invariant U recognises (see the U/height row below).
-const SEP_ROW_H = 40;
+// THE EXPECTATIONS, FROM THE TOKENS. The render gate holds no copy of a design
+// number: applyTokens() sets these from the bundle's `__DOC__.tokens` (main()
+// does it after the census; a test passes DEFAULT_TOKENS). Every one is a
+// height family invariant U or a floor M asserts:
+//   CELL_H       the fixed row (`row.cell_h`), unless a section DECLARES its own
+//   SEP_ROW_H    a thin row of separators / declared holes (`row.sep_h`)
+//   RAIL_ROW_*   a thin row holding a rail is `auto`: one title line + 2 × --s-2
+//                padding + 2 borders, up to the two-line ceiling RAILT enforces.
+//                Outside the band is a defect either way: CELL_H means the auto
+//                track was never applied, above MAX a third line slipped past.
+//                The line box is RAIL_LINE_EM × the rail font, the same factor
+//                check-layout.mjs uses for its railRowH floor.
+//   MIN_LEGIBLE  the readable leaf-cell floor (`cell_min_w`)
+//   BP           the collapse breakpoints (`breakpoints`)
+const RAIL_LINE_EM = 1.15;
+let CELL_H, SEP_ROW_H, RAIL_ROW_MIN, RAIL_ROW_MAX, MIN_LEGIBLE, BP, TOKENS;
+function renderExpectations(t) {
+  const line = Math.ceil(t.type.rail.px * RAIL_LINE_EM);
+  const chrome = 2 * t.space.base * t.space.scale[1] + 2;
+  return { CELL_H: t.row.cell_h, SEP_ROW_H: t.row.sep_h, RAIL_ROW_MIN: line + chrome,
+    RAIL_ROW_MAX: 2 * line + chrome, MIN_LEGIBLE: t.cell_min_w, BP: { ...t.breakpoints } };
+}
+function applyTokens(t) {
+  TOKENS = t;
+  ({ CELL_H, SEP_ROW_H, RAIL_ROW_MIN, RAIL_ROW_MAX, MIN_LEGIBLE, BP } = renderExpectations(t));
+}
 // ── ONE WIDTH, THE WIDEST. ────────────────────────────────────────────────
 // This was a FIVE-width sweep (600/900/1200/1920/2560) whose job was to prove the
 // …→2→1 collapse cascade while that cascade was being BUILT. It is stable now, and
@@ -238,14 +267,23 @@ const SB_GUARD = 17;     // widest classic vertical scrollbar to be robust again
 const MAX_FULL_H = 12000; // hard cap on the grown full-page viewport height (px)
 const FULL_MARGIN = 160;  // px slack below the last content row in the full-page capture
 const CELLW_TOL = 2;      // px spread allowed among a grid's equal fr cells (U)
-const MIN_LEGIBLE = 120;  // px — the readable floor for a leaf cell (M). Kept in
-                          // sync with --cell-min-w in index.html. Below this a
-                          // short title can only show ~1 char per line.
 const LEGIBLE_TOL = 6;    // px sub-pixel slack under MIN_LEGIBLE before M fires
 const SPAN_TOL_PCT = 15;  // % a compound section child's rendered width may
                           // deviate from its AUTHORED-span share (Q). Absorbs the
                           // min-content floor (~3% on the reference 2:1 split); a
                           // regression to equal shares is 25%+ off and so fails.
+const LEAD_TOL = 2;       // px sub-pixel slack between a lead band and its root's inner width
+const SPAN_FILL_TOL_PCT = 3; // % a ROOT section's rendered width may deviate from
+                          // its declared share of the PLANE (FILL). Tighter than
+                          // SPAN_TOL_PCT because this is not a proportion between
+                          // siblings but an absolute track arithmetic the plane
+                          // itself fixes: the only slack is sub-pixel rounding.
+                          // The measured defect was 58% off.
+// FILL / SLICE / TXT (see THE THREE RATCHET ROWS) hold on every page that does
+// not declare `text_fit: advisory` — the same page field that scopes INK and the
+// presentation-tier TEXT failures in tools/check-layout.mjs, so the static
+// estimate and the rendered ruling on the same text always cover the same pages.
+const ratcheted = c => c.textFitStrict === true;
 const WORDFIT_TOL = 1.5;  // px sub-pixel slack between the canvas-measured token
                           // width and the cell's available width (N). Small: a
                           // token that needs >~1.5px more than its cell WILL wrap
@@ -283,15 +321,14 @@ const ALL_FORMS = new Set(FORMS);
 // dead track, a lopsided row, or an illegibly narrow cell is a defect). Excludes
 // `timeline`, whose content is legitimately ONE long row.
 const GRIDDED = new Set(['dashboard', 'comparison', 'flow', 'mindmap', 'planner']);
-// GRID_DENSE (P/V) and DEFAULT_FORM come from static-census.cjs — the static
-// gate scopes its own ROW check by the same set, and one definition is the only
-// way the two gates cannot drift apart on which forms they judge.
-// WORDFIT — the narrative forms whose cells carry a real, human-language TITLE
-// that must not fracture mid-word. Scoped to flow + dashboard (the forms in this
-// deck); a token wider than its cell breaks under .box overflow-wrap:break-word,
-// a defect the M floor can miss (a 136px cell clears M's 120px floor yet is still
-// narrower than a 12-char monospace title). See invariant N.
-const WORDFIT = new Set(['dashboard', 'flow']);
+// GRID_DENSE (P/V), WORDFIT (N) and DEFAULT_FORM come from static-census.cjs —
+// the static gate scopes its own ROW check by GRID_DENSE and its TEXT budget by
+// WORDFIT, and one definition is the only way the two gates cannot drift apart
+// on which forms they judge. WORDFIT is the narrative set whose cells carry a
+// real, human-language TITLE that must not fracture mid-word: a token wider than
+// its cell breaks under .box overflow-wrap:break-word, a defect the M floor can
+// miss (a 136px cell clears M's 120px floor yet is still narrower than a 12-char
+// monospace title). See invariant N.
 
 const INVARIANTS = [
   // ── INTEGRITY — all forms, dura ──────────────────────────────────────────
@@ -374,17 +411,27 @@ const INVARIANTS = [
   //      wrapper that actually occupies the grid cell) must be exactly CELL_H and
   //      hold exactly 2 occupants. That is what proves `half` DIVIDED a slot rather
   //      than shrinking one and leaving a hole.
-  //   3. THE SEPARATOR ROW — the ROW itself is thinner. A horizontal separator draws
-  //      one pixel of ink and used to be charged a full CELL_H; a row whose ONLY
-  //      occupants are horizontal separators is now SEP_ROW_H. The separator is still
-  //      a cell (principle 1 is untouched), so this family is asserted on the TRACK:
-  //      for every leaf grid, every resolved row track must equal SEP_ROW_H when that
-  //      row's only occupants are horizontal separators and CELL_H otherwise. Both
-  //      directions matter — a separator SHARING its row with boxes must NOT thin it
-  //      (or the boxes clip), and an empty row (a hole, owned by RECT/HOLE in `npm
-  //      run check`) must not be mistaken for a separator row.
+  //   3. THE THIN ROW — the ROW itself is thinner. A horizontal separator draws
+  //      one pixel of ink and used to be charged a full CELL_H. The separator is
+  //      still a cell (principle 1 is untouched), so this family is asserted on the
+  //      TRACK: for every leaf grid, every resolved row track must equal SEP_ROW_H
+  //      when every occupant of that row is a THIN LEAF — a horizontal separator, a
+  //      declared hole (spacer), or a horizontal no-rowspan RAIL, mirroring the
+  //      engine's isThinRowLeaf — and CELL_H otherwise; a TRAILING sep/hole thin
+  //      row is a FLOOR (>= SEP_ROW_H), because the engine emits it as
+  //      minmax(--sep-row-h, 1fr) to absorb the slack a stretched section
+  //      leaves. A thin row that holds a RAIL is `auto` instead (a banner's
+  //      content IS its row), asserted as the band RAIL_ROW_MIN..RAIL_ROW_MAX:
+  //      one title line up to the two-line ceiling the static RAILT enforces.
+  //      Both directions matter — a separator SHARING its row with boxes must
+  //      NOT thin it (or the boxes clip), and an empty row (a hole, owned by
+  //      RECT/HOLE in `npm run model`) must not be mistaken for a separator row.
   //      A VERTICAL separator is not in this family: its ink IS the row height, so its
-  //      row stays CELL_H — measure() counts only `.sep:not(.sep-v)` as thin ink.
+  //      row stays CELL_H — measure() counts only `.sep:not(.sep-v)` as thin ink;
+  //      a vertical or rowspan rail is excluded the same way.
+  //      A grid that declares `compact` (index.html `.zone.compact`) runs its own
+  //      shorter --cell-h; only such a grid may, so a short row anywhere else is
+  //      named as the undeclared compact it is.
   //      The same track measurement finally covers the height of the two leaf types
   //      the `.box`-only height set never saw: a `.sep`/`.rail` that overflows the
   //      row(s) it is entitled to is reported here (the --zone-min-h-vs---cell-h
@@ -396,18 +443,49 @@ const INVARIANTS = [
       const slots = m.halfSlots || [];
       const badSlots = slots.filter(s => Math.abs(s.h - CELL_H) !== 0 || s.n !== 2);
       const cellsOk = eq(m.heights, [CELL_H]);
-      // family 3 — the row TRACKS of every leaf grid.
+      // family 3 — the row TRACKS of every leaf grid. The classifier MIRRORS the
+      // engine's rowTrackList (isThinRowLeaf in engine.js): a row is THIN when
+      // every occupant is a thin LEAF, so a MIXED sep+spacer row (a rule that
+      // spans 3 of 4 tracks with its fourth track declared) is one thin row, not
+      // a defective cell row.
       const badTracks = [], thinRows = [], spills = [];
       for (const g of m.rowTracks || []) {
+        // A grid's own row height: CELL_H unless it declares `compact`. A
+        // measurement that predates the cellH field reads as CELL_H. Only a grid
+        // that DECLARES `compact` may run a row other than CELL_H.
+        // The row a grid may run: its section's DECLARED override (data-cell-h,
+        // stamped by the engine from a `tokens.row.cell_h` or the `compact`
+        // preset), else CELL_H.
+        const cellH = g.cellH ?? CELL_H;
+        const rowH = g.declaredCellH ?? CELL_H;
+        if (cellH !== rowH)
+          badTracks.push(`${g.zone}: --cell-h=${cellH}px without a declared row override (\`compact\` or \`tokens.row.cell_h\`; expect ${rowH})`);
         g.tracks.forEach((h, i) => {
           const row = g.rows[i];
-          const thin = row.n > 0 && row.n === row.sepH;
-          const expect = thin ? SEP_ROW_H : CELL_H;
-          if (h !== expect) {
-            badTracks.push(`${g.zone}:row${i} track=${h}px expect ${expect}px (` +
-              (thin ? 'separator-only row — the thin track was not applied'
-                : `${row.n} occupant(s), ${row.sepH} separator(s) — a row that carries a box must stay ${CELL_H}px`) + ')');
-          } else if (thin) thinRows.push(`${g.zone}:row${i}`);
+          const thin = row.n > 0 && row.sepH + (row.hole || 0) + (row.railH || 0) === row.n;
+          const railRow = thin && (row.railH || 0) > 0;
+          // A TRAILING separator/hole thin row is the one family whose track is
+          // a FLOOR rather than a fixed height: the engine emits it as
+          // minmax(--sep-row-h, 1fr) so it ABSORBS the slack a stretched
+          // section leaves (rowTrackList's last-row rule), so it is
+          // legitimately TALLER than SEP_ROW_H and asserting equality would
+          // forbid the very thing it is for. Shorter than the floor is still a
+          // defect, and a NON-trailing thin row keeps the exact SEP_ROW_H.
+          // A RAIL thin row is `auto` at every position (the engine never lets
+          // a banner absorb slack), so its track is asserted as the BAND
+          // [RAIL_ROW_MIN, RAIL_ROW_MAX]: one title line up to the two-line
+          // ceiling RAILT enforces statically — the render-side twin of RAILT.
+          const trailing = i === g.tracks.length - 1;
+          const held = railRow ? h >= RAIL_ROW_MIN && h <= RAIL_ROW_MAX
+            : thin && trailing ? h >= SEP_ROW_H
+            : h === (thin ? SEP_ROW_H : rowH);
+          if (!held) {
+            badTracks.push(`${g.zone}:row${i} track=${h}px expect ${railRow
+              ? `${RAIL_ROW_MIN}..${RAIL_ROW_MAX}px (rail row is auto: one title line up to the two-line ceiling)`
+              : `${thin && trailing ? '>= ' : ''}${thin ? SEP_ROW_H : rowH}px (` +
+                (thin ? 'thin row (separators/declared holes only) — the thin track was not applied'
+                  : `${row.n} occupant(s), ${row.sepH} separator(s), ${row.hole || 0} hole(s) — a row that carries a box must stay ${rowH}px`) + ')'}`);
+          } else if (thin) thinRows.push(`${g.zone}:row${i}${railRow ? `(rail@${h}px)` : h !== SEP_ROW_H ? `(absorbed@${h}px)` : ''}`);
         });
         for (const o of g.overflow) spills.push(`${g.zone}:${o.cls} overflows its row by ${o.over}px`);
       }
@@ -416,7 +494,9 @@ const INVARIANTS = [
       if (slots.length) parts.push(`${slots.length} half-slot(s) @ ${[...new Set(slots.map(s => s.h))].join('/')}px expect ${CELL_H}`);
       const nTracks = (m.rowTracks || []).reduce((n, g) => n + g.tracks.length, 0);
       parts.push(`${nTracks} row track(s) across ${(m.rowTracks || []).length} leaf grid(s): ` +
-        `${thinRows.length} separator-only @ ${SEP_ROW_H}px${thinRows.length ? ` (${thinRows.join(', ')})` : ''}, ` +
+        `${thinRows.length} thin (separators/declared holes @ ${SEP_ROW_H}px, trailing thin row >= ${SEP_ROW_H}px, ` +
+        `rail rows ${RAIL_ROW_MIN}..${RAIL_ROW_MAX}px)` +
+        `${thinRows.length ? ` (${thinRows.join(', ')})` : ''}, ` +
         `${nTracks - thinRows.length} @ ${CELL_H}px; no .sep/.rail overflows its row`);
       if (badSlots.length) parts.push(`BAD: ${badSlots.map(s => `${s.zone}:h=${s.h}(expect ${CELL_H}),occupants=${s.n}(expect 2)`).join(', ')}`);
       if (badTracks.length) parts.push(`BAD TRACKS: ${badTracks.join(', ')}`);
@@ -428,7 +508,7 @@ const INVARIANTS = [
   // measurement, quantifies: a gap makes the sum short by exactly its own area, and
   // the hole is named by coordinate rather than inferred from a right-edge delta.
   { id: 'L', name: 'cells fill width (no right gap)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
-    when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run model)' },
+    when: (c) => c.w > BP.two, superseded: 'RECT/HOLE (npm run model)' },
   // E — RETIRED into arithmetic. A dead track is a track no slot's (column, span)
   // ever covers, which is a set operation on the authored data, not a rendered
   // measurement (TRACK in check-layout.mjs). It also guards the same thing more
@@ -441,7 +521,7 @@ const INVARIANTS = [
   // row (ROW), carrying over P's exact scope — grid-dense forms, >1 track, and rows
   // a rowspan touches exempt.
   { id: 'P', name: 'no orphan cell', cls: 'geometry', sev: 'dura', forms: GRID_DENSE,
-    when: (c) => c.w > 1000, superseded: 'ROW (npm run model)' },
+    when: (c) => c.w > BP.two, superseded: 'ROW (npm run model)' },
   { id: 'M', name: 'cells legible (min readable width)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
     when: () => true, superseded: null,
     check: (m) => {
@@ -523,19 +603,64 @@ const INVARIANTS = [
           `seps=${c.rendered.seps} rails=${c.rendered.rails} spacers=${c.rendered.spacers} ` +
           `half-slots=${c.rendered.halfSlots} leaf-grids=${c.rendered.leafGrids} — all match the authored census` }; } },
   { id: 'Y', name: 'band content fills band (no dead margin)', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.w >= 1200, superseded: null,
+    when: (c) => c.w > BP.two, superseded: null,
     check: (m) => { const FILL_MARGIN_TOL = 48, SYM_TOL = 16; const bands = m.topZones.filter(z => z.band);
       const bad = bands.filter(z => z.leftGap > FILL_MARGIN_TOL || z.rightGap > FILL_MARGIN_TOL || Math.abs(z.leftGap - z.rightGap) > SYM_TOL);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(z => `${z.zone}:not-filled(L${z.leftGap}/R${z.rightGap})`).join(', ')
         : bands.map(z => `${z.zone}(L${z.leftGap}/R${z.rightGap})`).join(' ') }; } },
   { id: 'Q', name: 'compound section widths follow authored span', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.w >= 1200, superseded: null,
+    when: (c) => c.w > BP.two, superseded: null,
     check: (m) => { const items = m.spanRatios || [];
       const bad = items.filter(it => it.errPct > SPAN_TOL_PCT);
       return { ok: bad.length === 0, detail: bad.length
         ? bad.map(it => `${it.grid}>${it.id}:span${it.span} width ${it.w}px vs expected ${it.expected}px (${it.errPct}% off, tol ${SPAN_TOL_PCT}% — span-weight not applied; a span:1 child likely inherited a parent band's --span)`).join(', ')
         : items.length ? `span-weighted compound widths proportional to authored span (${items.map(it => `${it.id}:s${it.span}@${it.w}px`).join(', ')})`
         : 'no span-weighted compound rows to check' }; } },
+  // ── THE THREE RATCHET ROWS ────────────────────────────────────────────────
+  // All three answer one measured failure: a page rendered with a 35%-wide middle
+  // band, a lifecycle wrapped into a 2x2 and eight clamped cards while BOTH gates
+  // reported ALL PASS. `npm run model` is arithmetic over the AUTHORED data, so it
+  // certified the geometry it MODELLED and could not see that index.html never
+  // implemented it; every row already here measured something adjacent instead (Q
+  // the proportion, Y and S bands only, C the box and not the text inside it).
+  // PAGE-SCOPED, not form-scoped: they hold on every page unless it declares
+  // `text_fit: advisory`, the one opt-out a deck authored before them uses.
+  { id: 'FILL', name: 'root span fills its declared tracks', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
+    when: (c) => ratcheted(c) && c.w > BP.two, superseded: null,
+    check: (m) => { const items = m.spanFill || [];
+      const bad = items.filter(it => it.offPct > SPAN_FILL_TOL_PCT);
+      return { ok: bad.length === 0, detail: bad.length
+        ? bad.map(it => `${it.id}:span${it.span}/${it.cols} rendered ${it.w}px vs ${it.expected}px of the plane ` +
+            `(${it.offPct}% off, tol ${SPAN_FILL_TOL_PCT}% — the declared span is not reaching the canvas)`).join(', ')
+        : items.map(it => `${it.id}:s${it.span}/${it.cols}@${it.w}px(=${it.expected})`).join(' ') }; } },
+  { id: 'LEAD', name: 'a lead band spans its root', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
+    when: () => true, superseded: null,
+    check: (m) => { const items = m.leadFill || [];
+      const bad = items.filter(it => it.inner - it.w > LEAD_TOL);
+      return { ok: bad.length === 0, detail: bad.length
+        ? bad.map(it => `${it.id}: lead drawn ${it.w}px inside a ${it.inner}px root (tol ${LEAD_TOL}px — the band shrank to its content)`).join(', ')
+        : items.length ? items.map(it => `${it.id}@${it.w}px/${it.inner}px`).join(' ') : 'no lead band on this page' }; } },
+  { id: 'SLICE', name: 'an N-slice row renders as N slices on one line', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
+    when: (c) => ratcheted(c) && c.w > BP.two, superseded: null,
+    check: (m) => { const rows = (m.compoundRows || []).filter(r => !r.column);
+      const expected = r => r.expectedLines || 1;
+      const wrapped = rows.filter(r => r.lines > expected(r));
+      const uneven = rows.filter(r => r.lines === 1 && r.equalSpans && r.wSpread > CELLW_TOL);
+      return { ok: wrapped.length === 0 && uneven.length === 0, detail:
+        wrapped.length || uneven.length
+          ? [...wrapped.map(r => `${r.zone}: ${r.n} authored slice(s) wrapped onto ${r.lines} lines where ` +
+                `their spans pack into ${expected(r)} ` +
+                `(${r.slices.map(s => `${s.id}@y${s.top}`).join(', ')}) — the row no longer reads left to right`),
+             ...uneven.map(r => `${r.zone}: ${r.n} equal-span slice(s) differ in width by ${r.wSpread}px ` +
+                `(${r.slices.map(s => `${s.id}@${s.w}px`).join(', ')})`)].join(', ')
+          : rows.map(r => `${r.zone}:${r.n}slice/${r.lines}line(s) of ${expected(r)}(spread ${r.wSpread}px)`)
+              .join(' ') || 'no compound slice rows' }; } },
+  { id: 'TXT', name: 'no clamped text (browser-measured)', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
+    when: (c) => ratcheted(c), superseded: null,
+    check: (m) => { const bad = m.clamps || [];
+      return { ok: bad.length === 0, detail: bad.length
+        ? bad.map(c => `${c.id}>${c.part} cut by ${c.over}px ("${c.text}")`).join(', ')
+        : `every .k/.t/.desc/.m block renders whole across ${m.nBoxes} box(es) (scrollHeight === clientHeight)` }; } },
   { id: 'V', name: 'horizontal composition (verticality)', cls: 'geometry', sev: 'consejo', forms: GRID_DENSE,
     when: (c) => c.tier === 'ultra', superseded: null,
     check: (m) => { const multiCol = m.leafGrids.filter(g => g.tracks >= 2).length; const singleCol = m.leafGrids.filter(g => g.tracks === 1).length;
@@ -677,6 +802,7 @@ function measure() {
       hspan: b.classList.contains('mspan'),   // partial horizontal merge
       rowspan: b.classList.contains('mrsp'),  // vertical merge (a taller cell)
       half: b.classList.contains('half'),     // half-height: shares a slot
+      compact: !!b.closest('.zone.compact'),  // in a `compact` grid: its row is that grid's own --cell-h
       clipped: b.scrollHeight > b.clientHeight + 1 };
   });
   // single-COLUMN cells: neither a band nor a partial horizontal span. A row-span
@@ -690,7 +816,9 @@ function measure() {
   // In both cases the component's own height is not the invariant; the SLOT's is.
   // So U asserts CELL_H over this set AND, separately, over every `.half-slot`
   // (collected below) — which is the wrapper that actually occupies the grid cell.
-  const heights = [...new Set(boxes.filter(b => !b.rowspan && !b.half).map(b => b.h))].sort((a,b)=>a-b);
+  // A `compact` grid's single-row cells are asserted against that grid's own
+  // --cell-h in the track family below, so they stay out of the page-wide set.
+  const heights = [...new Set(boxes.filter(b => !b.rowspan && !b.half && !b.compact).map(b => b.h))].sort((a,b)=>a-b);
   const clipped = boxes.filter(b => b.clipped).length;
 
   // HALF SLOTS — the wrapper a `half` PAIR renders into. It is the real grid cell,
@@ -705,17 +833,16 @@ function measure() {
       h: Math.round(r.height), n: s.querySelectorAll(':scope > .box').length };
   });
 
-  // ROW TRACKS — the SEPARATOR ROW, U's third height family, plus the height of
+  // ROW TRACKS — the THIN ROW, U's third height family, plus the height of
   // the two leaf types the height set never covered (`.sep`, `.rail`).
   //
   // WHY THE TRACK AND NOT THE COMPONENT: a horizontal separator's own height is 0
   // (or ~17px labeled), so measuring the ELEMENT says nothing about the space it
   // costs — the cost is the ROW. So read the grid's resolved `grid-template-rows`
   // (the used size of every track, implicit ones included) and assert each track
-  // against what its occupants entitle it to: SEP_ROW_H for a row whose only
-  // occupants are horizontal separators, CELL_H otherwise. That is what proves
-  // the thin row is thin EXACTLY where the ink is thin — a separator sharing its
-  // row with boxes must NOT thin it, and a hole must not be mistaken for one.
+  // against what its occupants entitle it to. That is what proves the thin row is
+  // thin EXACTLY where the ink is thin — a separator sharing its row with boxes
+  // must NOT thin it, and a hole must not be mistaken for one.
   //
   // Occupancy is derived from each child's own start row (the band containing its
   // top edge — an item is either stretched to the band start or centred inside it)
@@ -736,7 +863,7 @@ function measure() {
     const gTop = grid.getBoundingClientRect().top;
     const bands = []; let y = 0;
     for (const t of tracks) { bands.push([y, y + t]); y += t + gap; }
-    const rows = bands.map(() => ({ n: 0, sepH: 0 }));
+    const rows = bands.map(() => ({ n: 0, sepH: 0, hole: 0, railH: 0 }));
     const overflow = [];
     for (const child of grid.children) {
       const r = child.getBoundingClientRect();
@@ -753,14 +880,30 @@ function measure() {
       const rowspan = Math.max(1, Math.floor(Number(child.style.getPropertyValue('--rowspan')) || 1));
       const end = Math.min(bands.length - 1, start + rowspan - 1);
       const isSepH = child.classList.contains('sep') && !child.classList.contains('sep-v');
-      for (let i = start; i <= end; i++) { rows[i].n++; if (isSepH) rows[i].sepH++; }
+      const isHole = child.classList.contains('spacer');
+      // a HORIZONTAL rail without rowspan is the engine's third thin leaf; a
+      // vertical rail's ink IS the row height and a rowspan rail labels a lane,
+      // so neither counts (mirrors isThinRowLeaf in engine.js).
+      const isRailH = child.classList.contains('rail') && !child.classList.contains('rail-v')
+        && rowspan <= 1;
+      for (let i = start; i <= end; i++) {
+        rows[i].n++;
+        if (isSepH) rows[i].sepH++;
+        if (isHole) rows[i].hole++;
+        if (isRailH) rows[i].railH++;
+      }
       if (child.classList.contains('sep') || child.classList.contains('rail')) {
         const over = Math.round(Math.max(0, bot - bands[end][1]) + Math.max(0, bands[start][0] - top));
         if (over > 1) overflow.push({ cls: child.className, over });
       }
     }
     const zoneEl = grid.closest('.zone[data-zone]');
-    return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)', tracks, rows, overflow };
+    // No fallback: the engine always sets --cell-h, so a missing one reads 0 and fails U.
+    const cellH = Math.round(parseFloat(cs.getPropertyValue('--cell-h'))) || 0;
+    const compact = !!(zoneEl && zoneEl.classList.contains('compact'));
+    const declared = grid.closest('[data-cell-h]');
+    const declaredCellH = declared ? Number(declared.getAttribute('data-cell-h')) : undefined;
+    return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)', tracks, rows, overflow, cellH, compact, declaredCellH };
   });
 
   // FILTER REFERENTIAL INTEGRITY (invariant K). The chips and the components that
@@ -896,7 +1039,7 @@ function measure() {
     // lower rows.
     const colGap = parseFloat(getComputedStyle(g).columnGap) || 0;
     const rowGap = parseFloat(getComputedStyle(g).rowGap) || 0;
-    const cellH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-h')) || 130;
+    const cellH = parseFloat(getComputedStyle(g).getPropertyValue('--cell-h')) || 0;   // the grid's own row (engine-set)
     const rowPitch = cellH + rowGap;   // top-to-top distance between grid rows
     // `.half-slot` counts as a grid cell here — it IS the cell a `half` pair
     // occupies (the two boxes inside it are NOT direct children of the grid). Omit
@@ -1066,6 +1209,12 @@ function measure() {
   //       regression of the sep/rail/box exemption (fix-1 / bug #2). A separator
   //       is additionally checked to stay thin in absolute width — a divider line
   //       is never legitimately wide — as the observable EFFECT of the balloon.
+  //       EXEMPT from that width clause: a `.msp` BAND sep/rail (span == columns),
+  //       whose full-row width is authored (`.sec-grid.sec-compound > .msp` is
+  //       flex:0 0 100% by design — the width is the assertion of ownership, the
+  //       grid's substitute for an arrow). Its flex-grow is still asserted 0, and
+  //       it must FILL its row instead — a band leaf shrunk below its row is the
+  //       counterpart defect.
   //   (2) STACK OVERFLOW — a nested section (.zone) stacked in a columns:1
   //       (column-direction) compound must keep its CONTENT height (flex-grow 0).
   //       If it grows, a stretched parent divides its height between the stacked
@@ -1076,6 +1225,7 @@ function measure() {
   //       reset (fix-2). Measured per element, so it goes red BEFORE the spill is
   //       large enough to make two boxes overlap (which is all X can see).
   const SEP_MAX_W = 96;   // px — a divider line / thin rail is never this wide as a flex item
+  const BAND_LEAF_TOL = 2; // px — a `.msp` band leaf must reach its row's full width
   const balloons = [];
   const stackOverflow = [];
   act.querySelectorAll('.sec-grid.sec-compound').forEach(g => {
@@ -1098,9 +1248,21 @@ function measure() {
       const isZone = kid.classList.contains('zone');
       if (!column && isLeaf) {
         if (grow > 0) balloons.push(`${gid}>${label}:flex-grow=${grow} (leaf grew to an equal slice)`);
-        if ((kid.classList.contains('sep') || kid.classList.contains('rail'))
-            && Math.round(kid.getBoundingClientRect().width) > SEP_MAX_W)
-          balloons.push(`${gid}>${label}:width=${Math.round(kid.getBoundingClientRect().width)}px > ${SEP_MAX_W}px (divider/rail ballooned)`);
+        // The absolute-width clause is the observable EFFECT of a balloon, so it
+        // exempts the one leaf whose full-row width is AUTHORED: a `.msp` band
+        // (span == columns) sep/rail is `flex:0 0 100%` by the compound band
+        // rule in index.html — the width IS its assertion (a header rail owns
+        // its row), its flex-grow is still 0, and the grow clause above keeps
+        // catching a real balloon. In exchange the band must actually FILL its
+        // row: a shrunk band leaf is the defect S/Y only see for zones.
+        if (kid.classList.contains('sep') || kid.classList.contains('rail')) {
+          const w = Math.round(kid.getBoundingClientRect().width);
+          const isBand = kid.classList.contains('msp');
+          if (!isBand && w > SEP_MAX_W)
+            balloons.push(`${gid}>${label}:width=${w}px > ${SEP_MAX_W}px (divider/rail ballooned)`);
+          if (isBand && w < g.clientWidth - BAND_LEAF_TOL)
+            balloons.push(`${gid}>${label}:width=${w}px < row ${g.clientWidth}px (band sep/rail shrunk below its row)`);
+        }
       }
       if (column && isZone) {
         if (grow > 0) stackOverflow.push(`${gid}>${label}:flex-grow=${grow} (stacked section given a divided share)`);
@@ -1159,6 +1321,105 @@ function measure() {
           expected: Math.round(expected), errPct: +errPct.toFixed(1) }); });
     });
   });
+
+  // SPAN FILL (invariant FILL). Q above proves the PROPORTION between two
+  // sections on a row; it says nothing about whether the row reaches the edge of
+  // the canvas. A root section declared span M of N must occupy M of the plane's
+  // N tracks, and the arithmetic is the plane's own: the shared gap comes out
+  // first, the remainder divides into N equal tracks, and a span of M takes M
+  // tracks plus the M-1 gaps it swallows. This is the assertion that was missing
+  // when `.mspan` had no grid-column rule in the root band grid: a span:5 of 6
+  // rendered at its min-content inside ONE track while Q, Y and S all stayed
+  // green — Q because the proportion is computed from the row's own children, Y
+  // and S because neither a partial span nor a bare canvas margin is a band.
+  const planeEl = act.querySelector('.sec-plane');
+  const spanFill = [];
+  if (planeEl && rootGrid) {
+    const rootCols = Math.max(1, Number(rootGrid.style.getPropertyValue('--cols')) || 1);
+    const gap = parseFloat(getComputedStyle(rootGrid).columnGap) || 0;
+    const planeW = planeEl.getBoundingClientRect().width;
+    const track = (planeW - gap * (rootCols - 1)) / rootCols;
+    for (const kid of rootGrid.children) {
+      if (!kid.classList.contains('zone')) continue;
+      const id = kid.getAttribute('data-zone') || '?';
+      const span = Math.max(1, Math.min(authoredSpan[id] || 1, rootCols));
+      const expected = track * span + gap * (span - 1);
+      const w = kid.getBoundingClientRect().width;
+      spanFill.push({ id, span, cols: rootCols, w: Math.round(w),
+        expected: Math.round(expected), offPct: +(Math.abs(w - expected) / expected * 100).toFixed(1) });
+    }
+  }
+
+  // LEAD BANDS (invariant LEAD). FILL skips a leaf root child, so a lead box that
+  // shrank to its content inside a compound root passed every row; the lead is
+  // compared to the root grid's inner width, the band it was authored to span.
+  const leadFill = [];
+  if (rootGrid) {
+    const cs = getComputedStyle(rootGrid);
+    const inner = rootGrid.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    for (const kid of rootGrid.children) {
+      if (!kid.classList.contains('lead')) continue;
+      leadFill.push({ id: kid.getAttribute('data-k') || '?', w: Math.round(kid.getBoundingClientRect().width),
+        inner: Math.round(inner) });
+    }
+  }
+
+  // SLICE ROWS (invariant SLICE). A compound row authored as N slices must
+  // render as N slices on ONE line. Wrapping is a legitimate collapse at a
+  // narrow tier, so the check is tier-gated; at a wide tier a wrap means the row
+  // never had the width its author gave it, and the reading order the page
+  // depends on (left to right) silently becomes a 2x2 grid. Band children
+  // (.msp) are excluded: a band takes its own line BY DEFINITION.
+  const compoundRows = [...act.querySelectorAll('.sec-grid.sec-compound')].map(g => {
+    const zoneEl = g.closest('.zone[data-zone]');
+    const slices = [...g.children]
+      .filter(k => k.classList.contains('zone') && !k.classList.contains('msp'))
+      .map(k => { const r = k.getBoundingClientRect();
+        return { id: k.getAttribute('data-zone') || '?', w: Math.round(r.width),
+          top: Math.round(r.top / 4) * 4, span: authoredSpan[k.getAttribute('data-zone')] || 1 }; });
+    const lines = new Set(slices.map(s => s.top));
+    // A ROOT WITH BANDS is a CSS grid of --cols tracks, not a flex row: its
+    // sections pack into as many rows as their authored spans need (a band closes
+    // the row it follows), so "one line" is the flex-row expectation only. The
+    // grid's expectation is that packing, and a wrap is a line BEYOND it.
+    let expectedLines = 1;
+    if (getComputedStyle(g).display === 'grid') {
+      const cols = getComputedStyle(g).gridTemplateColumns.split(' ').filter(Boolean).length || 1;
+      let rows = 0, used = 0;
+      for (const k of g.children) {
+        if (!k.classList.contains('zone')) continue;
+        if (k.classList.contains('msp')) { used = 0; continue; }
+        const span = Math.min(cols, authoredSpan[k.getAttribute('data-zone')] || 1);
+        if (used === 0 || used + span > cols) { rows++; used = 0; }
+        used += span;
+      }
+      expectedLines = Math.max(1, rows);
+    }
+    const spans = slices.map(s => s.span);
+    const equalSpans = slices.length > 0 && Math.max(...spans) === Math.min(...spans);
+    const widths = slices.map(s => s.w);
+    return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)', n: slices.length,
+      lines: lines.size, expectedLines, equalSpans, slices,
+      wSpread: widths.length ? Math.max(...widths) - Math.min(...widths) : 0,
+      column: getComputedStyle(g).flexDirection.startsWith('column') };
+  }).filter(r => r.n > 0);
+
+  // TEXT CLAMP (invariant TXT). The BROWSER's own verdict on whether a string
+  // rendered whole: a text block whose scrollHeight exceeds its clientHeight is
+  // being cut by its own -webkit-line-clamp, which is what the reader sees as an
+  // ellipsis. This is measured, not budgeted — the arithmetic INK/TEXT checks in
+  // `npm run model` model the slot the stylesheet was SUPPOSED to give the block,
+  // so they stay green over a card the browser is clipping whenever the render
+  // and the model disagree. Only the render can settle it.
+  const clamps = [];
+  for (const box of act.querySelectorAll('.box')) {
+    for (const el of box.querySelectorAll('.k, .t, .desc, .m')) {
+      const over = el.scrollHeight - el.clientHeight;
+      if (over > 1) clamps.push({ id: box.getAttribute('data-k') || '?',
+        part: el.className.split(/\s+/)[0], over: Math.round(over),
+        text: (el.textContent || '').trim().slice(0, 40) });
+    }
+  }
 
   // ── CENSUS: AUTHORED == RENDERED (invariant Z) ────────────────────────────
   // Every other invariant measures the geometry of what IS on screen. NONE of them
@@ -1230,7 +1491,7 @@ function measure() {
 
   return { singleWidths, heights, clipped, maxRowCount, overflowX,
     leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, wordFit,
-    halfSlots, rowTracks, filterRefs, census, nBoxes: boxes.length,
+    halfSlots, rowTracks, filterRefs, census, spanFill, leadFill, compoundRows, clamps, nBoxes: boxes.length,
     canvasScrollHeight: canvas.scrollHeight, canvasClientWidth: cw };
 }
 
@@ -1295,6 +1556,10 @@ async function main() {
     process.exit(1);
   }
   console.log(`    [PASS] generated data matches the authored YAML — ${sc.summary}\n`);
+  // The census just proved the bundle carries the authored tokens.
+  applyTokens(loadGenerated(ROOT).doc.tokens);
+  console.log(`    [PASS] expectations from __DOC__.tokens — row ${CELL_H}px, thin row ${SEP_ROW_H}px, ` +
+    `rail row ${RAIL_ROW_MIN}..${RAIL_ROW_MAX}px, legible cell >= ${MIN_LEGIBLE}px, viewport ${TOKENS.viewport.w}x${TOKENS.viewport.h}\n`);
 
   // ── DEGRADATION: NO BROWSER IS A SKIP, NOT A FAILURE. ──
   // This gate is MANDATORY (`npm run render`, the MEASURED half) and it still exits
@@ -1375,6 +1640,7 @@ async function main() {
         return { pageId, resolved: !!dp,
           name: (dp && (dp.name || dp.id)) || pageId || `page${i}`,
           form: (dp && dp.form) || defForm,
+          textFit: dp ? dp.text_fit : undefined,
           tabIndex: i };
       });
     }, DEFAULT_FORM);
@@ -1473,12 +1739,13 @@ async function main() {
 
       // ── invariants (flat form-scoped lookup, asserted on first-pass geometry) ──
       // ctx carries the per-render facts a check may need beyond the geometry m:
-      // the page's FORM (scopes applicability), the tier, and the run-computed
-      // determinism / robustness / capture results. runInvariants filters the
-      // INVARIANTS table by (form, tier, not-retired) and evaluates each check —
-      // no per-tier branching tree here anymore.
+      // the page's FORM (scopes applicability), its id (scopes the ratchet rows),
+      // the tier, and the run-computed determinism / robustness / capture results.
+      // runInvariants filters the INVARIANTS table by (form, tier, not-retired) and
+      // evaluates each check — no per-tier branching tree here anymore.
       const m = m0;
-      const invCtx = { form: pg.form, tier, w, WIDE: WIDE_TIERS.has(tier), PASSES,
+      const invCtx = { form: pg.form, pageId: pg.pageId, textFitStrict: isTextFitStrict({ text_fit: pg.textFit }),
+        tier, w, WIDE: WIDE_TIERS.has(tier), PASSES,
         deterministic, uniqueSigs, sigs, robustOk, robustDetail, captureOk, captureDetail };
       const checks = runInvariants(m, invCtx);
       for (const c of checks) {
@@ -1490,6 +1757,29 @@ async function main() {
         maxRowCount: m.maxRowCount, wrap: m.wrap.join(' '), checks });
       await ctx.close();
     }
+  }
+
+  // ── VH: the page height MEASURED at the presentation viewport (ADVISORY) ──
+  // The render-side verdict on check-layout's HEIGHT prediction: each page at
+  // the document.yaml `viewport`, full height = the canvas's top offset (bar and
+  // chip row) + its scroll height + the frame below it. Advisory, because a
+  // deck may mean to scroll; the finding says by how much it does, and the
+  // chrome it prints is the number the static prediction assumes.
+  const VIEWPORT = TOKENS.viewport;
+  const pageHeights = [];
+  for (const pg of discovery) {
+    const ctx = await browser.newContext({ viewport: { width: VIEWPORT.w, height: VIEWPORT.h }, deviceScaleFactor: 1 });
+    const page = await ctx.newPage();
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await settle(page, pg.tabIndex);
+    const f = await page.evaluate(() => {
+      const c = document.querySelector('.act.active .canvas');
+      const cr = c.getBoundingClientRect();
+      return { top: Math.max(0, Math.ceil(cr.top)), content: c.scrollHeight,
+               bottom: Math.max(0, Math.ceil(window.innerHeight - cr.bottom)) };
+    });
+    pageHeights.push({ name: pg.name, px: f.top + f.content + f.bottom, chrome: f.top + f.bottom, content: f.content });
+    await ctx.close();
   }
   await browser.close();
   srv.close();
@@ -1514,6 +1804,15 @@ async function main() {
     console.log('');
   }
   console.log('═══════════════════════════════════════');
+  console.log(`● page height at the presentation viewport ${VIEWPORT.w}x${VIEWPORT.h} (VH, ADVISORY — measured)`);
+  for (const h of pageHeights) {
+    const over = h.px - VIEWPORT.h;
+    if (over > 0) advisories++;
+    console.log(`    [${over > 0 ? 'ADVICE' : 'PASS'}] VH ${h.name}: measured ${h.px}px ` +
+      `${over > 0 ? `> ${VIEWPORT.h} (+${over})` : `<= ${VIEWPORT.h}`} at ${VIEWPORT.w} ` +
+      `(chrome ${h.chrome}px + canvas ${h.content}px)`);
+  }
+  console.log('');
   console.log(`Screenshots: ${OUT}`);
   const v = reportVerdict(results, failed, advisories);
   console.log(v.line + '\n');
@@ -1553,7 +1852,7 @@ function reportVerdict(results, failed, advisories) {
 // That is what lets a harness exercise the pure decision logic — the invariant
 // table, the undeclared-form guard, the verdict, the static census — in an
 // environment with no browser at all.
-module.exports = { INVARIANTS, FORMS, ALL_FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE,
+module.exports = { applyTokens, renderExpectations, INVARIANTS, FORMS, ALL_FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE,
   WORDFIT, runInvariants, reportVerdict, staticCensus, nodeCensus, pageCensus };
 
 if (require.main === module) main();

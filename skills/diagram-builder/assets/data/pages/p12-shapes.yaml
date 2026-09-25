@@ -1,0 +1,75 @@
+# SHAPES — "a page can take a shape the grid does not draw."
+#
+# A FEATURE page. Two shapes, each from ordinary fields. A RING: the build loop
+# as two legs, each its own section, both in natural `order`, so the collapsed
+# column still reads 1 to 6; the direction lives in the kicker text and in the
+# chip's steps, never in a reversed `order`. A STAIRCASE: a `compact` grid whose
+# rowspans rest on declared holes, so every step lands on one shared floor. The
+# deck's CORE chip (`gate`) is inherited first; the page adds `loop` after it.
+#
+# FORM: flow. The word-fit floor applies; the orphan-row check does not.
+#
+# WHAT IT EXERCISES: `lead: true` · a ring as two legs in their own sections ·
+# the return-leg rule · `treatment: [compact]` with a rowspan staircase on
+# spacers · a core chip inherited plus a page chip.
+
+id: p12-shapes
+form: flow
+columns: 1
+
+filters:
+  - key: loop
+    label: "Which steps close the loop?"
+    steps:
+      - "Six steps in two legs. The outbound leg runs 1 to 3; the return leg runs 4 to 6 in its own section."
+      - "Both legs keep their natural <code>order</code>, so one column still reads 1 to 6. The direction is in the kicker: step 6 says <b>back to 1</b>."
+
+sections:
+
+  - id: p12-lead
+    order: 1
+    lead: true
+    kicker: "FEATURES · SHAPES"
+    title: "A ring and a staircase, from plain fields"
+    description:
+      - "each leg is its own section; each stair rests on a declared hole"
+    detail: "The grid cannot draw a curve or an arrow, so a shape is built from what it can do: sections in <code>order</code>, a chip that crosses them, rowspans and spacers. The shapes a page can take are named in the skill with the fields that produce each one."
+
+  - id: p12-out
+    title: "Outbound leg · steps 1 to 3"
+    order: 2
+    columns: 3
+    children:
+      - { id: p12-s1, order: 1, kicker: "STEP 1 OF 6 →", title: "Edit the YAML", description: ["the diagram is decided here"], filters: [loop],
+          detail: "The loop starts in the data. Nothing about the domain lives in the engine." }
+      - { id: p12-s2, order: 2, kicker: "STEP 2 OF 6 →", title: "Build", description: ["the strict schema runs"], filters: [loop],
+          detail: "<code>npm run build</code> writes the bundle and refuses any unknown field." }
+      - { id: p12-s3, order: 3, kicker: "STEP 3 OF 6 ↓", title: "Check", description: ["the layout, computed"], filters: [loop, gate],
+          detail: "<code>npm run check</code>: the static gate. The kicker's arrow turns the corner into the return leg." }
+
+  - id: p12-back
+    title: "Return leg · steps 4 to 6"
+    order: 3
+    columns: 3
+    children:
+      - { id: p12-s4, order: 1, kicker: "STEP 4 OF 6", title: "Validate", description: ["the layout, observed"], filters: [loop, gate],
+          detail: "<code>npm run validate</code>: the render gate. The return leg is its own section, so it never needs a reversed <code>order</code>." }
+      - { id: p12-s5, order: 2, kicker: "STEP 5 OF 6", title: "Look at it", description: ["what no gate can see"], filters: [loop],
+          detail: "SEEN is the only evidence for slot character, channel meaning and structure." }
+      - { id: p12-s6, order: 3, kicker: "STEP 6 OF 6 · BACK TO 1", title: "Adjust", description: ["recalculate, never nudge"], filters: [loop],
+          detail: "The ring closes in text: the kicker says where the path goes next, and the chip's steps say it again." }
+
+  - id: p12-stairs
+    title: "A staircase on one floor"
+    order: 4
+    columns: 3
+    treatment: [compact]
+    children:
+      - { id: p12-t3, order: 1, rowspan: 3, kicker: "COST 3", title: "Seen on screen", description: ["the latest, dearest find"],
+          detail: "Height is magnitude: the later a defect is found, the more it costs. A <code>compact</code> grid runs a short row, so three rows stay small." }
+      - { id: p12-gap-1, order: 2, type: spacer }
+      - { id: p12-gap-2, order: 3, type: spacer, rowspan: 2 }
+      - { id: p12-t2, order: 4, rowspan: 2, kicker: "COST 2", title: "Measured",
+          detail: "The spacer above it is a declared hole: filling runs top-down, so without it the step would hang from the ceiling." }
+      - { id: p12-t1, order: 5, kicker: "COST 1", title: "Modelled",
+          detail: "One compact row holds a kicker and a title. Every step ends on the same bottom row." }

@@ -659,6 +659,134 @@ CREATE INDEX IF NOT EXISTS idx_brief_decisions_brief ON brief_decisions(brief_id
 CREATE UNIQUE INDEX IF NOT EXISTS idx_brief_decisions_supersedes
     ON brief_decisions(supersedes_id) WHERE supersedes_id IS NOT NULL;
 
+-- v58: the change history of a brief. Triggers write it, so every path that
+-- edits an AC, adds a decision or replaces a plan version is recorded without
+-- each writer having to remember to. source='reconstructed' marks rows the
+-- v58 migration inferred from rows that already existed; AC edits made before
+-- v58 left no trace in the database and are not reconstructed.
+CREATE TABLE IF NOT EXISTS brief_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    brief_id    INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    subject     TEXT,
+    before      TEXT,
+    after       TEXT,
+    source      TEXT NOT NULL DEFAULT 'recorded'
+                CHECK (source IN ('recorded', 'reconstructed')),
+    occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_brief_events_brief ON brief_events(brief_id, occurred_at);
+
+CREATE TRIGGER IF NOT EXISTS brief_events_brief_created
+AFTER INSERT ON briefs
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    VALUES (NEW.id, 'brief_created', NEW.name,
+            json_object('title', NEW.title, 'status', NEW.status));
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_brief_edited
+AFTER UPDATE OF title, objective, context, approach, out_of_scope, status ON briefs
+WHEN OLD.title IS NOT NEW.title OR OLD.objective IS NOT NEW.objective
+  OR OLD.context IS NOT NEW.context OR OLD.approach IS NOT NEW.approach
+  OR OLD.out_of_scope IS NOT NEW.out_of_scope OR OLD.status IS NOT NEW.status
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, before, after)
+    VALUES (NEW.id, 'brief_edited', NEW.name,
+            json_object('title', OLD.title, 'objective', OLD.objective, 'context', OLD.context,
+                        'approach', OLD.approach, 'out_of_scope', OLD.out_of_scope, 'status', OLD.status),
+            json_object('title', NEW.title, 'objective', NEW.objective, 'context', NEW.context,
+                        'approach', NEW.approach, 'out_of_scope', NEW.out_of_scope, 'status', NEW.status));
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_ac_added
+AFTER INSERT ON acceptance_criteria
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    VALUES (NEW.brief_id, 'ac_added', NEW.ac_id,
+            json_object('description', NEW.description, 'evidence_type', NEW.evidence_type,
+                        'evidence_shape', NEW.evidence_shape, 'status', NEW.status));
+    UPDATE briefs SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.brief_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_ac_edited
+AFTER UPDATE ON acceptance_criteria
+WHEN OLD.description IS NOT NEW.description OR OLD.evidence_type IS NOT NEW.evidence_type
+  OR OLD.evidence_shape IS NOT NEW.evidence_shape OR OLD.artifact_path IS NOT NEW.artifact_path
+  OR OLD.status IS NOT NEW.status OR OLD.ac_id IS NOT NEW.ac_id
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, before, after)
+    VALUES (NEW.brief_id, 'ac_edited', NEW.ac_id,
+            json_object('description', OLD.description, 'evidence_type', OLD.evidence_type,
+                        'evidence_shape', OLD.evidence_shape, 'artifact_path', OLD.artifact_path,
+                        'status', OLD.status),
+            json_object('description', NEW.description, 'evidence_type', NEW.evidence_type,
+                        'evidence_shape', NEW.evidence_shape, 'artifact_path', NEW.artifact_path,
+                        'status', NEW.status));
+    UPDATE briefs SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.brief_id;
+END;
+
+-- The WHEN guard skips the cascade from deleting the brief itself: by then the
+-- brief row is gone and the event would violate its own foreign key.
+CREATE TRIGGER IF NOT EXISTS brief_events_ac_removed
+AFTER DELETE ON acceptance_criteria
+WHEN EXISTS (SELECT 1 FROM briefs WHERE id = OLD.brief_id)
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, before)
+    VALUES (OLD.brief_id, 'ac_removed', OLD.ac_id,
+            json_object('description', OLD.description, 'status', OLD.status));
+    UPDATE briefs SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = OLD.brief_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_decision_added
+AFTER INSERT ON brief_decisions
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    VALUES (NEW.brief_id, 'decision_added', 'D' || NEW.id,
+            json_object('decision', NEW.decision, 'rationale', NEW.rationale,
+                        'supersedes_id', NEW.supersedes_id));
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_plan_version_replaced
+AFTER INSERT ON plan_versions
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    SELECT p.brief_id, 'plan_version_replaced', 'plan ' || NEW.plan_id || ' v' || NEW.version,
+           json_object('reason', NEW.reason, 'status', NEW.status, 'change_id', NEW.change_id,
+                       'chars', length(NEW.content))
+    FROM plans p WHERE p.id = NEW.plan_id;
+END;
+
+-- v58: token usage at the grain Claude Code bills it -- one row per API
+-- message, keyed by (session_id, message_id). A transcript repeats a message's
+-- usage on every content-block line and a resumed subagent's transcript is
+-- re-read whole, so any per-line or per-stop sum double counts; the key makes
+-- re-ingesting a transcript a no-op. Plan/brief/workspace binding is NOT
+-- stamped here: it is resolved at read time through
+-- agent_contract_handoffs.harness_agent_id, so a mis-stamped handoff row can
+-- be corrected once instead of in every usage row. The main (orchestrator)
+-- thread has harness_agent_id NULL and agent_type 'main'; a subagent's
+-- agent_type is the agentType of its *.meta.json.
+CREATE TABLE IF NOT EXISTS token_usage (
+    session_id            TEXT NOT NULL,
+    message_id            TEXT NOT NULL,
+    harness_agent_id      TEXT,
+    agent_type            TEXT NOT NULL,
+    model                TEXT,
+    timestamp             TEXT NOT NULL,
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    transcript_path       TEXT NOT NULL,
+    PRIMARY KEY (session_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(harness_agent_id) WHERE harness_agent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp);
+
 -- ---------------------------------------------------------------------------
 -- evidence (three-tier storage model)
 -- ---------------------------------------------------------------------------

@@ -31,7 +31,6 @@
 # drawing a band with it.
 
 id: p9-the-hole
-layout: grid
 form: timeline
 # Two root columns, so each of the three bands takes a full row: the claim, the
 # two lanes with the row they share, the lane labelled down the block axis, and

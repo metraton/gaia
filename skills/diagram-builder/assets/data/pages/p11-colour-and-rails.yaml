@@ -1,0 +1,116 @@
+# COLOUR AND RAILS — "colour earns its place when it names an actor."
+#
+# A FEATURE page, not a principle: it exercises what the principle pages leave
+# unused. A LEAD band states the page's claim; a LEGEND band gives each of the
+# four categorical hues one actor, so a hue means the same box on every page
+# that uses it; a column of RAILS draws a tree by `indent`, each level in its
+# own hue and all of them one chip; and a `middle` section of `copy` boxes holds
+# the two commands a reader pastes. The deck's CORE chip (`gate`, declared in
+# document.yaml) is inherited first; the page adds its own chip after it.
+#
+# WHAT IT EXERCISES: `lead: true` · box hues blue / violet / gold / clay · rail
+# hues · rail `indent` 0..3 · rails as chip members · `copy: true` ·
+# `treatment: [middle]` · a core chip inherited plus a page chip.
+
+id: p11-colour-and-rails
+form: dashboard
+columns: 2
+
+filters:
+  - key: tree
+    label: "Which rails draw the tree?"
+    steps:
+      - "Four rails, one per level of the dialect, each inset one <code>indent</code> step deeper than its parent."
+      - "The indent moves the drawn frame, not the cell, so every cell gate still measures a full track."
+
+sections:
+
+  - id: p11-lead
+    order: 1
+    span: 2
+    lead: true
+    kicker: "FEATURES · COLOUR AND RAILS"
+    title: "A hue names an actor"
+    description:
+      - "the lead band states the page: one full-width first box, exempt from harmony"
+    detail: "A <b>lead band</b> is the page's first band: a box with <code>lead: true</code>, a direct child of the page root, first in <code>order</code>, spanning every root column. Its title is the claim the page makes, and its kicker places the page in the deck. The build refuses a lead that is nested, later or narrower."
+
+  - id: p11-legend
+    title: "The legend band"
+    subtitle: "four hues, four actors, the same on every page"
+    order: 2
+    span: 2
+    columns: 4
+    children:
+      - id: p11-blue
+        order: 1
+        variant: blue
+        kicker: "BLUE"
+        title: "The author"
+        description:
+          - "writes the YAML"
+        detail: "The four categorical hues carry no risk or state, so they are free to name peers. Here each one names an ACTOR of the build loop, and a deck that uses the same hue for the same actor on every page lets the reader recognise it before reading a word."
+      - id: p11-violet
+        order: 2
+        variant: violet
+        kicker: "VIOLET"
+        title: "The build"
+        description:
+          - "refuses unknown fields"
+        detail: "<code>npm run build</code> is the strict schema: every field is on a whitelist and every closed value on an enum, so a typo fails loudly instead of rendering nothing."
+      - id: p11-gold
+        order: 3
+        variant: gold
+        kicker: "GOLD"
+        title: "The static gate"
+        description:
+          - "computes the layout"
+        detail: "<code>npm run check</code> is the MODELLED evidence: arithmetic over the authored YAML, no browser. It is a member of the deck's core chip."
+        filters: [gate]
+      - id: p11-clay
+        order: 4
+        variant: clay
+        kicker: "CLAY"
+        title: "The render gate"
+        description:
+          - "observes the pixels"
+        detail: "<code>npm run validate</code> is the MEASURED evidence: the real render in Chromium. It is a member of the deck's core chip."
+        filters: [gate]
+
+  - id: p11-tree
+    title: "Rails as a tree"
+    subtitle: "one indent step per level"
+    order: 3
+    span: 1
+    columns: 1
+    children:
+      - { id: p11-r0, order: 1, type: rail, variant: blue, indent: 0, title: "document", filters: [tree] }
+      - { id: p11-r1, order: 2, type: rail, variant: violet, indent: 1, title: "page", filters: [tree] }
+      - { id: p11-r2, order: 3, type: rail, variant: gold, indent: 2, title: "section", filters: [tree] }
+      - { id: p11-r3, order: 4, type: rail, variant: clay, indent: 3, title: "component", filters: [tree] }
+
+  - id: p11-copy
+    title: "Boxes you paste from"
+    subtitle: "centred beside a taller neighbour"
+    order: 4
+    span: 1
+    columns: 2
+    treatment: [middle]
+    children:
+      - id: p11-cmd-build
+        order: 1
+        kicker: "COPY · BUILD"
+        title: "npm run build"
+        copy: true
+        description:
+          - "the corner button copies it"
+        detail: "<code>copy: true</code> puts a button on the box that copies its title; a string copies that string instead. Use it when the title IS the thing the reader pastes: a command, a path, an identifier."
+      - id: p11-cmd-gate
+        order: 2
+        kicker: "COPY · BOTH GATES"
+        title: "npm run gate"
+        copy: true
+        description:
+          - "check, then validate"
+        detail: "The section carries <code>treatment: [middle]</code>: its compound row stretches it to the tree's height, and <code>middle</code> centres its grid in that height instead of leaving the gap below."
+        filters: [gate]
