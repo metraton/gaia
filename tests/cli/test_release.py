@@ -16,7 +16,7 @@ wiring (argv, cwd, exit-code interpretation) genuinely works end to end.
 
 The Phase 3 `publish` tests never spawn a real `git`, `gh`, `npm test`, or
 `node scripts/release-prepare.mjs` -- every one of those is mocked at the
-`subprocess.run` boundary (or the `step_*`/`gate_npm_test` boundary for the
+`subprocess.run` boundary (or the `step_*`/`gate_tests` boundary for the
 orchestration tests). Nothing in this suite pushes to a remote, creates a
 GitHub Release, or writes to the real repo's git state.
 """
@@ -549,7 +549,7 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
         with patch("cli.release.gate_pre_publish_validate", side_effect=make_gate("g1")), \
              patch("cli.release.gate_npm_sandbox", side_effect=make_gate("g2")), \
              patch("cli.release.gate_plugin_dryrun", side_effect=make_gate("g3")), \
-             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")), \
+             patch("cli.release.gate_tests", side_effect=make_gate("g4")), \
              patch("cli.release.gate_convergence", side_effect=make_gate("g5")):
             results = run_release_check(_REPO_ROOT)
 
@@ -573,7 +573,7 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
         with patch("cli.release.gate_pre_publish_validate", side_effect=failing_gate1), \
              patch("cli.release.gate_npm_sandbox", side_effect=make_gate("g2")), \
              patch("cli.release.gate_plugin_dryrun", side_effect=make_gate("g3")), \
-             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")), \
+             patch("cli.release.gate_tests", side_effect=make_gate("g4")), \
              patch("cli.release.gate_convergence", side_effect=make_gate("g5")):
             results = run_release_check(_REPO_ROOT)
 
@@ -592,7 +592,7 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
              patch("cli.release.gate_npm_sandbox",
                    return_value={"name": "g2", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
              patch("cli.release.gate_plugin_dryrun", side_effect=fake_gate3), \
-             patch("cli.release.gate_npm_test",
+             patch("cli.release.gate_tests",
                    return_value={"name": "g4", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
              patch("cli.release.gate_convergence",
                    return_value={"name": "g5", "status": "PASS", "detail": "ok", "duration_ms": 1}):
@@ -836,7 +836,8 @@ class TestBuildPublishPlan(unittest.TestCase):
         names = [s["name"] for s in plan]
         self.assertEqual(
             names,
-            ["release:prepare", "npm test", "git commit", "git tag", "git push", "gh release create"],
+            ["release:prepare", "CI verdict or local suite", "git commit", "git tag", "git push",
+             "gh release create"],
         )
 
     def test_plan_marks_push_and_gh_release_as_t3(self):
@@ -1084,7 +1085,7 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
         with patch("cli.release.preflight_publish",
                    return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
              patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
-             patch("cli.release.gate_npm_test", side_effect=make_step("npm test")), \
+             patch("cli.release.gate_tests", side_effect=make_step("npm test")), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")), \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")), \
              patch("cli.release.step_git_push", side_effect=make_step("git push")), \
@@ -1116,7 +1117,7 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
         with patch("cli.release.preflight_publish",
                    return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
              patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
-             patch("cli.release.gate_npm_test", side_effect=failing_step), \
+             patch("cli.release.gate_tests", side_effect=failing_step), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")) as mock_commit, \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")) as mock_tag, \
              patch("cli.release.step_git_push", side_effect=make_step("git push")) as mock_push, \
@@ -1198,7 +1199,7 @@ class TestCmdReleasePublish(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AC-3 CRITICAL: this module must never invoke npm's own registry-publish
 # command directly -- that stays in CI (.github/workflows/publish.yml),
-# gated behind NODE_AUTH_TOKEN.
+# which publishes through npm trusted publishing (OIDC).
 # ---------------------------------------------------------------------------
 
 _NPM_PUBLISH_INVOCATION_RE = re.compile(r"""(['"])npm\1\s*,\s*(['"])publish\2""")
