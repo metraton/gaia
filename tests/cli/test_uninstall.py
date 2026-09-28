@@ -527,23 +527,26 @@ class TestCmdUninstallFootprint(unittest.TestCase):
             self.assertEqual(rc, 0)
             data = json.loads(buf.getvalue())
 
+            # No manifest: the pre-manifest install is adopted and reverted.
+            self.assertEqual(data["manifest"]["source"], "adopted")
+            reverted = set(data["manifest"]["reverted"])
+
             # skills symlink removed
-            self.assertIn(".claude/skills", data["symlinks"]["removed"])
+            self.assertIn(".claude/skills", reverted)
             self.assertFalse((claude_dir / "skills").exists())
 
             # .plugin-initialized removed
-            self.assertTrue(data["plugin_initialized"]["removed"])
+            self.assertIn(".claude/.plugin-initialized", reverted)
             self.assertFalse((claude_dir / ".plugin-initialized").exists())
 
             # plugin-registry.json: Gaia entry gone, third-party preserved
-            self.assertEqual(data["plugin_registry"]["removed_entries"], ["gaia"])
             self.assertTrue((claude_dir / "plugin-registry.json").exists())
             reg = json.loads((claude_dir / "plugin-registry.json").read_text())
             names = [e["name"] for e in reg["installed"]]
             self.assertEqual(names, ["third-party"])
 
             # settings.local.json: Gaia keys gone, user keys preserved
-            self.assertTrue(data["settings_local_json"]["found"])
+            self.assertIn(".claude/settings.local.json", reverted)
             local = json.loads((claude_dir / "settings.local.json").read_text())
             self.assertNotIn("agent", local)
             self.assertEqual(local["env"]["USER_VAR"], "preserve")
@@ -573,10 +576,8 @@ class TestCmdUninstallFootprint(unittest.TestCase):
                 self.assertEqual(rc, 0)
 
             data = json.loads(buf.getvalue())
-            # Second pass: nothing Gaia-owned left to clean.
-            self.assertFalse(data["plugin_initialized"].get("found"))
-            self.assertFalse(data["plugin_registry"].get("found"))
-            self.assertFalse(data["settings_local_json"].get("found"))
+            # Second pass: nothing Gaia-owned left to revert.
+            self.assertEqual(data["manifest"], {"source": "none", "reverted": [], "env": []})
             self.assertTrue(db.exists())
 
     def test_footprint_dry_run_touches_nothing(self):

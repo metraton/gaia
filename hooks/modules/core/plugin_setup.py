@@ -243,6 +243,16 @@ PERMISSIONS = {
 }
 
 
+# Claude Code's `attribution` setting with every part hidden: an empty string
+# drops the commit trailer and the PR footer, sessionUrl=false the claude.ai
+# session link (code.claude.com/docs/en/settings-reference, "Git and
+# attribution"). Written by every channel -- the plugin's session setup here
+# and `gaia install` -- because nothing Gaia publishes may carry Claude
+# attribution. includeGitInstructions is left alone: turning it off also
+# removes the git status snapshot, which has nothing to do with attribution.
+HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
+
+
 def is_first_run() -> bool:
     """Check if this is the first time the plugin runs."""
     marker = get_plugin_data_dir() / MARKER_FILE
@@ -323,11 +333,16 @@ def setup_project_permissions() -> bool:
     merged_allow = _authoritative_merge(current_allow, our_allow)
     merged_deny = _authoritative_merge(current_deny, our_deny)
 
-    if current_allow == set(merged_allow) and current_deny == set(merged_deny):
+    attribution = existing.get("attribution")
+    attribution = dict(attribution) if isinstance(attribution, dict) else {}
+    attribution_current = all(attribution.get(k) == v for k, v in HIDDEN_ATTRIBUTION.items())
+
+    if current_allow == set(merged_allow) and current_deny == set(merged_deny) and attribution_current:
         logger.info("Project permissions already include gaia rules, skipping")
         return False
 
-    # Update only permissions, preserve everything else (enabledPlugins, etc.)
+    # Update only permissions and attribution, preserve everything else (enabledPlugins, etc.)
+    existing["attribution"] = {**attribution, **HIDDEN_ATTRIBUTION}
     existing.setdefault("permissions", {})
     existing["permissions"]["allow"] = merged_allow
     existing["permissions"]["deny"] = merged_deny

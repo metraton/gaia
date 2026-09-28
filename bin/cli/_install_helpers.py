@@ -106,12 +106,10 @@ except Exception:  # noqa: BLE001
 # protected-path guard is handed a command string instead of the target path.
 _DEFAULT_PERMISSION_MODE = "acceptEdits"
 
-# Claude Code's `attribution` setting with every part hidden: an empty string
-# drops the commit trailer and the PR footer, sessionUrl=false the claude.ai
-# session link (code.claude.com/docs/en/settings-reference, "Git and
-# attribution"). includeGitInstructions is left alone: turning it off also
-# removes the git status snapshot, which has nothing to do with attribution.
-_HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
+try:
+    from modules.core.plugin_setup import HIDDEN_ATTRIBUTION as _HIDDEN_ATTRIBUTION  # type: ignore  # noqa: E402
+except Exception:  # noqa: BLE001
+    _HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
 
 
 # ---------------------------------------------------------------------------
