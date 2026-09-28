@@ -251,7 +251,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 58
+EXPECTED_SCHEMA_VERSION = 59
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
@@ -633,20 +633,19 @@ def check_schema_version() -> dict:
             "Run `gaia migrate plan` to see the chain, then `gaia migrate apply`.",
         )
     if live > EXPECTED_SCHEMA_VERSION:
-        # Code BEHIND the DB -- the REVERSE direction. A DB migrated forward by a
-        # NEWER Gaia would be mis-read by this older code, so the store refuses
-        # every write to it (gaia.store.writer.SchemaAheadError) and the
-        # bootstrap direction guard refuses to install over it. The remedy is
-        # NEVER to downgrade the DB -- install code at least as new as the DB.
+        # Code BEHIND the DB -- the REVERSE direction. The store keeps writing
+        # while the DB's min_code_version accepts this code and refuses every
+        # write past it (gaia.store.writer.SchemaAheadError). The remedy is
+        # NEVER to downgrade the DB -- install code at least as new as it asks.
         return _result(
             "Schema version",
             "warning",
             f"DB schema_version={live} > code expected {EXPECTED_SCHEMA_VERSION} "
-            f"(code BEHIND DB -- this Gaia refuses every write to the newer "
-            f"database; reads keep working)",
-            "Install a Gaia at least as new as the DB (`gaia dev` from a source "
-            "checkout that expects >= this version, or `gaia install`/`gaia "
-            "release` of a newer artifact). Do NOT downgrade the DB.",
+            f"(code BEHIND DB -- this Gaia writes only while the database's "
+            f"min_code_version is <= {EXPECTED_SCHEMA_VERSION}; reads keep working)",
+            "Install a Gaia at least as new as the DB (`gaia install`/`gaia "
+            "update` of a newer release in this installation, or `gaia dev` "
+            "from a newer checkout). Do NOT downgrade the DB.",
         )
     return _result("Schema version", "pass", f"v{live} matches code expectation")
 

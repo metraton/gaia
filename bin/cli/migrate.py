@@ -46,9 +46,12 @@ consent; when they stop on a data-reaching chain, the message names the exact
 `gaia migrate apply --consent-chain ...` command that continues.
 
 Migrations only run forward. A database newer than this code is never moved
-down: this Gaia refuses every write to it (reads keep working) until a Gaia
-whose schema version is at least the database's is installed. SessionStart
-names the fix in either direction.
+down. Each seal records min_code_version, the oldest code that may still write,
+and only a migration marked `-- gaia-compat: breaking` raises it. While this
+code's version reaches that minimum, apply has nothing to do and this Gaia keeps
+reading and writing (with a warning); past it, apply refuses and every write is
+refused (reads keep working) until a Gaia whose schema version is at least the
+minimum is installed. SessionStart names the fix in either direction.
 """
 
 

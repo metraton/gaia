@@ -102,8 +102,8 @@ live curated rows before anyone was asked.
 
 `scripts/migration_guard.py` now classifies every pending file before the
 chain opens.
-**There is nothing to declare and no header to remember** -- the classification
-reads the SQL itself, and the number of rows at risk is read from the target
+**This gate needs nothing declared** (the compatibility mark in section 1c is a
+separate rule) -- the classification reads the SQL itself, and the number of rows at risk is read from the target
 database. A file is refused only where those meet: a statement that rewrites or
 removes rows (`UPDATE`, `DELETE`, `DROP TABLE`, `ALTER TABLE ... DROP/RENAME`,
 `INSERT OR REPLACE`, or any statement the guard does not recognise) whose table
@@ -130,6 +130,51 @@ What this means when you author one:
 The guard's behaviour is pinned by `tests/cli/test_migration_consent_gate.py`,
 including a test asserting that no file currently in this directory produces an
 unrecognised statement.
+
+---
+
+## 1c. Every migration declares its compatibility: `-- gaia-compat:`
+
+Several Gaia installations of different versions can share one `gaia.db`. An
+installation whose code is older than the database keeps reading and writing
+as long as no migration since its version broke what it writes. Only the author
+knows that, so every `v{N-1}_to_v{N}.sql` carries exactly one header line:
+
+```
+-- gaia-compat: backward     code older than v{N} can still write after it
+-- gaia-compat: breaking     code older than v{N} must stop writing
+```
+
+A migration is **breaking** when code written before it would fail or write
+wrong rows afterwards: it removes or renames a column or table, rebuilds or
+rewrites rows (anything `scripts/migration_guard.py` classifies as reaching rows
+-- `UPDATE`, `DELETE`, `DROP TABLE`, `ALTER TABLE ... DROP/RENAME`,
+`INSERT OR REPLACE`), adds a `NOT NULL` column without a default, or adds a
+`CHECK`, unique index or trigger that rejects a write the older code makes.
+Adding a table, a nullable or defaulted column, an index, or a trigger that
+only records is **backward**.
+
+The mark is mandatory. `tests/cli/test_migration_compat_header.py` fails on a
+file without it, and on a file declared backward that the guard classifies as
+reaching rows. The engine treats an unmarked file as breaking.
+
+**Where the minimum lives.** `schema_version.min_code_version` (added by
+`v58_to_v59.sql`, nullable) holds, on each seal, the oldest code version that may
+still write. `scripts/bootstrap_database.py` (`_stamp`) writes it inside the same
+transaction as the migration it seals: it carries the previous seal's value, and
+only a breaking migration raises it to its own version. A ledger sealed before
+v59 has no value to carry, so the first seal falls back to the last breaking
+migration in this directory. The writer's own first-write seal
+(`gaia/store/writer.py`) records the same value.
+
+**What older code does with it** (`gaia/store/writer.py::writes_refused`): a
+database newer than the code whose newest `min_code_version` is at or below the
+code's version is read and written, with one stderr notice per process asking
+for `gaia install` in that installation; a larger minimum, or none recorded,
+refuses every write (reads keep working) with a message naming the fix --
+install a Gaia whose schema version is at least the minimum. `gaia migrate apply`
+on such a database changes nothing: it returns 0 inside the window and refuses
+outside it.
 
 ---
 

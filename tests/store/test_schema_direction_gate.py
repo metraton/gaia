@@ -1,10 +1,13 @@
-"""The store's schema-direction gate: a Gaia older than its database never writes.
+"""The store's schema-direction gate: a Gaia older than its database's window never writes.
 
-A database migrated by a newer Gaia carries columns and constraints this code
-does not know. Writing to it would fail on an unknown column at best and store
-rows the newer code misreads at worst, so every write through the store is
-refused with a message naming the fix, while reads keep working. The database
-version is read once per process, not once per write.
+A database migrated by a newer Gaia may carry columns and constraints this code
+does not know. Unless its newest seal records a min_code_version this code
+reaches (tests/store/test_schema_compat_window.py covers that window), writing
+to it would fail on an unknown column at best and store rows the newer code
+misreads at worst, so every write through the store is refused with a message
+naming the fix, while reads keep working. The seals here record no minimum,
+the conservative case. The database state is read once per process, not once
+per write.
 """
 
 from __future__ import annotations
@@ -71,7 +74,7 @@ def test_fresh_database_stays_unsealed_when_the_build_declares_no_version(
     assert _live_version(db) is None
 
 
-def test_database_ahead_refuses_writes_naming_the_fix_and_keeps_reads(db):
+def test_database_ahead_with_no_minimum_refuses_writes_naming_the_fix_and_keeps_reads(db):
     notification_id = writer.add_task_notification(task_name="t", headline="before")
     _seal(db, EXPECTED_SCHEMA_VERSION + 1)
     writer._SCHEMA_VERSION_BY_DB.clear()
