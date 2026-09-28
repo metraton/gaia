@@ -265,7 +265,7 @@ jobs:
   #                                                 FTS5 smoke)
   #
   # rc.2 launcher/workspace-resolution extension (Step -> what it proves):
-  #   "RC-2 launcher-generated"            -> `gaia install` WITHOUT --no-path
+  #   "RC-2 launcher-generated"            -> `gaia install --path` (opt-in)
   #        emits gaia.cmd + gaia.ps1 (install.py Step 6.5) AND gaia.ps1 runs in
   #        the MIDDLE of a pipeline (the rc.1 "Cannot run a document in the
   #        middle of a pipeline" bug); also evidences the baked `python` token
@@ -280,7 +280,7 @@ jobs:
   # rc.3 setx-persistence extension (Step -> what it proves):
   #   "RC-3 setx-persistence"        -> `gaia install` on Windows PERSISTS
   #        GAIA_WORKSPACE_PATH to the USER environment (install.py Step 6.6,
-  #        _persist_workspace_env -> `setx`; runs even under --no-path). The
+  #        _persist_workspace_env -> `setx`; only with the --path opt-in). The
   #        RC-2 launcher-generated step above already ran `gaia install` into
   #        _ws, so setx has fired. This step reads the value back from where
   #        setx writes it -- HKCU\Environment, surfaced by
@@ -378,7 +378,7 @@ jobs:
       # (extensionless bash shim that PowerShell rejected in a pipeline with
       # "Cannot run a document in the middle of a pipeline") only ever appeared
       # on the user's machine. Here we re-install into the SAME workspace AC-6
-      # validated, this time WITHOUT --no-path, so gaia.cmd + gaia.ps1 are
+      # validated, this time WITH the --path opt-in, so gaia.cmd + gaia.ps1 are
       # actually written to ~/.local/bin (install._install_windows_launchers).
       # We assert BOTH files exist, evidence which `python` the launcher bakes
       # (POSIX bakes `python3`; Windows must resolve `python`), and then drive
@@ -390,8 +390,8 @@ jobs:
         env:
           GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
         run: |
-          python bin/gaia install --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
-          if ($LASTEXITCODE -ne 0) { Write-Error "gaia install (no --no-path) failed with exit $LASTEXITCODE"; exit 1 }
+          python bin/gaia install --path --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
+          if ($LASTEXITCODE -ne 0) { Write-Error "gaia install --path failed with exit $LASTEXITCODE"; exit 1 }
           $base = Join-Path $HOME ".local/bin"
           $cmd  = Join-Path $base "gaia.cmd"
           $ps1  = Join-Path $base "gaia.ps1"
