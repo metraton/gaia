@@ -12,7 +12,7 @@ impossible by construction -- mirrors
 tests/unit/test_memory_initiative_migration.py's Group 1.
 
 Group 2 applies the REAL migration runner mechanism
-(scripts/bootstrap_database.py::_filter_add_column_idempotent) to a synthetic
+(scripts/bootstrap_database.py::_run_script) to a synthetic
 v44-shaped DB, proving: the column is genuinely absent before the migration,
 the migration adds it with the exact CHECK + DEFAULT, pre-existing rows land
 on 'any' (no behavior change from the mere act of migrating), the CHECK
@@ -167,8 +167,11 @@ def _load_bootstrap_module():
 
 
 def _apply_migration(con: sqlite3.Connection, bootstrap) -> None:
-    mig_sql = bootstrap._filter_add_column_idempotent(con, _MIGRATION_PATH)
-    con.executescript(f"BEGIN;\n{mig_sql}\nCOMMIT;")
+    """Apply the migration as the bootstrap runner does: statement by
+    statement through its _run_script, inside one transaction."""
+    con.execute("BEGIN")
+    bootstrap._run_script(con, _MIGRATION_PATH.read_text(encoding="utf-8"))
+    con.execute("COMMIT")
 
 
 def _seed(con: sqlite3.Connection, name: str) -> None:

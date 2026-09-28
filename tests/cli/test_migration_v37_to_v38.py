@@ -114,8 +114,11 @@ def _build_v37_db(db_path: Path) -> list[tuple]:
 
 
 def _apply_migration(con: sqlite3.Connection, bootstrap) -> None:
-    mig_sql = bootstrap._filter_add_column_idempotent(con, _MIGRATION)
-    con.executescript(f"BEGIN;\n{mig_sql}\nCOMMIT;")
+    """Apply the migration as the bootstrap runner does: statement by
+    statement through its _run_script, inside one transaction."""
+    con.execute("BEGIN")
+    bootstrap._run_script(con, _MIGRATION.read_text(encoding="utf-8"))
+    con.execute("COMMIT")
 
 
 def _index_names(con: sqlite3.Connection) -> set[str]:
