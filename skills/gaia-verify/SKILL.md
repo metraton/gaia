@@ -68,19 +68,26 @@ absent):
 1. **PATH `gaia`** -- a bare `gaia` resolves to the expected build (`gaia doctor`
    check 58, `Global CLI alignment`). A stale `npm install -g` copy earlier on
    PATH shadowing the workspace shim is the classic drift.
-2. **hooks in `.claude/settings.local.json`** (checklist 3 / doctor `Settings`).
+2. **hooks** (checklist 3 / doctor `Hook registrations` and `Hook commands`).
+   Doctor names the active channel (`Install channel`: plugin, npm local, or
+   both), counts each shipped (event, matcher) across the plugin's hooks.json,
+   `settings.local.json`, `settings.json` and `~/.claude/settings.json` -- 0 or
+   more than 1 is an error -- and checks every registered command resolves to
+   an existing interpreter and file, which catches what `npm uninstall` leaves.
+   The plugin with no hooks in the workspace settings is the healthy state.
 3. **workspace `node_modules/@jaguilar87/gaia`** (doctor `Install provenance`).
 4. **global npm** (`~/.npm-global`) -- reconciled to the origin by `gaia dev`
    via `npm link` (`install.reconcile_global_via_npm_link`); doctor warns on a
    PATH-shadowing global (POSIX + Windows).
-5. **DB schema** (`~/.gaia/gaia.db`) -- `gaia doctor` check `Schema version`
-   reports BOTH directions: code AHEAD of DB (forward migration pending -> run
+5. **DB schema** (resolved like the store: `GAIA_DB` > `GAIA_DATA_DIR` >
+   `~/.gaia/gaia.db`) -- `gaia doctor` check `Schema version` reports BOTH
+   directions: code AHEAD of DB (a warning: forward migration pending -> run
    `gaia migrate plan`, then `gaia migrate apply`) and code BEHIND DB (the
    reverse drift: while the DB's `schema_version.min_code_version` is at or
-   below the code's version the store keeps writing with a notice; past it, or
-   with no minimum recorded, the store refuses every write with
-   `SchemaAheadError` while reads keep working and `gaia migrate apply` refuses
-   -- install newer code, never downgrade the DB). SessionStart names the same
+   below the code's version the store keeps writing and doctor warns; past it,
+   or with no minimum recorded, the store refuses every write with
+   `SchemaAheadError` while reads keep working and doctor reports an error --
+   install newer code, never downgrade the DB). SessionStart names the same
    fix in a `## Database schema` block whenever the two disagree.
 
 The reconcile is idempotent in all 3 cases (not installed / stale / aligned):

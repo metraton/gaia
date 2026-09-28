@@ -7,9 +7,11 @@ Checks (in order):
   15. last-install-error - ~/.gaia/last-install-error.json (postinstall failure marker)
   20. claude-code        - CLI installed
   30. python             - Python 3.9+ available
-  35. workspace-init     - .claude/, plugin-registry, settings hooks all present
+  35. workspace-init     - .claude/, plugin-registry, settings hooks (npm channel) present
+  36. install-channel    - which channel is active: plugin, npm local, or both
   40. plugin-mode        - ops vs security, registry valid
-  45. schema-version     - gaia.db schema_version matches CLI expectation
+  45. schema-version     - gaia.db schema_version against CLI expectation and the
+                        database's compatibility window (min_code_version)
   47. schema-ddl         - live CHECK constraints match schema.sql (ledger-vs-DDL)
   49. workspace-roots    - active workspaces have the root `gaia worktree create` needs
   50. symlinks           - .claude/ symlinks resolve
@@ -26,7 +28,11 @@ Checks (in order):
                         host run; pass only with a recorded attestation,
                         explicit absence (never a false ok) without one
   65. agent-routing      - surface_routing table (DB) primary agents resolve to files
-  70. settings           - hooks registered (full event set), permissions, deny rules
+  70. settings           - permissions, deny rules
+  72. hook-registrations - each shipped (event, matcher) registered exactly once across
+                        plugin hooks.json, settings.local.json, settings.json, user settings
+  74. hook-commands      - each registered Gaia hook command resolves to an existing
+                        interpreter and file (orphans after `npm uninstall`)
   80. hook-files         - all hook scripts present
   90. project-context    - project-context.json valid
  100. project-dirs       - paths declared in context exist
@@ -253,13 +259,23 @@ def _package_root() -> Path:
 # `check_schema_version` raises a warning telling them how to repair.
 EXPECTED_SCHEMA_VERSION = 59
 
-# Locations the doctor reads outside the workspace.
+# Locations the doctor reads outside the workspace, module-level so tests can
+# redirect them to a tmp path.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
-_DEFAULT_DB_PATH = Path("~/.gaia/gaia.db").expanduser()
 # The user-scoped session registry the SessionStart hook writes (a JSON file,
-# NOT a DB table). Module-level so tests can redirect it to a tmp path -- same
-# isolation pattern as _INSTALL_ERROR_MARKER / _DEFAULT_DB_PATH above.
+# NOT a DB table).
 _SESSION_REGISTRY_PATH = Path("~/.claude/session_registry.json").expanduser()
+# Claude Code's user settings: a plugin enabled or a hook registered here runs
+# in every workspace, so hook counting has to include it.
+_USER_SETTINGS_PATH = Path("~/.claude/settings.json").expanduser()
+
+_NPM_PACKAGE_DIR = Path("node_modules") / "@jaguilar87" / "gaia"
+
+
+def _db_path() -> Path:
+    """gaia.db as the store resolves it: GAIA_DB > GAIA_DATA_DIR > ~/.gaia."""
+    from gaia.paths.resolver import db_path  # noqa: PLC0415
+    return db_path()
 
 # Env vars the host CLI (Claude Code) may export into a `gaia` CLI subprocess
 # to advertise the current session id. Empirically (probed 2026-07), a plain
@@ -353,6 +369,156 @@ def _expected_hook_events(project_root: Path) -> set:
         if isinstance(events, dict) and events:
             return set(events.keys())
     return set(CANONICAL_HOOK_EVENTS)
+
+
+def _settings_sources(project_root: Path) -> "list[tuple[str, Path]]":
+    """(label, path) of every settings file Claude Code reads hooks and plugins from."""
+    claude_dir = project_root / ".claude"
+    return [
+        ("settings.local.json", claude_dir / "settings.local.json"),
+        ("settings.json", claude_dir / "settings.json"),
+        ("user settings", _USER_SETTINGS_PATH),
+    ]
+
+
+def _enables_gaia_plugin(settings) -> bool:
+    """True when a settings mapping enables a ``gaia@<marketplace>`` plugin."""
+    plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
+    return isinstance(plugins, dict) and any(
+        key.split("@", 1)[0] == "gaia" and enabled is True for key, enabled in plugins.items()
+    )
+
+
+def _active_channels(project_root: Path) -> dict:
+    """The Gaia channels live for *project_root*.
+
+    ``plugin`` is active when this process runs under the plugin
+    (``CLAUDE_PLUGIN_ROOT``) or any settings file Claude Code reads for this
+    workspace enables it -- the user's included, which the hook writer does not
+    consult. ``npm`` is the package copy under the workspace's node_modules.
+    """
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    enabled_in = [
+        label for label, path in _settings_sources(project_root)
+        if _enables_gaia_plugin(_read_json(path))
+    ]
+    npm = project_root / _NPM_PACKAGE_DIR
+    return {
+        "plugin": bool(root or enabled_in),
+        "plugin_root": Path(root) if root else None,
+        "plugin_enabled_in": enabled_in,
+        "npm": npm if (npm / "package.json").is_file() else None,
+    }
+
+
+def _shipped_hooks(channels: dict) -> dict:
+    """The hooks mapping Gaia ships for the active channel, {} when none is readable.
+
+    The plugin's own hooks.json when its root is known, else the npm copy's,
+    else the one beside this doctor.
+    """
+    candidates = [
+        root / "hooks" / "hooks.json"
+        for root in (channels["plugin_root"], channels["npm"])
+        if root is not None
+    ]
+    candidates.append(_package_root() / "hooks" / "hooks.json")
+    for path in candidates:
+        data = _read_json(path)
+        hooks = data.get("hooks", data) if isinstance(data, dict) else None
+        if isinstance(hooks, dict) and hooks:
+            return hooks
+    return {}
+
+
+def _hook_handlers(hooks: dict):
+    """Yield (event, matcher, command) for every command handler in a hooks mapping."""
+    for event, entries in hooks.items():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            handlers = entry.get("hooks") if isinstance(entry, dict) else None
+            if not isinstance(handlers, list):
+                continue
+            for handler in handlers:
+                if isinstance(handler, dict) and isinstance(handler.get("command"), str):
+                    yield event, entry.get("matcher", ""), handler["command"]
+
+
+def _gaia_registrations(project_root: Path, channels: dict, shipped: dict) -> "list[tuple]":
+    """(source, event, matcher, command) for every Gaia hook registration.
+
+    The plugin registers every shipped handler through its hooks.json; the
+    settings files contribute the handlers the hook writer's own ownership test
+    (``plugin_setup.is_gaia_hook_command``) claims.
+    """
+    registrations = []
+    if channels["plugin"]:
+        source = "plugin hooks.json"
+        if channels["plugin_root"] is None:
+            source += f" (plugin enabled in {', '.join(channels['plugin_enabled_in'])})"
+        registrations += [(source, e, m, c) for e, m, c in _hook_handlers(shipped)]
+    from cli.cleanup import _gaia_hook_predicate  # noqa: PLC0415
+    is_gaia = _gaia_hook_predicate(project_root)
+    for label, path in _settings_sources(project_root):
+        data = _read_json(path)
+        hooks = data.get("hooks") if isinstance(data, dict) else None
+        if isinstance(hooks, dict):
+            registrations += [(label, e, m, c) for e, m, c in _hook_handlers(hooks) if is_gaia(c)]
+    return registrations
+
+
+def _hook_fix(project_root: Path, channels: dict) -> str:
+    """The command that leaves exactly one channel registering Gaia's hooks."""
+    ws = shlex.quote(str(project_root))
+    if channels["plugin"] and channels["npm"]:
+        return (
+            f"Keep one channel: `claude plugin disable gaia` keeps npm; "
+            f"`gaia uninstall --workspace {ws}` then `npm uninstall @jaguilar87/gaia` keeps the plugin"
+        )
+    if channels["plugin"]:
+        return f"`gaia uninstall --workspace {ws}` (the plugin registers the hooks itself)"
+    if channels["npm"]:
+        return f"`gaia install --workspace {ws}`"
+    return (
+        f"`gaia install --workspace {ws}` from the Gaia you run, or "
+        f"`claude plugin install gaia@gaia-marketplace` to use the plugin"
+    )
+
+
+def _command_problems(command: str, project_root: Path, plugin_root: "Path | None") -> "list[str] | None":
+    """What keeps *command* from running, [] when it resolves, None when unverifiable.
+
+    A command still carrying ``${CLAUDE_PLUGIN_ROOT}`` is expanded by the host
+    at run time; without that root in this process it cannot be checked.
+    Relative paths resolve against the workspace, the directory hooks run in.
+    """
+    if "${CLAUDE_PLUGIN_ROOT}" in command:
+        if plugin_root is None:
+            return None
+        command = command.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root.as_posix())
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return [f"unparseable command `{command}`"]
+    if not tokens:
+        return ["empty command"]
+    problems = []
+    interpreter = tokens[0]
+    if "/" in interpreter or "\\" in interpreter:
+        found = Path(interpreter).is_file()
+    else:
+        found = shutil.which(interpreter) is not None
+    if not found:
+        problems.append(f"interpreter `{interpreter}` not found")
+    script = next((t for t in tokens[1:] if not t.startswith("-")), None)
+    if script is not None:
+        path = Path(script)
+        if not path.is_absolute():
+            path = project_root / path
+        if not path.is_file():
+            problems.append(f"{script} does not exist")
+    return problems
 
 
 # ============================================================================
@@ -520,14 +686,12 @@ def check_workspace_initialized(project_root: Path) -> dict:
     if not settings.is_file():
         missing.append("settings.local.json")
 
-    # If all three files exist, also require that settings.local.json
-    # carries a hooks section -- a workspace with no hooks is functionally
-    # uninitialized even if the file is there.
-    has_hooks = False
-    if settings.is_file():
+    # Off the plugin channel settings.local.json is where Gaia's hooks live, so
+    # a file without them leaves the workspace uninitialized; the plugin
+    # registers them through its own hooks.json instead.
+    if settings.is_file() and not _active_channels(project_root)["plugin"]:
         data = _read_json(settings)
-        has_hooks = bool(data and data.get("hooks"))
-        if data and not has_hooks:
+        if data and not data.get("hooks"):
             missing.append("hooks in settings.local.json")
 
     if missing:
@@ -540,12 +704,43 @@ def check_workspace_initialized(project_root: Path) -> dict:
     return _result("Workspace initialized", "pass", "Gaia-aware workspace")
 
 
+@register_check("Install channel", order=36)
+def check_install_channel(project_root: Path) -> dict:
+    """Name the channels active for this workspace: plugin, npm local, or both."""
+    name = "Install channel"
+    channels = _active_channels(project_root)
+    active = []
+    if channels["plugin"]:
+        where = (
+            f"CLAUDE_PLUGIN_ROOT={channels['plugin_root']}" if channels["plugin_root"]
+            else f"enabled in {', '.join(channels['plugin_enabled_in'])}"
+        )
+        active.append(f"plugin ({where})")
+    if channels["npm"]:
+        pkg = _read_json(channels["npm"] / "package.json") or {}
+        active.append(f"npm local {pkg.get('version', '?')} ({channels['npm']})")
+    if not active:
+        # A global npm package or a checkout wires a workspace through its
+        # settings alone, with no plugin and no local copy to detect.
+        if _gaia_registrations(project_root, channels, _shipped_hooks(channels)):
+            return _result(name, "info",
+                           "no plugin and no local npm copy; hooks wired through settings "
+                           "(global npm package or a checkout)")
+        return _result(name, "warning", "no Gaia channel active in this workspace",
+                       _hook_fix(project_root, channels))
+    if len(active) > 1:
+        return _result(name, "info",
+                       f"{' and '.join(active)} -- both active; Hook registrations shows whether hooks run twice")
+    return _result(name, "pass", active[0])
+
+
 @register_check("Plugin registered", order=40)
 def check_plugin_mode(project_root: Path) -> dict:
     """Check that the gaia plugin is registered in plugin-registry.json."""
     registry_path = project_root / ".claude" / "plugin-registry.json"
     if not registry_path.is_file():
-        return _result("Plugin registered", "warning", "No plugin-registry.json", "Run `gaia scan` or restart Claude Code")
+        return _result("Plugin registered", "warning", "No plugin-registry.json",
+                       f"`gaia install --workspace {shlex.quote(str(project_root))}` or restart Claude Code")
 
     data = _read_json(registry_path)
     if not data:
@@ -569,12 +764,15 @@ def check_schema_version() -> dict:
     install. If a user upgrades the CLI past a schema bump without running
     `gaia install`, MAX(version) < EXPECTED -- we warn with a concrete hint.
 
+    A DB newer than the code is judged by its compatibility window
+    (``gaia.store.writer.writes_refused``): inside it is a warning, past it an
+    error, because the store refuses every write there.
+
     Skipped cleanly when:
       - sqlite3 cannot open the DB (fresh machine, no DB yet)
       - schema_version table missing (legacy DB from before this check)
     """
-    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
-    db_path = Path(db_path_str).expanduser()
+    db_path = _db_path()
 
     if not db_path.is_file():
         return _result(
@@ -633,19 +831,25 @@ def check_schema_version() -> dict:
             "Run `gaia migrate plan` to see the chain, then `gaia migrate apply`.",
         )
     if live > EXPECTED_SCHEMA_VERSION:
-        # Code BEHIND the DB -- the REVERSE direction. The store keeps writing
-        # while the DB's min_code_version accepts this code and refuses every
-        # write past it (gaia.store.writer.SchemaAheadError). The remedy is
-        # NEVER to downgrade the DB -- install code at least as new as it asks.
+        from gaia.store.writer import (  # noqa: PLC0415
+            schema_ahead_message,
+            schema_compatible_notice,
+            schema_versions,
+            writes_refused,
+        )
+        minimum = schema_versions(db_path)[2]
+        fix = (
+            "`npm install @jaguilar87/gaia@latest` then `gaia update` (npm channel), "
+            "or `claude plugin update gaia` (plugin channel); never downgrade the database"
+        )
+        if writes_refused(live, EXPECTED_SCHEMA_VERSION, minimum):
+            return _result(
+                "Schema version", "error",
+                schema_ahead_message(live, EXPECTED_SCHEMA_VERSION, db_path, minimum), fix,
+            )
         return _result(
-            "Schema version",
-            "warning",
-            f"DB schema_version={live} > code expected {EXPECTED_SCHEMA_VERSION} "
-            f"(code BEHIND DB -- this Gaia writes only while the database's "
-            f"min_code_version is <= {EXPECTED_SCHEMA_VERSION}; reads keep working)",
-            "Install a Gaia at least as new as the DB (`gaia install`/`gaia "
-            "update` of a newer release in this installation, or `gaia dev` "
-            "from a newer checkout). Do NOT downgrade the DB.",
+            "Schema version", "warning",
+            schema_compatible_notice(live, EXPECTED_SCHEMA_VERSION, minimum, db_path), fix,
         )
     return _result("Schema version", "pass", f"v{live} matches code expectation")
 
@@ -675,8 +879,7 @@ def check_episodes_growth() -> dict:
     episodes table size falls back to "unavailable" when the SQLite build has
     no ``dbstat`` vtab (a compile-time option).
     """
-    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
-    db_path = Path(db_path_str).expanduser()
+    db_path = _db_path()
 
     if not db_path.is_file():
         return _result(
@@ -806,8 +1009,7 @@ def check_schema_v12_tables() -> dict:
       - gaia.db does not exist (fresh machine, no DB yet)
       - MAX(schema_version) < 12 (migration not yet applied)
     """
-    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
-    db_path = Path(db_path_str).expanduser()
+    db_path = _db_path()
 
     if not db_path.is_file():
         return _result(
@@ -916,8 +1118,7 @@ def check_schema_ddl_consistency() -> dict:
     Skipped cleanly when the DB does not exist or the table is missing -- a
     fresh install with no DB is not "drift", just "not initialised yet".
     """
-    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
-    db_path = Path(db_path_str).expanduser()
+    db_path = _db_path()
     schema_path = _package_root() / "gaia" / "store" / "schema.sql"
 
     if not db_path.is_file():
@@ -1109,7 +1310,8 @@ def check_symlinks(project_root: Path) -> dict:
         return _result("Symlinks", "pass", f"{valid}/{total} valid")
 
     severity = "error" if has_critical_missing else "warning"
-    return _result("Symlinks", severity, f"{valid}/{total} valid", "Run `gaia scan` to recreate symlinks")
+    return _result("Symlinks", severity, f"{valid}/{total} valid",
+                   f"`gaia install --workspace {shlex.quote(str(project_root))}`")
 
 
 def _semver_tuple(v) -> tuple:
@@ -1403,9 +1605,19 @@ def check_install_provenance(project_root: Path) -> dict:
     installed_ver = installed.get("version") if installed else None
     spec = _gaia_dep_spec(project_root)
 
-    # No installed package and no declared dep -> plugin-mode / not a
-    # node_modules install. Nothing to reason about.
+    # No installed package and no declared dep: there is no npm install to
+    # compare, so this never passes; it names the plugin when that is the channel.
     if not installed_ver and not spec:
+        channels = _active_channels(project_root)
+        if channels["plugin_root"] is not None:
+            plugin = _read_json(channels["plugin_root"] / "package.json") or {}
+            return _result(name, "info",
+                           f"plugin-mode: plugin {plugin.get('version', '?')} at {channels['plugin_root']}; "
+                           "no node_modules @jaguilar87/gaia install to compare")
+        if channels["plugin"]:
+            return _result(name, "info",
+                           f"plugin-mode: plugin enabled in {', '.join(channels['plugin_enabled_in'])}; "
+                           "no node_modules @jaguilar87/gaia install to compare")
         return _result(name, "info", "no node_modules @jaguilar87/gaia install detected (plugin-mode?)")
 
     is_local = spec is not None and spec.startswith("file:")
@@ -2150,12 +2362,7 @@ def check_agent_resolution(project_root: Path) -> dict:
             "Check gaia installation",
         )
 
-    # Same GAIA_DB / _DEFAULT_DB_PATH resolution as check_schema_version, and
-    # always passed explicitly so the loader never falls back to querying the
-    # real ~/.gaia/gaia.db via gaia.paths when a test (or a sandboxed run)
-    # has redirected _DEFAULT_DB_PATH to an isolated path.
-    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
-    db_path = Path(db_path_str).expanduser()
+    db_path = _db_path()
 
     try:
         data = load_surface_routing_config(db_path=db_path)
@@ -2205,26 +2412,22 @@ def check_agent_resolution(project_root: Path) -> dict:
 
 @register_check("Settings", order=70)
 def check_settings(project_root: Path) -> dict:
-    """Check settings.local.json for hooks, permissions, deny rules."""
+    """Check settings.local.json for permissions and deny rules.
+
+    Hook registration is counted across every channel by check_hook_registrations.
+    """
+    fix = f"`gaia install --workspace {shlex.quote(str(project_root))}`"
     local_path = project_root / ".claude" / "settings.local.json"
     if not local_path.is_file():
-        return _result("Settings", "error", "settings.local.json missing", "Run `gaia scan` or `gaia update`")
+        return _result("Settings", "error", "settings.local.json missing", fix)
 
     data = _read_json(local_path)
     if not data:
-        return _result("Settings", "error", "Invalid JSON in settings.local.json", "Delete and run `gaia scan`")
+        return _result("Settings", "error", "Invalid JSON in settings.local.json",
+                       f"Fix or delete {local_path}, then {fix}")
 
     issues = []
     infos = []
-
-    hooks_config = data.get("hooks")
-    if not hooks_config:
-        issues.append("No hooks configured")
-    else:
-        expected = _expected_hook_events(project_root)
-        missing = sorted(h for h in expected if h not in hooks_config)
-        if missing:
-            issues.append(f"Missing hooks: {', '.join(missing)}")
 
     perms = data.get("permissions", {})
     allow_count = len(perms.get("allow", []))
@@ -2235,14 +2438,85 @@ def check_settings(project_root: Path) -> dict:
         issues.append("No deny rules (destructive commands not blocked)")
 
     if issues:
-        return _result("Settings", "error", "; ".join(issues), "Run `gaia scan` or `gaia update`")
+        return _result("Settings", "error", "; ".join(issues), fix)
 
-    hook_count = len(hooks_config) if hooks_config else 0
     perm_count = allow_count + deny_count
 
     if infos:
-        return _result("Settings", "info", f"{hook_count} hook types, {perm_count} rules -- {'; '.join(infos)}")
-    return _result("Settings", "pass", f"{hook_count} hook types, {perm_count} rules")
+        return _result("Settings", "info", f"{perm_count} rules -- {'; '.join(infos)}")
+    return _result("Settings", "pass", f"{perm_count} rules")
+
+
+def _pair_label(event: str, matcher: str) -> str:
+    return f"{event}[{matcher}]" if matcher else event
+
+
+@register_check("Hook registrations", order=72)
+def check_hook_registrations(project_root: Path) -> dict:
+    """Every shipped (event, matcher) registered exactly once across all channels.
+
+    Registrations are summed over the plugin's hooks.json and the workspace,
+    project and user settings files; zero means the hook never runs, more than
+    one means it runs that many times per event.
+    """
+    name = "Hook registrations"
+    channels = _active_channels(project_root)
+    shipped = _shipped_hooks(channels)
+    expected = {(event, matcher) for event, matcher, _ in _hook_handlers(shipped)}
+    fix = _hook_fix(project_root, channels)
+    if not expected:
+        return _result(name, "error", "no shipped hooks.json readable to count registrations against", fix)
+
+    sources: dict = {}
+    for source, event, matcher, _ in _gaia_registrations(project_root, channels, shipped):
+        sources.setdefault((event, matcher), []).append(source)
+
+    issues = [f"{_pair_label(*pair)} not registered" for pair in sorted(expected - sources.keys())]
+    issues += [
+        f"{_pair_label(*pair)} registered {len(found)} times ({', '.join(found)})"
+        for pair, found in sorted(sources.items()) if len(found) > 1
+    ]
+    issues += [
+        f"{_pair_label(*pair)} registered but no longer shipped ({', '.join(found)})"
+        for pair, found in sorted(sources.items()) if pair not in expected
+    ]
+    if issues:
+        return _result(name, "error", "; ".join(issues), fix)
+    return _result(name, "pass", f"{len(expected)} (event, matcher) pairs registered once each")
+
+
+@register_check("Hook commands", order=74)
+def check_hook_commands(project_root: Path) -> dict:
+    """Every registered Gaia hook command resolves to an existing interpreter and file."""
+    name = "Hook commands"
+    channels = _active_channels(project_root)
+    registrations = _gaia_registrations(project_root, channels, _shipped_hooks(channels))
+    commands = sorted({(source, command) for source, _, _, command in registrations})
+    ws = shlex.quote(str(project_root))
+    if channels["npm"] or (project_root / ".claude" / "hooks").exists():
+        fix = f"`gaia install --workspace {ws}`"
+    else:
+        fix = f"`gaia uninstall --workspace {ws}` (removes registrations whose package is gone)"
+    if not commands:
+        return _result(name, "warning", "no Gaia hook command registered through any channel",
+                       _hook_fix(project_root, channels))
+
+    broken = []
+    unverified = 0
+    for source, command in commands:
+        problems = _command_problems(command, project_root, channels["plugin_root"])
+        if problems is None:
+            unverified += 1
+        elif problems:
+            broken.append(f"{source}: {'; '.join(problems)}")
+    if broken:
+        return _result(name, "error", " | ".join(broken), fix)
+    checked = len(commands) - unverified
+    if not checked:
+        return _result(name, "info",
+                       f"{unverified} plugin hook commands resolve through CLAUDE_PLUGIN_ROOT, "
+                       "which this process does not set; not verified")
+    return _result(name, "pass", f"{checked} hook commands resolve to an interpreter and a file")
 
 
 @register_check("Hook files", order=80)
@@ -2277,13 +2551,14 @@ def check_hook_files(project_root: Path) -> dict:
             warnings.append(filename)
 
     if errors:
-        return _result("Hook files", "error", "; ".join(errors), "Recreate symlinks: `gaia scan`")
+        return _result("Hook files", "error", "; ".join(errors),
+                       f"`gaia install --workspace {shlex.quote(str(project_root))}`")
     if warnings:
         return _result(
             "Hook files",
             "warning",
             f"{valid}/{total} found (missing: {', '.join(warnings)})",
-            "Run `gaia scan` to recreate symlinks",
+            f"`gaia install --workspace {shlex.quote(str(project_root))}`",
         )
     return _result("Hook files", "pass", f"{valid}/{total} found")
 
@@ -2847,6 +3122,11 @@ def register(subparsers):
         help="Run Gaia health checks (read-only unless --fix)",
         description=(
             "Validate the local installation and report drift.\n"
+            "\n"
+            "Channel-aware: names the active channel (plugin, npm local, or\n"
+            "both) and counts each Gaia hook across the plugin's hooks.json and\n"
+            "every settings file, the user's included; the plugin with no hooks\n"
+            "in the workspace settings is healthy.\n"
             "\n"
             "Read-only: every check inspects state and prints an inline fix\n"
             "hint. Nothing is written UNLESS --fix is passed."
