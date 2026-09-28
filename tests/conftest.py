@@ -10,6 +10,9 @@ Provides:
 """
 
 import os
+import shutil
+import site
+import tempfile
 from collections.abc import MutableMapping
 import pytest
 from pathlib import Path
@@ -74,11 +77,114 @@ def bridge_runtime_env():
 
 
 # ============================================================================
+# LAYER-1 SELECTION
+#
+# The layer-1 suite is everything a bare `pytest` collects from the repo root
+# (testpaths in pyproject.toml) minus the entries below. npm test, CI and
+# `gaia release` must reach it by invoking pytest with no selection of their
+# own, so this tuple is the one place that decides what the suite contains.
+# An entry still runs whenever a command-line argument names it or a path
+# inside it. Why each entry is out:
+#   - layer2_llm_evaluation spends LLM tokens.
+#   - layer3_e2e drives a live Claude Code session.
+#   - the exhaustive opencode alias matrix outruns its bun driver's subprocess
+#     timeout; nightly.yml runs it by node id.
+# ============================================================================
+
+LAYER1_EXCLUDED = (
+    "tests/layer2_llm_evaluation",
+    "tests/layer3_e2e",
+    "tests/integration/test_opencode_protected_edit_bootstrap.py"
+    "::test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge",
+)
+
+
+def _rootdir_relative(config, path) -> str | None:
+    try:
+        return Path(path).resolve().relative_to(config.rootpath.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def _named_on_command_line(config, entry: str) -> bool:
+    """Whether a command-line argument is ``entry`` or lies inside it."""
+    for arg in config.args:
+        path, sep, node = arg.partition("::")
+        spelled = _rootdir_relative(config, Path(config.invocation_params.dir, path))
+        if spelled is None:
+            continue
+        spelled += sep + node
+        if spelled == entry or spelled.startswith((entry + "/", entry + "::")):
+            return True
+    return False
+
+
+def pytest_ignore_collect(collection_path, config):
+    """Skip excluded directories; None defers to --ignore and every other plugin."""
+    relative = _rootdir_relative(config, collection_path)
+    if relative in LAYER1_EXCLUDED and not _named_on_command_line(config, relative):
+        return True
+    return None
+
+
+def _deselect_outside_layer1(config, items):
+    """Deselect excluded node ids, reported as deselected like --deselect."""
+    excluded = tuple(
+        entry for entry in LAYER1_EXCLUDED
+        if "::" in entry and not _named_on_command_line(config, entry)
+    )
+    if not excluded:
+        return
+    dropped = [item for item in items if item.nodeid.startswith(excluded)]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = [item for item in items if item not in dropped]
+
+
+# ============================================================================
+# SESSION ISOLATION
+# ============================================================================
+
+SESSION_ROOT_ENV = "GAIA_TEST_SESSION_ROOT"
+_created_session_root = None
+
+
+def _isolate_session_home_and_tmpdir():
+    """Give the session, its xdist workers and every subprocess a private HOME and TMPDIR.
+
+    The first process of a session creates the root under the invoker's temp
+    directory and exports it; xdist workers and nested pytest runs inherit it
+    and reuse it. PYTHONUSERBASE stays on the invoker's user site, where pytest
+    and xdist may be installed, because Python derives it from HOME.
+    """
+    global _created_session_root
+    root = os.environ.get(SESSION_ROOT_ENV)
+    if not root:
+        os.environ.setdefault("PYTHONUSERBASE", site.getuserbase())
+        root = tempfile.mkdtemp(prefix="gaia-pytest-")
+        os.environ[SESSION_ROOT_ENV] = root
+        _created_session_root = root
+    home, tmp = Path(root, "home"), Path(root, "tmp")
+    home.mkdir(parents=True, exist_ok=True)
+    tmp.mkdir(exist_ok=True)
+    os.environ["HOME"] = str(home)
+    os.environ["TMPDIR"] = str(tmp)
+    tempfile.tempdir = str(tmp)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Drop the root this process created after a passing run; a failing one keeps its tmp_path dirs."""
+    if _created_session_root and exitstatus == 0:
+        shutil.rmtree(_created_session_root, ignore_errors=True)
+
+
+# ============================================================================
 # MARKERS
 # ============================================================================
 
 def pytest_configure(config):
-    """Register custom markers."""
+    """Isolate the session's HOME and TMPDIR, then register custom markers."""
+    _isolate_session_home_and_tmpdir()
     config.addinivalue_line("markers", "llm: LLM evaluation tests (require ANTHROPIC_API_KEY)")
     config.addinivalue_line("markers", "e2e: E2E headless tests (require claude CLI)")
     config.addinivalue_line(
@@ -201,7 +307,8 @@ def _fresh_mutative_classification_cache():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip llm and e2e tests unless explicitly requested via -m flag."""
+    """Deselect what layer 1 excludes; auto-skip llm and e2e tests unless -m selects them."""
+    _deselect_outside_layer1(config, items)
     # If user explicitly passed -m, respect that
     markexpr = config.getoption("-m", default="")
     if markexpr:
