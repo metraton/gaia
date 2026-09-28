@@ -935,7 +935,9 @@ class TestCheckSchemaVersion:
         assert r["severity"] == "warning"
         assert "99" in r["detail"]
         assert "BEHIND DB" in r["detail"]
-        assert "refuses every write" in r["detail"]
+        # Writes continue only inside the database's compatibility window.
+        assert "writes only while the database's min_code_version" in r["detail"]
+        assert "reads keep working" in r["detail"]
         # Remedy is newer code via the install actors; never a DB downgrade.
         assert "gaia dev" in r["fix"]
         assert "Do NOT downgrade the DB" in r["fix"]
