@@ -43,7 +43,9 @@ How apply treats a database:
 
 gaia install, gaia update and gaia dev run `gaia migrate apply` without
 consent; when they stop on a data-reaching chain, the message names the exact
-`gaia migrate apply --consent-chain ...` command that continues.
+`gaia migrate apply --consent-chain ...` command that continues. The plugin,
+which never runs install, does the same at SessionStart when the database is
+behind, and names that command in the session's startup notice.
 
 Migrations only run forward. A database newer than this code is never moved
 down. Each seal records min_code_version, the oldest code that may still write,

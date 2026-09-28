@@ -271,6 +271,17 @@ if __name__ == "__main__":
         if setup_message:
             logger.info("First-time setup: %s", setup_message)
 
+        # The plugin channel never runs `gaia install`, so this is where its
+        # database is migrated and its seeds re-run. Ordered before the
+        # manifest so the schema block below reads the migrated state.
+        upgrade_notice = ""
+        try:
+            from modules.session.plugin_upgrade import reconcile_plugin_install
+            upgrade_notice = reconcile_plugin_install(Path.cwd())
+        except Exception as _upgrade_exc:
+            logger.warning("plugin upgrade check failed (non-fatal): %s", _upgrade_exc)
+            upgrade_notice = f"Gaia could not check its database at session start: {_upgrade_exc}"
+
         # Note: SessionStart no longer triggers an automatic project scan.
         # Scanning is a separate, on-demand flow (`gaia scan`). Project context
         # injection (below, via build_session_context) is unaffected -- it reads
@@ -313,6 +324,11 @@ if __name__ == "__main__":
         response = {"session_type": "startup"}
         if setup_message:
             response["setup_message"] = setup_message
+        if upgrade_notice:
+            response["systemMessage"] = upgrade_notice
+            additional_context = "\n\n".join(
+                part for part in ("## Database upgrade\n" + upgrade_notice, additional_context) if part
+            )
         if additional_context:
             response["hookSpecificOutput"] = {
                 "hookEventName": "SessionStart",
