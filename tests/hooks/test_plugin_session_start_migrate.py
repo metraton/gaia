@@ -1,11 +1,12 @@
 """The plugin's SessionStart keeps the database and seeds in step with the code.
 
 The plugin channel never runs `gaia install`, so without this a plugin user
-kept new code over an old database with nothing telling them. The chain cases
-drive `reconcile` over a staged copy of the real migration engine, because the
-chain a test needs (structure only, or reaching rows) cannot be taken from the
-shipped migrations without breaking the next time one ships. The re-seed case
-drives the real hook as Claude Code does, on the plugin channel.
+kept new code over an old database with nothing telling them. A chain a test
+needs (structure only, or reaching rows) cannot be taken from the shipped
+migrations without breaking the next time one ships, so the chain cases stage
+their own: `reconcile` over a copy of the engine, and the real hook, run as
+Claude Code runs it on the plugin channel, over a copy of the package. The
+re-seed case runs the real hook over the package itself.
 
 Every case builds its own database and data dirs under tmp_path.
 """
@@ -15,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -161,28 +163,21 @@ def test_database_ahead_outside_the_window_is_not_migrated(data_dir, tmp_path, m
     assert not (data_dir / "backups").exists()
 
 
-def test_new_package_version_reseeds_without_registering_hooks(tmp_path):
-    db = _database(tmp_path / "gaia.db", EXPECTED)
-    with sqlite3.connect(db) as con:
-        con.execute("DELETE FROM agent_contract_permissions")
-        con.execute("DELETE FROM surface_routing")
-    plugin_data = tmp_path / "plugin-data"
-    plugin_data.mkdir()
-    (plugin_data / "seeded-version").write_text("0.0.1")
+def _run_plugin_hook(hook: Path, plugin_root: Path, db: Path, plugin_data: Path, tmp_path: Path):
+    """Drive *hook* as Claude Code does on the plugin channel; (process, stdout JSON)."""
     workspace = tmp_path / "workspace"
-    (workspace / ".claude").mkdir(parents=True)
+    (workspace / ".claude").mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env.update(
         {
             "GAIA_DB": str(db),
             "HOME": str(tmp_path),
             "CLAUDE_PLUGIN_DATA": str(plugin_data),
-            "CLAUDE_PLUGIN_ROOT": str(_REPO),
+            "CLAUDE_PLUGIN_ROOT": str(plugin_root),
         }
     )
-
     proc = subprocess.run(
-        [sys.executable, str(HOOK_PATH)],
+        [sys.executable, str(hook)],
         input=json.dumps(
             {"hook_event_name": "SessionStart", "session_id": "s-plugin", "source": "startup"}
         ),
@@ -192,13 +187,92 @@ def test_new_package_version_reseeds_without_registering_hooks(tmp_path):
         cwd=str(workspace),
         timeout=120,
     )
-
     assert proc.returncode == 0, proc.stderr
+    return proc, json.loads(proc.stdout.strip() or "{}")
+
+
+@pytest.fixture
+def staged_package(tmp_path):
+    """A copy of the package whose only migration is the one the test writes.
+
+    Copied rather than linked: every module finds the package through its own
+    resolved path, so a link would lead the hook back to the real migrations.
+    The seeds are marked current so the hook exercises the chain alone.
+    """
+    root = tmp_path / "pkg"
+    ignore = shutil.ignore_patterns("__pycache__")
+    for name in ("hooks", "gaia", "bin", "scripts", "opencode"):
+        shutil.copytree(_REPO / name, root / name, ignore=ignore)
+    shutil.copy2(_REPO / "package.json", root / "package.json")
+    shutil.rmtree(root / "scripts" / "migrations")
+    (root / "scripts" / "migrations").mkdir()
+    plugin_data = tmp_path / "plugin-data"
+    plugin_data.mkdir()
+    (plugin_data / "seeded-version").write_text(
+        json.loads((_REPO / "package.json").read_text())["version"]
+    )
+    return root, plugin_data
+
+
+def _hook_notice(response: dict) -> str:
+    return response.get("hookSpecificOutput", {}).get("additionalContext", "")
+
+
+def test_hook_leaves_a_data_reaching_chain_and_names_its_consent_command(
+    staged_package, data_dir, tmp_path
+):
+    root, plugin_data = staged_package
+    (root / "scripts" / "migrations" / f"v{EXPECTED - 1}_to_v{EXPECTED}.sql").write_text(
+        "UPDATE memory SET description = 'clobbered';\n"
+    )
+    db = _database(data_dir / "gaia.db", EXPECTED - 1)
+    before = _digest(db)
+
+    proc, response = _run_plugin_hook(
+        root / "hooks" / "session_start.py", root, db, plugin_data, tmp_path
+    )
+
+    command = f"gaia migrate apply --consent-chain v{EXPECTED - 1}..v{EXPECTED}"
+    assert command in _hook_notice(response), proc.stdout
+    assert command in response.get("systemMessage", "")
+    assert _digest(db) == before
+    assert not (data_dir / "backups").exists()
+
+
+def test_hook_applies_a_structure_only_chain_and_says_so(staged_package, data_dir, tmp_path):
+    root, plugin_data = staged_package
+    (root / "scripts" / "migrations" / f"v{EXPECTED - 1}_to_v{EXPECTED}.sql").write_text(
+        "CREATE TABLE IF NOT EXISTS plugin_probe (a TEXT);\n"
+    )
+    db = _database(data_dir / "gaia.db", EXPECTED - 1)
+
+    proc, response = _run_plugin_hook(
+        root / "hooks" / "session_start.py", root, db, plugin_data, tmp_path
+    )
+
+    assert _ledger(db) == EXPECTED
+    assert len(list((data_dir / "backups").glob("*.db"))) == 1
+    said = f"migrated from v{EXPECTED - 1} to v{EXPECTED}"
+    assert said in _hook_notice(response), proc.stdout
+    assert said in response.get("systemMessage", "")
+
+
+def test_new_package_version_reseeds_without_registering_hooks(tmp_path):
+    db = _database(tmp_path / "gaia.db", EXPECTED)
+    with sqlite3.connect(db) as con:
+        con.execute("DELETE FROM agent_contract_permissions")
+        con.execute("DELETE FROM surface_routing")
+    plugin_data = tmp_path / "plugin-data"
+    plugin_data.mkdir()
+    (plugin_data / "seeded-version").write_text("0.0.1")
+
+    _run_plugin_hook(HOOK_PATH, _REPO, db, plugin_data, tmp_path)
+
     package_version = json.loads((_REPO / "package.json").read_text())["version"]
     assert (plugin_data / "seeded-version").read_text().strip() == package_version
     with sqlite3.connect(db) as con:
         assert con.execute("SELECT COUNT(*) FROM agent_contract_permissions").fetchone()[0] > 0
         assert con.execute("SELECT COUNT(*) FROM surface_routing").fetchone()[0] > 0
-    settings = workspace / ".claude" / "settings.local.json"
+    settings = tmp_path / "workspace" / ".claude" / "settings.local.json"
     registered = json.loads(settings.read_text()).get("hooks", {}) if settings.exists() else {}
     assert registered == {}
