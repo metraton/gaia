@@ -224,8 +224,10 @@ A green pre-flight only protects the release if it runs the same gates CI runs. 
 
 ## Pipeline (`publish.yml`)
 
-The workflow at `.github/workflows/publish.yml` runs on every GitHub Release event (read-only checkout -- it neither commits nor pushes). It:
+The workflow at `.github/workflows/publish.yml` runs on every GitHub Release event (read-only checkout -- it neither commits nor pushes). Its permissions are `contents: read`, `actions: read` (to read `ci.yml`'s runs) and `id-token: write` (for npm trusted publishing). It:
 - Checks out the exact tagged commit.
+- Requires a green `CI verdict` for that commit before doing anything else: `.github/scripts/ci_verdict.py` (the same helper `ci.yml` uses) accepts a green verdict on the tag's commit, on another commit with its tree, or on its parent when the tag only bumped version sources. Because the tag lands seconds after the push that starts CI, the step polls for up to `VERDICT_WAIT_SECONDS` (1200 s). It fails closed -- nothing is packed or published -- when the tag's `ci.yml` run is red, when no verdict appears, or when the limit elapses, and the error names the commit, the tag and the `ci.yml` run it consulted.
+- Sets up Node 22 (trusted publishing needs Node >= 22.14.0) and installs `npm@^11.5.1` (it needs npm >= 11.5.1; Node 22 bundles npm 10), printing `node --version` and `npm --version`.
 - Installs deps with `npm ci`.
 - Packs the tarball with `npm pack` -- `prepack` (clean + `generate:plugin-root`) regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`, so the tarball root is a valid plugin root (the same tree the git plugin source serves). No `dist/` bundle is built or committed back.
 - Runs `npm run pre-publish:validate` (after pack, so it sees the fresh root manifests).
@@ -233,7 +235,7 @@ The workflow at `.github/workflows/publish.yml` runs on every GitHub Release eve
 - Runs the sandbox validation harness against the packed tarball (the gate).
 - Publishes the same tarball with `npm publish <tarball> --access public --tag <detected>`.
 
-`NPM_TOKEN` lives in GitHub Secrets, never local.
+Publishing authenticates by npm trusted publishing (OIDC): npm exchanges the job's OIDC token for a credential bound to the trusted publisher registered on npmjs.com (GitHub Actions, `metraton/gaia`, `publish.yml`, no environment) and attaches a provenance attestation on its own. The publish step reads no npm token, so `NODE_AUTH_TOKEN` and the `NPM_TOKEN` secret are not used. The match requires `package.json` `repository.url` to name `github.com/metraton/gaia`; renaming the repository or the workflow file breaks publishing until the trusted publisher is updated. `NPM_TOKEN` stays in GitHub Secrets only as the fallback: if trusted publishing fails, the fallback is reverting the commit that introduced it, never a token branch in the workflow.
 
 ## Path Defaults
 
