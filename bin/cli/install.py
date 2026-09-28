@@ -23,8 +23,11 @@ Responsibilities (in order):
   2. Configure workspace `.claude/settings.json` (create if missing).
   3. Merge gaia permissions, env vars, and agent identity into
      `.claude/settings.local.json`.
-  4. Merge hook event entries from `hooks.json` into `.claude/settings.local.json`
-     (only relevant in npm mode -- in plugin mode CC reads hooks.json directly).
+  4. Register Gaia's hooks in `.claude/settings.local.json` through the single
+     writer (`plugin_setup.sync_workspace_hooks`): npm mode writes each
+     (event, matcher, command) `hooks.json` ships and prunes retired ones;
+     plugin mode (or a workspace enabling the Gaia plugin) writes none, since
+     CC reads the plugin's hooks.json directly. User entries are kept.
   5. Create or repair `.claude/{agents,tools,hooks,config,skills}` symlinks
      (5 directories) plus a `.claude/CHANGELOG.md` file link, pointing at the
      installed package (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in

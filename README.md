@@ -108,7 +108,7 @@ gaia install                      # Claude Code; or --host opencode / --host all
 gaia doctor                       # one line per check, PASS or FAIL
 ```
 
-`gaia install` bootstraps `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, and merges the twelve hook events and the permission set into `.claude/settings.local.json` without removing what you already had there. With `--host opencode` it writes `opencode.json` in the workspace pointing at the packaged plugin instead of touching `.claude/`. Run `gaia doctor` from the workspace, or pass `--workspace <path>`; the full walk-through and the troubleshooting table are in [INSTALL.md](./INSTALL.md).
+`gaia install` bootstraps `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, and merges the permission set and Gaia's hook registrations into `.claude/settings.local.json` without removing what you already had there (when the workspace also enables the Gaia plugin, the plugin registers the hooks and install writes none). With `--host opencode` it writes `opencode.json` in the workspace pointing at the packaged plugin instead of touching `.claude/`. Run `gaia doctor` from the workspace, or pass `--workspace <path>`; the full walk-through and the troubleshooting table are in [INSTALL.md](./INSTALL.md).
 
 **First turn.** Start the host in the workspace and ask:
 

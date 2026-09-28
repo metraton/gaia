@@ -10,7 +10,8 @@ Public helpers exposed to install/update:
 
   - configure_settings_json   Create or repair `.claude/settings.json`.
   - merge_local_permissions   Union gaia permissions into `settings.local.json`.
-  - merge_local_hooks         Merge hook event entries into `settings.local.json`.
+  - merge_local_hooks         Register Gaia's hooks in `settings.local.json` for the
+                              workspace's channel (none under the plugin).
   - merge_worktree_settings   Force `worktree.bgIsolation: "none"` into `settings.local.json`,
                               but only for a workspace that is not inside a git working tree.
   - manage_symlinks           Create or repair `.claude/{agents,hooks,...}` symlinks.
@@ -46,9 +47,9 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Reuse the canonical permission/hook merge logic from plugin_setup.py.
 # That module is the SINGLE SOURCE OF TRUTH for PERMISSIONS, deny rules,
-# the authoritative-merge algorithm, and the hooks.json conversion. We import
-# the constants but reimplement the orchestration here so we can return the
-# {action, path, details} contract instead of plain booleans.
+# the authoritative-merge algorithm, and the single hook writer. Permissions
+# are orchestrated here to return the {action, path, details} contract; hooks
+# are delegated whole, so install/update and the session setup cannot diverge.
 # ---------------------------------------------------------------------------
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent  # bin/cli -> bin -> pkg/
@@ -76,8 +77,12 @@ try:
         PERMISSIONS,
         _authoritative_merge,
         _tool_name,
+        resolve_hook_channel,
+        sync_workspace_hooks,
     )
 except Exception:  # noqa: BLE001
+    resolve_hook_channel = None  # type: ignore[assignment]
+    sync_workspace_hooks = None  # type: ignore[assignment]
     # Fallback constants if the hooks package cannot be imported (e.g. partial
     # install). These mirror the canonical values in plugin_setup.py at the
     # time of writing -- if those drift, this fallback becomes stale, but the
@@ -620,62 +625,8 @@ def merge_local_permissions(
 
 
 # ---------------------------------------------------------------------------
-# 3. settings.local.json -- hooks merge (npm mode)
+# 3. settings.local.json -- hook registration (plugin_setup.sync_workspace_hooks)
 # ---------------------------------------------------------------------------
-
-# The unconverted form a hook command carries in hooks.json, before the merge
-# rewrites it to an absolute path.
-_PLUGIN_ROOT_HOOKS_TOKEN = "${CLAUDE_PLUGIN_ROOT}/hooks/"
-
-
-def _is_gaia_hook_command(command: str, hooks_abs: str) -> bool:
-    """True when *command* invokes an entry point out of Gaia's hooks dir.
-
-    Ownership is decided by the command's target, not by the event name: an
-    event Gaia ships can also carry a third-party entry, and that entry is not
-    Gaia's to remove.
-    """
-    if not command:
-        return False
-    normalized = command.replace("\\", "/")
-    return _PLUGIN_ROOT_HOOKS_TOKEN in normalized or f"{hooks_abs}/" in normalized
-
-
-def _prune_stale_gaia_events(
-    existing_hooks: dict[str, list],
-    shipped_events: set[str],
-    hooks_abs: str,
-) -> bool:
-    """Drop Gaia's own entries for events hooks.json no longer ships.
-
-    The merge is otherwise additive, so retiring an event from hooks.json left
-    its registration alive in every already-installed workspace, pointing at an
-    entry-point file the release had deleted. Third-party entries on the same
-    event survive, and an event Gaia never owned is never touched.
-    """
-    changed = False
-    for event in list(existing_hooks):
-        if event in shipped_events:
-            continue
-        kept: list = []
-        for entry in existing_hooks[event]:
-            hooks_list = entry.get("hooks", [])
-            surviving = [
-                h for h in hooks_list
-                if not _is_gaia_hook_command(h.get("command", ""), hooks_abs)
-            ]
-            if len(surviving) == len(hooks_list):
-                kept.append(entry)
-            elif surviving:
-                kept.append({**entry, "hooks": surviving})
-        if kept == existing_hooks[event]:
-            continue
-        changed = True
-        if kept:
-            existing_hooks[event] = kept
-        else:
-            del existing_hooks[event]
-    return changed
 
 
 def merge_local_hooks(
@@ -684,18 +635,14 @@ def merge_local_hooks(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Merge hooks from hooks.json into settings.local.json.
+    """Register Gaia's hooks in settings.local.json through the single writer.
 
-    Events hooks.json ships are added or completed; events it no longer ships
-    have Gaia's own entries pruned (see ``_prune_stale_gaia_events``).
-
-    In npm mode Claude Code reads hooks from settings.local.json, not from
-    hooks.json directly, so this is required for hooks to fire. Command
-    paths are made absolute through the STABLE `.claude/hooks` symlink (the
-    symlink itself is NOT followed) so hooks work regardless of cwd at
-    execution time AND survive repeated `gaia dev` runs -- see the
-    hooks_abs computation below for why the symlink must not be resolved
-    through.
+    Delegates to ``plugin_setup.sync_workspace_hooks``, the same merge the
+    session setup runs, for the channel that owns this workspace: the plugin
+    channel (``CLAUDE_PLUGIN_ROOT`` set, or a workspace enabling the Gaia
+    plugin) leaves zero Gaia entries; otherwise the npm channel writes the
+    (event, matcher, command) triples hooks.json ships and prunes retired
+    ones. User entries are never touched.
 
     Args:
         workspace: directory containing .claude/.
@@ -709,128 +656,16 @@ def merge_local_hooks(
 
     if not claude_dir.exists():
         return _result("skipped", local_path, ".claude/ not found")
+    if sync_workspace_hooks is None:
+        return _result("error", local_path, "hook writer unavailable: hooks package not importable")
 
-    # Locate hooks.json -- prefer package root, fall back to symlink.
-    hooks_json_path: Path | None = None
-    candidate = pkg_root / "hooks" / "hooks.json"
-    if candidate.is_file():
-        hooks_json_path = candidate
-    else:
-        candidate2 = claude_dir / "hooks" / "hooks.json"
-        if candidate2.is_file():
-            hooks_json_path = candidate2
+    hooks_json_path = pkg_root / "hooks" / "hooks.json"
+    if not hooks_json_path.is_file():
+        hooks_json_path = claude_dir / "hooks" / "hooks.json"
 
-    if hooks_json_path is None:
-        return _result("skipped", local_path, "hooks.json not found in package")
-
-    hooks_data = _read_json(hooks_json_path)
-    if hooks_data is None:
-        return _result("error", local_path, f"hooks.json invalid: {hooks_json_path}")
-
-    source_hooks = hooks_data.get("hooks", hooks_data)
-
-    # Absolute path for hook commands. Always normalized to forward-slash via
-    # .as_posix() -- this is what neutralizes both the re.sub "bad escape" on a
-    # Windows "C:\Users\..." backslash (the string below is used as a
-    # *replacement* pattern, where backslash is special) and the Windows shell
-    # eating backslash escapes when the command is written into
-    # settings.local.json. Python accepts forward-slash paths natively on
-    # Windows, so this is safe on every platform.
-    #
-    # CRITICAL: resolve the .claude PARENT to an absolute, normalized path, but
-    # do NOT follow the `hooks` symlink itself. `.claude/hooks` is the STABLE
-    # indirection point `manage_symlinks` repoints on every install; following
-    # it (the old `hooks_dir.resolve()`) baked the symlink's *current* target
-    # into settings.local.json. Under `gaia dev` that target is the pnpm
-    # content-addressed virtual-store path
-    # (node_modules/.pnpm/@jaguilar87+gaia@file+...+<sha8>.tgz/...), whose <sha8>
-    # segment changes on EVERY content change (see content_address_tarball in
-    # cli/dev.py) and whose old store dir is pruned/replaced on reinstall. The
-    # Claude Code harness pins hook commands at session start (no hot-reload),
-    # so a resumed/next-run session kept the stale resolved path and its hooks
-    # pointed at a store dir that no longer existed. Baking the stable
-    # `.claude/hooks/...` path instead keeps settings.local.json valid across
-    # repeated dev iterations -- install just repoints the one symlink.
-    hooks_dir = claude_dir / "hooks"
-    try:
-        # Resolve only the parent (the real workspace `.claude` dir), then
-        # re-attach the unresolved `hooks` symlink component.
-        hooks_abs = (claude_dir.resolve() / "hooks").as_posix()
-    except OSError:
-        hooks_abs = hooks_dir.as_posix()
-
-    def _convert(cmd: str) -> str:
-        # Replace ${CLAUDE_PLUGIN_ROOT}/hooks/ -> absolute hooks dir.
-        # hooks_abs is forward-slash only (see above), so it never contains
-        # a backslash escape sequence -- but the replacement is still passed
-        # through a lambda (not a raw string) as defense in depth, since
-        # re.sub interprets backslashes in a string replacement specially.
-        return re.sub(
-            r"\$\{CLAUDE_PLUGIN_ROOT\}/hooks/",
-            lambda _m: f"{hooks_abs}/",
-            cmd,
-        )
-
-    converted: dict[str, list] = {}
-    for event, entries in source_hooks.items():
-        converted[event] = []
-        for entry in entries:
-            new_entry = dict(entry)
-            if "hooks" in new_entry:
-                new_entry["hooks"] = [
-                    {**h, "command": _convert(h["command"])} if "command" in h else h
-                    for h in new_entry["hooks"]
-                ]
-            converted[event].append(new_entry)
-
-    existing = _read_json(local_path) if local_path.exists() else {}
-    if existing is None:
-        existing = {}
-
-    existing_hooks = existing.get("hooks", {})
-
-    # Note: Gaia has no shipped users yet; we assume a clean install or a
-    # workspace that already went through this helper. Auto-migration of
-    # legacy ".claude/hooks/..." relative paths used to live here -- it was
-    # removed in Pass 4 of the install refactor because no production
-    # workspaces ever wrote that flavor (no released version emitted it).
-    # If a future schema migration becomes necessary, add it explicitly with
-    # a versioned migration step rather than re-introducing silent rewrites.
-
-    # Smart merge -- gaia owns its event commands (dedupe by command string)
-    changed = False
-    for event, new_entries in converted.items():
-        if event not in existing_hooks:
-            existing_hooks[event] = new_entries
-            changed = True
-            continue
-
-        existing_cmds: set[str] = set()
-        for entry in existing_hooks[event]:
-            for h in entry.get("hooks", []):
-                if h.get("command"):
-                    existing_cmds.add(h["command"])
-
-        for new_entry in new_entries:
-            new_cmds = [h.get("command") for h in new_entry.get("hooks", []) if h.get("command")]
-            all_present = bool(new_cmds) and all(c in existing_cmds for c in new_cmds)
-            if not all_present:
-                existing_hooks[event].append(new_entry)
-                changed = True
-
-    if _prune_stale_gaia_events(existing_hooks, set(converted), hooks_abs):
-        changed = True
-
-    if not changed:
-        return _result("noop", local_path, "hooks already up to date")
-
-    existing["hooks"] = existing_hooks
-
-    if dry_run:
-        return _result("updated", local_path, "would merge hooks from hooks.json")
-
-    _write_json(local_path, existing)
-    return _result("updated", local_path, f"merged hooks from {hooks_json_path}")
+    channel = resolve_hook_channel(workspace, npm_copy=True)
+    action, details = sync_workspace_hooks(workspace, channel, hooks_json_path, dry_run=dry_run)
+    return _result(action, local_path, details)
 
 
 # ---------------------------------------------------------------------------

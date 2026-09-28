@@ -827,8 +827,8 @@ def _gaia_managed_permission_sets():
 def _is_gaia_hook_command(command: object) -> bool:
     """True when a hook command string was injected by Gaia.
 
-    Both hook writers -- ``merge_local_hooks`` (cli/_install_helpers.py) and
-    ``setup_project_hooks`` (hooks/modules/core/plugin_setup.py) -- bake the
+    The hook writer -- ``sync_workspace_hooks`` (hooks/modules/core/plugin_setup.py,
+    reached by install/update through ``merge_local_hooks``) -- bakes the
     ``${CLAUDE_PLUGIN_ROOT}/hooks/`` prefix into the workspace's
     ``.claude/hooks/`` directory (the stable symlink into the Gaia package).
     A command Gaia owns therefore resolves through ``.claude/hooks/``. We also
@@ -964,7 +964,7 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
                 del data["permissions"]
 
     # hooks (Gaia-injected event commands resolving into .claude/hooks/).
-    # This is the mirror of merge_local_hooks / setup_project_hooks: removing
+    # This is the mirror of plugin_setup.sync_workspace_hooks: removing
     # them here prevents an orphan `hooks` block (pointing at deleted symlinks)
     # from surviving uninstall and double-registering if the Claude Code plugin
     # is later mounted.

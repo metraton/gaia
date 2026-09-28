@@ -10,7 +10,8 @@ Order of operations:
   1. `gaia migrate apply` (no-op if schema already current).
   2. settings.json (create if missing).
   3. settings.local.json -- merge permissions/env/agent.
-  4. settings.local.json -- merge hooks (npm mode).
+  4. settings.local.json -- register hooks through the single writer
+     (npm mode writes hooks.json's triples; plugin mode writes none).
   5. settings.local.json -- force worktree.bgIsolation to "none".
   6. Symlinks under .claude/ (recreate only if broken or stale).
   7. plugin-registry.json (record current version).

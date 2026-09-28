@@ -88,7 +88,7 @@ def _detect_install_method() -> str:
     The install method -- NOT the runtime mode -- decides how Gaia's security
     hooks activate, so the first-run welcome can give accurate guidance:
 
-    - npm/pnpm install: setup_project_hooks() merges the hooks into
+    - npm/pnpm install: sync_workspace_hooks() registers the hooks in
       .claude/settings.local.json. Claude Code's settings file-watcher applies
       changes to that file automatically, so protection takes effect without a
       restart.

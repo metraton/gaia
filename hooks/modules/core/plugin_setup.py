@@ -2,6 +2,8 @@
 
 Detects first run via marker file in CLAUDE_PLUGIN_DATA.
 On first run, merges gaia permissions into .claude/settings.local.json.
+Also owns the single writer of Gaia hook entries in workspace settings
+(sync_workspace_hooks), used by the session setup and by install/update.
 """
 from __future__ import annotations
 
@@ -10,7 +12,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from .paths import get_plugin_data_dir
 
@@ -441,104 +443,22 @@ def _detect_npm_package_info() -> tuple[str, str | None] | None:
     return (pkg_name, version)
 
 
-def setup_project_hooks() -> bool:
-    """Merge hooks from hooks.json into .claude/settings.local.json.
+# ---------------------------------------------------------------------------
+# Workspace hook registration -- the single writer.
+#
+# Every path that registers Gaia's hooks in a workspace (`gaia install`,
+# `gaia update`, and the SessionStart/UserPromptSubmit setup below) goes
+# through sync_workspace_hooks, which decides ownership with
+# is_gaia_hook_command alone. The plugin channel registers hooks through the
+# plugin's own hooks.json, so there it leaves zero Gaia entries in the
+# workspace; the npm channel is read from settings files, so there it writes
+# exactly the (event, matcher, command) triples hooks.json ships.
+# ---------------------------------------------------------------------------
 
-    In npm mode, Claude Code reads hooks from settings files, not hooks.json.
-    This resolves hook script paths to absolute paths (via .claude/hooks symlink)
-    so hooks work regardless of CWD at execution time.
-
-    Returns True if settings were modified.
-    """
-    import re
-
-    claude_dir = Path.cwd() / ".claude"
-    settings_path = claude_dir / "settings.local.json"
-
-    # Find hooks.json — try package root (npm) or plugin root
-    hooks_json_path = None
-    # Strategy 1: relative to this module (npm layout)
-    module_dir = Path(__file__).resolve().parent.parent.parent
-    candidate = module_dir / "hooks.json"
-    if candidate.is_file():
-        hooks_json_path = candidate
-    else:
-        # Strategy 2: .claude/hooks/hooks.json (symlinked)
-        candidate2 = claude_dir / "hooks" / "hooks.json"
-        if candidate2.is_file():
-            hooks_json_path = candidate2
-
-    if not hooks_json_path:
-        logger.info("hooks.json not found, skipping hooks merge")
-        return False
-
-    try:
-        hooks_data = json.loads(hooks_json_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        logger.warning("hooks.json is invalid, skipping hooks merge")
-        return False
-
-    # Unwrap outer "hooks" key if present
-    source_hooks = hooks_data.get("hooks", hooks_data)
-
-    # Absolute path to the hooks directory so hooks work regardless of CWD at
-    # execution time (Stop/PostCompact hooks may run from unknown CWD).
-    #
-    # CRITICAL: resolve the .claude PARENT to an absolute path, but do NOT
-    # follow the `hooks` symlink itself -- `.claude/hooks` is the STABLE
-    # indirection that install repoints on every run. Following it (the old
-    # `hooks_dir.resolve()`) baked the symlink's current target -- under
-    # `gaia dev` the pnpm content-addressed store path whose hash segment
-    # changes on every content change and whose old dir is pruned -- into
-    # settings.local.json, so a resumed session pinned a path that no longer
-    # existed. This mirrors the same fix in cli/_install_helpers.merge_local_hooks.
-    hooks_dir = claude_dir / "hooks"
-    if hooks_dir.exists():
-        hooks_abs = str(claude_dir.resolve() / "hooks")
-    else:
-        # Fallback: use relative .claude/hooks/ if symlink not yet created
-        hooks_abs = str(claude_dir / "hooks")
-
-    def convert_command(cmd: str) -> str:
-        return re.sub(r'\$\{CLAUDE_PLUGIN_ROOT\}/hooks/', f'{hooks_abs}/', cmd)
-
-    converted_hooks: dict = {}
-    for event, entries in source_hooks.items():
-        converted_hooks[event] = []
-        for entry in entries:
-            new_entry = dict(entry)
-            if "hooks" in new_entry:
-                new_entry["hooks"] = [
-                    {**h, "command": convert_command(h["command"])} if "command" in h else h
-                    for h in new_entry["hooks"]
-                ]
-            converted_hooks[event].append(new_entry)
-
-    # Load existing settings.local.json
-    existing: dict = {}
-    if settings_path.exists():
-        try:
-            existing = json.loads(settings_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            existing = {}
-
-    # Replace hooks entirely — gaia is the sole author of hook entries.
-    # Previous merge-append logic caused duplicates when setup ran twice
-    # per session (session_start + user_prompt_submit).
-    existing_hooks = existing.get("hooks", {})
-    if existing_hooks == converted_hooks:
-        logger.info("settings.local.json hooks already up to date")
-        return False
-
-    existing["hooks"] = converted_hooks
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(existing, indent=2) + "\n")
-    logger.info("Merged hooks into %s", settings_path)
-    return True
-
+_PLUGIN_ROOT_HOOKS_TOKEN = "${CLAUDE_PLUGIN_ROOT}/hooks/"
 
 _GAIA_HOOK_SCRIPT_RE = re.compile(
-    r"(?:\.claude|\$\{CLAUDE_PLUGIN_ROOT\})/hooks/([A-Za-z0-9_]+\.py)\b"
+    r"(?P<root>\.claude|\$\{CLAUDE_PLUGIN_ROOT\})/hooks/(?P<name>[A-Za-z0-9_]+\.py)\b"
 )
 
 
@@ -548,75 +468,192 @@ def _gaia_hook_entrypoints() -> frozenset[str]:
     return frozenset(p.name for p in hooks_dir.glob("*.py"))
 
 
-def _is_gaia_hook_command(command: object, entrypoints: frozenset[str]) -> bool:
-    """True when *command* runs one of Gaia's own hook entrypoints.
+def _workspace_hook_dirs(workspace: Path) -> set[str]:
+    """Posix spellings of *workspace*'s ``.claude/hooks`` a Gaia writer bakes."""
+    claude_dir = workspace / ".claude"
+    dirs = {(claude_dir / "hooks").as_posix()}
+    try:
+        dirs.add((claude_dir.resolve() / "hooks").as_posix())
+    except OSError:
+        pass
+    return dirs
 
-    Both shapes a Gaia writer ever left in workspace settings qualify: the
-    rewritten ``<workspace>/.claude/hooks/<entrypoint>.py`` and the raw
-    ``${CLAUDE_PLUGIN_ROOT}/hooks/<entrypoint>.py``. The entrypoint name must
-    be one this package ships, so a user script that merely lives in a
-    ``.claude/hooks`` directory is never matched.
+
+def is_gaia_hook_command(command: object, workspace: Path, entrypoints: frozenset[str]) -> bool:
+    """True when *command* is a Gaia hook registration -- the one ownership test.
+
+    Qualifies: a ``.claude/hooks/<name>.py`` or ``${CLAUDE_PLUGIN_ROOT}/hooks/<name>.py``
+    target whose name is an entrypoint this package ships; any target left under
+    the unexpanded placeholder, which only Gaia's hooks.json carries; and a
+    target in *workspace*'s own ``.claude/hooks`` whose file is gone -- the
+    registration of an entrypoint a release retired. A user script that exists
+    there under a name Gaia does not ship is never matched.
     """
     if not isinstance(command, str):
         return False
-    match = _GAIA_HOOK_SCRIPT_RE.search(command.replace("\\", "/"))
-    return match is not None and match.group(1) in entrypoints
+    normalized = command.replace("\\", "/")
+    match = _GAIA_HOOK_SCRIPT_RE.search(normalized)
+    if match is None:
+        return False
+    name = match.group("name")
+    if name in entrypoints or match.group("root") != ".claude":
+        return True
+    in_workspace = any(f"{d}/{name}" in normalized for d in _workspace_hook_dirs(workspace))
+    return in_workspace and not (workspace / ".claude" / "hooks" / name).exists()
 
 
-def remove_merged_gaia_hooks() -> bool:
-    """Strip Gaia hook entries from the workspace ``settings.local.json``.
+def render_gaia_hooks(shipped_hooks: dict, hooks_dir: PurePath) -> dict:
+    """hooks.json entries with the plugin-root placeholder pointed at *hooks_dir*.
 
-    A plugin install registers its hooks through the plugin's own hooks.json;
-    any Gaia entry also present in workspace settings makes every hook fire
-    twice. Removes only commands :func:`_is_gaia_hook_command` recognises,
-    prunes the matcher entries and events that end up empty, and drops the
-    ``hooks`` key only when nothing is left in it. User entries are kept as
-    they were. Returns True if the file was rewritten.
+    The directory is written in posix form by plain substitution, so a Windows
+    path or one holding backslashes is neither regex-escaped nor rejected.
     """
-    settings_path = Path.cwd() / ".claude" / "settings.local.json"
-    if not settings_path.is_file():
-        return False
-    try:
-        settings = json.loads(settings_path.read_text())
-    except (json.JSONDecodeError, OSError):
-        logger.warning("settings.local.json is unreadable, skipping hook cleanup")
-        return False
-    hooks = settings.get("hooks") if isinstance(settings, dict) else None
-    if not isinstance(hooks, dict):
-        return False
+    prefix = f"{hooks_dir.as_posix()}/"
+    rendered: dict = {}
+    for event, entries in shipped_hooks.items():
+        rendered[event] = []
+        for entry in entries:
+            new_entry = dict(entry)
+            if isinstance(new_entry.get("hooks"), list):
+                new_entry["hooks"] = [
+                    {**h, "command": h["command"].replace(_PLUGIN_ROOT_HOOKS_TOKEN, prefix)}
+                    if isinstance(h, dict) and isinstance(h.get("command"), str) else h
+                    for h in new_entry["hooks"]
+                ]
+            rendered[event].append(new_entry)
+    return rendered
 
-    entrypoints = _gaia_hook_entrypoints()
-    kept_hooks: dict = {}
-    for event, entries in hooks.items():
+
+def merge_workspace_hooks(
+    existing_hooks: dict, gaia_hooks: dict, workspace: Path, entrypoints: frozenset[str]
+) -> dict:
+    """*existing_hooks* with Gaia's registrations replaced by exactly *gaia_hooks*.
+
+    Every handler :func:`is_gaia_hook_command` claims is removed and the
+    entries and events it leaves empty are dropped, so retired matchers and
+    events go; each shipped (event, matcher, command) is then placed once,
+    ahead of the user's entries for that event. Everything else is kept as
+    found. An empty *gaia_hooks* is the plugin channel.
+    """
+    user_hooks: dict = {}
+    for event, entries in existing_hooks.items():
         if not isinstance(entries, list):
-            kept_hooks[event] = entries
+            user_hooks[event] = entries
             continue
-        kept_entries = []
+        kept = []
         for entry in entries:
             handlers = entry.get("hooks") if isinstance(entry, dict) else None
             if not isinstance(handlers, list):
-                kept_entries.append(entry)
+                kept.append(entry)
                 continue
-            kept_handlers = [
+            users = [
                 h for h in handlers
-                if not _is_gaia_hook_command(
-                    h.get("command") if isinstance(h, dict) else None, entrypoints
+                if not is_gaia_hook_command(
+                    h.get("command") if isinstance(h, dict) else None, workspace, entrypoints
                 )
             ]
-            if kept_handlers:
-                kept_entries.append({**entry, "hooks": kept_handlers})
-        if kept_entries:
-            kept_hooks[event] = kept_entries
+            if len(users) == len(handlers):
+                kept.append(entry)
+            elif users:
+                kept.append({**entry, "hooks": users})
+        if kept:
+            user_hooks[event] = kept
 
-    if kept_hooks == hooks:
-        return False
-    if kept_hooks:
-        settings["hooks"] = kept_hooks
+    merged = {event: list(entries) for event, entries in gaia_hooks.items()}
+    for event, entries in user_hooks.items():
+        if event not in merged:
+            merged[event] = entries
+        elif isinstance(entries, list):
+            merged[event].extend(entries)
+    return merged
+
+
+def _workspace_enables_gaia_plugin(workspace: Path) -> bool:
+    """True when the workspace's own settings enable a ``gaia@...`` plugin."""
+    for name in ("settings.json", "settings.local.json"):
+        try:
+            data = json.loads((workspace / ".claude" / name).read_text())
+        except (OSError, ValueError):
+            continue
+        plugins = data.get("enabledPlugins") if isinstance(data, dict) else None
+        if isinstance(plugins, dict) and any(
+            key.split("@", 1)[0] == "gaia" and enabled is True
+            for key, enabled in plugins.items()
+        ):
+            return True
+    return False
+
+
+def resolve_hook_channel(workspace: Path, *, npm_copy: bool) -> str | None:
+    """The channel that owns hook registration in *workspace*.
+
+    ``"plugin"`` for a plugin launch (``CLAUDE_PLUGIN_ROOT`` set) or a
+    workspace whose settings enable the Gaia plugin: an npm copy installed
+    beside it defers, so the two channels stop undoing each other's writes.
+    Otherwise ``"npm"`` when *npm_copy*, else None -- write nothing.
+    """
+    if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip() or _workspace_enables_gaia_plugin(workspace):
+        return "plugin"
+    return "npm" if npm_copy else None
+
+
+def sync_workspace_hooks(
+    workspace: Path,
+    channel: str,
+    hooks_json_path: Path | None = None,
+    *,
+    dry_run: bool = False,
+) -> tuple[str, str]:
+    """Register Gaia's hooks in *workspace*'s settings.local.json for *channel*.
+
+    The only writer of Gaia hook entries in workspace settings. ``"npm"`` bakes
+    *hooks_json_path* through the stable ``.claude/hooks`` link -- its parent
+    resolved, the link itself not followed, so a repointed install never
+    leaves a dead store path behind; ``"plugin"`` registers nothing. A
+    settings file that cannot be parsed is left untouched. Returns
+    ``(action, details)``, action one of updated, noop, skipped, error.
+    """
+    claude_dir = workspace / ".claude"
+    settings_path = claude_dir / "settings.local.json"
+
+    gaia_hooks: dict = {}
+    if channel == "npm":
+        if hooks_json_path is None or not hooks_json_path.is_file():
+            return "skipped", "hooks.json not found in package"
+        try:
+            shipped = json.loads(hooks_json_path.read_text())
+        except (OSError, ValueError):
+            return "error", f"hooks.json invalid: {hooks_json_path}"
+        try:
+            hooks_dir = claude_dir.resolve() / "hooks"
+        except OSError:
+            hooks_dir = claude_dir / "hooks"
+        gaia_hooks = render_gaia_hooks(shipped.get("hooks", shipped), hooks_dir)
+
+    settings: dict = {}
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (OSError, ValueError):
+            return "error", f"{settings_path} is unreadable; hooks left as they are"
+    existing = settings.get("hooks", {}) if isinstance(settings, dict) else None
+    if not isinstance(existing, dict):
+        return "error", f"{settings_path} has no hooks object; hooks left as they are"
+
+    merged = merge_workspace_hooks(existing, gaia_hooks, workspace, _gaia_hook_entrypoints())
+    if merged == existing:
+        return "noop", "hooks already up to date"
+    if dry_run:
+        return "updated", f"would register {channel}-channel hooks"
+
+    if merged:
+        settings["hooks"] = merged
     else:
-        del settings["hooks"]
+        settings.pop("hooks", None)
+    claude_dir.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
-    logger.info("Removed Gaia hook entries merged into %s", settings_path)
-    return True
+    logger.info("Registered %s-channel hooks in %s", channel, settings_path)
+    return "updated", f"registered {channel}-channel hooks"
 
 
 def _installed_under_node_modules() -> bool:
@@ -625,21 +662,23 @@ def _installed_under_node_modules() -> bool:
 
 
 def _sync_workspace_hooks() -> bool:
-    """Bring workspace hook registration in line with how this copy was launched.
+    """Bring the cwd workspace's hook registration in line with this launch.
 
-    A plugin launch (``CLAUDE_PLUGIN_ROOT`` set) owns its hooks through the
-    plugin's hooks.json, so workspace entries are stripped. An npm/pnpm copy
-    is read by Claude Code from settings files, so hooks.json is merged there.
-    Any other launch writes nothing. That includes the workspace-registered
-    copy an earlier plugin version left behind, which runs out of the plugin
-    cache through the ``.claude/hooks`` link without ``CLAUDE_PLUGIN_ROOT``:
-    merging from there would undo the plugin's cleanup on every event.
+    Any launch that is neither plugin nor npm writes nothing. That includes
+    the workspace-registered copy an earlier plugin version left behind,
+    which runs out of the plugin cache through the ``.claude/hooks`` link
+    without ``CLAUDE_PLUGIN_ROOT``: merging from there would undo the
+    plugin's cleanup on every event. Returns True if settings changed.
     """
-    if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip():
-        return remove_merged_gaia_hooks()
-    if _installed_under_node_modules():
-        return setup_project_hooks()
-    return False
+    workspace = Path.cwd()
+    channel = resolve_hook_channel(workspace, npm_copy=_installed_under_node_modules())
+    if channel is None:
+        return False
+    hooks_json_path = Path(__file__).resolve().parents[2] / "hooks.json"
+    action, details = sync_workspace_hooks(workspace, channel, hooks_json_path)
+    if action == "error":
+        logger.warning("Hook registration skipped: %s", details)
+    return action == "updated"
 
 
 def run_first_time_setup(mark_done: bool = True) -> str | None:

@@ -38,7 +38,7 @@ def _gaia_commands(settings: dict) -> list:
         for entries in settings.get("hooks", {}).values()
         for entry in entries
         for h in entry.get("hooks", [])
-        if plugin_setup._is_gaia_hook_command(h.get("command"), entrypoints)
+        if plugin_setup.is_gaia_hook_command(h.get("command"), Path.cwd(), entrypoints)
     ]
 
 
@@ -83,6 +83,8 @@ class TestPluginLaunch:
 
     def test_entries_merged_by_an_earlier_version_are_stripped(self, plugin_launch):
         ws = plugin_launch
+        (ws / ".claude" / "hooks").mkdir()
+        (ws / ".claude" / "hooks" / "my_guard.py").write_text("")
         user_guard = {"type": "command", "command": f"python3 {ws}/.claude/hooks/my_guard.py"}
         user_echo = {"type": "command", "command": "echo user-hook"}
         (ws / ".claude" / "settings.local.json").write_text(json.dumps({
@@ -116,9 +118,9 @@ class TestPluginLaunch:
             "hooks": {"SessionStart": [{"hooks": [_gaia_handler(ws, name) for name in GAIA_ENTRYPOINTS]}]},
         }))
 
-        assert plugin_setup.remove_merged_gaia_hooks() is True
+        assert plugin_setup.sync_workspace_hooks(ws, "plugin") == ("updated", "registered plugin-channel hooks")
         assert "hooks" not in _settings(ws)
-        assert plugin_setup.remove_merged_gaia_hooks() is False
+        assert plugin_setup.sync_workspace_hooks(ws, "plugin")[0] == "noop"
 
 
 class TestNonPluginLaunch:
