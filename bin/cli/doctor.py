@@ -138,8 +138,13 @@ def _derive_workspace(override: str = None) -> Path:
        dev self-install and look one directory up for the real consumer
        workspace (which should also have node_modules/@jaguilar87/gaia/).
     5. If the script is NOT inside any node_modules/.../@jaguilar87/gaia/
-       tree (global install, PATH symlink, etc.) exit with a clear error --
-       no silent cwd fallback.
+       tree (the plugin, a global install, a checkout), the workspace is the
+       root recorded in gaia.db that contains ``CLAUDE_PROJECT_DIR`` when the
+       host sets it, else the cwd; a ``CLAUDE_PROJECT_DIR`` outside every
+       recorded root that holds ``.claude/`` is taken as is. Recorded roots
+       only: an unrecorded ``.claude/`` above the cwd may be one an earlier
+       cwd-anchored write seeded, so the walk up to it is never taken.
+    6. Nothing resolved: exit 2 with the two remedies.
 
     Why "leftmost node_modules", not "node_modules immediately followed by
     @jaguilar87/gaia": a plain npm/hoisted install puts the package directly
@@ -218,16 +223,15 @@ def _derive_workspace(override: str = None) -> Path:
         else:
             return workspace
 
-    # --- No inferable consumer workspace ---
-    # Legible, actionable failure -- NOT a raw CRITICAL. Reached when Gaia is
-    # not running from inside a workspace's node_modules/@jaguilar87/gaia tree
-    # (global or symlinked install) AND GAIA_WORKSPACE_PATH is unset or points
-    # at a dir without .claude/. The two remedies are explicit; no cwd walk-up
-    # and no forced --workspace (both deliberately avoided).
+    recorded = _recorded_workspace()
+    if recorded is not None:
+        return recorded
+
     print(
-        "gaia doctor: could not resolve a workspace to check "
-        "(global or symlinked install detected, and GAIA_WORKSPACE_PATH is "
-        "not set to a directory with .claude/).\n"
+        "gaia doctor: could not resolve a workspace to check (not running from "
+        "a workspace's node_modules, no workspace root recorded in gaia.db "
+        f"contains {_workspace_start()}, and GAIA_WORKSPACE_PATH is not set to a "
+        "directory with .claude/).\n"
         "  Fix it one of two ways:\n"
         "    - run `gaia doctor --workspace <path>` to check a specific "
         "workspace now, or\n"
@@ -237,6 +241,29 @@ def _derive_workspace(override: str = None) -> Path:
         file=sys.stderr,
     )
     sys.exit(2)
+
+
+def _workspace_start() -> Path:
+    """Where the session stands: the host's project dir when it sets one, else the cwd."""
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
+    return Path(project_dir).expanduser().resolve() if project_dir else Path.cwd().resolve()
+
+
+def _recorded_workspace() -> "Path | None":
+    """The recorded workspace root containing :func:`_workspace_start`, or None.
+
+    ``gaia.install_root.installed_root`` is not reused whole: past the recorded
+    roots it walks up to any ``.plugin-initialized`` marker and finally returns
+    the start itself, which would turn a folder outside every workspace into a
+    workspace instead of the exit-2 hint.
+    """
+    from gaia.install_root import owning_root, registered_roots  # noqa: PLC0415
+
+    start = _workspace_start()
+    root = owning_root(start, registered_roots(_db_path()))
+    if root is None and os.environ.get("CLAUDE_PROJECT_DIR", "").strip() and (start / ".claude").is_dir():
+        return start
+    return root
 
 
 def _read_json(path: Path):
@@ -270,6 +297,9 @@ _SESSION_REGISTRY_PATH = Path("~/.claude/session_registry.json").expanduser()
 _USER_SETTINGS_PATH = Path("~/.claude/settings.json").expanduser()
 
 _NPM_PACKAGE_DIR = Path("node_modules") / "@jaguilar87" / "gaia"
+
+# Claude Code's record of every installed plugin and the project or user scope it serves.
+_INSTALLED_PLUGINS_PATH = Path("~/.claude/plugins/installed_plugins.json").expanduser()
 
 
 def _db_path() -> Path:
@@ -409,6 +439,34 @@ def _active_channels(project_root: Path) -> dict:
         "plugin_enabled_in": enabled_in,
         "npm": npm if (npm / "package.json").is_file() else None,
     }
+
+
+def _plugin_tree(project_root: Path) -> "Path | None":
+    """The plugin install that serves *project_root*, or None off the plugin channel.
+
+    CLAUDE_PLUGIN_ROOT when the host exported it, else the install Claude Code
+    recorded for this project (local scope) or for every project (user scope).
+    None as well when the plugin is enabled but no install can be located: the
+    checks that consult this then fall back to the workspace's own files.
+    """
+    channels = _active_channels(project_root)
+    if not channels["plugin"]:
+        return None
+    if channels["plugin_root"] is not None:
+        return channels["plugin_root"]
+    record = _read_json(_INSTALLED_PLUGINS_PATH)
+    plugins = record.get("plugins") if isinstance(record, dict) else None
+    installs = [
+        install
+        for key, entries in (plugins or {}).items() if key.split("@", 1)[0] == "gaia"
+        for install in (entries if isinstance(entries, list) else [])
+        if isinstance(install, dict) and Path(install.get("installPath", "")).is_dir()
+    ]
+    local = [i for i in installs if i.get("scope") == "local"
+             and Path(i.get("projectPath", "")).resolve() == project_root.resolve()]
+    user = [i for i in installs if i.get("scope") == "user"]
+    chosen = local + user
+    return Path(chosen[0]["installPath"]) if chosen else None
 
 
 def _shipped_hooks(channels: dict) -> dict:
@@ -672,8 +730,16 @@ def check_workspace_initialized(project_root: Path) -> dict:
     settings.local.json with hooks all exist together. Failing any of the
     three means the workspace is not initialized; the others will surface
     their own errors, but this check gives the user one actionable hint.
+    On the plugin channel the plugin carries the registration and the hooks,
+    so only .claude/ is the workspace's own.
     """
     claude_dir = project_root / ".claude"
+    plugin = _plugin_tree(project_root)
+    if plugin is not None:
+        if not claude_dir.is_dir():
+            return _result("Workspace initialized", "error", "missing: .claude/",
+                           "Open Claude Code in this folder once with the gaia plugin enabled")
+        return _result("Workspace initialized", "pass", f"Gaia-aware workspace (plugin at {plugin})")
     registry = claude_dir / "plugin-registry.json"
     settings = claude_dir / "settings.local.json"
 
@@ -735,7 +801,10 @@ def check_install_channel(project_root: Path) -> dict:
 
 @register_check("Plugin registered", order=40)
 def check_plugin_mode(project_root: Path) -> dict:
-    """Check that the gaia plugin is registered in plugin-registry.json."""
+    """Check that the gaia plugin is registered: by Claude Code on the plugin channel, else in plugin-registry.json."""
+    plugin = _plugin_tree(project_root)
+    if plugin is not None:
+        return _result("Plugin registered", "pass", f"gaia (plugin at {plugin})")
     registry_path = project_root / ".claude" / "plugin-registry.json"
     if not registry_path.is_file():
         return _result("Plugin registered", "warning", "No plugin-registry.json",
@@ -1285,9 +1354,16 @@ def _extract_check_values(
 
 @register_check("Symlinks", order=50)
 def check_symlinks(project_root: Path) -> dict:
-    """Check .claude/ symlinks resolve to package content."""
+    """Check .claude/ symlinks resolve to package content; on the plugin channel, the plugin's own trees."""
     names = ["agents", "tools", "hooks", "config", "skills", "opencode", "CHANGELOG.md"]
     critical = {"agents", "hooks", "skills"}
+    plugin = _plugin_tree(project_root)
+    if plugin is not None:
+        missing = sorted(name for name in critical if not (plugin / name).is_dir())
+        if missing:
+            return _result("Symlinks", "error", f"plugin at {plugin} lacks {', '.join(missing)}",
+                           "`claude plugin update gaia` (or reinstall it)")
+        return _result("Symlinks", "pass", f"agents, hooks, skills served by the plugin at {plugin}")
     valid = 0
     has_critical_missing = False
 
@@ -2209,16 +2285,29 @@ def check_symbol_anchors(project_root: Path) -> dict:
 
 @register_check("Identity", order=60)
 def check_identity(project_root: Path) -> dict:
-    """Check orchestrator agent is configured."""
+    """Check orchestrator agent is configured.
+
+    On the plugin channel the orchestrator file and the ``agent`` default come
+    from the plugin; a workspace ``agent`` field still overrides that default,
+    so one naming another agent is an error there too.
+    """
     issues = []
     infos = []
+    plugin = _plugin_tree(project_root)
+    agents_root = plugin if plugin is not None else project_root / ".claude"
 
-    agent_path = project_root / ".claude" / "agents" / "gaia-orchestrator.md"
+    agent_path = agents_root / "agents" / "gaia-orchestrator.md"
     if not agent_path.is_file():
-        issues.append("gaia-orchestrator.md not found")
+        issues.append(f"gaia-orchestrator.md not found in {agent_path.parent}")
 
     local_settings = project_root / ".claude" / "settings.local.json"
-    if local_settings.is_file():
+    local_agent = (_read_json(local_settings) or {}).get("agent") if local_settings.is_file() else None
+    if plugin is not None:
+        agent = local_agent or (_read_json(plugin / "settings.json") or {}).get("agent")
+        if agent != "gaia-orchestrator":
+            issues.append(f'Agent set to "{agent}" (expected "gaia-orchestrator")' if agent
+                          else "No agent field in the plugin's settings.json")
+    elif local_settings.is_file():
         data = _read_json(local_settings)
         if data:
             agent = data.get("agent")
@@ -2377,7 +2466,8 @@ def check_agent_resolution(project_root: Path) -> dict:
             "Run `gaia install` (seeds via tools/scan/seed_surface_routing.py)",
         )
 
-    agents_dir = project_root / ".claude" / "agents"
+    plugin = _plugin_tree(project_root)
+    agents_dir = (plugin if plugin is not None else project_root / ".claude") / "agents"
 
     # Collect the agents the router references: one per surface + recon.
     referenced: dict[str, str] = {}  # agent name -> where it is referenced
@@ -3125,7 +3215,14 @@ def register(subparsers):
             "Channel-aware: names the active channel (plugin, npm local, or\n"
             "both) and counts each Gaia hook across the plugin's hooks.json and\n"
             "every settings file, the user's included; the plugin with no hooks\n"
-            "in the workspace settings is healthy.\n"
+            "in the workspace settings is healthy. On the plugin channel the\n"
+            "agents, skills, hooks and orchestrator default are judged in the\n"
+            "plugin install, not in the workspace's .claude/.\n"
+            "\n"
+            "Workspace: --workspace, else GAIA_WORKSPACE_PATH, else the folder\n"
+            "holding the node_modules this doctor runs from, else the workspace\n"
+            "root recorded in gaia.db that contains CLAUDE_PROJECT_DIR or the\n"
+            "current folder. Never a walk up to an unrecorded .claude/.\n"
             "\n"
             "Read-only: every check inspects state and prints an inline fix\n"
             "hint. Nothing is written UNLESS --fix is passed."
@@ -3142,7 +3239,7 @@ def register(subparsers):
                           "lane; plain `doctor` is allowed there. bool.")
     sub.add_argument("--workspace", metavar="PATH", default=None,
                      help="Check this workspace's .claude/ instead of auto-deriving. "
-                          "Skips realpath derivation entirely.")
+                          "Skips the derivation entirely.")
 
 
 def cmd_doctor(args) -> int:

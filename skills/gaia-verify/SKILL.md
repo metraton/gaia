@@ -47,14 +47,16 @@ Core flow: `npm run gaia:verify-install:rc` (the `@rc` tag) or `npm run gaia:ver
 
 ## Wire-up checklist (live / after any install)
 
-After wiring a workspace, these checks catch what `gaia doctor` cannot reach when the wire-up is so broken that doctor itself walks up to the user `.claude/` instead of the workspace. If any check fails, jump to `gaia-release/reference.md` -> "Diagnostic guide".
+After wiring a workspace, these checks catch what `gaia doctor` cannot reach when the wire-up is so broken that doctor cannot resolve the workspace at all. If any check fails, jump to `gaia-release/reference.md` -> "Diagnostic guide".
+
+Checks 1-3 are the npm channel's. A plugin-only workspace has none of them: its `.claude/` holds only the `hooks` link and `settings.local.json`, and doctor judges `Symlinks`, `Identity`, `Agent routing`, `Workspace initialized` and `Plugin registered` against the plugin install itself (`CLAUDE_PLUGIN_ROOT`, else the install recorded in `~/.claude/plugins/installed_plugins.json`) -- `_plugin_tree` in `bin/cli/doctor.py`.
 
 1. `ls -la <workspace>/.claude/` -- **6 directory symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
 2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). A fresh install always writes `gaia`; fail the check if the name is anything other than `gaia`.
 3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the repo root's `hooks/hooks.json`, not from `settings.local.json` or the metadata-only `plugin.json`).
 4. `ls ~/.gaia/gaia.db` -- DB file exists. It is bootstrapped **lazily on first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`) or by `gaia install` -- there is no postinstall.
 5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist. `gaia install` writes this marker on any bootstrap or wire-up failure; treat its presence as a hard failure regardless of what `gaia doctor` reports.
-6. `cd <workspace> && gaia doctor` -- `Status: HEALTHY`, checks pass, 0 errors.
+6. `cd <workspace> && gaia doctor` -- `Status: HEALTHY`, checks pass, 0 errors. With no flags, doctor outside a workspace's `node_modules` checks the workspace root recorded in gaia.db that contains the cwd (or `CLAUDE_PROJECT_DIR`), so a subfolder works too; a folder no recorded root contains exits 2 with the `--workspace` hint.
 
 ## Drift-free surfaces (what doctor validates == what dev/release reconcile)
 

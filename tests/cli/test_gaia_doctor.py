@@ -1302,8 +1302,9 @@ class TestDeriveWorkspace:
         assert result == consumer.resolve()
 
     def test_global_install_exits_with_error(self, tmp_path, monkeypatch, capsys):
-        """Script NOT inside any node_modules/@jaguilar87/gaia/ tree should
-        exit with the explicit error message -- no silent cwd fallback."""
+        """Script NOT inside any node_modules/@jaguilar87/gaia/ tree, run from a
+        folder no recorded workspace root contains, exits with the explicit
+        error message -- no silent cwd fallback."""
         # A path that has no node_modules/@jaguilar87/gaia/ ancestor
         script_path = tmp_path / "usr" / "local" / "lib" / "gaia" / "bin" / "cli" / "doctor.py"
         script_path.parent.mkdir(parents=True)
@@ -1315,7 +1316,7 @@ class TestDeriveWorkspace:
             doctor_mod._derive_workspace()
         assert exc.value.code == 2
         err = capsys.readouterr().err
-        assert "global or symlinked install detected" in err
+        assert "no workspace root recorded in gaia.db" in err
         assert "--workspace" in err
 
     def test_unresolvable_workspace_message_is_legible_and_actionable(
