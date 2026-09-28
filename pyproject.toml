@@ -14,6 +14,7 @@ dev = [
     "pytest==8.3.5",
     "pytest-cov>=5.0.0",
     "pytest-xdist>=3.6.0",
+    "pytest-split>=0.11.0",
     "ruff>=0.4.0",
     "pyyaml>=6.0",
 ]
@@ -33,11 +34,10 @@ include = ["gaia*"]
 
 [tool.pytest.ini_options]
 # testpaths is where the layer-1 suite starts; what it leaves out is
-# LAYER1_EXCLUDED in tests/conftest.py. npm test and CI run bare `pytest` from
-# the repo root so both get this one selection. tools/scan/tests stays outside
-# it: no surface has ever run it, and adding it here adds it to every surface
-# at once.
-testpaths = ["tests"]
+# LAYER1_EXCLUDED in tests/conftest.py. npm test, CI and the nightly run bare
+# `pytest` from the repo root so all of them get this one selection.
+# tools/scan/tests covers the shipped workspace scanners under tools/scan.
+testpaths = ["tests", "tools/scan/tests"]
 # -n auto: package.json's `test`/`test:layer1` scripts and CI already run
 # under pytest-xdist; this makes that the default for a bare `pytest tests/`
 # invocation too, instead of running ~8700 cases serially. `test:layer2` /

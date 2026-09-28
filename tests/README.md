@@ -102,8 +102,13 @@ specific debt does not waive transport or grant failures.
 **Running the pyramid:**
 
 ```bash
-# Layer 1 — default, fast, always runs in CI
-python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
+# Layer 1 — default, the same selection npm test and CI run: testpaths in
+# pyproject.toml (tests/ and tools/scan/tests/) minus LAYER1_EXCLUDED in conftest.py
+python3 -m pytest
+
+# Layer 1 as CI runs it: one of four pytest-split shards, partitioned by the
+# committed .test_durations (requires pytest-split from the [dev] extra)
+python3 -m pytest --splits 4 --group 1 --splitting-algorithm least_duration
 
 # Layer 1 by category
 python3 -m pytest tests/system/ -v
@@ -121,6 +126,8 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 ```
 
 **Markers:** Layer 2 tests use `@pytest.mark.llm`, Layer 3 tests use `@pytest.mark.e2e`. The default pytest run ignores both — you must opt in with `-m` or by pointing pytest directly at the layer directory.
+
+**Durations:** `.test_durations` at the repo root is what CI partitions the shards by; a test missing from it counts as the average, so a stale file unbalances the shards without dropping a test. Every CI run publishes a fresh merged copy as the `test-durations` artifact: refresh the committed file with `gh run download <run-id> --repo metraton/gaia --name test-durations --dir .`.
 
 **Fixtures:** Shared fixtures live in `conftest.py`. JSON test data (project-context variants) lives in `fixtures/`. Any test that needs a valid `agent_id` must mint it with `valid_agent_id()` from [`fixtures/agent_ids.py`](./fixtures/agent_ids.py) instead of hand-writing a literal — the helper reads `AGENT_ID_MIN_HEX` from the validator, so handles keep conforming when the floor is raised. Tests that assert REJECTION of a malformed handle keep their invalid literal inline: there, the bad value is the subject of the assertion.
 
