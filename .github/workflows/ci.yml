@@ -97,12 +97,18 @@ jobs:
       # file and rewrites the copy with only its own measured tests, uploaded
       # as test-durations-N and merged by the test-durations job below, whose
       # artifact is what refreshes the committed file.
+      #
+      # Every pytest-split option is spelled --name=value. pytest picks its
+      # rootdir and pyproject.toml from the path-like arguments before plugin
+      # options exist, so a separate-token durations path under $RUNNER_TEMP
+      # moved the rootdir to /home/runner/work: no configfile, hence no
+      # testpaths, no `-n auto` and no LAYER1 exclusions (run 36487229785).
       - name: Run tests
         run: |
           cp .test_durations "$RUNNER_TEMP/durations-${{ matrix.group }}.json"
           python -m pytest -q --tb=short \
-            --splits 4 --group ${{ matrix.group }} --splitting-algorithm least_duration \
-            --durations-path "$RUNNER_TEMP/durations-${{ matrix.group }}.json" \
+            --splits=4 --group=${{ matrix.group }} --splitting-algorithm=least_duration \
+            --durations-path="$RUNNER_TEMP/durations-${{ matrix.group }}.json" \
             --store-durations --clean-durations
 
       - name: Upload shard durations
