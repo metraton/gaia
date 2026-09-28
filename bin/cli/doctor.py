@@ -623,31 +623,27 @@ def check_schema_version() -> dict:
         con.close()
 
     if live < EXPECTED_SCHEMA_VERSION:
-        # Code AHEAD of the DB -- the forward direction. A reconcile migrates the
-        # DB forward. `gaia doctor` only reports; the reconcile lives in the
-        # install actors (`gaia dev` for local source, `gaia release`/`gaia
-        # install` for a shipped artifact).
+        # Code AHEAD of the DB -- the forward direction. `gaia migrate apply`
+        # moves the DB forward; `gaia doctor` only reports.
         return _result(
             "Schema version",
             "warning",
             f"DB schema_version={live}, code expects {EXPECTED_SCHEMA_VERSION} "
             f"(code ahead of DB -- forward migration pending)",
-            "Run `gaia dev` (local source) or `gaia install`/`gaia release` "
-            "(artifact) to apply pending schema migrations.",
+            "Run `gaia migrate plan` to see the chain, then `gaia migrate apply`.",
         )
     if live > EXPECTED_SCHEMA_VERSION:
-        # Code BEHIND the DB -- the REVERSE direction the drift-free guard names.
-        # A DB migrated forward by a NEWER Gaia would be mis-read by this older
-        # code (the drift that broke `gaia contract finalize`). The bootstrap
-        # direction guard REFUSES to install code older than the DB (no clobber);
-        # doctor mirrors that here as a report only. The remedy is NEVER to
-        # downgrade the DB -- install code at least as new as the DB.
+        # Code BEHIND the DB -- the REVERSE direction. A DB migrated forward by a
+        # NEWER Gaia would be mis-read by this older code, so the store refuses
+        # every write to it (gaia.store.writer.SchemaAheadError) and the
+        # bootstrap direction guard refuses to install over it. The remedy is
+        # NEVER to downgrade the DB -- install code at least as new as the DB.
         return _result(
             "Schema version",
             "warning",
             f"DB schema_version={live} > code expected {EXPECTED_SCHEMA_VERSION} "
-            f"(code BEHIND DB -- reverse-direction drift; this stale code would "
-            f"mis-read the newer schema, the finalize-breaking case)",
+            f"(code BEHIND DB -- this Gaia refuses every write to the newer "
+            f"database; reads keep working)",
             "Install a Gaia at least as new as the DB (`gaia dev` from a source "
             "checkout that expects >= this version, or `gaia install`/`gaia "
             "release` of a newer artifact). Do NOT downgrade the DB.",

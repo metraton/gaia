@@ -75,9 +75,11 @@ absent):
    PATH-shadowing global (POSIX + Windows).
 5. **DB schema** (`~/.gaia/gaia.db`) -- `gaia doctor` check `Schema version`
    reports BOTH directions: code AHEAD of DB (forward migration pending -> run
-   `gaia dev`/`install`/`release`) and code BEHIND DB (the reverse,
-   finalize-breaking drift the bootstrap direction guard REFUSES -- install
-   newer code, never downgrade the DB).
+   `gaia migrate plan`, then `gaia migrate apply`) and code BEHIND DB (the
+   reverse drift: the store refuses every write with `SchemaAheadError` while
+   reads keep working, and the bootstrap direction guard refuses to install --
+   install newer code, never downgrade the DB). SessionStart names the same
+   fix in a `## Database schema` block whenever the two disagree.
 
 The reconcile is idempotent in all 3 cases (not installed / stale / aligned):
 `gaia dev` (origin = local source) and `gaia release` (origin = artifact) share

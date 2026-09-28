@@ -1211,6 +1211,37 @@ def build_recurring_work_block(workspace: Optional[str] = None) -> str:
         return ""
 
 
+def build_schema_direction_block() -> str:
+    """Name the fix when the database and this code disagree on schema version.
+
+    Returns "" when they agree, when either version is unknown, or on any
+    error. Reads the database read-only and never creates it.
+    """
+    try:
+        from gaia.paths import db_path as _db_path
+        from gaia.store.writer import schema_ahead_message, schema_versions
+
+        db_file = _db_path()
+        if not db_file.exists():
+            return ""
+        live, expected = schema_versions(db_file)
+        if live is None or expected is None or live == expected:
+            return ""
+        if live < expected:
+            fix = (
+                f"gaia.db at {db_file} is at schema v{live}; this Gaia expects "
+                f"v{expected}. Writes that need the newer structure will fail "
+                f"until it is migrated. Run `gaia migrate plan` to see the chain, "
+                f"then `gaia migrate apply`."
+            )
+        else:
+            fix = schema_ahead_message(live, expected, db_file)
+        return "## Database schema\n" + fix
+    except Exception as exc:
+        logger.debug("build_schema_direction_block failed (non-fatal): %s", exc)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Assembler
 # ---------------------------------------------------------------------------
@@ -1222,6 +1253,9 @@ def build_session_context() -> str:
     """
     try:
         blocks = [
+            # A schema mismatch comes first: while it stands, writes either
+            # fail on missing structure or are refused outright.
+            build_schema_direction_block(),
             build_where_i_am_block(),
             # What I can run here: the guard-verified CLI path plus tool
             # presence. Split from Where I am (different freshness: a tool

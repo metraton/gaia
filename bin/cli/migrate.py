@@ -44,6 +44,11 @@ How apply treats a database:
 gaia install, gaia update and gaia dev run `gaia migrate apply` without
 consent; when they stop on a data-reaching chain, the message names the exact
 `gaia migrate apply --consent-chain ...` command that continues.
+
+Migrations only run forward. A database newer than this code is never moved
+down: this Gaia refuses every write to it (reads keep working) until a Gaia
+whose schema version is at least the database's is installed. SessionStart
+names the fix in either direction.
 """
 
 

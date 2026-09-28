@@ -909,8 +909,8 @@ class TestCheckSchemaVersion:
 
     def test_db_lower_than_expected_warns(self, monkeypatch, tmp_path):
         """Code AHEAD of the DB (forward direction): warn, report-only, and
-        point at the install actors (dev/install/release) -- not at doctor
-        itself, which never fixes."""
+        point at `gaia migrate`, the one path that moves the DB forward --
+        not at doctor itself, which never fixes."""
         db = tmp_path / "gaia.db"
         # Empty schema_version table -> MAX(version) = NULL -> treated as 0
         self._make_db(db, schema_version_rows=[])
@@ -920,14 +920,12 @@ class TestCheckSchemaVersion:
         assert r["severity"] == "warning"
         assert "schema_version=0" in r["detail"]
         assert "expects 5" in r["detail"]
-        # Points at the install actors, not `gaia install` alone.
-        assert "gaia dev" in r["fix"]
-        assert "gaia release" in r["fix"]
+        assert "gaia migrate apply" in r["fix"]
 
     def test_db_higher_than_expected_warns(self, monkeypatch, tmp_path):
-        """Code BEHIND the DB (reverse direction -- the finalize-breaking drift):
-        warn, name the direction, and tell the user to install NEWER code, never
-        to downgrade the DB. Mirrors the bootstrap direction guard."""
+        """Code BEHIND the DB (reverse direction): warn, name the direction and
+        the write refusal, and tell the user to install NEWER code, never to
+        downgrade the DB. Mirrors the store's write gate."""
         db = tmp_path / "gaia.db"
         self._make_db(db, schema_version_rows=[
             (99, "2026-05-20T00:00:00Z", "future"),
@@ -937,6 +935,7 @@ class TestCheckSchemaVersion:
         assert r["severity"] == "warning"
         assert "99" in r["detail"]
         assert "BEHIND DB" in r["detail"]
+        assert "refuses every write" in r["detail"]
         # Remedy is newer code via the install actors; never a DB downgrade.
         assert "gaia dev" in r["fix"]
         assert "Do NOT downgrade the DB" in r["fix"]

@@ -27,6 +27,8 @@ Public API::
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -206,20 +208,184 @@ def _has_application_tables(con: sqlite3.Connection) -> bool:
 _DOCTOR_PY = Path(__file__).resolve().parents[2] / "bin" / "cli" / "doctor.py"
 
 
-def _seal_materialized_schema(con: sqlite3.Connection) -> None:
-    """Record the version schema.sql just built, when this build declares one."""
+@functools.lru_cache(maxsize=1)
+def _expected_schema_version() -> int | None:
+    """The schema version this code expects, or None when the build declares none."""
     try:
         text = _DOCTOR_PY.read_text(encoding="utf-8")
     except OSError:
-        return
+        return None
     m = re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", text, re.MULTILINE)
-    if not m:
+    return int(m.group(1)) if m else None
+
+
+def _seal_materialized_schema(con: sqlite3.Connection) -> None:
+    """Record the version schema.sql just built, when this build declares one."""
+    expected = _expected_schema_version()
+    if expected is None:
         return
     con.execute(
         "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
         "VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?)",
-        (int(m.group(1)), "sealed by the writer: schema.sql materialized"),
+        (expected, "sealed by the writer: schema.sql materialized"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Schema-direction gate
+# ---------------------------------------------------------------------------
+#
+# A database sealed by a NEWER Gaia carries structure this code does not know,
+# so this code must not write to it: every write through _connect is refused
+# with a message naming the fix, and reads keep working. Moving the database
+# down is never the fix; migrations only run forward.
+#
+# The live version is read once per process per database path. A process that
+# migrates its own database only ever moves it forward, which cannot turn a
+# writable database into one this code must refuse.
+
+class SchemaAheadError(sqlite3.DatabaseError):
+    """A write refused because the database is newer than this code."""
+
+
+_SCHEMA_VERSION_BY_DB: dict[str, int | None] = {}
+
+_WRITE_ACTIONS = frozenset({
+    sqlite3.SQLITE_INSERT,
+    sqlite3.SQLITE_UPDATE,
+    sqlite3.SQLITE_DELETE,
+    sqlite3.SQLITE_CREATE_TABLE,
+    sqlite3.SQLITE_CREATE_INDEX,
+    sqlite3.SQLITE_CREATE_TRIGGER,
+    sqlite3.SQLITE_CREATE_VIEW,
+    sqlite3.SQLITE_CREATE_VTABLE,
+    sqlite3.SQLITE_DROP_TABLE,
+    sqlite3.SQLITE_DROP_INDEX,
+    sqlite3.SQLITE_DROP_TRIGGER,
+    sqlite3.SQLITE_DROP_VIEW,
+    sqlite3.SQLITE_DROP_VTABLE,
+    sqlite3.SQLITE_ALTER_TABLE,
+    sqlite3.SQLITE_REINDEX,
+})
+
+
+def _read_schema_version(con: sqlite3.Connection) -> int | None:
+    """MAX(schema_version.version), or None for a database with no ledger."""
+    try:
+        row = con.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
+
+
+def schema_ahead_message(live: int, expected: int, db_path: Path) -> str:
+    """The refusal a write to a database newer than this code receives."""
+    return (
+        f"gaia.db at {db_path} is at schema v{live}, newer than the v{expected} "
+        f"this Gaia expects, so it refuses to write to it; reads keep working. "
+        f"Install a Gaia whose schema version is at least v{live} (`gaia update` "
+        f"or `gaia install` of a newer release, or `gaia dev` from a newer "
+        f"checkout). Do not downgrade the database."
+    )
+
+
+def _schema_ahead(con: sqlite3.Connection, db_path: Path) -> str | None:
+    """The refusal message when ``db_path`` is newer than this code, else None."""
+    expected = _expected_schema_version()
+    if expected is None:
+        return None
+    key = str(db_path.resolve())
+    if key not in _SCHEMA_VERSION_BY_DB:
+        _SCHEMA_VERSION_BY_DB[key] = _read_schema_version(con)
+    live = _SCHEMA_VERSION_BY_DB[key]
+    if live is None or live <= expected:
+        return None
+    return schema_ahead_message(live, expected, db_path)
+
+
+def schema_versions(db_path: Path) -> tuple[int | None, int | None]:
+    """(database version, version this code expects), None where unknown; never writes."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        live = _read_schema_version(con)
+    finally:
+        con.close()
+    return live, _expected_schema_version()
+
+
+def assert_schema_writable(db_path: Path) -> None:
+    """Raise SchemaAheadError when ``db_path`` is newer than this code.
+
+    For the few writers that open their own connection instead of _connect.
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        message = _schema_ahead(con, db_path)
+    finally:
+        con.close()
+    if message:
+        raise SchemaAheadError(message)
+
+
+def _refuse_main_writes(action, arg1, arg2, dbname, trigger):
+    """sqlite3 authorizer: deny every change to the main database, allow the rest."""
+    if action == sqlite3.SQLITE_ALTER_TABLE:
+        dbname = arg1
+    if action in _WRITE_ACTIONS and dbname != "temp":
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+class _Cursor(sqlite3.Cursor):
+    """Cursor whose schema-gate denials carry the refusal message."""
+
+    def execute(self, *args):
+        with _named_refusal(self.connection):
+            return super().execute(*args)
+
+    def executemany(self, *args):
+        with _named_refusal(self.connection):
+            return super().executemany(*args)
+
+    def executescript(self, *args):
+        with _named_refusal(self.connection):
+            return super().executescript(*args)
+
+
+class _Connection(sqlite3.Connection):
+    """Connection whose schema-gate denials carry the refusal message.
+
+    sqlite3 reports an authorizer denial as a bare "not authorized"; this class
+    replaces it with ``schema_ahead`` when the gate is what denied.
+    """
+
+    schema_ahead: str | None = None
+
+    def cursor(self, factory=_Cursor):
+        return super().cursor(factory)
+
+    def execute(self, *args):
+        with _named_refusal(self):
+            return super().execute(*args)
+
+    def executemany(self, *args):
+        with _named_refusal(self):
+            return super().executemany(*args)
+
+    def executescript(self, *args):
+        with _named_refusal(self):
+            return super().executescript(*args)
+
+
+@contextlib.contextmanager
+def _named_refusal(con: sqlite3.Connection):
+    try:
+        yield
+    except sqlite3.DatabaseError as exc:
+        message = getattr(con, "schema_ahead", None)
+        if message and "not authorized" in str(exc):
+            raise SchemaAheadError(message) from exc
+        raise
 
 
 def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
@@ -298,12 +464,14 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
     Returns:
         Open sqlite3.Connection with foreign_keys=ON and a busy_timeout set.
+        When the database is newer than this code, every write on it raises
+        SchemaAheadError; reads are unaffected.
     """
     if db_path is None:
         db_path = _db_path()
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path))
+    con = sqlite3.connect(str(db_path), factory=_Connection)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     # Wait (bounded) for a contended lock instead of failing instantly -- the
@@ -324,6 +492,9 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # Materialize the schema based on ACTUAL presence (not file existence),
     # serialized so a concurrent first-write can never observe a missing table.
     _ensure_schema_materialized(con, db_path)
+    con.schema_ahead = _schema_ahead(con, db_path)
+    if con.schema_ahead:
+        con.set_authorizer(_refuse_main_writes)
     return con
 
 
