@@ -1090,5 +1090,82 @@ class TestRegisterPlugin(unittest.TestCase):
             self.assertEqual(data["installed"][0]["version"], "unknown")
 
 
+# ---------------------------------------------------------------------------
+# workspace_bootstrap: the .claude/hooks link a Windows install makes a junction
+# ---------------------------------------------------------------------------
+
+_HOOKS_DIR = _REPO_ROOT / "hooks"
+if str(_HOOKS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HOOKS_DIR))
+
+from modules.core import workspace_bootstrap  # noqa: E402
+
+
+class TestWorkspaceHooksJunction(unittest.TestCase):
+    """A junction is a link to repoint, not a user's real hooks directory."""
+
+    def _ensure_with_junction(self, workspace: Path, junction_target: Path) -> None:
+        link = workspace / ".claude" / "hooks"
+        link.mkdir(parents=True)
+        real_is_junction = getattr(Path, "is_junction", None)
+
+        def is_junction(path):
+            if path == link:
+                return link.is_dir() and not link.is_symlink()
+            return real_is_junction(path) if real_is_junction else False
+
+        def readlink(path):
+            if Path(path) == link:
+                return str(junction_target)
+            raise OSError("not a link")
+
+        with mock.patch.object(Path, "is_junction", is_junction, create=True), \
+             mock.patch.object(workspace_bootstrap.os, "readlink", readlink), \
+             mock.patch.object(workspace_bootstrap.Path, "cwd", return_value=workspace):
+            workspace_bootstrap.ensure_workspace_hooks_link()
+
+    def test_a_stale_junction_is_repointed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            self._ensure_with_junction(workspace, workspace / "old-package" / "hooks")
+
+            link = workspace / ".claude" / "hooks"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _HOOKS_DIR.resolve())
+
+    def test_a_current_junction_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            self._ensure_with_junction(workspace, _HOOKS_DIR)
+
+            link = workspace / ".claude" / "hooks"
+            self.assertFalse(link.is_symlink())
+            self.assertTrue(link.is_dir())
+
+
+class TestHooksVersionPrecedence(unittest.TestCase):
+    def test_prerelease_sorts_below_its_release_and_by_number(self):
+        key = workspace_bootstrap._version_key
+        self.assertLess(key("5.5.0-rc.3"), key("5.5.0"))
+        self.assertLess(key("5.5.0-rc.3"), key("5.5.0-rc.10"))
+        self.assertLess(key("5.4.9"), key("5.5.0-rc.1"))
+        self.assertLess(key(None), key("0.0.1-alpha"))
+        self.assertEqual(key("5.5.0+build.7"), key("5.5.0"))
+
+    def test_an_older_prerelease_install_does_not_win_over_the_running_release(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            running = root / "running"
+            installed = root / "installed"
+            for pkg, version in ((running, "5.5.0"), (installed, "5.5.0-rc.3")):
+                (pkg / "hooks").mkdir(parents=True)
+                (pkg / "package.json").write_text(json.dumps({"version": version}))
+
+            chosen = workspace_bootstrap._pick_fresher_hooks_dir(
+                running / "hooks", installed, installed / "hooks"
+            )
+            self.assertEqual(chosen, running / "hooks")
+
+
 if __name__ == "__main__":
     unittest.main()

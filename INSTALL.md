@@ -44,7 +44,7 @@ Claude Code consumes the plugin from GitHub (`source: github`, repo `metraton/ga
 /plugin install gaia@gaia-marketplace
 ```
 
-The marketplace route loads the agents, skills and hooks. It does **not** put the `gaia` CLI on your terminal's `PATH` and does not wire the workspace (`.claude/` links, `settings.local.json` permissions, `opencode.json`): those still come from Surface 1, `npm install @jaguilar87/gaia` followed by `gaia install`. The hooks run as `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/...`, so `python3` >= 3.12 must be on `PATH` on this route too.
+The marketplace route loads the agents, skills and hooks. It does **not** put the `gaia` CLI on your terminal's `PATH` and does not wire the workspace (`.claude/` links, `settings.local.json` permissions, `opencode.json`): those still come from Surface 1, `npm install @jaguilar87/gaia` followed by `gaia install`. The hooks run as `sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/<entrypoint>.py"`; the launcher uses the first of `python3`, `python` or `py -3` that is Python 3, so a Python >= 3.12 under any of those names must be on `PATH` on this route too.
 
 Auto-update is off by default for third-party marketplaces, so a new release does not reach you on its own. Refresh the marketplace, then update the plugin:
 

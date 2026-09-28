@@ -281,7 +281,15 @@ def _opencode_package_root(workspace: Path, package_root: Path) -> Path:
 def _link_opencode_skills(
     workspace: Path, package_root: Path, *, dry_run: bool = False
 ) -> tuple[list[str], bool] | None:
-    """Expose canonical skills to OpenCode as symlinks, never copied files."""
+    """Expose canonical skills to OpenCode and prune the ones a release retired.
+
+    Each skill is a symlink to the package; where symlinks are unavailable
+    (Windows without the privilege) it is a copy marked with
+    ``_OPENCODE_SKILL_COPY_MARKER`` and refreshed when the package's differs.
+    Only a link into this package's skills or a marked copy is Gaia's to
+    replace or prune; any other entry is the user's. Returns None when a
+    shipped skill's name is taken by the user's entry.
+    """
     skills_root = package_root / "skills"
     target_root = workspace / ".opencode" / "skills"
     if not skills_root.is_dir():
@@ -289,25 +297,82 @@ def _link_opencode_skills(
     if not dry_run:
         target_root.mkdir(parents=True, exist_ok=True)
 
+    shipped = {
+        source.name: source
+        for source in sorted(skills_root.iterdir())
+        if (source / "SKILL.md").is_file()
+    }
     linked: list[str] = []
     changed = False
-    for source in sorted(skills_root.iterdir()):
-        if not (source / "SKILL.md").is_file():
-            continue
-        target = target_root / source.name
+    for name, source in shipped.items():
+        target = target_root / name
         if target.is_symlink():
             if target.resolve(strict=False) == source.resolve():
-                linked.append(source.name)
+                linked.append(name)
                 continue
-            if not dry_run:
-                target.unlink()
+        elif _is_opencode_skill_copy(target):
+            if _same_tree(source, target):
+                linked.append(name)
+                continue
         elif target.exists():
             return None
         if not dry_run:
-            target.symlink_to(source, target_is_directory=True)
+            _remove_tree_or_link(target)
+            _place_opencode_skill(source, target)
         changed = True
-        linked.append(source.name)
+        linked.append(name)
+
+    for target in sorted(target_root.iterdir()) if target_root.is_dir() else []:
+        if target.name in shipped or not _is_gaia_opencode_skill(target, skills_root):
+            continue
+        if not dry_run:
+            _remove_tree_or_link(target)
+        changed = True
     return linked, changed
+
+
+_OPENCODE_SKILL_COPY_MARKER = ".gaia-skill-copy"
+
+
+def _is_opencode_skill_copy(target: Path) -> bool:
+    return not target.is_symlink() and (target / _OPENCODE_SKILL_COPY_MARKER).is_file()
+
+
+def _is_gaia_opencode_skill(target: Path, skills_root: Path) -> bool:
+    """True for a link into *skills_root* (dangling or not) or a marked copy."""
+    if target.is_symlink():
+        pointed = Path(os.readlink(target))
+        return pointed.parent in (skills_root, skills_root.resolve()) or (
+            target.resolve(strict=False).parent == skills_root.resolve()
+        )
+    return _is_opencode_skill_copy(target)
+
+
+def _tree_files(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file() and path.name != _OPENCODE_SKILL_COPY_MARKER
+    }
+
+
+def _same_tree(source: Path, copy: Path) -> bool:
+    return _tree_files(source) == _tree_files(copy)
+
+
+def _place_opencode_skill(source: Path, target: Path) -> None:
+    try:
+        target.symlink_to(source, target_is_directory=True)
+    except OSError:
+        shutil.copytree(source, target)
+        (target / _OPENCODE_SKILL_COPY_MARKER).write_text(f"{source}\n")
+
+
+def _remove_tree_or_link(target: Path) -> None:
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
 
 
 def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict:

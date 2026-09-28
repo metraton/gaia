@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
+from gaia.paths import tmp_dir
+
 from .base import HookAdapter
 # The shared tool policy's helpers keep their historical import path here.
 from .tool_policy import (  # noqa: F401
@@ -3640,7 +3642,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     # Context cache: PreToolUse -> SubagentStart bridge
     # ------------------------------------------------------------------ #
 
-    CONTEXT_CACHE_DIR = Path("/tmp/gaia-context-cache")
+    CONTEXT_CACHE_DIR = tmp_dir() / "gaia-context-cache"
     CONTEXT_CACHE_TTL_SECONDS = 60  # Cache entries older than this are stale
 
     def _cache_context_for_subagent(
@@ -3837,7 +3839,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     # target agent, not a one-shot handoff payload).
     # ------------------------------------------------------------------ #
 
-    RESUME_MAP_CACHE_DIR = Path("/tmp/gaia-contract-resume-map")
+    RESUME_MAP_CACHE_DIR = tmp_dir() / "gaia-contract-resume-map"
     RESUME_MAP_TTL_SECONDS = 24 * 60 * 60  # generous: spans a long resumed session
 
     def _cache_resume_mapping(self, session_id: str, agent_id: str) -> Path:

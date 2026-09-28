@@ -511,8 +511,7 @@ def _command_problems(command: str, project_root: Path, plugin_root: "Path | Non
         found = shutil.which(interpreter) is not None
     if not found:
         problems.append(f"interpreter `{interpreter}` not found")
-    script = next((t for t in tokens[1:] if not t.startswith("-")), None)
-    if script is not None:
+    for script in (t for t in tokens[1:] if not t.startswith("-")):
         path = Path(script)
         if not path.is_absolute():
             path = project_root / path

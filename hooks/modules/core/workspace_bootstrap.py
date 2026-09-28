@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import platform
+import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -34,24 +35,38 @@ def _read_pkg_version(pkg_root: Path) -> Optional[str]:
         return None
 
 
-def _version_tuple(v: Optional[str]) -> tuple:
-    """Coarse comparable tuple from a semver-ish string.
+def _version_key(v: Optional[str]) -> tuple:
+    """Sort key ordering versions by semver precedence, pre-releases included.
 
-    Compares on MAJOR.MINOR.PATCH only (prerelease/build metadata dropped),
-    which is enough to decide "is the installed package at least as new as
-    the executing copy". Unknown/unreadable versions sort lowest so a missing
-    version never wins the freshness comparison.
+    ``5.5.0-rc.3 < 5.5.0-rc.10 < 5.5.0``; build metadata is ignored. An
+    unknown or unreadable version sorts lowest, so it never wins the
+    freshness comparison.
     """
     if not v:
-        return (-1,)
-    base = v.split("+", 1)[0].split("-", 1)[0]
-    out = []
-    for part in base.split("."):
-        try:
-            out.append(int(part))
-        except ValueError:
-            out.append(0)
-    return tuple(out) if out else (-1,)
+        return ((-1,), ())
+    core, _, prerelease = v.split("+", 1)[0].partition("-")
+    numbers = tuple(int(part) if part.isdigit() else 0 for part in core.split("."))
+    if not prerelease:
+        return (numbers, (1,))
+    identifiers = tuple(
+        (0, int(part), "") if part.isdigit() else (1, 0, part)
+        for part in prerelease.split(".")
+    )
+    return (numbers, (0, identifiers))
+
+
+def _is_link(path: Path) -> bool:
+    """True for a symlink or a Windows junction, which ``is_symlink`` misses."""
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction is not None:
+        return is_junction()
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
 def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path) -> Path:
@@ -67,8 +82,8 @@ def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path)
     try:
         if not nm_hooks.exists():
             return exec_hooks_dir
-        nm_ver = _version_tuple(_read_pkg_version(nm_gaia))
-        exec_ver = _version_tuple(_read_pkg_version(exec_hooks_dir.parent))
+        nm_ver = _version_key(_read_pkg_version(nm_gaia))
+        exec_ver = _version_key(_read_pkg_version(exec_hooks_dir.parent))
         if nm_ver >= exec_ver:
             return nm_hooks
     except Exception:
@@ -112,11 +127,10 @@ def ensure_workspace_hooks_link() -> None:
         cache_hooks_dir = _pick_fresher_hooks_dir(cache_hooks_dir, nm_gaia, nm_hooks)
 
         # Case 1: real directory with files — npm install placed real files,
-        # nothing to do. Check via lstat to avoid following symlinks.
+        # nothing to do.
         try:
             st = workspace_hooks_dir.lstat()
-            import stat as _stat
-            is_symlink = _stat.S_ISLNK(st.st_mode)
+            is_symlink = _is_link(workspace_hooks_dir)
         except FileNotFoundError:
             is_symlink = False
             st = None
@@ -148,9 +162,13 @@ def ensure_workspace_hooks_link() -> None:
                     return
             except OSError as exc:
                 logger.warning("workspace_bootstrap: readlink failed (%s) — will recreate", exc)
-            # Stale or wrong target — remove and recreate.
+            # Stale or wrong target — remove and recreate. A junction is a
+            # directory entry: rmdir drops the link, never the target's files.
             try:
-                workspace_hooks_dir.unlink()
+                if workspace_hooks_dir.is_symlink():
+                    workspace_hooks_dir.unlink()
+                else:
+                    os.rmdir(workspace_hooks_dir)
             except OSError as exc:
                 logger.warning("workspace_bootstrap: unlink failed (%s) — skipping", exc)
                 return

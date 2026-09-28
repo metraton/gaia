@@ -233,10 +233,10 @@ class TestHooksJson:
     def test_all_commands_use_plugin_root(self):
         """All hook commands must use ${CLAUDE_PLUGIN_ROOT} prefix.
 
-        Hook commands are now invoked via `python3 ${CLAUDE_PLUGIN_ROOT}/...`
-        so the kernel never needs +x on the .py file (tarball installs do not
-        always preserve 0755). The ${CLAUDE_PLUGIN_ROOT} token must still
-        appear so CC resolves it to the plugin cache directory.
+        Hook commands run `sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" ...`, so
+        neither an exec bit nor a `python3` binary is required. The
+        ${CLAUDE_PLUGIN_ROOT} token must still appear so CC resolves it to the
+        plugin cache directory.
         """
         data = json.loads(self.hooks_path.read_text())
         for event_name, entries in data["hooks"].items():
@@ -247,9 +247,9 @@ class TestHooksJson:
                         f"Hook command in {event_name}/{entry.get('matcher', '')} "
                         f"does not reference ${{CLAUDE_PLUGIN_ROOT}}: {command}"
                     )
-                    assert command.startswith("python3 ${CLAUDE_PLUGIN_ROOT}/"), (
+                    assert command.startswith('sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" '), (
                         f"Hook command in {event_name}/{entry.get('matcher', '')} "
-                        f"must use `python3 ${{CLAUDE_PLUGIN_ROOT}}/...` invoker: {command}"
+                        f"must use the quoted hooks/launch.sh launcher: {command}"
                     )
 
     def test_hooks_json_has_all_required_events(self):

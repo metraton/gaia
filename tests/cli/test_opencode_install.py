@@ -421,3 +421,63 @@ def test_only_portable_provider_model_is_emitted(tmp_path):
     assert generated["portable"]["model"] == "openai/gpt-5"
     assert "model" not in generated["alias"]
     assert "options" not in generated["alias"]
+
+
+def _package_skills(package: Path, *names: str) -> None:
+    for name in names:
+        skill = package / "skills" / name / "SKILL.md"
+        skill.parent.mkdir(parents=True, exist_ok=True)
+        skill.write_text(f"---\nname: {name}\n---\n{name}\n")
+
+
+def _refuse_symlink(self, *args, **kwargs):
+    raise OSError("A required privilege is not held by the client")
+
+
+def test_skills_are_copied_when_symlinks_are_unavailable(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    _package_skills(package, "sample")
+    monkeypatch.setattr(Path, "symlink_to", _refuse_symlink)
+    linked, changed = _install_helpers._link_opencode_skills(tmp_path, package)
+
+    copy = tmp_path / ".opencode" / "skills" / "sample"
+    assert (linked, changed) == (["sample"], True)
+    assert not copy.is_symlink()
+    assert (copy / "SKILL.md").read_text() == (package / "skills" / "sample" / "SKILL.md").read_text()
+    assert _install_helpers._link_opencode_skills(tmp_path, package) == (["sample"], False)
+
+    (package / "skills" / "sample" / "SKILL.md").write_text("updated\n")
+    assert _install_helpers._link_opencode_skills(tmp_path, package) == (["sample"], True)
+    assert (copy / "SKILL.md").read_text() == "updated\n"
+
+
+def test_retired_skills_are_pruned_and_user_skills_kept(tmp_path):
+    package = tmp_path / "package"
+    _package_skills(package, "kept", "retired")
+    assert _install_helpers._link_opencode_skills(tmp_path, package) == (["kept", "retired"], True)
+    user_skill = tmp_path / ".opencode" / "skills" / "mine" / "SKILL.md"
+    user_skill.parent.mkdir()
+    user_skill.write_text("user\n")
+
+    for path in (package / "skills" / "retired").iterdir():
+        path.unlink()
+    (package / "skills" / "retired").rmdir()
+    linked, changed = _install_helpers._link_opencode_skills(tmp_path, package)
+
+    skills = tmp_path / ".opencode" / "skills"
+    assert (linked, changed) == (["kept"], True)
+    assert not (skills / "retired").exists() and not (skills / "retired").is_symlink()
+    assert user_skill.read_text() == "user\n"
+
+
+def test_retired_copied_skill_is_pruned(tmp_path, monkeypatch):
+    package = tmp_path / "package"
+    _package_skills(package, "kept", "retired")
+    monkeypatch.setattr(Path, "symlink_to", _refuse_symlink)
+    _install_helpers._link_opencode_skills(tmp_path, package)
+
+    (package / "skills" / "retired" / "SKILL.md").unlink()
+    linked, changed = _install_helpers._link_opencode_skills(tmp_path, package)
+
+    assert (linked, changed) == (["kept"], True)
+    assert not (tmp_path / ".opencode" / "skills" / "retired").exists()
