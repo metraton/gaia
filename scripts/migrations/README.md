@@ -18,20 +18,25 @@ The floor is **v18**. It is declared in three places that must agree:
 | Location | What it holds |
 |----------|---------------|
 | `gaia/store/schema.sql` | Produces the **latest** (EXPECTED) shape directly -- fresh installs land here, not at the floor. |
-| `scripts/bootstrap_database.sh` Section 3b (`SCHEMA_FLOOR=18`) | Stamps the fresh ledger at the floor; rejects DBs below it. |
+| `scripts/bootstrap_database.py` (`SCHEMA_FLOOR = 18`) | Stamps the fresh ledger at the floor; rejects DBs below it. |
 | `bin/cli/doctor.py` (`EXPECTED_SCHEMA_VERSION`) | The version the CLI expects; equals the floor when no forward migration exists, and the highest migration target once they do. |
 
 How bootstrap treats each case:
 
-* **Fresh install** (no `schema_version` rows): `schema.sql` already produced
-  the EXPECTED shape, and Section 3b stamps the ledger at the **floor** (not
-  EXPECTED). Section 3c then replays every forward migration from `floor+1` to
-  EXPECTED against that already-current DB. It does **not** seed v1 and walk the
-  historical chain. Because the migrations run against objects `schema.sql`
-  already created, they **must be idempotent** (see section 1).
+* **Fresh install** (no tables at all): `schema.sql` produces the EXPECTED
+  shape, the ledger is stamped at the **floor** (not EXPECTED), and every
+  forward migration from `floor+1` to EXPECTED replays on top -- all in one
+  transaction. It does **not** seed v1 and walk the historical chain. Because
+  the migrations run against objects `schema.sql` already created, they **must
+  be idempotent** (see section 1). The writer's own first-write
+  materialization (`gaia/store/writer.py`) seals the version `schema.sql`
+  builds instead of replaying.
 * **DB at or above the floor** (the common case, e.g. `~/.gaia/gaia.db`):
-  Section 3c applies any forward migrations the DB is still behind on, up to
-  EXPECTED.
+  only the forward migrations it is still behind on run, up to EXPECTED.
+  `schema.sql` is never applied to it. A copy is written to
+  `<db dir>/backups/` with SQLite's backup API before the chain opens.
+* **Tables but an empty ledger** (built by an older writer that did not seal):
+  handled like a fresh build over existing data -- backed up and gated.
 * **DB below the floor** (`1 <= version < 18`): **no longer supported** for
   in-place upgrade. Bootstrap aborts with a clear message asking you to
   recreate the DB (back up, delete `~/.gaia/gaia.db`, re-run `gaia install`).
@@ -61,12 +66,19 @@ version) to `N`:
 3. Bump `EXPECTED_SCHEMA_VERSION` to `N` in `bin/cli/doctor.py` **in the same
    commit**.
 
-`bootstrap_database.sh` Section 3c then applies `v{N-1}_to_v{N}.sql` inside a
-single `BEGIN/COMMIT` transaction for any DB behind `N`, and stamps the ledger
-only on success. A fresh install stamps the ledger at the floor (Section 3b)
-and then replays `floor+1 .. N` here too -- since `schema.sql` already produced
-the `N` shape, the migration runs against objects that already exist, which is
-exactly why it must be idempotent (no `_fresh` variant is used).
+`gaia migrate apply` (engine `scripts/bootstrap_database.py`) then applies
+`v{N-1}_to_v{N}.sql` to any DB behind `N`. The whole pending chain -- every
+migration and the `schema_version` row that seals it -- runs statement by
+statement inside ONE transaction, so an interruption anywhere, even between a
+migration and its seal, leaves objects and ledger as they were. A fresh install
+stamps the ledger at the floor and replays `floor+1 .. N` in that same
+transaction -- since `schema.sql` already produced the `N` shape, the migration
+runs against objects that already exist, which is exactly why it must be
+idempotent (no `_fresh` variant is used). An existing DB never gets
+`schema.sql`: its own migrations are the only thing that changes it, so a file
+that silently relied on `schema.sql` having created an object first breaks the
+upgrade from older bases -- `tests/cli/test_migration_upgrade_from_published_bases.py`
+catches that against every published base.
 
 `tests/cli/test_schema_version_lockstep.py` enforces that
 `EXPECTED_SCHEMA_VERSION` equals the floor when no forward migrations exist,
@@ -74,21 +86,22 @@ and equals the highest migration target once they do.
 
 Each independent feature that introduces new DDL gets its own migration
 version. Do NOT extend a version that has already been stamped: the ledger is
-monotonic, and `bootstrap_database.sh` will not re-run a frozen version. Two
+monotonic, and the engine will not re-run a frozen version. Two
 unrelated features ready at once get consecutive versions (e.g. v19 and v20),
 never bundled.
 
 ---
 
-## 1b. A migration that reaches DATA is not applied unattended
+## 1b. A chain that reaches DATA is not applied unattended
 
-Section 3c applies whatever it finds in this directory on any invocation that
-bootstraps, so committing a file is what schedules it. That is safe for
+The engine applies whatever it finds in this directory on any install, update
+or dev run, so committing a file is what schedules it. That is safe for
 structure and unsafe for data: `v49_to_v50.sql` was the first file here that
 also rewrote rows, and the next arbitrary CLI call erased a counter on 1359
 live curated rows before anyone was asked.
 
-`scripts/migration_guard.py` now classifies every pending file before it runs.
+`scripts/migration_guard.py` now classifies every pending file before the
+chain opens.
 **There is nothing to declare and no header to remember** -- the classification
 reads the SQL itself, and the number of rows at risk is read from the target
 database. A file is refused only where those meet: a statement that rewrites or
@@ -98,16 +111,19 @@ already held rows before this run started.
 
 What this means when you author one:
 
-* **Structure-only files are unaffected.** `CREATE`, `ADD COLUMN`,
-  `DROP INDEX/TRIGGER/VIEW` and a plain `INSERT` reach no existing row and
-  apply alone, exactly as before.
+* **Structure-only chains are unaffected.** `CREATE` (a `CREATE TRIGGER`
+  whole, whatever its body runs later), `ADD COLUMN`, `DROP INDEX/TRIGGER/VIEW`
+  and a plain `INSERT` reach no existing row; a chain made only of them applies
+  alone, after the backup.
 * **Fresh installs and test databases are never gated**, because their census
   is empty. Do not add a flag to skip the guard for them; there is nothing to
   skip.
-* **A data-reaching file will stop a real upgrade.** That is the point. The
-  refusal names the statement, the table, the row count, and the command that
-  continues -- `GAIA_MIGRATION_CONSENT=v{N-1}_to_v{N}`, which approves that one
-  file and nothing that ships after it.
+* **A data-reaching file stops the whole chain once (D68).** The refusal lists
+  every reaching statement of every file in the chain, with table and row
+  count, and names the one command that continues --
+  `gaia migrate apply --consent-chain vA..vB`. The consent names the chain, so
+  it approves that span and nothing that ships after it. `gaia migrate plan`
+  shows the same chain before anything is attempted.
 * **A test that applies such a file must name its consent**, the way
   `tests/cli/test_migration_v49_to_v50.py` does.
 
@@ -138,11 +154,11 @@ as the ledger grows.
 
 | Pattern | When to use |
 |---------|-------------|
-| `vN_to_vN+1.sql` | Applied to an existing DB at version N. Contains the full DDL delta, applied inside a `BEGIN/COMMIT` transaction by bootstrap Section 3c. |
+| `vN_to_vN+1.sql` | Applied to an existing DB at version N. Contains the full DDL delta, applied with its ledger seal inside the chain's single transaction by `gaia migrate apply`. It carries no `BEGIN`/`COMMIT` of its own -- the engine owns the transaction. |
 
 The historical `_fresh` and `_merge` variants are no longer used: under the
 floor model a single idempotent `vN_to_vN+1.sql` covers both an in-place
-upgrade and the fresh-install replay (Section 3c walks `floor+1 .. EXPECTED`
+upgrade and the fresh-install replay (the engine walks `floor+1 .. EXPECTED`
 on every fresh install), so one idempotent file replaces the old split.
 
 ---

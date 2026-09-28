@@ -7,7 +7,7 @@ Idempotent end-to-end. Where `gaia install` is "first-time setup",
 share helpers but differ in orchestration and phrasing.
 
 Order of operations:
-  1. Bootstrap DB (no-op if schema already current).
+  1. `gaia migrate apply` (no-op if schema already current).
   2. settings.json (create if missing).
   3. settings.local.json -- merge permissions/env/agent.
   4. settings.local.json -- merge hooks (npm mode).
@@ -39,12 +39,14 @@ from pathlib import Path
 
 # bin/cli/update.py -> bin/cli -> bin -> gaia/
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.py"
 
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from cli import _install_helpers  # type: ignore  # noqa: E402
+from cli import migrate  # type: ignore  # noqa: E402
+
+_BOOTSTRAP_SCRIPT = migrate.ENGINE
 
 
 # ---------------------------------------------------------------------------
@@ -117,15 +119,8 @@ def _run_bootstrap_idempotent(verbose: bool) -> dict:
     """
     if not _BOOTSTRAP_SCRIPT.is_file():
         return {"action": "skipped", "details": "bootstrap script missing"}
-    cmd = [sys.executable or "python3", str(_BOOTSTRAP_SCRIPT)]
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=not verbose,
-            text=True,
-            check=False,
-            timeout=120,
-        )
+        result = migrate.run("apply", capture=not verbose)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"action": "error", "details": f"bootstrap failed: {exc}"}
 
@@ -330,7 +325,9 @@ def register(subparsers):
             "Sync Gaia after a package upgrade. Idempotent: every step is a\n"
             "no-op when state is already current.\n"
             "\n"
-            "  - Bootstrap DB (re-applies migrations only if needed)\n"
+            "  - Database: runs `gaia migrate apply` (backup, one transaction;\n"
+            "    a chain reaching existing rows stops and names the\n"
+            "    `gaia migrate apply --consent-chain vA..vB` that continues)\n"
             "  - settings.json (create if missing)\n"
             "  - settings.local.json (merge permissions, env, agent, hooks)\n"
             "  - .claude/<name> symlinks (recreate broken/stale)\n"

@@ -158,7 +158,7 @@ npm publish                    # publishes @jaguilar87/gaia
 There is **no npm postinstall hook**. `package.json` carries an explicit `_install_note` documenting this: the DB is bootstrapped lazily on first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped only for the `install`/`uninstall` subcommands themselves), and workspace `.claude/` config is applied on demand via `gaia install` or by the SessionStart hook. `gaia install --postinstall` still exists as a flag for fail-soft, non-interactive invocation, but nothing in the npm lifecycle calls it automatically.
 
 `gaia install` (interactive or `--postinstall`), first run (no `.claude/`):
-1. Run `scripts/bootstrap_database.py` -- seeds the schema, agent rows, and `schema_version`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
+1. Run `gaia migrate apply` (engine `scripts/bootstrap_database.py`) -- backs up an existing DB, applies the pending chain and its `schema_version` seals in one transaction, seeds agent rows; a chain reaching existing rows stops and names `gaia migrate apply --consent-chain vA..vB`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
 2. Create `.claude/` if missing (created early so subsequent steps can write into it).
 3. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
 4. Merge hooks from `hooks.json` into `settings.local.json`.
@@ -169,7 +169,7 @@ There is **no npm postinstall hook**. `package.json` carries an explicit `_insta
 
 Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` separately to populate it -- install never triggers a scan.
 
-`gaia update` (`.claude/` exists): shares the same helpers via `_install_helpers.py` -- show version transition, create `settings.json` only if missing, merge permissions/env/hooks (union, preserves user config), recreate/fix broken symlinks, run schema migrations and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`, verify hooks/Python/DB schema/config.
+`gaia update` (`.claude/` exists): shares the same helpers via `_install_helpers.py` -- show version transition, create `settings.json` only if missing, merge permissions/env/hooks (union, preserves user config), recreate/fix broken symlinks, run `gaia migrate apply` and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`, verify hooks/Python/DB schema/config.
 
 The hook invoker is `python3 <script>` rather than executing the script directly, so missing exec bits on cross-platform checkouts do not break the install.
 

@@ -83,9 +83,7 @@ def _run_bootstrap(bootstrap, db: Path, workspace: Path, expected: int) -> int:
     # v49_to_v50 reaches data, and the fixture below is seeded with rows, so
     # the runner's consent gate refuses it unattended. Naming it here is what
     # this test bed is: a deliberate application against a throwaway database.
-    consent = {migration_guard.ENV_CONSENT: "v49_to_v50"}
-    with mock.patch.dict(os.environ, consent):
-        return bootstrap.main()
+    return bootstrap.main([migration_guard.CONSENT_FLAG, f"v{expected - 1}..v{expected}"])
 
 
 def _seed_corpus(db: Path) -> None:

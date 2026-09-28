@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""migration_guard.py -- consent gate for migrations that reach existing data.
+"""migration_guard.py -- consent gate for migration chains that reach existing data.
 
-Section 3c of ``bootstrap_database.py`` applies every pending migration file it
-finds in the source tree, unattended, on any invocation that bootstraps. That is
-harmless while migrations only add structure and unsafe the moment one rewrites
-or removes rows: a commit in the source tree becomes a data mutation on the live
-database with no human in between.
+``bootstrap_database.py`` (the engine behind ``gaia migrate``) applies every
+pending migration file between the database's ledger and the version the code
+expects. That is harmless while migrations only add structure and unsafe the
+moment one rewrites or removes rows: a commit in the source tree becomes a data
+mutation on the live database with no human in between.
 
 THE DISTINCTION DOES NOT DEPEND ON ANYONE DECLARING IT
     A convention an author can forget is a suggestion, not a gate. So nothing
@@ -15,39 +15,39 @@ THE DISTINCTION DOES NOT DEPEND ON ANYONE DECLARING IT
       * what the migration's own SQL does -- a statement cannot rewrite rows
         without BEING a statement that rewrites rows, and it must say so in the
         only language the runner will execute;
-      * how many rows the tables it names held BEFORE this bootstrap run
-        started, read from the target database itself.
+      * how many rows the tables it names held BEFORE this run started, read
+        from the target database itself.
 
-    A migration is blocked only where those two meet: a row-reaching statement
-    whose target table already held rows. Both inputs are evidence, not
-    testimony.
+    A migration reaches data only where those two meet: a row-reaching
+    statement whose target table already held rows. Both inputs are evidence,
+    not testimony.
 
-SILENCE FALLS ON THE SAFE SIDE, IN BOTH ITS FORMS
-    The author's silence is not a case at all: saying nothing yields the same
-    classification as saying anything, because only the SQL is read. The
-    PARSER's silence is the real edge, and it is gated: a statement whose
-    leading form this module does not recognise is UNRECOGNISED, never
-    "assumed structural", and it is treated as reaching every row in the
-    database.
+ONE CONSENT COVERS ONE CHAIN (D68)
+    A chain that only adds structure applies on its own, after a backup. A
+    chain in which any migration reaches data asks once for the whole chain,
+    and the consent names the chain (``v51..v58``) rather than a file, so it
+    approves exactly the span the user was shown and nothing that ships later.
+
+SILENCE FALLS ON THE SAFE SIDE
+    A statement whose leading form this module does not recognise is
+    UNRECOGNISED, never "assumed structural", and it is treated as reaching
+    every row in the database.
 
 A FRESH DATABASE IS NEVER GATED, BY CONSTRUCTION
     The census is taken once, before any schema or migration runs, so a
     database this run is creating has an empty census and every count is zero.
-    The whole chain -- including a data-reaching migration -- applies
-    unattended on a fresh install or a throwaway test database. That is not an
-    exemption branch, an installer flag, or an environment variable someone has
-    to remember: there is nothing to disable, because a migration that reaches
-    no existing row was never at risk of destroying one.
+    There is nothing to disable, because a migration that reaches no existing
+    row was never at risk of destroying one.
 """
 
 from __future__ import annotations
 
-import os
 import re
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-ENV_CONSENT = "GAIA_MIGRATION_CONSENT"
+CONSENT_FLAG = "--consent-chain"
 
 UNKNOWN_TABLE = "?"
 
@@ -72,7 +72,9 @@ _ROW_REACHING = (
 # enumerated by object type rather than allowed wholesale: an index, a trigger
 # and a view carry no rows of their own, while DROP TABLE discards every row of
 # one and is matched above. A plain INSERT belongs here for the same reason --
-# it can only add rows, never overwrite one that already exists.
+# it can only add rows, never overwrite one that already exists. CREATE covers
+# CREATE TRIGGER whole: its body runs on future writes, never on rows that
+# exist when the migration applies.
 _STRUCTURAL = (
     re.compile(r"^create\b", re.I),
     re.compile(r"^drop\s+(?:index|trigger|view)\b", re.I),
@@ -80,7 +82,6 @@ _STRUCTURAL = (
     re.compile(r"^insert\b", re.I),
     re.compile(r"^select\b", re.I),
     re.compile(r"^pragma\b", re.I),
-    re.compile(r"^(?:commit|end|rollback|savepoint|release)\b", re.I),
     re.compile(r"^(?:vacuum|analyze|reindex)\b", re.I),
 )
 
@@ -97,25 +98,19 @@ class Reach:
 
 @dataclass(frozen=True)
 class Verdict:
-    """What one migration would reach, and whether it may proceed unattended."""
+    """What one migration of a chain would reach in the existing data."""
 
     migration: str
     reaches: tuple[Reach, ...]
-    consented: bool
-
-    @property
-    def blocked(self) -> bool:
-        return bool(self.reaches) and not self.consented
 
 
 def take_census(con) -> dict[str, int]:
     """Row count per table, as it stands right now.
 
-    Called once before schema.sql and before the first migration, so what it
-    reports is exactly the data that pre-dates this run -- the only data a
-    migration can destroy. A table created later in the same run is absent
-    here and therefore counts as zero, which is correct: rows this run
-    produced were not at risk from it.
+    Called once before anything in the run writes, so what it reports is
+    exactly the data that pre-dates this run -- the only data a migration can
+    destroy. A table created later in the same run is absent here and
+    therefore counts as zero.
     """
     census: dict[str, int] = {}
     try:
@@ -172,33 +167,36 @@ def strip_comments(sql: str) -> str:
     return "".join(out)
 
 
-_SPLIT = re.compile(r";|\bbegin\b", re.I)
+def split_statements(sql: str) -> list[str]:
+    """Split a script into the statements SQLite itself would see.
 
-
-def _statements(sql: str) -> list[str]:
-    """Split into classifiable fragments on the semicolon and on BEGIN.
-
-    A trigger body is deliberately NOT held together: splitting it turns each
-    statement the trigger would run into its own fragment, which is what lets a
-    body that deletes rows be seen at all. BEGIN has to separate too, because a
-    trigger's FIRST body statement carries no semicolon before it and would
-    otherwise hide inside the structural `CREATE TRIGGER` fragment. The header
-    still classifies structural on its own, so an FTS mirror trigger -- whose
-    body only inserts -- is not gated.
+    Boundaries come from ``sqlite3.complete_statement`` -- SQLite's own
+    tokenizer -- so a semicolon inside a string, a comment, or a trigger body
+    never ends a statement. The runner executes these one at a time inside a
+    single transaction, and the gate classifies the same list, so what is
+    judged is exactly what runs. Fragments holding only comments are dropped.
     """
-    fragments = []
-    for raw in _SPLIT.split(strip_comments(sql)):
-        collapsed = " ".join(raw.split())
-        if collapsed:
-            fragments.append(collapsed)
-    return fragments
+    statements: list[str] = []
+    start = 0
+    for i, ch in enumerate(sql):
+        if ch == ";" and sqlite3.complete_statement(sql[start : i + 1]):
+            statements.append(sql[start : i + 1])
+            start = i + 1
+    statements.append(sql[start:])
+    return [s.strip() for s in statements if strip_comments(s).strip()]
+
+
+def normalize(statement: str) -> str:
+    """One statement without comments, on one line."""
+    return " ".join(strip_comments(statement).split())
 
 
 def scan(sql: str, census: dict[str, int]) -> tuple[Reach, ...]:
     """Statements that reach rows that already exist, with the count each finds."""
     total = sum(census.values())
     found: list[Reach] = []
-    for fragment in _statements(sql):
+    for statement in split_statements(sql):
+        fragment = normalize(statement)
         verb, table = _classify(fragment)
         if verb is None:
             continue
@@ -223,52 +221,55 @@ def _excerpt(fragment: str, limit: int = 90) -> str:
     return fragment if len(fragment) <= limit else fragment[: limit - 3] + "..."
 
 
-def consented(migration: str, environ=None) -> bool:
-    """Whether this exact migration was named in the consent variable.
-
-    Only exact stems are honoured, and there is no wildcard: consent to
-    `v49_to_v50` approves that file and nothing that ships after it.
-    """
-    raw = (os.environ if environ is None else environ).get(ENV_CONSENT, "")
-    return migration in {part.strip() for part in raw.split(",") if part.strip()}
+def assess(migration: str, sql: str, census: dict[str, int]) -> Verdict:
+    return Verdict(migration, scan(sql, census))
 
 
-def assess(
-    migration: str,
-    sql: str,
-    census: dict[str, int],
-    environ=None,
-) -> Verdict:
-    return Verdict(migration, scan(sql, census), consented(migration, environ))
+def chain_label(current: int, expected: int) -> str:
+    """The name a consent must carry: the exact span of versions it approves."""
+    return f"v{current}..v{expected}"
 
 
-def format_block(verdict: Verdict, mig_file: Path, db_path: Path, ledger_at: int) -> str:
+def consent_command(label: str) -> str:
+    return f"gaia migrate apply {CONSENT_FLAG} {label}"
+
+
+def format_chain_block(
+    verdicts: list[Verdict], label: str, db_path: Path, ledger_at: int
+) -> str:
+    """The refusal a user reads when a chain reaches data and was not consented."""
     lines = [
-        f"BLOCKED: migration {verdict.migration} reaches data that already exists.",
+        f"BLOCKED: migration chain {label} reaches data that already exists.",
         "",
-        f"  file:     {mig_file}",
         f"  database: {db_path}",
         "",
-        "  A migration that only adds structure applies unattended. This one does",
-        "  not, because these statements would reach rows present before this run:",
+        "  A chain that only adds structure applies on its own after a backup.",
+        "  This one does not, because these statements would reach rows present",
+        "  before this run:",
         "",
     ]
-    for reach in verdict.reaches:
-        where = "anywhere in the database" if reach.table == UNKNOWN_TABLE else f"`{reach.table}`"
-        lines.append(f"    {reach.verb} on {where} -- {reach.rows} row(s) at risk")
-        lines.append(f"      {reach.excerpt}")
+    for verdict in verdicts:
+        for reach in verdict.reaches:
+            where = (
+                "anywhere in the database"
+                if reach.table == UNKNOWN_TABLE
+                else f"`{reach.table}`"
+            )
+            lines.append(
+                f"    {verdict.migration}: {reach.verb} on {where} -- "
+                f"{reach.rows} row(s) at risk"
+            )
+            lines.append(f"      {reach.excerpt}")
     lines += [
         "",
-        "  NOTHING WAS APPLIED. No transaction was opened for this migration and",
-        f"  the schema_version ledger stays at v{ledger_at}.",
+        "  NOTHING WAS APPLIED. No transaction was opened and the schema_version",
+        f"  ledger stays at v{ledger_at}.",
         "",
-        "  To continue deliberately, re-run the SAME command with this migration",
-        "  named in the consent variable:",
+        "  Review the chain with `gaia migrate plan`, then consent to it once:",
         "",
-        f"      {ENV_CONSENT}={verdict.migration} <the command you just ran>",
+        f"      {consent_command(label)}",
         "",
-        "  Naming the version IS the consent: it approves this migration only and",
-        "  approves nothing that ships later. Read the file first -- the statements",
-        "  above are the ones that will run.",
+        "  The consent names this chain only: a backup is taken first, and it",
+        "  approves nothing that ships later.",
     ]
     return "\n".join(lines)

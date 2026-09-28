@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -199,6 +200,28 @@ def _has_application_tables(con: sqlite3.Connection) -> bool:
     return row is not None
 
 
+# EXPECTED_SCHEMA_VERSION is declared once, in bin/cli/doctor.py; the migration
+# engine reads it the same way. An unsealed database is one `gaia migrate`
+# cannot place on the chain, so schema.sql is sealed at the version it builds.
+_DOCTOR_PY = Path(__file__).resolve().parents[2] / "bin" / "cli" / "doctor.py"
+
+
+def _seal_materialized_schema(con: sqlite3.Connection) -> None:
+    """Record the version schema.sql just built, when this build declares one."""
+    try:
+        text = _DOCTOR_PY.read_text(encoding="utf-8")
+    except OSError:
+        return
+    m = re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", text, re.MULTILINE)
+    if not m:
+        return
+    con.execute(
+        "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
+        "VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?)",
+        (int(m.group(1)), "sealed by the writer: schema.sql materialized"),
+    )
+
+
 def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
     """Materialize the schema exactly once, safe under concurrent first-write.
 
@@ -256,6 +279,7 @@ def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
             if _has_application_tables(con):
                 return
             con.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+            _seal_materialized_schema(con)
             con.commit()
     finally:
         os.close(fd)

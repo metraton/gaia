@@ -34,7 +34,7 @@ _CLI_DIR = _SCRIPT_DIR / "cli"
 # Subcommands that must NOT trigger the lazy DB bootstrap:
 #   - install:   bootstraps the DB itself (Step 1); double-bootstrap is wasteful.
 #   - uninstall: tearing Gaia down -- recreating the DB would be perverse.
-_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall"})
+_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall", "migrate"})
 
 
 def _resolve_db_path():

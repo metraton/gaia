@@ -35,7 +35,8 @@ tarball.
     machinery a real `npm install` consumer would exercise.
 
 This terminates in `cli.install.cmd_install`, so the wiring logic
-(settings.json, permissions, hooks, symlinks, plugin-registry, DB bootstrap)
+(settings.json, permissions, hooks, symlinks, plugin-registry, and the DB
+through `gaia migrate apply`)
 is never duplicated between this and a plain `gaia install`.
 """
 
@@ -701,8 +702,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "  npm pack this source tree into a stable, persistent per-workspace\n"
             "  path (default_pack_dest, override with --pack-dest), install into\n"
             "  the actual consumer with npm/pnpm, update its Gaia dependency spec,\n"
-            "  then wire hosts + bootstrap DB via the freshly installed copy's own\n"
-            "  `gaia install`. Each pack attempt is retained separately. Repeated\n"
+            "  then wire hosts + migrate the DB via the freshly installed copy's own\n"
+            "  `gaia install`, which runs `gaia migrate apply` (backup, one\n"
+            "  transaction, one consent for a chain that reaches existing rows).\n"
+            "  Each pack attempt is retained separately. Repeated\n"
             "  normal installations require matching consumer metadata and\n"
             "  package-manager resolution. A legacy link to this exact source\n"
             "  checkout can be saved as a normal local dependency; any other\n"

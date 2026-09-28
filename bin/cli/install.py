@@ -14,7 +14,8 @@ lifecycle script. Workspace `.claude/` config is applied on demand by
 running `gaia install` (this module) or by the SessionStart hook.
 
 Responsibilities (in order):
-  1. Invoke `scripts/bootstrap_database.py` -- the cross-platform Python
+  1. Run `gaia migrate apply` (`cli.migrate`, engine
+     `scripts/bootstrap_database.py`) -- the cross-platform Python
      bootstrapper for creating/upgrading `~/.gaia/gaia.db` (schema,
      agent_permissions seed, project registration, FTS5 backfill, invariant
      checks). The canonical schema source is `gaia/store/schema.sql`;
@@ -83,7 +84,6 @@ from typing import Sequence
 
 # bin/cli/install.py -> bin/cli -> bin -> gaia/
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.py"
 
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
@@ -91,6 +91,9 @@ if str(_PACKAGE_ROOT) not in sys.path:
 # Helpers shared with `gaia update`. Module-relative import works when run
 # via `python bin/gaia install` because bin/ is on sys.path.
 from cli import _install_helpers  # type: ignore  # noqa: E402
+from cli import migrate  # type: ignore  # noqa: E402
+
+_BOOTSTRAP_SCRIPT = migrate.ENGINE
 
 _SEED_CONTRACT_PERMS = _PACKAGE_ROOT / "tools" / "scan" / "seed_contract_permissions.py"
 _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing.py"
@@ -776,20 +779,8 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
         print(f"gaia install: {msg}", file=sys.stderr)
         return {"rc": 1, "detail": msg}
 
-    env = os.environ.copy()
-    if db_path:
-        env["GAIA_DB"] = str(Path(db_path).expanduser().resolve())
-
-    cmd = [sys.executable or "python3", str(_BOOTSTRAP_SCRIPT)]
-
     try:
-        result = subprocess.run(
-            cmd,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = migrate.run("apply", db_path=db_path, capture=True)
     except OSError as exc:
         msg = f"failed to invoke python bootstrapper -- {exc}"
         print(f"gaia install: {msg}", file=sys.stderr)
@@ -1160,6 +1151,11 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "Idempotent end to end: re-running over an existing setup applies\n"
             "schema migrations, re-seeds permissions, and repairs broken symlinks\n"
             "without destroying user state.\n"
+            "\n"
+            "The database step runs `gaia migrate apply`: a backup first, the\n"
+            "whole chain in one transaction, structure-only chains on their own.\n"
+            "A chain that reaches existing rows stops here and names the\n"
+            "`gaia migrate apply --consent-chain vA..vB` command that continues.\n"
             "\n"
             "There is no npm postinstall hook -- bootstrap is lazy, triggered\n"
             "by the first `gaia` CLI invocation. Typically called by:\n"

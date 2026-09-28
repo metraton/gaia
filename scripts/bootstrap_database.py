@@ -1,31 +1,44 @@
 #!/usr/bin/env python3
-"""bootstrap_database.py -- Inicializador idempotente de la DB Gaia (Python port).
+"""bootstrap_database.py -- the migration engine behind ``gaia migrate``.
 
-Port cross-platform de ``scripts/bootstrap_database.sh``. Produce EXACTAMENTE el
-mismo esquema y los mismos seeds que el .sh, pero usando el modulo ``sqlite3``
-built-in de Python en lugar del binario ``sqlite3`` CLI. Esto permite que
-``gaia install``, el lazy bootstrap (bin/gaia) y ``gaia update`` funcionen en
-Windows -- donde ``sqlite3`` no suele estar en PATH y ``bash`` puede no existir.
+Brings a Gaia database from whatever version its ledger records to the version
+this code expects, and is what ``gaia install``, ``gaia update`` and the lazy
+first-run bootstrap reach through ``gaia migrate``. Cross-platform: it uses
+Python's built-in ``sqlite3`` module, never the ``sqlite3`` CLI or ``bash``.
 
-Fuente declarativa unica: ``gaia/store/schema.sql`` (ejecutado via
-``con.executescript``), igual que el .sh. La logica de seeds/migraciones se
-porta seccion-por-seccion desde el .sh para garantizar PARIDAD.
+Two actions:
+  (default) apply -- run the pending chain.
+  --plan          -- print the chain, what each step reaches, and what apply
+                     would require; writes nothing, creates nothing.
 
-Principios (heredados del .sh):
-  - Idempotente: ejecutarlo dos veces no cambia el estado.
-  - foreign_keys queda en OFF (default de sqlite3, igual que el CLI): las
-    migraciones con rebuild de tabla (DROP/RENAME) lo requieren.
-  - Autocommit (isolation_level=None): cada statement commitea al instante,
-    igual que cada invocacion separada de ``sqlite3 "$GAIA_DB" "..."`` en el .sh.
+How a run treats the database:
+  * Fresh (no file, or no tables): ``schema.sql`` builds it, the ledger is
+    stamped at the floor, and every forward migration replays on top. Nothing
+    pre-dates the run, so there is nothing to back up and nothing to consent.
+  * Sealed (ledger rows present): only the migrations from the ledger to the
+    expected version run. ``schema.sql`` is never applied to it.
+  * Unsealed (tables but an empty ledger -- what older writer builds left
+    behind): treated as a fresh build over existing data, so it is backed up
+    and gated like a sealed one.
 
-Configuracion (identica al .sh):
-  - GAIA_DB    -- path de la DB. Default ~/.gaia/gaia.db.
-  - SCHEMA_FILE-- override del schema.sql. Default <repo>/gaia/store/schema.sql.
-  - WORKSPACE  -- workspace cuya identidad se registra. Default = raiz del repo.
+Every write of the chain -- schema, each migration, and each ledger seal --
+runs inside ONE transaction, so an interruption at any point, including
+between a migration and its seal, leaves the objects and the version exactly
+as they were. Before that transaction opens on an existing database, a copy is
+written with SQLite's backup API to ``<database dir>/backups/``. A chain that
+only adds structure then applies on its own; a chain in which any migration
+reaches rows that already exist is refused until ``--consent-chain vA..vB``
+names that exact chain (D68: one consent for the whole chain).
+
+Configuration:
+  - GAIA_DB    -- path of the DB. Default ~/.gaia/gaia.db.
+  - SCHEMA_FILE-- override of schema.sql. Default <repo>/gaia/store/schema.sql.
+  - WORKSPACE  -- workspace whose identity is registered. Default = repo root.
 """
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
 import re
@@ -38,31 +51,26 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import migration_guard  # noqa: E402
 
-# === Section 1: Variables y validacion de entorno ===
-
 _SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Path de la DB. Configurable via env GAIA_DB; default ~/.gaia/gaia.db.
-# Misma resolucion que el .sh (linea 21): GAIA_DB o ~/.gaia/gaia.db.
 _DEFAULT_DB = Path.home() / ".gaia" / "gaia.db"
 GAIA_DB = Path(os.environ.get("GAIA_DB") or _DEFAULT_DB).expanduser()
 
-# Path al schema.sql. El script vive en gaia/scripts/, el schema en
-# gaia/gaia/store/schema.sql. Resolvemos relativo al script (no al cwd).
 SCHEMA_FILE = Path(
     os.environ.get("SCHEMA_FILE")
     or (_SCRIPT_DIR.parent / "gaia" / "store" / "schema.sql")
 ).expanduser()
 
-# Workspace cuya identidad se registra. Default: raiz del repo (un nivel arriba
-# de scripts/). Configurable via env.
 WORKSPACE = Path(os.environ.get("WORKSPACE") or _SCRIPT_DIR.parent).expanduser()
 
 MIG_DIR = _SCRIPT_DIR / "migrations"
 DOCTOR_PY = _SCRIPT_DIR.parent / "bin" / "cli" / "doctor.py"
 
-# floor de schema: schema.sql produce exactamente esta forma (ver Section 3b).
+# The lowest ledger version an existing database may carry; schema.sql plus the
+# replayed forward chain is what a fresh database is stamped from.
 SCHEMA_FLOOR = 18
+
+FRESH, SEALED, UNSEALED = "fresh", "sealed", "unsealed"
 
 
 def _log(msg: str) -> None:
@@ -74,20 +82,17 @@ def _err(msg: str) -> None:
 
 
 def _gaia_sha256(value: str | None) -> str:
-    """Scalar SHA-256 usado por el trigger ai_approval_events_hash.
-
-    schema.sql crea ese trigger; el bootstrap no inserta en approval_events, asi
-    que la funcion no llega a invocarse aqui -- pero la registramos igual que
-    gaia.store.writer._connect para que cualquier connection sea consistente."""
+    """Scalar SHA-256 the ai_approval_events_hash trigger calls; registered so
+    this connection matches gaia.store.writer._connect."""
     return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
 
 
 def _connect() -> sqlite3.Connection:
-    """Abre la connection en autocommit, foreign_keys OFF (default), y registra
-    gaia_sha256 -- paridad con el comportamiento del sqlite3 CLI."""
+    """Autocommit connection, foreign_keys OFF (table-rebuild migrations need
+    it), with gaia_sha256 registered."""
     GAIA_DB.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(GAIA_DB))
-    con.isolation_level = None  # autocommit: cada execute commitea (como el CLI)
+    con.isolation_level = None
     con.create_function("gaia_sha256", 1, _gaia_sha256, deterministic=True)
     return con
 
@@ -97,78 +102,8 @@ def _scalar(con: sqlite3.Connection, sql: str, params: tuple = ()) -> int:
     return int(row[0]) if row and row[0] is not None else 0
 
 
-_ADD_COLUMN_RE = re.compile(
-    r"alter\s+table\s+([a-z0-9_]+)\s+add\s+column\s+([a-z0-9_]+)",
-    re.IGNORECASE,
-)
-
-
-# === Section 1.5: Pre-schema ADD COLUMN reconciliation (existing DBs) ===
-#
-# schema.sql se aplica INCONDICIONALMENTE y completo, y carga indices sobre
-# columnas introducidas por migraciones forward (p.ej. contract_id + su UNIQUE
-# index). En una DB EXISTENTE cuya tabla precede a la columna, el CREATE INDEX
-# abortaria con "no such column". Esta seccion agrega esas columnas ANTES de
-# schema.sql, de forma generica e idempotente: para cada ALTER TABLE ADD COLUMN
-# declarado en las migraciones forward, si la tabla ya existe y la columna
-# falta, la agrega ahora. En una DB fresca no hay tablas todavia -> no-op.
-def _reconcile_pre_schema_add_columns(con: sqlite3.Connection) -> None:
-    for mig_file in sorted(MIG_DIR.glob("v*_to_v*.sql")):
-        for line in mig_file.read_text(encoding="utf-8").splitlines():
-            m = _ADD_COLUMN_RE.search(line)
-            if not m:
-                continue
-            table, col = m.group(1), m.group(2)
-            tbl_exists = _scalar(
-                con,
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
-                (table,),
-            )
-            if tbl_exists == 0:
-                continue
-            col_exists = _scalar(
-                con,
-                f"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?",
-                (col,),
-            )
-            if col_exists == 0:
-                _log(
-                    f"pre-schema reconcile: adding {table}.{col} (existing DB predates it)"
-                )
-                con.execute(line)
-
-
-# === Section 3c helper: idempotent ADD COLUMN guard (runner-level) ===
-#
-# schema.sql ya carga el DDL objetivo de cada migracion, asi que las migraciones
-# se replayean contra una DB que ya tiene sus objetos. CREATE ... IF NOT EXISTS
-# es idempotente; pero SQLite no tiene ADD COLUMN IF NOT EXISTS, asi que un
-# ALTER TABLE t ADD COLUMN c aborta con "duplicate column name" si la columna ya
-# existe. Este filtro neutraliza (comenta) esas lineas antes de correr la
-# migracion; todo lo demas pasa verbatim.
-def _filter_add_column_idempotent(con: sqlite3.Connection, mig_file: Path) -> str:
-    out_lines: list[str] = []
-    for line in mig_file.read_text(encoding="utf-8").splitlines():
-        m = _ADD_COLUMN_RE.search(line)
-        if m:
-            table, col = m.group(1), m.group(2)
-            exists = _scalar(
-                con,
-                f"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?",
-                (col,),
-            )
-            if exists > 0:
-                out_lines.append(
-                    f"-- [bootstrap] skipped (column {table}.{col} already present): {line}"
-                )
-                continue
-        out_lines.append(line)
-    return "\n".join(out_lines) + "\n"
-
-
 def _read_expected_schema_version() -> int:
-    """Lee EXPECTED_SCHEMA_VERSION = N de doctor.py (una sola fuente de verdad),
-    igual que el .sh (grep de ^EXPECTED_SCHEMA_VERSION\\s*=\\s*[0-9]+)."""
+    """EXPECTED_SCHEMA_VERSION = N from doctor.py, the single source of truth."""
     if not DOCTOR_PY.is_file():
         _err(
             f"ERROR: doctor.py no encontrado en {DOCTOR_PY} "
@@ -187,9 +122,8 @@ def _read_expected_schema_version() -> int:
 
 
 def _normalize_remote(raw_remote: str) -> str:
-    """Normalizacion de remote a identity, port exacto del bash (Section 4):
-    lowercase + strip de prefijos + forma ssh git@host:owner/repo -> host/owner/repo
-    + strip .git + strip trailing slash."""
+    """Remote -> identity: lowercase, strip scheme, ssh git@host:owner/repo ->
+    host/owner/repo, strip .git and trailing slash."""
     s = raw_remote.lower()
     for prefix in ("https://", "http://", "ssh://", "git+ssh://", "git+https://"):
         if s.startswith(prefix):
@@ -197,7 +131,7 @@ def _normalize_remote(raw_remote: str) -> str:
             break
     if s.startswith("git@"):
         s = s[len("git@"):]
-        s = s.replace(":", "/", 1)  # primer ':' -> '/'
+        s = s.replace(":", "/", 1)
     if s.endswith(".git"):
         s = s[: -len(".git")]
     if s.endswith("/"):
@@ -206,8 +140,8 @@ def _normalize_remote(raw_remote: str) -> str:
 
 
 def _resolve_workspace_identity() -> str:
-    """Section 4: identity via git remote get-url origin, con fallbacks a
-    basename(lowercase) y luego 'global'. git es cross-platform y guarded."""
+    """Identity via git remote get-url origin, falling back to the lowercase
+    basename and then 'global'."""
     raw_remote = ""
     try:
         result = subprocess.run(
@@ -221,24 +155,208 @@ def _resolve_workspace_identity() -> str:
     except OSError:
         raw_remote = ""
 
-    identity = ""
-    if raw_remote:
-        identity = _normalize_remote(raw_remote)
+    identity = _normalize_remote(raw_remote) if raw_remote else ""
     if not identity:
         try:
             identity = WORKSPACE.resolve().name.lower()
         except OSError:
             identity = ""
-    if not identity:
-        identity = "global"
-    return identity
+    return identity or "global"
 
 
-def main() -> int:
-    # --- Section 1: validaciones ---
-    # NOTA: a diferencia del .sh, NO validamos la presencia de un binario
-    # sqlite3 en PATH -- ese es justamente el objetivo de este port. Usamos el
-    # modulo sqlite3 built-in de Python.
+# === Reading the database's state ===
+
+def _ledger_version(con: sqlite3.Connection) -> int:
+    if not _scalar(
+        con,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version'",
+    ):
+        return 0
+    return _scalar(con, "SELECT COALESCE(MAX(version), 0) FROM schema_version")
+
+
+def _database_state(census: dict[str, int], ledger: int) -> str:
+    if ledger:
+        return SEALED
+    return UNSEALED if census else FRESH
+
+
+def _chain(start: int, expected: int) -> list[tuple[int, Path]]:
+    """Migration files (target version, path) from ``start`` to ``expected``."""
+    return [
+        (n, MIG_DIR / f"v{n - 1}_to_v{n}.sql") for n in range(start + 1, expected + 1)
+    ]
+
+
+# === Applying the chain ===
+
+_ADD_COLUMN_RE = re.compile(
+    r"^alter\s+table\s+[\"'`\[]?([a-z0-9_]+)[\"'`\]]?\s+add\s+column\s+[\"'`\[]?([a-z0-9_]+)",
+    re.IGNORECASE,
+)
+
+
+# SQLite refuses to change the journal mode inside a transaction, so schema.sql's
+# PRAGMA journal_mode is honoured once before the chain opens instead.
+_JOURNAL_MODE_RE = re.compile(r"^pragma\s+journal_mode\b", re.IGNORECASE)
+
+
+def _column_present(con: sqlite3.Connection, statement: str) -> bool:
+    """Whether an ADD COLUMN statement's column already exists.
+
+    SQLite has no ADD COLUMN IF NOT EXISTS, and the forward chain replays over
+    a fresh schema.sql build that already carries every column, so an ADD
+    COLUMN whose column is present is skipped rather than aborting the chain.
+    """
+    m = _ADD_COLUMN_RE.match(migration_guard.normalize(statement))
+    if not m:
+        return False
+    table, column = m.group(1), m.group(2)
+    return bool(
+        _scalar(
+            con,
+            f"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name=?",
+            (column,),
+        )
+    )
+
+
+def _run_script(con: sqlite3.Connection, sql: str) -> None:
+    """Execute a script statement by statement inside the open transaction.
+
+    ``executescript`` is avoided on purpose: it COMMITs any open transaction
+    before running, which would split the chain into separately durable parts.
+    """
+    for statement in migration_guard.split_statements(sql):
+        if _JOURNAL_MODE_RE.match(migration_guard.normalize(statement)):
+            continue
+        if _column_present(con, statement):
+            continue
+        con.execute(statement)
+
+
+def _stamp(con: sqlite3.Connection, version: int, description: str, now_utc: str) -> None:
+    con.execute(
+        "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
+        "VALUES (?, ?, ?)",
+        (version, now_utc, description),
+    )
+
+
+def _backup(con: sqlite3.Connection, ledger: int, now: datetime) -> Path:
+    """Copy the whole database, beside it, before anything writes to it."""
+    backup_dir = GAIA_DB.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    target = backup_dir / (
+        f"{GAIA_DB.stem}-v{ledger}-pre-migrate-{now.strftime('%Y%m%dT%H%M%S%fZ')}.db"
+    )
+    dest = sqlite3.connect(str(target))
+    try:
+        con.backup(dest)
+    finally:
+        dest.close()
+    return target
+
+
+def _apply_chain(
+    con: sqlite3.Connection,
+    state: str,
+    start: int,
+    chain: list[tuple[int, Path]],
+    now_utc: str,
+) -> None:
+    """Schema (fresh/unsealed only), every migration and every seal, in one
+    transaction. Any exception rolls the whole chain back."""
+    if state != SEALED:
+        con.execute("PRAGMA journal_mode = WAL")
+    con.execute("BEGIN IMMEDIATE")
+    try:
+        if state != SEALED:
+            _run_script(con, SCHEMA_FILE.read_text(encoding="utf-8"))
+            _stamp(con, start, f"baseline floor: schema.sql at v{start}", now_utc)
+        for n, mig_file in chain:
+            _log(f"migration v{n - 1}->v{n}: applying {mig_file}")
+            _run_script(con, mig_file.read_text(encoding="utf-8"))
+            _stamp(con, n, f"applied migration {mig_file.name}", now_utc)
+        con.execute("COMMIT")
+    except BaseException:
+        if con.in_transaction:
+            con.execute("ROLLBACK")
+        raise
+
+
+# === Plan / apply ===
+
+def _open_for_plan() -> sqlite3.Connection | None:
+    """Read-only connection, or None when the database does not exist yet."""
+    if not GAIA_DB.is_file():
+        return None
+    return sqlite3.connect(f"file:{GAIA_DB}?mode=ro", uri=True)
+
+
+def _assess_chain(
+    chain: list[tuple[int, Path]], census: dict[str, int]
+) -> list[migration_guard.Verdict]:
+    return [
+        migration_guard.assess(
+            path.stem, path.read_text(encoding="utf-8"), census
+        )
+        for _, path in chain
+    ]
+
+
+def _plan(expected: int) -> int:
+    con = _open_for_plan()
+    census = migration_guard.take_census(con) if con else {}
+    ledger = _ledger_version(con) if con else 0
+    if con:
+        con.close()
+    state = _database_state(census, ledger)
+    print(f"database: {GAIA_DB}")
+    if state == FRESH:
+        print(
+            f"fresh database: schema.sql builds it and the ledger is sealed at "
+            f"v{expected}. Nothing to back up, nothing to consent."
+        )
+        return 0
+    start = ledger if state == SEALED else SCHEMA_FLOOR
+    if ledger > expected:
+        print(f"ledger v{ledger} is NEWER than this code (v{expected}); apply refuses.")
+        return 1
+    if start == expected and state == SEALED:
+        print(f"ledger at v{ledger}: up to date, nothing to apply.")
+        return 0
+    chain = _chain(start, expected)
+    missing = [p.name for _, p in chain if not p.is_file()]
+    if missing:
+        print(f"missing migration files: {', '.join(missing)}; apply refuses.")
+        return 1
+    label = migration_guard.chain_label(start, expected)
+    print(f"chain {label} ({len(chain)} migrations, {state} database):")
+    if state == UNSEALED:
+        print("  schema.sql      rebuilds the unsealed database before the chain")
+    verdicts = _assess_chain(chain, census)
+    for verdict in verdicts:
+        if not verdict.reaches:
+            print(f"  {verdict.migration:<15} structure only")
+            continue
+        for reach in verdict.reaches:
+            print(
+                f"  {verdict.migration:<15} reaches data: {reach.verb} on "
+                f"`{reach.table}` ({reach.rows} rows)"
+            )
+    print(f"backup: written to {GAIA_DB.parent / 'backups'} before anything changes")
+    if any(v.reaches for v in verdicts):
+        print(
+            "consent: required once for the whole chain -> "
+            f"{migration_guard.consent_command(label)}"
+        )
+    else:
+        print("consent: none -- the chain only adds structure and applies on its own")
+    return 0
+
+
+def _apply(expected: int, consent_chain: str | None) -> int:
     if not SCHEMA_FILE.is_file():
         _err(f"ERROR: schema.sql no encontrado en {SCHEMA_FILE}")
         return 1
@@ -247,83 +365,20 @@ def main() -> int:
     _log(f"Using schema:  {SCHEMA_FILE}")
     _log(f"Using workspace: {WORKSPACE}")
 
+    now = datetime.now(timezone.utc)
+    now_utc = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     con = _connect()
     try:
-        # --- Section 1.4: census of pre-existing data (migration consent gate) ---
         # Taken before anything in this run can add a row, so it names exactly
         # the data a migration could destroy rather than data this run produced.
-        # A database being created now yields an empty census, which is what
-        # keeps fresh installs and test environments ungated.
-        pre_run_census = migration_guard.take_census(con)
+        census = migration_guard.take_census(con)
+        ledger = _ledger_version(con)
+        state = _database_state(census, ledger)
 
-        # --- Section 1.5: pre-schema ADD COLUMN reconciliation ---
-        _reconcile_pre_schema_add_columns(con)
-
-        # --- Section 2: aplicar schema (DDL) ---
-        # Todas las CREATE ... usan IF NOT EXISTS -> re-ejecutar es seguro.
-        con.executescript(SCHEMA_FILE.read_text(encoding="utf-8"))
-        table_count = _scalar(
-            con, "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
-        )
-        trigger_count = _scalar(
-            con, "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'"
-        )
-        fts5_count = _scalar(
-            con,
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'",
-        )
-        _log(
-            f"Schema applied ({table_count} tables, {trigger_count} triggers, "
-            f"{fts5_count} FTS5 mirrors)"
-        )
-
-        # --- Section 3: seed agent_permissions (brief B3 M2 mapping, 13 filas) ---
-        # INSERT OR IGNORE, ordenadas por agent_name. Paridad exacta con el .sh.
-        _perms = [
-            ("clusters", "cloud-troubleshooter"),
-            ("apps", "developer"),
-            ("features", "developer"),
-            ("libraries", "developer"),
-            ("services", "developer"),
-            ("gaia_installations", "gaia-system"),
-            ("integrations", "gaia-system"),
-            ("clusters_defined", "gitops-operator"),
-            ("releases", "gitops-operator"),
-            ("workloads", "gitops-operator"),
-            ("clusters", "platform-architect"),
-            ("tf_live", "platform-architect"),
-            ("tf_modules", "platform-architect"),
-        ]
-        con.executemany(
-            "INSERT OR IGNORE INTO agent_permissions "
-            "(table_name, agent_name, allow_write) VALUES (?, ?, 1)",
-            _perms,
-        )
-        _log("agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)")
-
-        # --- Section 3a: cleanup legacy agent_permissions rows ---
-        con.execute("DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator'")
-
-        # --- Section 3b: seed schema_version baseline (floor) ---
-        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        existing_version = _scalar(
-            con, "SELECT COALESCE(MAX(version), 0) FROM schema_version"
-        )
-        if existing_version == 0:
-            con.execute(
-                "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
-                "VALUES (?, ?, ?)",
-                (
-                    SCHEMA_FLOOR,
-                    now_utc,
-                    f"baseline floor: schema.sql at v{SCHEMA_FLOOR}",
-                ),
-            )
-            _log(f"schema_version baseline seeded at floor (v{SCHEMA_FLOOR})")
-        elif existing_version < SCHEMA_FLOOR:
+        if state == SEALED and ledger < SCHEMA_FLOOR:
             _err(
-                f"ERROR: DB at schema_version={existing_version} is below the "
-                f"supported floor v{SCHEMA_FLOOR}."
+                f"ERROR: DB at schema_version={ledger} is below the supported "
+                f"floor v{SCHEMA_FLOOR}."
             )
             _err(
                 f"In-place upgrade from pre-v{SCHEMA_FLOOR} databases is no longer supported."
@@ -333,231 +388,200 @@ def main() -> int:
                 "then re-run `gaia install`."
             )
             return 1
-        else:
-            _log(
-                f"schema_version at v{existing_version} (>= floor v{SCHEMA_FLOOR}); "
-                "no baseline seed needed"
-            )
 
-        # --- Section 3c: apply pending forward migrations (floor+1 .. EXPECTED) ---
-        expected_version = _read_expected_schema_version()
-        current_version = _scalar(
-            con, "SELECT COALESCE(MAX(version), 0) FROM schema_version"
-        )
-        _log(
-            f"schema_version: current={current_version}, expected={expected_version}"
-        )
-
-        # --- Section 3c.0: schema-DIRECTION guard (drift-free install) ---
-        # bootstrap only ever migrates FORWARD (code newer than DB). The reverse
-        # direction -- a live DB migrated by a NEWER Gaia than the code now being
-        # installed -- was previously unguarded: the `else` branch below logged
-        # "up-to-date" and the install "succeeded", leaving stale code to run
-        # against a newer schema. That is the exact drift that broke
-        # `gaia contract finalize` ("no column named ...") when a stale global CLI
-        # (code v36) ran against a DB migrated to v37. Refuse it: never install
-        # code OLDER than the DB (no clobber). The DB is left untouched (schema.sql
-        # is all CREATE ... IF NOT EXISTS, and no migration or stamp runs past this
-        # point); the remedy is to install a Gaia at least as new as the DB, not to
-        # downgrade the DB.
-        if current_version > expected_version:
+        # Never install code OLDER than the database: stale code reading a
+        # newer schema is the drift that broke `gaia contract finalize`.
+        if ledger > expected:
             _err(
-                f"ERROR: live DB schema_version={current_version} is NEWER than the "
-                f"schema this code expects (v{expected_version})."
+                f"ERROR: live DB schema_version={ledger} is NEWER than the "
+                f"schema this code expects (v{expected})."
             )
             _err(
-                "This Gaia code is OLDER than the database it would run against; "
-                "installing it would leave stale code reading a newer schema "
-                "(the finalize-breaking drift). Refusing to install -- the DB is "
-                "left untouched (no clobber)."
+                "This Gaia code is OLDER than the database it would run against. "
+                "Refusing -- the DB is left untouched (no clobber)."
             )
             _err(
-                f"Install a Gaia whose EXPECTED_SCHEMA_VERSION >= {current_version} "
-                "(the source checkout or release artifact that produced this DB), "
+                f"Install a Gaia whose EXPECTED_SCHEMA_VERSION >= {ledger}, "
                 "then re-run. To validate without changing anything, run `gaia doctor`."
             )
             return 1
 
-        if current_version < expected_version:
-            for n in range(current_version + 1, expected_version + 1):
-                prev = n - 1
-                mig_file = MIG_DIR / f"v{prev}_to_v{n}.sql"
-                if not mig_file.is_file():
-                    _err(f"ERROR: missing migration file {mig_file}")
-                    _err(
-                        f"Cannot advance from v{prev} to v{n}. The ledger will "
-                        f"remain at v{current_version}."
-                    )
-                    _err(
-                        f"When bumping EXPECTED_SCHEMA_VERSION to v{n}, add "
-                        f"scripts/migrations/v{prev}_to_v{n}.sql in the same commit."
-                    )
-                    return 1
-
-                # --- Section 3c.1: data-reachability consent gate ---
-                # Assessed on the file as committed, not on the runner-filtered
-                # copy: the risk being classified is what the source tree will
-                # execute, and the filter only ever neutralises ADD COLUMN lines,
-                # which reach no row either way.
-                verdict = migration_guard.assess(
-                    mig_file.stem,
-                    mig_file.read_text(encoding="utf-8"),
-                    pre_run_census,
+        start = ledger if state == SEALED else SCHEMA_FLOOR
+        _log(f"schema_version: current={ledger}, expected={expected} ({state} database)")
+        chain = _chain(start, expected)
+        for n, mig_file in chain:
+            if not mig_file.is_file():
+                _err(f"ERROR: missing migration file {mig_file}")
+                _err(f"Cannot advance to v{n}. The ledger remains at v{ledger}.")
+                _err(
+                    f"When bumping EXPECTED_SCHEMA_VERSION to v{n}, add "
+                    f"scripts/migrations/v{n - 1}_to_v{n}.sql in the same commit."
                 )
-                if verdict.blocked:
-                    _err(
-                        migration_guard.format_block(
-                            verdict, mig_file, GAIA_DB, current_version
-                        )
-                    )
-                    return 1
-                if verdict.reaches:
-                    _log(
-                        f"migration v{prev}->v{n}: reaches existing data; "
-                        f"applying under {migration_guard.ENV_CONSENT}"
-                    )
+                return 1
 
-                _log(f"migration v{prev}->v{n}: applying {mig_file}")
-                mig_sql = _filter_add_column_idempotent(con, mig_file)
-                # Cada migracion en su propia transaccion (BEGIN/COMMIT), igual
-                # que el .sh. En autocommit, executescript con BEGIN/COMMIT da
-                # atomicidad; si falla, la transaccion se revierte y el ledger
-                # NO avanza.
-                try:
-                    con.executescript(f"BEGIN;\n{mig_sql}\nCOMMIT;")
-                except sqlite3.Error as exc:
-                    try:
-                        con.execute("ROLLBACK")
-                    except sqlite3.Error:
-                        pass
-                    _err(
-                        f"ERROR: migration v{prev}->v{n} failed. Transaction "
-                        f"rolled back. ({exc})"
-                    )
-                    _err(
-                        f"schema_version ledger remains at v{current_version} -- "
-                        f"not stamping v{n}."
-                    )
-                    return 1
-                _log(f"migration v{prev}->v{n}: applied successfully")
-                con.execute(
-                    "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
-                    "VALUES (?, ?, ?)",
-                    (n, now_utc, f"applied migration {mig_file.name}"),
-                )
-        else:
+        if state == SEALED and not chain:
             _log("schema_version up-to-date (no migrations pending)")
-
-        # --- Section 4: registrar workspace actual ---
-        workspace_identity = _resolve_workspace_identity()
-        con.execute(
-            "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
-            (workspace_identity, workspace_identity),
-        )
-        _log(f"Workspace registered (identity={workspace_identity})")
-
-        # --- Section 5: FTS5 backfill (4 mirrors) ---
-        con.executescript(
-            """
-            INSERT INTO projects_fts(rowid, name, role, primary_language)
-            SELECT rowid, name, role, primary_language
-            FROM projects
-            WHERE rowid NOT IN (SELECT rowid FROM projects_fts);
-
-            INSERT INTO apps_fts(rowid, name, description, topic_key)
-            SELECT rowid, name, description, topic_key
-            FROM apps
-            WHERE rowid NOT IN (SELECT rowid FROM apps_fts);
-
-            INSERT INTO services_fts(rowid, name, description, topic_key)
-            SELECT rowid, name, description, topic_key
-            FROM services
-            WHERE rowid NOT IN (SELECT rowid FROM services_fts);
-
-            INSERT INTO briefs_fts(rowid, objective, context, approach)
-            SELECT id, objective, context, approach
-            FROM briefs
-            WHERE id NOT IN (SELECT rowid FROM briefs_fts);
-            """
-        )
-        fts_ok = True
-        for base, mirror in (
-            ("projects", "projects_fts"),
-            ("apps", "apps_fts"),
-            ("services", "services_fts"),
-            ("briefs", "briefs_fts"),
-        ):
-            base_count = _scalar(con, f"SELECT COUNT(*) FROM {base}")
-            mirror_count = _scalar(con, f"SELECT COUNT(*) FROM {mirror}")
-            if base_count != mirror_count:
-                _err(f"  WARN: {base} ({base_count}) != {mirror} ({mirror_count})")
-                fts_ok = False
-        if fts_ok:
-            _log("FTS5 backfilled (4/4 consistency check passed)")
         else:
-            _log("FTS5 backfilled (consistency check WARNING -- ver lineas anteriores)")
+            label = migration_guard.chain_label(start, expected)
+            reaching = [v for v in _assess_chain(chain, census) if v.reaches]
+            if reaching and consent_chain != label:
+                if consent_chain:
+                    _err(
+                        f"consent was given for {consent_chain}, but the pending "
+                        f"chain is {label}."
+                    )
+                _err(migration_guard.format_chain_block(reaching, label, GAIA_DB, ledger))
+                return 1
+            if state != FRESH:
+                _log(f"backup written: {_backup(con, ledger, now)}")
+            if reaching:
+                _log(f"chain {label}: reaches existing data; applying under consent")
+            try:
+                _apply_chain(con, state, start, chain, now_utc)
+            except sqlite3.Error as exc:
+                _err(f"ERROR: migration chain {label} failed and was rolled back. ({exc})")
+                _err(f"schema_version ledger remains at v{ledger}; no object changed.")
+                return 1
+            _log(f"chain {label}: applied and sealed at v{expected}")
 
-        # --- Section 6: invariantes finales ---
-        all_ok = True
-
-        perms_count = _scalar(
-            con, "SELECT COUNT(*) FROM agent_permissions WHERE allow_write IS NOT NULL"
-        )
-        if perms_count >= 13:
-            _log(f"check: agent_permissions rows >= 13 (got {perms_count}) -- PASS")
-        else:
-            _log(f"check: agent_permissions rows >= 13 (got {perms_count}) -- FAIL")
-            all_ok = False
-
-        agent_count = _scalar(
-            con, "SELECT COUNT(DISTINCT agent_name) FROM agent_permissions"
-        )
-        if agent_count >= 5:
-            _log(f"check: distinct agents >= 5 (got {agent_count}) -- PASS")
-        else:
-            _log(f"check: distinct agents >= 5 (got {agent_count}) -- FAIL")
-            all_ok = False
-
-        workspace_count = _scalar(con, "SELECT COUNT(*) FROM workspaces")
-        if workspace_count >= 1:
-            _log(f"check: workspaces rows >= 1 (got {workspace_count}) -- PASS")
-        else:
-            _log(f"check: workspaces rows >= 1 (got {workspace_count}) -- FAIL")
-            all_ok = False
-
-        trigger_fts_count = _scalar(
-            con,
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
-            "AND (name LIKE '%_fts_%' OR name LIKE 'briefs_a%')",
-        )
-        if trigger_fts_count == 12:
-            _log(f"check: FTS5 triggers == 12 (got {trigger_fts_count}) -- PASS")
-        else:
-            _log(f"check: FTS5 triggers == 12 (got {trigger_fts_count}) -- FAIL")
-            all_ok = False
-
-        schema_ver = _scalar(
-            con, "SELECT COALESCE(MAX(version), 0) FROM schema_version"
-        )
-        if schema_ver >= SCHEMA_FLOOR:
-            _log(
-                f"check: schema_version >= floor v{SCHEMA_FLOOR} (got {schema_ver}) -- PASS"
-            )
-        else:
-            _log(
-                f"check: schema_version >= floor v{SCHEMA_FLOOR} (got {schema_ver}) -- FAIL"
-            )
-            all_ok = False
-
-        # --- Section 7: resumen ---
-        if all_ok:
-            _log(f"Done. DB at {GAIA_DB} ready for `gaia` CLI operations.")
-            return 0
-        _err("Done WITH FAILURES. Revisa los checks marcados FAIL arriba.")
-        return 1
+        return _seed_and_check(con)
     finally:
         con.close()
 
 
+def _seed_and_check(con: sqlite3.Connection) -> int:
+    """Idempotent seeds and invariants that follow a current schema."""
+    _perms = [
+        ("clusters", "cloud-troubleshooter"),
+        ("apps", "developer"),
+        ("features", "developer"),
+        ("libraries", "developer"),
+        ("services", "developer"),
+        ("gaia_installations", "gaia-system"),
+        ("integrations", "gaia-system"),
+        ("clusters_defined", "gitops-operator"),
+        ("releases", "gitops-operator"),
+        ("workloads", "gitops-operator"),
+        ("clusters", "platform-architect"),
+        ("tf_live", "platform-architect"),
+        ("tf_modules", "platform-architect"),
+    ]
+    con.executemany(
+        "INSERT OR IGNORE INTO agent_permissions "
+        "(table_name, agent_name, allow_write) VALUES (?, ?, 1)",
+        _perms,
+    )
+    _log("agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)")
+    con.execute("DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator'")
+
+    workspace_identity = _resolve_workspace_identity()
+    con.execute(
+        "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
+        (workspace_identity, workspace_identity),
+    )
+    _log(f"Workspace registered (identity={workspace_identity})")
+
+    con.executescript(
+        """
+        INSERT INTO projects_fts(rowid, name, role, primary_language)
+        SELECT rowid, name, role, primary_language
+        FROM projects
+        WHERE rowid NOT IN (SELECT rowid FROM projects_fts);
+
+        INSERT INTO apps_fts(rowid, name, description, topic_key)
+        SELECT rowid, name, description, topic_key
+        FROM apps
+        WHERE rowid NOT IN (SELECT rowid FROM apps_fts);
+
+        INSERT INTO services_fts(rowid, name, description, topic_key)
+        SELECT rowid, name, description, topic_key
+        FROM services
+        WHERE rowid NOT IN (SELECT rowid FROM services_fts);
+
+        INSERT INTO briefs_fts(rowid, objective, context, approach)
+        SELECT id, objective, context, approach
+        FROM briefs
+        WHERE id NOT IN (SELECT rowid FROM briefs_fts);
+        """
+    )
+    fts_ok = True
+    for base, mirror in (
+        ("projects", "projects_fts"),
+        ("apps", "apps_fts"),
+        ("services", "services_fts"),
+        ("briefs", "briefs_fts"),
+    ):
+        base_count = _scalar(con, f"SELECT COUNT(*) FROM {base}")
+        mirror_count = _scalar(con, f"SELECT COUNT(*) FROM {mirror}")
+        if base_count != mirror_count:
+            _err(f"  WARN: {base} ({base_count}) != {mirror} ({mirror_count})")
+            fts_ok = False
+    _log(
+        "FTS5 backfilled (4/4 consistency check passed)"
+        if fts_ok
+        else "FTS5 backfilled (consistency check WARNING -- ver lineas anteriores)"
+    )
+
+    checks = (
+        ("agent_permissions rows >= 13",
+         _scalar(con, "SELECT COUNT(*) FROM agent_permissions WHERE allow_write IS NOT NULL"),
+         lambda v: v >= 13),
+        ("distinct agents >= 5",
+         _scalar(con, "SELECT COUNT(DISTINCT agent_name) FROM agent_permissions"),
+         lambda v: v >= 5),
+        ("workspaces rows >= 1",
+         _scalar(con, "SELECT COUNT(*) FROM workspaces"),
+         lambda v: v >= 1),
+        ("FTS5 triggers == 12",
+         _scalar(
+             con,
+             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+             "AND (name LIKE '%_fts_%' OR name LIKE 'briefs_a%')",
+         ),
+         lambda v: v == 12),
+        (f"schema_version >= floor v{SCHEMA_FLOOR}",
+         _ledger_version(con),
+         lambda v: v >= SCHEMA_FLOOR),
+    )
+    all_ok = True
+    for label, value, ok in checks:
+        passed = ok(value)
+        all_ok = all_ok and passed
+        _log(f"check: {label} (got {value}) -- {'PASS' if passed else 'FAIL'}")
+
+    if all_ok:
+        _log(f"Done. DB at {GAIA_DB} ready for `gaia` CLI operations.")
+        return 0
+    _err("Done WITH FAILURES. Revisa los checks marcados FAIL arriba.")
+    return 1
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="bootstrap_database.py",
+        description="Migration engine behind `gaia migrate` (plan / apply).",
+    )
+    parser.add_argument(
+        "--plan", action="store_true", help="print the pending chain; write nothing"
+    )
+    parser.add_argument(
+        migration_guard.CONSENT_FLAG,
+        dest="consent_chain",
+        metavar="vA..vB",
+        help="consent, once, to a chain that reaches existing data",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the engine. ``argv`` defaults to no arguments (apply, no consent),
+    so an in-process caller never inherits its host's command line."""
+    args = _parse_args(argv or [])
+    expected = _read_expected_schema_version()
+    if args.plan:
+        return _plan(expected)
+    return _apply(expected, args.consent_chain)
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
