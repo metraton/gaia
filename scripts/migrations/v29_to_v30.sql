@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v29 -> v30: add the scheduled-task DESIRED-STATE registry.
 --
 -- Moves recurring headless tasks out of a single machine's crontab and into

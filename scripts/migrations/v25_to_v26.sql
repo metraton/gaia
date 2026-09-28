@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v25 -> v26: scan-v2 SV3 memory-resilience foundation.
 --
 -- SV3 blinds the four memory-loss vectors identified in the decision

@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v47 -> v48: usage telemetry columns on curated memory rows, plus
 -- the memory_au FTS re-index trigger recreated with a WHEN clause so the new
 -- telemetry columns cannot amplify write-per-read on the search index.

@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v36 -> v37: born-at-dispatch foundation on agent_contract_handoffs
 -- (plan 34 / brief 114, task 3 "cimiento del rediseno del contrato").
 --

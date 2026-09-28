@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v23 -> v24: add the scanner-owned `project_facets` table (M3/T8, AC-6).
 --
 -- Persists the per-project stack fingerprint (languages, frameworks with

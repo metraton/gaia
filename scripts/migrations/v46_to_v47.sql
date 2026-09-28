@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v46 -> v47: time-bounded suspension of scheduled tasks.
 --
 -- WHAT CHANGES

@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v20 -> v21: add hard-terminal 'descoped' status to
 -- acceptance_criteria.status.
 --

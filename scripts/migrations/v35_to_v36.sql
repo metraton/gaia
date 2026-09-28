@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v35 -> v36: add a DB CHECK constraint on task_gates.status,
 -- closing the documented asymmetry from gaia.state.VALID_GATE_STATUSES /
 -- STATE_MACHINE_REGISTRY -- the ("task_gates", "status") entry previously had

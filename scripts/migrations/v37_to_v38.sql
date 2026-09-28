@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v37 -> v38: index the plan-task binding on agent_contract_handoffs.
 --
 -- WHAT CHANGES

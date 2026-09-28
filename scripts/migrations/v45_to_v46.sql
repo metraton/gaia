@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v45 -> v46: the continuation link on agent_contract_handoffs.
 --
 -- WHAT CHANGES

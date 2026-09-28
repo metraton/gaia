@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v24 -> v25: scan-v2 SV1 schema foundation -- provenance +
 -- memory-de-project anchor.
 --

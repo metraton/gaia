@@ -76,9 +76,11 @@ absent):
 5. **DB schema** (`~/.gaia/gaia.db`) -- `gaia doctor` check `Schema version`
    reports BOTH directions: code AHEAD of DB (forward migration pending -> run
    `gaia migrate plan`, then `gaia migrate apply`) and code BEHIND DB (the
-   reverse drift: the store refuses every write with `SchemaAheadError` while
-   reads keep working, and the bootstrap direction guard refuses to install --
-   install newer code, never downgrade the DB). SessionStart names the same
+   reverse drift: while the DB's `schema_version.min_code_version` is at or
+   below the code's version the store keeps writing with a notice; past it, or
+   with no minimum recorded, the store refuses every write with
+   `SchemaAheadError` while reads keep working and `gaia migrate apply` refuses
+   -- install newer code, never downgrade the DB). SessionStart names the same
    fix in a `## Database schema` block whenever the two disagree.
 
 The reconcile is idempotent in all 3 cases (not installed / stale / aligned):

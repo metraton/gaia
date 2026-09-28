@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v53 -> v54: per-grant history of the host tool calls that reserved.
 --
 -- A retry must be a different host tool call than the one that was blocked.

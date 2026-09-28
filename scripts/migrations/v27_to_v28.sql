@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v27 -> v28: add `contract_id` idempotency key to
 -- agent_contract_handoffs (brief: contract-as-managed-data-agent-contract-
 -- handoff-agnostico-por-cli, task T7).
