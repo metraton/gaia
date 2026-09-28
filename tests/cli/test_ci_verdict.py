@@ -1,4 +1,4 @@
-"""scripts/ci_verdict.py decides whether a commit can reuse an earlier green CI verdict.
+""".github/scripts/ci_verdict.py decides whether a commit can reuse an earlier green CI verdict.
 
 The GitHub API is replaced by a routing table, so every case below is the
 helper's own decision over a fixed repository history.
@@ -16,7 +16,7 @@ REPO = "metraton/gaia"
 
 def _load_helper():
     spec = importlib.util.spec_from_file_location(
-        "_gaia_ci_verdict", PROJECT_ROOT / "scripts" / "ci_verdict.py"
+        "_gaia_ci_verdict", PROJECT_ROOT / ".github" / "scripts" / "ci_verdict.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Each tree is tested once. scripts/ci_verdict.py looks for an earlier green
+  # Each tree is tested once. .github/scripts/ci_verdict.py looks for an earlier green
   # "CI verdict" on this commit, on another commit with its tree (the squash of
   # a PR head), or on its parent when only version sources changed; when one
   # exists the pytest shards are skipped and the verdict cites that run. The
@@ -49,7 +49,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           status=0
-          python3 scripts/ci_verdict.py "$HEAD_SHA" --github-output "$GITHUB_OUTPUT" || status=$?
+          python3 .github/scripts/ci_verdict.py "$HEAD_SHA" --github-output "$GITHUB_OUTPUT" || status=$?
           test "$status" -le 2
 
   # The layer-1 suite split across four runners by pytest-split, each shard
