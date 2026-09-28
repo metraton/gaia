@@ -2,7 +2,11 @@
 gaia cleanup -- Remove Gaia's workspace footprint and apply data retention.
 
 The full-cleanup footprint mirrors what `gaia install` writes, in reverse:
-  - CLAUDE.md and .claude/settings.json (removed outright -- Gaia-owned)
+  - CLAUDE.md and .claude/settings.json (removed only when Gaia authored them:
+    the install manifest, .claude/gaia-manifest.json, records Gaia creating
+    them and they hold nothing of the user's; without a manifest, only a
+    settings.json holding nothing but Gaia hook registrations. A file the user
+    wrote is kept byte for byte.)
   - .claude/ symlinks incl. skills (removed -- Gaia-owned)
   - .claude/.plugin-initialized marker (removed -- Gaia-owned)
   - .claude/plugin-registry.json (surgical: only Gaia's installed[] entry is
@@ -671,22 +675,52 @@ SYMLINKS_TO_REMOVE = [
 ]
 
 
-def _remove_claude_md(root: Path, dry_run: bool) -> dict:
-    path = root / "CLAUDE.md"
+def _gaia_authored(root: Path, rel: str) -> bool:
+    """True when the file at *rel* is Gaia's to remove: Gaia created it and it holds nothing of the user's.
+
+    With a manifest, the file goes only when reverting the manifest leaves it
+    absent -- created by install and not edited since, or a JSON file whose
+    user-added keys revert to nothing. Without one, only a settings.json
+    holding nothing but Gaia hook registrations (``_strip_gaia_hooks``) is
+    claimed; CLAUDE.md is never claimed, as manifest adoption never claims it.
+    """
+    from cli import _manifest  # noqa: PLC0415 -- _manifest imports this module lazily
+
+    manifest = _manifest.load(root)
+    if manifest is not None:
+        target = _manifest.revert_states(_manifest.capture(root), manifest["entries"])
+        return target.get(rel, {}).get("type") == "absent"
+    if rel != ".claude/settings.json":
+        return False
+    data = _read_json_file(root / rel)
+    if not isinstance(data, dict):
+        return False
+    remainder = copy.deepcopy(data)
+    hooks = remainder.get("hooks")
+    if isinstance(hooks, dict):
+        _strip_gaia_hooks(hooks, root)
+        if not hooks:
+            del remainder["hooks"]
+    return remainder == {}
+
+
+def _remove_if_gaia_authored(root: Path, rel: str, dry_run: bool) -> dict:
+    path = root / rel
     if not path.exists():
         return {"found": False}
+    if not _gaia_authored(root, rel):
+        return {"found": True, "removed": False, "preserved": True, "dry_run": dry_run}
     if not dry_run:
         path.unlink()
     return {"found": True, "removed": not dry_run, "dry_run": dry_run}
+
+
+def _remove_claude_md(root: Path, dry_run: bool) -> dict:
+    return _remove_if_gaia_authored(root, "CLAUDE.md", dry_run)
 
 
 def _remove_settings_json(root: Path, dry_run: bool) -> dict:
-    path = root / ".claude" / "settings.json"
-    if not path.exists():
-        return {"found": False}
-    if not dry_run:
-        path.unlink()
-    return {"found": True, "removed": not dry_run, "dry_run": dry_run}
+    return _remove_if_gaia_authored(root, ".claude/settings.json", dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -1113,11 +1147,14 @@ def register(subparsers):
     """Register the 'cleanup' subcommand."""
     p = subparsers.add_parser(
         "cleanup",
-        help="Remove CLAUDE.md, settings.json, symlinks and apply data retention policy",
+        help="Remove Gaia's workspace footprint and apply data retention policy",
         description=(
             "Cleanup gaia installation files and apply data retention policy.\n"
             "\n"
-            "Default mode: removes CLAUDE.md, settings.json, symlinks, then runs retention.\n"
+            "Default mode: removes Gaia's symlinks and markers, then runs retention.\n"
+            "CLAUDE.md and .claude/settings.json are removed only when Gaia created\n"
+            "them (per .claude/gaia-manifest.json, or without a manifest a settings.json\n"
+            "holding only Gaia hooks); a file you wrote is kept byte for byte.\n"
             "--prune / --retain: run data retention only (no file/symlink removal).\n"
             "--dry-run: print what would change without modifying anything.\n"
         ),
@@ -1271,12 +1308,12 @@ def cmd_cleanup(args) -> int:
             or retention_actions
         )
 
-        if claude_md.get("found"):
-            verb = "Would remove" if dry_run else "Removed"
-            print(f"  {verb}: CLAUDE.md")
-        if settings.get("found"):
-            verb = "Would remove" if dry_run else "Removed"
-            print(f"  {verb}: .claude/settings.json")
+        for rel, outcome in (("CLAUDE.md", claude_md), (".claude/settings.json", settings)):
+            if outcome.get("preserved"):
+                print(f"  Kept (not created by Gaia): {rel}")
+            elif outcome.get("found"):
+                verb = "Would remove" if dry_run else "Removed"
+                print(f"  {verb}: {rel}")
         if settings_local.get("found"):
             verb = "Would clean" if dry_run else "Cleaned"
             fields = ", ".join(settings_local.get("removed_fields", []))
