@@ -29,7 +29,9 @@ _MIGRATIONS = _REPO_ROOT / "scripts" / "migrations"
 _FIXTURES = _REPO_ROOT / "tests" / "fixtures" / "published_bases"
 
 sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+sys.path.insert(0, str(_FIXTURES))
 import migration_guard  # noqa: E402
+from loader import load_base  # noqa: E402
 
 BASES = (21, 26, 33, 37, 51, 57)
 
@@ -37,12 +39,6 @@ BASES = (21, 26, 33, 37, 51, 57)
 def _expected_version() -> int:
     text = (_REPO_ROOT / "bin" / "cli" / "doctor.py").read_text(encoding="utf-8")
     return int(re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", text, re.M).group(1))
-
-
-def load_base(version: int, db: Path) -> None:
-    con = sqlite3.connect(db)
-    con.executescript((_FIXTURES / f"v{version}.sql").read_text(encoding="utf-8"))
-    con.close()
 
 
 def _gaia(tmp: Path, db: Path, *args: str) -> subprocess.CompletedProcess:
@@ -128,6 +124,8 @@ def test_published_base_upgrades_through_gaia_migrate(base, tmp_path, fresh_obje
         consents_asked += 1
         applied = _gaia(tmp_path, db, "apply", "--consent-chain", label)
     assert applied.returncode == 0, applied.stdout + applied.stderr
+    # Printed so `pytest -s` shows the chain and the consent count per base.
+    print(f"\n--- v{base}: consents asked = {consents_asked}\n{plan.stdout}")
 
     assert consents_asked == (1 if _chain_reaches_data_from_backup(tmp_path, base, expected) else 0)
 

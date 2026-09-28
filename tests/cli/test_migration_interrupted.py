@@ -30,6 +30,9 @@ _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _FIXTURES = _REPO_ROOT / "tests" / "fixtures" / "published_bases"
 _BASE = 51
 
+sys.path.insert(0, str(_FIXTURES))
+from loader import load_base  # noqa: E402
+
 
 def _expected_version() -> int:
     text = (_REPO_ROOT / "bin" / "cli" / "doctor.py").read_text(encoding="utf-8")
@@ -54,9 +57,7 @@ def _stage(tmp: Path) -> Path:
 
 def _live(tmp: Path) -> Path:
     db = tmp / "gaia.db"
-    con = sqlite3.connect(db)
-    con.executescript((_FIXTURES / f"v{_BASE}.sql").read_text(encoding="utf-8"))
-    con.close()
+    load_base(_BASE, db)
     return db
 
 
