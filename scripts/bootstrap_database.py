@@ -33,7 +33,9 @@ names that exact chain (D68: one consent for the whole chain).
 Configuration:
   - GAIA_DB    -- path of the DB. Default ~/.gaia/gaia.db.
   - SCHEMA_FILE-- override of schema.sql. Default <repo>/gaia/store/schema.sql.
-  - WORKSPACE  -- workspace whose identity is registered. Default = repo root.
+  - WORKSPACE  -- workspace whose identity is registered. Unset = none: the
+                  package folder is never a workspace; `gaia install` registers
+                  the folder it ran in through its first scan.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ SCHEMA_FILE = Path(
     or (_SCRIPT_DIR.parent / "gaia" / "store" / "schema.sql")
 ).expanduser()
 
-WORKSPACE = Path(os.environ.get("WORKSPACE") or _SCRIPT_DIR.parent).expanduser()
+WORKSPACE = Path(os.environ["WORKSPACE"]).expanduser() if os.environ.get("WORKSPACE") else None
 
 MIG_DIR = _SCRIPT_DIR / "migrations"
 DOCTOR_PY = _SCRIPT_DIR.parent / "bin" / "cli" / "doctor.py"
@@ -421,7 +423,7 @@ def _apply(expected: int, consent_chain: str | None) -> int:
 
     _log(f"Initializing Gaia DB at {GAIA_DB}")
     _log(f"Using schema:  {SCHEMA_FILE}")
-    _log(f"Using workspace: {WORKSPACE}")
+    _log(f"Using workspace: {WORKSPACE or '(none registered)'}")
 
     now = datetime.now(timezone.utc)
     now_utc = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -539,12 +541,13 @@ def _seed_and_check(con: sqlite3.Connection) -> int:
     _log("agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)")
     con.execute("DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator'")
 
-    workspace_identity = _resolve_workspace_identity()
-    con.execute(
-        "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
-        (workspace_identity, workspace_identity),
-    )
-    _log(f"Workspace registered (identity={workspace_identity})")
+    if WORKSPACE is not None:
+        workspace_identity = _resolve_workspace_identity()
+        con.execute(
+            "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
+            (workspace_identity, workspace_identity),
+        )
+        _log(f"Workspace registered (identity={workspace_identity})")
 
     con.executescript(
         """
@@ -594,9 +597,6 @@ def _seed_and_check(con: sqlite3.Connection) -> int:
         ("distinct agents >= 5",
          _scalar(con, "SELECT COUNT(DISTINCT agent_name) FROM agent_permissions"),
          lambda v: v >= 5),
-        ("workspaces rows >= 1",
-         _scalar(con, "SELECT COUNT(*) FROM workspaces"),
-         lambda v: v >= 1),
         ("FTS5 triggers == 12",
          _scalar(
              con,

@@ -79,6 +79,10 @@ def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path)
 def ensure_workspace_hooks_link() -> None:
     """Create or repair <workspace>/.claude/hooks → the FRESHEST gaia hooks dir.
 
+    <workspace> is the installed root containing the cwd
+    (``gaia.install_root.installed_root``), so a session opened in a subfolder
+    repairs the installed link instead of seeding a ``.claude`` of its own.
+
     Never raises. All failures are logged as warnings so that a broken
     workspace layout never prevents the hook from running its real logic.
 
@@ -96,7 +100,9 @@ def ensure_workspace_hooks_link() -> None:
         # of the EXECUTING copy (may be a stale installed extraction).
         cache_hooks_dir = Path(__file__).resolve().parent.parent.parent
 
-        workspace = Path.cwd()
+        from gaia.install_root import installed_root
+
+        workspace = installed_root()
         workspace_hooks_dir = workspace / ".claude" / "hooks"
 
         # Prefer the top-level installed package's hooks dir when it is at

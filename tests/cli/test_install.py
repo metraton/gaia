@@ -13,8 +13,8 @@ Parity coverage (cmd_install vs gaia-update.js fresh-install path):
   - manage_symlinks               -- exercised + verified call order
   - register_plugin               -- exercised + verified call order
 
-Scanning is decoupled from install: cmd_install never triggers a scan (the
-former Step 7 / _maybe_run_fresh_scan path is removed).
+The first scan install runs (gaia.install_root.first_scan) is covered by
+tests/cli/test_install_first_scan.py.
 """
 
 import argparse

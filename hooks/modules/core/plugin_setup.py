@@ -308,7 +308,9 @@ def setup_project_permissions() -> bool:
 
     Returns True if settings were modified (reload needed).
     """
-    claude_dir = Path.cwd() / ".claude"
+    from gaia.install_root import installed_root
+
+    claude_dir = installed_root() / ".claude"
     settings_path = claude_dir / "settings.local.json"
 
     our_perms = PERMISSIONS
@@ -677,7 +679,7 @@ def _installed_under_node_modules() -> bool:
 
 
 def _sync_workspace_hooks() -> bool:
-    """Bring the cwd workspace's hook registration in line with this launch.
+    """Bring the installed workspace's hook registration in line with this launch.
 
     Any launch that is neither plugin nor npm writes nothing. That includes
     the workspace-registered copy an earlier plugin version left behind,
@@ -685,7 +687,9 @@ def _sync_workspace_hooks() -> bool:
     without ``CLAUDE_PLUGIN_ROOT``: merging from there would undo the
     plugin's cleanup on every event. Returns True if settings changed.
     """
-    workspace = Path.cwd()
+    from gaia.install_root import installed_root
+
+    workspace = installed_root()
     channel = resolve_hook_channel(workspace, npm_copy=_installed_under_node_modules())
     if channel is None:
         return False

@@ -35,9 +35,11 @@ Responsibilities (in order):
   6. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`
      (the single unified plugin registry identity).
 
-Scanning is intentionally NOT part of install. `gaia scan` is a separate,
-standalone module (bin/cli/scan.py + tools/scan/**) the user runs on demand;
-install never triggers it.
+  7. First scan (`gaia.install_root.first_scan`): the workspace is the folder
+     install ran in, registered under its basename with that folder as its
+     root, and the repos beneath it are indexed. A root already recorded is
+     left alone -- re-indexing is `gaia scan` -- and repos inside another
+     workspace's recorded root stay with that workspace. Non-fatal.
 
 Idempotent: re-running over a populated workspace + DB never destroys
 state -- bootstrap.sh uses IF NOT EXISTS / INSERT OR IGNORE, the helpers
@@ -923,6 +925,18 @@ def _seed_surface_routing(db_path: str | None, quiet: bool) -> dict:
     return {"action": "created", "details": summary}
 
 
+def _first_scan(workspace: Path, db_path: str | None) -> dict:
+    """Register and scan *workspace* once; a failure is reported, never fatal."""
+    from gaia.install_root import first_scan
+
+    try:
+        return first_scan(
+            workspace, database=Path(db_path).expanduser().resolve() if db_path else None
+        )
+    except Exception as exc:
+        return {"action": "error", "details": f"{type(exc).__name__}: {exc}"}
+
+
 def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
     """Build a short detail string for the install-error marker.
 
@@ -1177,6 +1191,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "A chain that reaches existing rows stops here and names the\n"
             "`gaia migrate apply --consent-chain vA..vB` command that continues.\n"
             "\n"
+            "The workspace is the folder install runs in (or --workspace): the\n"
+            "first install registers it under its folder name and scans the\n"
+            "repos beneath it. Later runs leave it to `gaia scan`.\n"
+            "\n"
             "There is no npm postinstall hook -- bootstrap is lazy, triggered\n"
             "by the first `gaia` CLI invocation. Typically called by:\n"
             "  - the user, manually, to re-bootstrap the DB or workspace\n"
@@ -1415,9 +1433,15 @@ def cmd_install(args: argparse.Namespace) -> int:
         verbose=verbose,
     )
 
-    # Install owns Steps 1-6 only. Workspace scanning is a separate, on-demand
-    # flow (`gaia scan`); install never triggers it. A clean install clears any
-    # stale install-error marker left by a prior failed bootstrap attempt.
+    _report_step(
+        name="first scan",
+        result=_first_scan(workspace, db_path),
+        quiet=quiet,
+        verbose=verbose,
+    )
+
+    # A clean install clears any stale install-error marker left by a prior
+    # failed bootstrap attempt.
     _clear_install_error_marker()
 
     _print_next_steps(quiet=quiet, postinstall=postinstall, hosts=wired)

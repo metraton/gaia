@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SessionStart hook — first-time setup + context injection (no auto-scan)."""
+"""SessionStart hook — first-time setup, the plugin's first scan, context injection."""
 
 import os
 import sys
@@ -274,18 +274,24 @@ if __name__ == "__main__":
         # The plugin channel never runs `gaia install`, so this is where its
         # database is migrated and its seeds re-run. Ordered before the
         # manifest so the schema block below reads the migrated state.
+        from gaia.install_root import installed_root, registered_roots, start_first_scan
+        workspace_root = installed_root()
         upgrade_notice = ""
         try:
             from modules.session.plugin_upgrade import reconcile_plugin_install
-            upgrade_notice = reconcile_plugin_install(Path.cwd())
+            upgrade_notice = reconcile_plugin_install(workspace_root)
         except Exception as _upgrade_exc:
             logger.warning("plugin upgrade check failed (non-fatal): %s", _upgrade_exc)
             upgrade_notice = f"Gaia could not check its database at session start: {_upgrade_exc}"
 
-        # Note: SessionStart no longer triggers an automatic project scan.
-        # Scanning is a separate, on-demand flow (`gaia scan`). Project context
-        # injection (below, via build_session_context) is unaffected -- it reads
-        # whatever the DB already holds, it does not scan.
+        # The plugin channel never runs `gaia install`, so its first session
+        # is where the installed folder gets its first scan. Detached: a scan
+        # of a large workspace must not hold the session open.
+        if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip() and workspace_root not in registered_roots():
+            try:
+                start_first_scan(workspace_root)
+            except Exception as _scan_exc:
+                logger.warning("first scan could not start (non-fatal): %s", _scan_exc)
 
         # Build the SessionStart manifest (Phase 4). Combines the Environment
         # block, projects index, contract index, and workspace memory into
