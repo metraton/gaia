@@ -136,7 +136,7 @@ def healthy_project(tmp_path):
     for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
               "session_start.py", "session_end_hook.py", "subagent_stop.py",
               "subagent_start.py", "stop_hook.py", "task_completed.py",
-              "pre_compact.py", "post_compact.py",
+              "pre_compact.py", "post_compact.py", "launch.sh",
               *(p.name for p in (REPO_ROOT / "hooks").glob("*.py"))]:
         (hooks_dir / h).write_text("# hook stub")
 

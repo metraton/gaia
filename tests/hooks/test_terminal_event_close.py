@@ -254,7 +254,10 @@ def test_terminal_event_close_hooks_json_registers_bash_failure_from_the_manifes
     hooks = json.loads((_REPO_ROOT / "hooks" / "hooks.json").read_text())["hooks"]
     assert hooks.get("PostToolUseFailure") == [{
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"}],
+        "hooks": [{
+            "type": "command",
+            "command": 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"',
+        }],
     }]
 
     build_plugin = _load_build_plugin()
