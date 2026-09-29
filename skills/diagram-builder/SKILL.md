@@ -143,8 +143,8 @@ Read an existing deck's `data/` first.
 3. **Draw the sketch before any YAML exists.** Draw it in ASCII, one mark per
    piece; do not narrate it. The person answers "yes", "like this" or "change
    X", and none of those answers needs a field name. How to draw it and how to
-   teach it without overloading the person is the conversation moment, which
-   comes in its own reference.
+   teach it without overloading the person is the conversation moment, in
+   [conversation.md](conversation.md).
 4. **Ask where the deck lives** before anything is saved.
 5. **Hand off to a subagent** with [build.md](build.md). Give it the agreed
    sketch and the values each piece carries, not field names. It returns the
@@ -152,7 +152,7 @@ Read an existing deck's `data/` first.
 6. **Read the census against the sketch.** Check the number of sections, how
    they nest, their widths, their colours and each chip's members. Name every
    difference before the person sees the deck. How to read it closely is the
-   review moment, which comes in its own reference.
+   review moment, in [review.md](review.md).
 7. **The person looks.** They open the deck and judge whether it says what they
    meant.
 8. **Offer the video last, as an option.** It is made from this deck only.
@@ -204,6 +204,10 @@ check the other.
 
 ## Where the rest lives
 
+- [conversation.md](conversation.md): for you, facing the person. The story in
+  one sentence, the sketch and its marks, the reading rules, the handoff.
+- [review.md](review.md): for you, after the build. The census read against the
+  sketch in four classes, and how each difference is named.
 - [build.md](build.md): for the subagent. It covers the build lane, the census,
   the vocabulary and every field, the per-form skeletons, the tokens, the
   engine's behaviour, and every check `model` runs.
