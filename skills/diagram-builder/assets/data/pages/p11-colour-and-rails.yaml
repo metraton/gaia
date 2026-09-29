@@ -1,7 +1,7 @@
 # COLOUR AND RAILS — "colour earns its place when it names an actor."
 #
-# A FEATURE page, not a principle: it exercises what the principle pages leave
-# unused. A LEAD band states the page's claim; a LEGEND band gives each of the
+# A DATA page: how a hue value you write fills the look. A LEAD band states
+# the page's claim; a LEGEND band gives each of the
 # four categorical hues one actor, so a hue means the same box on every page
 # that uses it; a column of RAILS draws a tree by `indent`, each level in its
 # own hue and all of them one chip; and a `middle` section of `copy` boxes holds
@@ -20,8 +20,8 @@ filters:
   - key: tree
     label: "Which rails draw the tree?"
     steps:
-      - "Four rails, one per level of the dialect, each inset one <code>indent</code> step deeper than its parent."
-      - "The indent moves the drawn frame, not the cell, so every cell gate still measures a full track."
+      - "Four rails, one per level of the deck, each inset one <code>indent</code> step deeper than its parent, each in its own hue."
+      - "The indent value moves the drawn frame, not the cell, so the tree reads by depth while every rail keeps its whole cell."
 
 sections:
 
@@ -46,35 +46,35 @@ sections:
         order: 1
         variant: blue
         kicker: "BLUE"
-        title: "The author"
+        title: "The writer"
         description:
-          - "writes the YAML"
-        detail: "The four categorical hues carry no risk or state, so they are free to name peers. Here each one names an ACTOR of the build loop, and a deck that uses the same hue for the same actor on every page lets the reader recognise it before reading a word."
+          - "writes the first draft"
+        detail: "The four categorical hues carry no risk or state, so they are free to name peers. Here each one names an ACTOR of a publishing story: write <code>variant: blue</code> on the writer's box on every page, and the reader recognises the writer before reading a word."
       - id: p11-violet
         order: 2
         variant: violet
         kicker: "VIOLET"
-        title: "The build"
+        title: "The editor"
         description:
-          - "refuses unknown fields"
-        detail: "<code>npm run build</code> is the strict schema: every field is on a whitelist and every closed value on an enum, so a typo fails loudly instead of rendering nothing."
+          - "cuts what is not needed"
+        detail: "The value is the whole instruction: <code>variant: violet</code> and the box takes the deck's violet. Change the palette and every violet box changes with it, together, so the editor still reads as one actor."
       - id: p11-gold
         order: 3
         variant: gold
         kicker: "GOLD"
-        title: "The model"
+        title: "The reviewer"
         description:
-          - "proves the layout closes"
-        detail: "<code>npm run model</code> is arithmetic over the authored YAML: it proves the layout closes, with no browser. It is a member of the deck's core chip."
+          - "a gate: approves or returns"
+        detail: "One hue, one actor. If gold meant the reviewer here and the budget on the next page, the colour would stop naming anything. The reviewer is a gate, so the deck's core chip lights this box."
         filters: [gate]
       - id: p11-clay
         order: 4
         variant: clay
         kicker: "CLAY"
-        title: "The census"
+        title: "The publisher"
         description:
-          - "states what each page is"
-        detail: "<code>npm run census</code> states what each page holds (sections, nesting, widths, colours, chip members) so the person reads it against the sketch. Whether the page says the right thing is their eye's call, never a script's. It is a member of the deck's core chip."
+          - "a gate: lets it go out"
+        detail: "A hue is data, not paint: the same value on the same actor is what keeps this legend true on every page. The publisher is the second gate the deck's core chip lights."
         filters: [gate]
 
   - id: p11-tree

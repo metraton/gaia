@@ -99,62 +99,62 @@ sections:
       - id: p3-a-anchor
         order: 1
         rowspan: 2
-        kicker: BIG IDEA
-        title: "The big one first"
+        kicker: FIRST
+        title: "The step all need"
         description:
-          - "a large idea comes first"
-          - "so its company can follow"
-        detail: "When one idea is large and others belong beside it, tell the large one first and its companions right after. The page fills forward in the order you told it, so the companions land beside the large idea."
+          - "one step comes first"
+          - "because the rest rely on it"
+        detail: "Ideas come in order when each one needs another to have happened. Find the step every other step relies on and tell it first; it stands taller because the steps after it all lean on it."
         variant: accent
       - id: p3-a-beside-1
         order: 2
-        kicker: BESIDE
-        title: "Beside it"
+        kicker: THEN
+        title: "What it enables"
         description:
-          - "told second, so it sits"
-          - "next to the big idea"
-        detail: "Nothing here says 'put this on the right'. It sits beside the big idea because it comes second in the story: where a thing lands is a consequence of when you tell it."
+          - "second, because it needs"
+          - "the first step done"
+        detail: "Ask of each idea: what must already be true before it can happen? The idea that makes it true comes before it. That question, not taste, decides the order."
         variant: neutral
       - id: p3-a-beside-2
         order: 3
-        kicker: BESIDE
-        title: "And beside that"
+        kicker: THEN
+        title: "What follows"
         description:
-          - "the row is full, so the"
-          - "next idea goes below"
-        detail: "When the row is full, the next idea continues on the row below, still beside the big idea, which is taller than one row."
+          - "each step needs the one"
+          - "before it, not a later one"
+        detail: "If two ideas could happen in either order, they are not a sequence: they go together, side by side, and belong to the page about what goes together."
         variant: neutral
       - id: p3-a-under-1
         order: 4
-        kicker: FORWARD
-        title: "Under, not back"
+        kicker: IN ORDER
+        title: "One direction"
         description:
-          - "the story never goes back"
-          - "to fill an earlier gap"
-        detail: "The reading moves forward only. An idea told later never jumps back into a gap left earlier, which is why what belongs beside something must be told before what comes after it."
+          - "the reader walks forward"
+          - "and never has to go back"
+        detail: "A sequence reads in one direction. If the reader must jump back to understand a step, that step is out of order: move it to where what it needs has already been told."
         variant: neutral
       - id: p3-a-under-2
         order: 5
-        kicker: FORWARD
-        title: "The block closes"
+        kicker: IN ORDER
+        title: "The run ends"
         description:
-          - "fifth in the story, and the"
-          - "big idea's company is full"
-        detail: "With this idea the big one's company is complete: it and its four companions fill the block together. Had any of them been told after the line below, it could not have joined them."
+          - "the last of the steps"
+          - "that rely on the first"
+        detail: "The steps that rely on the first one end here. Whatever comes next does not need them; it only comes after them, so it starts a new part below a line."
         variant: neutral
       - id: p3-a-sep
         type: separator
         order: 6
         span: 3
         style: dotted
-        text: "the story never goes back"
+        text: "a new part of the story"
       - id: p3-a-tail
         order: 7
         span: 3
-        kicker: LATE
-        title: "Told after the line"
+        kicker: AFTER
+        title: "The next part"
         description:
-          - "an idea told late lands"
-          - "late, whatever space is open"
-        detail: "This idea spans the whole width and is told after the line, so it lands below it however much space is open above. The rule of the ideas step: decide what belongs beside a big idea before you decide what comes after it."
+          - "it comes after the steps"
+          - "but does not need them"
+        detail: "This idea spans the whole width and is told after the line: it follows the steps above without depending on them. The rule of the ideas step: put in order only what depends on what came before it; everything else starts a new part."
         variant: muted

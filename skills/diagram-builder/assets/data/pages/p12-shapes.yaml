@@ -1,6 +1,6 @@
 # SHAPES — "a page can take a shape the grid does not draw."
 #
-# A FEATURE page. Two shapes, each from ordinary fields. A RING: the build loop
+# A STORY page. Two shapes, each from ordinary fields. A RING: the telling loop
 # as two legs, each its own section, both in natural `order`, so the collapsed
 # column still reads 1 to 6; the direction lives in the kicker text and in the
 # chip's steps, never in a reversed `order`. A STAIRCASE: a `compact` grid whose
@@ -33,30 +33,30 @@ sections:
     title: "Does your story come back, or climb?"
     description:
       - "a story that returns is a ring; a story that grows is a staircase"
-    detail: "Before any piece, say what the story does in one sentence. This one goes out and comes back (edit, build, check, look, fix, edit again), so the page is a ring: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a staircase. The shape is decided by the sentence you tell, never by the boxes you have."
+    detail: "Before any piece, say what the story does in one sentence. This one goes out and comes back (say it, name who acts, test it, tell a listener, hear the gap, say it again), so the page is a ring: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a staircase. The shape is decided by the sentence you tell, never by the boxes you have."
 
   - id: p12-out
     title: "Outbound leg · steps 1 to 3"
     order: 2
     columns: 3
     children:
-      - { id: p12-s1, order: 1, kicker: "STEP 1 OF 6 →", title: "Edit the YAML", description: ["the diagram is decided here"], filters: [loop],
-          detail: "The loop starts in the data. Nothing about the domain lives in the engine." }
-      - { id: p12-s2, order: 2, kicker: "STEP 2 OF 6 →", title: "Build", description: ["the strict schema runs"], filters: [loop],
-          detail: "<code>npm run build</code> writes the bundle and refuses any unknown field." }
-      - { id: p12-s3, order: 3, kicker: "STEP 3 OF 6 ↓", title: "Model", description: ["the layout, as arithmetic"], filters: [loop, gate],
-          detail: "<code>npm run model</code>: the layout proved to close, with no browser. The kicker's arrow turns the corner into the return leg." }
+      - { id: p12-s1, order: 1, kicker: "STEP 1 OF 6 →", title: "Say it once", description: ["one sentence, before any box"], filters: [loop],
+          detail: "The story starts as one sentence said aloud. If it needs two sentences, it is two stories, and each one gets its own page." }
+      - { id: p12-s2, order: 2, kicker: "STEP 2 OF 6 →", title: "Name who acts", description: ["the actors the reader follows"], filters: [loop],
+          detail: "Each actor you name is something the reader will follow across the page. Name only the actors the sentence needs." }
+      - { id: p12-s3, order: 3, kicker: "STEP 3 OF 6 ↓", title: "Does it hold?", description: ["a gate: still one sentence"], filters: [loop, gate],
+          detail: "The first gate on the story: if naming the actors split the sentence in two, stop and make two pages. The kicker's arrow turns the corner into the return leg." }
 
   - id: p12-back
     title: "Return leg · steps 4 to 6"
     order: 3
     columns: 3
     children:
-      - { id: p12-s4, order: 1, kicker: "STEP 4 OF 6", title: "Census", description: ["what each page is"], filters: [loop, gate],
-          detail: "<code>npm run census</code>: what each page holds, read against the sketch. The return leg is its own section, so it never needs a reversed <code>order</code>." }
-      - { id: p12-s5, order: 2, kicker: "STEP 5 OF 6", title: "Look at it", description: ["what no gate can see"], filters: [loop],
-          detail: "SEEN is the only evidence for slot character, channel meaning and structure." }
-      - { id: p12-s6, order: 3, kicker: "STEP 6 OF 6 · BACK TO 1", title: "Adjust", description: ["recalculate, never nudge"], filters: [loop],
+      - { id: p12-s4, order: 1, kicker: "STEP 4 OF 6", title: "Tell a listener", description: ["a gate: can they say it back?"], filters: [loop, gate],
+          detail: "The second gate: someone who did not write the story says it back to you. The return leg is its own section, so it never needs a reversed <code>order</code>." }
+      - { id: p12-s5, order: 2, kicker: "STEP 5 OF 6", title: "Hear the gap", description: ["what they could not repeat"], filters: [loop],
+          detail: "What the listener dropped is either missing from the story or something the story did not need. Both are decided before any box is drawn." }
+      - { id: p12-s6, order: 3, kicker: "STEP 6 OF 6 · BACK TO 1", title: "Say it again", description: ["the sentence, now tighter"], filters: [loop],
           detail: "The ring closes in text: the kicker says where the path goes next, and the chip's steps say it again." }
 
   - id: p12-stairs

@@ -385,9 +385,9 @@ sections:
           - id: gg-1-box-3
             kicker: INTERNAL
             title: "Three item"
-            description: ["a third stacked box — makes Group A the one with the most",
-              "written in it, so if stacking ever regressed it would be the",
-              "one squeezed by a divided height and spilling onto Group B"]
+            description: ["a third stacked box, the one with the most written in it,",
+              "so Group A carries more text than Group B beside it, and",
+              "each group still keeps its own height"]
       - id: gg-2
         title: "Group B"
         variant: neutral
