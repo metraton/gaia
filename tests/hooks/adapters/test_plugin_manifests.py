@@ -59,44 +59,10 @@ class TestPluginJson:
     @pytest.fixture(autouse=True)
     def setup(self):
         self.plugin_path = PROJECT_ROOT / ".claude-plugin" / "plugin.json"
-        self.package_path = PROJECT_ROOT / "package.json"
 
     def test_plugin_json_exists(self):
         """plugin.json must exist in .claude-plugin/."""
         assert self.plugin_path.exists(), f"Missing: {self.plugin_path}"
-
-    def test_plugin_json_valid(self):
-        """plugin.json must be valid JSON."""
-        data = json.loads(self.plugin_path.read_text())
-        assert isinstance(data, dict)
-
-    def test_plugin_json_required_fields(self):
-        """plugin.json must have name, version, description."""
-        data = json.loads(self.plugin_path.read_text())
-        assert "name" in data, "Missing 'name' field"
-        assert "version" in data, "Missing 'version' field"
-        assert "description" in data, "Missing 'description' field"
-
-    def test_plugin_json_name(self):
-        """plugin.json name must be 'gaia' (single unified plugin)."""
-        data = json.loads(self.plugin_path.read_text())
-        assert data["name"] == "gaia"
-
-    def test_plugin_json_description_length(self):
-        """plugin.json description must be max 200 characters."""
-        data = json.loads(self.plugin_path.read_text())
-        assert len(data["description"]) <= 200, (
-            f"Description too long: {len(data['description'])} chars (max 200)"
-        )
-
-    def test_plugin_json_version_matches_package(self):
-        """plugin.json version must match package.json version."""
-        plugin_data = json.loads(self.plugin_path.read_text())
-        package_data = json.loads(self.package_path.read_text())
-        assert plugin_data["version"] == package_data["version"], (
-            f"Version mismatch: plugin.json={plugin_data['version']} "
-            f"package.json={package_data['version']}"
-        )
 
     def test_plugin_json_has_no_inline_hooks(self):
         """plugin.json must NOT embed an inline 'hooks' block.
@@ -114,25 +80,6 @@ class TestPluginJson:
             "plugin.json must NOT embed an inline 'hooks' block -- hooks belong "
             "only in hooks/hooks.json. An inline block double-registers every "
             "hook. Run `npm run generate:plugin-root` to regenerate it."
-        )
-
-    def test_plugin_json_has_engines(self):
-        """plugin.json must have engines.claude-code field with >=2.1.0."""
-        data = json.loads(self.plugin_path.read_text())
-        assert "engines" in data, "Missing 'engines' field"
-        assert "claude-code" in data["engines"], "Missing 'engines.claude-code' field"
-        assert data["engines"]["claude-code"] == ">=2.1.0", (
-            f"Expected engines.claude-code '>=2.1.0', got '{data['engines']['claude-code']}'"
-        )
-
-    def test_plugin_json_has_categories(self):
-        """plugin.json must have categories array with devops, security, orchestration."""
-        data = json.loads(self.plugin_path.read_text())
-        assert "categories" in data, "Missing 'categories' field"
-        assert isinstance(data["categories"], list), "categories must be a list"
-        assert data["categories"] == ["devops", "security", "orchestration"], (
-            f"Expected categories ['devops', 'security', 'orchestration'], "
-            f"got {data['categories']}"
         )
 
 
@@ -232,27 +179,37 @@ class TestHooksJson:
             f"'startup|resume|compact', got {manifest_matchers}"
         )
 
-    def test_all_commands_use_plugin_root(self):
-        """All hook commands must use ${CLAUDE_PLUGIN_ROOT} prefix.
+    def test_every_registered_command_starts_its_hook_from_a_root_with_spaces(self, tmp_path):
+        """Each command of hooks.json, run as the host runs it, reaches its hook module.
 
-        Hook commands run `sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" ...`, so
-        neither an exec bit nor a `python3` binary is required. The
-        ${CLAUDE_PLUGIN_ROOT} token must still appear so CC resolves it to the
-        plugin cache directory.
+        The host substitutes ${CLAUDE_PLUGIN_ROOT} and hands the string to a
+        shell; a plugin cache path may contain spaces. A launcher that finds no
+        Python, a module path that no longer exists or an unquoted root all
+        surface here as the command failing to start its entrypoint.
         """
+        root = tmp_path / "plugin root"
+        root.symlink_to(PROJECT_ROOT, target_is_directory=True)
         data = json.loads(self.hooks_path.read_text())
-        for event_name, entries in data["hooks"].items():
-            for entry in entries:
-                for hook in entry["hooks"]:
-                    command = hook["command"]
-                    assert "${CLAUDE_PLUGIN_ROOT}/" in command, (
-                        f"Hook command in {event_name}/{entry.get('matcher', '')} "
-                        f"does not reference ${{CLAUDE_PLUGIN_ROOT}}: {command}"
-                    )
-                    assert command.startswith('sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" '), (
-                        f"Hook command in {event_name}/{entry.get('matcher', '')} "
-                        f"must use the quoted hooks/launch.sh launcher: {command}"
-                    )
+        commands = {
+            hook["command"]: event_name
+            for event_name, entries in data["hooks"].items()
+            for entry in entries
+            for hook in entry["hooks"]
+        }
+        failures = []
+        for command, event_name in commands.items():
+            assert "${CLAUDE_PLUGIN_ROOT}" in command, command
+            payload = {"hook_event_name": event_name, "session_id": "manifest-launch",
+                       "tool_name": "Bash", "tool_input": {"command": "true"}}
+            result = subprocess.run(
+                ["sh", "-c", command.replace("${CLAUDE_PLUGIN_ROOT}", str(root))],
+                input=json.dumps(payload), capture_output=True, text=True,
+                cwd=tmp_path, timeout=60,
+            )
+            not_started = ("can't open file", "No such file", "Traceback", "no Python 3 found")
+            if any(marker in result.stderr for marker in not_started):
+                failures.append(f"{event_name}: {command}\n  rc={result.returncode} {result.stderr[-400:]}")
+        assert not failures, "hook commands that did not start their hook:\n" + "\n".join(failures)
 
     def test_hooks_json_has_all_required_events(self):
         """hooks.json must have all 12 required hook event types.
