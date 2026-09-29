@@ -392,10 +392,11 @@ npm uninstall @jaguilar87/gaia        # or: pnpm remove @jaguilar87/gaia
 
 ### Claude Code plugin (Surface 2)
 
-Run `gaia uninstall` in the workspace **before** `claude plugin uninstall`, while the plugin's `gaia` still exists -- from a Claude Code session there (the plugin's `bin/gaia` is on its Bash tool's `PATH`), or with `npx gaia uninstall` when the package is installed too:
+Run `gaia uninstall` in the workspace **before** `claude plugin uninstall`, while the plugin's `gaia` still exists. The plugin does not put `gaia` on your terminal's `PATH`, so run its own copy: `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this workspace (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` from a terminal in the workspace folder -- it needs only Python on `PATH`. Inside a Claude Code session in the workspace the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you; with the package installed too, `npx gaia uninstall` does the same.
 
 ```bash
-gaia uninstall                                      # reverts the plugin's workspace writes
+<installPath>/bin/gaia uninstall --dry-run          # shows what reverts, changes nothing
+<installPath>/bin/gaia uninstall                    # reverts the plugin's workspace writes
 claude plugin uninstall gaia@gaia-marketplace
 claude plugin marketplace remove gaia-marketplace   # optional
 ```

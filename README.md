@@ -135,14 +135,17 @@ chain reaches rows that exist   -> stops, and the message (or the plugin's
 **Uninstall.** Each channel takes back only what it wrote. `~/.gaia/gaia.db` is never touched: delete `~/.gaia/` yourself if you want the memory gone too.
 
 ```
-Plugin     claude plugin uninstall gaia@gaia-marketplace
+Plugin     <installPath>/bin/gaia uninstall    # installPath: claude plugin list --json
+           claude plugin uninstall gaia@gaia-marketplace
            claude plugin marketplace remove gaia-marketplace   # optional
 Package    npx gaia uninstall            # --dry-run first shows what reverts
            npm uninstall @jaguilar87/gaia     # or: pnpm remove @jaguilar87/gaia
 OpenCode   npx gaia uninstall --workspace <folder>, then the npm step above
 ```
 
-Run `gaia uninstall` before removing the package, while `gaia` still exists. It reverts `.claude/gaia-manifest.json` -- every file, link and settings key back to its prior state, `opencode.json` and the `--path` launcher included -- and writes a gzip snapshot of the database to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. The plugin's sessions record what they write into the workspace in the same manifest -- the permissions and attribution merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts the plugin's writes too, including the user entries the merge replaced, and keeps what you added since; a plugin workspace from before that record is recognized by Gaia's permissions and attribution. Run it before `claude plugin uninstall`.
+Run `gaia uninstall` from the workspace folder before removing the package or the plugin, while `gaia` still exists. It reverts `.claude/gaia-manifest.json` -- every file, link and settings key back to its prior state, `opencode.json` and the `--path` launcher included -- and writes a gzip snapshot of the database to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. The plugin's sessions record what they write into the workspace in the same manifest -- the permissions and attribution merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts the plugin's writes too, including the user entries the merge replaced, and keeps what you added since; a plugin workspace from before that record is recognized by Gaia's permissions and attribution.
+
+On the plugin, `gaia` is not on your terminal's `PATH` and is gone once the plugin is removed, so run the plugin's own copy first. `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this workspace (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` in a terminal in the workspace folder -- it needs only Python on `PATH`. Inside a Claude Code session in the workspace the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you. Then remove the plugin.
 
 **First turn.** Start the host in the workspace and ask:
 
