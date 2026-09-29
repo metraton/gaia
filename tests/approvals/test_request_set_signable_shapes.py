@@ -57,6 +57,8 @@ def request_set(tmp_path, bootstrapped_db_template):
                 "--what", "Run the planned change", "--question", "Run it?",
                 "--does", "Runs the planned change", "--impact", "Changes the scratch target",
                 "--rollback", "Recreate the scratch target", "--session-id", "ses-773",
+                "--verification", "kubectl get namespace scratch",
+                "--shared-state", "Sí: el namespace scratch del clúster.",
                 "--agent-id", "developer", "--json",
             ],
             cwd=env["WORKSPACE"], env=shell, capture_output=True, text=True, timeout=180,

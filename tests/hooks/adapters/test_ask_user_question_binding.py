@@ -70,6 +70,7 @@ def _request(n: int) -> str:
         what=f"Publicar la rama {n} en el remoto.",
         question=f"¿Publico la rama {n}?",
         session_id=REQUESTER_SESSION, agent_id=REQUESTER, rollback="Borrar la rama remota.",
+        verification="git ls-remote", shared_state="Sí: la rama remota.",
     )
 
 
@@ -81,6 +82,7 @@ def _phraseless() -> str:
         "command_set", [{"command": "git push origin feat/sin-frases", "cwd": REPO}],
         what="Publicar la rama sin frases.",
         session_id=REQUESTER_SESSION, agent_id=REQUESTER, rollback="Borrar la rama remota.",
+        verification="git ls-remote", shared_state="Sí: la rama remota.",
     )
     return store.insert_requested(payload, agent_id=REQUESTER, session_id=REQUESTER_SESSION)
 

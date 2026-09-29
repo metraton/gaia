@@ -390,6 +390,8 @@ def _request_set_expecting(env, *extra):
     argv += [
         "--what", "Publicar la rama y la imagen.", "--question", "¿Publico la rama y la imagen?",
         "--rollback", "revert the published revision",
+        "--verification", "git log --oneline -1",
+        "--shared-state", "Sí: publica en el remoto compartido.",
         "--agent-id", e2e.AGENT_ID, "--session-id", e2e.SESSION_ID, "--json", *extra,
     ]
     result = subprocess.run(argv, cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=180)

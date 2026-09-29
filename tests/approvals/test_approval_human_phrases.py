@@ -65,7 +65,8 @@ def _set_args(**overrides):
         "command": [COMMAND], "cwd": [REPO], "expect_exit": None,
         "what": PHRASES["what"], "question": PHRASES["question"],
         "does": [PHRASES["does"]], "impact": [PHRASES["impact"]],
-        "rationale": None, "verification": None, "rollback": PHRASES["rollback"],
+        "rationale": None, "verification": "git ls-remote", "rollback": PHRASES["rollback"],
+        "shared_state": "Sí: la rama remota.",
         "agent_id": AGENT, "session_id": SESSION, "json": True,
     }
     values.update(overrides)

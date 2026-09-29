@@ -75,6 +75,7 @@ def _request(cwd, *, command=COMMAND, question="¿Publico la rama?", what="Publi
           "impact": "La rama queda publicada."}],
         what=what, question=question, session_id=SESSION, agent_id=AGENT,
         rollback="Borrar la rama remota.",
+        verification="git ls-remote", shared_state="Sí: la rama remota.",
     )
 
 
@@ -416,6 +417,7 @@ def _request_set_cli(env, cwd, command):
         "--does", "Publica la rama.", "--impact", "Queda visible.",
         "--what", "Publicar la rama.", "--question", "¿Publico la rama?",
         "--rollback", "Borrar la rama remota.",
+        "--verification", "git ls-remote", "--shared-state", "Sí: la rama remota.",
         "--agent-id", e2e.AGENT_ID, "--session-id", e2e.SESSION_ID, "--json",
     ]
     return subprocess.run(
@@ -525,7 +527,8 @@ def test_approval_live_fixes_request_set_refuses_a_directory_that_does_not_exist
         command=[COMMAND], cwd=[str(Path(host["other"]) / "missing")], expect_exit=None,
         what="Publicar la rama.", question="¿Publico la rama?",
         does=["Sube la rama al remoto."], impact=["La rama queda publicada."],
-        rationale=None, verification=None, rollback="Borrar la rama remota.",
+        rationale=None, verification="git ls-remote", rollback="Borrar la rama remota.",
+        shared_state="Sí: la rama remota.",
         agent_id=AGENT, session_id=SESSION, json=True,
     )
     out = io.StringIO()

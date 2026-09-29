@@ -102,6 +102,7 @@ def _request_set(tmp_path, commands=(FIRST_COMMAND, SECOND_COMMAND)):
         "--rationale", "Publish the branch and the image under one consent",
         "--verification", "git -C . log --oneline -1",
         "--rollback", "revert the published revision",
+        "--shared-state", "Sí: publica en el remoto compartido.",
         "--agent-id", AGENT_ID,
         "--session-id", SUBAGENT_SESSION,
         "--json",

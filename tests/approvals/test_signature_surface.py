@@ -26,7 +26,7 @@ AGENT = "gaia-system"
 SESSION = "ses-requester"
 REPO = "/home/jorge/ws/me"
 WORKTREE_GAIA = (
-    "/home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia"
+    __file__.rsplit("/tests/", 1)[0] + "/bin/gaia"
 )
 D12_COMMAND = (
     f"python3 {WORKTREE_GAIA} dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all"
@@ -94,7 +94,9 @@ def test_signature_surface_golden_d12_example():
 
     details = (
         f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {D12_COMMAND} ] "
-        f"[ DOES: {D12_DOES} ] [ IMPACT: {D12_IMPACT} ] [ ROLLBACK: {D12_ROLLBACK} ]"
+        f"[ DOES: {D12_DOES} ] [ IMPACT: {D12_IMPACT} ] [ VERIFICATION: no declarada ] "
+        "[ SHARED-STATE: no declarado; no supongas que no toca estado compartido ] "
+        f"[ ROLLBACK: {D12_ROLLBACK} ]"
     )
     assert rendered.questions == (
         {"question": _asks(D12_COMMAND), "header": "Firma 1/1", "options": OPTIONS, "multiSelect": False},
@@ -147,9 +149,13 @@ def test_signature_surface_same_template_for_n_commands():
     assert [q["question"] for q in rendered.details_questions] == [
         f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {first} ] "
         "[ DOES: Sube la rama al remoto. ] [ IMPACT: La rama queda publicada. ] "
+        "[ VERIFICATION: no declarada ] "
+        "[ SHARED-STATE: no declarado; no supongas que no toca estado compartido ] "
         "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]",
         f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {second} ] "
         "[ DOES: Abre el PR contra main. ] [ IMPACT: Queda un PR abierto. ] "
+        "[ VERIFICATION: no declarada ] "
+        "[ SHARED-STATE: no declarado; no supongas que no toca estado compartido ] "
         "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]",
     ]
     assert [q["header"] for q in rendered.questions] == ["Firma 1/2", "Firma 2/2"]
