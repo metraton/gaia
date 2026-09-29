@@ -76,11 +76,14 @@ async function captureMissing(playwright, plan, missing) {
 }
 
 // The held images as an ffconcat list: each lasts its frames, and the last is
-// listed twice because the demuxer gives the final entry no duration.
+// listed twice because the demuxer gives the final entry no duration. Every
+// image declares the frame rate: without it the demuxer times images in the
+// image reader's default 1/25 s, and neighbouring one-frame images collapse.
 function concatList(runs) {
   const lines = ['ffconcat version 1.0'];
-  for (const r of runs) lines.push(`file '${r.file}'`, `duration ${(r.count / FRAME.fps).toFixed(6)}`);
-  lines.push(`file '${runs[runs.length - 1].file}'`);
+  const image = file => [`file '${file}'`, `option framerate ${FRAME.fps}`];
+  for (const r of runs) lines.push(...image(r.file), `duration ${(r.count / FRAME.fps).toFixed(6)}`);
+  lines.push(...image(runs[runs.length - 1].file));
   return lines.join('\n') + '\n';
 }
 
