@@ -303,7 +303,7 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--workspace", default=None,
-        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').",
+        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global').",
     )
     p.add_argument(
         "--since", default=None, metavar="DUR_OR_DATE",

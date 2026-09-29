@@ -425,6 +425,42 @@ def find_brief_workspaces(
         con.close()
 
 
+class AmbiguousBriefName(LookupError):
+    """A brief name missing from the resolved workspace is held by several."""
+
+    def __init__(self, name: str, workspace: str, holders: list[str]):
+        self.name = name
+        self.workspace = workspace
+        self.holders = holders
+        named = ", ".join(repr(w) for w in holders)
+        super().__init__(
+            f"brief '{name}' is not in workspace '{workspace}' and exists in "
+            f"several: {named} -- pass --workspace=<workspace> to choose one"
+        )
+
+
+def brief_home(
+    workspace: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> str:
+    """Return the workspace that holds brief ``name`` as seen from ``workspace``.
+
+    ``workspace`` itself when it holds the brief or when no workspace does (the
+    caller then reports its own not-found or creates there); otherwise the one
+    workspace that holds it. Raises :class:`AmbiguousBriefName` when several
+    do, never picking one silently (decision D-d of brief
+    ``una-gaia-cualquier-instalacion``).
+    """
+    holders = find_brief_workspaces(name, db_path=db_path)
+    if not holders or workspace in holders:
+        return workspace
+    if len(holders) == 1:
+        return holders[0]
+    raise AmbiguousBriefName(name, workspace, holders)
+
+
 def get_brief(
     workspace: str,
     name: str,

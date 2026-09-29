@@ -411,19 +411,20 @@ def containing_workspace(cwd: Path | str | None = None) -> str:
 def cli_workspace(
     explicit: str | None = None,
     cwd: Path | str | None = None,
-    *,
-    fallback: str = "me",
 ) -> str:
     """Return the workspace a CLI call without ``--workspace`` operates on.
 
     Resolution order: ``explicit`` > ``GAIA_DISPATCH_WORKSPACE`` >
-    ``GAIA_WORKSPACE`` > :func:`containing_workspace` of ``cwd`` > ``fallback``.
+    ``GAIA_WORKSPACE`` > :func:`containing_workspace` of ``cwd`` > ``"global"``.
 
     Every CLI that accepts ``--workspace`` (brief, plan, task, ac, evidence,
     milestone, memory, ...) delegates here: when each carried its own copy,
     brief named the directory while memory asked which project contains it,
-    so the same cwd read two different workspaces. ``"global"`` counts as
-    unresolved because it holds no coordination or curated rows.
+    so the same cwd read two different workspaces. When nothing resolves
+    (a cwd with no identifiable name, or a failing lookup) the answer is
+    Gaia's unattributed scope ``"global"``, the same one
+    :func:`resolve_workspace` ends in: no installation's workspace name is
+    baked into the code.
     """
     if explicit:
         return explicit
@@ -437,9 +438,7 @@ def cli_workspace(
         ws = containing_workspace(cwd)
     except Exception:
         ws = ""
-    if ws and ws != "global":
-        return ws
-    return fallback
+    return ws or "global"
 
 
 # ---------------------------------------------------------------------------

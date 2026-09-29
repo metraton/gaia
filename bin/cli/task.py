@@ -659,7 +659,7 @@ def register(subparsers) -> None:
     )
     task_parser.add_argument(
         "--workspace", metavar="W", default=None,
-        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').",
+        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global'); a brief named here is looked up in the other workspaces when the resolved one lacks it.",
     )
 
     actions = task_parser.add_subparsers(dest="task_action", metavar="<action>")
@@ -1091,6 +1091,11 @@ def cmd_task(args) -> int:
         "gate":       _cmd_gate,
     }
     if action in handlers:
+        from cli._brief_scope import follow_brief
+
+        ambiguity = follow_brief(args, getattr(args, "brief", None))
+        if ambiguity:
+            return _err(ambiguity, as_json=getattr(args, "json", False))
         return handlers[action](args)
 
     print("Usage: gaia task "

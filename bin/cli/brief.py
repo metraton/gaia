@@ -168,20 +168,15 @@ def _cmd_new(args) -> int:
     )
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
-    # FIX (workspace-create footgun): the read-time cross-workspace hint
-    # (FIX 2 in _cmd_show, shipped 5.0.10) only warns when a brief LOOKUP
-    # misses locally but exists elsewhere -- it says nothing at CREATE time.
-    # Creating from the cwd of a sub-repo (e.g. ~/ws/aaxis/aos/aos) silently
-    # attributes the new brief to that repo's inferred workspace instead of
-    # the user's personal one, and the mistake surfaces only in a later
-    # session when the brief is "missing" from 'me'. Advisory only (stderr,
-    # non-blocking) so headless/agent flows are never gated -- mirrors the
-    # non-blocking "Warning: [...]" pattern in _cmd_close.
-    if not getattr(args, "workspace", None) and workspace != "me":
+    # A brief created without --workspace lands in the resolved workspace,
+    # which from inside a sub-repo may not be the one intended. Advisory only
+    # (stderr, non-blocking) so headless/agent flows are never gated; it names
+    # no particular workspace because none is universal.
+    if not getattr(args, "workspace", None):
         print(
             f"Warning: creating brief in workspace '{workspace}' "
-            f"(inferred from cwd), not your personal workspace 'me'. "
-            f"Pass --workspace=me if that was not intended.",
+            f"(no --workspace given). Pass --workspace=<name> if that was not "
+            f"intended.",
             file=sys.stderr,
         )
 
@@ -716,7 +711,7 @@ def register(subparsers) -> None:
     )
     brief_parser.add_argument(
         "--workspace", metavar="W", default=None,
-        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').",
+        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global'); a brief named here is looked up in the other workspaces when the resolved one lacks it.",
     )
 
     actions = brief_parser.add_subparsers(dest="brief_action", metavar="<action>")
@@ -1373,6 +1368,13 @@ def cmd_brief(args) -> int:
         "ac": _cmd_ac,
     }
     if action in handlers:
+        if action != "new":
+            from cli._brief_scope import follow_brief
+
+            named = getattr(args, "brief", None) or getattr(args, "name", None)
+            ambiguity = follow_brief(args, named)
+            if ambiguity:
+                return _err(ambiguity, as_json=getattr(args, "json", False))
         return handlers[action](args)
 
     print(

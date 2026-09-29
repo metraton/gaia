@@ -479,7 +479,7 @@ def register(subparsers) -> None:
     )
     plan_parser.add_argument(
         "--workspace", metavar="W", default=None,
-        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').",
+        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global'); a brief named here is looked up in the other workspaces when the resolved one lacks it.",
     )
 
     actions = plan_parser.add_subparsers(dest="plan_action", metavar="<action>")
@@ -695,6 +695,12 @@ def cmd_plan(args) -> int:
         "change": _cmd_change,
     }
     if action in handlers:
+        from cli._brief_scope import follow_brief
+
+        named = getattr(args, "brief_name", None) or getattr(args, "brief", None)
+        ambiguity = follow_brief(args, named)
+        if ambiguity:
+            return _err(ambiguity, as_json=getattr(args, "json", False))
         return handlers[action](args)
 
     print(

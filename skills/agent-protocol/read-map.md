@@ -10,12 +10,16 @@ one place that vocabulary is written down; everywhere else points here.
 
 ## Two rules that decide whether any of it resolves
 
-**A read is scoped to a WORKSPACE, and the workspace comes from the current directory.** The same
-verb answers differently from two directories: run from a repo nested inside a workspace,
-`gaia memory show <slug>` returns `not found in workspace '<repo>'`; run from the workspace root, or
-with `--workspace <name>`, it returns the row. `gaia workspace current` prints which one you are in.
-When a coordinate does not resolve, check the workspace before concluding the row is gone -- almost
-every verb below takes `--workspace`.
+**A read by slug is scoped to a WORKSPACE, and the workspace comes from the current directory.** The
+same verb answers differently from two directories: run from a directory whose workspace does not
+hold it, `gaia memory show <slug>` returns `not found in workspace '<ws>'`; with `--workspace <name>`
+it returns the row. `gaia workspace current` prints which one you are in. Two reads follow their
+object instead: `gaia memory get-relevant --initiative`/`--project` returns the project's rows from
+every workspace, and a brief named to the coordination verbs (brief, plan, task, ac, evidence,
+milestone) without `--workspace` is looked up in the other workspaces when yours lacks it -- a name
+two of them hold is an error naming both, answered with `--workspace`. When a coordinate does not
+resolve, check the workspace before concluding the row is gone -- almost every verb below takes
+`--workspace`.
 
 **Absent and empty are different answers, and the verbs keep them apart.** A path that exists prints
 its value even when that value is `[]`; a path that does not exist is an error with a non-zero exit.
@@ -51,7 +55,7 @@ persisting. It belongs to the write cycle, not to a coordinate; that cycle is in
 | `gaia memory search '<term>'` | `--workspace` | FTS5 across curated rows and episodes, scored. The handle to use when you have a topic and not a name. |
 | `gaia memory list` | `--type project\|user\|feedback\|atom\|decision\|negative`, `--json` | Name, type and one-line description per row -- the index, not the bodies. |
 | `gaia memory story <slug>` | `--workspace` | The row's lineage as one fused timeline: related/derivative/graduated nodes with depth, then events in order. |
-| `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` | The compact block SessionStart injects, on demand. |
+| `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` or `--project <name>` | The compact block SessionStart injects, on demand; with a project, its whole live-pending set from every workspace. |
 | `gaia memory stats` / `gaia memory conflicts` | -- | Counts and FTS coverage; contradiction scan across rows. |
 | `gaia memory episode-show <episode_id>` | -- | One episode with score, age, tags and retrieval count. Episode ids come from `gaia query --surface episodes`. |
 

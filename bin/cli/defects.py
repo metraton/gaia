@@ -185,7 +185,7 @@ def register(subparsers) -> None:
     p.add_argument(
         "--workspace", default=None, metavar="W",
         help="Workspace identity, or 'all' for every workspace. "
-             "Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').",
+             "Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global').",
     )
     p.add_argument(
         "--count", action="store_true", default=False,

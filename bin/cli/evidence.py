@@ -385,7 +385,7 @@ def register(subparsers) -> None:
     add_p.add_argument("--negative", action="store_true", default=False,
                        help="Record evidence that refutes; it never accepts the AC.")
     add_p.add_argument("--workspace", default=None, metavar="W",
-                       help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').")
+                       help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global'); a brief named here is looked up in the other workspaces when the resolved one lacks it.")
     add_p.add_argument("--json", action="store_true", default=False,
                        help="Emit JSON output.")
 
@@ -425,7 +425,7 @@ def register(subparsers) -> None:
     list_p.add_argument("--ac", default=None, metavar="AC_ID",
                         help="Filter to a specific AC (optional).")
     list_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').")
+                        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global'); a brief named here is looked up in the other workspaces when the resolved one lacks it.")
     list_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON output.")
 
@@ -458,6 +458,11 @@ def cmd_evidence(args) -> int:
         "orphans": _cmd_orphans,
     }
     if action in handlers:
+        from cli._brief_scope import follow_brief
+
+        ambiguity = follow_brief(args, getattr(args, "brief", None))
+        if ambiguity:
+            return _err(ambiguity, as_json=getattr(args, "json", False))
         return handlers[action](args)
 
     print("Usage: gaia evidence <add|show|list|orphans>", file=sys.stderr)
