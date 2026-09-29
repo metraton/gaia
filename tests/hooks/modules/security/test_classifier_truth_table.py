@@ -377,7 +377,7 @@ CLASSIFIER_TRUTH_TABLE = [
     ("control-push-force", GATED, "git push --force origin main", True, T3),
     ("control-kubectl-delete", GATED, "kubectl delete pod my-pod", True, T3),
     ("control-terraform-apply", GATED, "terraform apply -auto-approve", True, T3),
-    ("control-rm-recursive", GATED, "rm -rf /home/jorge/ws/me/gaia/hooks", True, T3),
+    ("control-rm-recursive", GATED, "rm -rf /home/user/ws/me/gaia/hooks", True, T3),
     # ---- Mutations outrank incidental validation/simulation words ----------
     # A T1/T2 pattern can occur in an argument or path without changing what
     # the command executes. The focal password rotation and one row for every
@@ -514,14 +514,14 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "friction_residual_sim_flag_alone_cannot_absolve_mutating_script",
         GATED,
-        "node /home/jorge/ws/me/gaia/scripts/release-prepare.mjs --dry-run",
+        "node /home/user/ws/me/gaia/scripts/release-prepare.mjs --dry-run",
         True,
         T3,
     ),
     (
         "friction_residual_unrelated_sim_flag_cannot_absolve_mutating_script",
         GATED,
-        "node /home/jorge/ws/me/gaia/scripts/release-prepare.mjs "
+        "node /home/user/ws/me/gaia/scripts/release-prepare.mjs "
         "--report-duplicates",
         True,
         T3,
@@ -531,14 +531,14 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "friction_residual_packed_rf_control_rm",
         GATED,
-        "rm -rf /home/jorge/.gaia/scratch/friction-residual-probe",
+        "rm -rf /home/user/.gaia/scratch/friction-residual-probe",
         True,
         T3,
     ),
     (
         "friction_residual_packed_rf_control_cp",
         GATED,
-        "cp -rf /home/jorge/.gaia/scratch/src /home/jorge/.gaia/scratch/dst",
+        "cp -rf /home/user/.gaia/scratch/src /home/user/.gaia/scratch/dst",
         True,
         T3,
     ),
@@ -601,7 +601,7 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "grouping_free_readonly_subshell_repo",
         FREE,
-        "(cd /home/jorge/ws/me/gaia && ls -la)",
+        "(cd /home/user/ws/me/gaia && ls -la)",
         False,
         T0,
     ),
@@ -796,14 +796,14 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "cmdsub_t3_project_dir_delete",
         GATED,
-        "ls $(rm -rf /home/jorge/ws/me/gaia/hooks)",
+        "ls $(rm -rf /home/user/ws/me/gaia/hooks)",
         True,
         T3,
     ),
     (
         "cmdsub_t3_user_dir_delete",
         GATED,
-        "echo $(rm -rf /home/jorge/projects/app)",
+        "echo $(rm -rf /home/user/projects/app)",
         True,
         T3,
     ),
@@ -887,7 +887,7 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "cmdsub_t3_nested_user_dir_delete",
         GATED,
-        "echo $(echo $(rm -rf /home/jorge/projects/app))",
+        "echo $(echo $(rm -rf /home/user/projects/app))",
         True,
         T3,
     ),
@@ -901,7 +901,7 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "cmdsub_t3_read_carrier_double_quoted",
         GATED,
-        'grep -rn "$(rm -rf /home/jorge/projects/app)" .',
+        'grep -rn "$(rm -rf /home/user/projects/app)" .',
         True,
         T3,
     ),
@@ -1123,13 +1123,13 @@ NO_OVERCORRECTION_CENSUS = [
     (
         "mention-grep-quoted-search-term",
         MENTION_FREE,
-        'grep -rn "SessionStart" /home/jorge/ws/me/.claude/settings.local.json',
+        'grep -rn "SessionStart" /home/user/ws/me/.claude/settings.local.json',
         False,
     ),
     (
         "mention-grep-quoted-dangerous-form",
         MENTION_FREE,
-        'grep -rn "(rm -rf /)" /home/jorge/ws/me/gaia/README.md',
+        'grep -rn "(rm -rf /)" /home/user/ws/me/gaia/README.md',
         False,
     ),
     # ---- Mention, not use: the mentioned command is a SUBSTITUTION ----------
@@ -1261,7 +1261,7 @@ NO_OVERCORRECTION_CENSUS = [
     (
         "mention-approvable-project-delete-single-quoted",
         MENTION_FREE,
-        "echo '$(rm -rf /home/jorge/ws/me/gaia)'",
+        "echo '$(rm -rf /home/user/ws/me/gaia)'",
         False,
     ),
     (

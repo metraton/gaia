@@ -76,7 +76,7 @@ def test_upsert_and_get(db):
         schedule_spec={"kind": "calendar", "minute": 20, "hour": [9, 13, 17, 21]},
         schedule_hint="20 9,13,17,21",
         prompt_body="do the triage",
-        project_dir="/home/jorge/ws/me",
+        project_dir="/home/user/ws/me",
         workspace="me",
         db_path=db,
     )
@@ -261,7 +261,7 @@ def test_cli_dispatch_register_list_show(db, monkeypatch, capsys):
     args = parser.parse_args([
         "schedule", "register", "--name", "gmail-triage",
         "--cron", "20 9,13,17,21 * * *", "--prompt", "body",
-        "--project-dir", "/home/jorge/ws/me", "--workspace", "me",
+        "--project-dir", "/home/user/ws/me", "--workspace", "me",
     ])
     assert cli.cmd_schedule(args) == 0
 
@@ -304,10 +304,10 @@ def test_adopt_skips_comment_line_above_entry(monkeypatch):
     sample = [
         "# gmail-triage headless scheduled task -- runs at 09:20, 13:20, 17:20, 21:20",
         "20 9,13,17,21 * * * env TASK_NAME=gmail-triage "
-        "PROJECT_DIR=/home/jorge/ws/me "
-        "PROMPT_FILE=/home/jorge/.gaia/scheduled-tasks/gmail-triage.prompt "
-        "/home/jorge/.gaia/scheduled-tasks/run-scheduled-task.sh "
-        ">> /home/jorge/.gaia/scheduled-tasks/logs/gmail-triage.log 2>&1",
+        "PROJECT_DIR=/home/user/ws/me "
+        "PROMPT_FILE=/home/user/.gaia/scheduled-tasks/gmail-triage.prompt "
+        "/home/user/.gaia/scheduled-tasks/run-scheduled-task.sh "
+        ">> /home/user/.gaia/scheduled-tasks/logs/gmail-triage.log 2>&1",
         "",
     ]
     monkeypatch.setattr(CronBackend, "_read_crontab", staticmethod(lambda: sample))
@@ -316,8 +316,8 @@ def test_adopt_skips_comment_line_above_entry(monkeypatch):
     assert found is not None
     cron, project_dir, prompt_file = found
     assert cron == "20 9,13,17,21 * * *"
-    assert project_dir == "/home/jorge/ws/me"
-    assert prompt_file == "/home/jorge/.gaia/scheduled-tasks/gmail-triage.prompt"
+    assert project_dir == "/home/user/ws/me"
+    assert prompt_file == "/home/user/.gaia/scheduled-tasks/gmail-triage.prompt"
 
     # the adopted cron string converts to the neutral spec without blowing up
     spec = cli._cron_to_spec(cron)
@@ -370,7 +370,7 @@ def _register(db, name="gmail-triage", **kw):
     from gaia.store import writer
     return writer.upsert_scheduled_task(
         name=name, schedule_spec=_SPEC, schedule_hint="20 9,13,17,21",
-        project_dir="/home/jorge/ws/me", workspace="me", db_path=db, **kw
+        project_dir="/home/user/ws/me", workspace="me", db_path=db, **kw
     )
 
 
@@ -1024,7 +1024,7 @@ def _register_in(db, name, workspace):
     from gaia.store import writer
     return writer.upsert_scheduled_task(
         name=name, schedule_spec=_SPEC, schedule_hint="20 9,13,17,21",
-        project_dir="/home/jorge/ws/me", workspace=workspace, db_path=db,
+        project_dir="/home/user/ws/me", workspace=workspace, db_path=db,
     )
 
 

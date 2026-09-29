@@ -41,7 +41,7 @@ AGENT_ID = "gaia-system"
 TOKEN = "t4-presentation-token"
 
 COMMANDS = (
-    "git -C /home/jorge/ws/me/gaia push origin fix/consent-protocol",
+    "git -C /home/user/ws/me/gaia push origin fix/consent-protocol",
     "flux reconcile kustomization apps --with-source",
 )
 
@@ -51,10 +51,10 @@ SEALED_PAYLOAD = {
     "commands": list(COMMANDS),
     "scope": "COMMAND_SET",
     "risk_level": "high",
-    "rollback_hint": "git -C /home/jorge/ws/me/gaia push --force-with-lease origin <prior-sha>",
+    "rollback_hint": "git -C /home/user/ws/me/gaia push --force-with-lease origin <prior-sha>",
     "rationale": "Publishes the branch and reconciles the cluster from it",
     "impact": "Remote branch advances and the cluster reconciles to the pushed revision",
-    "verification": "git -C /home/jorge/ws/me/gaia log --oneline -1 origin/fix/consent-protocol",
+    "verification": "git -C /home/user/ws/me/gaia log --oneline -1 origin/fix/consent-protocol",
 }
 
 PHRASES = {
@@ -70,10 +70,10 @@ PRESENTABLE_PAYLOAD = {**SEALED_PAYLOAD, **PHRASES}
 PRODUCED_COMMANDS = COMMANDS
 PRODUCED_RATIONALE = "Publishes the branch and reconciles the cluster from it"
 PRODUCED_VERIFICATION = (
-    "git -C /home/jorge/ws/me/gaia log --oneline -1 origin/fix/consent-protocol"
+    "git -C /home/user/ws/me/gaia log --oneline -1 origin/fix/consent-protocol"
 )
 PRODUCED_ROLLBACK = (
-    "git -C /home/jorge/ws/me/gaia push --force-with-lease "
+    "git -C /home/user/ws/me/gaia push --force-with-lease "
     "origin fix/consent-protocol@{1}:fix/consent-protocol"
 )
 

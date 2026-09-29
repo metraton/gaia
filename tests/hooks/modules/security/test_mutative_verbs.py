@@ -227,7 +227,7 @@ class TestMkdirPathSensitive:
 
     def test_mkdir_home_jorge_is_t0(self):
         """Absolute path under /home is NOT sensitive -- classifies as T0."""
-        result = detect_mutative_command("mkdir /home/jorge/projects/new")
+        result = detect_mutative_command("mkdir /home/user/projects/new")
         assert result.is_mutative is False
         assert result.category == "READ_ONLY"
 
@@ -1698,10 +1698,10 @@ class TestSqliteReadonlyDotCommands:
         assert result.category == "READ_ONLY"
 
     def test_sqlite3_tables_is_read_only(self):
-        """Exact reproduction of the blocked command: sqlite3 /home/jorge/.gaia/gaia.db ".tables"
+        """Exact reproduction of the blocked command: sqlite3 /home/user/.gaia/gaia.db ".tables"
         This was wrongly classified as T3 before the fix."""
         result = detect_mutative_command(
-            "sqlite3 /home/jorge/.gaia/gaia.db \".tables\""
+            "sqlite3 /home/user/.gaia/gaia.db \".tables\""
         )
         assert result.is_mutative is False, (
             f"Expected READ_ONLY but got is_mutative={result.is_mutative}, "
@@ -4300,7 +4300,7 @@ class TestGaiaInstallSubcommandsAreMutative:
     """
 
     def test_gaia_dev_is_mutative(self):
-        result = detect_mutative_command("gaia dev --workspace /home/jorge/ws/me")
+        result = detect_mutative_command("gaia dev --workspace /home/user/ws/me")
         assert result.is_mutative is True, (
             f"gaia dev is a state-mutating install and must be T3. "
             f"Got {result.category}: {result.reason}"
@@ -4315,7 +4315,7 @@ class TestGaiaInstallSubcommandsAreMutative:
     def test_gaia_dev_via_python_source_entry_is_mutative(self):
         # The deploy command uses the source-tree entry point directly.
         result = detect_mutative_command(
-            "gaia dev --mode pack --workspace /home/jorge/ws/me"
+            "gaia dev --mode pack --workspace /home/user/ws/me"
         )
         assert result.is_mutative is True
 
@@ -4412,7 +4412,7 @@ class TestGaiaScanWriteModeIsMutative:
         assert result.category == "MUTATIVE"
 
     def test_gaia_scan_write_mode_with_root_is_mutative(self):
-        result = detect_mutative_command("gaia scan --workspace me /home/jorge/ws")
+        result = detect_mutative_command("gaia scan --workspace me /home/user/ws")
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
 
@@ -4951,7 +4951,7 @@ class TestPowerShellLane:
         # rc.4: the hyphenated path argument must not be read as a cmdlet.
         r = self._run(
             'powershell.exe -NoProfile -Command '
-            '"Get-ChildItem C:\\Users\\jorge\\my-folder -Recurse"'
+            '"Get-ChildItem C:\\Users\\user\\my-folder -Recurse"'
         )
         assert r.is_mutative is False
 
@@ -5052,7 +5052,7 @@ class TestBareWindowsCommandLane:
     # Verb-Noun-shaped path/flag argument ('my-folder', 'a-b') sits in an
     # argument position and must not force a false T3 on a legitimate read.
     @pytest.mark.parametrize("cmd", [
-        "Get-ChildItem C:\\Users\\jorge\\my-folder",
+        "Get-ChildItem C:\\Users\\user\\my-folder",
         "Get-ChildItem C:\\my-folder -Recurse",
         "dir C:\\my-app\\sub-dir",
         "Get-Content C:\\a-b\\file.txt",

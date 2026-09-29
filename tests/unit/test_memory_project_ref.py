@@ -432,8 +432,8 @@ def test_normalize_initiative(raw, expected) -> None:
 @pytest.mark.parametrize(
     "ref,expected",
     [
-        ("/home/jorge/ws/me/gaia/.git", "gaia"),
-        ("/home/jorge/ws/me/balance/.git", "balance"),
+        ("/home/user/ws/me/gaia/.git", "gaia"),
+        ("/home/user/ws/me/balance/.git", "balance"),
         ("github.com/me/direct", "direct"),
         ("myrepo.git", "myrepo"),
         ("/a/b/c/", "c"),
@@ -466,10 +466,10 @@ def test_upsert_memory_derives_initiative_from_project_ref(db: Path) -> None:
 
     upsert_memory(
         "me", "project_g_notes", type="project", body="notes",
-        project_ref="/home/jorge/ws/me/gaia/.git", db_path=db,
+        project_ref="/home/user/ws/me/gaia/.git", db_path=db,
     )
     assert _get_initiative(db, "me", "project_g_notes") == "gaia"
-    assert _get_project_ref(db, "me", "project_g_notes") == "/home/jorge/ws/me/gaia/.git"
+    assert _get_project_ref(db, "me", "project_g_notes") == "/home/user/ws/me/gaia/.git"
 
 
 def test_upsert_memory_explicit_initiative_wins_over_project_ref(db: Path) -> None:
@@ -479,7 +479,7 @@ def test_upsert_memory_explicit_initiative_wins_over_project_ref(db: Path) -> No
 
     upsert_memory(
         "me", "override", type="project", body="notes",
-        project_ref="/home/jorge/ws/me/gaia/.git", initiative="century",
+        project_ref="/home/user/ws/me/gaia/.git", initiative="century",
         db_path=db,
     )
     assert _get_initiative(db, "me", "override") == "century"
