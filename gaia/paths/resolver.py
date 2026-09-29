@@ -185,6 +185,15 @@ def logs_dir() -> Path:
     return data_dir() / "logs"
 
 
+def session_dir() -> Path:
+    """Return the active session directory every channel shares.
+
+    Returns:
+        ``data_dir() / "session" / "active"``
+    """
+    return data_dir() / "session" / "active"
+
+
 def events_dir() -> Path:
     """Return the path to the events directory.
 

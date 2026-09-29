@@ -174,8 +174,16 @@ def _get_memory_v2_stats(project_root: Path) -> dict:
 
 
 def _get_contract_stats(project_root: Path):
-    """Get response contract validation stats from session directories."""
-    contract_dir = project_root / ".claude" / "session" / "active" / "response-contract"
+    """Get response contract validation stats from session directories.
+
+    Reads the data home's session state; a workspace .claude/session left by
+    an earlier layout is read only when the data home has none.
+    """
+    from gaia.paths import session_dir
+
+    contract_dir = session_dir() / "response-contract"
+    if not contract_dir.is_dir():
+        contract_dir = project_root / ".claude" / "session" / "active" / "response-contract"
     if not contract_dir.is_dir():
         return None
 
