@@ -4,6 +4,7 @@ window.__DOC__ = {
   "title": "Diagram Deck",
   "subtitle": "A portable, data-driven diagram — edit data/ and run npm run build",
   "version": "0.2.0",
+  "look": "brand",
   "palette": "rose-pine",
   "tokens": {
     "row": {
@@ -336,7 +337,7 @@ window.__DOC__ = {
           "description": [
             "a story that returns is a ring; a story that grows is a staircase"
           ],
-          "detail": "Before any piece, say what the story does in one sentence. This one goes out and comes back (edit, build, check, look, fix, edit again), so the page is a ring: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a staircase. The shape is decided by the sentence you tell, never by the boxes you have."
+          "detail": "Before any piece, say what the story does in one sentence. This one goes out and comes back (say it, name who acts, test it, tell a listener, hear the gap, say it again), so the page is a ring: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a staircase. The shape is decided by the sentence you tell, never by the boxes you have."
         },
         {
           "id": "p12-out",
@@ -348,41 +349,41 @@ window.__DOC__ = {
               "id": "p12-s1",
               "order": 1,
               "kicker": "STEP 1 OF 6 →",
-              "title": "Edit the YAML",
+              "title": "Say it once",
               "description": [
-                "the diagram is decided here"
+                "one sentence, before any box"
               ],
               "filters": [
                 "loop"
               ],
-              "detail": "The loop starts in the data. Nothing about the domain lives in the engine."
+              "detail": "The story starts as one sentence said aloud. If it needs two sentences, it is two stories, and each one gets its own page."
             },
             {
               "id": "p12-s2",
               "order": 2,
               "kicker": "STEP 2 OF 6 →",
-              "title": "Build",
+              "title": "Name who acts",
               "description": [
-                "the strict schema runs"
+                "the actors the reader follows"
               ],
               "filters": [
                 "loop"
               ],
-              "detail": "<code>npm run build</code> writes the bundle and refuses any unknown field."
+              "detail": "Each actor you name is something the reader will follow across the page. Name only the actors the sentence needs."
             },
             {
               "id": "p12-s3",
               "order": 3,
               "kicker": "STEP 3 OF 6 ↓",
-              "title": "Model",
+              "title": "Does it hold?",
               "description": [
-                "the layout, as arithmetic"
+                "a gate: still one sentence"
               ],
               "filters": [
                 "loop",
                 "gate"
               ],
-              "detail": "<code>npm run model</code>: the layout proved to close, with no browser. The kicker's arrow turns the corner into the return leg."
+              "detail": "The first gate on the story: if naming the actors split the sentence in two, stop and make two pages. The kicker's arrow turns the corner into the return leg."
             }
           ]
         },
@@ -396,36 +397,36 @@ window.__DOC__ = {
               "id": "p12-s4",
               "order": 1,
               "kicker": "STEP 4 OF 6",
-              "title": "Census",
+              "title": "Tell a listener",
               "description": [
-                "what each page is"
+                "a gate: can they say it back?"
               ],
               "filters": [
                 "loop",
                 "gate"
               ],
-              "detail": "<code>npm run census</code>: what each page holds, read against the sketch. The return leg is its own section, so it never needs a reversed <code>order</code>."
+              "detail": "The second gate: someone who did not write the story says it back to you. The return leg is its own section, so it never needs a reversed <code>order</code>."
             },
             {
               "id": "p12-s5",
               "order": 2,
               "kicker": "STEP 5 OF 6",
-              "title": "Look at it",
+              "title": "Hear the gap",
               "description": [
-                "what no gate can see"
+                "what they could not repeat"
               ],
               "filters": [
                 "loop"
               ],
-              "detail": "SEEN is the only evidence for slot character, channel meaning and structure."
+              "detail": "What the listener dropped is either missing from the story or something the story did not need. Both are decided before any box is drawn."
             },
             {
               "id": "p12-s6",
               "order": 3,
               "kicker": "STEP 6 OF 6 · BACK TO 1",
-              "title": "Adjust",
+              "title": "Say it again",
               "description": [
-                "recalculate, never nudge"
+                "the sentence, now tighter"
               ],
               "filters": [
                 "loop"
@@ -1159,61 +1160,61 @@ window.__DOC__ = {
               "id": "p3-a-anchor",
               "order": 1,
               "rowspan": 2,
-              "kicker": "BIG IDEA",
-              "title": "The big one first",
+              "kicker": "FIRST",
+              "title": "The step all need",
               "description": [
-                "a large idea comes first",
-                "so its company can follow"
+                "one step comes first",
+                "because the rest rely on it"
               ],
-              "detail": "When one idea is large and others belong beside it, tell the large one first and its companions right after. The page fills forward in the order you told it, so the companions land beside the large idea.",
+              "detail": "Ideas come in order when each one needs another to have happened. Find the step every other step relies on and tell it first; it stands taller because the steps after it all lean on it.",
               "variant": "accent"
             },
             {
               "id": "p3-a-beside-1",
               "order": 2,
-              "kicker": "BESIDE",
-              "title": "Beside it",
+              "kicker": "THEN",
+              "title": "What it enables",
               "description": [
-                "told second, so it sits",
-                "next to the big idea"
+                "second, because it needs",
+                "the first step done"
               ],
-              "detail": "Nothing here says 'put this on the right'. It sits beside the big idea because it comes second in the story: where a thing lands is a consequence of when you tell it.",
+              "detail": "Ask of each idea: what must already be true before it can happen? The idea that makes it true comes before it. That question, not taste, decides the order.",
               "variant": "neutral"
             },
             {
               "id": "p3-a-beside-2",
               "order": 3,
-              "kicker": "BESIDE",
-              "title": "And beside that",
+              "kicker": "THEN",
+              "title": "What follows",
               "description": [
-                "the row is full, so the",
-                "next idea goes below"
+                "each step needs the one",
+                "before it, not a later one"
               ],
-              "detail": "When the row is full, the next idea continues on the row below, still beside the big idea, which is taller than one row.",
+              "detail": "If two ideas could happen in either order, they are not a sequence: they go together, side by side, and belong to the page about what goes together.",
               "variant": "neutral"
             },
             {
               "id": "p3-a-under-1",
               "order": 4,
-              "kicker": "FORWARD",
-              "title": "Under, not back",
+              "kicker": "IN ORDER",
+              "title": "One direction",
               "description": [
-                "the story never goes back",
-                "to fill an earlier gap"
+                "the reader walks forward",
+                "and never has to go back"
               ],
-              "detail": "The reading moves forward only. An idea told later never jumps back into a gap left earlier, which is why what belongs beside something must be told before what comes after it.",
+              "detail": "A sequence reads in one direction. If the reader must jump back to understand a step, that step is out of order: move it to where what it needs has already been told.",
               "variant": "neutral"
             },
             {
               "id": "p3-a-under-2",
               "order": 5,
-              "kicker": "FORWARD",
-              "title": "The block closes",
+              "kicker": "IN ORDER",
+              "title": "The run ends",
               "description": [
-                "fifth in the story, and the",
-                "big idea's company is full"
+                "the last of the steps",
+                "that rely on the first"
               ],
-              "detail": "With this idea the big one's company is complete: it and its four companions fill the block together. Had any of them been told after the line below, it could not have joined them.",
+              "detail": "The steps that rely on the first one end here. Whatever comes next does not need them; it only comes after them, so it starts a new part below a line.",
               "variant": "neutral"
             },
             {
@@ -1222,19 +1223,19 @@ window.__DOC__ = {
               "order": 6,
               "span": 3,
               "style": "dotted",
-              "text": "the story never goes back"
+              "text": "a new part of the story"
             },
             {
               "id": "p3-a-tail",
               "order": 7,
               "span": 3,
-              "kicker": "LATE",
-              "title": "Told after the line",
+              "kicker": "AFTER",
+              "title": "The next part",
               "description": [
-                "an idea told late lands",
-                "late, whatever space is open"
+                "it comes after the steps",
+                "but does not need them"
               ],
-              "detail": "This idea spans the whole width and is told after the line, so it lands below it however much space is open above. The rule of the ideas step: decide what belongs beside a big idea before you decide what comes after it.",
+              "detail": "This idea spans the whole width and is told after the line: it follows the steps above without depending on them. The rule of the ideas step: put in order only what depends on what came before it; everything else starts a new part.",
               "variant": "muted"
             }
           ]
@@ -3977,8 +3978,8 @@ window.__DOC__ = {
           "key": "tree",
           "label": "Which rails draw the tree?",
           "steps": [
-            "Four rails, one per level of the dialect, each inset one <code>indent</code> step deeper than its parent.",
-            "The indent moves the drawn frame, not the cell, so every cell gate still measures a full track."
+            "Four rails, one per level of the deck, each inset one <code>indent</code> step deeper than its parent, each in its own hue.",
+            "The indent value moves the drawn frame, not the cell, so the tree reads by depth while every rail keeps its whole cell."
           ]
         }
       ],
@@ -4008,33 +4009,33 @@ window.__DOC__ = {
               "order": 1,
               "variant": "blue",
               "kicker": "BLUE",
-              "title": "The author",
+              "title": "The writer",
               "description": [
-                "writes the YAML"
+                "writes the first draft"
               ],
-              "detail": "The four categorical hues carry no risk or state, so they are free to name peers. Here each one names an ACTOR of the build loop, and a deck that uses the same hue for the same actor on every page lets the reader recognise it before reading a word."
+              "detail": "The four categorical hues carry no risk or state, so they are free to name peers. Here each one names an ACTOR of a publishing story: write <code>variant: blue</code> on the writer's box on every page, and the reader recognises the writer before reading a word."
             },
             {
               "id": "p11-violet",
               "order": 2,
               "variant": "violet",
               "kicker": "VIOLET",
-              "title": "The build",
+              "title": "The editor",
               "description": [
-                "refuses unknown fields"
+                "cuts what is not needed"
               ],
-              "detail": "<code>npm run build</code> is the strict schema: every field is on a whitelist and every closed value on an enum, so a typo fails loudly instead of rendering nothing."
+              "detail": "The value is the whole instruction: <code>variant: violet</code> and the box takes the deck's violet. Change the palette and every violet box changes with it, together, so the editor still reads as one actor."
             },
             {
               "id": "p11-gold",
               "order": 3,
               "variant": "gold",
               "kicker": "GOLD",
-              "title": "The model",
+              "title": "The reviewer",
               "description": [
-                "proves the layout closes"
+                "a gate: approves or returns"
               ],
-              "detail": "<code>npm run model</code> is arithmetic over the authored YAML: it proves the layout closes, with no browser. It is a member of the deck's core chip.",
+              "detail": "One hue, one actor. If gold meant the reviewer here and the budget on the next page, the colour would stop naming anything. The reviewer is a gate, so the deck's core chip lights this box.",
               "filters": [
                 "gate"
               ]
@@ -4044,11 +4045,11 @@ window.__DOC__ = {
               "order": 4,
               "variant": "clay",
               "kicker": "CLAY",
-              "title": "The census",
+              "title": "The publisher",
               "description": [
-                "states what each page is"
+                "a gate: lets it go out"
               ],
-              "detail": "<code>npm run census</code> states what each page holds (sections, nesting, widths, colours, chip members) so the person reads it against the sketch. Whether the page says the right thing is their eye's call, never a script's. It is a member of the deck's core chip.",
+              "detail": "A hue is data, not paint: the same value on the same actor is what keeps this legend true on every page. The publisher is the second gate the deck's core chip lights.",
               "filters": [
                 "gate"
               ]
@@ -5153,9 +5154,9 @@ window.__DOC__ = {
                   "kicker": "INTERNAL",
                   "title": "Three item",
                   "description": [
-                    "a third stacked box — makes Group A the one with the most",
-                    "written in it, so if stacking ever regressed it would be the",
-                    "one squeezed by a divided height and spilling onto Group B"
+                    "a third stacked box, the one with the most written in it,",
+                    "so Group A carries more text than Group B beside it, and",
+                    "each group still keeps its own height"
                   ]
                 }
               ]

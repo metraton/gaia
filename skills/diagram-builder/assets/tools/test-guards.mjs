@@ -18,7 +18,7 @@ import { widthAtTier, isBandAtTier, isBandClass, place,
   textBudget, capacityFor, isThinRowLeaf, inkBudget,
   railTitleFit, railTitleWidth, headerBudget, predictPageHeight, pageHeightAdvisory,
   CSS_TEXT } from './check-layout.mjs';
-import { DEFAULT_TOKENS } from '../engine/tokens.mjs';
+import { DEFAULT_TOKENS, TOKEN_SCHEMA, LOOKS, getPath } from '../engine/tokens.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -680,6 +680,74 @@ const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
   report('TEXT/opt-out: text_fit advisory reports without failing; a bad text_fit or viewport is refused', ok,
     `advised exit=${advised.code} badFit exit=${badFit.code} badViewport exit=${badViewport.code}\n` +
     `${advised.out}\n${badFit.out}\n${badViewport.out}`);
+  rmDeck(dir);
+}
+
+// ── 10c. LOOK — one line picks the palette and the tokens, above the floors ──
+// Every named look builds, carries its palette, and resolves to tokens at or
+// above every schema minimum. A look beside a `palette` is refused. A test look
+// injected into the fixture's LOOKS proves the floors bite on a look: one below
+// a type floor is refused by the build, one that squeezes the plane fails model's
+// LEGIBLE, and the same injection at the default plane passes (the teeth case:
+// the red comes from the squeeze, not from the injection).
+{
+  const dir = mkDeck();
+  const writeLook = (look, extra = {}) => fs.writeFileSync(path.join(dir, 'data', 'document.yaml'),
+    dumpYaml({ ...FIXTURE_DOCUMENT, look, ...extra }), 'utf8');
+  const bundle = () => {
+    const src = fs.readFileSync(path.join(dir, 'data', 'data.generated.js'), 'utf8');
+    const start = src.indexOf('window.__DOC__ = ') + 'window.__DOC__ = '.length;
+    return JSON.parse(src.slice(start, src.indexOf(';\nif (', start)));
+  };
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  const problems = [];
+  for (const [name, look] of Object.entries(LOOKS)) {
+    writeLook(name);
+    const built = runNode([buildInDir]);
+    if (built.code !== 0) { problems.push(`look ${name}: build exit ${built.code}\n${built.out}`); continue; }
+    const doc = bundle();
+    if (doc.look !== name || doc.palette !== look.palette)
+      problems.push(`look ${name}: bundle carries look ${doc.look}, palette ${doc.palette}`);
+    for (const [p, s] of Object.entries(TOKEN_SCHEMA)) {
+      const v = getPath(doc.tokens, p);
+      if (typeof s.min === 'number' && typeof v === 'number' && v < s.min)
+        problems.push(`look ${name}: tokens.${p} ${v} is below its floor ${s.min}`);
+    }
+  }
+  writeLook('brand', { palette: 'neutral' });
+  const both = runNode([buildInDir]);
+  const tokensFile = path.join(dir, 'engine', 'tokens.mjs');
+  const shipped = fs.readFileSync(tokensFile, 'utf8');
+  const anchor = "  brand: { palette: 'rose-pine', tokens: {} },";
+  const injectTestLook = tokens => {
+    fs.writeFileSync(tokensFile, shipped.replace(anchor, `${anchor}\n  test: { palette: 'neutral', tokens: ${tokens} },`), 'utf8');
+    writeLook('test');
+    const build = runNode([buildInDir]);
+    return { build, model: build.code === 0 ? runNode([CHECK, dir]) : null };
+  };
+  // section-e is one zone of 4 tracks: 34px of zone chrome and 3 gaps of 8px.
+  // At plane_max 640 a track is (640 - 34 - 24) / 4 ≈ 146px, under a 200px
+  // floor at the 1200, 1920 and 2560 tiers; at 1280 it is ≈ 306px (≈ 258px at
+  // the 1200 tier), and the collapsed tiers are wider still. The fixture's
+  // 4 × 2 rectangle has no room for more tracks, so the look raises the floor
+  // instead of adding columns, and plane_max alone separates red from control.
+  const tiny = injectTestLook('{ type: { desc: { px: 8 } } }');
+  const squeezed = injectTestLook('{ plane_max: 640, cell_min_w: 200 }');
+  const control = injectTestLook('{ plane_max: 1280, cell_min_w: 200 }');
+  // A finding line starts with [FAIL]; the closing summary also names "[FAIL] lines".
+  const failLines = run => (run.model?.out ?? '').split('\n').filter(l => l.trimStart().startsWith('[FAIL]'));
+  const squeezedFails = failLines(squeezed);
+  const ok = problems.length === 0 && shipped.includes(anchor)
+    && both.code !== 0 && both.out.includes('`look: brand` already chooses the palette')
+    && tiny.build.code !== 0 && tiny.build.out.includes('look: tokens.type.desc.px must be a number 10..24 px')
+    && squeezed.build.code === 0 && squeezed.model.code !== 0 && squeezedFails.length > 0
+    && squeezedFails.every(l => l.includes('below the 200px legible floor (cell_min_w)'))
+    && control.build.code === 0 && control.model.code === 0;
+  report('LOOK: each look builds above the floors; look+palette, a sub-floor look and a squeezing look are refused', ok,
+    `${problems.join('\n')}\nboth exit=${both.code} tiny exit=${tiny.build.code} ` +
+    `squeezed build=${squeezed.build.code} model=${squeezed.model?.code} control model=${control.model?.code}\n` +
+    `${both.out}\n${tiny.build.out}\n--- squeezed model ---\n${squeezed.model?.out ?? squeezed.build.out}\n` +
+    `--- control model ---\n${control.model?.out ?? control.build.out}`);
   rmDeck(dir);
 }
 

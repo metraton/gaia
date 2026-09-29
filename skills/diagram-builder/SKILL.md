@@ -51,9 +51,11 @@ The look has three dials, and each says one thing:
 - **treatment = structure.** It covers a dashed frame (`outside`), centred
   text, a vertical label, a frameless wrapper, and a short-row staircase. It
   changes how something is drawn, never what it means.
-- **look = where it will be seen.** One line in the document (`projector`,
-  `report`, `brand`) sets the colours and text sizes of the whole deck and never
-  changes what anything means. How to choose it is in [look.md](look.md).
+- **palette = skin.** It sets how the whole deck looks (`neutral`, `rose-pine`,
+  `rose-pine-moon`, `contrast`) and never changes what anything means. A person
+  usually reaches it through the document's one-line look (`projector`,
+  `report`, `brand`), which picks the palette and the text sizes together; how
+  to choose it is in [look.md](look.md).
 
 ## The map: from an idea to a piece
 
