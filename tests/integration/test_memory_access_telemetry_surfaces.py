@@ -58,6 +58,10 @@ for _path in (str(_REPO_ROOT), str(_BIN_DIR)):
         sys.path.insert(0, _path)
 
 WORKSPACE = "me"
+# type=user rows have no workspace: the writer lands them here, so every
+# per-row measurement below spans both workspaces.
+USER_WORKSPACE = "_gaia_user"
+_IN_CORPUS = f"workspace IN ('{WORKSPACE}', '{USER_WORKSPACE}')"
 _GAIA = _REPO_ROOT / "bin" / "gaia"
 
 INJECTION = "injection"
@@ -378,8 +382,10 @@ def seeded(tmp_path_factory) -> dict:
                 db_path=db,
             )
             if seed.class_ or seed.status:
-                reclassify_memory(WORKSPACE, seed.name, class_=seed.class_,
-                                  status=seed.status, db_path=db)
+                reclassify_memory(
+                    USER_WORKSPACE if seed.type == "user" else WORKSPACE,
+                    seed.name, class_=seed.class_, status=seed.status,
+                    db_path=db)
         _seed_episode(db)
         payload = data_dir / "checkpoint.json"
         payload.write_text(json.dumps({
@@ -425,7 +431,7 @@ def _counters(db: Path) -> dict[str, tuple[int, int, int]]:
             name: (injection, deliberate, kernel)
             for name, injection, deliberate, kernel in con.execute(
                 "SELECT name, injection_count, deliberate_count, kernel_count "
-                "FROM memory WHERE workspace = ?", (WORKSPACE,)
+                f"FROM memory WHERE {_IN_CORPUS}"
             )
         }
     finally:
@@ -531,8 +537,8 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
         con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
         try:
             return con.execute(
-                "SELECT updated_at FROM memory WHERE workspace = ? AND name = ?",
-                (WORKSPACE, row_name),
+                f"SELECT updated_at FROM memory WHERE {_IN_CORPUS} AND name = ?",
+                (row_name,),
             ).fetchone()[0]
         finally:
             con.close()
@@ -541,8 +547,7 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
         con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
         try:
             return con.execute(
-                "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
-                (WORKSPACE,),
+                f"SELECT COUNT(*) FROM memory_history WHERE {_IN_CORPUS}",
             ).fetchone()[0]
         finally:
             con.close()
@@ -592,11 +597,10 @@ def test_telemetry_never_touches_the_audited_columns(seeded):
     con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
     try:
         before_updated = dict(con.execute(
-            "SELECT name, updated_at FROM memory WHERE workspace = ?",
-            (WORKSPACE,)))
+            f"SELECT name, updated_at FROM memory WHERE {_IN_CORPUS}"))
         before_history = con.execute(
-            "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
-            (WORKSPACE,)).fetchone()[0]
+            f"SELECT COUNT(*) FROM memory_history WHERE {_IN_CORPUS}",
+        ).fetchone()[0]
     finally:
         con.close()
 
@@ -611,11 +615,10 @@ def test_telemetry_never_touches_the_audited_columns(seeded):
     con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
     try:
         after_updated = dict(con.execute(
-            "SELECT name, updated_at FROM memory WHERE workspace = ?",
-            (WORKSPACE,)))
+            f"SELECT name, updated_at FROM memory WHERE {_IN_CORPUS}"))
         after_history = con.execute(
-            "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
-            (WORKSPACE,)).fetchone()[0]
+            f"SELECT COUNT(*) FROM memory_history WHERE {_IN_CORPUS}",
+        ).fetchone()[0]
     finally:
         con.close()
 

@@ -306,13 +306,15 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
     """Durable executor-facing user-preference rows, freshest first, bounded.
 
     Selects exactly ``type='user' AND audience='executor'`` for the
-    workspace -- not ``class='anchor'`` (which mixed in anchors from
-    unrelated projects sharing the same workspace). Returns ``name`` plus
+    workspace plus the workspace-less user sentinel (``USER_WORKSPACE``) --
+    not ``class='anchor'`` (which mixed in anchors from unrelated projects
+    sharing the same workspace). Returns ``workspace`` and ``name`` plus
     ``body`` -- the name never renders in the block (that would cost a
     further ``gaia memory show`` call the agent in practice never made) but
     is needed so the kernel-axis telemetry in ``build_memory_block`` can
     bump exactly the rows that make it into the block, never a candidate
-    filtered out below. A body is injected whole; one over
+    filtered out below; the workspace tells it which of two same-named rows
+    to bump. A body is injected whole; one over
     ``_MEMORY_BODY_HARD_CEILING`` is dropped entirely instead of sliced --
     see the ceiling's own comment for why.
     """
@@ -321,12 +323,17 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
     try:
         con = _connect(db_path)
         try:
+            from gaia.store.writer import USER_WORKSPACE
+            workspaces = [workspace] + [
+                w for w in (USER_WORKSPACE,) if w != workspace
+            ]
             rows = con.execute(
-                "SELECT name, body FROM memory "
-                "WHERE workspace = ? AND type = 'user' AND audience = 'executor' "
+                "SELECT workspace, name, body FROM memory "
+                f"WHERE workspace IN ({', '.join('?' for _ in workspaces)}) "
+                "AND type = 'user' AND audience = 'executor' "
                 "AND deleted_at IS NULL "
                 "ORDER BY updated_at DESC LIMIT ?",
-                (workspace, _MEMORY_ROW_LIMIT),
+                (*workspaces, _MEMORY_ROW_LIMIT),
             ).fetchall()
         finally:
             con.close()
@@ -347,15 +354,17 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
                 len(body), _MEMORY_BODY_HARD_CEILING,
             )
             continue
-        kept.append({"name": row["name"], "body": body})
+        kept.append({
+            "workspace": row["workspace"], "name": row["name"], "body": body,
+        })
     return kept
 
 
 def _record_kernel_telemetry(
-    workspace: str, names: list, *, db_path=None,
+    rows: list, *, db_path=None,
 ) -> None:
-    """Best-effort kernel-axis bump for rows rendered into the kernel's
-    "How the user works" block. Reuses the same store-layer helper the
+    """Best-effort kernel-axis bump for the ``(workspace, name)`` rows rendered
+    into the kernel's "How the user works" block. Reuses the same store-layer helper the
     get-relevant surfaces use (``gaia.store.writer.record_memory_access``);
     never a second implementation. Bumps the ``"kernel"`` axis
     (``kernel_count``/``last_kernel_at``), NOT ``"injection"``: this block
@@ -370,15 +379,15 @@ def _record_kernel_telemetry(
     telemetry defect must never surface as a broken kernel, unlike a single
     CLI invocation.
     """
-    if not names:
+    if not rows:
         return
     try:
         from gaia.store.writer import record_memory_access
     except ImportError:
         return
-    for name in names:
+    for row_workspace, name in rows:
         try:
-            record_memory_access(workspace, name, "kernel", db_path=db_path)
+            record_memory_access(row_workspace, name, "kernel", db_path=db_path)
         except Exception:
             logger.debug(
                 "memory kernel telemetry failed (non-fatal)", exc_info=True,
@@ -399,7 +408,7 @@ def build_memory_block(workspace: str, *, db_path=None) -> str:
         lines.extend(f"  {line}" if line else "" for line in body_lines[1:])
     block = "\n".join(lines)
     _record_kernel_telemetry(
-        workspace, [row["name"] for row in rows], db_path=db_path,
+        [(row["workspace"], row["name"]) for row in rows], db_path=db_path,
     )
     return block
 

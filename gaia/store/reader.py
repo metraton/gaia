@@ -155,7 +155,7 @@ def count_pending_by_initiative(
     Mirrors the selection predicate ``bin/cli/memory.py::_PENDING_VIVO_SELECT``
     (``class='thread'``, ``status`` in ``carry_forward``/``open``,
     ``deleted_at IS NULL``, a supersedes-destination row excluded) plus the
-    host-sentinel union ``_reader_workspaces`` performs there -- keep both
+    host- and user-sentinel union ``_reader_workspaces`` performs there -- keep both
     aligned if either changes; a count here that diverges from what
     ``gaia memory get-relevant --initiative <key>`` returns for the same key
     is exactly the drift this function exists to prevent, since a project's
@@ -167,11 +167,10 @@ def count_pending_by_initiative(
     if not initiatives:
         return {}
     try:
-        from gaia.store.writer import HOST_WORKSPACE
-        workspaces = (
-            [workspace] if workspace == HOST_WORKSPACE
-            else [workspace, HOST_WORKSPACE]
-        )
+        from gaia.store.writer import HOST_WORKSPACE, USER_WORKSPACE
+        workspaces = [workspace] + [
+            w for w in (HOST_WORKSPACE, USER_WORKSPACE) if w != workspace
+        ]
     except Exception:
         workspaces = [workspace]
 

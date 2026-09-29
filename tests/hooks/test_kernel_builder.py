@@ -256,16 +256,17 @@ def test_cli_block_workspace_line_points_at_get_contract_not_get():
 
 
 def _seed_memory_row(con, *, name, type_="user", audience="executor",
-                      body="b", class_="anchor", updated_at="2026-01-01T00:00:00Z"):
+                      body="b", class_="anchor", updated_at="2026-01-01T00:00:00Z",
+                      workspace=WORKSPACE):
     con.execute(
         "INSERT INTO workspaces (name, identity) VALUES (?, ?) "
         "ON CONFLICT(name) DO NOTHING",
-        (WORKSPACE, WORKSPACE),
+        (workspace, workspace),
     )
     con.execute(
         "INSERT INTO memory (workspace, name, type, body, class, "
         "updated_at, audience) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (WORKSPACE, name, type_, body, class_, updated_at, audience),
+        (workspace, name, type_, body, class_, updated_at, audience),
     )
 
 
@@ -375,6 +376,98 @@ def test_memory_block_empty_when_only_non_matching_rows_exist(tmp_path):
         con.close()
 
     assert build_memory_block(WORKSPACE, db_path=db) == ""
+
+
+# ---------------------------------------------------------------------------
+# User memory has no workspace (brief una-gaia-cualquier-instalacion, AC-11):
+# a type=user audience=executor row in the workspace-less sentinel reaches the
+# kernel of a born row in ANY workspace, alongside that workspace's own rows.
+# ---------------------------------------------------------------------------
+
+USER_SENTINEL = "_gaia_user"
+
+
+def test_memory_block_includes_sentinel_user_rows_from_any_workspace(tmp_path):
+    db = tmp_path / "gaia.db"
+    from gaia.store.writer import _connect
+
+    con = _connect(db)
+    try:
+        _seed_memory_row(
+            con, name="user_sentinel_executor_pref", workspace=USER_SENTINEL,
+            body="Sentinel preference for every executor.",
+        )
+        _seed_memory_row(
+            con, name="user_sentinel_orchestrator_pref", workspace=USER_SENTINEL,
+            audience="orchestrator", body="Orchestrator-only sentinel note.",
+        )
+        _seed_memory_row(
+            con, name="atom_sentinel_not_user", workspace=USER_SENTINEL,
+            type_="atom", class_="log", body="Not a user row.",
+        )
+        _seed_memory_row(
+            con, name="user_own_workspace_pref", workspace="other",
+            body="Preference stored in the born row's own workspace.",
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    block = build_memory_block("other", db_path=db)
+    assert "Sentinel preference for every executor." in block
+    assert "Preference stored in the born row's own workspace." in block
+    assert "Orchestrator-only sentinel note." not in block
+    assert "Not a user row." not in block
+
+    kernel = build_kernel_context(
+        _base_row(workspace="other"), db_path=db,
+    )
+    assert "Sentinel preference for every executor." in kernel
+
+
+def test_memory_block_never_reads_another_workspaces_user_rows(tmp_path):
+    db = tmp_path / "gaia.db"
+    from gaia.store.writer import _connect
+
+    con = _connect(db)
+    try:
+        _seed_memory_row(
+            con, name="user_legacy_me_pref", workspace="me",
+            body="Legacy row still under me.",
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    assert build_memory_block("other", db_path=db) == ""
+
+
+def test_memory_block_bumps_kernel_telemetry_on_the_sentinel_row(tmp_path):
+    db = tmp_path / "gaia.db"
+    from gaia.store.writer import _connect
+
+    con = _connect(db)
+    try:
+        _seed_memory_row(
+            con, name="user_sentinel_executor_pref", workspace=USER_SENTINEL,
+            body="Sentinel preference.",
+        )
+        _seed_memory_row(
+            con, name="user_sentinel_executor_pref", workspace="other",
+            body="Same slug in the born row's workspace.",
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    build_memory_block("other", db_path=db)
+
+    assert _telemetry_row(
+        db, "user_sentinel_executor_pref", USER_SENTINEL,
+    )["kernel_count"] == 1
+    assert _telemetry_row(
+        db, "user_sentinel_executor_pref", "other",
+    )["kernel_count"] == 1
 
 
 # ---------------------------------------------------------------------------

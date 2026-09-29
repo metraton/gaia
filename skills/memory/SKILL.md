@@ -65,7 +65,7 @@ enforces the destination after that choice; `reference.md` owns its mechanics.
    sweep is what finds it. For a project initiative that gap is a scoping
    hypothesis — confirm with the right `--workspace` before trusting the
    empty result. It is not one for a host-scoped initiative (`gaia_system`):
-   every reader unions the caller's workspace with `_gaia_host`
+   every reader unions the caller's workspace with `_gaia_host` and `_gaia_user`
    (`bin/cli/memory.py::_reader_workspaces`), so an empty
    `gaia memory get-relevant --initiative` there already covers every
    workspace and is the complete answer.
@@ -83,7 +83,7 @@ enforces the destination after that choice; `reference.md` owns its mechanics.
    | Operation | Handling |
    |---|---|
    | `add`/`append`/`reclassify`/`link` on `project`/`feedback`/`atom`/`negative` rows | autonomous, brief report |
-   | `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop) |
+   | `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the sentinel `_gaia_user`, and a name already there is reported (`user_name_collision`), never overwritten — change it with `edit --workspace _gaia_user` |
    | contradicting or superseding a user `decision_*` row | ask first |
    | `edit`/`delete` | T3 approval flow; delegate to a specialist and never autoexecute |
    | `checkpoint` | autonomous after the milestone test; it is one atomic operation and remains all-or-nothing |

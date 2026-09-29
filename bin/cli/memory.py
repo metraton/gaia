@@ -677,7 +677,10 @@ def _cmd_add(args) -> int:
     # "silent NULL by absence" this contract forbids. Scope inference from
     # natural language ("the century project") lives in the ORCHESTRATOR, not
     # in this function; the function only accepts explicit, resolvable scope.
-    if project_flag is None and project_ref_flag is None and workspace_flag is None:
+    # type=user is the exception: it has no workspace (USER_WORKSPACE), so
+    # there is no scope to be missing.
+    if (mem_type != "user" and project_flag is None
+            and project_ref_flag is None and workspace_flag is None):
         return _err_structured(
             "no scope provided: pass at least one of --project (preferred) or "
             "--workspace. Refusing to write with project/workspace both empty "
@@ -694,6 +697,7 @@ def _cmd_add(args) -> int:
             project_workspaces, VALID_MEMORY_TYPES,
             normalize_initiative, initiative_from_project_ref,
             HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
+            MemoryUserScopeError, USER_WORKSPACE,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -779,7 +783,7 @@ def _cmd_add(args) -> int:
             initiative=initiative,
             audience=audience_flag,
         )
-    except MemoryHostScopeError as exc:
+    except (MemoryHostScopeError, MemoryUserScopeError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -795,7 +799,10 @@ def _cmd_add(args) -> int:
     # requested --workspace/env/cwd; `res["workspace"]` is the writer's
     # authoritative answer, so every downstream use (reclassify, output)
     # follows it rather than re-deriving the same rule here.
-    host_scoped_notice = initiative in HOST_SCOPED_INITIATIVES
+    host_scoped_notice = (
+        initiative in HOST_SCOPED_INITIATIVES and mem_type != "user"
+    )
+    user_scoped_notice = mem_type == "user"
     workspace = res.get("workspace", workspace)
 
     # T5: apply class/status if either flag was supplied. The reclassify
@@ -845,6 +852,8 @@ def _cmd_add(args) -> int:
             out["memory_status"] = reclassify_result["memory_status"]
         if host_scoped_notice:
             out["host_scoped"] = True
+        if user_scoped_notice:
+            out["user_scoped"] = True
         print(json.dumps(out, indent=2))
     else:
         verb = "Updated" if res.get("action") == "updated" else "Created"
@@ -861,6 +870,11 @@ def _cmd_add(args) -> int:
         if host_scoped_notice:
             print(
                 f"  initiative host-scoped: escrita en {HOST_WORKSPACE}, "
+                f"--workspace ignorado"
+            )
+        if user_scoped_notice:
+            print(
+                f"  type user sin workspace: escrita en {USER_WORKSPACE}, "
                 f"--workspace ignorado"
             )
         if reclassify_result is not None:
@@ -1057,8 +1071,10 @@ def _cmd_checkpoint(args) -> int:
     # Host-scope forces the whole checkpoint into HOST_WORKSPACE regardless
     # of the requested --workspace/env/cwd; `res["workspace"]` is the
     # writer's authoritative answer.
+    user_scoped_notice = payload["resumen"]["type"] == "user"
     host_scoped_notice = (
         normalize_initiative(initiative_flag) in HOST_SCOPED_INITIATIVES
+        and not user_scoped_notice
     )
     workspace = res.get("workspace", workspace)
 
@@ -1076,6 +1092,8 @@ def _cmd_checkpoint(args) -> int:
             out["project_ref"] = project_ref
         if host_scoped_notice:
             out["host_scoped"] = True
+        if user_scoped_notice:
+            out["user_scoped"] = True
         print(json.dumps(out, indent=2))
     else:
         anchor = res.get("anchor") or {}
@@ -1150,7 +1168,7 @@ def _cmd_list(args) -> int:
         rows = list_memory(
             workspace, type=type_filter, audience=audience_filter,
             class_=class_filter, status=status_filter, order_by=order_by,
-            direction=direction,
+            direction=direction, with_user_scope=True,
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -1524,20 +1542,24 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
             # NOT IN subquery: exclude rows that are the destination of any
             # supersedes edge. A row A with an incoming `supersedes` from B
             # means "B replaces A" -- A drops out of the injection.
+            # The caller's workspace plus the user sentinel: type=user rows
+            # have no workspace, so they are read from every vantage.
+            section_workspaces = _section_workspaces(workspace)
+            ws_ph = ", ".join("?" for _ in section_workspaces)
             base_select = (
-                "SELECT name, type, description, body, updated_at, class, "
-                "       status, project_ref "
+                "SELECT workspace, name, type, description, body, updated_at, "
+                "       class, status, project_ref "
                 "FROM memory "
-                "WHERE workspace = ? "
+                f"WHERE workspace IN ({ws_ph}) "
                 # scan-v2 SV3: a soft-deleted (tombstoned) row must not be
                 # injected into the SessionStart memory block.
                 "  AND deleted_at IS NULL "
                 "  AND name NOT IN ("
                 "    SELECT dst_name FROM memory_links "
-                "    WHERE workspace = ? AND kind = 'supersedes'"
+                f"    WHERE workspace IN ({ws_ph}) AND kind = 'supersedes'"
                 "  ) "
             )
-            base_params: list = [workspace, workspace]
+            base_params: list = section_workspaces + section_workspaces
 
             # v32: cwd anchoring removed. Rows are workspace-scoped only; the
             # launch directory neither filters nor prioritises them. order_prefix
@@ -1669,7 +1691,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 "description": body,
                 "project_ref": r.get("project_ref"),
             })
-            telemetry_names_by_section["anchor"].append(name)
+            telemetry_names_by_section["anchor"].append(
+                (r.get("workspace") or workspace, name)
+            )
         if len(out) <= 2:
             return []
         return out
@@ -1708,7 +1732,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 "description": desc,
                 "project_ref": r.get("project_ref"),
             })
-            telemetry_names_by_section[section_key].append(name)
+            telemetry_names_by_section[section_key].append(
+                (r.get("workspace") or workspace, name)
+            )
         out.append("")  # blank line between sections
         return out
 
@@ -1812,11 +1838,11 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     # actually saw, never per row merely selected. Fired after the block/
     # payload are fully computed, so a telemetry failure can never affect
     # what this command returns.
-    _bump_injection_telemetry(
-        workspace,
-        [n for sec in ("carry_forward", "anchor", "thread_open")
-         for n in telemetry_names_by_section[sec]],
-    )
+    for row_workspace, row_name in (
+        pair for sec in ("carry_forward", "anchor", "thread_open")
+        for pair in telemetry_names_by_section[sec]
+    ):
+        _bump_injection_telemetry(row_workspace, [row_name])
 
     # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
     # pointer is never the line that gets dropped; its length was reserved from
@@ -1868,20 +1894,33 @@ _PENDING_VIVO_SELECT = (
 )
 
 
-def _reader_workspaces(workspace: str) -> list[str]:
-    """Workspaces a canonical read should union: the caller's own workspace
-    plus the host sentinel (:data:`gaia.store.writer.HOST_WORKSPACE`), so a
-    host-scoped row -- forced into the sentinel at write time by
-    ``apply_host_scope`` -- is reachable from any vantage. Deduped when the
-    caller's workspace already IS the sentinel.
-    """
+def _section_workspaces(workspace: str) -> list[str]:
+    """The caller's workspace plus the user sentinel
+    (:data:`gaia.store.writer.USER_WORKSPACE`), so a type=user row is reachable
+    from any vantage. Deduped when the caller's workspace already IS it."""
     try:
-        from gaia.store.writer import HOST_WORKSPACE
+        from gaia.store.writer import USER_WORKSPACE
     except ImportError:
         return [workspace]
-    if workspace == HOST_WORKSPACE:
+    return [workspace] + [w for w in (USER_WORKSPACE,) if w != workspace]
+
+
+def _reader_workspaces(workspace: str) -> list[str]:
+    """Workspaces a canonical read should union: the caller's own workspace
+    plus both sentinels, so a host-scoped row (forced into
+    :data:`gaia.store.writer.HOST_WORKSPACE` at write time by
+    ``apply_host_scope``) and a user row (forced into
+    :data:`gaia.store.writer.USER_WORKSPACE`) are reachable from any vantage.
+    Deduped when the caller's workspace already IS a sentinel. Mirrored by
+    ``gaia.store.reader.count_pending_by_initiative``.
+    """
+    try:
+        from gaia.store.writer import HOST_WORKSPACE, USER_WORKSPACE
+    except ImportError:
         return [workspace]
-    return [workspace, HOST_WORKSPACE]
+    return [workspace] + [
+        w for w in (HOST_WORKSPACE, USER_WORKSPACE) if w != workspace
+    ]
 
 
 def _collapse_desc(text: str) -> str:
@@ -1912,7 +1951,7 @@ def _bucket_key(initiative) -> str:
 def _fetch_pending_vivo(workspace: str, extra_where: str = "",
                         extra_params=None) -> list:
     """Return live-pending thread rows for ``workspace`` UNIONED with the host
-    sentinel (see ``_reader_workspaces``), freshest first.
+    and user sentinels (see ``_reader_workspaces``), freshest first.
 
     Never raises: any DB/import error yields an empty list so the SessionStart
     contract stays fail-safe.
@@ -2361,7 +2400,9 @@ def _cmd_curated_show(args) -> int:
     want_history = getattr(args, "history", False)
 
     try:
-        from gaia.store.writer import get_memory, record_memory_access, HOST_WORKSPACE
+        from gaia.store.writer import (
+            get_memory, record_memory_access, HOST_WORKSPACE, USER_WORKSPACE,
+        )
         from gaia.store.reader import (
             get_memory_class_status, memory_links_for, memory_history_for,
         )
@@ -2369,6 +2410,12 @@ def _cmd_curated_show(args) -> int:
         return _err(f"gaia.store not importable: {exc}", as_json)
 
     row = get_memory(workspace, name)
+    # A user row (type=user) has no workspace either: same one-probe fallback
+    # to its sentinel as the host-scoped row below.
+    if row is None and workspace != USER_WORKSPACE:
+        row = get_memory(USER_WORKSPACE, name)
+        if row is not None:
+            workspace = USER_WORKSPACE
     # (workspace, name) is the PK -- a slug is not resolved by name alone. A
     # host-scoped row now lives under HOST_WORKSPACE regardless of the caller's
     # own vantage, so a miss under the resolved workspace falls back to the
@@ -3540,7 +3587,10 @@ def register(subparsers):
         "--type", required=True,
         choices=("project", "user", "feedback", "atom", "decision", "negative"),
         help="Memory type. Curated taxonomy (atom/decision/negative) "
-             "requires slug prefix matching the type, e.g. 'atom_node_20'.",
+             "requires slug prefix matching the type, e.g. 'atom_node_20'. "
+             "'user' has no workspace: it needs no scope flag, is written to "
+             "the _gaia_user scope from any workspace, and a name already "
+             "there is reported, not overwritten.",
     )
     _add_body_group = add_p.add_mutually_exclusive_group(required=True)
     _add_body_group.add_argument(

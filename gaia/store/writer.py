@@ -2227,6 +2227,44 @@ def apply_host_scope(
     return HOST_WORKSPACE
 
 
+# User-scope (brief una-gaia-cualquier-instalacion, AC-11): who the user is
+# does not depend on the project a session opened in, so every type=user row
+# lives under this workspace-less sentinel, the same shape as HOST_WORKSPACE.
+# Readers union it in (memory get-relevant, the executor kernel); rows written
+# before this rule still sit under their old workspace until the governed
+# relocation moves them here.
+USER_WORKSPACE = "_gaia_user"
+
+
+class MemoryUserScopeError(ValueError):
+    """Raised when a user-scoped write or move breaks the sentinel's rule: a
+    name already stored there, a non-user row moved in, or a user row moved
+    out. Carries a stable ``code`` for the CLI, like
+    :class:`MemoryHostScopeError`."""
+
+    def __init__(self, message: str, *, code: str = "user_scope") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def resolve_memory_workspace(
+    workspace: str,
+    mem_type: str,
+    initiative: str | None,
+    project_ref: str | None,
+) -> str:
+    """Workspace a curated-memory write really lands in.
+
+    ``type='user'`` always resolves to :data:`USER_WORKSPACE`, whatever
+    ``--workspace``/env/cwd asked for; it outranks host-scope because it names
+    the person, not a Gaia component, and keeps any project anchor it carries.
+    Every other type follows :func:`apply_host_scope`.
+    """
+    if mem_type == "user":
+        return USER_WORKSPACE
+    return apply_host_scope(workspace, initiative, project_ref)
+
+
 # ---------------------------------------------------------------------------
 # Structural enforcement: curated memory is owned by the orchestrator-operator
 # pair. When a subagent dispatch carries GAIA_DISPATCH_AGENT, only those two
@@ -2651,15 +2689,18 @@ def upsert_memory(
     'executor'/'orchestrator' back to 'any'. On INSERT of a brand-new row,
     ``None`` resolves to the schema's own default ('any') rather than NULL.
     Must be one of :data:`VALID_MEMORY_AUDIENCES` when set.
+
+    A ``type='user'`` row lands in :data:`USER_WORKSPACE`, and a name already
+    live there raises :class:`MemoryUserScopeError` (``user_name_collision``)
+    instead of replacing the stored row.
     """
     _assert_dispatch_can_write_memory()
 
     initiative = canonical_project_key(project_ref, initiative)
 
-    # Host-scope: gaia_system (and any future HOST_SCOPED_INITIATIVES) always
-    # lands in the sentinel workspace, ignoring whatever --workspace/env/cwd
-    # resolved it, and refuses a project anchor outright.
-    workspace = apply_host_scope(workspace, initiative, project_ref)
+    # User-scope and host-scope: a sentinel workspace overrides whatever
+    # --workspace/env/cwd resolved (see resolve_memory_workspace).
+    workspace = resolve_memory_workspace(workspace, type, initiative, project_ref)
 
     if type not in VALID_MEMORY_TYPES:
         raise ValueError(
@@ -2686,9 +2727,19 @@ def upsert_memory(
             _ensure_workspace_row(con, workspace, workspace_path)
 
             existing = con.execute(
-                "SELECT name FROM memory WHERE workspace = ? AND name = ?",
+                "SELECT name, deleted_at FROM memory "
+                "WHERE workspace = ? AND name = ?",
                 (workspace, name),
             ).fetchone()
+            if (workspace == USER_WORKSPACE and existing is not None
+                    and existing["deleted_at"] is None):
+                raise MemoryUserScopeError(
+                    f"user memory {name!r} already exists in the user scope "
+                    f"({USER_WORKSPACE}); it was not overwritten. Change it "
+                    f"with `gaia memory edit --workspace {USER_WORKSPACE} "
+                    f"--name {name}`, or pick another name.",
+                    code="user_name_collision",
+                )
             action = "updated" if existing is not None else "inserted"
 
             now = _now_iso()
@@ -3485,7 +3536,7 @@ def _upsert_checkpoint_row(
 
     if initiative is None:
         initiative = initiative_from_project_ref(project_ref)
-    workspace = apply_host_scope(workspace, initiative, project_ref)
+    workspace = resolve_memory_workspace(workspace, mem_type, initiative, project_ref)
 
     existing = con.execute(
         "SELECT name FROM memory WHERE workspace = ? AND name = ?",
@@ -3647,7 +3698,9 @@ def close_session_memory(
 
     if initiative is not None:
         initiative = normalize_initiative(initiative)
-    effective_workspace = apply_host_scope(workspace, initiative, project_ref)
+    effective_workspace = resolve_memory_workspace(
+        workspace, record_type, initiative, project_ref,
+    )
 
     # -- one connection, one BEGIN, one commit/rollback -----------------------
     con = _connect(db_path)
@@ -3835,10 +3888,12 @@ def list_memory(
     include_deleted: bool = False,
     order_by: str = "name",
     direction: str | None = None,
+    with_user_scope: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
     """List curated memory rows, optionally filtered by ``type``/``audience``/
-    ``class_``/``status``.
+    ``class_``/``status``. ``with_user_scope`` adds the workspace-less
+    :data:`USER_WORKSPACE` rows to the listing of ``workspace``.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
@@ -3879,10 +3934,13 @@ def list_memory(
     order_clause = f"{sort_column} {direction.upper()}"
     if sort_column != "name":
         order_clause += ", name ASC"
+    workspaces = [workspace]
+    if with_user_scope and workspace != USER_WORKSPACE:
+        workspaces.append(USER_WORKSPACE)
     con = _connect(db_path)
     try:
-        where = ["workspace = ?"]
-        params: list = [workspace]
+        where = [f"workspace IN ({', '.join('?' for _ in workspaces)})"]
+        params: list = list(workspaces)
         if type is not None:
             where.append("type = ?")
             params.append(type)
@@ -7132,6 +7190,8 @@ def relocate_memory(
             :data:`HOST_WORKSPACE`. Moving a host-scoped row INTO the sentinel
             is always allowed regardless of ``from_workspace`` -- that is the
             migration path for a row written before this rule existed.
+        MemoryUserScopeError: a non-user row targets :data:`USER_WORKSPACE`,
+            or a row is moved OUT of it.
         MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
     """
     _assert_dispatch_can_write_memory()
@@ -7165,12 +7225,23 @@ def relocate_memory(
 
             for name in name_list:
                 src = con.execute(
-                    "SELECT initiative FROM memory WHERE workspace = ? AND name = ?",
+                    "SELECT initiative, type FROM memory "
+                    "WHERE workspace = ? AND name = ?",
                     (from_workspace, name),
                 ).fetchone()
                 if src is None:
                     missing.append(name)
                     continue
+
+                if ((to_workspace == USER_WORKSPACE and src["type"] != "user")
+                        or from_workspace == USER_WORKSPACE):
+                    raise MemoryUserScopeError(
+                        f"relocate_memory: {name!r} (type={src['type']!r}) "
+                        f"cannot move {from_workspace!r} -> {to_workspace!r}; "
+                        f"the user scope {USER_WORKSPACE!r} holds exactly the "
+                        f"type='user' rows and they never leave it",
+                        code="user_scope_move",
+                    )
 
                 if (to_workspace != HOST_WORKSPACE
                         and src["initiative"] in HOST_SCOPED_INITIATIVES):
