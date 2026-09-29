@@ -77,7 +77,10 @@ absent):
    more than 1 is an error -- and checks every registered command resolves to
    an existing interpreter and file, which catches what `npm uninstall` leaves.
    The plugin with no hooks in the workspace settings is the healthy state.
-3. **workspace `node_modules/@jaguilar87/gaia`** (doctor `Install provenance`).
+3. **workspace `node_modules/@jaguilar87/gaia`**, or the `gaia-dev` plugin
+   directory that `gaia dev --channel plugin` serves (doctor `Install
+   provenance`: one record per channel, with the source SHA it was built from
+   and how many commits the source has moved since).
 4. **global npm** (`~/.npm-global`) -- reconciled to the origin by `gaia dev`
    via `npm link` (`install.reconcile_global_via_npm_link`); doctor warns on a
    PATH-shadowing global (POSIX + Windows).

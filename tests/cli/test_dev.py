@@ -1235,5 +1235,181 @@ class TestPackModeReportsTheDevIteration(unittest.TestCase):
         self.assertIsNone(read_record("9.9.9"))
 
 
+# ---------------------------------------------------------------------------
+# --channel: npm, plugin, opencode, all; --host kept as its alias
+# ---------------------------------------------------------------------------
+
+_FAKE_CLAUDE = """#!{python}
+import json, os, sys
+from pathlib import Path
+state_path = Path(__file__).with_name("state.json")
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+state["calls"].append(args)
+if args[:3] == ["plugin", "marketplace", "list"]:
+    print(json.dumps(state["marketplaces"]))
+elif args[:2] == ["plugin", "list"]:
+    print(json.dumps(state["plugins"]))
+elif args[:3] == ["plugin", "marketplace", "add"]:
+    state["marketplaces"].append({{"name": "gaia-dev", "source": "directory", "installLocation": args[3]}})
+elif args[:2] == ["plugin", "install"]:
+    state["plugins"].append({{"id": args[2], "scope": "local", "projectPath": os.getcwd()}})
+state_path.write_text(json.dumps(state))
+"""
+
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """A `claude` on PATH that records its calls and keeps its registry in a file, never in HOME."""
+    import shutil
+
+    real = shutil.which("claude")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "claude"
+    script.write_text(_FAKE_CLAUDE.format(python=sys.executable))
+    script.chmod(0o755)
+    state = bin_dir / "state.json"
+    state.write_text(json.dumps({"marketplaces": [], "plugins": [], "calls": []}))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return {"state": state, "real": real}
+
+
+def _channel_args(workspace, **overrides):
+    values = {"workspace": str(workspace), "channel": None, "host": "all", "quiet": True,
+              "verbose": False, "keep_tarball": False, "pack_dest": None,
+              "no_global_link": False, "from_worktree": None, "ref": None}
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+@pytest.mark.skipif(not _npm_available(), reason="npm not available in this environment")
+def test_channel_plugin_builds_the_directory_claude_code_loads(tmp_path, monkeypatch, fake_claude):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", str(tmp_path / "plugins"))
+    monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm-cache"))
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+    npm_hook = f"python3 {workspace / '.claude' / 'hooks' / 'pre_tool_use.py'}"
+    (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+        "enabledPlugins": {"other@elsewhere": True},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": npm_hook},
+            {"type": "command", "command": "echo mine"},
+        ]}]},
+    }))
+
+    with redirect_stdout(io.StringIO()) as out:
+        rc = cmd_dev(_channel_args(workspace, channel="plugin", quiet=False))
+    assert rc == 0, out.getvalue()
+
+    directory = dev_mod._dev_plugin.plugin_dir(workspace)
+    assert directory.is_dir() and not directory.is_symlink()
+    assert "/reload-plugins" in out.getvalue() and str(directory) in out.getvalue()
+    marketplace = json.loads((directory / ".claude-plugin" / "marketplace.json").read_text())
+    assert marketplace["name"] == "gaia-dev"
+    assert [(p["name"], p["source"], "version" in p) for p in marketplace["plugins"]] == [("gaia", ".", False)]
+    manifest = json.loads((directory / ".claude-plugin" / "plugin.json").read_text())
+    assert manifest["name"] == "gaia"
+    hooks_text = (directory / "hooks" / "hooks.json").read_text()
+    assert "${CLAUDE_PLUGIN_ROOT}/" in hooks_text
+    assert str(workspace) not in hooks_text and ".claude/hooks" not in hooks_text
+    gaia_bin = directory / "bin" / "gaia"
+    assert os.access(gaia_bin, os.X_OK) and not (directory / "node_modules").exists()
+    version = subprocess.run([str(gaia_bin), "--version"], capture_output=True, text=True, timeout=60)
+    assert version.returncode == 0 and manifest["version"] in version.stdout, version.stderr
+    assert any((directory / "skills").iterdir()) and any((directory / "agents").iterdir())
+
+    local = json.loads((workspace / ".claude" / "settings.local.json").read_text())
+    assert local["enabledPlugins"] == {
+        "other@elsewhere": True, "gaia@gaia-dev": True, "gaia@gaia-marketplace": False}
+    assert [h["command"] for e in local["hooks"]["PreToolUse"] for h in e["hooks"]] == ["echo mine"]
+    calls = json.loads(fake_claude["state"].read_text())["calls"]
+    assert ["plugin", "marketplace", "add", str(directory), "--scope", "local"] in calls
+    assert ["plugin", "install", "gaia@gaia-dev", "--scope", "local"] in calls
+    assert not (home / ".claude").exists()
+    conftest_data_dir = "_gaia_isolated_data"
+    written = {p.name for p in tmp_path.iterdir()} - {conftest_data_dir}
+    assert written <= {"bin", "data", "home", "npm-cache", "ws"}
+
+    if fake_claude["real"] is None:
+        pytest.skip("claude CLI not on PATH: claude plugin validate not run")
+    validate = subprocess.run([fake_claude["real"], "plugin", "validate", str(directory)],
+                              capture_output=True, text=True, timeout=120)
+    assert validate.returncode == 0, validate.stdout + validate.stderr
+
+
+def test_channel_plugin_registration_is_skipped_when_already_local(tmp_path, fake_claude):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    directory = tmp_path / "plugin"
+    directory.mkdir()
+    fake_claude["state"].write_text(json.dumps({
+        "marketplaces": [{"name": "gaia-dev", "installLocation": str(directory)}],
+        "plugins": [{"id": "gaia@gaia-dev", "scope": "local", "projectPath": str(workspace)}],
+        "calls": [],
+    }))
+    result = dev_mod._dev_plugin.register_plugin(workspace, directory)
+    assert result["action"] == "noop"
+    calls = json.loads(fake_claude["state"].read_text())["calls"]
+    assert [c[:3] for c in calls] == [["plugin", "marketplace", "list"], ["plugin", "list", "--json"]]
+
+
+def test_channel_plugin_refuses_a_gaia_dev_marketplace_elsewhere(tmp_path, fake_claude):
+    fake_claude["state"].write_text(json.dumps({
+        "marketplaces": [{"name": "gaia-dev", "installLocation": str(tmp_path / "other")}],
+        "plugins": [], "calls": [],
+    }))
+    result = dev_mod._dev_plugin.register_plugin(tmp_path, tmp_path / "plugin")
+    assert result["action"] == "error" and "already points at" in result["details"]
+    assert all(c[:3] != ["plugin", "marketplace", "add"]
+               for c in json.loads(fake_claude["state"].read_text())["calls"])
+
+
+@pytest.mark.parametrize("alias,channel", [("claude_code", "npm"), ("opencode", "opencode")])
+def test_channel_host_alias_installs_the_same_package(tmp_path, monkeypatch, alias, channel):
+    calls = []
+    monkeypatch.setattr(dev_mod, "_run_pack_mode", lambda ws, **kw: calls.append(("pack", kw["host"])) or 0)
+    monkeypatch.setattr(dev_mod, "_run_plugin_channel", lambda ws, **kw: calls.append(("plugin",)) or 0)
+    assert cmd_dev(_channel_args(tmp_path, host=alias)) == 0
+    assert cmd_dev(_channel_args(tmp_path, channel=channel)) == 0
+    assert calls[0] == calls[1] and len(calls) == 2
+
+
+@pytest.mark.parametrize("channel,expected", [
+    (None, [("pack", "all")]),
+    ("plugin", [("plugin",)]),
+    ("all", [("pack", "all"), ("plugin",)]),
+])
+def test_channel_selection_runs_package_channels_before_the_plugin(tmp_path, monkeypatch, channel, expected):
+    calls = []
+    monkeypatch.setattr(dev_mod, "_run_pack_mode", lambda ws, **kw: calls.append(("pack", kw["host"])) or 0)
+    monkeypatch.setattr(dev_mod, "_run_plugin_channel", lambda ws, **kw: calls.append(("plugin",)) or 0)
+    assert cmd_dev(_channel_args(tmp_path, channel=channel)) == 0
+    assert calls == expected
+
+
+@pytest.mark.parametrize("argv", [["dev", "--channel", "plugin", "--host", "opencode"],
+                                  ["dev", "--channel", "bogus"]])
+def test_channel_parse_rejects_conflicts_and_unknown_values(argv):
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers(dest="command"))
+    with redirect_stderr(io.StringIO()), pytest.raises(SystemExit):
+        parser.parse_args(argv)
+
+
+def test_channel_help_documents_channel_and_host_alias():
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers(dest="command"))
+    with redirect_stdout(io.StringIO()) as out, pytest.raises(SystemExit):
+        parser.parse_args(["dev", "--help"])
+    text = out.getvalue()
+    assert "--channel {npm,plugin,opencode,all}" in text
+    assert "/reload-plugins" in text and "Alias kept for compatibility" in text
+
+
 if __name__ == "__main__":
     unittest.main()

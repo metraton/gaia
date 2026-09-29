@@ -19,7 +19,7 @@ Checks (in order):
   53. skill-cross-refs   - agent `skills:` refs resolve to skills/<name>/SKILL.md
   55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
   56. source-parity     - installed package == the Gaia source checkout it was built from
-  57. install-provenance - local (file:) vs npm install; mode, version, symlink resolution
+  57. install-provenance - gaia dev records per channel (source SHA, commits behind, drift); else file: vs npm install
   58. global-cli-alignment - PATH gaia vs workspace-expected install (version/content drift)
   59. executed-copy-alignment - node_modules/@jaguilar87/gaia resolves to the checkout, or a
                         stale tarball the pin restored over a dev link (names the realpath)
@@ -1661,19 +1661,34 @@ def _gaia_dep_spec(project_root: Path) -> "str | None":
     return None
 
 
+def _provenance_summary(record: dict) -> str:
+    """One channel's line: which channel, built from which commit, how far behind, what drifted."""
+    commit = record.get("commit") or "unknown commit"
+    line = f"{record.get('channel', 'npm')} channel from {commit[:12]}"
+    if record.get("behind"):
+        line += f", {record['behind']} commit(s) behind the source HEAD"
+    diagnostics = record.get("diagnostics") or []
+    return f"{line}: " + ("; ".join(diagnostics) if diagnostics
+                          else "recorded source, artifact and destination match")
+
+
 @register_check("Install provenance", order=57)
 def check_install_provenance(project_root: Path) -> dict:
     """Diagnose recorded dev-install drift, retaining legacy resolution checks when no record exists."""
     from gaia.install_provenance import inspect_install
 
     name = "Install provenance"
-    provenance = inspect_install(project_root, _gaia_dep_spec(project_root))
-    if provenance is not None:
-        diagnostics = provenance["diagnostics"]
-        result = _result(name, "error" if diagnostics else "pass",
-                         "; ".join(diagnostics) if diagnostics else "recorded source, artifact and destination match",
+    records = [record for record in (
+        inspect_install(project_root, _gaia_dep_spec(project_root)),
+        inspect_install(project_root, None, channel="plugin"),
+    ) if record is not None]
+    if records:
+        diagnostics = [d for record in records for d in record["diagnostics"]]
+        summary = "; ".join(_provenance_summary(record) for record in records)
+        result = _result(name, "error" if diagnostics else "pass", summary,
                          "Inspect provenance and reinstall from the selected source if intended")
-        result["provenance"] = provenance
+        result["provenance"] = records[0]
+        result["provenance_by_channel"] = {record.get("channel", "npm"): record for record in records}
         return result
     nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
     installed = _read_json(nm_gaia / "package.json")
