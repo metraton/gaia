@@ -212,7 +212,6 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 | Tools | `tests/tools/` | context_provider, episodic, pending_updates, deep_merge, review_engine, surface_router |
 | Integration | `tests/integration/` | Context enrichment, subagent lifecycle, subagent stop, nonce approval relay |
 | Performance | `tests/performance/` | Context injection benchmarks |
-| Cross-layer | `tests/test_cross_layer_consistency.py` | Consistency between hooks, config, and agents |
 
 ### L2 (LLM Evaluation)
 
@@ -234,7 +233,7 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 | Hook module (security, tools, core) | `pytest tests/hooks/ -v` |
 | Agent definition (.md) | `pytest tests/layer1_prompt_regression/ tests/system/ -v` |
 | Skill content | `pytest tests/layer1_prompt_regression/ -v` |
-| Config file | `pytest tests/system/ tests/test_cross_layer_consistency.py -v` |
+| Config file | `pytest tests/system/ -v` |
 | Context/routing | `pytest tests/tools/ tests/integration/ -v` |
 | CLI tool (bin/) | `pytest tests/layer3_e2e/ -v -m e2e` |
 | Any change (pre-commit) | `npm test` (full L1) |
