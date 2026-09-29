@@ -77,20 +77,18 @@ def _read_only_base_cmds() -> "frozenset[str]":
         return frozenset()
 
 
-def _peel_env_prefix(command: str) -> Tuple[str, bool]:
-    """Peel a leading env-var assignment / ``env`` wrapper prefix off *command*.
+def _peel_command_wrappers(command: str) -> Tuple[str, bool]:
+    """Peel leading wrappers (``sudo``, ``timeout``, ``env``...) and assignments off *command*.
 
-    Reuses ``mutative_verbs._peel_leading_env_prefix`` (ONE source of truth for
-    the peel logic that the T3 classifier already relies on) so the catastrophic
-    hard-block layer matches the REAL command rather than the ``env`` token or a
-    leading ``NAME=value`` assignment.  Lazy import mirrors ``_read_only_base_cmds``
-    and avoids the declared import cycle with mutative_verbs.  On failure, returns
-    the command unchanged (fail-open on the peel only -- the un-peeled command is
-    still fully classified by the caller).
+    Delegates to ``mutative_verbs._peel_leading_command_wrappers`` -- the ONE
+    peel the T3 detector also uses (DP1) -- so this floor matches the REAL
+    command. Lazy import avoids the declared import cycle with mutative_verbs.
+    On failure the command is returned unchanged; the un-peeled form is still
+    fully classified by the caller.
     """
     try:
-        from .mutative_verbs import _peel_leading_env_prefix
-        return _peel_leading_env_prefix(command)
+        from .mutative_verbs import _peel_leading_command_wrappers
+        return _peel_leading_command_wrappers(command)
     except ImportError:
         return command, False
 
@@ -696,19 +694,16 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
         return result
 
     # ------------------------------------------------------------------
-    # Env-prefix / env-wrapper evasion guard (mirror of the T3 fix in
-    # mutative_verbs._peel_leading_env_prefix).
+    # Wrapper / assignment evasion guard.
     # ------------------------------------------------------------------
-    # A leading ``env [opts] NAME=val ...`` wrapper or one/more ``NAME=value``
-    # assignments land the base-command scan on ``env`` (a READ_ONLY_BASE_CMDS
-    # carrier -> whole command skipped as a false positive) or on the assignment
-    # token itself (defeating the ``^``-anchored regexes such as disk_operations
-    # ``^dd``/``^fdisk``/``^mkfs`` that have no semantic-rule backup).  Either
-    # way a CATASTROPHIC command hidden behind the prefix would EVADE this
-    # permanent-deny floor with no approval path.  Peel the prefix and classify
-    # the REAL command.  Strictly additive: the un-peeled form was already
+    # A leading wrapper (``env``, ``sudo``, ``timeout 10``, ``nice -n 5``...) or
+    # ``NAME=value`` assignment moves the base command off position 0, which
+    # defeats the ``^``-anchored regexes such as disk_operations
+    # ``^dd``/``^mkfs`` that have no semantic-rule backup -- the catastrophic
+    # command then falls to an approvable T3 or runs free. Peel and classify
+    # the REAL command. Strictly additive: the un-peeled form was already
     # classified above, so this can only ADD a block, never remove one.
-    remainder, peeled = _peel_env_prefix(command)
+    remainder, peeled = _peel_command_wrappers(command)
     if peeled and remainder and remainder != command:
         peeled_result = _classify_stripped_command(remainder)
         if peeled_result.is_blocked:

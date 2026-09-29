@@ -278,6 +278,15 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "cherry-pick", # local-only: applies commits from another branch, no remote side effects
 })
 
+# Flags that turn a local-safe branch switch into a reset of an EXISTING branch:
+# `-B`/`-C` create the branch, or repoint it when it already exists, so the
+# commits only it reached become unreachable. The lowercase `-b`/`-c` refuse an
+# existing name and stay free. Checked before GIT_LOCAL_SAFE_SUBCOMMANDS.
+_GIT_BRANCH_RESET_FLAGS: Dict[str, FrozenSet[str]] = {
+    "checkout": frozenset({"-B"}),
+    "switch": frozenset({"-C", "--force-create"}),
+}
+
 
 # ============================================================================
 # Verb+Flag Overrides (mutative verb downgraded to READ_ONLY by a flag)
@@ -774,6 +783,11 @@ def _validated_anchor_table(
     return table
 
 
+# A CLI that is another CLI under a different name answers to its anchors.
+# `ghx` is the account-pinned `gh` launcher: same subcommands, same effects.
+_ANCHOR_CLI_ALIASES: Dict[str, str] = {"ghx": "gh"}
+
+
 # Keyed by base_cmd; the anchors of one CLI are tried in declaration order and
 # the first match decides. Every match yields the same verdict, so order only
 # affects which path the reason names -- and an order that leaves an anchor
@@ -883,6 +897,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("workflow", "run")),
         MutativeAnchor(path=("run", "rerun")),
         MutativeAnchor(path=("run", "cancel")),
+        # Merges or rebases the base branch into the PR's REMOTE head: a push
+        # to someone's branch, and a CI trigger besides. Today the verb scan
+        # reaches it only by splitting `update-branch`; the anchor names it.
+        MutativeAnchor(path=("pr", "update-branch")),
         # `gh` keeps ONE active account per host, so switching or logging out
         # rewrites a slot every concurrent session and agent on the machine
         # reads -- a mutation whose blast radius is other people's work, not
@@ -2628,6 +2646,36 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
     return True
 
 
+def _check_git_worktree_unlock(
+    targets: "Tuple[str, ...]", family: str,
+) -> "Optional[MutativeResult]":
+    """Gate unlocking a worktree Gaia retains; stand aside for any other worktree.
+
+    Gaia locks each worktree it creates so retention can tell owned work from
+    abandoned work; the unlock is what exposes it to `git worktree prune` and
+    the reclaimer. A relative target resolves against `git -C`'s repository,
+    not the hook's cwd, so it cannot be ruled out and is gated.
+    """
+    import os
+
+    for target in targets:
+        expanded = os.path.expanduser(target)
+        if os.path.isabs(expanded) and _gaia_worktrees_root(os.path.realpath(expanded)) is None:
+            continue
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="worktree unlock",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                "git worktree unlock releases the retention lock Gaia holds on "
+                "a worktree it manages, leaving uncaptured work open to prune"
+            ),
+        )
+    return None
+
+
 def _check_git_worktree(
     semantics: CommandSemantics,
     tokens: tuple,
@@ -2643,6 +2691,8 @@ def _check_git_worktree(
         return None
 
     subcommand = non_flag[1]
+    if subcommand == "unlock":
+        return _check_git_worktree_unlock(non_flag[2:], family)
     if subcommand not in GIT_WORKTREE_MUTATIVE_SUBCOMMANDS:
         return None
 
@@ -3455,7 +3505,7 @@ def _classify_leading_shell_assignments(
     A pure assignment is transient shell bookkeeping. A ``$(...)`` or
     backtick inside its value, however, executes a command and must be judged
     by that command's real effect before the env-prefix peeler discards it.
-    An ``env [opts]`` wrapper ahead of the assignments is skipped so
+    Wrappers ahead of the assignments (``env``, ``sudo``...) are skipped so
     ``env NAME=$(...) cmd`` is examined exactly like the bare form -- the
     peeler would otherwise discard the substitution unseen.
     Returns ``None`` when a real command follows the assignments so ordinary
@@ -3463,7 +3513,7 @@ def _classify_leading_shell_assignments(
     """
     n = len(command)
     saw_assignment = False
-    cursor = _skip_env_wrapper(command, 0)
+    cursor = _skip_command_wrappers(command, 0)
     while cursor < n:
         while cursor < n and command[cursor].isspace():
             cursor += 1
@@ -3589,6 +3639,118 @@ def _resolve_executor_payload(
             return " ".join(payload).strip() or None
         return None
 
+    grammar = _COMMAND_EXECUTORS.get(base_cmd)
+    if grammar is not None:
+        return _executor_grammar_payload(tokens[1:], grammar)
+
+    return None
+
+
+@dataclass(frozen=True)
+class _ExecutorGrammar:
+    """Where an executor carries the command it runs.
+
+    ``command_option``: a ``-c``/``--command`` value is the payload.
+    ``trailing``: the words after the executor's own flags and ``positionals``
+    are the payload -- ``"argv"`` when they are exec'd as an argument vector,
+    ``"shell"`` when they are joined with spaces and handed to a shell.
+    """
+
+    value_flags: FrozenSet[str] = frozenset()
+    positionals: int = 0
+    command_option: bool = False
+    trailing: "Optional[str]" = None
+
+
+# Executors that take the command to run as a quoted string or trailing words.
+# `ssh` runs the payload on another host; the effect is the same mutation.
+_COMMAND_EXECUTORS: Dict[str, _ExecutorGrammar] = {
+    "xargs": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s",
+            "--arg-file", "--delimiter", "--max-lines", "--max-args",
+            "--max-procs", "--max-chars", "--process-slot-var",
+        }),
+        trailing="argv",
+    ),
+    "watch": _ExecutorGrammar(
+        value_flags=frozenset({"-n", "-q", "--interval", "--equexit"}),
+        trailing="shell",
+    ),
+    "ssh": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+            "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w", "-B",
+        }),
+        positionals=1,
+        trailing="shell",
+    ),
+    "flock": _ExecutorGrammar(
+        value_flags=frozenset({"-w", "-E", "--timeout", "--conflict-exit-code"}),
+        positionals=1,
+        command_option=True,
+        trailing="argv",
+    ),
+    "su": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group",
+            "--whitelist-environment",
+        }),
+        command_option=True,
+    ),
+    "script": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-E", "-I", "-O", "-B", "-T", "--echo", "--log-in", "--log-out",
+            "--log-io", "--log-timing", "--logging-format",
+        }),
+        command_option=True,
+    ),
+}
+
+
+def _executor_grammar_payload(
+    args: "List[str]", grammar: _ExecutorGrammar,
+) -> "Optional[str]":
+    """Return the command an executor described by *grammar* runs, or None."""
+    if grammar.command_option:
+        payload = _command_option_payload(args)
+        if payload is not None:
+            return payload
+    if grammar.trailing is None:
+        return None
+
+    index = 0
+    positionals = grammar.positionals
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("-") and len(token) > 1:
+            index += 2 if token in grammar.value_flags else 1
+            continue
+        if positionals:
+            positionals -= 1
+            index += 1
+            continue
+        break
+    words = args[index:]
+    if not words:
+        return None
+    return shlex.join(words) if grammar.trailing == "argv" else " ".join(words)
+
+
+def _command_option_payload(args: "List[str]") -> "Optional[str]":
+    """Return the value of a ``-c``/``--command`` option (``-qc CMD`` included), or None."""
+    for index, token in enumerate(args):
+        if token.startswith("--command="):
+            return token.split("=", 1)[1].strip() or None
+        is_short_c = (
+            token.startswith("-") and not token.startswith("--")
+            and token[1:].isalpha() and token.endswith("c")
+        )
+        if (token == "--command" or is_short_c) and index + 1 < len(args):
+            return args[index + 1].strip() or None
     return None
 
 
@@ -3914,17 +4076,13 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             _depth=_depth,
         )
 
-    # --- Honor a leading env-var assignment / `env` wrapper prefix ---
-    # A shell command may be prefixed with one or more ``NAME=value`` assignments
-    # (``GITHUB_TOKEN=$(gh auth token) terragrunt apply``) or wrapped in ``env``
-    # (``env FOO=bar terragrunt apply``).  In both forms the REAL command -- and
-    # its mutative verb -- follows the prefix, but ``analyze_command`` keys off
-    # ``tokens[0]``, which lands on the assignment token (``github_token=$(gh``)
-    # or on ``env`` (a read-only base command), so the mutative verb was never
-    # scanned and the operation slipped the T3 gate.  Peel the prefix and
-    # re-classify the underlying command -- SAME command minus an inert prefix,
-    # so ``_depth`` is carried through unchanged (mirrors the ``cd`` peel above).
-    env_remainder, env_peeled = _peel_leading_env_prefix(command)
+    # --- Honor leading assignments and transparent wrappers ---
+    # ``GITHUB_TOKEN=$(gh auth token) terragrunt apply``, ``env FOO=bar ...``,
+    # ``sudo``/``timeout 30``/``nice -n 5`` ...: the REAL command and its verb
+    # follow the prefix, but ``analyze_command`` keys off ``tokens[0]``. Peel and
+    # re-classify -- SAME command minus an inert prefix, so ``_depth`` is carried
+    # through unchanged (mirrors the ``cd`` peel above).
+    env_remainder, env_peeled = _peel_leading_command_wrappers(command)
     if env_peeled and env_remainder and env_remainder != command.strip():
         return detect_mutative_command(
             env_remainder, from_source_code=from_source_code, cwd=cwd,
@@ -4410,6 +4568,22 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             return config_result
 
         git_subcmd = semantics.non_flag_tokens[0]
+        reset_flags = tuple(sorted(
+            _GIT_BRANCH_RESET_FLAGS.get(git_subcmd, frozenset()).intersection(tokens)
+        ))
+        if reset_flags:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=git_subcmd,
+                dangerous_flags=reset_flags,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"'git {git_subcmd} {reset_flags[0]}' resets the branch if it "
+                    f"already exists, discarding the commits only it pointed at"
+                ),
+            )
         if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
             if dangerous_flags:
@@ -4460,7 +4634,8 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # win; BEFORE the Step 4 verb scan, so an anchor is still reached when a
     # read-only noun sits at the head of the path and would short-circuit there.
     if semantics.non_flag_tokens:
-        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ()):
+        anchor_cli = _ANCHOR_CLI_ALIASES.get(base_cmd, base_cmd)
+        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(anchor_cli, ()):
             anchor_flags = anchor.matched_flags(semantics)
             if anchor_flags is None:
                 continue
@@ -5396,17 +5571,52 @@ def cwd_after_component(command: str, base_cwd: "Optional[str]") -> "Optional[st
 # after a fully-consumed prior assignment / peeled `env` token.
 _ENV_ASSIGN_PREFIX_RE = _re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
-# `env`-wrapper option flags.  Boolean flags carry no value; value flags consume
-# the following token (short form) as their argument.  Long `--opt=value` forms
-# are self-contained and handled inline.
-_ENV_WRAPPER_BOOL_FLAGS = frozenset({
-    "-i", "--ignore-environment", "-0", "--null", "-v", "--debug", "-",
-})
-_ENV_WRAPPER_VALUE_FLAGS = frozenset({"-u", "-C", "-S"})
-_ENV_WRAPPER_VALUE_LONG_FLAGS = frozenset({
-    "--unset", "--chdir", "--split-string",
-    "--block-signal", "--default-signal", "--ignore-signal",
-})
+@dataclass(frozen=True)
+class _WrapperGrammar:
+    """How a transparent wrapper's own arguments end and the wrapped command begins.
+
+    ``value_flags`` consume the following word as their argument; any other
+    flag -- boolean, clustered (``-oL``, ``-c3``) or ``--long=value`` -- is one
+    word. ``positionals`` counts the wrapper's own operands before the wrapped
+    command (``timeout``'s duration).
+    """
+
+    value_flags: FrozenSet[str] = frozenset()
+    positionals: int = 0
+
+
+# Wrappers that run the command after them with the same effect it has alone.
+# ONE table feeds both the permanent-block floor and the T3 detector (through
+# _peel_leading_command_wrappers), so a wrapper recognised by one and not the
+# other cannot reopen a floor command the other still blocks.
+_COMMAND_WRAPPERS: Dict[str, _WrapperGrammar] = {
+    "env": _WrapperGrammar(value_flags=frozenset({
+        "-u", "-C", "-S", "--unset", "--chdir", "--split-string",
+        "--block-signal", "--default-signal", "--ignore-signal",
+    })),
+    "sudo": _WrapperGrammar(value_flags=frozenset({
+        "-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "-R",
+        "--user", "--group", "--host", "--prompt", "--close-from",
+        "--chdir", "--role", "--type", "--other-user", "--command-timeout",
+        "--chroot",
+    })),
+    "doas": _WrapperGrammar(value_flags=frozenset({"-u", "-C"})),
+    "timeout": _WrapperGrammar(
+        value_flags=frozenset({"-s", "-k", "--signal", "--kill-after"}),
+        positionals=1,
+    ),
+    "nice": _WrapperGrammar(value_flags=frozenset({"-n", "--adjustment"})),
+    "ionice": _WrapperGrammar(value_flags=frozenset({
+        "-c", "-n", "--class", "--classdata",
+    })),
+    "nohup": _WrapperGrammar(),
+    "stdbuf": _WrapperGrammar(value_flags=frozenset({
+        "-i", "-o", "-e", "--input", "--output", "--error",
+    })),
+    "time": _WrapperGrammar(value_flags=frozenset({
+        "-f", "-o", "--format", "--output",
+    })),
+}
 
 
 def _consume_shell_word(s: str, i: int) -> int:
@@ -5471,97 +5681,85 @@ def _consume_shell_word(s: str, i: int) -> int:
     return i
 
 
-def _skip_env_wrapper(s: str, i: int) -> int:
-    """Return the index just past a leading ``env [opts]`` wrapper at ``s[i]``.
-
-    Skips leading whitespace, the bare ``env`` token, and its option flags,
-    stopping at the first assignment or wrapped-command token.  Returns ``i``
-    unchanged (modulo leading whitespace) when no wrapper is present.  Shared
-    by the env-prefix peeler and the assignment-substitution guard so both see
-    the same prefix boundary -- if only the peeler skipped the wrapper, an
-    ``env NAME=$(mutative) cmd`` form would have its substitution discarded
-    without ever being classified.
-    """
+def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
+    """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
-    while i < n and s[i].isspace():
-        i += 1
-    # Only a bare `env` TOKEN (followed by whitespace or end) is the wrapper;
-    # `env=x` is an assignment named `env`, handled by the assignment loop.
-    if not (s[i : i + 3] == "env" and (i + 3 >= n or s[i + 3].isspace())):
-        return i
-    i += 3
+    positionals = grammar.positionals
     while i < n:
         while i < n and s[i].isspace():
             i += 1
         if i >= n:
             break
-        # An assignment ends the env-flag scan; the assignment loop takes over.
-        if _ENV_ASSIGN_PREFIX_RE.match(s, i):
-            break
         tok_end = _consume_shell_word(s, i)
         tok = s[i:tok_end]
         if tok == "--":
+            return tok_end
+        if tok.startswith("-"):
             i = tok_end
-            break
-        if tok in _ENV_WRAPPER_BOOL_FLAGS:
+            if tok in grammar.value_flags:
+                while i < n and s[i].isspace():
+                    i += 1
+                i = _consume_shell_word(s, i)
+            continue
+        if positionals and not _ENV_ASSIGN_PREFIX_RE.match(tok):
+            positionals -= 1
             i = tok_end
             continue
-        if tok in _ENV_WRAPPER_VALUE_FLAGS:
-            # Short value flag consumes the following token as its argument.
-            i = tok_end
-            while i < n and s[i].isspace():
-                i += 1
-            i = _consume_shell_word(s, i)
-            continue
-        if tok.startswith("--") and "=" in tok:
-            # Self-contained long option (--chdir=/x, --unset=FOO).
-            i = tok_end
-            continue
-        if tok in _ENV_WRAPPER_VALUE_LONG_FLAGS:
-            i = tok_end
-            while i < n and s[i].isspace():
-                i += 1
-            i = _consume_shell_word(s, i)
-            continue
-        # Any other token is the wrapped command -- stop peeling here.
         break
     return i
 
 
-def _peel_leading_env_prefix(command: str) -> "Tuple[str, bool]":
-    """Peel a leading env-var assignment / ``env`` wrapper prefix off *command*.
+def _skip_command_wrappers(s: str, i: int) -> int:
+    """Return the index just past every leading transparent wrapper at ``s[i]``.
 
-    Returns ``(remainder, peeled)`` where ``remainder`` is the underlying command
-    with any leading ``NAME=value`` assignments and/or a leading ``env [opts]``
-    wrapper removed, and ``peeled`` reports whether anything was stripped.  The
-    real (possibly mutative) command follows such a prefix, but the token-0 base
-    command scan lands on the assignment token or on ``env`` (a read-only base
-    command) and never sees the verb -- this restores it (T3 gate-evasion fix).
-
-    Careful NOT to over-strip: the assignment regex is anchored at the scan
-    cursor, which only ever sits at the command start or immediately after a
-    fully-consumed prior assignment / peeled ``env`` token.  A ``=`` inside a
-    later argument (``echo A=B terragrunt apply``) is therefore never mistaken
-    for a leading assignment -- the cursor is past ``echo`` (a real command) by
-    then and the loop has already stopped.
+    Stops at the first assignment or wrapped-command token. Shared by the
+    wrapper peeler and the assignment-substitution guard so both see the same
+    prefix boundary -- if only the peeler skipped a wrapper, an
+    ``env NAME=$(mutative) cmd`` form would have its substitution discarded
+    without ever being classified.
     """
-    s = command.strip() if command else ""
     n = len(s)
-    i = _skip_env_wrapper(s, 0)
-    peeled = i > 0
-
-    # --- Leading NAME=value assignments (one or more) ---
     while True:
         while i < n and s[i].isspace():
             i += 1
-        m = _ENV_ASSIGN_PREFIX_RE.match(s, i)
-        if not m:
-            break
-        i = _consume_shell_word(s, m.end())
-        peeled = True
+        word_end = _consume_shell_word(s, i)
+        grammar = _COMMAND_WRAPPERS.get(s[i:word_end].rsplit("/", 1)[-1])
+        if grammar is None:
+            return i
+        i = _skip_wrapper_arguments(s, word_end, grammar)
 
-    remainder = s[i:].strip()
-    return remainder, peeled
+
+def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
+    """Peel leading wrappers (``_COMMAND_WRAPPERS``) and ``NAME=value`` assignments off *command*.
+
+    Returns ``(remainder, peeled)``. The wrapped command runs with the effect
+    it has alone, but the token-0 scans land on the wrapper or the assignment
+    and never see its verb. The block floor and the T3 detector both call this
+    one function (DP1), so ``sudo``/``timeout``/``nice`` in front of a floor
+    command cannot leave it at consent, nor a T3 command free.
+
+    The assignment regex is anchored at the scan cursor, which only ever sits
+    at the command start or just past a consumed wrapper or assignment, so a
+    ``=`` inside a later argument (``echo A=B terragrunt apply``) is never
+    taken for a leading assignment.
+    """
+    s = command.strip() if command else ""
+    n = len(s)
+    i = 0
+    while True:
+        start = i
+        i = _skip_command_wrappers(s, i)
+        while True:
+            while i < n and s[i].isspace():
+                i += 1
+            m = _ENV_ASSIGN_PREFIX_RE.match(s, i)
+            if not m:
+                break
+            i = _consume_shell_word(s, m.end())
+        if i == start:
+            break
+
+    return s[i:].strip(), i > 0
 
 
 def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
