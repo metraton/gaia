@@ -177,12 +177,18 @@ def test_approval_live_fixes_the_fence_reads_as_deep_as_the_validator(db_env):
     assert hidden.reason == REJECTION_MESSAGE, hidden.reason
 
 
+# One obfuscated spelling proves the plugin reaches the shared guard; the guard's
+# reading of every spelling is the Claude Code table above, in process.
 @pytest.mark.table(
     ("session_id", "command"),
-    [(ROOT_SESSION_ID, PRESENT), (ROOT_SESSION_ID, DECIDE), (SESSION_ID, PRESENT), (SESSION_ID, DECIDE)]
-    + [(SESSION_ID, spelling) for spelling in SHELL_SPELLINGS.values()],
-    ids=["orchestrator-present", "orchestrator-decide", "specialist-present", "specialist-decide"]
-    + [f"specialist-{name}" for name in SHELL_SPELLINGS],
+    [
+        (ROOT_SESSION_ID, PRESENT), (ROOT_SESSION_ID, DECIDE), (SESSION_ID, PRESENT),
+        (SESSION_ID, DECIDE), (SESSION_ID, SHELL_SPELLINGS["empty-quotes"]),
+    ],
+    ids=[
+        "orchestrator-present", "orchestrator-decide", "specialist-present",
+        "specialist-decide", "specialist-empty-quotes",
+    ],
 )
 def test_approval_live_fixes_opencode_refuses_the_host_consent_verbs(db_env, session_id, command):
     env, db_path = db_env
