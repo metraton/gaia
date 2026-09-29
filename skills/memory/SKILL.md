@@ -83,7 +83,7 @@ enforces the destination after that choice; `reference.md` owns its mechanics.
    | Operation | Handling |
    |---|---|
    | `add`/`append`/`reclassify`/`link` on `project`/`feedback`/`atom`/`negative` rows | autonomous, brief report |
-   | `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the sentinel `_gaia_user`, and a name already there is reported (`user_name_collision`), never overwritten — change it with `edit --workspace _gaia_user` |
+   | `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the sentinel `_gaia_user`, and a name already there is reported (`user_name_collision`), never overwritten — change it with `edit`/`append`, which find the row from any workspace |
    | contradicting or superseding a user `decision_*` row | ask first |
    | `edit`/`delete` | T3 approval flow; delegate to a specialist and never autoexecute |
    | `checkpoint` | autonomous after the milestone test; it is one atomic operation and remains all-or-nothing |

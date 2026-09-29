@@ -2736,8 +2736,8 @@ def upsert_memory(
                 raise MemoryUserScopeError(
                     f"user memory {name!r} already exists in the user scope "
                     f"({USER_WORKSPACE}); it was not overwritten. Change it "
-                    f"with `gaia memory edit --workspace {USER_WORKSPACE} "
-                    f"--name {name}`, or pick another name.",
+                    f"with `gaia memory edit --name {name}` or `gaia memory "
+                    f"append {name}`, or pick another name.",
                     code="user_name_collision",
                 )
             action = "updated" if existing is not None else "inserted"
@@ -3785,26 +3785,31 @@ def search_memory_curated(
     query: str,
     *,
     limit: int = 10,
+    with_user_scope: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table."""
+    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
+    ``with_user_scope`` adds the workspace-less :data:`USER_WORKSPACE` rows."""
     fts_q = _prepare_memory_fts_query(query)
+    workspaces = [workspace]
+    if with_user_scope and workspace != USER_WORKSPACE:
+        workspaces.append(USER_WORKSPACE)
     con = _connect(db_path)
     try:
         rows = con.execute(
-            """
+            f"""
             SELECT m.name, m.type, m.description,
                    snippet(memory_fts, -1, '[', ']', '...', 16) AS snippet,
                    bm25(memory_fts) AS rank
             FROM memory_fts
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
-              AND m.workspace = ?
+              AND m.workspace IN ({', '.join('?' for _ in workspaces)})
               AND m.deleted_at IS NULL
             ORDER BY rank
             LIMIT ?
             """,
-            (fts_q, workspace, limit),
+            (fts_q, *workspaces, limit),
         ).fetchall()
         return [
             {

@@ -117,8 +117,11 @@ def _render_story(story: dict, workspace: str) -> str:
 def _cmd_story(args) -> int:
     """Handle ``gaia memory story <slug>``."""
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     slug = args.name
+    from cli.memory import _workspace_holding
+    workspace = _workspace_holding(
+        _resolve_workspace(getattr(args, "workspace", None)), slug,
+    )
     max_depth = int(getattr(args, "max_depth", None) or 5)
 
     try:

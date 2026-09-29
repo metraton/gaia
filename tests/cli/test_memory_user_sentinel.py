@@ -340,3 +340,88 @@ def test_relocate_rejects_user_row_out_of_sentinel(tmp_db):
     with pytest.raises(MemoryUserScopeError):
         relocate_memory(SENTINEL, "ws", ["user_stays_put"])
     assert [r[0] for r in _rows(tmp_db)] == [SENTINEL]
+
+
+# ---------------------------------------------------------------------------
+# (g) every reader and by-name verb finds a sentinel row without --workspace
+# ---------------------------------------------------------------------------
+
+def _seed_user_and_host_rows(monkeypatch, capsys):
+    _in_workspace(monkeypatch, "alpha")
+    assert memory_mod._cmd_add(_add_args(
+        name="user_prefers_plain_reports", body="plain reports please",
+        description="plain reports",
+    )) == 0
+    assert memory_mod._cmd_add(_add_args(
+        name="user_second_note", body="second note", description="second",
+    )) == 0
+    assert memory_mod._cmd_add(_add_args(
+        name="atom_host_note", type="atom", body="host note",
+        description="host", initiative="gaia_system", workspace="alpha",
+    )) == 0
+    capsys.readouterr()
+    _in_workspace(monkeypatch, "beta")
+
+
+def test_search_reaches_user_row_from_other_workspace(
+    tmp_db, monkeypatch, capsys,
+):
+    _seed_user_and_host_rows(monkeypatch, capsys)
+    rc = memory_mod._cmd_search_scoped(argparse.Namespace(
+        query="plain", scope="memory", limit=10, workspace=None, json=True,
+    ))
+    assert rc == 0
+    names = {r["name"] for r in _json.loads(capsys.readouterr().out)["results"]}
+    assert "user_prefers_plain_reports" in names
+
+
+def test_legacy_types_get_relevant_reaches_user_row_from_other_workspace(
+    tmp_db, monkeypatch, capsys,
+):
+    _seed_user_and_host_rows(monkeypatch, capsys)
+    rc = memory_mod._cmd_get_relevant(_get_relevant_args(types="user"))
+    assert rc == 0
+    items = _json.loads(capsys.readouterr().out)["items"]
+    assert {"user_prefers_plain_reports", "user_second_note"} <= {
+        i["name"] for i in items
+    }
+
+
+def test_append_reclassify_link_story_resolve_sentinel_rows_without_workspace(
+    tmp_db, monkeypatch, capsys,
+):
+    _seed_user_and_host_rows(monkeypatch, capsys)
+
+    assert memory_mod._cmd_append(argparse.Namespace(
+        name="user_prefers_plain_reports", body="and short", body_file=None,
+        workspace=None, json=True,
+    )) == 0
+    assert memory_mod._cmd_append(argparse.Namespace(
+        name="atom_host_note", body="host extra", body_file=None,
+        workspace=None, json=True,
+    )) == 0
+    assert memory_mod._cmd_reclassify(argparse.Namespace(
+        name="user_prefers_plain_reports", class_="anchor", status=None,
+        workspace=None, json=True,
+    )) == 0
+    assert memory_mod._cmd_reclassify(argparse.Namespace(
+        name="atom_host_note", class_="anchor", status=None,
+        workspace=None, json=True,
+    )) == 0
+    assert memory_mod._cmd_link(argparse.Namespace(
+        src_name="user_second_note", dst_name="user_prefers_plain_reports",
+        kind="derived_from", delete=False, workspace=None, json=True,
+    )) == 0
+    capsys.readouterr()
+
+    from cli.memory_story import _cmd_story
+    assert _cmd_story(argparse.Namespace(
+        name="user_prefers_plain_reports", max_depth=5, workspace=None,
+        json=True,
+    )) == 0
+    assert "user_second_note" in capsys.readouterr().out
+
+    rows = {(r[0], r[1]): r[3] for r in _rows(tmp_db)}
+    assert rows[(SENTINEL, "user_prefers_plain_reports")].endswith("and short")
+    assert rows[("_gaia_host", "atom_host_note")].endswith("host extra")
+    assert not any(r[0] == "beta" for r in _rows(tmp_db))

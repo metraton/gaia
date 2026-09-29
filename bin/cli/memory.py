@@ -593,6 +593,25 @@ def _resolve_workspace(explicit: str | None) -> str:
     return cli_workspace(explicit)
 
 
+def _workspace_holding(workspace: str, name: str) -> str:
+    """Workspace that stores the live row ``name`` for a by-name verb.
+
+    A type=user row lives in ``_gaia_user`` and a host-scoped one in
+    ``_gaia_host``, whichever workspace the caller resolved, so the caller's
+    workspace is tried first and the two sentinels only on a miss. Returns
+    ``workspace`` when no live row is found anywhere (the verb then reports
+    its own not-found) or when the store cannot be read.
+    """
+    try:
+        from gaia.store.writer import get_memory, HOST_WORKSPACE, USER_WORKSPACE
+        for candidate in dict.fromkeys((workspace, USER_WORKSPACE, HOST_WORKSPACE)):
+            if get_memory(candidate, name) is not None:
+                return candidate
+    except Exception:
+        pass
+    return workspace
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handler: add (DB-only writer)
 # ---------------------------------------------------------------------------
@@ -2175,7 +2194,7 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
     grouped: dict[str, list[dict]] = {t: [] for t in types_list}
     for t in types_list:
         try:
-            rows = list_memory(workspace, type=t)
+            rows = list_memory(workspace, type=t, with_user_scope=True)
         except Exception:
             rows = []
         rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
@@ -2234,7 +2253,7 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
             name = r.get("name") or ""
             desc = (r.get("description") or "").strip()
             if not desc:
-                full = get_memory(workspace, name) or {}
+                full = get_memory(_workspace_holding(workspace, name), name) or {}
                 body = (full.get("body") or "").strip().replace("\n", " ")
                 desc = body[:60] + ("..." if len(body) > 60 else "")
             line = f"- {name}: {desc}" if desc else f"- {name}"
@@ -2618,8 +2637,10 @@ def _cmd_edit(args) -> int:
     project is a structured error, never a silent NULL.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = getattr(args, "name", None)
+    workspace = _workspace_holding(
+        _resolve_workspace(getattr(args, "workspace", None)), name,
+    )
     field = getattr(args, "field", None)
     content = getattr(args, "content", None)
     body_file = getattr(args, "body_file", None)
@@ -2650,7 +2671,7 @@ def _cmd_edit(args) -> int:
         # Look up the existing row to check whether a description is already set.
         try:
             from gaia.store.writer import get_memory as _gm_check
-            existing = _gm_check(_resolve_workspace(getattr(args, "workspace", None)), name)
+            existing = _gm_check(workspace, name)
             if existing and not (existing.get("description") or "").strip():
                 return _err(
                     "body contains markdown structure (code blocks/headers/multi-paragraph).\n"
@@ -2817,8 +2838,10 @@ def _cmd_append(args) -> int:
     needs no T3 approval -- appending only grows the record.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    workspace = _workspace_holding(
+        _resolve_workspace(getattr(args, "workspace", None)), name,
+    )
     body = getattr(args, "body", None)
     body_file = getattr(args, "body_file", None)
 
@@ -2884,8 +2907,10 @@ def _cmd_reclassify(args) -> int:
         non-NULL, the call fails with a structural-reason message.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    workspace = _workspace_holding(
+        _resolve_workspace(getattr(args, "workspace", None)), name,
+    )
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
 
@@ -2941,8 +2966,10 @@ def _cmd_reclassify(args) -> int:
 def _cmd_link(args) -> int:
     """Handle ``gaia memory link <src> <dst> --kind=<k> [--delete]``."""
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     src_name = args.src_name
+    workspace = _workspace_holding(
+        _resolve_workspace(getattr(args, "workspace", None)), src_name,
+    )
     dst_name = args.dst_name
     kind = args.kind
     do_delete = getattr(args, "delete", False)
@@ -3055,7 +3082,9 @@ def _cmd_search_scoped(args) -> int:
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
-    curated = search_memory_curated(workspace, query, limit=limit)
+    curated = search_memory_curated(
+        workspace, query, limit=limit, with_user_scope=True,
+    )
 
     if scope == "memory":
         if as_json:
