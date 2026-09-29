@@ -8,11 +8,17 @@ import { join } from 'node:path';
 import { DECK, VIDEO_DIR, argValue, fail } from './deck.mjs';
 
 export const FRAME = { fps: 60, width: 1920, height: 1080, theme: 'light', supersample: 2 };
-export const MOTION = { fade: 0.4, lead: 0.8, tail: 1.2, reveal: { duration: 0.7, rise: 10, anticipation: 0.3 } };
+// A reveal is a fade only: no rise and no ring, so the frame shows the deck's
+// own layout at every instant.
+export const MOTION = { fade: 0.4, lead: 0.8, tail: 1.2, reveal: { duration: 0.7, anticipation: 0.3 } };
 export const ALIGN_FILE = join(VIDEO_DIR, 'align.json');
 // Speech rate of the estimate used while a page has no aligned audio: enough to
 // check and frame the timeline, never to capture it.
 const CHARS_PER_SECOND = 15;
+const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
+
+/** The letters and digits of a text, lower-cased: what a said word and a timed word share. */
+export const letters = s => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
 function preorder(nodes, out = []) {
   for (const n of nodes || []) {
@@ -20,6 +26,32 @@ function preorder(nodes, out = []) {
     preorder(n.children, out);
   }
   return out;
+}
+
+// Where a cue's word first occurs in the sentence: its character index, for the
+// estimate, and how many letters precede it, to find it among timed words.
+function wordAnchor(say, word) {
+  for (const m of say.matchAll(WORD)) {
+    if (letters(m[0]) === letters(word)) return { char: m.index, offset: letters(say.slice(0, m.index)).length };
+  }
+  return null;
+}
+
+// A sentence's cues in the order they fire: its own show and chip at its start,
+// then its word cues, which must be listed in the order their words are said.
+function sentenceCues(s, at, errors) {
+  const fires = [];
+  if (s.show && s.show.length) fires.push({ reveal: s.show });
+  if (s.chip !== undefined) fires.push({ chip: s.chip });
+  let said = -1;
+  for (const cue of s.cues || []) {
+    const anchor = wordAnchor(s.say, cue.at);
+    if (!anchor) { errors.push(`${at}: cue at "${cue.at}" is not a word of the sentence`); continue; }
+    if (anchor.char < said) errors.push(`${at}: cue at "${cue.at}" is listed after a later word; list cues in the order they are said`);
+    said = Math.max(said, anchor.char);
+    fires.push({ word: cue.at, ...anchor, ...(cue.show ? { reveal: cue.show } : { chip: cue.chip }) });
+  }
+  return fires;
 }
 
 function derivePage(page, sp, errors) {
@@ -30,19 +62,18 @@ function derivePage(page, sp, errors) {
   let reached = -1;
   sp.sentences.forEach((s, k) => {
     const at = `${sp.page} sentence ${k + 1}`;
-    for (const id of s.show || []) {
-      const i = order.indexOf(id);
-      if (i < 0) errors.push(`${at}: shows "${id}", which is not on the page`);
-      else if (i < reached) errors.push(`${at}: shows "${id}" after "${order[reached]}", out of the deck's order`);
-      else reached = i;
-      shown.add(id);
-    }
-    if (s.show && s.show.length) cues.push({ s: k + 1, reveal: s.show });
-    if (s.chip !== undefined) {
-      if (s.chip !== 'all' && !chips.includes(s.chip)) {
-        errors.push(`${at}: chip "${s.chip}" is not a chip of the page (${chips.join(', ') || 'none'})`);
+    for (const cue of sentenceCues(s, at, errors)) {
+      for (const id of cue.reveal || []) {
+        const i = order.indexOf(id);
+        if (i < 0) errors.push(`${at}: shows "${id}", which is not on the page`);
+        else if (i < reached) errors.push(`${at}: shows "${id}" after "${order[reached]}", out of the deck's order`);
+        else reached = i;
+        shown.add(id);
       }
-      cues.push({ s: k + 1, chip: s.chip });
+      if (cue.chip !== undefined && cue.chip !== 'all' && !chips.includes(cue.chip)) {
+        errors.push(`${at}: chip "${cue.chip}" is not a chip of the page (${chips.join(', ') || 'none'})`);
+      }
+      cues.push({ s: k + 1, ...cue });
     }
   });
   const base = (page.sections || []).map(n => n.id).filter(id => id && !shown.has(id));
@@ -90,6 +121,30 @@ function sentenceTimes(page, align) {
   return { method: 'estimate', duration: t, sentences };
 }
 
+// The start of the timed word that holds the letter at `offset` of its sentence;
+// punctuation carries no letters and is skipped.
+function wordStart(words, offset) {
+  let spelled = 0, start = words[0].start;
+  for (const w of words) {
+    const n = letters(w.word).length;
+    if (!n) continue;
+    if (spelled > offset) break;
+    start = w.start;
+    spelled += n;
+  }
+  return start;
+}
+
+// Seconds of a cue inside its page's audio. A word cue takes its word's time
+// when align kept the page's word timings; without them it is placed by its
+// share of the sentence's characters and marked estimated, so the chips of one
+// sentence still fire apart and in the order they are said.
+function cueTime(c, sentence, say) {
+  if (c.word === undefined) return { t: sentence.start };
+  if (sentence.words) return { t: wordStart(sentence.words, c.offset) };
+  return { t: sentence.start + (c.char / say.length) * (sentence.end - sentence.start), estimated: true };
+}
+
 /** Lays the chosen pages end to end and resolves every cue to seconds. */
 export function buildPlan(timeline, align, pageIds = timeline.pages.map(p => p.page)) {
   let clock = 0;
@@ -99,7 +154,15 @@ export function buildPlan(timeline, align, pageIds = timeline.pages.map(p => p.p
     const voiceAt = start + MOTION.lead;
     const end = voiceAt + times.duration + MOTION.tail;
     clock = end;
-    const cues = p.cues.map(c => ({ ...c, t: voiceAt + times.sentences[c.s - 1].start }));
+    const cues = p.cues.map(({ char, offset, ...c }) => {
+      const at = cueTime({ ...c, char, offset }, times.sentences[c.s - 1], p.sentences[c.s - 1]);
+      return { ...c, t: voiceAt + at.t, ...(at.estimated ? { estimated: true } : {}) };
+    });
+    const estimated = cues.filter(c => c.estimated).length;
+    if (estimated) {
+      console.log(`[video] ${p.page}: warning: ${estimated} word cue(s) with no word timings (timing ${times.method}); ` +
+        `placed by their share of the sentence's characters`);
+    }
     return { page: p.page, audio: p.audio, method: times.method, start, voiceAt, end, base: p.base, cues,
       sentences: times.sentences };
   });

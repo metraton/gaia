@@ -795,6 +795,9 @@ function slotHeightPx(rowspan, half, rows = { cellH: CSS_TEXT.cellH, rowGap: CSS
 // One box's ink: every block it renders, at the line count the width budget
 // already computed for it, plus the chrome between them. Returns the measured
 // demand and the slack against the slot, so a pass can report a number.
+// The slack is judged in tenths of a pixel, the precision the report prints:
+// a need that reads 130.0px in a 130.0px slot (130.025 for a kicker, a two-line
+// 17px title and three description lines) is equality, never "0.0px overflows".
 function inkBudget(leaf, ctx) {
   if (!leaf || leaf.type === 'separator' || leaf.type === 'rail' || leaf.type === 'spacer') return null;
   // A SECTION is not a slot: its zone grows with its own grid and its header is
@@ -837,7 +840,7 @@ function inkBudget(leaf, ctx) {
   const rows = { cellH: ctx.cellH ?? (ctx.compact ? CSS_TEXT.compactCellH : CSS_TEXT.cellH),
     rowGap: ctx.compact ? CSS_TEXT.compactRowGap : CSS_TEXT.gap };
   const slot = slotHeightPx(rowspanOf(leaf), !!ctx.half, rows);
-  return { ink, slot, slack: slot - ink, blocks: blocks.length };
+  return { ink, slot, slack: (Math.round(slot * 10) - Math.round(ink * 10)) / 10, blocks: blocks.length };
 }
 
 // The tightest and the loosest ink gap the run measured — a check that prints

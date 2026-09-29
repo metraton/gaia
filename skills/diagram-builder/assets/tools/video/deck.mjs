@@ -21,7 +21,8 @@ const PLAYWRIGHT = join(HERE, 'node_modules', 'playwright');
 // speed or any markup belongs to the voice step, so an unknown key is refused.
 const SCRIPT_KEYS = new Set(['pages']);
 const PAGE_KEYS = new Set(['page', 'audio', 'sentences']);
-const SENTENCE_KEYS = new Set(['say', 'show', 'chip']);
+const SENTENCE_KEYS = new Set(['say', 'show', 'chip', 'cues']);
+const CUE_KEYS = new Set(['at', 'show', 'chip']);
 
 /** Prints one `[video]` message and ends the process with exit 1. */
 export function fail(message) {
@@ -81,6 +82,19 @@ export function readScript() {
         errors.push(`${at}: "show" must list ids of the page`);
       }
       if (s.chip !== undefined && typeof s.chip !== 'string') errors.push(`${at}: "chip" must be one chip key`);
+      if (s.cues !== undefined && !(Array.isArray(s.cues) && s.cues.length)) {
+        errors.push(`${at}: "cues" must list word cues ({ "at": <word>, "show" or "chip" })`);
+      }
+      for (const [c, cue] of (Array.isArray(s.cues) ? s.cues : []).entries()) {
+        const where = `${at} cue ${c + 1}`;
+        refuseUnknown(cue, CUE_KEYS, where);
+        if (typeof cue.at !== 'string' || !cue.at.trim()) errors.push(`${where}: "at" must name a word of the sentence`);
+        if ((cue.show === undefined) === (cue.chip === undefined)) errors.push(`${where}: give exactly one of "show" or "chip"`);
+        if (cue.show !== undefined && !(Array.isArray(cue.show) && cue.show.length && cue.show.every(id => typeof id === 'string'))) {
+          errors.push(`${where}: "show" must list ids of the page`);
+        }
+        if (cue.chip !== undefined && typeof cue.chip !== 'string') errors.push(`${where}: "chip" must be one chip key`);
+      }
     }
   }
   if (errors.length) fail(errors.join('\n[video] '));

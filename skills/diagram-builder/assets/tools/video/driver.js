@@ -3,9 +3,9 @@
 // time passed to window.__seek(t), and CSS transitions are switched off, so a
 // screenshot after __seek depends on t alone and never on the wall clock.
 //
-// Reveals use `filter: opacity()` and `translate`, not `opacity`/`transform`,
-// so the deck's own `.stage.flowing` dimming (an `opacity` rule) keeps working
-// on revealed boxes.
+// A reveal is a fade in place, drawn with `filter: opacity()` rather than
+// `opacity`, so the deck's own `.stage.flowing` dimming (an `opacity` rule)
+// keeps working on revealed boxes.
 (function () {
   'use strict';
 
@@ -65,7 +65,7 @@
       `transform-origin:0 0;transform:translate(${x}px,${y}px) scale(${scale})`;
   }
 
-  // plan: { fade, reveal:{duration,rise,anticipation},
+  // plan: { fade, reveal:{duration,anticipation},
   //         pages:[{ page, start, voiceAt, end, base:[id], cues:[{ t, reveal?:[id], chip? }] }] }
   // A reveal or a lit chip fires reveal.anticipation seconds before its anchor,
   // never before the page's fade-in ends; a clear (chip "all") fires on it.
@@ -93,7 +93,7 @@
         for (const id of cue.reveal || []) {
           const n = find(id, 'reveal');
           if (!n) continue;
-          reveals.push({ el: n, t: fire, rise: plan.reveal.rise });
+          reveals.push({ el: n, t: fire });
           at.set(n, Math.min(at.has(n) ? at.get(n) : Infinity, fire));
         }
         if (cue.chip !== undefined) {
@@ -150,7 +150,6 @@
     for (const r of pg.reveals) {
       const e = easeOutCubic(clamp01((t - r.t) / video.reveal.duration));
       r.el.style.filter = e >= 1 ? '' : `opacity(${e})`;
-      r.el.style.translate = e >= 1 ? '' : `0 ${(1 - e) * r.rise}px`;
     }
 
     let key = 'all';

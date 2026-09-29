@@ -18,7 +18,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { audioPath, fail, readScript, requireDeck, wordsPath } from './deck.mjs';
-import { ALIGN_FILE, loadTimeline } from './timeline.mjs';
+import { ALIGN_FILE, letters, loadTimeline } from './timeline.mjs';
 
 const SILENCE_FILTER = 'silencedetect=noise=-35dB:d=0.15';
 const TOLERANCE_S = 2.0;
@@ -87,7 +87,6 @@ function matchPauses(expected, gaps) {
 }
 
 const round = x => Math.round(x * 1000) / 1000;
-const letters = s => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
 /** Returns the page's word timings, or null (saying why) when there are none it can trust. */
 function readWords(page, wav) {
@@ -105,8 +104,9 @@ function readWords(page, wav) {
 }
 
 // Walks the words in order, attributing their letters to the sentence being
-// spelled; punctuation tokens carry no letters and are skipped. Returns null
-// as soon as the words stop spelling the sentences.
+// spelled; punctuation tokens carry no letters and are skipped. Each span keeps
+// its words, which word-level cues are timed by. Returns null as soon as the
+// words stop spelling the sentences.
 function sentencesFromWords(sentences, words) {
   const targets = sentences.map(letters);
   const spans = [];
@@ -115,10 +115,11 @@ function sentencesFromWords(sentences, words) {
     const l = letters(w.word);
     if (!l) continue;
     if (k >= targets.length) return null;
-    if (!spelled) spans[k] = { start: w.start };
+    if (!spelled) spans[k] = { start: w.start, words: [] };
     spelled += l;
     if (!targets[k].startsWith(spelled)) return null;
     spans[k].end = w.end;
+    spans[k].words.push({ word: w.word, start: round(w.start) });
     if (spelled === targets[k]) { k += 1; spelled = ''; }
   }
   return k === targets.length ? spans : null;
@@ -137,7 +138,8 @@ function alignPage(page, wav) {
     method: 'words',
     speech: [round(spans[0].start), round(spans[spans.length - 1].end)],
     words: words.length,
-    sentences: page.sentences.map((text, k) => ({ text, start: round(spans[k].start), end: round(spans[k].end) })),
+    sentences: page.sentences.map((text, k) => ({ text, start: round(spans[k].start), end: round(spans[k].end),
+      words: spans[k].words })),
   };
 }
 

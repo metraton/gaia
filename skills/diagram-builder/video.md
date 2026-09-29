@@ -17,7 +17,7 @@ what is missing.
   section that comes later in the YAML is never shown before an earlier one,
   and a section is never shown after something it contains. A top-level
   section that no sentence shows is on screen from the start.
-- **Chips.** A sentence may light one of the page's own chips, including the
+- **Chips.** A sentence, or a word inside it, may light one of the page's own chips, including the
   core chips it inherits, or `all` to clear it. When the chip lights, at least
   one of its members must already be on screen.
 - **The look.** The frame is the rendered deck, with its chip bar and its
@@ -39,8 +39,29 @@ sentence shows:
 ```
 
 - `say` is only the words. A voice, a speed or any markup belongs to the voice
-  step, never to the script, so any field other than `say`, `show` and `chip`
-  is refused by name.
+  step, never to the script, so any field other than `say`, `show`, `chip` and
+  `cues` is refused by name.
+- `show` and `chip` fire when the sentence starts. To fire on a word inside
+  the sentence, list it in `cues`, each cue with `at` (a word of `say`, matched
+  by its letters at its first occurrence) and exactly one of `show` or `chip`.
+  List the cues in the order their words are said. A sentence can light
+  several chips this way, each on its own word:
+
+  ```json
+  { "say": "One chip says what comes first, another lights what crosses the sections.",
+    "cues": [ { "at": "first", "chip": "packing" }, { "at": "crosses", "chip": "crosscut" } ] }
+  ```
+
+  Reveals still follow the deck's order across all cues. A reveal is a fade in
+  place: no rise and no ring.
+- A word cue takes its word's time from the page's word timings
+  (`method=words` in `video/align.json`). A page without them (manual audio
+  aligned by silencedetect, the length estimate, Kokoro in Spanish) places the
+  cue by its word's share of the sentence's characters, marks it
+  `(estimated)` in `video:plan`, and every step prints a warning naming the
+  page. It is not moved to the sentence start, which would fire every chip of
+  the sentence at the same instant, and it is not refused, which would bind
+  the script to one voice.
 - `audio` declares where that page's narration will be. The path is relative
   to `video/` and must stay inside it. Audio is never read from the deck's root.
 
@@ -68,8 +89,13 @@ Two providers ship:
   downloaded, and installs nothing. The venv defaults to
   `~/.local/share/gaia-tts/kokoro/.venv` (`--kokoro-venv` points elsewhere) and
   the model to `~/.local/share/gaia-tts/kokoro/model` (`--kokoro-model`). It
-  voices each page with `am_michael`, an American male voice (`--voice` picks
-  another), and writes the words file too. When the install is absent, or Kokoro fails on a page,
+  voices each page with `am_michael`, an American male voice, at speed 1.0,
+  and writes the words file too. `--voice` picks another voice or a blend:
+  a comma-separated list such as `am_michael,af_heart` is averaged 50/50 the
+  way Kokoro's `KPipeline.load_voice` does, and each name must have its
+  `voices/<name>.pt` in the model folder. `--speed 1.1` sets the pace. The
+  narration must sound male, so a blend keeps a male base voice first; its
+  first letter also sets the language. When the install is absent, or Kokoro fails on a page,
   the step says so on one line and continues as `manual`. That is not an
   error: the video never depends on a voice being installed.
 - **`manual`** is always there. It prints, per page, the text to voice and the
@@ -78,7 +104,8 @@ Two providers ship:
   model by hand, then leave the WAV at the declared path.
 
 `video:align` prefers the words file. Each sentence then runs from its first
-word to its last (`method=words`). It uses the file only when it is at least as
+word to its last (`method=words`) and keeps its words, which time the word
+cues. It uses the file only when it is at least as
 new as the audio and its words spell the page's sentences; audio left later by
 hand was not timed by it. Otherwise the page falls back to silencedetect,
 which matches sentence ends to pauses in the audio (`method=silencedetect`),
@@ -114,8 +141,8 @@ three steps, with their consent; the skill never runs them.
 3. `hf download hexgrad/Kokoro-82M config.json kokoro-v1_0.pth voices/am_michael.pt --local-dir ~/.local/share/gaia-tts/kokoro/model`
 
 Then `npm run video:voice --prefix <deck>` uses it. The deck's
-`tools/video/kokoro_say.py` takes `--text-file`, `--voice`, `--out`, `--words`
-and `--model-dir`, reads the model offline, and writes a 24 kHz mono WAV and
+`tools/video/kokoro_say.py` takes `--text-file`, `--voice` (one name or a
+comma-separated blend), `--speed`, `--out`, `--words` and `--model-dir`, reads the model offline, and writes a 24 kHz mono WAV and
 the word list from Kokoro's token timestamps, one segment per line of text. The first letter of the
 voice sets the language: `a` American English, `b` British, `e` Spanish.
 

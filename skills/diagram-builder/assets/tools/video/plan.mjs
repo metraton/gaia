@@ -12,7 +12,8 @@ for (const p of plan.pages) {
   console.log(`${p.page}: ${p.start.toFixed(2)}-${p.end.toFixed(2)} s, timing ${p.method}, ` +
     `shown from the start: ${p.base.join(', ') || 'nothing'}`);
   for (const c of p.cues) {
-    console.log(`  ${c.t.toFixed(2)} s  sentence ${c.s}  ${c.reveal ? 'show ' + c.reveal.join(', ') : 'chip ' + c.chip}`);
+    const word = c.word === undefined ? '' : ` at "${c.word}"${c.estimated ? ' (estimated)' : ''}`;
+    console.log(`  ${c.t.toFixed(2)} s  sentence ${c.s}${word}  ${c.reveal ? 'show ' + c.reveal.join(', ') : 'chip ' + c.chip}`);
   }
 }
 console.log(`total ${plan.duration.toFixed(2)} s`);

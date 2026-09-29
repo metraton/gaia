@@ -27,7 +27,9 @@ SAMPLE_RATE = 24000
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--text-file", required=True, type=Path)
-    parser.add_argument("--voice", required=True, help="e.g. af_heart, am_michael, bm_george, ef_dora")
+    parser.add_argument("--voice", required=True,
+                        help="one voice (am_michael) or a comma-separated blend averaged 50/50 "
+                             "(am_michael,af_heart); the first voice's letter sets the language")
     parser.add_argument("--out", required=True, type=Path, help="output .wav")
     parser.add_argument("--words", type=Path, help="optional output .json with per-word timestamps")
     parser.add_argument("--speed", type=float, default=1.0)
@@ -47,7 +49,8 @@ def main() -> int:
     loaded = time.perf_counter()
 
     chunks, words, offset = [], [], 0.0
-    voice_path = str(args.model_dir / "voices" / f"{args.voice}.pt")
+    # KPipeline.load_voice splits this on commas and averages the voices it names.
+    voice_path = ",".join(str(args.model_dir / "voices" / f"{name.strip()}.pt") for name in args.voice.split(","))
     for result in pipeline(text, voice=voice_path, speed=args.speed, split_pattern=r"\n+"):
         audio = result.audio.numpy()
         for token in result.tokens or []:

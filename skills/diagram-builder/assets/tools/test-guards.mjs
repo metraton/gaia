@@ -19,6 +19,7 @@ import { widthAtTier, isBandAtTier, isBandClass, place,
   railTitleFit, railTitleWidth, headerBudget, predictPageHeight, pageHeightAdvisory,
   CSS_TEXT } from './check-layout.mjs';
 import { DEFAULT_TOKENS, TOKEN_SCHEMA, LOOKS, getPath } from '../engine/tokens.mjs';
+import { buildPlan, loadTimeline } from './video/timeline.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -338,6 +339,23 @@ function rebuild(dir) {
   const ok = over && over.slack < 0 && fits && fits.slack > 0 && skip === null;
   report('INK: an overfull half box has negative slack, a title-only box fits, a separator is skipped', ok,
     `over=${over && over.slack.toFixed(1)} fits=${fits && fits.slack.toFixed(1)} skip=${skip}`);
+}
+
+// ── 3j. INK/boundary — a box that needs exactly its row does not overflow ────
+// A kicker, a two-line title at 17px and a three-line description need
+// 13.125 + 43.5 + 50.4 + 16 + 3 + 4 = 130.025px: the report reads 130.0px of a
+// 130.0px row, so that is equality, and one pixel more (17.4px title) is not.
+{
+  const leaf = { id: 'full', kicker: 'K', title: 'A title long enough to wrap onto two lines',
+    description: ['one', 'two', 'three'] };
+  const equal = inkBudget(leaf, { availPx: 200, fontPx: 17 });
+  const over = inkBudget(leaf, { availPx: 200, fontPx: 17.4 });
+  const line = ig => `need ${ig.ink.toFixed(1)}px and the slot is ${ig.slot.toFixed(1)}px — ` +
+    `${(-ig.slack).toFixed(1)}px overflows`;
+  const ok = equal.ink.toFixed(1) === '130.0' && equal.slot === 130 && equal.slack >= 0
+    && over.ink.toFixed(1) === '131.0' && over.slot === 130 && (-over.slack).toFixed(1) === '1.0';
+  report('INK/boundary: 130 needed of 130 available is no overflow, 131 of 130 overflows by 1.0px', ok,
+    `equal: ${line(equal)} (slack ${equal.slack}) | one more: ${line(over)} (slack ${over.slack})`);
 }
 
 // ── 4. control positive — the intact owned fixture must pass ───────────────
@@ -1507,6 +1525,80 @@ const excerpt = out => JSON.stringify(out.trim().slice(0, 300));
   } finally {
     rmDeck(good);
     rmDeck(bad);
+  }
+}
+
+// ── VIDEO WORD CUES — a cue fires at its word, several chips per sentence ───
+// The timeline is built in-process from the guard's own page and script, with
+// word timings as align.json keeps them, so every expected second is known.
+{
+  const name = 'VIDEO/words: a word cue fires at its word, each chip of a sentence at its own word, ' +
+    'reveals in YAML order, no ring and no rise; without word timings a word cue is estimated inside its sentence';
+  const doc = { pages: [{ id: 'words', filters: [{ key: 'one' }, { key: 'two' }], sections: [
+    { id: 'sec', children: [{ id: 'a', filters: ['one'] }, { id: 'b', filters: ['two'] }] }] }] };
+  const said = [
+    { say: 'The section opens here.', show: ['sec'] },
+    { say: 'First comes a, then b.', cues: [{ at: 'comes', show: ['a'] }, { at: 'then', show: ['b'] }] },
+    { say: 'One chip lights a and the other lights b.', cues: [{ at: 'chip', chip: 'one' }, { at: 'other', chip: 'two' }] }];
+  const script = { pages: [{ page: 'words', audio: 'audio/words.wav', sentences: said }] };
+  const timed = (text, start, words) => ({ text, start, end: words[words.length - 1][1] + 0.3,
+    words: words.map(([word, t]) => ({ word, start: t })) });
+  const sentences = [
+    timed(said[0].say, 0, [['The', 0], ['section', 0.3], ['opens', 0.8], ['here', 1.2], ['.', 1.5]]),
+    timed(said[1].say, 2, [['First', 2], ['comes', 2.4], ['a', 2.8], [',', 2.9], ['then', 3.2], ['b', 3.6]]),
+    timed(said[2].say, 5, [['One', 5], ['chip', 5.3], ['lights', 5.6], ['a', 5.9], ['and', 6.1], ['the', 6.3],
+      ['other', 6.5], ['lights', 6.8], ['b', 7.1]])];
+  const words = { pages: [{ page: 'words', method: 'words', duration: 8, sentences }] };
+  const silence = { pages: [{ page: 'words', method: 'silencedetect', duration: 8,
+    sentences: sentences.map(({ words: _, ...s }) => s) }] };
+  try {
+    const plan = buildPlan(loadTimeline(doc, script), words);
+    const p = plan.pages[0];
+    const at = sec => +(p.voiceAt + sec).toFixed(3);
+    const reveals = p.cues.filter(c => c.reveal).map(c => `${c.reveal.join('+')}@${+c.t.toFixed(3)}`);
+    const chips = p.cues.filter(c => c.chip).map(c => `${c.chip}@${+c.t.toFixed(3)}`);
+    const estimated = buildPlan(loadTimeline(doc, script), silence).pages[0].cues.filter(c => c.chip);
+    const inside = estimated.every(c => c.estimated && c.t > p.voiceAt + 5 && c.t < p.voiceAt + 7.4)
+      && estimated.length === 2 && estimated[0].t < estimated[1].t;
+    const ok = reveals.join(' ') === `sec@${at(0)} a@${at(2.4)} b@${at(3.2)}`
+      && chips.join(' ') === `one@${at(5.3)} two@${at(6.5)}`
+      && !/"(rise|rings?)"\s*:/.test(JSON.stringify(plan)) && inside;
+    report(name, ok, `reveals ${reveals.join(' ')} | chips ${chips.join(' ')} | motion ${JSON.stringify(plan.reveal)} | ` +
+      `no word timings: ${estimated.map(c => `${c.chip}@${c.t.toFixed(3)} estimated=${c.estimated}`).join(' ')}`);
+  } catch (e) {
+    report(name, false, e.message);
+  }
+}
+
+// ── VOICE BLEND — kokoro takes a comma-separated list of voices and a speed ──
+// A stub interpreter stands in for the venv's python and records its argv, so
+// the adapter's resolution is checked with no Kokoro installed.
+{
+  const name = 'VOICE: kokoro accepts a comma-separated blend, finds each voice\'s .pt, names a missing one, ' +
+    'and passes the speed through';
+  const dir = mkVideoDeck();
+  const venv = path.join(dir, 'venv');
+  const model = path.join(dir, 'model');
+  const argsFile = path.join(dir, 'kokoro-args.txt');
+  fs.mkdirSync(path.join(venv, 'bin'), { recursive: true });
+  fs.mkdirSync(path.join(model, 'voices'), { recursive: true });
+  fs.writeFileSync(path.join(model, 'config.json'), '{}');
+  for (const v of ['am_michael', 'af_heart']) fs.writeFileSync(path.join(model, 'voices', `${v}.pt`), '');
+  fs.writeFileSync(path.join(venv, 'bin', 'python'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\n`, { mode: 0o755 });
+  try {
+    const exported = runVideo(dir, 'script');
+    const kokoroArgs = ['--provider', 'kokoro', '--kokoro-venv', venv, '--kokoro-model', model];
+    const blend = runVideo(dir, 'voice', ...kokoroArgs, '--voice', 'am_michael,af_heart', '--speed', '1.1');
+    const argv = fs.existsSync(argsFile) ? fs.readFileSync(argsFile, 'utf8').split('\n') : [];
+    const after = flag => argv[argv.indexOf(flag) + 1];
+    const missing = runVideo(dir, 'voice', ...kokoroArgs, '--voice', 'am_michael,af_nope');
+    const ok = exported.code === 0 && blend.code === 0 && !/manual provider/.test(blend.out)
+      && after('--voice') === 'am_michael,af_heart' && after('--speed') === '1.1'
+      && /voices\/af_nope\.pt/.test(missing.out) && !/voices\/am_michael\.pt/.test(missing.out);
+    report(name, ok, `blend: exit ${blend.code} ${excerpt(blend.out)} argv=${JSON.stringify(argv)} | ` +
+      `missing member: ${excerpt(missing.out)}`);
+  } finally {
+    rmDeck(dir);
   }
 }
 

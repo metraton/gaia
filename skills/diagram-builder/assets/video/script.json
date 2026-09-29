@@ -18,9 +18,10 @@
         { "say": "Some ideas cross every section.", "show": ["p6-lead"] },
         { "say": "First, what the page is about.", "show": ["p6-what"] },
         { "say": "Then the flow it follows.", "show": ["p6-flow"] },
-        { "say": "Two sides sit next to each other.", "show": ["p6-left", "p6-right"] },
-        { "say": "One chip says what comes first.", "chip": "packing" },
-        { "say": "Another lights what crosses the sections.", "chip": "crosscut" }
+        { "say": "Two sides sit next to each other.",
+          "cues": [{ "at": "sides", "show": ["p6-left"] }, { "at": "other", "show": ["p6-right"] }] },
+        { "say": "One chip says what comes first, another lights what crosses the sections.",
+          "cues": [{ "at": "first", "chip": "packing" }, { "at": "crosses", "chip": "crosscut" }] }
       ]
     }
   ]
