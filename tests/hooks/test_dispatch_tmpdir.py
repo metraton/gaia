@@ -90,9 +90,10 @@ def test_dispatch_tmpdir_path_fits_a_unix_socket_under_real_home(adapter):
 
     produced = Path(_child_tmpdirs(_rewritten(adapter, "a1b2c3d0f1e2d3c4b"))[0])
     assert produced.parent == tmp_dir()
-    # The isolated test data dir is itself deep under pytest's basetemp, so the
-    # budget is measured on the layout a real install uses: ~/.gaia/tmp/<name>.
-    real = Path.home() / ".gaia" / "tmp" / produced.name
+    # Both the test data dir and Path.home() sit under pytest's basetemp, whose
+    # depth follows the machine's TMPDIR, so the budget is measured on a fixed
+    # home laid out like a real install: ~/.gaia/tmp/<name>.
+    real = Path("/home/user") / ".gaia" / "tmp" / produced.name
     assert len(str(real) + SOCKET_BELOW_TMPDIR) < UNIX_SOCKET_PATH_MAX, str(real)
 
 
