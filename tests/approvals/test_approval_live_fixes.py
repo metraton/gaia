@@ -38,7 +38,7 @@ AGENT_ID = "a0f1e2d3c4b5a6978"
 ORCHESTRATOR_SESSION = "ses-live-fixes-orchestrator"
 COMMAND = "git push origin feat/live"
 LONG_COMMAND = (
-    "python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia"
+    "python3 " + __file__.rsplit("/tests/", 1)[0] + "/bin/gaia"
     " dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all"
 )
 

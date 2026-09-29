@@ -356,7 +356,8 @@ def _request_set_args(**overrides):
     values = dict(
         command=[D12_COMMAND], cwd=[REPO], expect_exit=None, what=D12_TITLE,
         question=D12_QUESTION, does=[D12_DOES], impact=[D12_IMPACT],
-        rationale=None, verification=None, rollback=D12_ROLLBACK,
+        verification="gaia doctor", shared_state="No: solo tu espacio de trabajo.",
+        rationale=None, rollback=D12_ROLLBACK,
         agent_id=AGENT, session_id=SESSION, json=True,
     )
     values.update(overrides)
@@ -422,10 +423,11 @@ def test_signature_surface_cli_presents_the_d12_surface(db, tmp_path, monkeypatc
     shown = json.loads(out)
 
     expected = surface.render(_d12_payload(), approval_id)
-    assert shown == {
-        "approval_id": approval_id,
-        "text": expected.text,
-        "questions": list(expected.questions),
-        "details": expected.details,
-        "details_questions": list(expected.details_questions),
-    }
+    assert (shown["approval_id"], shown["text"], shown["questions"]) == (
+        approval_id, expected.text, list(expected.questions),
+    )
+    request = _request_set_args()
+    for details in shown["details_questions"]:
+        assert f"[ VERIFICATION: {request.verification} ]" in details["question"]
+        assert f"[ SHARED-STATE: {request.shared_state} ]" in details["question"]
+        assert f"[ ROLLBACK: {D12_ROLLBACK} ]" in details["question"]

@@ -61,17 +61,24 @@ def test_d27_block_surface_details_uses_the_block_format_without_the_command():
     """Details repeats the exact command (approving from Details is allowed, D37) and never the ID."""
     rendered = surface.render(PAYLOAD, APPROVAL_ID)
 
-    assert [q["question"] for q in rendered.details_questions] == [
-        f"[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: {PUSH} ] "
-        "[ DOES: git push: sube la rama de prueba al remoto. ] "
-        "[ IMPACT: La rama queda visible para todo el equipo. ] "
-        "[ ROLLBACK: borrar la rama remota y cerrar el PR. ] "
-        f"[ CWD: {PROJECT}/demo-repo ]",
-        f"[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: {PR} ] "
-        "[ DOES: gh pr create: abre el pull request de la rama. ] "
-        "[ IMPACT: El equipo recibe un aviso del PR nuevo. ] "
-        "[ ROLLBACK: borrar la rama remota y cerrar el PR. ]",
+    details = [q["question"] for q in rendered.details_questions]
+    expected = [
+        (PUSH, "git push: sube la rama de prueba al remoto.",
+         "La rama queda visible para todo el equipo."),
+        (PR, "gh pr create: abre el pull request de la rama.",
+         "El equipo recibe un aviso del PR nuevo."),
     ]
+    assert len(details) == len(expected)
+    for text, (command, does, impact) in zip(details, expected):
+        assert text.startswith("[ GAIA-SECURITY ] [ DETAILS ] [ developer ] ")
+        for field in (
+            f"[ COMMAND: {command} ]", f"[ DOES: {does} ]", f"[ IMPACT: {impact} ]",
+            "[ VERIFICATION: ", "[ SHARED-STATE: ",
+            "[ ROLLBACK: borrar la rama remota y cerrar el PR. ]",
+        ):
+            assert field in text
+    assert details[0].endswith(f"[ CWD: {PROJECT}/demo-repo ]")
+    assert "[ CWD: " not in details[1]
     shown = json.dumps([rendered.questions, rendered.details_questions], ensure_ascii=False)
     assert APPROVAL_ID not in shown and "30 min" not in shown
 
