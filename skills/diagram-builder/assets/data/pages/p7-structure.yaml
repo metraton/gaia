@@ -78,7 +78,7 @@ sections:
         description:
           - "2 tracks, 2 rows"
           - "the rectangle closes"
-        detail: "This is the uncomfortable half of the principle: <code>npm run check</code> measures 2 tracks × 2 rows = 4 cells and reports a closed rectangle, and <code>npm run validate</code> finds every cell legible and uniform. Both gates are RIGHT — a fold is not a geometry defect. It is a semantic one, and no arithmetic reaches it."
+        detail: "This is the uncomfortable half of the principle: <code>npm run model</code> measures 2 tracks × 2 rows = 4 cells and reports a closed rectangle, and <code>npm run census</code> counts every cell where the YAML put it. Both checks are RIGHT — a fold is not a geometry defect. It is a semantic one, and no arithmetic reaches it."
         variant: neutral
 
   # ── ROW 1, RIGHT · THE SPLIT — the same cells, two framed zones ────────────
@@ -166,7 +166,7 @@ sections:
         description:
           - "closure, tracks, pixels"
           - "none of them see this"
-        detail: "<code>npm run check</code> asserts arithmetic (closure, dead tracks, orphan rows, chip arity) and <code>npm run validate</code> asserts pixels (legibility, word fit, real geometry). Neither has any notion of what a section MEANS, so a green run says <em>it is not broken</em> and never <em>it is right</em>."
+        detail: "<code>npm run model</code> asserts arithmetic (closure, dead tracks, orphan rows, chip arity) and <code>npm run census</code> states what each page holds. Neither has any notion of what a section MEANS, so a green run says <em>it is not broken</em> and never <em>it is right</em>."
         variant: neutral
       - id: p7-j-why
         order: 2

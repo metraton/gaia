@@ -22,7 +22,7 @@
 # 1 → 2 → 3 · a cross-cutting CONCEPT chip with members in three different
 # sections · one cell belonging to BOTH relations at once · the arity rule
 # explained rather than authored (a one-member chip is rejected by
-# `npm run check`, so the seed cannot contain one) · a `key` REUSED from p3, to
+# `npm run model`, so the seed cannot contain one) · a `key` REUSED from p3, to
 # show that the same slug declared on two pages projects one onto the other.
 
 id: p6-relations
@@ -90,7 +90,7 @@ sections:
         description:
           - "one member is no relation"
           - "and it blacks out the page"
-        detail: "A one-member chip cannot be shown on this page, because <code>npm run check</code> FAILS it (CHIP arity): a relation needs two ends, and since an active chip dims everything it does not name, a chip with a single member switches the whole canvas off to spotlight one box. A chip with ZERO members fails the same check from the other direction. The rule is enforced, so the defect is stated here in words instead of authored."
+        detail: "A one-member chip cannot be shown on this page, because <code>npm run model</code> FAILS it (CHIP arity): a relation needs two ends, and since an active chip dims everything it does not name, a chip with a single member switches the whole canvas off to spotlight one box. A chip with ZERO members fails the same check from the other direction. The rule is enforced, so the defect is stated here in words instead of authored."
         variant: warn
 
   # ── ROW 2 · THE FLOW CHIP — direction carried by `order` ──────────────────

@@ -29,11 +29,11 @@ sections:
   - id: p12-lead
     order: 1
     lead: true
-    kicker: "FEATURES · SHAPES"
-    title: "A ring and a staircase, from plain fields"
+    kicker: "STORY · 2 OF 2"
+    title: "Does your story come back, or climb?"
     description:
-      - "each leg is its own section; each stair rests on a declared hole"
-    detail: "The grid cannot draw a curve or an arrow, so a shape is built from what it can do: sections in <code>order</code>, a chip that crosses them, rowspans and spacers. The shapes a page can take are named in the skill with the fields that produce each one."
+      - "a story that returns is a ring; a story that grows is a staircase"
+    detail: "Before any piece, say what the story does in one sentence. This one goes out and comes back (edit, build, check, look, fix, edit again), so the page is a ring: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a staircase. The shape is decided by the sentence you tell, never by the boxes you have."
 
   - id: p12-out
     title: "Outbound leg · steps 1 to 3"
@@ -44,16 +44,16 @@ sections:
           detail: "The loop starts in the data. Nothing about the domain lives in the engine." }
       - { id: p12-s2, order: 2, kicker: "STEP 2 OF 6 →", title: "Build", description: ["the strict schema runs"], filters: [loop],
           detail: "<code>npm run build</code> writes the bundle and refuses any unknown field." }
-      - { id: p12-s3, order: 3, kicker: "STEP 3 OF 6 ↓", title: "Check", description: ["the layout, computed"], filters: [loop, gate],
-          detail: "<code>npm run check</code>: the static gate. The kicker's arrow turns the corner into the return leg." }
+      - { id: p12-s3, order: 3, kicker: "STEP 3 OF 6 ↓", title: "Model", description: ["the layout, as arithmetic"], filters: [loop, gate],
+          detail: "<code>npm run model</code>: the layout proved to close, with no browser. The kicker's arrow turns the corner into the return leg." }
 
   - id: p12-back
     title: "Return leg · steps 4 to 6"
     order: 3
     columns: 3
     children:
-      - { id: p12-s4, order: 1, kicker: "STEP 4 OF 6", title: "Validate", description: ["the layout, observed"], filters: [loop, gate],
-          detail: "<code>npm run validate</code>: the render gate. The return leg is its own section, so it never needs a reversed <code>order</code>." }
+      - { id: p12-s4, order: 1, kicker: "STEP 4 OF 6", title: "Census", description: ["what each page is"], filters: [loop, gate],
+          detail: "<code>npm run census</code>: what each page holds, read against the sketch. The return leg is its own section, so it never needs a reversed <code>order</code>." }
       - { id: p12-s5, order: 2, kicker: "STEP 5 OF 6", title: "Look at it", description: ["what no gate can see"], filters: [loop],
           detail: "SEEN is the only evidence for slot character, channel meaning and structure." }
       - { id: p12-s6, order: 3, kicker: "STEP 6 OF 6 · BACK TO 1", title: "Adjust", description: ["recalculate, never nudge"], filters: [loop],

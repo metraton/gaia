@@ -134,7 +134,7 @@ sections:
         kicker: STEP 2
         title: "Verify"
         description: ["step 2 of the same lane"]
-        detail: "Two lanes in one grid must be of EQUAL length: <code>npm run check</code> fails a grid where one rail-led row reaches track 4 and another stops at 3, and it fails HARD, because unlike a short last row that is a collapse artefact, a ragged lane is authored."
+        detail: "Two lanes in one grid must be of EQUAL length: <code>npm run model</code> fails a grid where one rail-led row reaches track 4 and another stops at 3, and it fails HARD, because unlike a short last row that is a collapse artefact, a ragged lane is authored."
         variant: neutral
       - id: p9-l-release
         order: 8

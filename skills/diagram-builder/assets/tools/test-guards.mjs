@@ -1288,5 +1288,53 @@ function catalogueDivergence(vocabulary, entries) {
   }
 }
 
+// ── 19. PATH — the seed is a tour: story → ideas → pieces → data ──
+// Each visible page of the seed declares the step it teaches as the prefix of
+// its manifest `name` ("Ideas · …"), so the step reads in the page tabs, and
+// along `order` the steps only move forward. The pieces step is exactly the
+// catalogue's `pieces-*` pages, which keeps the catalogue one block. A
+// scaffolded deck is the person's own story, not the tour, so there the case
+// is skipped, never passed.
+const PATH_STEPS = ['Story', 'Ideas', 'Pieces', 'Data'];
+
+function pathDivergence(pages) {
+  const bad = [];
+  let reached = 0;
+  let reachedBy = '(the start)';
+  const tour = pages.filter(p => p.visible === true).sort((a, b) => a.order - b.order);
+  for (const entry of tour) {
+    const step = PATH_STEPS.indexOf(/^(\w+) · /.exec(entry.name || '')?.[1]);
+    if (step < 0) { bad.push(`${entry.id} declares no step: "${entry.name}"`); continue; }
+    if ((PATH_STEPS[step] === 'Pieces') !== entry.id.startsWith('pieces-'))
+      bad.push(`${entry.id} declares ${PATH_STEPS[step]}; the pieces step is exactly the pieces-* pages`);
+    if (step < reached) bad.push(`${entry.id} (${PATH_STEPS[step]}) comes after ${reachedBy} (${PATH_STEPS[reached]})`);
+    else { reached = step; reachedBy = entry.id; }
+  }
+  return bad;
+}
+{
+  const name = 'PATH: every seed page declares its step, and the steps run story → ideas → pieces → data';
+  if (!fs.existsSync(path.join(ROOT, '..', 'SKILL.md'))) {
+    console.log(`[SKIP] ${name} — no SKILL.md beside this deck (a scaffold, not the skill)`);
+  } else {
+    try {
+      const docFile = path.join(ROOT, 'data', 'document.yaml');
+      const pages = yaml.parse(fs.readFileSync(docFile, 'utf8'), docFile).pages || [];
+      const bad = pathDivergence(pages);
+      report(name, bad.length === 0, bad.join(' | ') || `${pages.length} pages in path order`);
+      const caught = pathDivergence([
+        { id: 'seeded-ideas', name: 'Ideas · grouped', order: 1, visible: true },
+        { id: 'seeded-story', name: 'Story · told late', order: 2, visible: true },
+        { id: 'seeded-bare', name: 'No step here', order: 3, visible: true },
+      ]);
+      report('PATH/teeth: an undeclared step and a step out of order are both reported',
+        caught.some(b => b.includes('declares no step')) && caught.some(b => b.includes('comes after')),
+        caught.join(' | ') || 'the comparator accepted a seeded divergence');
+    } catch (e) {
+      report(name, false, e.message);
+    }
+  }
+}
+
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);
 process.exit(failures === 0 ? 0 : 1);

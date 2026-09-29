@@ -161,7 +161,7 @@ sections:
         description:
           - "arithmetic proves the"
           - "rectangle, not the reading"
-        detail: "<code>npm run check</code> proves <code>Σ(spanCols × rowspanRows) == tracks × rows</code> without a browser, and a grid of eight illegible 60px cells satisfies it perfectly. Closure is a claim about the FILL, never about whether anything in it can be read."
+        detail: "<code>npm run model</code> proves <code>Σ(spanCols × rowspanRows) == tracks × rows</code> without a browser, and a grid of eight illegible 60px cells satisfies it perfectly. Closure is a claim about the FILL, never about whether anything in it can be read."
         variant: neutral
       - id: p8-i-floor
         order: 2

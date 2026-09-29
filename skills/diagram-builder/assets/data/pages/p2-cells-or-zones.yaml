@@ -20,7 +20,7 @@
 # · `treatment: [envelope]` as the container frame · `span` as a RELATIVE WEIGHT
 # in the legitimate 2:1 split · `span` as a PARTIAL TRACK COUNT at the root band
 # grid (1 < 3 < 4 — the only place a compound level counts tracks, and the shape
-# the render gate's invariant Q measures) · vertical separators dividing zones on
+# the width a zone gets on screen) · vertical separators dividing zones on
 # one row — mixing done on purpose, which is legal, not forbidden.
 
 id: p2-cells-or-zones
@@ -155,7 +155,7 @@ sections:
   #   • INSIDE it, `columns: 3` is INERT (the children are sections) and what
   #     divides the row is the RATIO 2:1 between the authored spans.
   # The same dial, read as a track count above and as a weight below — which is why
-  # the render gate measures both here (invariant Q, rendered width vs authored
+  # a person looking at the page sees both here (rendered width vs authored
   # span, on every side-by-side row of either kind).
   - id: p2-weight
     title: "span as weight — a 2:1 split"

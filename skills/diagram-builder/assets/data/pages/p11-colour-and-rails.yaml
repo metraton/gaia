@@ -29,11 +29,11 @@ sections:
     order: 1
     span: 2
     lead: true
-    kicker: "FEATURES · COLOUR AND RAILS"
-    title: "A hue names an actor"
+    kicker: "DATA · 4 OF 7"
+    title: "A value you write becomes a colour"
     description:
-      - "the lead band states the page: one full-width first box, exempt from harmony"
-    detail: "A <b>lead band</b> is the page's first band: a box with <code>lead: true</code>, a direct child of the page root, first in <code>order</code>, spanning every root column. Its title is the claim the page makes, and its kicker places the page in the deck. The build refuses a lead that is nested, later or narrower."
+      - "write the same hue on the same actor, and every page paints it the same"
+    detail: "This is the data step: the look is not drawn, it is filled. A hue on a box, an indent on a rail and <code>copy: true</code> on a command are values in the YAML, and each value decides how its box looks. This first box is the <b>lead band</b> (<code>lead: true</code>, first in <code>order</code>, spanning every root column): its title is the page's claim and its kicker places the page in the tour."
 
   - id: p11-legend
     title: "The legend band"
@@ -62,19 +62,19 @@ sections:
         order: 3
         variant: gold
         kicker: "GOLD"
-        title: "The static gate"
+        title: "The model"
         description:
-          - "computes the layout"
-        detail: "<code>npm run check</code> is the MODELLED evidence: arithmetic over the authored YAML, no browser. It is a member of the deck's core chip."
+          - "proves the layout closes"
+        detail: "<code>npm run model</code> is arithmetic over the authored YAML: it proves the layout closes, with no browser. It is a member of the deck's core chip."
         filters: [gate]
       - id: p11-clay
         order: 4
         variant: clay
         kicker: "CLAY"
-        title: "The render gate"
+        title: "The census"
         description:
-          - "observes the pixels"
-        detail: "<code>npm run validate</code> is the MEASURED evidence: the real render in Chromium. It is a member of the deck's core chip."
+          - "states what each page is"
+        detail: "<code>npm run census</code> states what each page holds (sections, nesting, widths, colours, chip members) so the person reads it against the sketch. Whether the page says the right thing is their eye's call, never a script's. It is a member of the deck's core chip."
         filters: [gate]
 
   - id: p11-tree
@@ -107,10 +107,10 @@ sections:
         detail: "<code>copy: true</code> puts a button on the box that copies its title; a string copies that string instead. Use it when the title IS the thing the reader pastes: a command, a path, an identifier."
       - id: p11-cmd-gate
         order: 2
-        kicker: "COPY · BOTH GATES"
-        title: "npm run gate"
+        kicker: "COPY · MODEL"
+        title: "npm run model"
         copy: true
         description:
-          - "check, then validate"
+          - "the layout, as arithmetic"
         detail: "The section carries <code>treatment: [middle]</code>: its compound row stretches it to the tree's height, and <code>middle</code> centres its grid in that height instead of leaving the gap below."
         filters: [gate]

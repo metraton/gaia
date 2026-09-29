@@ -68,7 +68,7 @@ sections:
         description:
           - "this grid declares two tracks"
           - "so four cells fill two rows"
-        detail: "<code>columns: N</code> is the only thing that creates tracks in a leaf grid. Four single cells in two tracks close a 2×2 rectangle — the identity <code>Σ(spanCols × rowspanRows) == tracks × rows</code> that <code>npm run check</code> asserts on the data, with no browser."
+        detail: "<code>columns: N</code> is the only thing that creates tracks in a leaf grid. Four single cells in two tracks close a 2×2 rectangle — the identity <code>Σ(spanCols × rowspanRows) == tracks × rows</code> that <code>npm run model</code> asserts on the data, with no browser."
         variant: neutral
 
   # ── ROW 1, RIGHT · a REAL partial merge, with the row that holds it up ────
