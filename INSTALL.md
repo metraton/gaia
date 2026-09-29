@@ -6,7 +6,7 @@ This guide will help you install and configure Gaia in your project. The process
 
 Gaia is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
 
-Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (declared in `.claude-plugin/marketplace.json` with `source: github`, repo `metraton/gaia`, and `ref` pinned to the tag of the current release, `v<version>`), so there is no separate `dist/` bundle.
+Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (declared in `.claude-plugin/marketplace.json` with `source: "."` -- the repository root -- and no version in the entry; the version is the one in `.claude-plugin/plugin.json`), so there is no separate `dist/` bundle.
 
 ---
 
@@ -34,7 +34,7 @@ After install, `gaia doctor` verifies the result. If a bootstrap or wire-up step
 
 ### Surface 2: Claude Code plugin
 
-Claude Code consumes the plugin from GitHub (`source: github`, repo `metraton/gaia`, `ref` = the tag of the current release, per `.claude-plugin/marketplace.json`) — it clones that tag into its plugin cache. Add the marketplace (`gaia-marketplace`) and install the single plugin:
+Claude Code consumes the plugin from GitHub: the marketplace is the `metraton/gaia` repository and its `gaia` entry has `source: "."`, so the plugin is the code of whatever branch or tag you add the marketplace from (`metraton/gaia#v<version>` for a release; the default branch when no ref is given). Add the marketplace (`gaia-marketplace`) and install the single plugin:
 
 ```bash
 # Add the marketplace

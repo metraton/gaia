@@ -9,13 +9,15 @@ Validates:
 4. hooks.json has PreToolUse, PostToolUse, SubagentStop events
 5. hooks.json uses ${CLAUDE_PLUGIN_ROOT} in all command paths
 6. marketplace.json exists and is valid JSON (flat format: name, owner, plugins)
-7. marketplace.json has the single unified 'gaia' plugin with a `source: github` source
+7. marketplace.json has the single unified 'gaia' plugin with source '.' and no entry version
+   (release:prepare leaves the entry alone; the validator still catches plugin.json drift)
 8. The manifest's declared bin/agents/commands entries exist in the source tree
 9. All version fields match across all manifest files
 """
 
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -528,9 +530,9 @@ class TestMarketplaceJson:
     """Test .claude-plugin/marketplace.json manifest.
 
     The marketplace.json is a flat structure with top-level name, owner,
-    and plugins array. Each plugin's `source` is the github object form
-    ({"source": "github", "repo": "metraton/gaia"}) -- `/plugin install`
-    clones the repo so the full plugin tree ships; there is no dist/ bundle.
+    and plugins array. The gaia entry's `source` is "." -- the marketplace
+    root is the plugin root, so `/plugin marketplace add metraton/gaia#<ref>`
+    installs the code of that branch or tag; there is no dist/ bundle.
     """
 
     @pytest.fixture(autouse=True)
@@ -576,51 +578,26 @@ class TestMarketplaceJson:
         assert names == {"gaia"}, f"expected only {{'gaia'}}, got {names}"
 
     def test_marketplace_plugins_have_required_fields(self):
-        """Each marketplace plugin must have name, description, version, source."""
+        """Each marketplace plugin must have name, description, source."""
         data = json.loads(self.marketplace_path.read_text())
         for plugin in data["plugins"]:
             assert "name" in plugin, f"Plugin missing 'name': {plugin}"
             assert "description" in plugin, f"Plugin missing 'description': {plugin}"
-            assert "version" in plugin, f"Plugin missing 'version': {plugin}"
             assert "source" in plugin, f"Plugin missing 'source': {plugin}"
 
-    def test_marketplace_plugin_sources_are_github(self):
-        """Each marketplace plugin source must be the github object form.
+    def test_marketplace_plugin_source_is_the_repo_root(self):
+        """The gaia entry's source is "." and it carries no version or ref.
 
-        The plugin surface is distributed via a git/github source
-        ({"source": "github", "repo": "metraton/gaia"}) so `/plugin install`
-        clones the repo and the full plugin tree (agents, skills, hooks) ships
-        intact -- the npm-source model dropped the skills/ tree, so the plugin
-        surface uses github while npm remains the CLI-only surface.
-        `source.repo` is the `owner/name` slug.
-
-        `source.ref` is OPTIONAL and pins the install to a release tag
-        (`v<version>`) so installs are reproducible instead of tracking moving
-        default-branch HEAD. release:prepare (bumpMarketplace) writes it
-        atomically with the version at every release cut, so it never goes
-        stale. This test is tolerant when it is absent (refless resolves the
-        repo's current default ref -- a valid pre-pin state) and strict when
-        present: a pinned ref MUST equal `v<plugin version>`.
+        A relative source resolves inside the marketplace checkout, so the ref
+        the user pins with `marketplace add metraton/gaia#<ref>` is the code
+        that installs. A github source with its own `ref` would install that
+        ref instead, whatever branch the marketplace was added from.
         """
         data = json.loads(self.marketplace_path.read_text())
-        for plugin in data["plugins"]:
-            source = plugin["source"]
-            assert isinstance(source, dict), (
-                f"Plugin '{plugin['name']}' source must be an object, got {type(source)}"
-            )
-            assert source.get("source") == "github", (
-                f"Plugin '{plugin['name']}' source.source must be 'github', got {source.get('source')!r}"
-            )
-            assert source.get("repo") == "metraton/gaia", (
-                f"Plugin '{plugin['name']}' source.repo must be 'metraton/gaia', "
-                f"got {source.get('repo')!r}"
-            )
-            ref = source.get("ref")
-            if ref is not None:
-                assert ref == f"v{plugin['version']}", (
-                    f"Plugin '{plugin['name']}' source.ref must be "
-                    f"'v{plugin['version']}' (the release tag) when pinned, got {ref!r}"
-                )
+        (gaia,) = [p for p in data["plugins"] if p["name"] == "gaia"]
+        assert gaia["source"] == ".", f"source must be '.', got {gaia['source']!r}"
+        assert "version" not in gaia, "the entry must not declare a version"
+        assert "ref" not in gaia, "the entry must not declare a ref"
 
 
 class TestMarketplaceRegistrable:
@@ -728,17 +705,81 @@ class TestVersionSync:
             f"Version mismatch (expected {expected}): {', '.join(mismatches)}"
         )
 
-    def test_marketplace_plugin_versions_match(self):
-        """All marketplace sub-plugin versions must match package.json version."""
-        expected = self._get_version(self.package_path)
+    def test_marketplace_entries_declare_no_version(self):
+        """The plugin version lives once, in plugin.json.
+
+        Claude Code lets plugin.json win over an entry version and only warns,
+        so a second copy in the entry could drift without failing anything.
+        """
         marketplace_data = json.loads(self.marketplace_path.read_text())
+        declared = {p["name"]: p["version"] for p in marketplace_data["plugins"] if "version" in p}
+        assert not declared, f"marketplace entries declare a version: {declared}"
 
-        mismatches = []
-        for plugin in marketplace_data["plugins"]:
-            if plugin["version"] != expected:
-                mismatches.append(f"{plugin['name']}: {plugin['version']}")
 
-        assert not mismatches, (
-            f"Marketplace version mismatch (expected {expected}): "
-            f"{', '.join(mismatches)}"
+def _node_modules_dir() -> Path | None:
+    """The node_modules release-prepare.mjs imports chalk from.
+
+    An agent worktree has none of its own; the main checkout that owns it
+    (git's common dir) does.
+    """
+    candidates = [PROJECT_ROOT / "node_modules"]
+    common = subprocess.run(
+        ["git", "-C", str(PROJECT_ROOT), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True, text=True,
+    )
+    if common.returncode == 0:
+        candidates.append(Path(common.stdout.strip()).parent / "node_modules")
+    return next((c for c in candidates if (c / "chalk").is_dir()), None)
+
+
+@pytest.fixture
+def repo_copy(tmp_path: Path) -> Path:
+    """A disposable copy of the source tree that release:prepare may rewrite."""
+    node_modules = _node_modules_dir()
+    if shutil.which("node") is None or shutil.which("npm") is None or node_modules is None:
+        pytest.skip("release:prepare needs node, npm and an installed node_modules")
+    copy = tmp_path / "repo"
+    shutil.copytree(
+        PROJECT_ROOT, copy,
+        ignore=shutil.ignore_patterns(".git", "node_modules", "__pycache__", ".pytest_cache"),
+    )
+    (copy / "node_modules").symlink_to(node_modules, target_is_directory=True)
+    subprocess.run(["git", "init", "-q", str(copy)], check=True)
+    return copy
+
+
+class TestReleasePrepareLeavesTheMarketplaceEntryAlone:
+    """release:prepare bumps plugin.json and never writes the marketplace entry."""
+
+    VERSION = "9.8.7-rc.6"
+
+    def _prepare(self, repo: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["node", "scripts/release-prepare.mjs", self.VERSION],
+            cwd=repo, capture_output=True, text=True, timeout=300,
         )
+
+    def test_bump_writes_plugin_json_and_not_the_entry(self, repo_copy):
+        entry_before = (repo_copy / ".claude-plugin" / "marketplace.json").read_text()
+
+        result = self._prepare(repo_copy)
+
+        assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+        plugin = json.loads((repo_copy / ".claude-plugin" / "plugin.json").read_text())
+        assert plugin["version"] == self.VERSION
+        assert (repo_copy / ".claude-plugin" / "marketplace.json").read_text() == entry_before
+
+    def test_validator_still_fails_on_plugin_json_drift(self, repo_copy):
+        assert self._prepare(repo_copy).returncode == 0
+        plugin_path = repo_copy / ".claude-plugin" / "plugin.json"
+        plugin = json.loads(plugin_path.read_text())
+        plugin["version"] = "0.0.1"
+        plugin_path.write_text(json.dumps(plugin, indent=2) + "\n")
+
+        result = subprocess.run(
+            ["node", "bin/pre-publish-validate.js", "--validate-only"],
+            cwd=repo_copy, capture_output=True, text=True, timeout=300,
+        )
+
+        assert result.returncode != 0
+        assert "plugin.json" in result.stdout + result.stderr
