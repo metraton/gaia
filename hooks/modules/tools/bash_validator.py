@@ -1120,6 +1120,7 @@ class BashValidator:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=payload_cwd,
+                command=command, tool_use_id=tool_use_id,
             )
         else:
             result = self._validate_single_command(
@@ -1550,6 +1551,8 @@ class BashValidator:
         session_id: str = "",
         agent_type: str = "",
         cwd: Optional[str] = None,
+        command: str = "",
+        tool_use_id: str = "",
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
@@ -1560,6 +1563,9 @@ class BashValidator:
         intake on this path -- consent grouping is requested plan-first via
         ``gaia approvals request-set``, and execution stays one command per Bash
         call, so a chain is never the surface on which a set is discovered.
+        The one exception is a pipeline whose exact bytes (``command``) are a
+        live signed set item: request-set seals pipelines as one item, so that
+        item is matched and reserved here instead of denied.
 
         A chain with NO T3 component runs the per-component pass: each component
         is validated by ``_validate_single_command``, a blocked component fails
@@ -1597,6 +1603,12 @@ class BashValidator:
                 has_t3 = True
                 break
         if has_t3:
+            signed = self._match_signed_pipeline(
+                command, components, session_id=session_id, agent_type=agent_type,
+                tool_use_id=tool_use_id, cwd=cwd,
+            )
+            if signed is not None:
+                return signed
             reason = (
                 "Compound T3 execution is disabled. Create a plan-first "
                 "request-set and issue each command as a separate Bash call."
@@ -1663,6 +1675,49 @@ class BashValidator:
             tier=highest_tier,
             reason=f"All {len(components)} components validated",
             consumed_approval_id=consumed_approval_id,
+        )
+
+    def _match_signed_pipeline(
+        self,
+        command: str,
+        components: List[str],
+        *,
+        session_id: str,
+        agent_type: str,
+        tool_use_id: str,
+        cwd: Optional[str],
+    ) -> Optional[BashValidationResult]:
+        """Reserve a pipeline whose exact bytes are a live signed set item, else None.
+
+        Only a chain whose every separator is a pipe qualifies: the component
+        count must equal the unquoted pipe-stage count ``request-set`` sealed.
+        """
+        if not (command and session_id and tool_use_id):
+            return None
+        from gaia.approvals.command_set import pipe_stages
+        try:
+            if len(pipe_stages(command)) != len(components):
+                return None
+        except ValueError:
+            return None
+        try:
+            from gaia.approvals.core import match_command
+            cs_match = match_command(
+                command, cwd=cwd or os.getcwd(), session_id=session_id,
+                agent_id=agent_type or None, tool_use_id=tool_use_id,
+            )
+        except Exception as exc:
+            return BashValidationResult(
+                allowed=False, tier=SecurityTier.T3_BLOCKED,
+                reason=f"COMMAND_SET persistence failed closed: {exc}",
+            )
+        if cs_match is None:
+            return None
+        return BashValidationResult(
+            allowed=True, tier=SecurityTier.T3_BLOCKED,
+            reason="Ordered COMMAND_SET command reserved",
+            consumed_approval_id=cs_match["approval_id"],
+            command_set_reservation=cs_match,
         )
 
     def _phase4_check_composition(
