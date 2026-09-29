@@ -552,8 +552,8 @@ def temp_gaia_db(tmp_path):
 # the tests/test_writer_*.py tail onto a single xdist worker while the others
 # sat idle.
 #
-# This session-scoped fixture runs that bootstrap EXACTLY ONCE (per xdist
-# worker) into an immutable template .db file. Per-test fixtures then
+# This session-scoped fixture runs that bootstrap EXACTLY ONCE per run (shared
+# by the xdist workers) into an immutable template .db file. Per-test fixtures then
 # `copy_bootstrapped_db(...)` it -- a filesystem copy is milliseconds vs a
 # multi-second subprocess storm. Isolation is preserved exactly: every test
 # still gets its OWN independent .db file that it alone mutates; the template
@@ -570,14 +570,35 @@ def bootstrapped_db_template(tmp_path_factory):
     schema_version floor + FTS5 mirrors). Immutable after creation -- consumers
     copy it, never mutate it.
     """
-    import os
-    import subprocess
-
     repo_root = Path(__file__).resolve().parents[1]
     bootstrap = repo_root / "scripts" / "bootstrap_database.sh"
-    template_dir = tmp_path_factory.mktemp("gaia_db_template")
+    # One build serves every xdist worker: the workers share the parent of
+    # their base temp, and the lock makes the first one build while the rest
+    # wait and reuse it. Without fcntl (Windows) each worker builds its own.
+    base = tmp_path_factory.getbasetemp()
+    shared = base.parent if os.environ.get("PYTEST_XDIST_WORKER") else base
+    template_dir = shared / "gaia_db_template"
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+        template_dir = tmp_path_factory.mktemp("gaia_db_template")
+    template_dir.mkdir(exist_ok=True)
     env = IsolatedRuntimeEnv(template_dir)
     template = Path(env["GAIA_DB"])
+    with open(shared / "gaia_db_template.lock", "w") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (template_dir / "built").exists():
+            _build_template(bootstrap, env, template)
+            (template_dir / "built").touch()
+    return template
+
+
+def _build_template(bootstrap: Path, env, template: Path) -> None:
+    """Run the real bootstrap into ``template`` and fail loudly if it did not produce one."""
+    import subprocess
+
     # WORKSPACE only sets the bootstrap's seeded workspaces.identity row; the
     # writer tests insert their own 'me' workspace and never rely on it.
     res = subprocess.run(
@@ -593,7 +614,6 @@ def bootstrapped_db_template(tmp_path_factory):
         f"stderr:\n{res.stderr}"
     )
     assert template.exists(), "bootstrap did not produce a template DB"
-    return template
 
 
 def copy_bootstrapped_db(template: Path, dest: Path) -> Path:
