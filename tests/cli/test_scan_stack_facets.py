@@ -12,7 +12,7 @@ table is 100% scanner-owned: a rescan upserts the current facets (keyed on
 (workspace, project, scope, key)) and prunes the stale ones for the project.
 
 AC command surface (plan_id=19, T8):
-    gaia scan --workspace me /home/jorge/ws/me/gaia --dry-run --json
+    gaia scan --workspace me /home/user/ws/me/gaia --dry-run --json
     -> the detected stack (e.g. python/helm/terraform) appears as facet rows
        (scope/key/value) in the persisted project_facets payload, equivalent
        to SELECT scope, key, value FROM project_facets WHERE workspace=...

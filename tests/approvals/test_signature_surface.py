@@ -24,12 +24,12 @@ from gaia.store import writer
 APPROVAL_ID = "P-" + "a" * 32
 AGENT = "gaia-system"
 SESSION = "ses-requester"
-REPO = "/home/jorge/ws/me"
+REPO = "/home/user/ws/me"
 WORKTREE_GAIA = (
     __file__.rsplit("/tests/", 1)[0] + "/bin/gaia"
 )
 D12_COMMAND = (
-    f"python3 {WORKTREE_GAIA} dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all"
+    f"python3 {WORKTREE_GAIA} dev --workspace /home/user/ws/me --ref bbc2f09 --host all"
 )
 D12_TITLE = "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos."
 D12_QUESTION = "¿Reinstalo Gaia?"

@@ -194,7 +194,7 @@ def _producer_awaiting_verification(
         dispatch_tool_use_id="toolu-producer",
         dispatch_description="audit the release pipeline",
         dispatch_prompt="Audit the release pipeline end to end.",
-        dispatch_project="gaia (/home/jorge/ws/me/gaia)",
+        dispatch_project="gaia (/home/user/ws/me/gaia)",
         db_path=db_path,
     )
     stamp_harness_agent_id(contract_id, HARNESS_ID, db_path=db_path)

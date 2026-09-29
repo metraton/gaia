@@ -39,7 +39,7 @@ ORCHESTRATOR_SESSION = "ses-live-fixes-orchestrator"
 COMMAND = "git push origin feat/live"
 LONG_COMMAND = (
     "python3 " + __file__.rsplit("/tests/", 1)[0] + "/bin/gaia"
-    " dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all"
+    " dev --workspace /home/user/ws/me --ref bbc2f09 --host all"
 )
 
 

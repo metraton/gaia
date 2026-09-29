@@ -508,7 +508,7 @@ class TestProjectTag:
     def test_project_ref_git_path_renders_basename_tag(self, tmp_db, capsys):
         _insert_memory(tmp_db, "atom_tagged", "atom", "thread", "open",
                        "tagged row", "2026-05-22T10:00:00Z",
-                       project_ref="/home/jorge/ws/me/gaia/.git")
+                       project_ref="/home/user/ws/me/gaia/.git")
         _insert_memory(tmp_db, "atom_untagged", "atom", "thread", "open",
                        "no tag", "2026-05-22T09:00:00Z", project_ref=None)
 
@@ -523,7 +523,7 @@ class TestProjectTag:
         assert "[" not in untagged
 
     def test_project_tag_helper(self):
-        assert memory_mod._project_tag("/home/jorge/ws/me/gaia/.git") == "gaia"
+        assert memory_mod._project_tag("/home/user/ws/me/gaia/.git") == "gaia"
         assert memory_mod._project_tag("id/p1") == "p1"
         assert memory_mod._project_tag("gaia") == "gaia"
         assert memory_mod._project_tag(None) == ""

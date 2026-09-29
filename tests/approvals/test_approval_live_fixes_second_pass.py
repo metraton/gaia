@@ -244,7 +244,7 @@ def test_approval_live_fixes_signature_omits_the_folder_the_requester_runs_in(ho
 # The command of the Claude Code live test (P-8a94e99b...), whose Gaia-made
 # breaks and the host's own wrap together broke it apart; one line keeps it whole.
 # The folder keeps the live one's length off Gaia's scratch, where cp is not T3.
-LIVE_SCRATCH = "/home/jorge/ws/me/pruebas/a1fc9164405433383.b2455ec1105e"
+LIVE_SCRATCH = "/home/user/ws/me/pruebas/a1fc9164405433383.b2455ec1105e"
 LIVE_CP = (
     "cp --verbose --no-dereference --preserve=mode,timestamps "
     f"{LIVE_SCRATCH}/movido.txt {LIVE_SCRATCH}/copia-de-prueba.txt"

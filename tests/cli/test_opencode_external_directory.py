@@ -57,12 +57,12 @@ def test_opencode_external_directory_subagents_list_read_and_search_anywhere_wit
     home = Path.home().as_posix()
     # The ask pattern OpenCode builds is "<directory>/*" for the path a tool touches.
     asked = [
-        "/home/jorge/*",
+        "/home/user/*",
         f"{home}/*",
         f"{home}/.config/*",
         f"{home}/.config/opencode/*",
         f"{home}/ws/century-inc/platform/*",
-        "/home/jorge/ws/century-inc/gitops/clusters/*",
+        "/home/user/ws/century-inc/gitops/clusters/*",
     ]
     for name, rules in _subagent_rules(_generated()).items():
         for pattern in asked:

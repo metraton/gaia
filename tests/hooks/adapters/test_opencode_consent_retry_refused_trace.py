@@ -31,7 +31,7 @@ APPROVAL_ID = "P-a4e54958238e4428b49e5623ab4f527a"
 SESSION_ID = "ses_f53ee3ac2ffeLzO3PSaVXUxFYy"
 RETRY_CALL_ID = "call_RPws80NkLnr3VjRiriMk6QSx"
 ROLE = "gaia-operator"
-COMMAND = "cp /dev/null /home/jorge/.gaia/scratch/oc-lote-probe1.txt"
+COMMAND = "cp /dev/null /home/user/.gaia/scratch/oc-lote-probe1.txt"
 FINGERPRINT = hashlib.sha256(COMMAND.encode("utf-8")).hexdigest()
 
 

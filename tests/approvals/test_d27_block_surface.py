@@ -14,11 +14,11 @@ import json
 from gaia.approvals import surface
 
 APPROVAL_ID = "P-0123abcd"
-PROJECT = "/home/jorge/ws/me"
+PROJECT = "/home/user/ws/me"
 PUSH = "git push origin feature/demo-login"
 PR = (
     'gh pr create --repo metraton/demo --base main --head feature/demo-login '
-    '--title "Login de prueba" --body-file /home/jorge/.gaia/scratch/demo-1234/pr.md'
+    '--title "Login de prueba" --body-file /home/user/.gaia/scratch/demo-1234/pr.md'
 )
 PAYLOAD = {
     "requested_by": {"agent_id": "developer"},

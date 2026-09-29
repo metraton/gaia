@@ -44,7 +44,7 @@ FILE_COMMANDS = [
     "gh issue comment 3 -F {f}",
     "gh release create v1.0.0 --notes-file {f}",
     "gh release edit v1.0.0 -F {f}",
-    GH_WRAPPER + " -C /home/jorge/ws/me/gaia pr create --title t --body-file {f}",
+    GH_WRAPPER + " -C /home/user/ws/me/gaia pr create --title t --body-file {f}",
     GH_WRAPPER + " issue comment 7 --body-file {f}",
     "gh api repos/o/r/issues/1/comments -F body=@{f}",
     "git commit -F {f}",

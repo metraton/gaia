@@ -1042,7 +1042,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
 
     def test_windows_invokes_setx_with_workspace(self):
         """The Windows branch calls setx GAIA_WORKSPACE_PATH <workspace>."""
-        workspace = Path("C:/Users/jorge/ws/app")
+        workspace = Path("C:/Users/user/ws/app")
         completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with self._win():
             with patch("cli.install.subprocess.run", return_value=completed) as mock_run:
