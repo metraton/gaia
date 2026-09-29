@@ -66,16 +66,16 @@ def _settings(workspace: Path) -> dict:
 
 class TestPluginLaunch:
     def test_first_run_leaves_no_gaia_hook_in_workspace_settings(self, plugin_launch):
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
 
         assert _gaia_commands(_settings(plugin_launch)) == []
 
     def test_two_runs_are_idempotent(self, plugin_launch):
         settings_path = plugin_launch / ".claude" / "settings.local.json"
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
         after_first = settings_path.read_bytes()
-        second_message = plugin_setup.run_first_time_setup(mark_done=True)
+        second_message = plugin_setup.run_first_time_setup()
 
         assert settings_path.read_bytes() == after_first
         assert second_message is None
@@ -102,7 +102,7 @@ class TestPluginLaunch:
             },
         }))
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
         settings = _settings(ws)
 
         assert _gaia_commands(settings) == []
@@ -127,7 +127,7 @@ class TestNonPluginLaunch:
     def test_npm_copy_still_merges_hooks_into_workspace_settings(self, workspace, monkeypatch):
         monkeypatch.setattr(plugin_setup, "_installed_under_node_modules", lambda: True)
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
         commands = _gaia_commands(_settings(workspace))
 
         hooks_dir = f"{workspace}/.claude/hooks"
@@ -140,6 +140,6 @@ class TestNonPluginLaunch:
         undo the plugin launch's cleanup on every event."""
         monkeypatch.setattr(plugin_setup, "_installed_under_node_modules", lambda: False)
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
 
         assert "hooks" not in _settings(workspace)

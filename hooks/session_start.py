@@ -100,7 +100,7 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
 
 from modules.core.stdin import has_stdin_data
 from modules.core.logging_setup import configure_hook_logging
-from modules.core.plugin_setup import run_first_time_setup
+from modules.core.plugin_setup import mark_data_home, run_first_time_setup
 from modules.session.session_registry import register_session, SessionRegistryError
 
 # Configure logging -- file handler only when GAIA_DEBUG is set; no
@@ -271,12 +271,14 @@ if __name__ == "__main__":
         except Exception as _wt_exc:
             logger.debug("sweep_repo_worktrees failed (non-fatal): %s", _wt_exc)
 
-        # First-time setup: create project permissions if needed.
-        # mark_done=False so UserPromptSubmit can detect first-run
-        # and show the welcome message before marking initialized.
-        setup_message = run_first_time_setup(mark_done=False)
+        setup_message = run_first_time_setup()
         if setup_message:
-            logger.info("First-time setup: %s", setup_message)
+            logger.info("Session setup: %s", setup_message)
+        try:
+            data_home_notice = mark_data_home()
+        except Exception as _home_exc:
+            logger.warning("data home marker not written (non-fatal): %s", _home_exc)
+            data_home_notice = ""
 
         # The plugin channel never runs `gaia install`, so this is where its
         # database is migrated and its seeds re-run. Ordered before the
@@ -352,11 +354,14 @@ if __name__ == "__main__":
         response = {"session_type": "startup"}
         if setup_message:
             response["setup_message"] = setup_message
-        if upgrade_notice:
-            response["systemMessage"] = upgrade_notice
-            additional_context = "\n\n".join(
-                part for part in ("## Database upgrade\n" + upgrade_notice, additional_context) if part
-            )
+        notices = {"## Database upgrade": upgrade_notice, "## Data home": data_home_notice}
+        shown = {title: text for title, text in notices.items() if text}
+        if shown:
+            response["systemMessage"] = "\n\n".join(shown.values())
+            sections = [f"{title}\n{text}" for title, text in shown.items()]
+            if additional_context:
+                sections.append(additional_context)
+            additional_context = "\n\n".join(sections)
         if additional_context:
             response["hookSpecificOutput"] = {
                 "hookEventName": "SessionStart",

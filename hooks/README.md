@@ -22,8 +22,7 @@ User sends prompt
         |
 [user_prompt_submit.py] <- fires on UserPromptSubmit event
         |  Refreshes the session heartbeat (throttled, non-fatal)
-        |  Emits sparse first-run and unread-notification notices
-        |  First-run welcome on the install's first prompt only
+        |  Emits the unread-notification counter, and nothing when there are none
         |  Skills loaded on-demand: agent-response
         v
 Orchestrator dispatches agent (Task/Agent tool call)
@@ -47,7 +46,7 @@ Tool executes
         |
 [post_tool_use.py] <- fires on PostToolUse for: Bash, Task, AskUserQuestion,
         |                 and on PostToolUseFailure for: Bash
-        |  Audits result, logs to .claude/logs/; a signed call closes on its own
+        |  Audits result, logs to the data home's logs/ (~/.gaia/logs, or GAIA_DATA_DIR); a signed call closes on its own
         |        terminal event (success or failure), matched by tool_use_id
         v
 [subagent_stop.py] <- fires on SubagentStop for all agents

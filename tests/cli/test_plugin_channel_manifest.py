@@ -164,7 +164,7 @@ def test_e_repeated_sessions_still_revert_exactly(env):
     assert _local(env).read_bytes() == USER_LOCAL
 
 
-def test_f_marker_and_registry_in_the_workspace_are_reverted(env):
+def test_f_registry_in_the_workspace_is_reverted_and_the_marker_stays_home(env):
     env["vars"].pop("CLAUDE_PLUGIN_DATA")
     _local(env).write_bytes(USER_LOCAL)
     before = sorted(p.name for p in (env["workspace"] / ".claude").iterdir())
@@ -172,7 +172,9 @@ def test_f_marker_and_registry_in_the_workspace_are_reverted(env):
     _session(env)
     _hook(env, USER_PROMPT_SUBMIT, {"hook_event_name": "UserPromptSubmit", "prompt": "hello"})
     written = {p.name for p in (env["workspace"] / ".claude").iterdir()}
-    assert {".plugin-initialized", "plugin-registry.json"} <= written
+    assert "plugin-registry.json" in written
+    assert ".plugin-initialized" not in written
+    assert (Path(env["vars"]["GAIA_DATA_DIR"]) / ".plugin-initialized").is_file()
 
     _uninstall(env)
 

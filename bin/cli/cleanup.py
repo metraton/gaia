@@ -726,10 +726,11 @@ def _remove_settings_json(root: Path, dry_run: bool) -> dict:
 # ---------------------------------------------------------------------------
 # Gaia-owned data-dir markers (.plugin-initialized, plugin-registry.json)
 #
-# Both live in get_plugin_data_dir(), which falls back to .claude/ when
-# CLAUDE_PLUGIN_DATA is unset (the common npm-install case). The marker is a
-# pure Gaia artifact -- removed outright. The registry is shared with Claude
-# Code's plugin system, so only Gaia's own entry is removed surgically.
+# The registry lives in get_plugin_data_dir(), which falls back to .claude/
+# when CLAUDE_PLUGIN_DATA is unset (the common npm-install case); it is shared
+# with Claude Code's plugin system, so only Gaia's own entry is removed
+# surgically. A marker in .claude/ is one an earlier version left there (it now
+# lives in the Gaia data home) -- a pure Gaia artifact, removed outright.
 # ---------------------------------------------------------------------------
 
 # Plugin names Gaia registers in plugin-registry.json. "gaia" is the sole
@@ -738,9 +739,8 @@ _GAIA_PLUGIN_NAMES = {"gaia"}
 
 
 def _remove_plugin_initialized(root: Path, dry_run: bool) -> dict:
-    """Remove the .plugin-initialized first-run marker.
+    """Remove a .plugin-initialized marker an earlier version wrote into .claude/.
 
-    Written by plugin_setup.mark_initialized() into get_plugin_data_dir().
     A pure Gaia artifact (timestamp + mode), safe to delete outright.
     """
     path = root / ".claude" / ".plugin-initialized"

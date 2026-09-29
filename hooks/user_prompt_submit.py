@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """UserPromptSubmit hook — refreshes session liveness and emits sparse notices."""
 
-import os
 import sys
 import json
 import logging
@@ -15,7 +14,6 @@ if _pkg_root not in sys.path:
 
 from modules.core.logging_setup import configure_hook_logging
 from modules.core.stdin import has_stdin_data
-from modules.core.plugin_setup import run_first_time_setup
 
 # Configure logging -- file handler only when GAIA_DEBUG is set; no
 # hooks-*.log is written by default (see modules.core.logging_setup).
@@ -82,101 +80,6 @@ def _build_notifications_counter() -> str:
         return ""
 
 
-def _detect_install_method() -> str:
-    """Detect how Gaia was installed: "npm" or "plugin".
-
-    The install method -- NOT the runtime mode -- decides how Gaia's security
-    hooks activate, so the first-run welcome can give accurate guidance:
-
-    - npm/pnpm install: sync_workspace_hooks() registers the hooks in
-      .claude/settings.local.json. Claude Code's settings file-watcher applies
-      changes to that file automatically, so protection takes effect without a
-      restart.
-    - plugin install (marketplace / --plugin-dir): Claude Code reads hooks from
-      the plugin's own hooks.json, which is only re-read on /reload-plugins or
-      a restart.
-
-    Detection, most reliable first:
-      1. plugin-registry.json "source" -- the determination persisted by
-         ensure_plugin_registry() at first setup ("npm-mode" / "plugin-mode").
-         run_first_time_setup() runs before the welcome, so the registry
-         normally already exists here.
-      2. CLAUDE_PLUGIN_ROOT env var -- set by Claude Code only when launching
-         from a plugin root, so its presence means a plugin install.
-      3. node_modules in this module's resolved path -- npm/pnpm layout.
-      4. Default "plugin": the safer guidance, since "/reload-plugins (or
-         restart)" is harmless in both cases, whereas telling an npm user it
-         "applies automatically" would be wrong if it does not.
-    """
-    # 1. Persisted determination from the registry.
-    try:
-        from modules.core.paths import get_plugin_data_dir
-        registry_path = get_plugin_data_dir() / "plugin-registry.json"
-        if registry_path.exists():
-            source = json.loads(registry_path.read_text()).get("source", "")
-            if source == "npm-mode":
-                return "npm"
-            if source == "plugin-mode":
-                return "plugin"
-    except Exception as _reg_exc:
-        logger.debug("install-method registry read failed (non-fatal): %s", _reg_exc)
-
-    # 2. CLAUDE_PLUGIN_ROOT -> plugin install.
-    if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip():
-        return "plugin"
-
-    # 3. node_modules in module path -> npm/pnpm install.
-    if "node_modules" in Path(__file__).resolve().parts:
-        return "npm"
-
-    # 4. Conservative default.
-    return "plugin"
-
-
-def _build_welcome() -> str:
-    """Build the first-run welcome message for the user.
-
-    This message is injected as additionalContext so Claude receives it,
-    not the user directly.  The framing explains WHY the user needs to
-    know — Claude should naturally relay it because it is actionable.
-
-    The activation guidance branches on the INSTALL METHOD (see
-    _detect_install_method), because that -- not the runtime mode -- is what
-    determines whether the security hooks activate on their own or need a
-    reload/restart. The product is a single unified plugin, always named
-    "Gaia" to the user (the ops/security runtime mode is an internal detail,
-    not a product name).
-    """
-    if _detect_install_method() == "npm":
-        return (
-            "Gaia was just installed for the first time in this project. "
-            "Gaia configured its security protections — destructive-command "
-            "blocking and approval gating for mutative operations — by merging "
-            "them into .claude/settings.local.json. Because this is an npm/pnpm "
-            "install, Claude Code's settings watcher applies those changes "
-            "automatically, so protection takes effect without restarting. "
-            "Tell the user that Gaia is installed and its protections apply on "
-            "their own; they can confirm by running /hooks and checking that "
-            "Gaia's entries are listed. Only if /hooks does not show Gaia's "
-            "entries after a few seconds should the user restart Claude Code as "
-            "a fallback."
-        )
-
-    # Plugin install (or unknown -> conservative reload guidance).
-    return (
-        "Gaia was just installed for the first time in this project. "
-        "Gaia configured its security protections — destructive-command "
-        "blocking and approval gating for mutative operations — but because "
-        "this is a plugin install, Claude Code only picks them up after "
-        "reloading plugins. Until then, Gaia cannot protect the user's "
-        "commands: destructive operations will not be blocked and mutative "
-        "operations will not require approval. Tell the user that Gaia is "
-        "installed and that they need to run /reload-plugins (or restart "
-        "Claude Code) to activate its security protections, and that until "
-        "they do, protections are not active."
-    )
-
-
 if __name__ == "__main__":
     if not has_stdin_data():
         sys.exit(0)
@@ -205,14 +108,6 @@ if __name__ == "__main__":
         except Exception as _hb_exc:
             logger.debug("touch_session failed (non-fatal): %s", _hb_exc)
 
-        # Check first-run BEFORE setup (SessionStart does setup with
-        # mark_done=False so the marker doesn't exist yet on first run).
-        from modules.core.plugin_setup import is_first_run, mark_initialized
-        first_run = is_first_run()
-
-        # Ensure registry + permissions exist (idempotent, no mark).
-        setup_msg = run_first_time_setup(mark_done=False)
-
         # Build sparse additionalContext. DB-backed routing remains available
         # to diagnostic tools but is no longer injected into each user turn.
         # Identity now lives in agents/gaia-orchestrator.md (agent definition).
@@ -221,14 +116,6 @@ if __name__ == "__main__":
         # re-evaluating on every prompt added noise without changing the
         # answer.
         context_parts = []
-
-        # First-time welcome: the marker does not exist yet because
-        # neither SessionStart nor this call marked it.
-        if first_run:
-            welcome = _build_welcome()
-            context_parts.append(welcome)
-            mark_initialized()  # Mark AFTER building the welcome
-            logger.info("First-run welcome prepended")
 
         # Prompt extraction is retained for liveness diagnostics only.
         prompt_text = _extract_user_prompt(raw_input)

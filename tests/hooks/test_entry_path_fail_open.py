@@ -52,6 +52,7 @@ def _run_entry_point(payload, data_dir, extra_env=None):
     """Drive the real entry point as a subprocess with an isolated data dir."""
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_DATA"] = str(data_dir)
+    env["GAIA_DATA_DIR"] = str(data_dir)
     env.pop("GAIA_DEBUG", None)
     if extra_env:
         env.update(extra_env)

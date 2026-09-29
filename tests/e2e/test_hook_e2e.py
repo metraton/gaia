@@ -301,7 +301,7 @@ class TestPostToolUseE2E:
     (see adapt_post_tool_use), so it exits 0 regardless of whether the
     underlying tool call succeeded or failed. The real observable effect is
     the audit record log_execution() writes -- assert on ITS exit_code,
-    isolated to a per-test data dir via CLAUDE_PLUGIN_DATA so the assertion
+    isolated to a per-test data home via GAIA_DATA_DIR so the assertion
     reads the record this test produced, not ambient audit history.
     """
 
@@ -322,7 +322,7 @@ class TestPostToolUseE2E:
     def test_successful_command_recorded_with_exit_code_0(self, tmp_path):
         """A successful Bash result (dict tool_response) must audit exit_code 0."""
         code, response, stderr = run_hook(
-            self.HOOK, POSTTOOL_BASH, env_extras={"CLAUDE_PLUGIN_DATA": str(tmp_path)}
+            self.HOOK, POSTTOOL_BASH, env_extras={"GAIA_DATA_DIR": str(tmp_path)}
         )
         assert code == 0, f"Expected exit 0, got {code}. stderr: {stderr}"
         record = self._read_last_audit_record(tmp_path)
@@ -334,7 +334,7 @@ class TestPostToolUseE2E:
     def test_failed_command_recorded_with_exit_code_1(self, tmp_path):
         """A failed Bash result (bare-string tool_response) must audit exit_code 1."""
         code, response, stderr = run_hook(
-            self.HOOK, POSTTOOL_BASH_FAILED, env_extras={"CLAUDE_PLUGIN_DATA": str(tmp_path)}
+            self.HOOK, POSTTOOL_BASH_FAILED, env_extras={"GAIA_DATA_DIR": str(tmp_path)}
         )
         assert code == 0, f"Expected exit 0 (post-hook never blocks), got {code}. stderr: {stderr}"
         record = self._read_last_audit_record(tmp_path)

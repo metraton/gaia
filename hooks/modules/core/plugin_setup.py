@@ -1,12 +1,12 @@
-"""First-time plugin setup for SessionStart hook.
+"""Plugin setup for the SessionStart hook.
 
-Detects first run via marker file in CLAUDE_PLUGIN_DATA.
 On every session, merges gaia permissions and attribution into
-.claude/settings.local.json; what that (or a marker and registry landing in
-.claude/ when CLAUDE_PLUGIN_DATA is unset) writes into the workspace is
-recorded in the install manifest (recorded_in_manifest), so `gaia uninstall`
-reverts it. Also owns the single writer of Gaia hook entries in workspace
-settings (sync_workspace_hooks), used by the session setup and by install/update.
+.claude/settings.local.json; what that (or a registry landing in .claude/ when
+CLAUDE_PLUGIN_DATA is unset) writes into the workspace is recorded in the
+install manifest (recorded_in_manifest), so `gaia uninstall` reverts it. The
+init marker lives in the data home, outside the workspace (mark_data_home).
+Also owns the single writer of Gaia hook entries in workspace settings
+(sync_workspace_hooks), used by the session setup and by install/update.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path, PurePath
 
-from .paths import get_plugin_data_dir
+from .paths import get_data_home, get_plugin_data_dir, legacy_data_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -257,25 +257,35 @@ PERMISSIONS = {
 HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
 
 
-def is_first_run() -> bool:
-    """Check if this is the first time the plugin runs."""
-    marker = get_plugin_data_dir() / MARKER_FILE
-    return not marker.exists()
+def marker_path() -> Path:
+    """The init marker: one per data home, whichever channel launched the session."""
+    return get_data_home() / MARKER_FILE
 
 
-def mark_initialized() -> None:
-    """Mark the plugin as initialized."""
-    with recorded_in_manifest():
-        _write_marker()
+def mark_data_home() -> str:
+    """Write the init marker on the first session under the data home.
 
-
-def _write_marker() -> None:
-    marker = get_plugin_data_dir() / MARKER_FILE
+    Returns a notice naming the per-channel directories an earlier layout left
+    logs or session state in, only on the session that writes the marker; ""
+    otherwise. Those directories stay where they are: nothing is merged.
+    """
+    marker = marker_path()
+    if marker.exists():
+        return ""
     marker.write_text(json.dumps({
         "initialized_at": datetime.now().isoformat(),
         "mode": "gaia",
     }))
-    logger.info("Plugin marked as initialized: %s", marker)
+    logger.info("Data home marked as initialized: %s", marker)
+    legacy = legacy_data_dirs()
+    if not legacy:
+        return ""
+    listing = "\n".join(f"- {path}" for path in legacy)
+    return (
+        f"Gaia now keeps logs and session state in {marker.parent}, shared by "
+        "every channel. Earlier per-channel data was left in place, not merged:\n"
+        f"{listing}"
+    )
 
 
 @contextmanager
@@ -748,30 +758,12 @@ def _sync_workspace_hooks() -> bool:
     return action == "updated"
 
 
-def run_first_time_setup(mark_done: bool = True) -> str | None:
-    """Run setup. Returns a reload message if permissions were written.
-
-    Args:
-        mark_done: If True, mark the plugin as initialized after setup.
-                   Set to False when the caller wants to defer marking
-                   (e.g., UserPromptSubmit marks after showing the welcome).
-    """
-    # Always ensure registry, permissions, and hooks exist (even on subsequent runs)
+def run_first_time_setup() -> str | None:
+    """Ensure the registry, permissions and hooks exist; a reload message if any were written."""
     with recorded_in_manifest():
         ensure_plugin_registry()
         reload_needed = setup_project_permissions()
         hooks_changed = _sync_workspace_hooks()
-        reload_needed = reload_needed or hooks_changed
-        first_run = is_first_run()
-        if first_run and mark_done:
-            _write_marker()
-
-    if not first_run:
-        if reload_needed:
-            return "Permissions updated. Run /reload-plugins to activate."
-        return None
-
-    if reload_needed:
-        return "GAIA setup complete. Run /reload-plugins to activate permissions."
-
+    if reload_needed or hooks_changed:
+        return "Permissions updated. Run /reload-plugins to activate."
     return None
