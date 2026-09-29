@@ -1108,5 +1108,34 @@ function runEngine(search) {
     ok, `plain __deck=${plain ? '__deck' in plain : 'n/a'} | video __deck=${deck ? Object.keys(deck).join(',') : 'none'} | driven=${driven}`);
 }
 
+// ── 16. CENSUS — the width the grid GIVES a node, not the one authored ──────
+// section-e authors 8 columns but its content fills 6 (six single cells and one
+// span-2), so a census that echoed the YAML would report 8 and "2/8".
+{
+  const dir = mkDeck();
+  const name = 'CENSUS: reports resolved columns/width, the variant in use and the chip members by authored id';
+  try {
+    const { p, doc } = loadOverview(dir);
+    findNode(doc, 'section-e').columns = 8;
+    findNode(doc, 'item-a').variant = 'blue';
+    saveOverview(p, doc);
+    rebuild(dir);
+    const { code, out } = runNode([path.join(ROOT, 'tools', 'census.mjs'), dir, '--json']);
+    const page = JSON.parse(out).pages[0];
+    const section = page.sections[0];
+    const got = { code, section: section.id, columns: section.columns,
+      width: section.children.find(c => c.id === 'item-c').width,
+      blue: page.variants.blue, flow: page.chips.find(c => c.key === 'flow').members };
+    const ok = code === 0 && got.section === 'section-e'
+      && got.columns.authored === 8 && got.columns.effective === 6 && got.width === '2/6'
+      && JSON.stringify(got.blue) === '["item-a"]' && got.flow.join(',') === 'item-1,item-3,item-7';
+    report(name, ok, JSON.stringify(got));
+  } catch (e) {
+    report(name, false, e.message);
+  } finally {
+    rmDeck(dir);
+  }
+}
+
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);
 process.exit(failures === 0 ? 0 : 1);

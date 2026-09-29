@@ -51,13 +51,16 @@ assets/
 │   │                        NO browser, exit≠0 on any [FAIL]
 │   ├── static-census.cjs    the authored-data reader and the form list (FORMS)
 │   │                        the build and the model share — one parse path
+│   ├── census.mjs           the per-page summary (`npm run census [-- --json]`):
+│   │                        sections and nesting, resolved columns/span/width,
+│   │                        colours and chip members, by authored id
 │   ├── test-guards.mjs      the negative-test suite (`npm test`) — fabricates one
 │   │                        broken deck per case in a temp dir and asserts the
 │   │                        guard FAILS as claimed
 │   └── contrast-audit.cjs   WCAG 2.1 contrast audit of the swappable palettes
 │                            (`npm run contrast`), reading the tokens out of
 │                            index.html so a palette edit is audited by construction
-├── package.json          the four scripts (build · model · test · contrast); no
+├── package.json          the five scripts (build · model · census · test · contrast); no
 │                         dependencies — Node alone runs all of them
 └── data/                 ── the only part you edit ──
     ├── document.yaml     manifest: title/subtitle/version, tokens, core chips, and
@@ -78,7 +81,9 @@ assets/
   Nothing to install: the deck has no npm dependencies. Then **`npm run model`
   — the mandatory gate**: arithmetic over the authored YAML, no browser. Never
   declare a layout change done until it is green. Whether the page LOOKS right
-  is a human review: open `index.html` and look. `npm test` runs the
+  is a human review: open `index.html` and look. `npm run census -- --json`
+  prints what each page resolved to, so it can be checked against the sketch
+  agreed before building without reading the YAML. `npm test` runs the
   negative-test suite over the guards themselves, and `npm run contrast` audits
   the palettes against WCAG 2.1.
 - **The dialect** (every field + the `status`/`variant` enums) is documented in
