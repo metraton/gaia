@@ -270,7 +270,11 @@ class TestReleaseCheckReusesCiVerdict(unittest.TestCase):
         calls = []
         local_suite = fake_kwargs.pop("local_suite", False)
         with ExitStack() as stack:
-            for gate in ("gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun", "gate_convergence"):
+            stack.enter_context(patch("cli.release._pack_helpers.pack_tarball", return_value={"action": "error"}))
+            for gate in (
+                "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
+                "gate_convergence", "gate_opencode_surface",
+            ):
                 stack.enter_context(patch(f"cli.release.{gate}", return_value=_PASS))
             npm_test = stack.enter_context(patch("cli.release.gate_npm_test", return_value=_SUITE_PASS))
             stack.enter_context(patch("cli.release._run", side_effect=_fake_run(calls=calls, **fake_kwargs)))

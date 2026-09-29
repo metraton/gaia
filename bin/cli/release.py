@@ -10,9 +10,9 @@ BOTH surfaces, reproducing CI" -- plus the shared drift-free convergence gate:
 
   1. pre-publish:validate  -- the version-drift / manifest gate
      (`bin/pre-publish-validate.js --validate-only`).
-  2. gaia:verify-install:local -- packs the CURRENT source tree (via the
-     shared `_pack_helpers.pack_tarball`, the same primitive `gaia dev`
-     uses -- Phase 1) and installs it into a throwaway sandbox
+  2. gaia:verify-install:local -- installs the tarball of the CURRENT source
+     tree (packed once, after gate 1, via the shared
+     `_pack_helpers.pack_tarball`, the same primitive `gaia dev` uses) into a throwaway sandbox
      (`bin/validate-sandbox.sh --tarball <tgz> --target sandbox`). This
      proves the npm/pnpm surface of exactly what `npm publish` would ship.
   3. gaia:plugin-dryrun -- packs the tarball again (bin/plugin-dryrun.sh
@@ -36,12 +36,21 @@ BOTH surfaces, reproducing CI" -- plus the shared drift-free convergence gate:
      hard FAIL, because installing that artifact would be REFUSED by bootstrap
      (never ship code older than the DB). This is what makes `gaia release` as
      drift-safe as `gaia dev`.
+  6. opencode:surface -- the OpenCode channel rides the npm package, so this
+     inspects the SAME tarball gate 2 installs, without starting OpenCode: it
+     extracts it, wires it into a throwaway workspace through the wiring
+     `gaia install --host opencode` uses (`_install_helpers.configure_opencode_plugin`),
+     and FAILs naming whatever is missing -- opencode/plugin.ts, a file it
+     resolves relative to itself (./bridge.py, ../bin/gaia, an imported
+     module), an inventoried agent or `{file:...}` prompt, a skill link. The
+     live OpenCode run stays a manual check.
 
 Gates 1-4 are each a subprocess call to the EXISTING script/binary -- this
 module never reimplements pre-publish-validate.js, validate-sandbox.sh, or
 plugin-dryrun.sh; gate 5 is an in-process, read-only inspection via the shared
-`cli/_converge` inspector (no reimplementation of the direction guard either).
-All five gates always run (no short-circuit) so the summary reports a complete
+`cli/_converge` inspector (no reimplementation of the direction guard either),
+and gate 6 an in-process inspection confined to temporary directories.
+All six gates always run (no short-circuit) so the summary reports a complete
 PASS/FAIL/SKIP picture per gate, mirroring how `bin/validate-sandbox.sh`'s own
 check harness aggregates through to a summary rather than stopping at the first
 failure.
@@ -99,6 +108,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -116,6 +126,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from cli import _converge  # type: ignore  # noqa: E402
+from cli import _install_helpers  # type: ignore  # noqa: E402
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
 
@@ -276,32 +287,28 @@ def gate_pre_publish_validate(repo_root: Path, *, timeout: int = 180) -> dict[st
     return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or "ok", "duration_ms": duration}
 
 
-def gate_npm_sandbox(repo_root: Path, *, timeout: int = 600) -> dict[str, Any]:
-    """Gate 2: pack (via shared `_pack_helpers.pack_tarball`) + `bin/validate-sandbox.sh
-    --tarball <tgz> --target sandbox`.
+def gate_npm_sandbox(repo_root: Path, pack: dict[str, Any], *, timeout: int = 600) -> dict[str, Any]:
+    """Gate 2: `bin/validate-sandbox.sh --tarball <tgz> --target sandbox` on the
+    tarball `run_release_check` packed (`_pack_helpers.pack_tarball`).
 
     Proves the npm/pnpm surface of exactly what `npm publish` would ship,
     installed into a throwaway `/tmp` sandbox that cleans itself up.
     """
     t0 = _now_ms()
     name = "gaia:verify-install:local"
+    if pack["action"] == "error":
+        return {
+            "name": name, "status": "FAIL",
+            "detail": f"npm pack failed: {pack['details']}",
+            "duration_ms": _now_ms() - t0,
+        }
 
-    with tempfile.TemporaryDirectory(prefix="gaia-release-check-pack-") as tmp:
-        pack_res = _pack_helpers.pack_tarball(repo_root, dest_dir=Path(tmp), timeout=timeout)
-        if pack_res["action"] == "error":
-            return {
-                "name": name, "status": "FAIL",
-                "detail": f"npm pack failed: {pack_res['details']}",
-                "duration_ms": _now_ms() - t0,
-            }
-
-        tarball = pack_res["tarball"]
-        script = repo_root / "bin" / "validate-sandbox.sh"
-        rc, out, err = _run(
-            ["bash", str(script), "--tarball", str(tarball), "--target", "sandbox"],
-            cwd=repo_root,
-            timeout=timeout,
-        )
+    script = repo_root / "bin" / "validate-sandbox.sh"
+    rc, out, err = _run(
+        ["bash", str(script), "--tarball", str(pack["tarball"]), "--target", "sandbox"],
+        cwd=repo_root,
+        timeout=timeout,
+    )
 
     duration = _now_ms() - t0
     if rc is None:
@@ -550,6 +557,112 @@ def gate_convergence(repo_root: Path, *, workspace: Path | None = None) -> dict[
     if report.get("reverse_direction"):
         return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": duration}
     return {"name": name, "status": "PASS", "detail": detail or "ok", "duration_ms": duration}
+
+
+# plugin.ts reaches the files beside it in two ways: `new URL(<ref>,
+# import.meta.url)` for the files it spawns (./bridge.py, ../bin/gaia), and
+# `from <ref>` for the modules it imports, which Bun resolves without an extension.
+_TS_RELATIVE_REF = re.compile(
+    r"""new\s+URL\(\s*["'](\.{1,2}/[^"']+)["']\s*,\s*import\.meta\.url"""
+    r"""|from\s+["'](\.{1,2}/[^"']+)["']"""
+)
+_TS_IMPORT_SUFFIXES = ("", ".ts", ".js")
+
+
+def gate_opencode_surface(pack: dict[str, Any]) -> dict[str, Any]:
+    """Gate 6: the OpenCode surface of the tarball gate 2 installs, checked without starting OpenCode.
+
+    FAILs naming each missing or broken piece; `_opencode_surface_problems` lists what is checked.
+    """
+    t0 = _now_ms()
+    name = "opencode:surface"
+    if pack["action"] == "error":
+        return {
+            "name": name, "status": "FAIL",
+            "detail": f"npm pack failed: {pack['details']}",
+            "duration_ms": _now_ms() - t0,
+        }
+
+    with tempfile.TemporaryDirectory(prefix="gaia-release-check-opencode-") as tmp:
+        root = Path(tmp).resolve()
+        try:
+            with tarfile.open(pack["tarball"]) as archive:
+                archive.extractall(root, filter="data")
+        except (OSError, tarfile.TarError) as exc:
+            problems = [f"cannot extract {pack['tarball']}: {exc}"]
+        else:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            problems = _opencode_surface_problems(root / "package", workspace)
+
+    detail = "\n".join(problems) or "plugin.ts, the files it resolves, agents and skills all present"
+    return {"name": name, "status": "FAIL" if problems else "PASS", "detail": detail, "duration_ms": _now_ms() - t0}
+
+
+def _opencode_surface_problems(package: Path, workspace: Path) -> list[str]:
+    """Wire *package* into *workspace* as `gaia install --host opencode` does and name what does not resolve.
+
+    Checked: opencode/plugin.ts and every relative reference it (or a module it
+    imports) resolves; every agent the inventory names, since the wiring skips a
+    missing one silently; opencode.json's plugin[] entry and each `{file:...}`
+    agent prompt; one .opencode/skills link per packaged skill.
+    """
+    plugin = package / "opencode" / "plugin.ts"
+    if not plugin.is_file():
+        return ["opencode/plugin.ts is missing from the package"]
+
+    problems = _missing_plugin_references(package, plugin)
+    problems += [
+        f"{source.relative_to(package).as_posix()} (named by the OpenCode agent inventory) is missing from the package"
+        for source in _install_helpers._opencode_agent_sources(package)
+        if not source.is_file()
+    ]
+
+    wired = _install_helpers.configure_opencode_plugin(workspace, package)
+    if wired["action"] == "error":
+        return [*problems, f"OpenCode install wiring failed: {wired['details']}"]
+    config = json.loads((workspace / "opencode.json").read_text(encoding="utf-8"))
+
+    if not any(Path(entry).resolve() == plugin for entry in config.get("plugin", [])):
+        problems.append(f"opencode.json plugin[] does not point at the packaged opencode/plugin.ts: {config.get('plugin')}")
+    for agent, spec in config.get("agent", {}).items():
+        prompt = spec.get("prompt", "")
+        target = re.fullmatch(r"\{file:(.+)\}", prompt)
+        if target is None or not Path(target.group(1)).is_file():
+            problems.append(f"opencode.json agent {agent}: prompt {prompt!r} is not an existing file")
+
+    skills = sorted(path.parent.name for path in (package / "skills").glob("*/SKILL.md"))
+    if not skills:
+        problems.append("the package ships no skills/*/SKILL.md")
+    problems += [
+        f".opencode/skills/{skill} does not resolve to the packaged skills/{skill}/SKILL.md"
+        for skill in skills
+        if not (workspace / ".opencode" / "skills" / skill / "SKILL.md").is_file()
+    ]
+    return problems
+
+
+def _missing_plugin_references(package: Path, plugin: Path) -> list[str]:
+    """Name each relative reference of *plugin*, or of a module it imports, that is not a file."""
+    problems: list[str] = []
+    pending, seen = [plugin], set()
+    while pending:
+        module = pending.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        for url_ref, import_ref in _TS_RELATIVE_REF.findall(module.read_text(encoding="utf-8")):
+            ref = url_ref or import_ref
+            suffixes = _TS_IMPORT_SUFFIXES if import_ref else ("",)
+            target = next(
+                (candidate for suffix in suffixes if (candidate := module.parent / f"{ref}{suffix}").is_file()),
+                None,
+            )
+            if target is None:
+                problems.append(f"{ref} (resolved by {module.relative_to(package).as_posix()}) is missing from the package")
+            elif import_ref:
+                pending.append(target.resolve())
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -978,21 +1091,27 @@ def build_publish_plan(version: str, *, local_suite: bool = False) -> list[dict[
 def run_release_check(
     repo_root: Path, *, functional: bool = False, local_suite: bool = False
 ) -> list[dict[str, Any]]:
-    """Run the full Layer-2 pre-release gate in order and return all 5 results.
+    """Run the full Layer-2 pre-release gate in order and return all 6 results.
 
     Every gate runs regardless of earlier gate outcomes -- the summary must
     report a complete pass/fail/skip picture per gate (AC-2), not stop at
     the first red light. The 5th gate (`gate_convergence`) runs the same
     drift-free convergence `gaia dev` runs, applying the schema-direction guard
     so a release is refused when the live DB is newer than the artifact.
+    Gates 2 and 6 inspect ONE `npm pack` of the tree, packed after gate 1, so
+    the npm and OpenCode surfaces are judged on the same artifact.
     """
-    return [
-        gate_pre_publish_validate(repo_root),
-        gate_npm_sandbox(repo_root),
-        gate_plugin_dryrun(repo_root, functional=functional),
-        gate_tests(repo_root, local_suite=local_suite),
-        gate_convergence(repo_root),
-    ]
+    results = [gate_pre_publish_validate(repo_root)]
+    with tempfile.TemporaryDirectory(prefix="gaia-release-check-pack-") as tmp:
+        pack = _pack_helpers.pack_tarball(repo_root, dest_dir=Path(tmp))
+        results += [
+            gate_npm_sandbox(repo_root, pack),
+            gate_plugin_dryrun(repo_root, functional=functional),
+            gate_tests(repo_root, local_suite=local_suite),
+            gate_convergence(repo_root),
+            gate_opencode_surface(pack),
+        ]
+    return results
 
 
 def _report(
@@ -1086,6 +1205,12 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "                                    runs (shared cli/_converge), origin = the\n"
             "                                    release artifact; FAILs on reverse-direction\n"
             "                                    schema drift (live DB newer than the artifact)\n"
+            "  6. opencode:surface           -- the OpenCode surface of gate 2's tarball,\n"
+            "                                    without starting OpenCode: wires it into a\n"
+            "                                    temp workspace as `gaia install --host\n"
+            "                                    opencode` does and FAILs naming what is\n"
+            "                                    missing (opencode/plugin.ts, ./bridge.py,\n"
+            "                                    ../bin/gaia, an agent {file:...}, a skill link)\n"
             "\n"
             "No npm publish and no external repo. Gate 4 reads the GitHub API; the\n"
             "other gates reach only what npm pack/install already reach for.\n"
