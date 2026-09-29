@@ -45,7 +45,7 @@ def _make_row(name, type_, desc, updated_at, body=None):
 
 def _fake_list_memory_factory(rows_by_type):
     """Return a list_memory mock that filters by type from a dict of rows."""
-    def _impl(workspace, *, type=None):
+    def _impl(workspace, *, type=None, with_user_scope=False):
         if type is None:
             out = []
             for rows in rows_by_type.values():
