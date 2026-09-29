@@ -581,6 +581,72 @@ jobs:
           Write-Host "RC-3 doctor-via-npm-shim HEALTHY (status=$($doc.status), 0 red) WITHOUT --workspace -- setx persistence fixes the machine-2 scenario."
           exit 0
 
+  # The tarball the upgrade cells install. Packed once, on Linux, because
+  # that is where a release is packed: a Windows user installs a tarball built
+  # here, never one built on Windows. It does not wait for decide so the cells
+  # start as soon as the lookup ends; it is in the verdict's needs because a
+  # failed pack skips every cell, and a skipped cell alone reads as green.
+  pack:
+    name: Pack the package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - name: npm pack
+        run: |
+          mkdir pack-out
+          npm pack --silent --pack-destination pack-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: pack-out/*.tgz
+          retention-days: 7
+
+  # Every published database base (the dumps under
+  # tests/fixtures/published_bases, one per release that changed the schema)
+  # upgraded by `gaia migrate` from the installed tarball, then both install
+  # channels run their registered hook command as written and `gaia uninstall`
+  # must leave no manifest behind. The dumps are versioned, so no checkout here
+  # needs tags or history. Windows is in the matrix because the hook command
+  # starts with `sh`, and every path the package sees there contains a space.
+  # Skipped with the shards when decide found this tree already green, and run
+  # beside them otherwise, so the cells add no wall time as long as each one
+  # finishes before the slowest shard. tests/ci/upgrade_smoke.py holds the
+  # steps and their assertions.
+  upgrade:
+    name: Upgrade v${{ matrix.base }} (${{ matrix.os }})
+    needs: [decide, pack]
+    if: ${{ needs.decide.outputs.reusable != 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        base: [21, 26, 33, 37, 51, 57]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: pack-out
+
+      - name: Upgrade v${{ matrix.base }}, install both channels, run the hooks, uninstall
+        run: python tests/ci/upgrade_smoke.py --base ${{ matrix.base }} --pack-dir pack-out --root "${{ runner.temp }}/gaia upgrade"
+
   # The one check that summarizes the tree: green only when every job it
   # needs succeeded or was skipped by its own condition (l2-ci-subset outside
   # push, the shards when decide found a reusable verdict). A job that judges
@@ -601,6 +667,8 @@ jobs:
       - build-plugins
       - validate-manifests
       - windows-compat
+      - pack
+      - upgrade
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
