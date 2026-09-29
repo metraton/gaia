@@ -159,9 +159,12 @@ def main() -> int:
         "session_id": "upgrade-smoke", "cwd": str(npm_ws), "hook_event_name": "PreToolUse",
         "tool_name": "Bash", "tool_input": {"command": "git status"},
     }
+    # A session with no agent is the orchestrator, which may run only the gaia
+    # CLI: the block (exit 2) is a decision only the Python hook can reach,
+    # where a launcher that found no Python exits 1.
     hook = _run_hook(_hook_command(registered, "PreToolUse"), pre_tool_use, env=env, cwd=npm_ws)
-    _require(hook.returncode == 0, f"the registered PreToolUse command exited {hook.returncode}")
-    print("npm channel: registered hook command ran")
+    _require(hook.returncode == 2 and "[BLOCKED]" in hook.stdout + hook.stderr, f"the registered PreToolUse command exited {hook.returncode} without Gaia's decision")
+    print("npm channel: registered hook command ran and blocked the orchestrator's git status")
 
     built = _run([sys.executable, str(package / "scripts" / "build-plugin.py"), "gaia", "--manifests-only", "--output-dir", str(package)], env=env, cwd=package)
     _require(built.returncode == 0, "build-plugin.py failed on the installed package")
