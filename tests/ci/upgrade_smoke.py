@@ -100,7 +100,8 @@ def _run_hook(command: str, payload: dict, *, env: dict, cwd: Path) -> subproces
 def _uninstall_leaves_nothing(gaia: list[str], workspace: Path, env: dict) -> None:
     done = _run([*gaia, "uninstall", "--workspace", str(workspace), "--json", "--no-backup"], env=env, cwd=workspace)
     _require(done.returncode == 0, f"gaia uninstall failed in {workspace}")
-    _require(json.loads(done.stdout)["manifest"]["source"] == "manifest", "uninstall did not revert from a manifest")
+    result = json.loads(done.stdout)
+    _require(result.get("manifest", {}).get("source") == "manifest", f"uninstall did not revert from a manifest: {result.get('cleanup_error')}")
     _require(not (workspace / ".claude" / "gaia-manifest.json").exists(), "the manifest survived uninstall")
     again = _run([*gaia, "uninstall", "--workspace", str(workspace), "--json", "--dry-run", "--no-backup"], env=env, cwd=workspace)
     left = json.loads(again.stdout)["manifest"]

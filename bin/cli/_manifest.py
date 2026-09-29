@@ -84,14 +84,25 @@ def load(workspace: Path) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def _state_of(path: Path) -> dict:
-    """Snapshot of one path: absent, symlink (target), dir, or file (bytes)."""
-    if path.is_symlink():
+    """Snapshot of one path: absent, symlink (target), dir, or file (bytes).
+
+    A Windows junction -- the link install falls back to without symlink
+    privilege -- is a symlink here: as a dir it would be rmtree'd, which
+    Python 3.12 refuses on a junction.
+    """
+    if path.is_symlink() or _is_junction(path):
         return {"type": "symlink", "target": os.readlink(path)}
     if path.is_dir():
         return {"type": "dir"}
     if path.is_file():
         return {"type": "file", "bytes": path.read_bytes()}
     return {"type": "absent"}
+
+
+def _is_junction(path: Path) -> bool:
+    """True for a Windows directory junction (os.path.isjunction exists from 3.12)."""
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(isjunction and isjunction(path))
 
 
 def _key(workspace: Path, path: Path) -> str:
@@ -290,7 +301,9 @@ def apply_states(workspace: Path, current: dict[str, dict], target: dict[str, di
                 shutil.rmtree(path)
             changed.append(key)
             continue
-        if have["type"] in ("symlink", "file"):
+        if _is_junction(path):
+            path.rmdir()
+        elif have["type"] in ("symlink", "file"):
             path.unlink()
         elif have["type"] == "dir":
             continue
