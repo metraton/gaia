@@ -33,6 +33,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
 try:
@@ -4534,12 +4535,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # contains a heredoc ('<<'), the heredoc body is script source --
     # not shell subcommands.  Route through inline code analysis.
     # The length heuristic is suppressed: multi-line heredocs are normal
-    # and must not be flagged on size alone.
-    if (
-        base_cmd in _INLINE_CODE_CLIS
-        and "<<" in command
-        and semantics.non_flag_tokens
-        and semantics.non_flag_tokens[0] == "-"
+    # and must not be flagged on size alone. A shell's heredoc program is a
+    # script, so it is read line by line as ``bash script.sh`` would be.
+    program = heredoc_program(command)
+    if program is not None and program.interpreter == base_cmd and program.is_shell:
+        return _classify_script_content_by_regex(
+            program.body, "<heredoc>", family, cwd=cwd, _depth=_depth + 1,
+        )
+    if base_cmd in _INLINE_CODE_CLIS and "<<" in command and (
+        program is not None
+        or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
     ):
         return _check_inline_code(command, base_cmd, family, skip_length_check=True)
 
@@ -6412,8 +6417,12 @@ def _check_script_file(
     DEPTH`` the script body is NOT opened and the invocation is retained rather
     than released -- see the constant, which owns that rationale.
 
-    Returns ``None`` when the command is not a script-file invocation.
+    Returns ``None`` when the command is not a script-file invocation, which
+    includes a heredoc program: its body is inspected by Step 3c, and the
+    opener token is not a path.
     """
+    if heredoc_program(command) is not None:
+        return None
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
