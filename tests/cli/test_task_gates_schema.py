@@ -21,12 +21,13 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+_BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _MIGRATION = _REPO_ROOT / "scripts" / "migrations" / "v33_to_v34.sql"
 
@@ -39,7 +40,7 @@ def _run_bootstrap(workspace: Path) -> subprocess.CompletedProcess:
     env["GAIA_DB"] = str(tmp_db)
     env["WORKSPACE"] = str(workspace)
     return subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
+        [sys.executable, str(_BOOTSTRAP_PY)],
         env=env, capture_output=True, text=True, check=False, timeout=120,
     )
 
@@ -172,8 +173,8 @@ class TestTaskGatesSchemaUpgradeExistingDb(unittest.TestCase):
     bootstrap, gaining task_gates while prior rows survive."""
 
     def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_PY}")
         if not _SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
 

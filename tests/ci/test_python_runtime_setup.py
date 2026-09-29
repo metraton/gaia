@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from tests.conftest import require_tool
+
 
 def test_python_ci_provisions_pinned_bun_before_tests():
     """Bun setup precedes pytest and uses an exact stable version."""
@@ -69,7 +71,7 @@ def test_python_ci_fetches_exact_baseline_before_tests(tmp_path):
     assert git("rev-parse", "--is-shallow-repository").stdout.strip() == "true"
     missing = git("show", f"{baseline}:opencode/plugin.ts", check=False)
     assert missing.returncode == 128
-    subprocess.run(["bash", "-e", "-c", script], cwd=clone,
+    subprocess.run([require_tool("sh"), "-e", "-c", script], cwd=clone,
                    check=True, capture_output=True)
     after = git("rev-parse", "HEAD").stdout.strip()
     assert after == before

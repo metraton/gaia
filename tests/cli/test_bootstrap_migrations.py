@@ -1,5 +1,5 @@
 """Integration tests for the bootstrap migration framework under the schema
-FLOOR model (Section 3b/3c of bootstrap_database.sh).
+FLOOR model (the migration chain of bootstrap_database.py).
 
 The historical v1->v17 migration chain was collapsed into a floor (v18). The
 bootstrap script no longer seeds v1 and walks the chain; instead it:
@@ -47,7 +47,6 @@ from tests.conftest import copy_bootstrapped_db
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
 _BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _DOCTOR_PY = _REPO_ROOT / "bin" / "cli" / "doctor.py"
@@ -59,10 +58,10 @@ _MIGRATIONS_DIR = _REPO_ROOT / "scripts" / "migrations"
 # ---------------------------------------------------------------------------
 
 def _read_floor() -> int:
-    """Parse SCHEMA_FLOOR=N from bootstrap_database.sh."""
-    text = _BOOTSTRAP_SH.read_text()
+    """Parse SCHEMA_FLOOR=N from bootstrap_database.py."""
+    text = _BOOTSTRAP_PY.read_text()
     m = re.search(r"^\s*SCHEMA_FLOOR\s*=\s*(\d+)\s*$", text, re.MULTILINE)
-    assert m is not None, "SCHEMA_FLOOR not found in bootstrap_database.sh"
+    assert m is not None, "SCHEMA_FLOOR not found in bootstrap_database.py"
     return int(m.group(1))
 
 
@@ -75,29 +74,12 @@ def _read_expected_version() -> int:
 
 
 def _run_bootstrap(workspace: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
-    """Invoke bootstrap_database.sh with GAIA_DB inside the workspace."""
-    tmp_db = workspace / "tmp_gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(tmp_db)
-    env["WORKSPACE"] = str(workspace)
-    if env_overrides:
-        env.update(env_overrides)
-    return subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-
-
-def _run_bootstrap_py(workspace: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
     """Invoke the canonical Python bootstrapper with GAIA_DB inside the workspace.
 
     This is the path `gaia install`/`gaia update`/the lazy bootstrap all use
-    (see bin/cli/install.py::_run_bootstrap), so the direction guard must hold
-    here, not only in the shell reference.
+    (see bin/cli/install.py::_run_bootstrap). It needs neither `bash` nor the
+    `sqlite3` CLI, so these tests hold on a machine that has only the suite's
+    own toolchain.
     """
     tmp_db = workspace / "tmp_gaia.db"
     env = os.environ.copy()
@@ -214,8 +196,8 @@ class TestUpgradeExistingDbToV28(unittest.TestCase):
     """
 
     def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_PY}")
         if not _SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
         if sqlite3.sqlite_version_info < (3, 35, 0):
@@ -355,8 +337,8 @@ class TestV30ToV31DropDuplicateIndexes(unittest.TestCase):
     }
 
     def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_PY}")
         if not self._MIGRATION.is_file():
             self.skipTest(f"migration not found at {self._MIGRATION}")
 
@@ -449,8 +431,8 @@ class TestBootstrapFloorModel(unittest.TestCase):
         self.fresh_install = bootstrapped_db_template
 
     def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_PY}")
         if not _SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
         self.floor = _read_floor()
@@ -494,8 +476,12 @@ class TestBootstrapFloorModel(unittest.TestCase):
             finally:
                 con.close()
 
-            # stdout should reflect the floor baseline path, not a chain walk.
-            self.assertIn(f"floor (v{self.floor})", res.stdout)
+            # The run replays the chain from the floor and seals at EXPECTED.
+            self.assertIn(
+                f"chain v{self.floor}..v{self.expected}: applied and sealed "
+                f"at v{self.expected}",
+                res.stdout,
+            )
 
     # ----- 2. Below-floor DB is rejected ----------------------------------
 
@@ -572,7 +558,7 @@ class TestSchemaDirectionGuard(unittest.TestCase):
     code being installed) was previously unguarded -- the `else` branch logged
     "up-to-date" and the install "succeeded", leaving stale code to read a newer
     schema. That is the exact drift that broke `gaia contract finalize`. Both
-    bootstrap paths (the canonical .py and the shell reference) must:
+    bootstrap path must:
       * exit non-zero,
       * name the direction ("NEWER than ... expects"),
       * leave the DB ledger UNTOUCHED (no clobber).
@@ -608,17 +594,6 @@ class TestSchemaDirectionGuard(unittest.TestCase):
             db = workspace / "tmp_gaia.db"
             newer = self.expected + 1
             _build_above_expected_db(db, newer)
-            res = _run_bootstrap_py(workspace)
-            self._assert_refused_and_untouched(res, db, newer)
-
-    def test_sh_bootstrap_refuses_newer_db(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap_database.sh not found at {_BOOTSTRAP_SH}")
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            db = workspace / "tmp_gaia.db"
-            newer = self.expected + 5
-            _build_above_expected_db(db, newer)
             res = _run_bootstrap(workspace)
             self._assert_refused_and_untouched(res, db, newer)
 
@@ -631,7 +606,7 @@ class TestSchemaDirectionGuard(unittest.TestCase):
             workspace = Path(tmp)
             db = workspace / "tmp_gaia.db"
             _build_above_expected_db(db, self.expected)
-            res = _run_bootstrap_py(workspace)
+            res = _run_bootstrap(workspace)
             self.assertEqual(
                 res.returncode, 0,
                 f"aligned DB (==expected) wrongly refused:\nstdout:\n{res.stdout}\n"

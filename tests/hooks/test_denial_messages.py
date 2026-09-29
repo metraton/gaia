@@ -199,3 +199,37 @@ def test_gh_auth_switch_denial_names_the_per_process_alternative():
     )
     assert 'GH_TOKEN="$(gh auth token --user <account>)"' in message
     assert "`gh auth status`" in message
+
+
+def test_gh_auth_switch_denial_suggestions_classify_free():
+    """Every command the rendered denial suggests is one the classifier lets through.
+
+    The suggestions are read back out of the message a subagent receives and
+    fed to the classifier: advice that is itself gated would send the agent
+    round the same denial.
+    """
+    import re
+
+    from modules.security.mutative_verbs import detect_mutative_command
+    from modules.security.tiers import SecurityTier, classify_command_tier
+
+    result = detect_mutative_command("gh auth switch -u someone")
+    message = build_t3_blocked_denial_message(
+        approval_id="P-dddd",
+        command="gh auth switch -u someone",
+        verb=result.verb,
+        category=result.category,
+        guidance=result.guidance,
+    )
+
+    suggested = re.findall(r"`([^`]+)`", message)
+    per_process = re.search(r'GH_TOKEN="\$\([^)]*\)" gh \.\.\.', message)
+    assert suggested and per_process, f"message names no suggestion: {message!r}"
+    suggested.append(
+        per_process.group(0).replace("<account>", "someone").replace("gh ...", "gh pr list")
+    )
+
+    for command in suggested:
+        assert classify_command_tier(command) == SecurityTier.T0_READ_ONLY, (
+            f"suggested {command!r} is not free: {classify_command_tier(command)}"
+        )

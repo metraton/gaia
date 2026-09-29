@@ -2,11 +2,11 @@
 Tests for bin/cli/install.py -- gaia install subcommand.
 
 Smoke tests + orchestration tests only -- never invoke
-bootstrap_database.sh against a real DB; the helper modules are mocked or
+bootstrap_database.py against a real DB; the helper modules are mocked or
 exercised against tmp dirs.
 
 Parity coverage (cmd_install vs gaia-update.js fresh-install path):
-  - bootstrap_database.sh         -- mocked
+  - bootstrap_database.py         -- mocked
   - configure_settings_json       -- exercised + verified call order
   - merge_local_permissions       -- exercised + verified call order
   - merge_local_hooks             -- exercised + verified call order
@@ -53,6 +53,7 @@ from cli.install import (  # noqa: E402
     _npm_config_prefix_posix,
 )
 import cli.install as install_mod  # noqa: E402  # for monkeypatching the marker path
+from tests.conftest import require_tool  # noqa: E402
 
 
 class TestRegisterSubcommand(unittest.TestCase):
@@ -254,45 +255,41 @@ class TestCmdInstallBootstrapMarker(unittest.TestCase):
 
 
 class TestBootstrapScriptIntegration(unittest.TestCase):
-    """Run the real bootstrap_database.sh against a tmp sqlite DB.
+    """Run the real bootstrap_database.py against a tmp sqlite DB.
 
     This is the test that would have caught the rc.4 regression: the seed SQL
-    in Section 4 referenced `projects.identity` (a column dropped in the
-    workspaces/projects rename, commit be9698f). Without an integration test
-    that actually executes the bash script against the schema, drift between
-    bootstrap seed and schema goes undetected until npm install.
+    referenced `projects.identity` (a column dropped in the workspaces/projects
+    rename, commit be9698f). Without an integration test that actually executes
+    the bootstrap against the schema, drift between bootstrap seed and schema
+    goes undetected until npm install. The Python engine is the one `gaia
+    install` runs, and it needs neither `bash` nor the `sqlite3` CLI.
     """
 
-    _BOOTSTRAP_SH = (
-        Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_database.sh"
+    _BOOTSTRAP_PY = (
+        Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_database.py"
     )
     _SCHEMA_SQL = (
         Path(__file__).resolve().parents[2] / "gaia" / "store" / "schema.sql"
     )
 
     def setUp(self):
-        if not self._BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {self._BOOTSTRAP_SH}")
+        if not self._BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {self._BOOTSTRAP_PY}")
         if not self._SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {self._SCHEMA_SQL}")
 
     def _run_bootstrap_against_tmp_db(self, workspace: Path) -> subprocess.CompletedProcess:
-        """Invoke bootstrap_database.sh with GAIA_DB pointed at a tmp file."""
+        """Invoke bootstrap_database.py with GAIA_DB pointed at a tmp file."""
         tmp_db = workspace / "tmp_gaia.db"
         env = os.environ.copy()
         env["GAIA_DB"] = str(tmp_db)
         env["WORKSPACE"] = str(workspace)
         return subprocess.run(
-            ["bash", str(self._BOOTSTRAP_SH)],
+            [sys.executable, str(self._BOOTSTRAP_PY)],
             env=env,
             capture_output=True,
             text=True,
             check=False,
-            # 120s, matching the `bootstrapped_db_template` fixture's timeout
-            # for the same script (conftest.py). 30s assumed an idle machine;
-            # under xdist parallelism (many workers spawning the script's
-            # ~31 sqlite3 subprocesses concurrently) it expired intermittently
-            # even though the script itself was healthy (serial runs: 196/196).
             timeout=120,
         )
 
@@ -1368,7 +1365,9 @@ class TestLauncherShellBehavior(unittest.TestCase):
         link.chmod(0o755)
 
     def _run_launcher(self, launcher: Path, *, cwd: Path, args=None):
-        cmd = ["bash", str(launcher)]
+        # The shim body is a POSIX `exec ... "$@"`; the three behaviours under
+        # test hold for any sh, so the own toolchain's `sh` runs it, not bash.
+        cmd = [require_tool("sh"), str(launcher)]
         if args:
             cmd.extend(args)
         return subprocess.run(

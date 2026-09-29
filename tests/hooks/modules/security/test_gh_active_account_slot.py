@@ -22,6 +22,7 @@ before. A present entry is not a firing one -- this repository has shipped a
 whole table that read as coverage and decided nothing.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -181,6 +182,46 @@ def test_denial_names_the_per_process_alternative(case_id, command):
         f"{case_id}: the reason the classifier reports must carry the guidance, "
         f"or callers that surface only the reason drop it -- got {result.reason!r}"
     )
+
+
+def _suggested_commands(guidance: str) -> list[str]:
+    """The runnable commands a guidance names, with placeholders made concrete.
+
+    Backticked spans are commands as written; the per-process form carries an
+    ``<account>`` slot and a trailing ``gh ...`` that stand for "your account"
+    and "your gh command".
+    """
+    commands = re.findall(r"`([^`]+)`", guidance)
+    per_process = re.search(r'GH_TOKEN="\$\([^)]*\)" gh \.\.\.', guidance)
+    assert per_process, f"guidance names no per-process form: {guidance!r}"
+    commands.append(
+        per_process.group(0)
+        .replace("<account>", "someone")
+        .replace("gh ...", "gh pr list")
+    )
+    return commands
+
+
+@pytest.mark.parametrize("case_id,command", CLOSED, ids=[c for c, _ in CLOSED])
+def test_every_command_the_denial_suggests_classifies_free(case_id, command):
+    """The way out a denial names must itself pass free through the classifier.
+
+    Asserting the suggestion's text proves the sentence is there; feeding it to
+    the classifier proves the suggestion is not a second denial -- an agent
+    that follows advice that is itself gated has been sent in a circle.
+    """
+    suggested = _suggested_commands(detect_mutative_command(command).guidance)
+    assert len(suggested) == 3, f"{case_id}: expected status, login and the per-process form: {suggested}"
+    for suggestion in suggested:
+        result = detect_mutative_command(suggestion)
+        assert result.is_mutative is False, (
+            f"{case_id}: suggested {suggestion!r} is itself gated -- "
+            f"{result.category}: {result.reason}"
+        )
+        assert classify_command_tier(suggestion) == T0, (
+            f"{case_id}: suggested {suggestion!r} must be T0, got "
+            f"{classify_command_tier(suggestion)}"
+        )
 
 
 def test_account_slot_gate_carries_both_faces():

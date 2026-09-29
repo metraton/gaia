@@ -24,7 +24,7 @@ The existing unit tests did not catch it because:
 This module closes both gaps:
 
   1. TestSchemaV15Migration -- builds a v14-shaped DB with the LEGACY ``repo``
-     column on all nine child tables, runs bootstrap_database.sh, and asserts
+     column on all nine child tables, runs bootstrap_database.py, and asserts
      every child table converged to ``project`` (the exact regression that
      caused the live failure).
 
@@ -49,7 +49,7 @@ import pytest
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+_BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _MIGRATIONS_DIR = _REPO_ROOT / "scripts" / "migrations"
 
@@ -171,7 +171,7 @@ def _run_bootstrap_with_db(db_path: Path, workspace: Path) -> subprocess.Complet
     env["GAIA_DB"] = str(db_path)
     env["WORKSPACE"] = str(workspace)
     return subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
+        [sys.executable, str(_BOOTSTRAP_PY)],
         env=env,
         capture_output=True,
         text=True,
@@ -186,7 +186,7 @@ def _run_bootstrap_fresh(workspace: Path) -> tuple[subprocess.CompletedProcess, 
     env["GAIA_DB"] = str(db_path)
     env["WORKSPACE"] = str(workspace)
     res = subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
+        [sys.executable, str(_BOOTSTRAP_PY)],
         env=env,
         capture_output=True,
         text=True,
@@ -220,8 +220,8 @@ class TestSchemaV15Migration:
     """
 
     def setup_method(self):
-        if not _BOOTSTRAP_SH.is_file():
-            pytest.skip(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _BOOTSTRAP_PY.is_file():
+            pytest.skip(f"bootstrap script not found at {_BOOTSTRAP_PY}")
 
     def test_fresh_install_child_tables_use_project(self):
         """Fresh bootstrap (schema.sql) produces child tables with `project`."""
