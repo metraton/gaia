@@ -672,8 +672,8 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     Each name carries a live-pending count in parentheses -- ``aos-iac (3)`` --
     when ``gaia.store.reader.count_pending_by_initiative`` finds at least one
     live-pending thread (``class='thread'``, ``status`` in
-    ``carry_forward``/``open``) whose ``initiative`` normalizes to that
-    project's displayed name; a project with nothing pending carries no
+    ``carry_forward``/``open``), in any workspace, whose canonical project key
+    is that project's normalized displayed name; a project with nothing pending carries no
     annotation at all. This replaces the retired transversal digest, the
     SessionStart block that used to list live-pending threads by project on
     its own: the count is a signal to ask about, not content to read here, so
@@ -857,7 +857,7 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
             if key:
                 by_ws_inits.setdefault(e["ws"], set()).add(key)
         for ws, inits in by_ws_inits.items():
-            counts = _reader.count_pending_by_initiative(ws, sorted(inits))
+            counts = _reader.count_pending_by_initiative(sorted(inits))
             for key, n in counts.items():
                 pending_counts[(ws, key)] = n
     except Exception as exc:

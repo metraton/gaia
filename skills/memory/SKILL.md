@@ -62,13 +62,13 @@ enforces the destination after that choice; `reference.md` owns its mechanics.
    strengthening knowledge. An empty result answers "no row matches this
    phrasing", never "this initiative owes nothing": a pending is worded as the
    problem looked when it opened, not as what just resolved it, so step 1's
-   sweep is what finds it. For a project initiative that gap is a scoping
-   hypothesis — confirm with the right `--workspace` before trusting the
-   empty result. It is not one for a host-scoped initiative (`gaia_system`):
-   every reader unions the caller's workspace with `_gaia_host` and `_gaia_user`
-   (`bin/cli/memory.py::_reader_workspaces`), so an empty
-   `gaia memory get-relevant --initiative` there already covers every
-   workspace and is the complete answer.
+   sweep is what finds it. An empty
+   `gaia memory get-relevant --initiative` is the complete answer for that
+   project: it reads every workspace by the canonical project key
+   (`gaia.store.reader::pending_threads_by_project`). A search or a slug read
+   stays scoped to the caller's workspace plus `_gaia_host` and `_gaia_user`
+   (`bin/cli/memory.py::_reader_workspaces`), so an empty one is a scoping
+   hypothesis — confirm with the right `--workspace` before trusting it.
 3. **Choose the home.** Run *Other home first*, and continue only for genuinely
    curated value.
 4. **Adjudicate the change.** The orchestrator chooses scope (see *The one-line

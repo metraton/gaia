@@ -593,19 +593,21 @@ def _resolve_workspace(explicit: str | None) -> str:
     return cli_workspace(explicit)
 
 
-def _workspace_holding(workspace: str, name: str) -> str:
-    """Workspace that stores the live row ``name`` for a by-name verb.
+def _workspace_holding(workspace: str, name: str, *,
+                       include_deleted: bool = False) -> str:
+    """Workspace that stores the row ``name`` for a by-name verb.
 
     A type=user row lives in ``_gaia_user`` and a host-scoped one in
     ``_gaia_host``, whichever workspace the caller resolved, so the caller's
-    workspace is tried first and the two sentinels only on a miss. Returns
-    ``workspace`` when no live row is found anywhere (the verb then reports
-    its own not-found) or when the store cannot be read.
+    workspace is tried first and the two sentinels only on a miss. Only live
+    rows count unless ``include_deleted`` (a hard delete reaches a
+    tombstone). Returns ``workspace`` when no row is found anywhere (the verb
+    then reports its own not-found) or when the store cannot be read.
     """
     try:
         from gaia.store.writer import get_memory, HOST_WORKSPACE, USER_WORKSPACE
         for candidate in dict.fromkeys((workspace, USER_WORKSPACE, HOST_WORKSPACE)):
-            if get_memory(candidate, name) is not None:
+            if get_memory(candidate, name, include_deleted=include_deleted) is not None:
                 return candidate
     except Exception:
         pass
@@ -1473,8 +1475,9 @@ def _cmd_get_relevant(args) -> int:
     decided purely by the flags:
 
       * ``--types=...``  -> legacy per-type flow (unchanged, back-compat).
-      * ``--initiative=X`` -> PROJECT MODE: the WHOLE live-pending corpus of
-        the ONE requested initiative, uncapped and body-bearing.
+      * ``--initiative=X`` or ``--project=X`` -> PROJECT MODE: the WHOLE
+        live-pending corpus of the ONE requested project, from every
+        workspace, uncapped and body-bearing.
       * ``--sections=...`` -> SECTION renderer: the class/status sections
         (carry_forward / anchor / thread_open). This is the subagent-dispatch
         path (``--sections=anchor`` gives a dispatched subagent the durable
@@ -1498,10 +1501,13 @@ def _cmd_get_relevant(args) -> int:
         return _cmd_get_relevant_by_type(args, workspace, max_chars)
 
     initiative_arg = getattr(args, "initiative", None)
+    project_arg = getattr(args, "project", None)
     sections_arg = getattr(args, "sections", None)
 
-    if initiative_arg:
-        return _render_project_mode(args, workspace, initiative_arg, as_json)
+    if initiative_arg or project_arg:
+        return _render_project_mode(
+            args, workspace, initiative_arg, as_json, project_arg=project_arg,
+        )
     if sections_arg:
         return _render_sections(args, workspace, as_json)
     return _render_digest(args, workspace, as_json)
@@ -1899,7 +1905,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 # ``_reader_workspaces``) with the SAME query shape used for a single
 # workspace -- ``{ws}`` is filled in with 1 or 2 placeholders at call time.
 _PENDING_VIVO_SELECT = (
-    "SELECT name, type, description, body, updated_at, initiative, "
+    "SELECT workspace, name, type, description, body, updated_at, initiative, "
     "       class, status "
     "FROM memory "
     "WHERE workspace IN ({ws}) "
@@ -2098,13 +2104,16 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
     return 0
 
 
-def _render_project_mode(args, workspace: str, initiative_arg: str,
-                         as_json: bool) -> int:
-    """Project mode: the WHOLE live-pending corpus of ONE requested initiative.
+def _render_project_mode(args, workspace: str, initiative_arg: str | None,
+                         as_json: bool, *, project_arg: str | None = None) -> int:
+    """Project mode: the WHOLE live-pending corpus of ONE requested project.
 
-    ``--initiative=X`` normalises X the SAME way the write side does
-    (``normalize_initiative``), so the key matches what was stored. The
-    special value "otros" targets the NULL-initiative bucket.
+    ``--initiative=X`` and ``--project=X`` resolve X to the canonical project
+    key (``canonical_project_key``: an initiative, a bare name, a git path or a
+    remote identity), and the rows are every live-pending thread of that
+    project in ANY workspace -- the project, not the caller's workspace,
+    decides the corpus. The special value "otros" targets the NULL-initiative
+    bucket, which has no project and so stays scoped to ``workspace``.
 
     Every matching row is returned -- no top-N cap, no overflow footer, no
     char budget -- with the description verbatim and the ``body`` projected
@@ -2114,21 +2123,22 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
     part of the answer. See the note above ``_DIGEST_HEADER``.
 
     Every row returned bumps deliberate-read telemetry in both output shapes:
-    naming the initiative is what identified them, so the text block's
+    naming the project is what identified them, so the text block's
     collapsed rendering is the same request as the JSON payload's.
     """
-    try:
-        from gaia.store.writer import normalize_initiative
-        key = normalize_initiative(initiative_arg)
-    except Exception:
-        key = (initiative_arg or "").strip().lower() or None
+    from gaia.store.reader import pending_threads_by_project
+    from gaia.store.writer import canonical_project_key
+
+    if initiative_arg:
+        key = canonical_project_key(initiative=initiative_arg)
+    else:
+        key = canonical_project_key(project_ref=project_arg)
 
     if key == _OTHERS_BUCKET or key is None:
-        # The NULL-initiative bucket.
         rows = _fetch_pending_vivo(workspace, "  AND initiative IS NULL ")
         label = _OTHERS_BUCKET
     else:
-        rows = _fetch_pending_vivo(workspace, "  AND initiative = ? ", [key])
+        rows = pending_threads_by_project([key])
         label = key
 
     if not rows:
@@ -2146,6 +2156,7 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
         lines.append(f"- {name}: {bullet}" if bullet else f"- {name}")
         items.append({
             "name": name,
+            "workspace": r.get("workspace"),
             "type": r.get("type"),
             "initiative": label,
             "class": r.get("class"),
@@ -2155,7 +2166,8 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             "body": r.get("body"),
         })
 
-    _bump_memory_telemetry(workspace, [i["name"] for i in items], "deliberate")
+    for item in items:
+        _bump_memory_telemetry(item["workspace"], [item["name"]], "deliberate")
 
     block = "\n".join(lines) + "\n\n" + _MEMORY_POINTER
 
@@ -2371,20 +2383,23 @@ _SHOW_POINTER_LINE1 = (
 )
 
 
-def _show_pointer_line2(workspace: str, initiative) -> str | None:
+def _show_pointer_line2(row: dict) -> str | None:
     """Second pointer line: computed, and only present when it fires.
 
-    Fires only when the shown row names an ``initiative`` that itself has
-    other live-pending rows -- the technique the 2026-08-17 case measured
-    missing (sweep the initiative's whole live-pending set before writing
-    about it). A row with no initiative, or an initiative with zero
-    live-pending rows, returns ``None``: a condition that always fires is
-    not a condition.
+    Fires only when the shown row belongs to a project (its canonical project
+    key) that itself has live-pending rows in any workspace -- the technique
+    the 2026-08-17 case measured missing (sweep the project's whole
+    live-pending set before writing about it). A row with no project, or a
+    project with zero live-pending rows, returns ``None``: a condition that
+    always fires is not a condition.
     """
+    from gaia.store.reader import pending_threads_by_project
+    from gaia.store.writer import canonical_project_key
+
+    initiative = canonical_project_key(row.get("project_ref"), row.get("initiative"))
     if not initiative:
         return None
-    pending = _fetch_pending_vivo(workspace, "  AND initiative = ? ", [initiative])
-    n = len(pending)
+    n = len(pending_threads_by_project([initiative]))
     if n == 0:
         return None
     return (
@@ -2528,7 +2543,7 @@ def _cmd_curated_show(args) -> int:
 
     print()
     print(_SHOW_POINTER_LINE1)
-    line2 = _show_pointer_line2(workspace, row.get("initiative"))
+    line2 = _show_pointer_line2(row)
     if line2:
         print(line2)
     return 0
@@ -2549,10 +2564,13 @@ def _cmd_delete(args) -> int:
     recoverability, the direction that needs consent.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
     skip_confirm = getattr(args, "yes", False)
     hard = getattr(args, "hard", False)
+    workspace = _workspace_holding(
+        _resolve_workspace(getattr(args, "workspace", None)), name,
+        include_deleted=hard,
+    )
 
     try:
         from gaia.store.writer import get_memory, delete_memory
@@ -3762,9 +3780,10 @@ def register(subparsers):
             "mode has a DIFFERENT failure/budget contract, not a shared one: "
             "with no flag, the cross-project DIGEST is emitted -- capped by "
             "--max-chars, top-K initiatives, one freshest item each, excess "
-            "rolled into an overflow line. With --initiative=<key>, PROJECT "
-            "MODE returns EVERY live-pending row of that ONE initiative "
-            "instead -- --max-chars is accepted but IGNORED, since capping "
+            "rolled into an overflow line. With --initiative=<key> or "
+            "--project=<name>, PROJECT MODE returns EVERY live-pending row of "
+            "that ONE project from every workspace instead -- the cwd does not "
+            "narrow it -- and --max-chars is accepted but IGNORED, since capping "
             "an explicitly named corpus would silently withhold part of the "
             "answer; an initiative with zero live-pending rows and a "
             "made-up initiative key produce the SAME empty, exit-0 result "
@@ -3806,14 +3825,21 @@ def register(subparsers):
              "When omitted (and no --initiative/--types), the transversal "
              "initiative digest is emitted instead.",
     )
-    rel_p.add_argument(
+    rel_project = rel_p.add_mutually_exclusive_group()
+    rel_project.add_argument(
         "--initiative", default=None, metavar="KEY",
         help="Project mode (v32): return EVERY live-pending row of the ONE "
-             "named initiative (normalised like the write side), uncapped -- "
-             "not just the top ones, and --max-chars is ignored here. The "
-             "value 'otros' targets the NULL-initiative bucket. When "
-             "omitted, the cross-project transversal digest is emitted "
-             "instead.",
+             "named initiative (normalised like the write side) from every "
+             "workspace, uncapped -- not just the top ones, and --max-chars "
+             "is ignored here. The value 'otros' targets the NULL-initiative "
+             "bucket of the resolved workspace. When omitted, the "
+             "cross-project transversal digest is emitted instead.",
+    )
+    rel_project.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Project mode by project: a name, git path or remote identity "
+             "(github.com/owner/repo) resolved to the same canonical key as "
+             "--initiative; same output.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,

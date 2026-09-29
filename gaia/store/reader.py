@@ -142,65 +142,81 @@ def get_notification(
 
 
 # ---------------------------------------------------------------------------
-# memory reads -- live-pending count per initiative
+# memory reads -- a project's live-pending threads
 # ---------------------------------------------------------------------------
 
+_PENDING_THREADS_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
+    "       m.initiative, m.project_ref, m.class, m.status "
+    "FROM memory m "
+    "WHERE m.deleted_at IS NULL "
+    "  AND m.class = 'thread' "
+    "  AND m.status IN ('carry_forward', 'open') "
+    "  AND (COALESCE(m.initiative, '') != '' OR COALESCE(m.project_ref, '') != '') "
+    "  AND NOT EXISTS ("
+    "    SELECT 1 FROM memory_links l "
+    "    WHERE l.workspace = m.workspace AND l.dst_name = m.name "
+    "      AND l.kind = 'supersedes'"
+    "  ) "
+    "ORDER BY COALESCE(m.updated_at, '') DESC"
+)
+
+
+def pending_threads_by_project(
+    keys: list[str],
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Live-pending thread rows of the projects in ``keys``, freshest first.
+
+    A project's pending work is one corpus whichever workspace wrote it
+    (AC-12 of brief ``una-gaia-cualquier-instalacion``), so no workspace
+    filters the rows: a row belongs to a project when
+    ``gaia.store.writer.canonical_project_key`` of its ``initiative`` and
+    ``project_ref`` is in ``keys``. The thread predicate is
+    ``bin/cli/memory.py::_PENDING_VIVO_SELECT``'s, with a supersedes link
+    read in the row's own workspace; keep the two aligned, since this set is
+    what ``gaia memory get-relevant --initiative`` returns and every
+    "N more live-pending" count must equal it.
+
+    Returns ``[]`` for empty ``keys`` and on any DB error -- never raises,
+    since callers render it as an optional annotation or a best-effort read.
+    """
+    if not keys:
+        return []
+    try:
+        from gaia.store.writer import canonical_project_key
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        wanted = set(keys)
+        return [
+            dict(r) for r in con.execute(_PENDING_THREADS_WITH_A_PROJECT)
+            if canonical_project_key(r["project_ref"], r["initiative"]) in wanted
+        ]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 def count_pending_by_initiative(
-    workspace: str,
     initiatives: list[str],
     db_path: Path | None = None,
 ) -> dict[str, int]:
-    """Live-pending thread count per initiative, scoped like a project.
+    """Live-pending thread count per project key, from every workspace.
 
-    Mirrors the selection predicate ``bin/cli/memory.py::_PENDING_VIVO_SELECT``
-    (``class='thread'``, ``status`` in ``carry_forward``/``open``,
-    ``deleted_at IS NULL``, a supersedes-destination row excluded) plus the
-    host- and user-sentinel union ``_reader_workspaces`` performs there -- keep both
-    aligned if either changes; a count here that diverges from what
-    ``gaia memory get-relevant --initiative <key>`` returns for the same key
-    is exactly the drift this function exists to prevent, since a project's
-    on-screen count and its actual corpus size must always agree.
-
-    Returns ``{}`` for an empty ``initiatives`` list and on any DB error --
-    never raises, since a caller renders this as an optional annotation.
+    Counts :func:`pending_threads_by_project`, so a project's on-screen count
+    and the corpus ``gaia memory get-relevant --initiative <key>`` returns
+    agree by construction. Keys with no pending rows are absent.
     """
-    if not initiatives:
-        return {}
-    try:
-        from gaia.store.writer import HOST_WORKSPACE, USER_WORKSPACE
-        workspaces = [workspace] + [
-            w for w in (HOST_WORKSPACE, USER_WORKSPACE) if w != workspace
-        ]
-    except Exception:
-        workspaces = [workspace]
+    from gaia.store.writer import canonical_project_key
 
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return {}
-    try:
-        ws_ph = ", ".join("?" for _ in workspaces)
-        init_ph = ", ".join("?" for _ in initiatives)
-        sql = (
-            "SELECT initiative, COUNT(*) AS cnt FROM memory "
-            f"WHERE workspace IN ({ws_ph}) "
-            "  AND deleted_at IS NULL "
-            "  AND class = 'thread' "
-            "  AND status IN ('carry_forward', 'open') "
-            f"  AND initiative IN ({init_ph}) "
-            "  AND name NOT IN ("
-            "    SELECT dst_name FROM memory_links "
-            f"    WHERE workspace IN ({ws_ph}) AND kind = 'supersedes'"
-            "  ) "
-            "GROUP BY initiative"
-        )
-        params = list(workspaces) + list(initiatives) + list(workspaces)
-        rows = con.execute(sql, params).fetchall()
-        return {r["initiative"]: r["cnt"] for r in rows}
-    except Exception:
-        return {}
-    finally:
-        con.close()
+    counts: dict[str, int] = {}
+    for row in pending_threads_by_project(initiatives, db_path):
+        key = canonical_project_key(row["project_ref"], row["initiative"])
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 # ---------------------------------------------------------------------------

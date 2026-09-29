@@ -287,7 +287,7 @@ def test_checkpoint_user_lands_in_sentinel_and_pending_reaches_other_workspace(
     assert "user_pending_thread" in {i["name"] for i in digest["items"]}
 
     from gaia.store.reader import count_pending_by_initiative
-    assert count_pending_by_initiative("beta", ["aos"]) == {"aos": 1}
+    assert count_pending_by_initiative(["aos"]) == {"aos": 1}
 
 
 # ---------------------------------------------------------------------------
