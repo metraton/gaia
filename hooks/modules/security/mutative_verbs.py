@@ -23,6 +23,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
+from .cli_aliases import as_wrapped_cli
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
     CommandSemantics,
@@ -33,6 +34,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
 try:
@@ -669,8 +671,7 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 _GH_ACCOUNT_GUIDANCE = (
     "The active gh account is global state shared with every other session on "
     "this machine -- name the account on the invocation instead of switching "
-    'it: GH_TOKEN="$(gh auth token --user <account>)" gh ... , or the `ghx` '
-    "wrapper, which resolves the account from the repository's remote. "
+    'it: GH_TOKEN="$(gh auth token --user <account>)" gh ... . '
     "`gh auth status` lists the accounts; `gh auth login` adds a missing one."
 )
 
@@ -797,11 +798,6 @@ def _validated_anchor_table(
                         f"coverage and classifies nothing."
                     )
     return table
-
-
-# A CLI that is another CLI under a different name answers to its anchors.
-# `ghx` is the account-pinned `gh` launcher: same subcommands, same effects.
-_ANCHOR_CLI_ALIASES: Dict[str, str] = {"ghx": "gh"}
 
 
 # Keyed by base_cmd; the anchors of one CLI are tried in declaration order and
@@ -4000,10 +3996,26 @@ def detect_mutative_command(
     The floor is deliberately not symmetric: it never LOWERS a verdict.  The
     old reading is the corrupted one, and it is consulted only as a source of
     escalation.
+
+    A wrapper declared in ``GAIA_CLI_ALIASES`` gets the same one-way floor:
+    it is also read as the CLI it wraps, so it is never classified more
+    leniently than that CLI.  The lookup stays outside the cached function so
+    the cache remains keyed on the command text alone.
     """
     result = _detect_mutative_command(command, from_source_code, cwd, _depth)
     if result.is_mutative:
         return result
+
+    wrapped = as_wrapped_cli(command)
+    if wrapped is not None:
+        # One hop through the cached classifier: a declared cycle
+        # (a=b,b=a) must not recurse.
+        wrapped_result = _detect_mutative_command(wrapped, from_source_code, cwd, _depth)
+        if wrapped_result.is_mutative:
+            return replace(
+                wrapped_result,
+                reason=f"{wrapped_result.reason} (declared in GAIA_CLI_ALIASES as a wrapper of this CLI)",
+            )
 
     absorbing = _absorbing_form(command)
     if absorbing is None or absorbing == command:
@@ -4534,12 +4546,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # contains a heredoc ('<<'), the heredoc body is script source --
     # not shell subcommands.  Route through inline code analysis.
     # The length heuristic is suppressed: multi-line heredocs are normal
-    # and must not be flagged on size alone.
-    if (
-        base_cmd in _INLINE_CODE_CLIS
-        and "<<" in command
-        and semantics.non_flag_tokens
-        and semantics.non_flag_tokens[0] == "-"
+    # and must not be flagged on size alone. A shell's heredoc program is a
+    # script, so it is read line by line as ``bash script.sh`` would be.
+    program = heredoc_program(command)
+    if program is not None and program.interpreter == base_cmd and program.is_shell:
+        return _classify_script_content_by_regex(
+            program.body, "<heredoc>", family, cwd=cwd, _depth=_depth + 1,
+        )
+    if base_cmd in _INLINE_CODE_CLIS and "<<" in command and (
+        program is not None
+        or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
     ):
         return _check_inline_code(command, base_cmd, family, skip_length_check=True)
 
@@ -4660,8 +4676,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # win; BEFORE the Step 4 verb scan, so an anchor is still reached when a
     # read-only noun sits at the head of the path and would short-circuit there.
     if semantics.non_flag_tokens:
-        anchor_cli = _ANCHOR_CLI_ALIASES.get(base_cmd, base_cmd)
-        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(anchor_cli, ()):
+        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ()):
             anchor_flags = anchor.matched_flags(semantics)
             if anchor_flags is None:
                 continue
@@ -6412,8 +6427,12 @@ def _check_script_file(
     DEPTH`` the script body is NOT opened and the invocation is retained rather
     than released -- see the constant, which owns that rationale.
 
-    Returns ``None`` when the command is not a script-file invocation.
+    Returns ``None`` when the command is not a script-file invocation, which
+    includes a heredoc program: its body is inspected by Step 3c, and the
+    opener token is not a path.
     """
+    if heredoc_program(command) is not None:
+        return None
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the

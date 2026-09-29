@@ -89,6 +89,27 @@ CORPUS = [
     ("gaia-add-value-names-reset-hard",
      "gaia contract add evidence_report.open_gaps "
      '"git reset --hard was not used"'),
+    # -- Measured live while task 779 ran ------------------------------------
+    ("heredoc-gate-add-evidence-shape-names-floor",
+     "gaia task gate add my-brief 7 --verification-type command "
+     "--evidence-shape-file - <<'GATE'\n"
+     "kubectl delete namespace prod must stay on the permanent floor;\n"
+     "flux uninstall and git push --force origin main are refused.\n"
+     "Writes to .claude/settings.json and hooks/ are protected.\n"
+     "GATE"),
+    ("gaia-plan-change-propose-names-cluster-delete",
+     "gaia plan change propose my-brief --reason "
+     '"The gate must keep kubectl delete namespace prod and kubectl drain node-1 '
+     "refused while text naming them, and edits to .claude/settings.json or "
+     '.claude/settings.local.json, is only stored as data."'),
+    ("gaia-evidence-add-names-cluster-delete",
+     "gaia evidence add --task 779 --summary "
+     "\"Verified that kubectl delete ns prod --all stays blocked when run and that "
+     'a note naming ~/.claude/settings.json is accepted as data."'),
+    ("gaia-contract-fill-json-names-flux-uninstall",
+     "gaia contract fill --draft-id a1234567890abcdef.x --json "
+     "'{\"evidence_report\": {\"patterns_checked\": "
+     "[\"grep uninstall -> the flux uninstall floor rule\"]}}'"),
 ]
 
 # The executing twin of each data form: same words, and this time they run.
@@ -113,6 +134,11 @@ CONTROLS = [
      "EOF\n)\""),
     ("control-git-grep-pager-runs", "git grep -Orm -e secret"),
     ("control-claude-plugin-install", "claude plugin install gaia@gaia-marketplace"),
+    ("control-kubectl-delete-namespace", "kubectl delete namespace prod"),
+    ("control-interpreter-heredoc-runs-rmtree",
+     "python3 - <<'PY'\nimport shutil\nshutil.rmtree('/srv/data')\nPY"),
+    ("control-shell-heredoc-runs-cluster-delete",
+     "bash -s <<'SH'\nkubectl delete namespace prod\nSH"),
 ]
 
 

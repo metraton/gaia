@@ -45,6 +45,8 @@ import re
 import shlex
 from typing import Iterator, List, Optional, Tuple
 
+from .cli_aliases import is_cli
+
 _MAX_BODY_BYTES = 1024 * 1024
 
 # gh subcommands whose text lands on GitHub. ``api`` is included because
@@ -148,8 +150,10 @@ def _publishing_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
     base = os.path.basename(tokens[0])
     args = tokens[1:]
 
-    if base in ("gh", "ghx"):
-        if base == "ghx" and args[:1] == ["-C"]:
+    if is_cli(base, "gh"):
+        # A declared wrapper may take a leading `-C <dir>` of its own before
+        # the gh subcommand.
+        if base != "gh" and args[:1] == ["-C"]:
             args = args[2:]
         if not args:
             return None

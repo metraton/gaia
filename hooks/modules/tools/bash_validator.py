@@ -84,6 +84,7 @@ from ..security.approval_messages import (
 from ..security.fail_open import clear_classification, note_mutative_classification
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.data_heredoc import data_heredoc_header
+from ..security.program_heredoc import heredoc_program
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_memory_write_guard import (
@@ -729,7 +730,7 @@ class BashValidator:
 
         # ================================================================
         # PUBLISH ATTRIBUTION GUARD
-        # Refuse a publishing command (gh/ghx pr|issue|release|api, git
+        # Refuse a publishing command (gh pr|issue|release|api, git
         # commit) whose text still carries Claude attribution after the strip
         # above -- in the command string or in a body file it names. Runs
         # before tier classification so a refused command never mints an
@@ -1111,7 +1112,10 @@ class BashValidator:
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
-        if not has_operators:
+        # An interpreter's heredoc is its program: splitting it into shell
+        # components would validate the body's lines one by one and never
+        # show the classifier the program whose effect decides the tier.
+        if not has_operators or heredoc_program(command) is not None:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
