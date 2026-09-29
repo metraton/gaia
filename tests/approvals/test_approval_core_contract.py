@@ -257,6 +257,20 @@ def test_approval_core_contract_consumption_bound_to_requesting_session_and_agen
     assert core.match_command(COMMANDS[0], cwd=REPO, session_id=SESSION, agent_id=AGENT, tool_use_id="t3") is not None
 
 
+def test_approval_core_contract_an_executed_item_never_runs_again(db):
+    """Once an item of the set ran, its signature is spent: only the next item matches."""
+    from gaia.approvals import core
+
+    approval_id = _approved_set(db)
+    assert core.match_command(COMMANDS[0], cwd=REPO, session_id=SESSION, agent_id=AGENT, tool_use_id="t1")["index"] == 0
+    assert core.close_command(approval_id, session_id=SESSION, tool_use_id="t1", exit_code=0) == "executed"
+
+    assert core.match_command(COMMANDS[0], cwd=REPO, session_id=SESSION, agent_id=AGENT, tool_use_id="t2") is None
+    assert core.match_command(COMMANDS[1], cwd=REPO, session_id=SESSION, agent_id=AGENT, tool_use_id="t3")["index"] == 1
+    assert core.close_command(approval_id, session_id=SESSION, tool_use_id="t3", exit_code=0) == "executed"
+    assert core.match_command(COMMANDS[1], cwd=REPO, session_id=SESSION, agent_id=AGENT, tool_use_id="t4") is None
+
+
 def test_approval_core_contract_declared_nonzero_exit_advances_the_set(db):
     from gaia.approvals import core
 
