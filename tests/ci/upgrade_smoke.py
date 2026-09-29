@@ -13,8 +13,9 @@ never from the checkout; the checkout only supplies the committed base dump
      and require the ledger to reach the package's EXPECTED_SCHEMA_VERSION
   4. npm channel: ``gaia install`` into a workspace, then run the registered
      PreToolUse command exactly as written, through a POSIX shell
-  5. plugin channel: ``build-plugin.py`` regenerates the package's plugin
-     manifests, then the plugin's SessionStart command runs as written
+  5. plugin channel: the package's hooks.json must equal what
+     ``build-plugin.py`` builds, then its SessionStart command runs as written
+     with the package as CLAUDE_PLUGIN_ROOT
   6. ``gaia uninstall`` on both workspaces, which must leave no manifest and
      nothing left to revert
 
@@ -166,12 +167,19 @@ def main() -> int:
     _require(hook.returncode == 2 and "[BLOCKED]" in hook.stdout + hook.stderr, f"the registered PreToolUse command exited {hook.returncode} without Gaia's decision")
     print("npm channel: registered hook command ran and blocked the orchestrator's git status")
 
-    built = _run([sys.executable, str(package / "scripts" / "build-plugin.py"), "gaia", "--manifests-only", "--output-dir", str(package)], env=env, cwd=package)
-    _require(built.returncode == 0, "build-plugin.py failed on the installed package")
+    # The package is the plugin root (marketplace source npm), and build-plugin
+    # needs build/, which the package does not ship: so the checkout builds the
+    # manifests and the package must carry exactly what it built.
+    built_dir = root / "built plugin"
+    built_dir.mkdir()
+    built = _run([sys.executable, str(REPO_ROOT / "scripts" / "build-plugin.py"), "gaia", "--manifests-only", "--output-dir", str(built_dir)], env=env, cwd=REPO_ROOT)
+    _require(built.returncode == 0, "build-plugin.py failed")
+    shipped = json.loads((package / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    _require(json.loads((built_dir / "hooks" / "hooks.json").read_text(encoding="utf-8")) == shipped, "the package's hooks.json is not what build-plugin produces")
     plugin_env = {**env, "CLAUDE_PLUGIN_ROOT": str(package), "CLAUDE_PLUGIN_DATA": str(plugin_data), "PYTHONPATH": str(package)}
     registered_ws = _run([sys.executable, "-m", "gaia.install_root", str(plugin_ws)], env=plugin_env, cwd=package)
     _require(registered_ws.returncode == 0, "registering the plugin workspace failed")
-    plugin_hooks = json.loads((package / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    plugin_hooks = shipped["hooks"]
     session_start = {"session_id": "upgrade-smoke", "cwd": str(plugin_ws), "hook_event_name": "SessionStart", "source": "startup"}
     hook = _run_hook(_hook_command(plugin_hooks, "SessionStart"), session_start, env=plugin_env, cwd=plugin_ws)
     _require(hook.returncode == 0, f"the plugin SessionStart command exited {hook.returncode}")
