@@ -680,8 +680,9 @@ const doc = {
   look: manifest.look,
   palette,
   palette_overrides: paletteOverrides,
-  // The resolved tokens are what both gates read; `css_vars` is the projection
-  // engine.js applies to :root. Per-node overrides ride on the node itself.
+  // The resolved tokens are what the static gate reads; `css_vars` is the
+  // projection engine.js applies to :root. Per-node overrides ride on the node
+  // itself.
   tokens,
   css_vars: cssVars(tokens),
   pages

@@ -1828,7 +1828,7 @@ function main() {
   // the engine turns into CSS properties. A bundle without them cannot be
   // judged: every number below would be a default nobody built.
   const gen = loadGenerated(ROOT);
-  console.log('\nTOKENS  (window.__DOC__.tokens — what the engine and both gates compute with)');
+  console.log('\nTOKENS  (window.__DOC__.tokens — what the engine and the static gate compute with)');
   if (gen.ok && gen.doc.tokens) {
     applyTokens(gen.doc.tokens);
     asserted++;
