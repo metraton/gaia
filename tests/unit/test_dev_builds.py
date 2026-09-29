@@ -185,7 +185,7 @@ class TestDegradesInsteadOfFailing:
         assert dev_builds.read_record("5.3.0") is None
         assert dev_builds.describe_version("5.3.0") == "5.3.0"
 
-    @pytest.mark.parametrize(
+    @pytest.mark.table(
         "body",
         [
             "",
@@ -276,7 +276,7 @@ class TestFormatLabel:
     def test_record_without_a_digest_still_reports_the_count(self):
         assert dev_builds.format_label("5.3.0", {"count": 2}) == "5.3.0 (dev.2)"
 
-    @pytest.mark.parametrize(
+    @pytest.mark.table(
         "record",
         [{}, {"count": 0}, {"count": -1}, {"count": "3"}, {"count": True}, "nope", 5],
     )

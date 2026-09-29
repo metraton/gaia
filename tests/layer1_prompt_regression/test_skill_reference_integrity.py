@@ -203,7 +203,7 @@ class TestSkillReferenceIntegrity:
         """Guard against a path change silently emptying the corpus."""
         assert _skill_markdown_files(), f"no skill markdown found under {SKILLS_ROOT}"
 
-    @pytest.mark.parametrize(
+    @pytest.mark.table(
         "skill_md", _skill_markdown_files(), ids=lambda p: str(p.relative_to(SKILLS_ROOT))
     )
     def test_cited_artifacts_exist(self, skill_md, request):
