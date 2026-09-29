@@ -10,7 +10,9 @@ it from reaching text the shell would run:
 
 - the delimiter is QUOTED, so the body cannot expand ``$(...)`` or backticks;
 - the receiver is ``gaia`` and a ``--<name>-file`` flag takes ``-``, which is how
-  the plan/task/brief/ac/memory commands read content from stdin. Interpreters
+  the plan/task/brief/ac/memory commands read content from stdin -- or a bare
+  ``cat`` with no argument, which only echoes the body (the
+  ``"$(cat <<'EOF' ... EOF)"`` idiom that passes a value to a CLI). Interpreters
   (``bash``, ``python3 -``, ``ssh``, ``kubectl exec``) are never receivers;
 - the declaring line is one plain command: no operator, redirect, quote,
   substitution or variable around it, so the heredoc is that command's stdin
@@ -31,6 +33,7 @@ from typing import List, Optional
 from .shell_substitution import _heredoc_body_span, _read_heredoc_opener
 
 _DATA_RECEIVERS = frozenset({"gaia"})
+_ECHO_RECEIVER = ["cat"]
 _STDIN_CONTENT_FLAG = re.compile(r"--[a-z][a-z0-9-]*-file")
 _SHELL_SYNTAX = frozenset("|&;<>()`$\\'\"")
 
@@ -67,10 +70,11 @@ def data_heredoc_header(command: str) -> Optional[str]:
     if not header or _SHELL_SYNTAX.intersection(header):
         return None
     tokens = header.split()
-    if os.path.basename(tokens[0]) not in _DATA_RECEIVERS:
-        return None
-    if not _reads_content_from_stdin(tokens):
-        return None
+    if tokens != _ECHO_RECEIVER:
+        if os.path.basename(tokens[0]) not in _DATA_RECEIVERS:
+            return None
+        if not _reads_content_from_stdin(tokens):
+            return None
 
     _body_start, resume, terminated = _heredoc_body_span(
         command, first_newline + 1, delimiter, strip_tabs,

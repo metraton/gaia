@@ -160,12 +160,13 @@ class TestHeredocFeedingAnInterpreterIsStillCommands:
         command = "cat <<'X' | bash\nrm -rf /tmp/gaia-heredoc-probe\nX"
         assert _validate(command).allowed is False
 
-    def test_permanent_deny_floor_still_reads_a_data_body(self):
+    def test_permanent_deny_floor_reads_only_the_header(self):
+        """A body that names a floor command is stored prose, not a run of it."""
         command = _heredoc(
             "gaia plan save --brief=b --content-file=-", "'PLAN'", "PLAN",
-            "kubectl delete namespace prod\n",
+            "kubectl delete namespace prod\ngit push --force origin main\n",
         )
-        assert _validate(command).allowed is False
+        assert _validate(command).allowed is True
 
     def test_command_after_the_terminator_is_still_analysed(self):
         command = (

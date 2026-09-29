@@ -1161,10 +1161,11 @@ class BashValidator:
         the header is classified (classifying it would mint a pending approval
         for the body-less string), and a sanitizer rewrite of the header would
         otherwise become updatedInput and drop the body from what runs. The
-        permanent-deny floor keeps reading the body; it is categorical.
+        permanent-deny floor reads the header too: the body is stdin the CLI
+        stores, so a force push it merely names runs nowhere.
         """
         header = data_heredoc_header(command)
-        if header is None or is_blocked_command(command).is_blocked:
+        if header is None or is_blocked_command(header).is_blocked:
             return None
         cwd = (hook_payload or {}).get("cwd") or None
         if detect_mutative_command(header, cwd=cwd).is_mutative:

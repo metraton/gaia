@@ -32,7 +32,9 @@ import os
 import re
 from typing import Optional, Tuple
 
+from .data_heredoc import data_heredoc_header
 from .mutative_verbs import _peel_leading_command_wrappers, detect_mutative_command
+from .shell_substitution import extract_substitutions
 from .shell_write_guard import _split_components, _tokenize, _writer_targets
 
 # ---------------------------------------------------------------------------
@@ -142,6 +144,25 @@ def writes_db_file(command: str) -> bool:
     )
 
 
+def _sql_scope(command: str) -> str:
+    """Return the part of *command* the shell would run, for the SQL-shell check.
+
+    A lone Gaia CLI call stores its argument values and runs none of them, so
+    only its substitutions are read -- and of those, a quoted heredoc echoed by
+    a bare ``cat`` contributes nothing but its header. Anything else is read whole.
+    """
+    components = [c for c in _split_components(command) if c.strip()]
+    if len(components) != 1:
+        return command
+    peeled, _ = _peel_leading_command_wrappers(components[0].strip())
+    tokens = _tokenize(peeled)
+    if not tokens or os.path.basename(tokens[0]) != "gaia":
+        return command
+    return "\n".join(
+        data_heredoc_header(body) or body for body in extract_substitutions(command)
+    )
+
+
 def rejection_message() -> str:
     """Return the canonical rejection message."""
     return REJECTION_MESSAGE
@@ -159,7 +180,7 @@ def check(command: str) -> Tuple[bool, Optional[str]]:
         - (False, msg)  if command writes gaia.db outside the store API --
           SQL through the SQL shell, or any shell writer over the file
     """
-    if is_db_write_attempt(command):
+    if is_db_write_attempt(_sql_scope(command)):
         return False, REJECTION_MESSAGE
     if writes_db_file(command):
         return False, FILE_WRITE_REJECTION_MESSAGE

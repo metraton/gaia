@@ -276,7 +276,23 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "reset",       # local-only: modifies local refs/staging, never touches remote
     "revert",      # local-only: creates a new commit undoing changes, no remote side effects
     "cherry-pick", # local-only: applies commits from another branch, no remote side effects
+    "grep",        # read-only search: its pattern is data, never a verb to run
+                   # (except -O, see git_grep_opens_pager)
 })
+
+
+def git_grep_opens_pager(tokens: Tuple[str, ...]) -> bool:
+    """Return True when a ``git grep`` hands its matches to a command (``-O<cmd>``).
+
+    ``--open-files-in-pager`` runs the named program over every matching file,
+    the one spelling of the search that executes something. A short bundle
+    carrying ``O`` counts, erring toward gating a search rather than freeing a run.
+    """
+    return any(
+        token.startswith("--open-files-in-pager")
+        or (token.startswith("-") and not token.startswith("--") and "O" in token)
+        for token in tokens
+    )
 
 # Flags that turn a local-safe branch switch into a reset of an EXISTING branch:
 # `-B`/`-C` create the branch, or repoint it when it already exists, so the
@@ -2865,6 +2881,7 @@ HELP_IDEMPOTENT_FAMILIES: FrozenSet[str] = frozenset({
 # Explicit base_cmd whitelist (not covered by CLI_FAMILY_LOOKUP).
 HELP_IDEMPOTENT_BASE_CMDS: FrozenSet[str] = frozenset({
     "gaia",      # project CLI, not in CLI_FAMILY_LOOKUP
+    "claude",    # Claude Code CLI: `claude plugin uninstall --help` only prints usage
 })
 
 # These CLIs parse help as a global, non-executing request even when the
@@ -4583,6 +4600,15 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     f"'git {git_subcmd} {reset_flags[0]}' resets the branch if it "
                     f"already exists, discarding the commits only it pointed at"
                 ),
+            )
+        if git_subcmd == "grep" and git_grep_opens_pager(tuple(tokens)):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=git_subcmd,
+                cli_family=family,
+                confidence="high",
+                reason="'git grep -O' runs a command over every matching file",
             )
         if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)

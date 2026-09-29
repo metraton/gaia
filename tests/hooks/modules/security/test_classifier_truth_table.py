@@ -1312,24 +1312,15 @@ NO_OVERCORRECTION_CENSUS = [
         "awk '{print $(NF)}' report.txt",
         False,
     ),
-    # ---- OPEN: a mention that escalates today ----
-    # Measured, not desired. The escalation does not come from any anchor this
-    # plan added -- it comes from the permanently-blocked pattern table
-    # (`blocked_commands.py`, category `git_destructive`), which this plan's
-    # diff does not touch, and the same verdict is produced by the tree that
-    # predates the M2 anchors. It is recorded here so the census carries it
-    # rather than looking clean by omission.
-    #
-    # The asymmetry that makes it a false positive rather than a policy: the
-    # SAME quoted text behind `echo` classifies free, because `echo` is in
-    # READ_ONLY_BASE_CMDS and the Gaia CLI is not. The block therefore depends
-    # on which read-only command is carrying the prose, not on what runs.
+    # Once OPEN (the `git_destructive` floor pattern searched the Gaia CLI's
+    # argument text); closed since the Gaia CLI is a floor carrier -- it stores
+    # a value and never runs one. The same text behind `echo` was always free.
     (
         "mention-force-push-escalates",
-        MENTION_OPEN,
+        MENTION_FREE,
         'gaia contract add evidence_report.key_outputs '
         '"git push --force origin main is forbidden"',
-        True,
+        False,
     ),
 ]
 
