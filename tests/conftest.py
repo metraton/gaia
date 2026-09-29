@@ -76,6 +76,32 @@ def bridge_runtime_env():
     return env
 
 
+# The only programs the suite may take for granted (D107): what CI installs and
+# Gaia itself needs. Anything else a test runs is a fixture it writes in its tmp.
+OWN_TOOLCHAIN = ("python", "git", "sh", "node", "npm", "bun", "gaia")
+
+
+def require_tool(name):
+    """Return the path of an own-toolchain program, failing the test loudly when it is absent.
+
+    A skip would let the verdict change from one machine to the next, so a
+    missing link of the chain is reported as a broken environment instead.
+    """
+    if name not in OWN_TOOLCHAIN:
+        raise ValueError(f"{name!r} is not in the own toolchain {OWN_TOOLCHAIN}; write a fixture instead")
+    path = shutil.which(name)
+    if path is None:
+        pytest.fail(f"{name} is not on PATH: the suite requires the own toolchain {OWN_TOOLCHAIN}",
+                    pytrace=False)
+    return path
+
+
+@pytest.fixture
+def bun():
+    """The bun on PATH that drives the real OpenCode plugin."""
+    return require_tool("bun")
+
+
 # ============================================================================
 # LAYER-1 SELECTION
 #

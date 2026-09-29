@@ -69,9 +69,7 @@ def isolated_dev_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     })
 
 
-def _npm_available() -> bool:
-    import shutil
-    return shutil.which("npm") is not None
+from tests.conftest import require_tool
 
 
 @pytest.mark.usefixtures("isolated_dev_policy")
@@ -860,8 +858,10 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
 # .claude/ -- nothing here can leak into either.
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_npm_available(), "npm not available in this environment")
 class TestDevPackModeRealEndToEnd(unittest.TestCase):
+    def setUp(self):
+        require_tool("npm")
+
     def test_pack_install_wire_produces_healthy_workspace(self):
         with tempfile.TemporaryDirectory(prefix="gaia-dev-e2e-") as tmp:
             tmp_path = Path(tmp)
@@ -1261,9 +1261,6 @@ state_path.write_text(json.dumps(state))
 @pytest.fixture
 def fake_claude(tmp_path, monkeypatch):
     """A `claude` on PATH that records its calls and keeps its registry in a file, never in HOME."""
-    import shutil
-
-    real = shutil.which("claude")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     script = bin_dir / "claude"
@@ -1272,7 +1269,7 @@ def fake_claude(tmp_path, monkeypatch):
     state = bin_dir / "state.json"
     state.write_text(json.dumps({"marketplaces": [], "plugins": [], "calls": []}))
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    return {"state": state, "real": real}
+    return {"state": state}
 
 
 def _channel_args(workspace, **overrides):
@@ -1283,8 +1280,8 @@ def _channel_args(workspace, **overrides):
     return argparse.Namespace(**values)
 
 
-@pytest.mark.skipif(not _npm_available(), reason="npm not available in this environment")
 def test_channel_plugin_builds_the_directory_claude_code_loads(tmp_path, monkeypatch, fake_claude):
+    require_tool("npm")
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -1334,12 +1331,6 @@ def test_channel_plugin_builds_the_directory_claude_code_loads(tmp_path, monkeyp
     conftest_data_dir = "_gaia_isolated_data"
     written = {p.name for p in tmp_path.iterdir()} - {conftest_data_dir}
     assert written <= {"bin", "data", "home", "npm-cache", "ws"}
-
-    if fake_claude["real"] is None:
-        pytest.skip("claude CLI not on PATH: claude plugin validate not run")
-    validate = subprocess.run([fake_claude["real"], "plugin", "validate", str(directory)],
-                              capture_output=True, text=True, timeout=120)
-    assert validate.returncode == 0, validate.stdout + validate.stderr
 
 
 def test_channel_plugin_registration_is_skipped_when_already_local(tmp_path, fake_claude):

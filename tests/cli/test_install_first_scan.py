@@ -7,7 +7,6 @@ seeding a `.claude` of its own.
 """
 
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -60,9 +59,7 @@ def test_bootstrap_registers_no_workspace_for_the_package_folder(tmp_path):
     assert _rows(db, "SELECT name, identity FROM workspaces") == []
 
 
-@pytest.mark.skipif(shutil.which("sqlite3") is None, reason="needs the sqlite3 CLI")
-def test_shell_bootstrap_registers_a_workspace_only_when_one_is_named(tmp_path):
-    script = str(_REPO / "scripts" / "bootstrap_database.sh")
+def test_bootstrap_registers_a_workspace_only_when_one_is_named(tmp_path):
     unnamed = tmp_path / "unnamed.db"
     named = tmp_path / "named.db"
     workspace = tmp_path / "acme"
@@ -70,8 +67,8 @@ def test_shell_bootstrap_registers_a_workspace_only_when_one_is_named(tmp_path):
 
     for db, extra in ((unnamed, {}), (named, {"WORKSPACE": str(workspace)})):
         proc = subprocess.run(
-            ["bash", script], env={**_env(tmp_path, db), **extra},
-            capture_output=True, text=True, timeout=300,
+            [sys.executable, str(_REPO / "scripts" / "bootstrap_database.py")],
+            env={**_env(tmp_path, db), **extra}, capture_output=True, text=True, timeout=300,
         )
         assert proc.returncode == 0, proc.stdout + proc.stderr
 
