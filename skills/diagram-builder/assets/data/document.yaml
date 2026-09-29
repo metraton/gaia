@@ -98,7 +98,7 @@ pages:
     omit_filters: [gate]
   # ── A FORM, not a principle. The flow whose phases are sections: the shape
   # the semantic doctrine's "when the idea MOVES, the layout is the path" names,
-  # and the seed side of the "flow — phases as sections" skeleton in reference.md.
+  # and the seed side of the "flow — phases as sections" skeleton in build.md.
   - id: p10-flow-phases
     name: "Flow · phases as sections"
     order: 10

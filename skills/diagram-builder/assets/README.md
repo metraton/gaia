@@ -86,8 +86,8 @@ assets/
   agreed before building without reading the YAML. `npm test` runs the
   negative-test suite over the guards themselves, and `npm run contrast` audits
   the palettes against WCAG 2.1.
-- **The dialect** (every field + the `status`/`variant` enums) is documented in
-  the diagram-builder skill: `../GLOSSARY.md` and `../reference.md`.
+- **The dialect** (every field and the `variant`/`treatment` sets) is documented
+  in the diagram-builder skill's `../build.md`.
 - **`document.yaml`'s optional `version`** renders in the header — bump it on a
   meaningful change. The engine also
   supports click-and-drag panning on the canvas (grab/grabbing cursor) as a

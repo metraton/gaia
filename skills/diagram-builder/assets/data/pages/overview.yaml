@@ -1,7 +1,7 @@
 # Starter page. id lives here (+ cross-referenced in ../document.yaml);
 # name/order/visible live in the manifest. This file is pure page content:
 # layout, columns, filters, sections. See the diagram-builder dialect
-# reference (../GLOSSARY.md, ../reference.md) for every field.
+# reference (the skill's build.md) for every field.
 #
 # LAYOUT MODEL — a filled grid of uniform-height cells:
 #   • every leaf component is one cell: cells are equal `fr` and fill their row;

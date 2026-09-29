@@ -730,6 +730,7 @@ Every mode ends with the build lane above.
 | **HARMONY** | with `harmony: true`, a box or rail in no chip |
 | **LIT** | `filters` on a separator or spacer, which never render a membership |
 | **TEXT** | a line past its clamp at the presentation viewport on a strict page (other tiers and tokens advise) |
+| **HEADER** | a section's title or subtitle past its clamp at the zone's inner width, compound grids included. Its findings print under the TEXT label and follow TEXT's rule: they fail at the presentation viewport on a strict page and advise elsewhere |
 | **INK** | a box's stacked lines overflow its row at the presentation viewport |
 | **RAILT** | a thin rail's title past two lines |
 | **FROZEN** | an undeclared hole under a `vertical` box whose row a taller sibling sets |

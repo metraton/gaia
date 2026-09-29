@@ -98,7 +98,7 @@ const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 // `variant` is a HARD ERROR that names the axis it belongs to — a clean break, not
 // a silent translation, so a deck is either on the new vocabulary or it fails
 // loudly at the gate. (The legacy→new mapping is tabled in the skill's
-// reference.md, "Migrating a pre-2.1 deck".)
+// build.md, "The strict schema, and migrating an old deck".)
 // blue / violet / gold / clay are CATEGORICAL: they tell peer groups apart and
 // carry no risk or state, so the page that uses them must say what each means.
 const COMPONENT_VARIANTS = new Set([

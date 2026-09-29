@@ -72,9 +72,8 @@ skills/
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
 ├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (thinking method + section/component dialect + authoring modes)
-│   ├── GLOSSARY.md        # canonical dialect terms (section + component types) + status/variant enums
-│   ├── reference.md       # field schema, engine behaviors, authoring modes, build/verify loop
-│   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/verify.mjs, seed data/ (see assets/README.md)
+│   ├── build.md           # for the builder: the build lane (build/model/census/contrast/test), vocabulary, field schema, checks
+│   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/, seed data/ (see assets/README.md)
 ├── execution/             # Post-approval execution discipline
 ├── fast-queries/          # Project Context-first scoped diagnostics
 ├── gaia-compact/          # Preserve transient continuity without duplicating durable state
