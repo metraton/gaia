@@ -863,7 +863,7 @@ def step_gh_release_create(repo_root: Path, version: str, *, timeout: int = 180)
     t0 = _now_ms()
     name = "gh release create"
     tag = f"v{version}"
-    prerelease = any(marker in version for marker in ("-rc.", "-beta.", "-alpha."))
+    prerelease = _is_prerelease(version)
     cmd = ["gh", "release", "create", tag, "--title", tag, "--generate-notes"]
     if prerelease:
         cmd.append("--prerelease")
@@ -959,6 +959,36 @@ def _check_tag_absent(repo_root: Path, version: str, *, remote: str = "origin", 
     )
 
 
+def _is_prerelease(version: str) -> bool:
+    """Whether *version* is an rc/beta/alpha pre-release rather than a stable."""
+    return any(marker in version for marker in ("-rc.", "-beta.", "-alpha."))
+
+
+def _check_stable_from_main(repo_root: Path, version: str, *, timeout: int = 30) -> str | None:
+    """Return an actionable error when a STABLE *version* is published from a
+    branch other than ``main``; None for a pre-release on any branch or a
+    stable on ``main``.
+
+    A stable release reaches `latest` for every channel, so it ships only what
+    main holds; an rc ships from the accumulating branch, where
+    `git push --follow-tags` lands its bump. There is no escape flag: a branch
+    that cannot be named (detached HEAD, git failure) is not main.
+    """
+    if _is_prerelease(version):
+        return None
+    rc, out, _ = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, timeout=timeout)
+    branch = out.strip() if rc == 0 else ""
+    if branch == "main":
+        return None
+    shown = branch if branch and branch != "HEAD" else "a detached or unknown HEAD"
+    return (
+        f"stable version {version} can only be published from main, but this "
+        f"checkout is on {shown}. Merge to main and publish from there, or "
+        f"publish a pre-release from this branch instead "
+        f"(`gaia release publish {version}-rc.N`)."
+    )
+
+
 def _xdist_available() -> bool:
     """Whether pytest-xdist is importable (the `xdist` module). `npm test` runs
     pytest with `-n auto`, which cannot start without it."""
@@ -987,7 +1017,8 @@ def preflight_publish(repo_root: Path, version: str, *, timeout: int = 30) -> di
     Checks:
       1. the active gh account has push/admin on ``metraton/gaia``;
       2. tag ``v<version>`` does not already exist (local or remote);
-      3. pytest-xdist is importable (`npm test` uses `-n auto`).
+      3. pytest-xdist is importable (`npm test` uses `-n auto`);
+      4. a stable version runs from ``main`` (a pre-release from any branch).
     """
     t0 = _now_ms()
     name = "preconditions"
@@ -997,6 +1028,7 @@ def preflight_publish(repo_root: Path, version: str, *, timeout: int = 30) -> di
             _check_gh_push_permission(repo_root, timeout=timeout),
             _check_tag_absent(repo_root, version, timeout=timeout),
             _check_xdist_importable(),
+            _check_stable_from_main(repo_root, version, timeout=timeout),
         )
         if p
     ]
@@ -1007,7 +1039,7 @@ def preflight_publish(repo_root: Path, version: str, *, timeout: int = 30) -> di
     return {
         "name": name,
         "status": "PASS",
-        "detail": "gh push access, tag availability, and pytest-xdist all confirmed",
+        "detail": "gh push access, tag availability, pytest-xdist, and release branch all confirmed",
         "duration_ms": duration,
     }
 
@@ -1246,7 +1278,11 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Trigger the Layer-3 release pipeline (bump -> test -> commit -> tag -> push -> gh release create)",
         description=(
             "Runs, in order, the gaia-release Layer 3 trigger sequence -- STOPS at the\n"
-            "first failure (unlike `check`'s always-run-all-gates design):\n"
+            "first failure (unlike `check`'s always-run-all-gates design). A read-only\n"
+            "preconditions gate runs first: gh push access, tag v<version> absent,\n"
+            "pytest-xdist importable, and the release branch -- a stable version (no\n"
+            "-rc/-beta/-alpha) publishes only from main; a pre-release publishes from\n"
+            "any branch, and step 5 pushes its bump to that branch:\n"
             "  1. release:prepare <version>  -- atomic multi-source version bump +\n"
             "                                    manifest regen + validate\n"
             "                                    (scripts/release-prepare.mjs)\n"

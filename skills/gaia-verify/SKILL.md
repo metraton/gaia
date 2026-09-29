@@ -81,8 +81,9 @@ absent):
    directory that `gaia dev --channel plugin` serves (doctor `Install
    provenance`: one record per channel, with the source SHA it was built from
    and how many commits the source has moved since).
-4. **global npm** (`~/.npm-global`) -- reconciled to the origin by `gaia dev`
-   via `npm link` (`install.reconcile_global_via_npm_link`); doctor warns on a
+4. **global npm** (`~/.npm-global`) -- never touched by `gaia dev`, which
+   changes no global npm link, PATH launcher or user-scope setting; a global
+   copy stays at whatever version was last installed globally. Doctor warns on a
    PATH-shadowing global (POSIX + Windows).
 5. **DB schema** (resolved like the store: `GAIA_DB` > `GAIA_DATA_DIR` >
    `~/.gaia/gaia.db`) -- `gaia doctor` check `Schema version` reports BOTH

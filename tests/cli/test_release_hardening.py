@@ -142,7 +142,8 @@ class TestPreflightPublish(unittest.TestCase):
     def test_all_clear_is_pass(self):
         with patch("cli.release._check_gh_push_permission", return_value=None), \
              patch("cli.release._check_tag_absent", return_value=None), \
-             patch("cli.release._check_xdist_importable", return_value=None):
+             patch("cli.release._check_xdist_importable", return_value=None), \
+             patch("cli.release._check_stable_from_main", return_value=None):
             res = preflight_publish(_REPO_ROOT, "5.0.5")
         self.assertEqual(res["name"], "preconditions")
         self.assertEqual(res["status"], "PASS")
@@ -150,7 +151,8 @@ class TestPreflightPublish(unittest.TestCase):
     def test_gh_permission_failure_fails_the_gate(self):
         with patch("cli.release._check_gh_push_permission", return_value="no push access to metraton/gaia"), \
              patch("cli.release._check_tag_absent", return_value=None), \
-             patch("cli.release._check_xdist_importable", return_value=None):
+             patch("cli.release._check_xdist_importable", return_value=None), \
+             patch("cli.release._check_stable_from_main", return_value=None):
             res = preflight_publish(_REPO_ROOT, "5.0.5")
         self.assertEqual(res["status"], "FAIL")
         self.assertIn("no push access", res["detail"])
@@ -158,7 +160,8 @@ class TestPreflightPublish(unittest.TestCase):
     def test_existing_tag_fails_the_gate(self):
         with patch("cli.release._check_gh_push_permission", return_value=None), \
              patch("cli.release._check_tag_absent", return_value="tag v5.0.5 already exists (local)"), \
-             patch("cli.release._check_xdist_importable", return_value=None):
+             patch("cli.release._check_xdist_importable", return_value=None), \
+             patch("cli.release._check_stable_from_main", return_value=None):
             res = preflight_publish(_REPO_ROOT, "5.0.5")
         self.assertEqual(res["status"], "FAIL")
         self.assertIn("v5.0.5 already exists", res["detail"])
@@ -166,7 +169,8 @@ class TestPreflightPublish(unittest.TestCase):
     def test_missing_xdist_fails_the_gate(self):
         with patch("cli.release._check_gh_push_permission", return_value=None), \
              patch("cli.release._check_tag_absent", return_value=None), \
-             patch("cli.release._check_xdist_importable", return_value="pytest-xdist is not importable"):
+             patch("cli.release._check_xdist_importable", return_value="pytest-xdist is not importable"), \
+             patch("cli.release._check_stable_from_main", return_value=None):
             res = preflight_publish(_REPO_ROOT, "5.0.5")
         self.assertEqual(res["status"], "FAIL")
         self.assertIn("pytest-xdist", res["detail"])
@@ -174,12 +178,49 @@ class TestPreflightPublish(unittest.TestCase):
     def test_multiple_failures_all_reported(self):
         with patch("cli.release._check_gh_push_permission", return_value="gh problem"), \
              patch("cli.release._check_tag_absent", return_value="tag problem"), \
-             patch("cli.release._check_xdist_importable", return_value="xdist problem"):
+             patch("cli.release._check_xdist_importable", return_value="xdist problem"), \
+             patch("cli.release._check_stable_from_main", return_value="branch problem"):
             res = preflight_publish(_REPO_ROOT, "5.0.5")
         self.assertEqual(res["status"], "FAIL")
         self.assertIn("gh problem", res["detail"])
         self.assertIn("tag problem", res["detail"])
         self.assertIn("xdist problem", res["detail"])
+        self.assertIn("branch problem", res["detail"])
+
+
+# ---------------------------------------------------------------------------
+# P0 gate: a stable version is published only from main; a pre-release from
+# any branch. The branch comes from `git rev-parse --abbrev-ref HEAD` through
+# `_run`, the only subprocess boundary the preflight crosses for it.
+# ---------------------------------------------------------------------------
+
+class TestPreflightStableOnlyFromMain(unittest.TestCase):
+    def _preflight_on_branch(self, branch, version):
+        with patch("cli.release._check_gh_push_permission", return_value=None), \
+             patch("cli.release._check_tag_absent", return_value=None), \
+             patch("cli.release._check_xdist_importable", return_value=None), \
+             patch("cli.release._run", return_value=(0, f"{branch}\n", "")):
+            return preflight_publish(_REPO_ROOT, version)
+
+    def test_stable_version_off_main_fails_naming_main(self):
+        res = self._preflight_on_branch("feat/token-usage-ledger", "5.5.0")
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("main", res["detail"])
+        self.assertIn("feat/token-usage-ledger", res["detail"])
+        self.assertIn("-rc.", res["detail"])
+
+    def test_detached_head_is_not_main(self):
+        res = self._preflight_on_branch("HEAD", "5.5.0")
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("main", res["detail"])
+
+    def test_rc_version_off_main_passes(self):
+        res = self._preflight_on_branch("feat/token-usage-ledger", "5.5.0-rc.4")
+        self.assertEqual(res["status"], "PASS")
+
+    def test_stable_version_on_main_passes(self):
+        res = self._preflight_on_branch("main", "5.5.0")
+        self.assertEqual(res["status"], "PASS")
 
 
 # ---------------------------------------------------------------------------
