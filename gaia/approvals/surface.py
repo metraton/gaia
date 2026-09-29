@@ -37,7 +37,7 @@ DEFAULT_QUESTION = "¿Apruebo esta solicitud?"
 OPTIONS = (
     ("Approve", "Autoriza exactamente este comando"),
     ("Reject", "Rechaza la firma; no se ejecuta nada"),
-    ("Details", "Qué hace, impacto y cómo deshacerlo"),
+    ("Details", "Qué hace, impacto, verificación y cómo deshacerlo"),
 )
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
@@ -52,6 +52,8 @@ _NO_AGENT = "agente sin identificar"
 _NO_DOES = "(sin descripción declarada)"
 _NO_IMPACT = "no declarado"
 _NO_ROLLBACK = "no declarado; no supongas que se puede deshacer"
+_NO_VERIFICATION = "no declarada"
+_NO_SHARED_STATE = "no declarado; no supongas que no toca estado compartido"
 
 
 class SurfaceLimitError(SealError):
@@ -206,7 +208,11 @@ def _command_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
 
 
 def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's Details question: the command, what it does, impact, rollback, and its folder when it matters (D37)."""
+    """One command's Details question (D37).
+
+    The command, what it does, its impact, how the result is verified, whether
+    it rewrites shared state, the rollback, and its folder when it matters.
+    """
     folder = _details_folder(payload, item)
     fields = [
         "[ DETAILS ]",
@@ -214,6 +220,8 @@ def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
         f"[ COMMAND: {_target(item)} ]",
         f"[ DOES: {_one_line(item.get('does') or _NO_DOES)} ]",
         f"[ IMPACT: {_one_line(item.get('impact') or _NO_IMPACT)} ]",
+        f"[ VERIFICATION: {_one_line(payload.get('verification') or _NO_VERIFICATION)} ]",
+        f"[ SHARED-STATE: {_one_line(payload.get('shared_state') or _NO_SHARED_STATE)} ]",
         f"[ ROLLBACK: {_one_line(payload.get('rollback_hint') or _NO_ROLLBACK)} ]",
         *([f"[ CWD: {_one_line(folder)} ]"] if folder else []),
     ]

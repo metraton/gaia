@@ -1763,9 +1763,11 @@ def cmd_request_set(args) -> int:
     unsigned one marked ``"signed": false``; ``command_set`` only the signed.
 
     ``--rollback`` is required too (D38): how to undo the set, or a sentence
-    saying it cannot be undone. ``--verification`` stays optional; omitted,
-    the surface states it was never declared and never invents one. The
-    requester's automatic pendings the set covers are withdrawn and listed.
+    saying it cannot be undone; so are ``--verification``, how the result is
+    checked, and ``--shared-state``, whether the set rewrites state others
+    rely on. Each item seals the content of the files its command runs or
+    reads. The requester's automatic pendings the set covers are withdrawn
+    and listed.
     """
     try:
         from gaia.approvals import core
@@ -1779,6 +1781,7 @@ def cmd_request_set(args) -> int:
             question=getattr(args, "question", None),
             rollback=getattr(args, "rollback", None),
             verification=getattr(args, "verification", None),
+            shared_state=getattr(args, "shared_state", None),
             rationale=args.rationale,
             requested_from=os.getcwd(),
         )
@@ -2554,7 +2557,9 @@ def register(subparsers) -> None:
             "quote it yourself, the signed bytes are the bytes that run. A T3 step is "
             "signed and runs only in its turn; any other step (a local git commit, a "
             "test) is shown in its position as unsigned and is neither asked nor "
-            "reserved. At least one step must be T3"
+            "reserved. At least one step must be T3. The content of a file a signed "
+            "step runs or reads (a script, --*-file, -f) is sealed too: write the "
+            "file before requesting, and a change before running needs a new signature"
         ),
     )
     p_request_set.add_argument(
@@ -2583,7 +2588,14 @@ def register(subparsers) -> None:
     p_request_set.add_argument("--rationale")
     p_request_set.add_argument(
         "--verification",
-        help="How the resulting state will be confirmed; sealed and shown verbatim",
+        help="Required: how the resulting state will be confirmed; sealed and shown in Details",
+    )
+    p_request_set.add_argument(
+        "--shared-state", dest="shared_state",
+        help=(
+            "Required: whether the set rewrites state others rely on (a shared branch, "
+            "a cluster, a registry) and which, as a human sentence; shown in Details"
+        ),
     )
     p_request_set.add_argument(
         "--rollback",

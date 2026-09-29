@@ -60,6 +60,9 @@ _MAX_EXIT_CODE = 255
 REPLACED_REASON = "reemplazada"
 #: The flag a requester owes on every request: how to undo it, or that it cannot be undone (D38).
 ROLLBACK_FLAG = "--rollback"
+#: The flags a COMMAND_SET owes besides the rollback: how its result is checked,
+#: and whether it rewrites state other people rely on.
+SET_OWED_FLAGS = ("--verification", "--shared-state")
 
 
 class SealError(ValueError):
@@ -175,6 +178,8 @@ def _seal_items(kind: str, items: Iterable[Mapping[str, Any]]) -> list[dict]:
             item = {"command": target, "rationale": raw.get("rationale") or ""}
             if raw.get("signed") is False:
                 item["signed"] = False
+            if raw.get("files"):
+                item["files"] = list(raw["files"])
         for phrase in ("does", "impact"):
             if _optional_text(raw.get(phrase)):
                 item[phrase] = raw[phrase].strip()
@@ -206,6 +211,7 @@ def seal_request(
     verification: Optional[str] = None,
     impact: Optional[str] = None,
     rationale: Optional[str] = None,
+    shared_state: Optional[str] = None,
     operation: Optional[str] = None,
     risk_level: str = "medium",
     requested_from: Optional[str] = None,
@@ -247,6 +253,7 @@ def seal_request(
         "exact_content": "\n".join(targets) if kind == "command_set" else targets[0],
         "rollback_hint": _optional_text(rollback),
         "verification": _optional_text(verification),
+        "shared_state": _optional_text(shared_state),
         "impact": _optional_text(impact),
         "rationale": _optional_text(rationale) or what_text,
         "risk_level": risk_level,
@@ -355,20 +362,28 @@ def request_line(payload: Mapping[str, Any]) -> str:
             "--impact", shlex.quote(f"<impact of item {position}, 100 max>"),
         ]
     words += [ROLLBACK_FLAG, shlex.quote("<how to undo it, or that it cannot be undone>")]
+    if payload.get("operation") != _FILE_OPERATION:
+        words += [
+            "--verification", shlex.quote("<how the result will be checked>"),
+            "--shared-state", shlex.quote("<whether it rewrites shared state, and which>"),
+        ]
     return " ".join(words)
 
 
 def _require_phrases(
     what: object, question: object, items: list[Mapping[str, Any]], rollback: object,
+    owed: Optional[Mapping[str, object]] = None,
 ) -> None:
     """Refuse a new request lacking a phrase, its rollback sentence included (D38).
 
-    The rollback is owed only when a request is made, not when one is shown,
-    so a signature sealed before D38 stays presentable.
+    ``owed`` maps each further flag the request kind owes to its value. The
+    rollback and these are owed only when a request is made, not when one is
+    shown, so a signature sealed before they were owed stays presentable.
     """
     missing = _missing(what, question, items)
     if _optional_text(rollback) is None:
         missing.append(ROLLBACK_FLAG)
+    missing.extend(flag for flag, value in (owed or {}).items() if _optional_text(value) is None)
     if missing:
         raise NotPresentableError(missing)
 
@@ -473,15 +488,19 @@ def request_command_set(
     question: Optional[str] = None,
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
+    shared_state: Optional[str] = None,
     rationale: Optional[str] = None,
     requested_from: Optional[str] = None,
 ) -> str:
     """Validate a plan-first set, seal it and persist the pending request; return its approval_id.
 
     A step that does not classify T3 is sealed as an unsigned step: shown in
-    its position, never asked, never reserved. Every phrase is required (:class:`NotPresentableError` names each one
-    missing), and the requester's phraseless reactive requests the set covers
-    are replaced. ``requested_from`` is the requester's shell folder.
+    its position, never asked, never reserved. Every phrase is required
+    (:class:`NotPresentableError` names each one missing), ``verification``
+    and ``shared_state`` included, and the requester's phraseless reactive
+    requests the set covers are replaced. Each signed step is sealed with the
+    content of the files its command runs or reads. ``requested_from`` is the
+    requester's shell folder.
     """
     from gaia.approvals.command_set import CommandSetValidationError, validate_request_set
 
@@ -491,12 +510,18 @@ def request_command_set(
         validated = validate_request_set(commands, cwds=cwds if all(cwds) else None)
     except CommandSetValidationError as exc:
         raise SealError(str(exc)) from exc
-    items = [{**item, "signed": checked["signed"]} for item, checked in zip(items, validated)]
-    _require_phrases(what, question, items, rollback)
+    sealed_items = [
+        {**item, "signed": checked["signed"], "files": checked.get("files")}
+        for item, checked in zip(items, validated)
+    ]
+    _require_phrases(
+        what, question, sealed_items, rollback,
+        owed=dict(zip(SET_OWED_FLAGS, (verification, shared_state))),
+    )
     payload = seal_request(
-        "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
+        "command_set", sealed_items, what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, rationale=rationale,
-        requested_from=requested_from,
+        shared_state=shared_state, requested_from=requested_from,
     )
     return _persist_replacing(payload)
 

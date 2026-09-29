@@ -39,7 +39,7 @@ D12_ROLLBACK = "volver al código anterior con --ref c1d8b89; la base queda actu
 OPTIONS = [
     {"label": "Approve", "description": "Autoriza exactamente este comando"},
     {"label": "Reject", "description": "Rechaza la firma; no se ejecuta nada"},
-    {"label": "Details", "description": "Qué hace, impacto y cómo deshacerlo"},
+    {"label": "Details", "description": "Qué hace, impacto, verificación y cómo deshacerlo"},
 ]
 
 

@@ -7776,6 +7776,8 @@ def reserve_plan_command(
 ) -> dict | None:
     """Reserve the exact next command for one correlated Bash tool call.
 
+    An item whose sealed files changed since signing never matches, so the
+    grant stays unconsumed and the command asks for a new signature.
     An item sealed by gaia.approvals.core (it carries ``position``) matches only
     in its sealed ``cwd`` and only for the session and agent the grant is bound
     to; an item sealed before that carries neither and keeps its old reach.
@@ -7796,7 +7798,7 @@ def reserve_plan_command(
     """
     if not session_id or not tool_use_id:
         return None
-    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import command_fingerprint, files_unchanged
 
     con = _connect(db_path)
     now_iso = _now_iso()
@@ -7820,6 +7822,8 @@ def reserve_plan_command(
                 continue
             item = items[index]
             if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
+                continue
+            if not files_unchanged(item):
                 continue
             if "position" in item and not _sealed_item_binds(item, grant, cwd, session_id, agent_id):
                 continue
@@ -7901,9 +7905,10 @@ def find_pending_plan_command(command: str, *, db_path: Path | None = None) -> d
 
     Returns the ``approval_id`` that authorizes the command, the ``index`` it
     would consume and the stored ``fingerprint``; ``None`` when no live grant is
-    waiting for this command at the position it authorizes next.
+    waiting for this command at the position it authorizes next, or when a file
+    its item sealed changed since signing.
     """
-    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import command_fingerprint, files_unchanged
 
     fingerprint = command_fingerprint(command)
     con = _connect(db_path)
@@ -7914,7 +7919,10 @@ def find_pending_plan_command(command: str, *, db_path: Path | None = None) -> d
             if index >= len(items):
                 continue
             item = items[index]
-            if item.get("command") == command and item.get("fingerprint") == fingerprint:
+            if (
+                item.get("command") == command and item.get("fingerprint") == fingerprint
+                and files_unchanged(item)
+            ):
                 return {
                     "approval_id": grant["approval_id"],
                     "index": index,

@@ -8,12 +8,17 @@ same sequence. Chains, protected paths, interactive programs, unquoted
 parentheses, and permanently blocked commands are rejected before an approval
 row can be minted: a request the runtime could only refuse after the user
 signed is refused here instead.
+
+A signature covers what a signed step executes, not only its bytes: each file
+the step runs or reads is sealed by content (:func:`sealed_files`) and must be
+unchanged when the item is matched (:func:`files_unchanged`).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shlex
 import sys
@@ -116,6 +121,125 @@ def _opens_repl(stage: str) -> bool:
     return True
 
 
+#: The largest file a signature seals. Hashing streams, so the bound is not
+#: memory: it keeps the hook's match of a signed item fast, and a file past it
+#: is refused at request time rather than signed without its content.
+SEALED_FILE_MAX_BYTES = 64 * 1024 * 1024
+_SCRIPT_RUNNER = re.compile(
+    r"^(?:(?:ba|z|da|k)?sh|python(?:\d+(?:\.\d+)*)?|node|ruby|perl|php)$"
+)
+_INLINE_PROGRAM_FLAGS = _PROGRAM_FLAGS | {"-"}
+#: Flags whose value may be a file or not (``git push -f origin``): a value that
+#: is not a file yet is sealed as absent, so creating it later breaks the match.
+_MAYBE_FILE_FLAGS = frozenset({"-f", "--file", "--filename", "--values"})
+_ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
+
+
+def _file_operands(stage: str) -> list[tuple[str, bool]]:
+    """Name each file ``stage`` runs or reads, with whether it must already exist.
+
+    A file the stage surely runs or reads must exist: an interpreter's script,
+    a program given as a path, and the value of a ``--<name>-file`` flag. A
+    ``-f``-style value may be a file or a word, so it need not.
+    """
+    tokens = shlex.split(stage)
+    while tokens and (tokens[0] == "sudo" or _ASSIGNMENT.match(tokens[0])):
+        tokens = tokens[1:]
+    if not tokens:
+        return []
+    operands: list[tuple[str, bool]] = []
+    if "/" in tokens[0]:
+        operands.append((tokens[0], True))
+    elif _SCRIPT_RUNNER.match(tokens[0]):
+        for token in tokens[1:]:
+            if token in _INLINE_PROGRAM_FLAGS:
+                break
+            if not token.startswith("-"):
+                operands.append((token, True))
+                break
+    for position, token in enumerate(tokens[1:], start=1):
+        name, has_value, value = token.partition("=")
+        if not has_value:
+            value = tokens[position + 1] if position + 1 < len(tokens) else ""
+        if not name.startswith("-") or not value or value == "-":
+            continue
+        if name.startswith("--") and name.endswith("-file"):
+            operands.append((value, True))
+        elif name in _MAYBE_FILE_FLAGS and (has_value or not value.startswith("-")):
+            operands.append((value, False))
+    return operands
+
+
+def _content_digest(path: str) -> str | None:
+    """The sha256 of the regular file at ``path``; None when nothing is there.
+
+    Raises CommandSetValidationError for what a signature cannot seal: a
+    directory or other non-regular file, or one past SEALED_FILE_MAX_BYTES.
+    """
+    if not os.path.lexists(path):
+        return None
+    if not os.path.isfile(path):
+        raise CommandSetValidationError(
+            f"reads {path}, which is not a regular file; name the files it holds"
+        )
+    if os.path.getsize(path) > SEALED_FILE_MAX_BYTES:
+        raise CommandSetValidationError(
+            f"reads {path}, larger than the {SEALED_FILE_MAX_BYTES} bytes a signature seals"
+        )
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sealed_files(command: str, cwd: str) -> list[dict]:
+    """Seal the content of every file ``command`` runs or reads, resolved from ``cwd``.
+
+    Each seal is ``{"path", "sha256"}``, ``sha256`` None for an optional file
+    that does not exist yet. An ELF binary is not sealed: it is an installed
+    tool, not something the requester wrote. Raises
+    CommandSetValidationError for a required file that does not exist yet and
+    for any file :func:`_content_digest` cannot seal.
+    """
+    seals: dict[str, str | None] = {}
+    for stage in pipe_stages(command):
+        for operand, required in _file_operands(stage):
+            path = os.path.normpath(os.path.join(cwd, os.path.expanduser(operand)))
+            if path in seals:
+                continue
+            try:
+                digest = _content_digest(path)
+            except OSError as exc:
+                raise CommandSetValidationError(f"cannot read {operand}: {exc.strerror}") from exc
+            if digest is None and required:
+                raise CommandSetValidationError(
+                    f"runs or reads {operand}, which does not exist yet; write it before "
+                    "requesting -- the signature seals its content"
+                )
+            if digest is not None and _is_compiled(path):
+                continue
+            seals[path] = digest
+    return [{"path": path, "sha256": digest} for path, digest in seals.items()]
+
+
+def _is_compiled(path: str) -> bool:
+    """True for an ELF binary, the one kind of program file left unsealed."""
+    with open(path, "rb") as handle:
+        return handle.read(4) == b"\x7fELF"
+
+
+def files_unchanged(item: dict) -> bool:
+    """True when every file sealed in ``item`` is still exactly as it was signed."""
+    for seal in item.get("files") or ():
+        try:
+            if _content_digest(seal["path"]) != seal["sha256"]:
+                return False
+        except (CommandSetValidationError, OSError):
+            return False
+    return True
+
+
 def command_fingerprint(command: str) -> str:
     """Return the hard byte fingerprint used at request and execution time."""
     return hashlib.sha256(command.encode("utf-8")).hexdigest()
@@ -192,10 +316,16 @@ def validate_request_set(
                 and flag.outcome == OUTCOME_MUTATIVE
                 and not flag.command_family.startswith("git_")
             )
-        normalized.append(
-            {"command": raw, "fingerprint": command_fingerprint(raw), "rationale": "",
-             "signed": bool(is_t3)}
-        )
+        item = {"command": raw, "fingerprint": command_fingerprint(raw), "rationale": "",
+                "signed": bool(is_t3)}
+        if is_t3:
+            try:
+                files = sealed_files(raw, stage_cwd or os.getcwd())
+            except (CommandSetValidationError, ValueError) as exc:
+                raise CommandSetValidationError(f"command[{index}] {exc}") from exc
+            if files:
+                item["files"] = files
+        normalized.append(item)
     if not any(item["signed"] for item in normalized):
         raise CommandSetValidationError("COMMAND_SET requires at least one command classified T3")
     return normalized
