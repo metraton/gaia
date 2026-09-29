@@ -2869,9 +2869,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 # within-turn retry. An EXACT per-session resume mapping (written
                 # at PreToolUse:SendMessage) means the orchestrator is continuing
                 # this session's agent across messages, so IN_PROGRESS must not
-                # trip the retry cap. Use the exact file only (never the fuzzy
-                # cross-session fallback in _read_resume_mapping) so a fresh,
-                # non-resumed dispatch keeps the anti-parking cap intact.
+                # trip the retry cap; a fresh, non-resumed dispatch has no such
+                # file and keeps the anti-parking cap intact.
                 _is_resume = (
                     self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
                 ).is_file()
@@ -3723,23 +3722,13 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         if not self.CONTEXT_CACHE_DIR.exists():
             return None
 
-        # Find all cache files for this session, sorted newest-first
+        # Only this session's own entries are candidates: with none, nothing is
+        # injected rather than another session's newest digest.
         candidates: List[Path] = sorted(
             self.CONTEXT_CACHE_DIR.glob(f"{session_id}-*.json"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-
-        if not candidates:
-            # Fallback: try to find the most recent cache file regardless of
-            # session_id, since the orchestrator session_id and the subagent
-            # session_id may differ.
-            all_files = sorted(
-                self.CONTEXT_CACHE_DIR.glob("*.json"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            candidates = all_files
 
         now = time.time()
 
@@ -3863,10 +3852,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         Non-consuming (unlike the one-shot context cache): the same mapping
         must still be readable after N resumes of the same session
-        (AC-19's "IN_PROGRESS across resumes"). Falls back to the most
-        recently written mapping across ALL sessions when no exact match
-        exists, mirroring ``_read_cached_context``'s own fallback for the
-        orchestrator-session vs subagent-session id mismatch.
+        (AC-19's "IN_PROGRESS across resumes"). Only the session's own
+        mapping is read: without one this returns None, never the agent
+        another session resumed.
         """
         if not self.RESUME_MAP_CACHE_DIR.exists():
             return None
@@ -3874,13 +3862,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         candidate = self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
         if not candidate.is_file():
-            all_files = sorted(
-                self.RESUME_MAP_CACHE_DIR.glob("*.json"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            candidate = all_files[0] if all_files else None
-        if candidate is None:
             return None
 
         try:
@@ -4000,7 +3981,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         2. Cache miss + resume-mapping hit (T6, AC-18/AC-20): the CC session
            resuming this agent was recorded by
            ``_adapt_send_message``/``_cache_resume_mapping``; if that
-           session_id (or, failing that, the most recent resume) maps to an
+           same session_id maps to an
            agent_id with a live ``gaia.contract.drafts`` draft, surface a
            minimal summary of it so the resumed agent continues its own
            draft instead of re-emitting the contract block.
