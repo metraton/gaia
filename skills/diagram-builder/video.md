@@ -63,11 +63,13 @@ page of the script. Every provider keeps the same contract:
 
 Two providers ship:
 
-- **`kokoro`** (the default) runs an existing local Kokoro install and installs
-  nothing. It looks in `~/.local/share/gaia-tts/kokoro` (`--kokoro-dir` points
-  elsewhere) for `.venv/bin/python` and `kokoro_say.py`, voices each page with
-  `am_michael`, an American male voice (`--voice` picks another), and writes
-  the words file too. When the install is absent, or Kokoro fails on a page,
+- **`kokoro`** (the default) runs the deck's own `tools/video/kokoro_say.py`
+  with the interpreter of a venv the person created, on a model they
+  downloaded, and installs nothing. The venv defaults to
+  `~/.local/share/gaia-tts/kokoro/.venv` (`--kokoro-venv` points elsewhere) and
+  the model to `~/.local/share/gaia-tts/kokoro/model` (`--kokoro-model`). It
+  voices each page with `am_michael`, an American male voice (`--voice` picks
+  another), and writes the words file too. When the install is absent, or Kokoro fails on a page,
   the step says so on one line and continues as `manual`. That is not an
   error: the video never depends on a voice being installed.
 - **`manual`** is always there. It prints, per page, the text to voice and the
@@ -103,18 +105,18 @@ for both; only the voice step changes.
   voice the whole video in one sitting. It has no adapter here: it is used
   through `manual`.
 
-**Kokoro, once.** Apache-2.0, about 330 MB of weights.
+**Kokoro, once.** Apache-2.0, about 330 MB of weights. The person runs these
+three steps, with their consent; the skill never runs them.
 
 1. `python3 -m venv ~/.local/share/gaia-tts/kokoro/.venv`
 2. `~/.local/share/gaia-tts/kokoro/.venv/bin/pip install "kokoro>=0.9.4" soundfile`
    (`uv pip install --torch-backend cpu` installs the CPU-only torch and skips CUDA).
 3. `hf download hexgrad/Kokoro-82M config.json kokoro-v1_0.pth voices/am_michael.pt --local-dir ~/.local/share/gaia-tts/kokoro/model`
-4. `kokoro_say.py` in that folder takes `--text-file`, `--voice`, `--out` and
-   `--words`, loads the model from `model/` offline, and writes a 24 kHz mono
-   WAV and the word list from Kokoro's token timestamps. Each line of the text
-   is one segment.
 
-Then `npm run video:voice --prefix <deck>` uses it. The first letter of the
+Then `npm run video:voice --prefix <deck>` uses it. The deck's
+`tools/video/kokoro_say.py` takes `--text-file`, `--voice`, `--out`, `--words`
+and `--model-dir`, reads the model offline, and writes a 24 kHz mono WAV and
+the word list from Kokoro's token timestamps, one segment per line of text. The first letter of the
 voice sets the language: `a` American English, `b` British, `e` Spanish.
 
 **Qwen3-TTS, once.** Apache-2.0, 2.5 GB (0.6B) to 4.5 GB (1.7B) downloaded on
