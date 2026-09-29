@@ -1,9 +1,9 @@
 // The deck's DESIGN TOKENS: every visual number a deck may tune, with its
 // default and its schema. document.yaml `tokens:` is merged over DEFAULT_TOKENS
 // by build-data.mjs; the resolved set is written into window.__DOC__, which is
-// what the engine turns into CSS custom properties and what both gates read.
-// Nothing else in the deck may hold one of these numbers as a literal: a copy
-// is how the engine, the static gate and the render gate drift apart.
+// what the engine turns into CSS custom properties and what the static gate
+// reads. Nothing else in the deck may hold one of these numbers as a literal:
+// a copy is how the engine and the static gate drift apart.
 //
 // Pure data plus pure functions over it — no I/O — so the build, the static
 // gate and the tests import the same module. The engine does not import it (it
