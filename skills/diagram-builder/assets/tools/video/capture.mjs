@@ -85,18 +85,21 @@ function concatList(runs) {
 }
 
 // The scale runs before fps, so each held image is downscaled once, not once
-// per frame it lasts.
+// per frame it lasts. The audio is padded to the video's exact length rather
+// than endlessly with -shortest: once -frames:v stops the video, -shortest
+// never fires and ffmpeg keeps padding audio forever (measured on ffmpeg 6.1).
 function encode(plan, list, frames, out) {
   const args = ['-hide_banner', '-nostats', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list];
   plan.pages.forEach(p => args.push('-i', audioPath(p)));
   const video = `[0:v]scale=${FRAME.width}:${FRAME.height}:flags=lanczos,fps=${FRAME.fps}[vout]`;
   const delayed = plan.pages.map((p, i) => `[${i + 1}:a]adelay=${Math.round(p.voiceAt * 1000)}:all=1[a${i}]`);
+  const pad = `apad=whole_dur=${(frames / FRAME.fps).toFixed(6)}[aout]`;
   const mix = plan.pages.length === 1
-    ? '[a0]apad[aout]'
-    : plan.pages.map((_, i) => `[a${i}]`).join('') + `amix=inputs=${plan.pages.length}:normalize=0,apad[aout]`;
+    ? `[a0]${pad}`
+    : plan.pages.map((_, i) => `[a${i}]`).join('') + `amix=inputs=${plan.pages.length}:normalize=0,${pad}`;
   args.push('-filter_complex', [video, ...delayed, mix].join(';'), '-map', '[vout]', '-map', '[aout]', '-frames:v', String(frames),
     '-c:v', 'libx264', '-preset', 'slow', '-tune', 'animation', '-crf', '10', '-pix_fmt', 'yuv420p', '-r', String(FRAME.fps),
-    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-shortest', '-movflags', '+faststart', out);
+    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', out);
   const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'inherit', 'inherit'] });
   return new Promise((ok, no) => ffmpeg.on('close', code => (code === 0 ? ok() : no(new Error(`ffmpeg exited ${code}`)))));
 }
