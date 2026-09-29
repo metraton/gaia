@@ -206,6 +206,66 @@ def test_schema_check_reads_the_database_under_gaia_data_dir(tmp_path, monkeypat
     assert str(db.resolve()) in r["detail"], r
 
 
+def _two_installs(tmp_path: Path, monkeypatch) -> "tuple[Path, Path]":
+    """A tmp HOME whose installed_plugins.json lists the published marketplace
+    install first (A) and the dev install second (B), both with a real tree."""
+    home = tmp_path / "home"
+    published = _package(home / ".claude" / "plugins" / "cache" / "gaia-marketplace" / "gaia" / "5.5.0")
+    dev = _package(tmp_path / "dev-plugin")
+    for tree in (published, dev):
+        for name in ("agents", "skills"):
+            (tree / name).mkdir()
+    record = home / ".claude" / "plugins" / "installed_plugins.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"version": 2, "plugins": {
+        "gaia@gaia-marketplace": [{"scope": "user", "installPath": str(published)}],
+        "gaia@gaia-dev": [{"scope": "user", "installPath": str(dev)}],
+    }}))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(doctor_mod, "_INSTALLED_PLUGINS_PATH", record)
+    return published, dev
+
+
+def test_checks_name_the_enabled_install_not_the_first_gaia_entry(tmp_path, workspace, monkeypatch):
+    published, dev = _two_installs(tmp_path, monkeypatch)
+    _settings(workspace, "settings.local.json", {
+        "enabledPlugins": {"gaia@gaia-marketplace": False, "gaia@gaia-dev": True},
+    })
+
+    assert doctor_mod._plugin_tree(workspace) == dev
+    for r in (
+        doctor_mod.check_symlinks(workspace),
+        doctor_mod.check_plugin_mode(workspace),
+        doctor_mod.check_workspace_initialized(workspace),
+    ):
+        assert str(dev) in r["detail"], r
+        assert str(published) not in r["detail"], r
+
+
+def test_a_disabled_install_in_the_workspace_overrides_the_user_settings(tmp_path, workspace, monkeypatch):
+    """settings.local.json turns the marketplace copy off; the user's file, read
+    last, still lists it on. The workspace's word stands."""
+    published, dev = _two_installs(tmp_path, monkeypatch)
+    doctor_mod._USER_SETTINGS_PATH.write_text(
+        json.dumps({"enabledPlugins": {"gaia@gaia-marketplace": True, "gaia@gaia-dev": True}})
+    )
+    _settings(workspace, "settings.local.json", {"enabledPlugins": {"gaia@gaia-marketplace": False}})
+
+    assert doctor_mod._plugin_tree(workspace) == dev
+
+
+def test_installed_but_none_enabled_says_so(tmp_path, workspace, monkeypatch):
+    _two_installs(tmp_path, monkeypatch)
+    _settings(workspace, "settings.local.json", PERMISSIONS)
+
+    assert doctor_mod._plugin_tree(workspace) is None
+    r = doctor_mod.check_install_channel(workspace)
+
+    assert r["severity"] == "warning", r
+    assert "gaia@gaia-marketplace" in r["detail"] and "gaia@gaia-dev" in r["detail"]
+    assert "not enabled" in r["detail"]
+
+
 def test_empty_provenance_is_never_pass(workspace):
     provenance = doctor_mod.check_install_provenance(workspace)
     commands = doctor_mod.check_hook_commands(workspace)

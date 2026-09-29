@@ -441,27 +441,57 @@ def _active_channels(project_root: Path) -> dict:
     }
 
 
+def _enabled_gaia_keys(project_root: Path) -> "list[str]":
+    """The ``gaia@<marketplace>`` keys switched on for *project_root*.
+
+    A key is decided by the first settings source that names it, in the order
+    Claude Code applies them (workspace local, workspace, user), so a
+    ``false`` in the workspace outranks a ``true`` in the user's file.
+    """
+    decided: dict = {}
+    for _, path in _settings_sources(project_root):
+        settings = _read_json(path)
+        plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
+        for key, enabled in (plugins if isinstance(plugins, dict) else {}).items():
+            if key.split("@", 1)[0] == "gaia":
+                decided.setdefault(key, enabled is True)
+    return [key for key, enabled in decided.items() if enabled]
+
+
+def _installed_gaia_installs() -> "dict[str, list]":
+    """installed_plugins.json entries per ``gaia@<marketplace>`` key whose tree exists."""
+    record = _read_json(_INSTALLED_PLUGINS_PATH)
+    plugins = record.get("plugins") if isinstance(record, dict) else None
+    installed: dict = {}
+    for key, entries in (plugins or {}).items():
+        if key.split("@", 1)[0] != "gaia":
+            continue
+        found = [
+            install for install in (entries if isinstance(entries, list) else [])
+            if isinstance(install, dict) and Path(install.get("installPath", "")).is_dir()
+        ]
+        if found:
+            installed[key] = found
+    return installed
+
+
 def _plugin_tree(project_root: Path) -> "Path | None":
     """The plugin install that serves *project_root*, or None off the plugin channel.
 
     CLAUDE_PLUGIN_ROOT when the host exported it, else the install Claude Code
-    recorded for this project (local scope) or for every project (user scope).
-    None as well when the plugin is enabled but no install can be located: the
-    checks that consult this then fall back to the workspace's own files.
+    recorded for this project (local scope) or for every project (user scope)
+    under a key the settings enable -- a second gaia@ install that is switched
+    off never names the tree. None as well when the plugin is enabled but no
+    install can be located: the checks that consult this then fall back to the
+    workspace's own files.
     """
     channels = _active_channels(project_root)
     if not channels["plugin"]:
         return None
     if channels["plugin_root"] is not None:
         return channels["plugin_root"]
-    record = _read_json(_INSTALLED_PLUGINS_PATH)
-    plugins = record.get("plugins") if isinstance(record, dict) else None
-    installs = [
-        install
-        for key, entries in (plugins or {}).items() if key.split("@", 1)[0] == "gaia"
-        for install in (entries if isinstance(entries, list) else [])
-        if isinstance(install, dict) and Path(install.get("installPath", "")).is_dir()
-    ]
+    by_key = _installed_gaia_installs()
+    installs = [install for key in _enabled_gaia_keys(project_root) for install in by_key.get(key, [])]
     local = [i for i in installs if i.get("scope") == "local"
              and Path(i.get("projectPath", "")).resolve() == project_root.resolve()]
     user = [i for i in installs if i.get("scope") == "user"]
@@ -791,8 +821,11 @@ def check_install_channel(project_root: Path) -> dict:
             return _result(name, "info",
                            "no plugin and no local npm copy; hooks wired through settings "
                            "(global npm package or a checkout)")
-        return _result(name, "warning", "no Gaia channel active in this workspace",
-                       _hook_fix(project_root, channels))
+        installed = sorted(_installed_gaia_installs())
+        detail = "no Gaia channel active in this workspace"
+        if installed:
+            detail += f" ({', '.join(installed)} installed but not enabled)"
+        return _result(name, "warning", detail, _hook_fix(project_root, channels))
     if len(active) > 1:
         return _result(name, "info",
                        f"{' and '.join(active)} -- both active; Hook registrations shows whether hooks run twice")
