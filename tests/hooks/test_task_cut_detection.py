@@ -496,13 +496,12 @@ class TestFailureIsNotSilent:
 
     @pytest.fixture
     def trace_lines(self, tmp_path, monkeypatch):
-        """Pin BOTH roots: the trace resolves through CLAUDE_PLUGIN_DATA.
+        """Pin the data home: the trace resolves under ``GAIA_DATA_DIR``'s logs/.
 
-        ``GAIA_DATA_DIR`` alone is not enough -- ``get_logs_dir`` goes through
-        ``get_plugin_data_dir``, which reads ``CLAUDE_PLUGIN_DATA`` and caches
-        the result. Without pinning it (and clearing the cache both ways) these
-        tests append to the developer's real ``hook-trace.jsonl`` and then
-        assert against it.
+        Without pinning it these tests append to the developer's real
+        ``hook-trace.jsonl`` and then assert against it. CLAUDE_PLUGIN_DATA is
+        pinned too, and the path cache cleared both ways, so no per-install
+        lookup reaches the developer's plugin data either.
         """
         from modules.core.paths import clear_path_cache
 
