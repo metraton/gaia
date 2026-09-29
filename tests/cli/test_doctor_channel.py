@@ -254,6 +254,21 @@ def test_a_disabled_install_in_the_workspace_overrides_the_user_settings(tmp_pat
     assert doctor_mod._plugin_tree(workspace) == dev
 
 
+def test_workspace_false_beats_user_true_for_the_channel_too(tmp_path, workspace, monkeypatch):
+    """The workspace switches the only install off while the user's file has it on:
+    the channel check and the tree pick must agree that no plugin is active."""
+    _two_installs(tmp_path, monkeypatch)
+    doctor_mod._USER_SETTINGS_PATH.write_text(json.dumps({"enabledPlugins": {"gaia@gaia-marketplace": True}}))
+    _settings(workspace, "settings.local.json", {"enabledPlugins": {"gaia@gaia-marketplace": False}})
+
+    channels = doctor_mod._active_channels(workspace)
+    r = doctor_mod.check_install_channel(workspace)
+
+    assert channels["plugin"] is False, channels
+    assert doctor_mod._plugin_tree(workspace) is None
+    assert r["severity"] == "warning" and "not enabled" in r["detail"], r
+
+
 def test_installed_but_none_enabled_says_so(tmp_path, workspace, monkeypatch):
     _two_installs(tmp_path, monkeypatch)
     _settings(workspace, "settings.local.json", PERMISSIONS)

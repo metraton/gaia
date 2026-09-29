@@ -411,12 +411,22 @@ def _settings_sources(project_root: Path) -> "list[tuple[str, Path]]":
     ]
 
 
-def _enables_gaia_plugin(settings) -> bool:
-    """True when a settings mapping enables a ``gaia@<marketplace>`` plugin."""
-    plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
-    return isinstance(plugins, dict) and any(
-        key.split("@", 1)[0] == "gaia" and enabled is True for key, enabled in plugins.items()
-    )
+def _gaia_plugin_decisions(project_root: Path) -> "dict[str, tuple[bool, str]]":
+    """key -> (enabled, settings label) for every ``gaia@<marketplace>`` key the settings name.
+
+    The first source naming a key decides it, in the order Claude Code applies
+    them (workspace local, workspace, user), so a ``false`` in the workspace
+    outranks a ``true`` in the user's file. The channel check and the
+    plugin-tree pick both read this, so doctor cannot contradict itself.
+    """
+    decided: dict = {}
+    for label, path in _settings_sources(project_root):
+        settings = _read_json(path)
+        plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
+        for key, enabled in (plugins if isinstance(plugins, dict) else {}).items():
+            if key.split("@", 1)[0] == "gaia":
+                decided.setdefault(key, (enabled is True, label))
+    return decided
 
 
 def _active_channels(project_root: Path) -> dict:
@@ -428,9 +438,10 @@ def _active_channels(project_root: Path) -> dict:
     consult. ``npm`` is the package copy under the workspace's node_modules.
     """
     root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    decisions = _gaia_plugin_decisions(project_root)
     enabled_in = [
-        label for label, path in _settings_sources(project_root)
-        if _enables_gaia_plugin(_read_json(path))
+        label for label, _ in _settings_sources(project_root)
+        if any(on and where == label for on, where in decisions.values())
     ]
     npm = project_root / _NPM_PACKAGE_DIR
     return {
@@ -439,23 +450,6 @@ def _active_channels(project_root: Path) -> dict:
         "plugin_enabled_in": enabled_in,
         "npm": npm if (npm / "package.json").is_file() else None,
     }
-
-
-def _enabled_gaia_keys(project_root: Path) -> "list[str]":
-    """The ``gaia@<marketplace>`` keys switched on for *project_root*.
-
-    A key is decided by the first settings source that names it, in the order
-    Claude Code applies them (workspace local, workspace, user), so a
-    ``false`` in the workspace outranks a ``true`` in the user's file.
-    """
-    decided: dict = {}
-    for _, path in _settings_sources(project_root):
-        settings = _read_json(path)
-        plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
-        for key, enabled in (plugins if isinstance(plugins, dict) else {}).items():
-            if key.split("@", 1)[0] == "gaia":
-                decided.setdefault(key, enabled is True)
-    return [key for key, enabled in decided.items() if enabled]
 
 
 def _installed_gaia_installs() -> "dict[str, list]":
@@ -491,7 +485,8 @@ def _plugin_tree(project_root: Path) -> "Path | None":
     if channels["plugin_root"] is not None:
         return channels["plugin_root"]
     by_key = _installed_gaia_installs()
-    installs = [install for key in _enabled_gaia_keys(project_root) for install in by_key.get(key, [])]
+    enabled = [key for key, (on, _) in _gaia_plugin_decisions(project_root).items() if on]
+    installs = [install for key in enabled for install in by_key.get(key, [])]
     local = [i for i in installs if i.get("scope") == "local"
              and Path(i.get("projectPath", "")).resolve() == project_root.resolve()]
     user = [i for i in installs if i.get("scope") == "user"]
