@@ -346,11 +346,15 @@ def setup_project_permissions() -> bool:
     /reload-plugins picks up changes mid-session without restart.
     Preserves enabledPlugins and any existing user configuration.
 
-    Returns True if settings were modified (reload needed).
+    Returns True if settings were modified (reload needed); False, writing
+    nothing, when the cwd is inside a managed worktree.
     """
-    from gaia.install_root import installed_root
+    from gaia.install_root import InsideManagedWorktree, installed_root
 
-    claude_dir = installed_root() / ".claude"
+    try:
+        claude_dir = installed_root() / ".claude"
+    except InsideManagedWorktree:
+        return False
     settings_path = claude_dir / "settings.local.json"
 
     our_perms = PERMISSIONS
@@ -725,11 +729,15 @@ def _sync_workspace_hooks() -> bool:
     the workspace-registered copy an earlier plugin version left behind,
     which runs out of the plugin cache through the ``.claude/hooks`` link
     without ``CLAUDE_PLUGIN_ROOT``: merging from there would undo the
-    plugin's cleanup on every event. Returns True if settings changed.
+    plugin's cleanup on every event. So does a cwd inside a managed
+    worktree, which has no installed workspace. Returns True if settings changed.
     """
-    from gaia.install_root import installed_root
+    from gaia.install_root import InsideManagedWorktree, installed_root
 
-    workspace = installed_root()
+    try:
+        workspace = installed_root()
+    except InsideManagedWorktree:
+        return False
     channel = resolve_hook_channel(workspace, npm_copy=_installed_under_node_modules())
     if channel is None:
         return False

@@ -1104,6 +1104,13 @@ from modules.core import workspace_bootstrap  # noqa: E402
 class TestWorkspaceHooksJunction(unittest.TestCase):
     """A junction is a link to repoint, not a user's real hooks directory."""
 
+    @staticmethod
+    def _installed_package(workspace: Path) -> Path:
+        package = workspace / "node_modules" / "@jaguilar87" / "gaia"
+        (package / "hooks").mkdir(parents=True)
+        (package / "package.json").write_text('{"version": "0.0.1"}', encoding="utf-8")
+        return package / "hooks"
+
     def _ensure_with_junction(self, workspace: Path, junction_target: Path) -> None:
         link = workspace / ".claude" / "hooks"
         link.mkdir(parents=True)
@@ -1127,16 +1134,17 @@ class TestWorkspaceHooksJunction(unittest.TestCase):
     def test_a_stale_junction_is_repointed(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
+            installed_hooks = self._installed_package(workspace)
             self._ensure_with_junction(workspace, workspace / "old-package" / "hooks")
 
             link = workspace / ".claude" / "hooks"
             self.assertTrue(link.is_symlink())
-            self.assertEqual(link.resolve(), _HOOKS_DIR.resolve())
+            self.assertEqual(link.resolve(), installed_hooks.resolve())
 
     def test_a_current_junction_is_left_alone(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            self._ensure_with_junction(workspace, _HOOKS_DIR)
+            self._ensure_with_junction(workspace, self._installed_package(workspace))
 
             link = workspace / ".claude" / "hooks"
             self.assertFalse(link.is_symlink())

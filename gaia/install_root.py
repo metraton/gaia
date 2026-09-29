@@ -3,19 +3,25 @@
 Every channel (plugin, npm, pnpm) treats the installed folder as the workspace.
 Writes that belong to the workspace anchor to that folder rather than to the
 current directory, so a session opened in a subfolder reuses the installed
-`.claude` instead of seeding its own.
+`.claude` instead of seeding its own. A managed worktree is the exception: it
+belongs to no installed folder, so a cwd inside one has no workspace to write to.
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
-from gaia.paths import db_path
+from gaia.paths import db_path, worktrees_dir
 
 INIT_MARKER = Path(".claude") / ".plugin-initialized"
+
+
+class InsideManagedWorktree(ValueError):
+    """The path lies inside a managed worktree, so no installed workspace owns it."""
 
 
 def registered_roots(database: Path | None = None) -> dict[Path, str]:
@@ -45,16 +51,36 @@ def owning_root(path: Path, roots: dict[Path, str]) -> Path | None:
     return None
 
 
+def managed_worktrees_root(path: Path, roots: dict[Path, str]) -> Path | None:
+    """The managed worktrees root strictly containing *path*, or None.
+
+    The candidates are the ones `gaia worktree create` places worktrees under:
+    each recorded root's ``.project-worktrees`` and the legacy central root.
+    """
+    from gaia.worktree import _WORKSPACE_ROOT_DIRNAME
+
+    candidates = [root / _WORKSPACE_ROOT_DIRNAME for root in roots]
+    candidates.append(Path(os.path.realpath(worktrees_dir())))
+    return next((root for root in candidates if root in path.parents), None)
+
+
 def installed_root(start: Path | None = None, *, database: Path | None = None) -> Path:
     """The installed workspace root containing *start*; *start* itself when none does.
 
     A root recorded in the registry wins over the on-disk init marker, because a
     `.claude` seeded by an earlier cwd-anchored write carries the same marker.
     The home directory is never a candidate: `~/.claude` is Claude Code's user
-    directory, not an install.
+    directory, not an install. A *start* inside a managed worktree raises
+    `InsideManagedWorktree` instead of resolving to the workspace holding the
+    worktree: writing there from a disposable checkout re-points the
+    workspace's hooks at a tree that is later deleted.
     """
     here = (start or Path.cwd()).resolve()
-    recorded = owning_root(here, registered_roots(database))
+    roots = registered_roots(database)
+    worktrees = managed_worktrees_root(here, roots)
+    if worktrees is not None:
+        raise InsideManagedWorktree(f"{here} is inside the managed worktrees root {worktrees}")
+    recorded = owning_root(here, roots)
     if recorded is not None:
         return recorded
     home = Path.home().resolve()

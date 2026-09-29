@@ -153,6 +153,9 @@ def test_a_subfolder_resolves_to_the_installed_root_and_seeds_no_claude_dir(
 
     assert installed_root(subfolder, database=db) == workspace.resolve()
 
+    package = workspace / "node_modules" / "@jaguilar87" / "gaia"
+    (package / "hooks").mkdir(parents=True)
+    (package / "package.json").write_text('{"version": "0.0.1"}', encoding="utf-8")
     sys.path.insert(0, str(_REPO / "hooks"))
     from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
 
@@ -161,3 +164,4 @@ def test_a_subfolder_resolves_to_the_installed_root_and_seeds_no_claude_dir(
     assert not (subfolder / ".claude").exists()
     assert not (workspace / "billing" / ".claude").exists()
     assert (workspace / ".claude" / "hooks").is_symlink()
+    assert (workspace / ".claude" / "hooks").resolve() == (package / "hooks").resolve()

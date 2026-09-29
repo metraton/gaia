@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""SessionStart hook — first-time setup, the plugin's first scan, context injection."""
+"""SessionStart hook — first-time setup, the plugin's first scan, context injection.
+
+Every write happens only when the host executes this file: importing it -- as
+doctor's importability check does -- links no hooks and records no manifest.
+"""
 
 import os
 import sys
@@ -15,8 +19,6 @@ if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
 from modules.core.plugin_setup import recorded_in_manifest
 from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
-with recorded_in_manifest():
-    ensure_workspace_hooks_link()
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +110,9 @@ logger = logging.getLogger(__name__)
 
 
 if __name__ == "__main__":
+    with recorded_in_manifest():
+        ensure_workspace_hooks_link()
+
     if not has_stdin_data():
         sys.exit(0)
 
@@ -276,13 +281,23 @@ if __name__ == "__main__":
         # The plugin channel never runs `gaia install`, so this is where its
         # database is migrated and its seeds re-run. Ordered before the
         # manifest so the schema block below reads the migrated state.
-        from gaia.install_root import installed_root, registered_roots, start_first_scan
-        workspace_root = installed_root()
+        from gaia.install_root import (
+            InsideManagedWorktree,
+            installed_root,
+            registered_roots,
+            start_first_scan,
+        )
+        try:
+            workspace_root = installed_root()
+        except InsideManagedWorktree as _worktree_exc:
+            logger.info("no installed workspace: %s", _worktree_exc)
+            workspace_root = None
         upgrade_notice = ""
         try:
             from modules.session.plugin_upgrade import reconcile_plugin_install
-            with recorded_in_manifest():
-                upgrade_notice = reconcile_plugin_install(workspace_root)
+            if workspace_root is not None:
+                with recorded_in_manifest():
+                    upgrade_notice = reconcile_plugin_install(workspace_root)
         except Exception as _upgrade_exc:
             logger.warning("plugin upgrade check failed (non-fatal): %s", _upgrade_exc)
             upgrade_notice = f"Gaia could not check its database at session start: {_upgrade_exc}"
@@ -290,7 +305,11 @@ if __name__ == "__main__":
         # The plugin channel never runs `gaia install`, so its first session
         # is where the installed folder gets its first scan. Detached: a scan
         # of a large workspace must not hold the session open.
-        if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip() and workspace_root not in registered_roots():
+        if (
+            workspace_root is not None
+            and os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+            and workspace_root not in registered_roots()
+        ):
             try:
                 start_first_scan(workspace_root)
             except Exception as _scan_exc:

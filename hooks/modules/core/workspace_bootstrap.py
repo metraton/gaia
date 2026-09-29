@@ -69,34 +69,33 @@ def _is_link(path: Path) -> bool:
     return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path) -> Path:
-    """Return whichever hooks dir belongs to the fresher gaia package.
+def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path) -> Optional[Path]:
+    """Return the hooks dir of the fresher installed gaia package, or None when none qualifies.
 
-    Prefers the top-level installed package (``nm_hooks``) when it exists and
-    its version is >= the executing copy's version; otherwise keeps the
-    executing copy (``exec_hooks_dir``). The executing copy's package root is
-    ``exec_hooks_dir.parent`` (``.../gaia/hooks`` -> ``.../gaia``). Never
-    raises; on any doubt it falls back to the executing copy, preserving the
-    prior behaviour.
+    The candidates are the top-level installed package (``nm_hooks``, winning
+    ties) and the executing copy (``exec_hooks_dir``, whose package root is
+    ``exec_hooks_dir.parent``). A package root that is a git checkout -- the
+    source tree or a worktree of it -- never qualifies, whatever its version:
+    a workspace linked there loses its hooks when the checkout is released.
     """
-    try:
-        if not nm_hooks.exists():
-            return exec_hooks_dir
-        nm_ver = _version_key(_read_pkg_version(nm_gaia))
-        exec_ver = _version_key(_read_pkg_version(exec_hooks_dir.parent))
-        if nm_ver >= exec_ver:
-            return nm_hooks
-    except Exception:
-        pass
-    return exec_hooks_dir
+    candidates = [
+        (hooks, package)
+        for hooks, package in ((nm_hooks, nm_gaia), (exec_hooks_dir, exec_hooks_dir.parent))
+        if hooks.is_dir() and not (package / ".git").exists()
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: _version_key(_read_pkg_version(candidate[1])))[0]
 
 
 def ensure_workspace_hooks_link() -> None:
-    """Create or repair <workspace>/.claude/hooks → the FRESHEST gaia hooks dir.
+    """Create or repair <workspace>/.claude/hooks → the FRESHEST installed gaia hooks dir.
 
     <workspace> is the installed root containing the cwd
     (``gaia.install_root.installed_root``), so a session opened in a subfolder
-    repairs the installed link instead of seeding a ``.claude`` of its own.
+    repairs the installed link instead of seeding a ``.claude`` of its own. A
+    cwd inside a managed worktree has no workspace, and no installed package
+    qualifies when both candidates are git checkouts: either way nothing is linked.
 
     Never raises. All failures are logged as warnings so that a broken
     workspace layout never prevents the hook from running its real logic.
@@ -113,18 +112,22 @@ def ensure_workspace_hooks_link() -> None:
     try:
         # hooks/modules/core/workspace_bootstrap.py → up 3 levels = hooks/
         # of the EXECUTING copy (may be a stale installed extraction).
-        cache_hooks_dir = Path(__file__).resolve().parent.parent.parent
+        exec_hooks_dir = Path(__file__).resolve().parent.parent.parent
 
-        from gaia.install_root import installed_root
+        from gaia.install_root import InsideManagedWorktree, installed_root
 
-        workspace = installed_root()
+        try:
+            workspace = installed_root()
+        except InsideManagedWorktree as exc:
+            logger.info("workspace_bootstrap: %s -- no hooks link", exc)
+            return
         workspace_hooks_dir = workspace / ".claude" / "hooks"
 
-        # Prefer the top-level installed package's hooks dir when it is at
-        # least as new as the executing copy -- this is the freshness anchor.
         nm_gaia = workspace / "node_modules" / "@jaguilar87" / "gaia"
-        nm_hooks = nm_gaia / "hooks"
-        cache_hooks_dir = _pick_fresher_hooks_dir(cache_hooks_dir, nm_gaia, nm_hooks)
+        cache_hooks_dir = _pick_fresher_hooks_dir(exec_hooks_dir, nm_gaia, nm_gaia / "hooks")
+        if cache_hooks_dir is None:
+            logger.info("workspace_bootstrap: no installed gaia hooks dir -- no hooks link")
+            return
 
         # Case 1: real directory with files — npm install placed real files,
         # nothing to do.
