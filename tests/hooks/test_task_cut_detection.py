@@ -142,7 +142,7 @@ def _async_launch_response(**overrides) -> dict:
         "agentId": "a328e0d9b8f2aa70b",
         "description": "some background work",
         "resolvedModel": "claude-sonnet-5",
-        "outputFile": "/home/jorge/.tmp/claude-1001/-home-jorge-ws-me/793cce12",
+        "outputFile": "/home/user/.tmp/claude-1001/-home-jorge-ws-me/793cce12",
         "canReadOutputFile": True,
     }
     response.update(overrides)

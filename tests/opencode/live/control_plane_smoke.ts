@@ -14,7 +14,7 @@
  * event; nobody has to locate or open an internal session.
  *
  *   OPENCODE_SMOKE_BASE_URL=http://127.0.0.1:10788 \
- *   OPENCODE_SMOKE_DIRECTORY=/home/jorge/ws/me \
+ *   OPENCODE_SMOKE_DIRECTORY=/home/user/ws/me \
  *   OPENCODE_SMOKE_PASSWORD=<OPENCODE_SERVER_PASSWORD of the serve process> \
  *   bun tests/opencode/live/control_plane_smoke.ts
  *

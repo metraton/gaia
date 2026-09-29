@@ -61,8 +61,8 @@ Document coherence fixes applied this session
 
 Evidence
 --------
-equivalents-security-core.md: /home/jorge/ws/me/gaia/tests/evals/evidence/equivalents-security-core.md
-equivalents-approval-grants.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-approval-grants.skip
-equivalents-blocked-commands.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-blocked-commands.skip
-equivalents-mutative-verbs.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-mutative-verbs.skip
-equivalents-tiers.skip: /home/jorge/ws/me/gaia/tests/evals/equivalents-tiers.skip
+equivalents-security-core.md: /home/user/ws/me/gaia/tests/evals/evidence/equivalents-security-core.md
+equivalents-approval-grants.skip: /home/user/ws/me/gaia/tests/evals/equivalents-approval-grants.skip
+equivalents-blocked-commands.skip: /home/user/ws/me/gaia/tests/evals/equivalents-blocked-commands.skip
+equivalents-mutative-verbs.skip: /home/user/ws/me/gaia/tests/evals/equivalents-mutative-verbs.skip
+equivalents-tiers.skip: /home/user/ws/me/gaia/tests/evals/equivalents-tiers.skip

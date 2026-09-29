@@ -320,9 +320,9 @@ def test_force_signal_detection(worktrees):
 # ---------------------------------------------------------------------------
 
 def test_positionals_preserve_case():
-    tokens = ("git", "worktree", "remove", "/home/Jorge/WS/Wt-A")
+    tokens = ("git", "worktree", "remove", "/home/User/WS/Wt-A")
     assert _git_worktree_positionals(tokens) == [
-        "worktree", "remove", "/home/Jorge/WS/Wt-A",
+        "worktree", "remove", "/home/User/WS/Wt-A",
     ]
 
 

@@ -1030,7 +1030,7 @@ class TestBuildProjectsBlockNoSilentDrop:
         return {
             f"proj_{i}": {
                 "name": f"project-name-number-{i}",
-                "local_path": f"/home/jorge/ws/aaxis/group/project-name-number-{i}",
+                "local_path": f"/home/user/ws/aaxis/group/project-name-number-{i}",
                 "type": "terraform" if i % 2 else "application",
                 "description": (
                     f"Project {i}: a reasonably descriptive summary line that "

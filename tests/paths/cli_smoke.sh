@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-REPO_ROOT="/home/jorge/ws/me/gaia"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GAIA_BIN="${REPO_ROOT}/bin/gaia"
 PYTHON="${REPO_ROOT}/.venv/bin/python"
 

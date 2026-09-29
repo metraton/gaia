@@ -151,8 +151,8 @@ def test_backfill_git_project_ref_uses_repo_basename(v31_db: Path) -> None:
     con.row_factory = sqlite3.Row
     try:
         con.execute("INSERT INTO workspaces (name) VALUES ('me')")
-        _seed(con, "atom_gaia_note", project_ref="/home/jorge/ws/me/gaia/.git")
-        _seed(con, "atom_balance_note", project_ref="/home/jorge/ws/me/balance/.git")
+        _seed(con, "atom_gaia_note", project_ref="/home/user/ws/me/gaia/.git")
+        _seed(con, "atom_balance_note", project_ref="/home/user/ws/me/balance/.git")
         con.commit()
 
         _apply_migration_sql(con)

@@ -41,8 +41,8 @@ CATEGORICAL = "CATEGORICAL"
 # A project path and a user path that are NOT the filesystem root: the permanent
 # floor owns the root, and the point of these rows is the tier below it -- the
 # one where somebody's actual working tree lives.
-PROJECT = "/home/jorge/ws/me/gaia/tools"
-USERDIR = "/home/jorge/projects/app"
+PROJECT = "/home/user/ws/me/gaia/tools"
+USERDIR = "/home/user/projects/app"
 
 # (case_id, expected_level, command)
 MUTATION_THROUGH_SUBSTITUTION = [
@@ -84,7 +84,7 @@ MUTATION_THROUGH_SUBSTITUTION = [
     # The BOUNDARY of the body-count cap, the other axis the corpus missed. The
     # cap is a scan condition, so one substitution past it is never looked at.
     ("body-count-past-the-cap", APPROVABLE,
-     "echo " + " ".join(["$(pwd)"] * 64) + " $(rm -rf /home/jorge/projects/app)"),
+     "echo " + " ".join(["$(pwd)"] * 64) + " $(rm -rf /home/user/projects/app)"),
 ]
 
 # The floor and the .claude boundary. These were closed BEFORE the mutative lane

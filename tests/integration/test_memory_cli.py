@@ -484,13 +484,13 @@ def test_add_project_flag_populates_initiative_from_basename(tmp_db, tmp_path,
 
     monkeypatch.chdir(tmp_path)
     _seed_project(tmp_db, "me", "gaia",
-                  project_identity="/home/jorge/ws/me/gaia/.git")
+                  project_identity="/home/user/ws/me/gaia/.git")
 
     rc = _cmd_add(_add_args(name="git-init-mem", project="gaia"))
     assert rc == 0, capsys.readouterr()
 
     row = _read_memory_row(tmp_db, "me", "git-init-mem")
-    assert row["project_ref"] == "/home/jorge/ws/me/gaia/.git"
+    assert row["project_ref"] == "/home/user/ws/me/gaia/.git"
     assert row["initiative"] == "gaia"
 
 
