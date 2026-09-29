@@ -326,6 +326,7 @@ class ToolPolicy:
         call's terminal event reads back.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
+        from gaia.secret_reads import redacted_command, redaction_profile
         from modules.tools.bash_validator import BashValidator
 
         command = parameters.get("command", "")
@@ -394,19 +395,25 @@ class ToolPolicy:
         # host-provided agent_type is exported at the front of the command so
         # the guards enforce the per-agent model (build_dispatch_identity_command).
         # The orchestrator and a human CLI call are never injected.
+        # The rewrite comes after classification and the grant match above, so
+        # the sealed bytes stay the command the user signed.
         final_command = effective_command
+        profile = redaction_profile(effective_command)
+        if profile is not None:
+            final_command = redacted_command(effective_command, profile)
         if is_subagent and not dispatch_identity_in_env:
             final_command = build_dispatch_identity_command(
-                effective_command, agent_type,
+                final_command, agent_type,
                 tmpdir=dispatch_tmpdir(hook_data["agent_id"]),
             )
 
         if final_command != command:
-            reason = (
-                result.reason
-                if result.modified_input
-                else "dispatch-identity injected (GAIA_DISPATCH_AGENT)"
-            )
+            if result.modified_input:
+                reason = result.reason
+            elif profile is not None:
+                reason = "output passes through the secret redactor"
+            else:
+                reason = "dispatch-identity injected (GAIA_DISPATCH_AGENT)"
             logger.info(
                 "MODIFIED: %s -> tier=%s (footer_stripped=%s, dispatch_id=%s)",
                 command[:80], result.tier,

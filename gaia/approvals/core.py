@@ -40,7 +40,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from gaia.redaction import has_clear_secret, redact_text
 from gaia.store.writer import APPROVAL_WINDOW_MINUTES as WINDOW_MINUTES
+
+# A sealed request stores its command verbatim, because the grant is bound to
+# those bytes; a credential written into the command would be stored in clear.
+CLEAR_SECRET_REFUSAL = (
+    "the command carries a credential in clear, which the approval record would store; "
+    "pass it through an environment variable or a file and request that command instead"
+)
 
 DECISION_OPTIONS = frozenset({"approve", "reject", "details"})
 _COMMAND_KINDS = frozenset({"command", "command_set"})
@@ -155,6 +163,8 @@ def _seal_items(kind: str, items: Iterable[Mapping[str, Any]]) -> list[dict]:
             target = raw.get("command")
             if not isinstance(target, str) or not target or target != target.strip():
                 raise SealError(f"item {position}: command must be a non-empty exact string")
+            if has_clear_secret(target):
+                raise SealError(f"item {position}: {CLEAR_SECRET_REFUSAL}")
             cwd = raw.get("cwd")
             expect_exit = _expected_exits(raw.get("expect_exit"), position)
             item = {"command": target, "rationale": raw.get("rationale") or ""}
@@ -1041,12 +1051,12 @@ def close_call(
     else:
         outcome = "executed" if exit_code == 0 else "failed"
     payload = {
-        "command": command,
+        "command": redact_text(command),
         "exit_code": exit_code,
         "outcome": "success" if outcome == "executed" else "failure",
     }
     if error:
-        payload["error"] = error
+        payload["error"] = redact_text(error)
     store.record_event(
         approval_id, "EXECUTED" if outcome == "executed" else "FAILED",
         session_id=session_id or None,

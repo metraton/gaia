@@ -2383,6 +2383,19 @@ def decide_t3_outcome(
     # matter which outcome this call produces.
     note_mutative_classification(command, verb, category)
 
+    from gaia.redaction import has_clear_secret
+
+    if has_orchestrator_above and has_clear_secret(command):
+        from gaia.approvals.core import CLEAR_SECRET_REFUSAL
+
+        reason = f"T3 {category.lower()} command refused: {CLEAR_SECRET_REFUSAL}."
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T3_BLOCKED,
+            reason=reason,
+            block_response=build_hook_permission_response("deny", reason),
+        )
+
     # A genuine multi-command chain is a set of >= 2 items. Anything else
     # collapses to the singular path so we never mint a COMMAND_SET for one
     # command (mirrors _build_sealed_payload's is_command_set guard).
