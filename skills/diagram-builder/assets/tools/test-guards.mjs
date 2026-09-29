@@ -309,6 +309,25 @@ function rebuild(dir) {
   rmDeck(dir);
 }
 
+// ── 3g2. CASCADE — the breakpoints link before the inline <style> FAILS ─────
+// The generated collapse rules repeat inline selectors at equal specificity, so
+// a tier applies only when its sheet loads later. Put the link back where it sat
+// when stacked zones rendered squashed: the gate must name the link and the base
+// rule that outranked the stack tier.
+{
+  const dir = mkDeck();
+  const idx = path.join(dir, 'index.html');
+  const src = fs.readFileSync(idx, 'utf8');
+  const link = src.match(/<link\b[^>]*breakpoints\.generated\.css[^>]*>\n/)?.[0];
+  if (link) fs.writeFileSync(idx, src.replace(link, '').replace('<style>', `${link}<style>`), 'utf8');
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = !!link && code !== 0 && out.includes('CASCADE') && out.includes('before the last </style>')
+    && out.includes('.sec-grid.sec-compound > .zone: { flex: var(--span, 1) 1 0; }');
+  report('CASCADE: the breakpoints sheet linked before the inline <style> fails the static gate', ok,
+    `link-found=${!!link} exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+
 // ── 3h. WORDS — a text-only edit without a rebuild FAILS the gate ───────────
 // CENSUS compares ids and counts, so rewording a title leaves it green while the
 // bundle still carries the old words. The fixture is edited and deliberately NOT

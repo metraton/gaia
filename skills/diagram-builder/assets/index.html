@@ -11,9 +11,6 @@
     document.documentElement.classList.toggle('dark', dark);
   })();
 </script>
-<!-- The collapse tiers: generated from tokens.breakpoints by engine/build-data.mjs,
-     because a container query cannot read var(). -->
-<link rel="stylesheet" href="data/breakpoints.generated.css?v={{DIAGRAM_DECK_VERSION}}">
 <style>
   :root {
     --bg:#FAF9F5; --surface:#FFFFFF; --surface2:#F0EEE6;
@@ -952,6 +949,11 @@
   .h-illo .il-guide line { stroke:var(--line); stroke-width:1; stroke-dasharray:2 3; }
   .h-illo .il-dim { opacity:0.18; }
 </style>
+<!-- The collapse tiers: generated from tokens.breakpoints by engine/build-data.mjs,
+     because a container query cannot read var(). Linked AFTER the inline style:
+     its rules repeat inline selectors at equal specificity and win only on source
+     order (the CASCADE check in tools/check-layout.mjs fails otherwise). -->
+<link rel="stylesheet" href="data/breakpoints.generated.css?v={{DIAGRAM_DECK_VERSION}}">
 </head>
 <body>
 

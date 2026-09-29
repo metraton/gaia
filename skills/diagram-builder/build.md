@@ -566,7 +566,8 @@ a box the two `lines`. Nothing else is per-node: a per-cell font or spacing
 would let one cell stop matching its neighbours. `treatment: [compact]` is sugar
 for `row.cell_h: <row.compact_h>` plus its structural rules. The breakpoints are
 written to `data/breakpoints.generated.css`, because a container query cannot
-read `var()`. TOKENS fails when the `:root` defaults in `index.html` differ from
+read `var()`. `index.html` links that sheet after its last `</style>`: its rules
+repeat inline selectors at equal specificity and win only on source order. TOKENS fails when the `:root` defaults in `index.html` differ from
 `DEFAULT_TOKENS`.
 
 | Key | Default | Range | Where | Why it is a token |
@@ -737,6 +738,7 @@ Every mode ends with the build lane above.
 | **HEIGHT** | advisory: a page's predicted height against `viewport.h` — a deck may mean to scroll |
 | **ORDER** | a duplicate effective `order` among siblings |
 | **CSS** · **SPAN** · **TOKENS** | `index.html` no longer declares the breakpoints, span rules, text metrics or token defaults the checker computes with. No `index.html` at all is `[NOT ASSERTED]`, never a pass |
+| **CASCADE** | `index.html` links `data/breakpoints.generated.css` before its last `</style>`, or an inline rule with a same-selector twin in that sheet sits after the link — the inline rule then wins on source order and the collapse tier never applies. Read from the file order, not a joined text |
 
 ## Feasibility
 

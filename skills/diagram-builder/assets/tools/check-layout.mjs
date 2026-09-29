@@ -501,6 +501,79 @@ function cssTextTokens(root) {
   return { ok: true, fixed, drift };
 }
 
+// ── THE CASCADE ORDER, READ FROM index.html AS WRITTEN ─────────────────────
+// The generated collapse rules repeat selectors the inline stylesheet already
+// styles (`.sec-grid.sec-compound > .zone`) at equal specificity, so a tier
+// applies only when its sheet loads LATER than the base rule. Every width this
+// report derives assumes it does. Source order is exactly what a joined text
+// (cssTextTokens) erases, so this reads the offsets in index.html itself.
+const BREAKPOINTS_LINK_RE = /<link\b[^>]*href=["']data\/breakpoints\.generated\.css[^"']*["'][^>]*>/i;
+
+// Style rules of a CSS text as { key, selector, body, offset }, one per
+// comma-separated selector, at any at-rule depth. `key` ignores whitespace
+// around combinators so `a > b` and `a>b` are the same selector.
+function cssStyleRules(css, base = 0) {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, c => ' '.repeat(c.length));
+  const rules = [], open = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const inRule = open.length && !open.at(-1).prelude.startsWith('@');
+    if (ch === '{') { open.push({ prelude: text.slice(start, i).trim(), at: i }); start = i + 1; }
+    else if (ch === ';' && !inRule) start = i + 1;
+    else if (ch === '}') {
+      const frame = open.pop();
+      start = i + 1;
+      if (!frame || frame.prelude.startsWith('@')) continue;
+      const body = text.slice(frame.at + 1, i).trim().replace(/\s+/g, ' ');
+      for (const sel of splitTopLevelCommas(frame.prelude)) {
+        const selector = sel.replace(/\s+/g, ' ').trim();
+        rules.push({ key: selector.replace(/\s*([>+~])\s*/g, '$1'), selector, body, offset: base + frame.at });
+      }
+    }
+  }
+  return rules;
+}
+
+function splitTopLevelCommas(s) {
+  const parts = [];
+  let depth = 0, from = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(') depth++;
+    else if (s[i] === ')') depth--;
+    else if (s[i] === ',' && depth === 0) { parts.push(s.slice(from, i)); from = i + 1; }
+  }
+  parts.push(s.slice(from));
+  return parts.filter(p => p.trim());
+}
+
+// Returns { noFile, problem, linkLine, lastStyleLine, linkBeforeStyle, twins, losers }.
+// `losers` are the inline rules that share a selector with a generated rule and
+// sit AFTER the link, so they outrank that tier on source order.
+function cssCascadeOrder(root) {
+  const file = path.join(root, 'index.html');
+  if (!fs.existsSync(file)) return { noFile: true, problem: `index.html does not exist under "${root}"` };
+  const src = fs.readFileSync(file, 'utf8');
+  const link = src.match(BREAKPOINTS_LINK_RE);
+  if (!link) return { noFile: false, problem: 'index.html links no data/breakpoints.generated.css' };
+  const lineAt = offset => src.slice(0, offset).split('\n').length;
+  const styles = [...src.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)];
+  const inline = styles.flatMap(m => cssStyleRules(m[1], m.index + m[0].indexOf('>') + 1));
+  const genFile = path.join(root, 'data', 'breakpoints.generated.css');
+  const generated = new Set(fs.existsSync(genFile)
+    ? cssStyleRules(fs.readFileSync(genFile, 'utf8')).map(r => r.key) : []);
+  const twins = inline.filter(r => generated.has(r.key));
+  const lastStyleEnd = styles.length ? styles.at(-1).index + styles.at(-1)[0].length : -1;
+  return {
+    noFile: false,
+    linkLine: lineAt(link.index),
+    lastStyleLine: styles.length ? lineAt(lastStyleEnd) : null,
+    linkBeforeStyle: link.index < lastStyleEnd,
+    twins: twins.length,
+    losers: twins.filter(r => r.offset > link.index).map(r => ({ ...r, line: lineAt(r.offset) })),
+  };
+}
+
 // ── THE WIDTH CHAIN, MIRRORED FROM THE STYLESHEET ──────────────────────────
 // container width -> canvas insets+padding -> the plane's cap -> (per nesting
 // level) a section's share of its parent, minus its own zone frame -> the leaf
@@ -1835,6 +1908,35 @@ function main() {
   const spanHeadline = () =>
     `all ${spanCss.present.length} rules present (band and partial span, in the leaf grid and the root band grid)`;
 
+  // CASCADE — the collapse tiers load after every base rule they override. Same
+  // split as SPAN: no index.html is NOT ASSERTED, a missing link FAILS.
+  const cascade = cssCascadeOrder(ROOT);
+  const cascadeFailsBefore = findings.length;
+  console.log('\nCASCADE  (load order of data/breakpoints.generated.css vs the inline <style> of index.html)');
+  if (cascade.noFile) {
+    notAsserted('CASCADE', 'index.html', `${cascade.problem}, so the load order of the collapse tiers cannot be read.`);
+  } else if (cascade.problem) {
+    fail('CASCADE', 'index.html', `${cascade.problem} — the collapse tiers every width in this report assumes ` +
+      'never reach the browser.');
+  } else {
+    asserted++;
+    if (cascade.linkBeforeStyle)
+      fail('CASCADE', `index.html:${cascade.linkLine} <link data/breakpoints.generated.css>`,
+        `comes before the last </style> (index.html:${cascade.lastStyleLine}). The generated rules share ` +
+        `selectors with inline rules at equal specificity, so the inline rule wins on source order and the ` +
+        `collapse tier never applies. Move the link after the last </style>.`);
+    for (const r of cascade.losers)
+      fail('CASCADE', `index.html:${r.line} ${r.selector}`,
+        `{ ${r.body} } comes after the breakpoints link (index.html:${cascade.linkLine}) and has a same-selector ` +
+        'twin in data/breakpoints.generated.css, so it outranks that tier at every width the tier claims.');
+  }
+  const cascadeHeadline = () => `link at index.html:${cascade.linkLine}, after the last </style> at ` +
+    `index.html:${cascade.lastStyleLine}; all ${cascade.twins} same-selector twin(s) precede it`;
+  const cascadeFindings = findings.slice(cascadeFailsBefore);
+  if (!cascadeFindings.length) console.log(`    [PASS] ${cascadeHeadline()}`);
+  for (const f of cascadeFindings)
+    console.log(`    [${f.sev === 'fail' ? 'FAIL' : 'NOT ASSERTED'}] ${f.where}: ${f.detail}`);
+
   const deck = loadAuthoredDeck(ROOT);
   if (!deck.manifest) {
     console.log('\n══════════════════════════════════════════════════════════════');
@@ -1975,6 +2077,9 @@ function main() {
     ['SPAN', 'index.html implements the span→tracks rules every width in this report assumes ' +
       '(a missing rule FAILS: unlike a metric there is no mirrored constant to fall back to)',
       spanHeadline],
+    ['CASCADE', 'data/breakpoints.generated.css is linked after the last </style> of index.html, and every ' +
+      'generated rule loads after its same-selector twin there (read from the file order, not a joined text: ' +
+      'at equal specificity the later rule wins)', cascadeHeadline],
   ];
   console.log('\n  ── CHECKS ─────────────────────────────────────────────────────');
   for (const [id, name, passDetail] of CHECKS) {
@@ -2040,6 +2145,6 @@ if (process.argv[1]?.endsWith(`${path.sep}check-layout.mjs`)) main();
 export { applyTokens, metricsFrom, tiersFor, widthAtTier, isBandAtTier, isBandClass, place, tracksFor,
   orderedChildren, slotsOf, effectiveCols, rowShare, rowspanOf, RESET_CHIP, DEFAULT_SECTION_COLUMNS,
   planeWidth, cellTextWidth, titlePx, capacityFor, wrapLines, longestToken,
-  textBudget, cssTextTokens, CSS_TEXT, MONO_ADVANCE_EM, isThinRowLeaf,
+  textBudget, cssTextTokens, cssCascadeOrder, CSS_TEXT, MONO_ADVANCE_EM, isThinRowLeaf,
   inkBudget, slotHeightPx, railTitleWidth, railTitleFit, headerBudget, zoneTitlePx,
   predictPageHeight, pageHeightAdvisory, PAGE_CHROME_PX };
