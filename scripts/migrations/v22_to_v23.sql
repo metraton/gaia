@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v22 -> v23: add agent-owned `description` column to `projects`.
 --
 -- Closes the M3/T9 slice of the workspace-identity brief (AC-7): projects had

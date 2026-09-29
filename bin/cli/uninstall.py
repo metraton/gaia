@@ -1,8 +1,18 @@
 """
-gaia uninstall -- disconnect Gaia from the current workspace.
+gaia uninstall -- take back exactly what `gaia install` and the plugin's sessions wrote.
 
-Wraps the workspace-level cleanup performed by `gaia cleanup` and adds:
-  * preuninstall mode (invoked by npm before package removal)
+Reverts the workspace's install manifest (`cli/_manifest.py`): every file,
+link and settings key install or a plugin session recorded returns to the
+state it had before Gaia -- files Gaia did not create (a CLAUDE.md, a
+settings.json, a hook script of the user's own) are never removed, and keys
+the user added since are kept. The opt-in writes outside the workspace
+(`--path` launcher, Windows setx) are reverted too. A workspace wired before
+manifests existed -- including a plugin workspace whose only trace is Gaia's
+permissions and attribution -- is adopted: its known Gaia footprint is
+reverted and nothing else. It runs on its own -- nothing depends on
+`npm uninstall`.
+
+Also:
   * a gzip snapshot of ~/.gaia/gaia.db, taken by DEFAULT before cleanup
   * dry-run reporting
 
@@ -36,18 +46,8 @@ import json
 import sys
 from pathlib import Path
 
-# Reuse the heavy lifting already implemented in cleanup.py rather than
-# duplicating retention policy, symlink lists, or root detection.
-from cli.cleanup import (  # type: ignore  # noqa: E402
-    _apply_retention_policy,
-    _clean_settings_local_json,
-    _find_project_root,
-    _remove_claude_md,
-    _remove_plugin_initialized,
-    _remove_plugin_registry_entry,
-    _remove_settings_json,
-    _remove_symlinks,
-)
+from cli import _manifest  # type: ignore  # noqa: E402
+from cli.cleanup import _find_project_root  # type: ignore  # noqa: E402
 
 # cli.cleanup (imported above) already inserts the repo root into sys.path,
 # so gaia.paths is importable here. Single source of truth for BOTH the
@@ -115,18 +115,17 @@ def register(subparsers):
     """Register the 'uninstall' subcommand."""
     p = subparsers.add_parser(
         "uninstall",
-        help="Disconnect Gaia from this workspace (cleanup; DB is never deleted)",
+        help="Revert exactly what Gaia (install or plugin) wrote here (the DB is never touched)",
         description=(
-            "Disconnect Gaia from the current machine.\n"
+            "Revert the workspace's install manifest: every file, link and\n"
+            "settings key `gaia install` or a plugin session wrote returns to its\n"
+            "prior state, and the --path launcher / Windows setx it recorded are\n"
+            "taken back. Files Gaia did not create are never removed. A workspace\n"
+            "wired before manifests existed (a plugin one included) is adopted\n"
+            "and reverted the same way.\n"
             "\n"
-            "By default removes CLAUDE.md, .claude/ symlinks, settings.json,\n"
-            "and applies the retention policy. The user DB at ~/.gaia/gaia.db\n"
-            "is NEVER deleted by this command -- there is no flag that removes\n"
-            "it. A gzip snapshot of it is written by default before cleanup;\n"
-            "pass --no-backup to skip that snapshot.\n"
-            "\n"
-            "Intended to be invoked from npm preuninstall via:\n"
-            "    python3 bin/gaia uninstall --preuninstall\n"
+            "The user DB at ~/.gaia/gaia.db is NEVER modified or deleted. A gzip\n"
+            "snapshot of it is written by default; --no-backup skips it.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -221,15 +220,8 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         "backup_requested": backup,
     }
 
-    # --- Workspace cleanup (delegated to cleanup.py helpers) -------------
     try:
-        result["claude_md"] = _remove_claude_md(workspace, dry_run)
-        result["settings_json"] = _remove_settings_json(workspace, dry_run)
-        result["settings_local_json"] = _clean_settings_local_json(workspace, dry_run)
-        result["plugin_initialized"] = _remove_plugin_initialized(workspace, dry_run)
-        result["plugin_registry"] = _remove_plugin_registry_entry(workspace, dry_run)
-        result["symlinks"] = _remove_symlinks(workspace, dry_run)
-        result["retention_actions"] = _apply_retention_policy(workspace, dry_run)
+        result["manifest"] = _manifest.uninstall(workspace, dry_run=dry_run)
     except Exception as exc:  # noqa: BLE001
         result["cleanup_error"] = str(exc)
 
@@ -282,44 +274,19 @@ def _print_human(result: dict, *, preuninstall: bool, dry_run: bool) -> None:
     print(f"  db:        {result['db_path']}")
     print()
 
-    claude_md = result.get("claude_md") or {}
-    settings = result.get("settings_json") or {}
-    settings_local = result.get("settings_local_json") or {}
-    plugin_initialized = result.get("plugin_initialized") or {}
-    plugin_registry = result.get("plugin_registry") or {}
-    symlinks = result.get("symlinks") or {}
-    retention = result.get("retention_actions") or []
+    manifest = result.get("manifest") or {}
     db = result.get("db") or {}
 
-    if claude_md.get("found"):
-        verb = "Would remove" if dry_run else "Removed"
-        print(f"  {verb}: CLAUDE.md")
-    if settings.get("found"):
-        verb = "Would remove" if dry_run else "Removed"
-        print(f"  {verb}: .claude/settings.json")
-    if settings_local.get("found"):
-        verb = "Would clean" if dry_run else "Cleaned"
-        fields = ", ".join(settings_local.get("removed_fields", []))
-        print(f"  {verb}: .claude/settings.local.json ({fields})")
-    if plugin_initialized.get("found"):
-        verb = "Would remove" if dry_run else "Removed"
-        print(f"  {verb}: .claude/.plugin-initialized")
-    if plugin_registry.get("found"):
-        verb = "Would remove" if dry_run else "Removed"
-        entries = ", ".join(plugin_registry.get("removed_entries", []))
-        print(f"  {verb}: plugin-registry.json entry ({entries})")
-    for rel in symlinks.get("removed", []):
-        verb = "Would remove symlink" if dry_run else "Removed symlink"
+    source = manifest.get("source", "none")
+    if source == "none":
+        print("  Nothing to revert: no Gaia install recorded in this workspace.")
+    elif source == "adopted":
+        print("  No manifest: reverting the footprint of an install that predates it.")
+    verb = "Would restore" if dry_run else "Restored"
+    for rel in manifest.get("reverted", []):
         print(f"  {verb}: {rel}")
-    if retention:
-        # These are routine log-hygiene prunes applied on the way out, NOT
-        # part of the uninstall teardown -- the header keeps that distinct.
-        print("\n  Retention policy (routine log hygiene, not part of uninstall):")
-        for action in retention:
-            verb = "Would prune" if dry_run else "Pruned"
-            path = action.get("path", "?")
-            label = action.get("label", "")
-            print(f"    {verb}: {path} ({label})")
+    for name in manifest.get("env", []):
+        print(f"  {verb}: user environment variable {name}")
 
     print()
     snapshot = result.get("snapshot") or {}

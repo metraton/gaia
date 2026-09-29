@@ -185,7 +185,7 @@ class TestDegradesInsteadOfFailing:
         assert dev_builds.read_record("5.3.0") is None
         assert dev_builds.describe_version("5.3.0") == "5.3.0"
 
-    @pytest.mark.parametrize(
+    @pytest.mark.table(
         "body",
         [
             "",
@@ -276,7 +276,7 @@ class TestFormatLabel:
     def test_record_without_a_digest_still_reports_the_count(self):
         assert dev_builds.format_label("5.3.0", {"count": 2}) == "5.3.0 (dev.2)"
 
-    @pytest.mark.parametrize(
+    @pytest.mark.table(
         "record",
         [{}, {"count": 0}, {"count": -1}, {"count": "3"}, {"count": True}, "nope", 5],
     )
@@ -293,7 +293,7 @@ class TestFormatLabel:
 
 
 # ---------------------------------------------------------------------------
-# The five version sources the release gate protects stay untouched
+# The four version sources the release gate protects stay untouched
 # ---------------------------------------------------------------------------
 
 class TestReleaseGateSourcesUntouched:
@@ -301,9 +301,10 @@ class TestReleaseGateSourcesUntouched:
         """The counter is state, not source.
 
         `bin/pre-publish-validate.js` requires package.json, pyproject.toml,
-        .claude-plugin/plugin.json, .claude-plugin/marketplace.json and the
-        CHANGELOG header to agree on one version; a counter written into any of
-        them would break the release and dirty a git-tracked file per dev run.
+        .claude-plugin/plugin.json and the CHANGELOG header to agree on one
+        version, and rejects a version in any .claude-plugin/marketplace.json
+        entry; a counter written into any of them would break the release and
+        dirty a git-tracked file per dev run.
         """
         dev_builds.record_build("5.3.0", "fb27693c")
 

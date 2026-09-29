@@ -35,9 +35,11 @@ Responsibilities (in order):
   6. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`
      (the single unified plugin registry identity).
 
-Scanning is intentionally NOT part of install. `gaia scan` is a separate,
-standalone module (bin/cli/scan.py + tools/scan/**) the user runs on demand;
-install never triggers it.
+  7. First scan (`gaia.install_root.first_scan`): the workspace is the folder
+     install ran in, registered under its basename with that folder as its
+     root, and the repos beneath it are indexed. A root already recorded is
+     left alone -- re-indexing is `gaia scan` -- and repos inside another
+     workspace's recorded root stay with that workspace. Non-fatal.
 
 Idempotent: re-running over a populated workspace + DB never destroys
 state -- bootstrap.sh uses IF NOT EXISTS / INSERT OR IGNORE, the helpers
@@ -68,10 +70,18 @@ Flags:
   --skip-workspace   Bootstrap the DB only; skip workspace configuration.
                      Useful when running install just to refresh the DB
                      schema from a non-Gaia directory.
-  --no-path          Skip creating the ~/.local/bin/gaia launcher. By default
-                      install links POSIX PATH resolution to the selected
-                      package's bin.gaia entry and writes workspace-aware
-                      `gaia.cmd` + `gaia.ps1` launchers on Windows.
+  --path             Opt in to the writes outside the workspace: the
+                     ~/.local/bin/gaia launcher (a symlink to this package's
+                     bin/gaia; `gaia.cmd` + `gaia.ps1` on Windows) and, on
+                     Windows, `setx GAIA_WORKSPACE_PATH`. Without it install
+                     writes nothing outside the workspace. `--no-path` is
+                     still accepted and does nothing.
+
+Every file and settings key install writes is recorded in the workspace's
+manifest, `.claude/gaia-manifest.json` (`cli/_manifest.py`), which
+`gaia uninstall` reverts exactly. A workspace wired by an install that
+predates the manifest is adopted on the next install. `gaia update` is an
+alias of this command.
 """
 
 from __future__ import annotations
@@ -95,6 +105,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
 # via `python bin/gaia install` because bin/ is on sys.path.
 from cli import _install_helpers  # type: ignore  # noqa: E402
 from cli import migrate  # type: ignore  # noqa: E402
+from cli import _manifest  # type: ignore  # noqa: E402
 
 _BOOTSTRAP_SCRIPT = migrate.ENGINE
 
@@ -527,6 +538,14 @@ _create_path_symlink = _install_path_launcher
 # because the next `gaia doctor` is a NEW process that inherits the user env.
 
 
+def _launcher_manifest_paths() -> list[Path]:
+    """Every path `--path` may create outside the workspace, parents included."""
+    link = Path("~/.local/bin/gaia").expanduser()
+    if _is_windows():
+        return [link.with_name("gaia.cmd"), link.with_name("gaia.ps1"), link.parent, link.parent.parent]
+    return [link, link.parent, link.parent.parent]
+
+
 def _persist_workspace_env(workspace: Path) -> dict:
     """Windows only: persist GAIA_WORKSPACE_PATH to the USER environment.
 
@@ -906,6 +925,18 @@ def _seed_surface_routing(db_path: str | None, quiet: bool) -> dict:
     return {"action": "created", "details": summary}
 
 
+def _first_scan(workspace: Path, db_path: str | None) -> dict:
+    """Register and scan *workspace* once; a failure is reported, never fatal."""
+    from gaia.install_root import first_scan
+
+    try:
+        return first_scan(
+            workspace, database=Path(db_path).expanduser().resolve() if db_path else None
+        )
+    except Exception as exc:
+        return {"action": "error", "details": f"{type(exc).__name__}: {exc}"}
+
+
 def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
     """Build a short detail string for the install-error marker.
 
@@ -1160,6 +1191,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "A chain that reaches existing rows stops here and names the\n"
             "`gaia migrate apply --consent-chain vA..vB` command that continues.\n"
             "\n"
+            "The workspace is the folder install runs in (or --workspace): the\n"
+            "first install registers it under its folder name and scans the\n"
+            "repos beneath it. Later runs leave it to `gaia scan`.\n"
+            "\n"
             "There is no npm postinstall hook -- bootstrap is lazy, triggered\n"
             "by the first `gaia` CLI invocation. Typically called by:\n"
             "  - the user, manually, to re-bootstrap the DB or workspace\n"
@@ -1167,6 +1202,12 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    add_install_arguments(p)
+    return p
+
+
+def add_install_arguments(p: argparse.ArgumentParser) -> None:
+    """The flags of `gaia install`, shared by its alias `gaia update`."""
     p.add_argument(
         "--postinstall",
         action="store_true",
@@ -1221,18 +1262,24 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Skip workspace configuration; only bootstrap the DB",
     )
     p.add_argument(
-        "--no-path",
-        dest="no_path",
+        "--path",
+        dest="path",
         action="store_true",
         default=False,
-        help="Skip PATH launchers and persistent Windows workspace environment changes",
+        help=(
+            "Also write the `gaia` launcher to ~/.local/bin (gaia.cmd/gaia.ps1 "
+            "on Windows) and persist GAIA_WORKSPACE_PATH with setx on Windows. "
+            "Recorded in the manifest, so `gaia uninstall` takes them back."
+        ),
     )
+    # Retired opt-out, accepted so existing callers keep working: nothing is
+    # written outside the workspace unless --path asks for it.
+    p.add_argument("--no-path", dest="no_path", action="store_true", help=argparse.SUPPRESS)
     p.add_argument(
         "--strict-wiring",
         action="store_true",
         help="Fail if any requested host or required wiring step fails or is skipped",
     )
-    return p
 
 
 def cmd_install(args: argparse.Namespace) -> int:
@@ -1242,7 +1289,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     verbose = bool(getattr(args, "verbose", False))
     db_path = getattr(args, "db_path", None)
     skip_workspace = bool(getattr(args, "skip_workspace", False))
-    no_path = bool(getattr(args, "no_path", False))
+    opt_path = bool(getattr(args, "path", False))
     strict_wiring = bool(getattr(args, "strict_wiring", False))
     workspace_arg = getattr(args, "workspace", None)
     try:
@@ -1305,6 +1352,11 @@ def cmd_install(args: argparse.Namespace) -> int:
             print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
         return 0
 
+    outside = _launcher_manifest_paths() if opt_path else []
+    baseline, baseline_source = _manifest.baseline_for(workspace, outside)
+    if baseline_source == "adopted" and not quiet:
+        print("  [~] manifest: adopting an install that predates the manifest")
+
     wired: list[str] = []
     failed: list[str] = []
     for host_key in hosts:
@@ -1338,8 +1390,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         # aborts the consumer's package install.
         return 0 if postinstall else 1
 
-    # Step 6.5 -- PATH launcher (~/.local/bin/gaia) unless --no-path
-    if not no_path:
+    # Step 6.5 -- PATH launcher (~/.local/bin/gaia), only with --path: the one
+    # write outside the workspace, so the user asks for it.
+    if opt_path:
         # Link directly to this installed package's bin/gaia so PATH resolution
         # preserves the provenance consumed by the orchestrator guard.
         path_res = _install_path_launcher(workspace=workspace)
@@ -1359,13 +1412,36 @@ def cmd_install(args: argparse.Namespace) -> int:
         if shadow_warning is None:
             _warn_launcher_dir_absent(link="~/.local/bin/gaia", quiet=quiet)
 
-    if not no_path and _is_windows():
+    env_prior: dict = {}
+    if opt_path and _is_windows():
+        env_prior = _manifest.windows_env_prior()
         env_res = _persist_workspace_env(workspace)
         _report_step(name="workspace-env", result=env_res, quiet=quiet, verbose=verbose)
 
-    # Install owns Steps 1-6 only. Workspace scanning is a separate, on-demand
-    # flow (`gaia scan`); install never triggers it. A clean install clears any
-    # stale install-error marker left by a prior failed bootstrap attempt.
+    manifest = _manifest.record(
+        workspace,
+        baseline,
+        channel=_install_helpers.resolve_hook_channel(workspace, npm_copy=True) or "npm",
+        version=_install_helpers._read_plugin_version(_PACKAGE_ROOT) or "unknown",
+        extra=outside,
+        env=env_prior,
+    )
+    _report_step(
+        name="manifest",
+        result={"action": "updated", "details": f"{len(manifest['entries'])} entries recorded"},
+        quiet=quiet,
+        verbose=verbose,
+    )
+
+    _report_step(
+        name="first scan",
+        result=_first_scan(workspace, db_path),
+        quiet=quiet,
+        verbose=verbose,
+    )
+
+    # A clean install clears any stale install-error marker left by a prior
+    # failed bootstrap attempt.
     _clear_install_error_marker()
 
     _print_next_steps(quiet=quiet, postinstall=postinstall, hosts=wired)

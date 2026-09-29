@@ -40,7 +40,7 @@ def _approved_set(db_path):
 @pytest.mark.parametrize(
     "commands, message",
     [
-        (["echo safe", "git push origin main"], "not classified T3"),
+        (["echo safe"], "at least one command classified T3"),
         (["git push origin main && docker push x", "git push origin backup"], "atomic"),
         (["vim file", "git push origin main"], "interactive"),
         (["ssh host", "git push origin main"], "interactive"),
@@ -56,8 +56,8 @@ def test_request_set_rejects_ineligible_commands(commands, message):
 def test_ssh_prefixed_tools_are_not_interactive():
     # `ssh\b` matched `ssh-keygen`, so a batch key generation was refused as an
     # interactive program. Reaching the T3 check proves the interactive gate
-    # stood aside; ssh-keygen is genuinely not T3, which is a separate verdict.
-    with pytest.raises(CommandSetValidationError, match="not classified T3"):
+    # stood aside; ssh-keygen is genuinely not T3, so a set of only it signs nothing.
+    with pytest.raises(CommandSetValidationError, match="at least one command classified T3"):
         validate_request_set(['ssh-keygen -t ed25519 -f /tmp/k -N ""'])
 
 

@@ -1219,12 +1219,17 @@ def build_schema_direction_block() -> str:
     """
     try:
         from gaia.paths import db_path as _db_path
-        from gaia.store.writer import schema_ahead_message, schema_versions
+        from gaia.store.writer import (
+            schema_ahead_message,
+            schema_compatible_notice,
+            schema_versions,
+            writes_refused,
+        )
 
         db_file = _db_path()
         if not db_file.exists():
             return ""
-        live, expected = schema_versions(db_file)
+        live, expected, minimum = schema_versions(db_file)
         if live is None or expected is None or live == expected:
             return ""
         if live < expected:
@@ -1234,8 +1239,10 @@ def build_schema_direction_block() -> str:
                 f"until it is migrated. Run `gaia migrate plan` to see the chain, "
                 f"then `gaia migrate apply`."
             )
+        elif writes_refused(live, expected, minimum):
+            fix = schema_ahead_message(live, expected, db_file, minimum)
         else:
-            fix = schema_ahead_message(live, expected, db_file)
+            fix = schema_compatible_notice(live, expected, minimum, db_file)
         return "## Database schema\n" + fix
     except Exception as exc:
         logger.debug("build_schema_direction_block failed (non-fatal): %s", exc)

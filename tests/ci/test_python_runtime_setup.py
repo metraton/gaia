@@ -1,7 +1,9 @@
 """The Python CI suite provisions the runtime its plugin tests execute."""
 
 import re
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -84,23 +86,60 @@ _EXHAUSTIVE_OPENCODE_MATRIX = (
 )
 
 
+def _pytest_arguments(run):
+    """The arguments after ``-m pytest`` in a workflow ``run`` script."""
+    command = re.sub(r"\$\{\{[^}]*\}\}", "EXPR", run.replace("\\\n", " "))
+    tokens = shlex.split(command[command.index("-m pytest"):])
+    return tokens[2:]
+
+
+def _collected(root, arguments):
+    """Node ids a collection from the repo root selects with these arguments.
+
+    A second -q would switch the listing from node ids to per-file counts.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
+         *(argument for argument in arguments if argument != "-q"), "-n", "0"],
+        cwd=root, capture_output=True, text=True, check=False,
+    )
+    return {line for line in result.stdout.splitlines() if "::" in line}
+
+
 def test_exhaustive_opencode_matrix_leaves_per_pr_ci_but_keeps_a_scheduled_run():
-    """The per-PR suite deselects the exhaustive matrix and a scheduled workflow runs it."""
-    workflows = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+    """The per-PR suite leaves the exhaustive matrix out and a scheduled workflow runs it.
+
+    Per-PR CI names no test path, so it runs the shared selection, and a
+    separate-token option value would be taken as a path when pytest picks its
+    rootdir and configfile (run 36487229785 lost pyproject.toml that way).
+    """
+    root = Path(__file__).resolve().parents[2]
+    workflows = root / ".github" / "workflows"
     ci = yaml.safe_load((workflows / "ci.yml").read_text(encoding="utf-8"))
-    ci_runs = [step.get("run", "") for step in ci["jobs"]["test-python"]["steps"]]
-    assert any(f"--deselect {_EXHAUSTIVE_OPENCODE_MATRIX}" in run for run in ci_runs)
+    ci_arguments = [
+        _pytest_arguments(step["run"])
+        for step in ci["jobs"]["test-python"]["steps"]
+        if "-m pytest" in step.get("run", "")
+    ]
+    assert ci_arguments
+    for arguments in ci_arguments:
+        assert [token for token in arguments if not token.startswith("-")] == []
+
+    module = _EXHAUSTIVE_OPENCODE_MATRIX.split("::")[0]
+    shared_selection = _collected(root, [module])
+    assert shared_selection
+    assert _EXHAUSTIVE_OPENCODE_MATRIX not in shared_selection
 
     nightly = yaml.safe_load((workflows / "nightly.yml").read_text(encoding="utf-8"))
     # PyYAML reads the bare workflow key ``on`` as the boolean True.
     assert nightly[True]["schedule"]
-    nightly_runs = [
-        step.get("run", "")
+    nightly_arguments = [
+        _pytest_arguments(step["run"])
         for job in nightly["jobs"].values()
         for step in job["steps"]
+        if "-m pytest" in step.get("run", "")
     ]
     assert any(
-        "-m pytest" in run and _EXHAUSTIVE_OPENCODE_MATRIX in run
-        and "--deselect" not in run
-        for run in nightly_runs
+        _EXHAUSTIVE_OPENCODE_MATRIX in _collected(root, arguments)
+        for arguments in nightly_arguments
     )

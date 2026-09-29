@@ -461,7 +461,7 @@ def _run(argv, seeded) -> subprocess.CompletedProcess:
 # The census
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("surface", SURFACES, ids=lambda s: s.surface_id)
+@pytest.mark.table("surface", SURFACES, ids=lambda s: s.surface_id)
 def test_surface_moves_exactly_the_counter_its_verdict_declares(surface, seeded):
     before = _counters(seeded["db"])
     result = _run(surface.argv, seeded)

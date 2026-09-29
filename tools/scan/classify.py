@@ -296,6 +296,10 @@ class ScanReport:
             and never aborts the scan. Empty on a clean run and always empty in
             dry-run (facets are only persisted on apply). Shape:
             ``{workspace, project, path, error}``.
+        foreign_repos: Repos under ``root`` that sit inside the recorded root
+            of a DIFFERENT workspace (a workspace installed inside this one).
+            They are left to that workspace -- never classified, created or
+            re-owned here. Shape: ``{repo, path, workspace}``.
         vanished: One dict per project row that would be / was marked missing
             during reconcile (R5, SV2). Shape: ``{workspace, project, path,
             project_identity, remote, missing_since}``. ``missing_since`` is
@@ -346,6 +350,7 @@ class ScanReport:
     warnings: list[dict] = field(default_factory=list)
     marked_missing: int = 0
     facet_failures: list[dict] = field(default_factory=list)
+    foreign_repos: list[dict] = field(default_factory=list)
     vanished: list[dict] = field(default_factory=list)
     move_candidates: list[dict] = field(default_factory=list)
     rename_candidates: list[dict] = field(default_factory=list)
@@ -368,6 +373,7 @@ class ScanReport:
             "warnings": self.warnings,
             "marked_missing": self.marked_missing,
             "facet_failures": self.facet_failures,
+            "foreign_repos": self.foreign_repos,
             "vanished": self.vanished,
             "move_candidates": self.move_candidates,
             "rename_candidates": self.rename_candidates,
@@ -752,6 +758,19 @@ def scan(
     report = ScanReport(mode="apply" if apply else "dry-run")
     for repo in repos:
         report.repos_found.append({"repo": repo.name, "path": str(repo)})
+
+    from gaia.install_root import owning_root, registered_roots
+    roots = registered_roots(_resolve_db_path(db_path))
+    own_repos = []
+    for repo in repos:
+        owner = owning_root(repo.resolve(), roots)
+        if owner is not None and roots[owner] != W:
+            report.foreign_repos.append(
+                {"repo": repo.name, "path": str(repo), "workspace": roots[owner]}
+            )
+        else:
+            own_repos.append(repo)
+    repos = own_repos
 
     if apply:
         _ensure_scan_permissions(db_path)

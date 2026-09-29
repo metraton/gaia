@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v44 -> v45: audience column on memory (kernel-injection redesign,
 -- wave 1).
 --

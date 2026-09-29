@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v43 -> v44: dispatch project on agent_contract_handoffs.
 --
 -- WHAT CHANGES

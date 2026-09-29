@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v32 -> v33: add ON DELETE CASCADE to the workspace FK on four
 -- audit-trail tables (memory_history, agent_contract_handoffs,
 -- project_context_contracts_history, project_history).

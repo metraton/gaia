@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
+from gaia.paths import tmp_dir
+
 from .base import HookAdapter
 # The shared tool policy's helpers keep their historical import path here.
 from .tool_policy import (  # noqa: F401
@@ -59,6 +61,19 @@ logger = logging.getLogger(__name__)
 # Requester identity of a main-session call, whose event carries no agent. The
 # approval core never defaults an identity, so the adapter names it explicitly.
 PRIMARY_AGENT = "claude-code-primary"
+
+# Host name recorded on an approval's chain when this host refuses a signed call.
+HOST_NAME = "claude_code"
+
+# The PostToolUseFailure ``error`` Claude Code sends when its permission layer,
+# or the user at its prompt, refused a call: the command never ran, so the
+# signature it matched must not be spent. Anchored at the start, where a real
+# exit reads "Exit code N", so a command's own output never matches.
+_HOST_REFUSAL = re.compile(
+    r"(?:Error:\s*)?(?:Permission to use \S+ with command .* has been denied"
+    r"|The user doesn't want to proceed with this tool use)",
+    re.DOTALL,
+)
 
 # Claude Code's PreToolUse responses nest their permission fields under this
 # top-level key. The literal shape is OWNED by this adapter layer: business
@@ -1032,6 +1047,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     """
 
     PRIMARY_AGENT_TYPE = PRIMARY_AGENT
+    HOST_NAME = HOST_NAME
 
     # ------------------------------------------------------------------ #
     # parse_event: stdin JSON -> HookEvent
@@ -1388,6 +1404,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         failed = False
         output = ""
         exit_code = 0
+        ran = True
 
         if raw.get("hook_event_name") == HookEventType.POST_TOOL_USE_FAILURE.value:
             # A failed call has no tool_response; its outcome is the top-level
@@ -1395,6 +1412,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             output = str(raw.get("error") or "")
             failed = True
             exit_code = self._extract_exit_code_from_result(output)
+            ran = _HOST_REFUSAL.match(output) is None
         elif isinstance(tool_response, str):
             # Failure form: the harness passed the error text as a bare string.
             output = tool_response
@@ -1429,6 +1447,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             output=output,
             exit_code=exit_code,
             session_id=session_id,
+            ran=ran,
         )
 
     # ------------------------------------------------------------------ #
@@ -2867,9 +2886,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 # within-turn retry. An EXACT per-session resume mapping (written
                 # at PreToolUse:SendMessage) means the orchestrator is continuing
                 # this session's agent across messages, so IN_PROGRESS must not
-                # trip the retry cap. Use the exact file only (never the fuzzy
-                # cross-session fallback in _read_resume_mapping) so a fresh,
-                # non-resumed dispatch keeps the anti-parking cap intact.
+                # trip the retry cap; a fresh, non-resumed dispatch has no such
+                # file and keeps the anti-parking cap intact.
                 _is_resume = (
                     self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
                 ).is_file()
@@ -3640,7 +3658,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     # Context cache: PreToolUse -> SubagentStart bridge
     # ------------------------------------------------------------------ #
 
-    CONTEXT_CACHE_DIR = Path("/tmp/gaia-context-cache")
+    CONTEXT_CACHE_DIR = tmp_dir() / "gaia-context-cache"
     CONTEXT_CACHE_TTL_SECONDS = 60  # Cache entries older than this are stale
 
     def _cache_context_for_subagent(
@@ -3721,23 +3739,13 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         if not self.CONTEXT_CACHE_DIR.exists():
             return None
 
-        # Find all cache files for this session, sorted newest-first
+        # Only this session's own entries are candidates: with none, nothing is
+        # injected rather than another session's newest digest.
         candidates: List[Path] = sorted(
             self.CONTEXT_CACHE_DIR.glob(f"{session_id}-*.json"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-
-        if not candidates:
-            # Fallback: try to find the most recent cache file regardless of
-            # session_id, since the orchestrator session_id and the subagent
-            # session_id may differ.
-            all_files = sorted(
-                self.CONTEXT_CACHE_DIR.glob("*.json"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            candidates = all_files
 
         now = time.time()
 
@@ -3837,7 +3845,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     # target agent, not a one-shot handoff payload).
     # ------------------------------------------------------------------ #
 
-    RESUME_MAP_CACHE_DIR = Path("/tmp/gaia-contract-resume-map")
+    RESUME_MAP_CACHE_DIR = tmp_dir() / "gaia-contract-resume-map"
     RESUME_MAP_TTL_SECONDS = 24 * 60 * 60  # generous: spans a long resumed session
 
     def _cache_resume_mapping(self, session_id: str, agent_id: str) -> Path:
@@ -3861,10 +3869,9 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         Non-consuming (unlike the one-shot context cache): the same mapping
         must still be readable after N resumes of the same session
-        (AC-19's "IN_PROGRESS across resumes"). Falls back to the most
-        recently written mapping across ALL sessions when no exact match
-        exists, mirroring ``_read_cached_context``'s own fallback for the
-        orchestrator-session vs subagent-session id mismatch.
+        (AC-19's "IN_PROGRESS across resumes"). Only the session's own
+        mapping is read: without one this returns None, never the agent
+        another session resumed.
         """
         if not self.RESUME_MAP_CACHE_DIR.exists():
             return None
@@ -3872,13 +3879,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         candidate = self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
         if not candidate.is_file():
-            all_files = sorted(
-                self.RESUME_MAP_CACHE_DIR.glob("*.json"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            candidate = all_files[0] if all_files else None
-        if candidate is None:
             return None
 
         try:
@@ -3998,7 +3998,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         2. Cache miss + resume-mapping hit (T6, AC-18/AC-20): the CC session
            resuming this agent was recorded by
            ``_adapt_send_message``/``_cache_resume_mapping``; if that
-           session_id (or, failing that, the most recent resume) maps to an
+           same session_id maps to an
            agent_id with a live ``gaia.contract.drafts`` draft, surface a
            minimal summary of it so the resumed agent continues its own
            draft instead of re-emitting the contract block.

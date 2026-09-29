@@ -130,7 +130,8 @@ class TestNonPluginLaunch:
         plugin_setup.run_first_time_setup(mark_done=True)
         commands = _gaia_commands(_settings(workspace))
 
-        assert f"python3 {workspace}/.claude/hooks/pre_tool_use.py" in commands
+        hooks_dir = f"{workspace}/.claude/hooks"
+        assert f'sh "{hooks_dir}/launch.sh" "{hooks_dir}/pre_tool_use.py"' in commands
         assert "${CLAUDE_PLUGIN_ROOT}" not in json.dumps(_settings(workspace)["hooks"])
 
     def test_workspace_registered_copy_of_a_plugin_install_writes_no_hooks(self, workspace, monkeypatch):

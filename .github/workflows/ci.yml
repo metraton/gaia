@@ -18,13 +18,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Each tree is tested once. .github/scripts/ci_verdict.py looks for an earlier green
+  # "CI verdict" on this commit, on another commit with its tree (the squash of
+  # a PR head), or on its parent when only version sources changed; when one
+  # exists the pytest shards are skipped and the verdict cites that run. The
+  # short jobs still run: validate-manifests and build-plugins are exactly what
+  # a version-only commit can break. A pull request is judged by its head, not
+  # the merge ref, so the squash landing on main finds the same tree. A failed
+  # lookup reports "not reusable", which runs everything.
+  decide:
+    name: Reuse decision
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      reusable: ${{ steps.lookup.outputs.reusable }}
+      source_run: ${{ steps.lookup.outputs.source_run }}
+      source_url: ${{ steps.lookup.outputs.source_url }}
+      reason: ${{ steps.lookup.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Exit 1 (nothing reusable) and 2 (lookup failed) both leave
+      # reusable=false; only a crash of the helper itself fails this job.
+      - name: Look up a reusable CI verdict
+        id: lookup
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          status=0
+          python3 .github/scripts/ci_verdict.py "$HEAD_SHA" --github-output "$GITHUB_OUTPUT" || status=$?
+          test "$status" -le 2
+
+  # The layer-1 suite split across four runners by pytest-split, each shard
+  # still under xdist (`-n auto` from pyproject addopts). A single job took
+  # 7m08 on run 36181584626; the shards exist to bring a push's full verdict
+  # under three minutes without dropping a test.
   test-python:
-    name: Python ${{ matrix.python-version }}
+    name: Python ${{ matrix.python-version }} (shard ${{ matrix.group }}/4)
+    needs: decide
+    if: ${{ needs.decide.outputs.reusable != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.12"]
+        group: [1, 2, 3, 4]
 
     steps:
       - uses: actions/checkout@v7
@@ -76,47 +117,65 @@ jobs:
       # Installed explicitly here, rather than assumed present on the
       # runner image -- ubuntu-latest does not ship pyyaml by default.
       #
-      # pytest-xdist: required by the `-n auto` on the Run tests step below.
-      # It is declared in pyproject.toml's [dev] extra, but this job installs
-      # explicit specs rather than `.[dev]`, so the extra alone does not put it
-      # on the runner -- without this name, `-n auto` aborts on an unrecognized
-      # argument before collecting a single test.
+      # pytest-xdist and pytest-split are in pyproject.toml's [dev] extra, but
+      # this job installs explicit specs rather than `.[dev]`, so each must be
+      # named here. pytest-split is pinned because every shard must compute the
+      # same partition; an algorithm change between versions would reshuffle it.
       - name: Install test dependencies
-        run: pip install pytest==8.3.5 pyyaml pytest-xdist
+        run: pip install pytest==8.3.5 pyyaml pytest-xdist pytest-split==0.11.0
 
-      # tests/evals runs in-scope here (no --ignore) so the drift gate
-      # (compare_to_baseline / enforce_no_regression, tests/evals/test_evals.py
-      # session teardown) fires on every push instead of only when invoked by
-      # hand. This also reconciles the two test surfaces: package.json's
-      # `test` / `test:layer1` scripts never excluded tests/evals, so CI was
-      # the only surface skipping it. tests/evals itself carries no live,
-      # token-spending cases (the last ones, S1/S6, were dropped along with
-      # the subprocess dispatch lane they needed); the only remaining
-      # `@pytest.mark.llm` tests live in tests/layer2_llm_evaluation, already
-      # excluded above via --ignore, so no -m flag is needed here.
-      # No -x, deliberately. Fail-fast made a red run report only its FIRST
-      # failure and hide everything behind it (one cut at 967 tests, another at
-      # 5846 of 7605), so each further defect cost a full push to discover.
-      # Without it the same run reports every failure at once. WHAT is validated
-      # is unchanged -- the selection (tests/ minus the two --ignore paths) is
-      # identical; only the reporting is.
+      # Bare pytest: the selection is testpaths (pyproject.toml) minus
+      # LAYER1_EXCLUDED (tests/conftest.py), the same one `npm test` runs, so
+      # no path is repeated here. No -x: a red run reports every failure.
       #
-      # -n auto mirrors package.json's `test` script, which has always run this
-      # same selection under xdist -- CI was the slower of the two surfaces for
-      # identical work. It also pairs correctly with dropping -x: xdist's
-      # fail-fast is non-deterministic (already-dispatched tests keep running),
-      # so the two flags were never a combination worth keeping. The tests/evals
-      # baseline gate shards safely because compare_to_baseline only walks the
-      # cases a run actually recorded, so a per-worker session compares its own
-      # subset rather than reporting the unrun cases as regressions.
+      # least_duration partitions by the versioned .test_durations; a test
+      # missing from it counts as the average. Each shard reads a copy of that
+      # file and rewrites the copy with only its own measured tests, uploaded
+      # as test-durations-N and merged by the test-durations job below, whose
+      # artifact is what refreshes the committed file.
       #
-      # The exhaustive opencode alias matrix is deselected: it runs up against its
-      # bun driver's subprocess timeout, so it runs on the nightly schedule instead.
+      # Every pytest-split option is spelled --name=value. pytest picks its
+      # rootdir and pyproject.toml from the path-like arguments before plugin
+      # options exist, so a separate-token durations path under $RUNNER_TEMP
+      # moved the rootdir to /home/runner/work: no configfile, hence no
+      # testpaths, no `-n auto` and no LAYER1 exclusions (run 36487229785).
       - name: Run tests
-        run: >-
-          python -m pytest tests/ -q --tb=short -n auto
-          --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
-          --deselect tests/integration/test_opencode_protected_edit_bootstrap.py::test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge
+        run: |
+          cp .test_durations "$RUNNER_TEMP/durations-${{ matrix.group }}.json"
+          python -m pytest -q --tb=short \
+            --splits=4 --group=${{ matrix.group }} --splitting-algorithm=least_duration \
+            --durations-path="$RUNNER_TEMP/durations-${{ matrix.group }}.json" \
+            --store-durations --clean-durations
+
+      - name: Upload shard durations
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-durations-${{ matrix.group }}
+          path: ${{ runner.temp }}/durations-${{ matrix.group }}.json
+          retention-days: 30
+
+  test-durations:
+    name: Merge test durations
+    needs: test-python
+    if: ${{ !cancelled() && needs.test-python.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: test-durations-*
+          merge-multiple: true
+          path: shards
+
+      - name: Merge shard durations into .test_durations
+        run: jq -S -s add shards/durations-*.json > .test_durations
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-durations
+          path: .test_durations
+          include-hidden-files: true
+          retention-days: 30
 
   l2-ci-subset:
     name: L2 ci_subset (budget-bounded LLM)
@@ -152,19 +211,15 @@ jobs:
           python -m pytest tests/layer2_llm_evaluation -m ci_subset -q --tb=short
 
   lint-js:
-    name: ESLint (Node ${{ matrix.node-version }})
+    name: ESLint
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ["18", "20", "22"]
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Node.js ${{ matrix.node-version }}
+      - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: "20"
           cache: npm
 
       - name: Install dependencies
@@ -246,7 +301,7 @@ jobs:
   #                                                 FTS5 smoke)
   #
   # rc.2 launcher/workspace-resolution extension (Step -> what it proves):
-  #   "RC-2 launcher-generated"            -> `gaia install` WITHOUT --no-path
+  #   "RC-2 launcher-generated"            -> `gaia install --path` (opt-in)
   #        emits gaia.cmd + gaia.ps1 (install.py Step 6.5) AND gaia.ps1 runs in
   #        the MIDDLE of a pipeline (the rc.1 "Cannot run a document in the
   #        middle of a pipeline" bug); also evidences the baked `python` token
@@ -261,7 +316,7 @@ jobs:
   # rc.3 setx-persistence extension (Step -> what it proves):
   #   "RC-3 setx-persistence"        -> `gaia install` on Windows PERSISTS
   #        GAIA_WORKSPACE_PATH to the USER environment (install.py Step 6.6,
-  #        _persist_workspace_env -> `setx`; runs even under --no-path). The
+  #        _persist_workspace_env -> `setx`; only with the --path opt-in). The
   #        RC-2 launcher-generated step above already ran `gaia install` into
   #        _ws, so setx has fired. This step reads the value back from where
   #        setx writes it -- HKCU\Environment, surfaced by
@@ -359,7 +414,7 @@ jobs:
       # (extensionless bash shim that PowerShell rejected in a pipeline with
       # "Cannot run a document in the middle of a pipeline") only ever appeared
       # on the user's machine. Here we re-install into the SAME workspace AC-6
-      # validated, this time WITHOUT --no-path, so gaia.cmd + gaia.ps1 are
+      # validated, this time WITH the --path opt-in, so gaia.cmd + gaia.ps1 are
       # actually written to ~/.local/bin (install._install_windows_launchers).
       # We assert BOTH files exist, evidence which `python` the launcher bakes
       # (POSIX bakes `python3`; Windows must resolve `python`), and then drive
@@ -371,8 +426,8 @@ jobs:
         env:
           GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
         run: |
-          python bin/gaia install --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
-          if ($LASTEXITCODE -ne 0) { Write-Error "gaia install (no --no-path) failed with exit $LASTEXITCODE"; exit 1 }
+          python bin/gaia install --path --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
+          if ($LASTEXITCODE -ne 0) { Write-Error "gaia install --path failed with exit $LASTEXITCODE"; exit 1 }
           $base = Join-Path $HOME ".local/bin"
           $cmd  = Join-Path $base "gaia.cmd"
           $ps1  = Join-Path $base "gaia.ps1"
@@ -525,3 +580,113 @@ jobs:
           }
           Write-Host "RC-3 doctor-via-npm-shim HEALTHY (status=$($doc.status), 0 red) WITHOUT --workspace -- setx persistence fixes the machine-2 scenario."
           exit 0
+
+  # The tarball the upgrade cells install. Packed once, on Linux, because
+  # that is where a release is packed: a Windows user installs a tarball built
+  # here, never one built on Windows. It does not wait for decide so the cells
+  # start as soon as the lookup ends; it is in the verdict's needs because a
+  # failed pack skips every cell, and a skipped cell alone reads as green.
+  pack:
+    name: Pack the package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - name: npm pack
+        run: |
+          mkdir pack-out
+          npm pack --silent --pack-destination pack-out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: pack-out/*.tgz
+          retention-days: 7
+
+  # Every published database base (the dumps under
+  # tests/fixtures/published_bases, one per release that changed the schema)
+  # upgraded by `gaia migrate` from the installed tarball, then both install
+  # channels run their registered hook command as written and `gaia uninstall`
+  # must leave no manifest behind. The dumps are versioned, so no checkout here
+  # needs tags or history. Windows is in the matrix because the hook command
+  # starts with `sh`, and every path the package sees there contains a space.
+  # Skipped with the shards when decide found this tree already green, and run
+  # beside them otherwise, so the cells add no wall time as long as each one
+  # finishes before the slowest shard. tests/ci/upgrade_smoke.py holds the
+  # steps and their assertions.
+  upgrade:
+    name: Upgrade v${{ matrix.base }} (${{ matrix.os }})
+    needs: [decide, pack]
+    if: ${{ needs.decide.outputs.reusable != 'true' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        base: [21, 26, 33, 37, 51, 57]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: pack-out
+
+      - name: Upgrade v${{ matrix.base }}, install both channels, run the hooks, uninstall
+        run: python tests/ci/upgrade_smoke.py --base ${{ matrix.base }} --pack-dir pack-out --root "${{ runner.temp }}/gaia upgrade"
+
+  # The one check that summarizes the tree: green only when every job it
+  # needs succeeded or was skipped by its own condition (l2-ci-subset outside
+  # push, the shards when decide found a reusable verdict). A job that judges
+  # the tree must be appended to `needs`, or its failure no longer reaches the
+  # verdict; the checks below read `needs` whole and need no edit.
+  #
+  # test-durations is deliberately absent: it measures the suite for the next
+  # partition and says nothing about this tree. Since ci_verdict.py reuses
+  # this job's result, depending on it would make a failed artifact merge
+  # send an already-tested tree back through the suite.
+  ci-verdict:
+    name: CI verdict
+    needs:
+      - decide
+      - test-python
+      - l2-ci-subset
+      - lint-js
+      - build-plugins
+      - validate-manifests
+      - windows-compat
+      - pack
+      - upgrade
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report job results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+
+      - name: Cite the reused verdict
+        if: ${{ needs.decide.outputs.reusable == 'true' }}
+        env:
+          SOURCE_RUN: ${{ needs.decide.outputs.source_run }}
+          SOURCE_URL: ${{ needs.decide.outputs.source_url }}
+          REASON: ${{ needs.decide.outputs.reason }}
+        run: |
+          echo "Suite not rerun: run $SOURCE_RUN already passed this tree ($REASON) $SOURCE_URL"
+
+      - name: Fail unless every job succeeded or was skipped
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
+        run: exit 1

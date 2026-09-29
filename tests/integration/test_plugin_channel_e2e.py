@@ -19,6 +19,7 @@ adapt_pre_tool_use, the same method the stdin entry point calls).
 
 import json
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -206,15 +207,12 @@ class TestPluginHooksJsonPaths:
             for entry in entries:
                 for hook in entry["hooks"]:
                     command = hook["command"]
-                    # Commands are invoked as `python3 ${CLAUDE_PLUGIN_ROOT}/...`
-                    # to avoid depending on the script's exec bit (tarball install
-                    # mode is not always preserved). Strip the invoker prefix to
-                    # validate the path token.
+                    # The last quoted token is the entrypoint the launcher runs.
                     assert "${CLAUDE_PLUGIN_ROOT}/" in command, (
                         f"Command in {event_name} does not reference "
                         f"${{CLAUDE_PLUGIN_ROOT}}: {command}"
                     )
-                    path_part = command.split()[-1]
+                    path_part = shlex.split(command)[-1]
 
                     # Resolve the path: replace ${CLAUDE_PLUGIN_ROOT} with repo root
                     resolved = path_part.replace("${CLAUDE_PLUGIN_ROOT}", str(repo_root))
@@ -237,8 +235,7 @@ class TestPluginHooksJsonPaths:
             for entry in entries:
                 for hook in entry["hooks"]:
                     command = hook["command"]
-                    # Strip the `python3 ` invoker prefix to reach the path token.
-                    path_part = command.split()[-1]
+                    path_part = shlex.split(command)[-1]
                     resolved = path_part.replace("${CLAUDE_PLUGIN_ROOT}", str(repo_root))
                     resolved_path = Path(resolved)
                     assert resolved_path.suffix == ".py", (
@@ -329,7 +326,7 @@ class TestPluginAgentDispatchCarriesNoPreloadedContext:
             f"PreToolUse:Agent should return no payload, got: {result}"
         )
 
-        cache_dir = Path("/tmp/gaia-context-cache")
+        cache_dir = ClaudeCodeAdapter.CONTEXT_CACHE_DIR
         for f in cache_dir.glob(f"{session_marker}-*.json"):
             cached = json.loads(f.read_text())
             assert "# Project Context" not in cached.get("context", ""), (

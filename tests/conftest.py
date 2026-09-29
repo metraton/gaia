@@ -89,13 +89,37 @@ def bridge_runtime_env():
 #   - layer3_e2e drives a live Claude Code session.
 #   - the exhaustive opencode alias matrix outruns its bun driver's subprocess
 #     timeout; nightly.yml runs it by node id.
+#   - NIGHTLY_ONLY: the *_mutants.py files pin the branch direction of concrete
+#     cosmic-ray mutants rather than an observable behavior, and the tests/evals
+#     files test the LLM eval harness, not Gaia. nightly.yml imports this tuple
+#     and names every entry, so the mutation score is still measured.
 # ============================================================================
+
+NIGHTLY_ONLY = (
+    "tests/hooks/modules/security/test_approval_grants_mutants.py",
+    "tests/hooks/modules/security/test_blocked_commands_mutants.py",
+    "tests/hooks/modules/security/test_inline_ast_analyzer_mutants.py",
+    "tests/hooks/modules/security/test_mutative_verbs_mutants.py",
+    "tests/hooks/modules/security/test_tiers_mutants.py",
+    "tests/evals/test_backend_routing.py",
+    "tests/evals/test_baseline.py",
+    "tests/evals/test_catalog.py",
+    "tests/evals/test_evals.py",
+    "tests/evals/test_graders_code.py",
+    "tests/evals/test_graders_decision.py",
+    "tests/evals/test_graders_trace.py",
+    "tests/evals/test_reporter.py",
+    "tests/evals/test_runner.py",
+    "tests/evals/test_skill_injection_consumer.py",
+    "tests/evals/test_skill_injection_dispatch_reality.py",
+)
 
 LAYER1_EXCLUDED = (
     "tests/layer2_llm_evaluation",
     "tests/layer3_e2e",
     "tests/integration/test_opencode_protected_edit_bootstrap.py"
     "::test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge",
+    *NIGHTLY_ONLY,
 )
 
 
@@ -192,6 +216,101 @@ def pytest_configure(config):
         "ci_subset: small, budget-bounded subset of L2/L3 (LLM) tests that runs in "
         "CI under a controlled token budget (brief #89 AC-6)",
     )
+    config.addinivalue_line(
+        "markers",
+        "table(argnames, argvalues, ids=None): parametrize's signature, collected as "
+        "ONE test that runs every row and fails naming each failing row. Rows share "
+        "the test's fixtures, so only rows that need no fresh per-row state qualify.",
+    )
+
+
+# ============================================================================
+# TABLE TESTS
+#
+# A corpus of hundreds of rows that exercise one code path is one behavior, so
+# it is reported as one test: every row still runs and every row still asserts.
+# ============================================================================
+
+def _table_argnames(mark) -> list[str]:
+    names = mark.args[0]
+    if isinstance(names, str):
+        names = names.split(",")
+    return [name.strip() for name in names]
+
+
+def _table_rows(item) -> list[tuple[str, dict, bool]]:
+    """(row id, arguments, skipped) for the product of the item's table marks."""
+    rows = [("", {}, False)]
+    for mark in item.iter_markers("table"):
+        if mark.kwargs.get("indirect"):
+            raise pytest.UsageError(f"{item.nodeid}: table does not support indirect")
+        names = _table_argnames(mark)
+        ids = mark.kwargs.get("ids")
+        expanded = []
+        for index, raw in enumerate(mark.args[1]):
+            param_id, marks = None, ()
+            if isinstance(raw, type(pytest.param(None))):
+                param_id, marks, raw = raw.id, raw.marks, raw.values
+                raw = raw[0] if len(names) == 1 else raw
+            values = (raw,) if len(names) == 1 else tuple(raw)
+            if param_id is None and isinstance(ids, (list, tuple)):
+                param_id = ids[index]
+            elif param_id is None and callable(ids):
+                param_id = "-".join(str(ids(v)) for v in values)
+            param_id = param_id or "-".join(str(v)[:60] for v in values)
+            skipped = any(
+                m.name in ("skip", "xfail") or (m.name == "skipif" and m.args and m.args[0])
+                for m in marks
+            )
+            expanded.append((param_id, dict(zip(names, values)), skipped))
+        rows = [
+            ("-".join(filter(None, (left_id, right_id))), {**left, **right}, l_skip or r_skip)
+            for left_id, left, l_skip in rows
+            for right_id, right, r_skip in expanded
+        ]
+    return rows
+
+
+def pytest_generate_tests(metafunc):
+    """Bind a table's argument names once, so the test is collected as one item."""
+    names = [n for mark in metafunc.definition.iter_markers("table") for n in _table_argnames(mark)]
+    if names:
+        metafunc.parametrize(names, [tuple(None for _ in names)], ids=["table"])
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    """Run every row of a table test and fail once, listing the failing rows."""
+    if pyfuncitem.get_closest_marker("table") is None:
+        return None
+    import inspect
+
+    rows = _table_rows(pyfuncitem)
+    table_names = set(rows[0][1])
+    fixtures = {
+        name: pyfuncitem.funcargs[name]
+        for name in inspect.signature(pyfuncitem.obj).parameters
+        if name not in table_names
+    }
+    failures, ran = [], 0
+    for row_id, arguments, skipped in rows:
+        if skipped:
+            continue
+        try:
+            pyfuncitem.obj(**fixtures, **arguments)
+            ran += 1
+        except pytest.skip.Exception:
+            continue
+        except (Exception, pytest.fail.Exception) as error:
+            ran += 1
+            failures.append(f"[{row_id}] {type(error).__name__}: {error}")
+    if failures:
+        pytest.fail(
+            f"{len(failures)} of {ran} rows failed:\n" + "\n".join(failures), pytrace=False
+        )
+    if not ran:
+        pytest.skip("every row of the table was skipped")
+    return True
 
 
 @pytest.fixture(autouse=True)
@@ -433,8 +552,8 @@ def temp_gaia_db(tmp_path):
 # the tests/test_writer_*.py tail onto a single xdist worker while the others
 # sat idle.
 #
-# This session-scoped fixture runs that bootstrap EXACTLY ONCE (per xdist
-# worker) into an immutable template .db file. Per-test fixtures then
+# This session-scoped fixture runs that bootstrap EXACTLY ONCE per run (shared
+# by the xdist workers) into an immutable template .db file. Per-test fixtures then
 # `copy_bootstrapped_db(...)` it -- a filesystem copy is milliseconds vs a
 # multi-second subprocess storm. Isolation is preserved exactly: every test
 # still gets its OWN independent .db file that it alone mutates; the template
@@ -451,14 +570,35 @@ def bootstrapped_db_template(tmp_path_factory):
     schema_version floor + FTS5 mirrors). Immutable after creation -- consumers
     copy it, never mutate it.
     """
-    import os
-    import subprocess
-
     repo_root = Path(__file__).resolve().parents[1]
     bootstrap = repo_root / "scripts" / "bootstrap_database.sh"
-    template_dir = tmp_path_factory.mktemp("gaia_db_template")
+    # One build serves every xdist worker: the workers share the parent of
+    # their base temp, and the lock makes the first one build while the rest
+    # wait and reuse it. Without fcntl (Windows) each worker builds its own.
+    base = tmp_path_factory.getbasetemp()
+    shared = base.parent if os.environ.get("PYTEST_XDIST_WORKER") else base
+    template_dir = shared / "gaia_db_template"
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+        template_dir = tmp_path_factory.mktemp("gaia_db_template")
+    template_dir.mkdir(exist_ok=True)
     env = IsolatedRuntimeEnv(template_dir)
     template = Path(env["GAIA_DB"])
+    with open(shared / "gaia_db_template.lock", "w") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (template_dir / "built").exists():
+            _build_template(bootstrap, env, template)
+            (template_dir / "built").touch()
+    return template
+
+
+def _build_template(bootstrap: Path, env, template: Path) -> None:
+    """Run the real bootstrap into ``template`` and fail loudly if it did not produce one."""
+    import subprocess
+
     # WORKSPACE only sets the bootstrap's seeded workspaces.identity row; the
     # writer tests insert their own 'me' workspace and never rely on it.
     res = subprocess.run(
@@ -474,7 +614,6 @@ def bootstrapped_db_template(tmp_path_factory):
         f"stderr:\n{res.stderr}"
     )
     assert template.exists(), "bootstrap did not produce a template DB"
-    return template
 
 
 def copy_bootstrapped_db(template: Path, dest: Path) -> Path:

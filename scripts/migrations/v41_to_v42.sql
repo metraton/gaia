@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- v42: ordered, reservation-based plan-first COMMAND_SET execution.
 ALTER TABLE approval_grants ADD COLUMN request_fingerprint TEXT;
 ALTER TABLE approval_grants ADD COLUMN next_index INTEGER NOT NULL DEFAULT 0;

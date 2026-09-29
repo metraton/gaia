@@ -34,6 +34,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,15 +220,45 @@ def _expected_schema_version() -> int | None:
     return int(m.group(1)) if m else None
 
 
+_MIGRATION_GUARD_PY = Path(__file__).resolve().parents[2] / "scripts" / "migration_guard.py"
+
+
+def _last_breaking_version(version: int) -> int | None:
+    """The minimum code version the shipped migrations imply at ``version``.
+
+    Read through the migration engine's own guard so the writer's seal and
+    `gaia migrate`'s seals derive the minimum from one parser; None when the
+    build ships no migrations.
+    """
+    if not _MIGRATION_GUARD_PY.is_file():
+        return None
+    import importlib.util
+
+    name = "_gaia_migration_guard"
+    guard = sys.modules.get(name)
+    if guard is None:
+        spec = importlib.util.spec_from_file_location(name, _MIGRATION_GUARD_PY)
+        guard = importlib.util.module_from_spec(spec)
+        # dataclasses resolve their module through sys.modules while executing.
+        sys.modules[name] = guard
+        spec.loader.exec_module(guard)
+    return guard.last_breaking_version(_MIGRATION_GUARD_PY.parent / "migrations", version)
+
+
 def _seal_materialized_schema(con: sqlite3.Connection) -> None:
     """Record the version schema.sql just built, when this build declares one."""
     expected = _expected_schema_version()
     if expected is None:
         return
     con.execute(
-        "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
-        "VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?)",
-        (expected, "sealed by the writer: schema.sql materialized"),
+        "INSERT OR IGNORE INTO schema_version "
+        "(version, applied_at, description, min_code_version) "
+        "VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, ?)",
+        (
+            expected,
+            "sealed by the writer: schema.sql materialized",
+            _last_breaking_version(expected),
+        ),
     )
 
 
@@ -235,20 +266,23 @@ def _seal_materialized_schema(con: sqlite3.Connection) -> None:
 # Schema-direction gate
 # ---------------------------------------------------------------------------
 #
-# A database sealed by a NEWER Gaia carries structure this code does not know,
-# so this code must not write to it: every write through _connect is refused
-# with a message naming the fix, and reads keep working. Moving the database
+# A database sealed by a NEWER Gaia may carry structure this code does not
+# know. Its newest seal records min_code_version, the oldest code that may still
+# write to it: this code keeps writing while its expected version reaches that
+# minimum (warning once per process), and otherwise every write through
+# _connect is refused with a message naming the fix while reads keep working.
+# A newer database with no recorded minimum is refused. Moving the database
 # down is never the fix; migrations only run forward.
 #
-# The live version is read once per process per database path. A process that
+# The live state is read once per process per database path. A process that
 # migrates its own database only ever moves it forward, which cannot turn a
 # writable database into one this code must refuse.
 
 class SchemaAheadError(sqlite3.DatabaseError):
-    """A write refused because the database is newer than this code."""
+    """A write refused because the database is newer than this code allows."""
 
 
-_SCHEMA_VERSION_BY_DB: dict[str, int | None] = {}
+_SCHEMA_VERSION_BY_DB: dict[str, tuple[int | None, int | None]] = {}
 
 _WRITE_ACTIONS = frozenset({
     sqlite3.SQLITE_INSERT,
@@ -278,43 +312,89 @@ def _read_schema_version(con: sqlite3.Connection) -> int | None:
     return row[0] if row else None
 
 
-def schema_ahead_message(live: int, expected: int, db_path: Path) -> str:
-    """The refusal a write to a database newer than this code receives."""
+def _read_min_code_version(con: sqlite3.Connection) -> int | None:
+    """min_code_version of the newest seal, or None without the column or a value."""
+    try:
+        row = con.execute(
+            "SELECT min_code_version FROM schema_version ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
+
+
+def writes_refused(live: int | None, expected: int | None, minimum: int | None) -> bool:
+    """Whether code at ``expected`` must not write to a database at ``live``."""
+    if live is None or expected is None or live <= expected:
+        return False
+    return minimum is None or minimum > expected
+
+
+def schema_ahead_message(
+    live: int, expected: int, db_path: Path, minimum: int | None = None
+) -> str:
+    """The refusal a write to a database past this code's window receives."""
+    required = live if minimum is None else minimum
+    reason = (
+        "records no minimum code version it accepts"
+        if minimum is None
+        else f"requires Gaia code at schema v{minimum} or newer since a breaking migration"
+    )
+    return (
+        f"gaia.db at {db_path} is at schema v{live} and {reason}; this Gaia "
+        f"expects v{expected}, so it refuses to write to it; reads keep working. "
+        f"Install a Gaia whose schema version is at least v{required} (`gaia "
+        f"install` or `gaia update` of a newer release in this installation, or "
+        f"`gaia dev` from a newer checkout). Do not downgrade the database."
+    )
+
+
+def schema_compatible_notice(live: int, expected: int, minimum: int, db_path: Path) -> str:
+    """The warning for a newer database that still accepts writes from this code."""
     return (
         f"gaia.db at {db_path} is at schema v{live}, newer than the v{expected} "
-        f"this Gaia expects, so it refuses to write to it; reads keep working. "
-        f"Install a Gaia whose schema version is at least v{live} (`gaia update` "
-        f"or `gaia install` of a newer release, or `gaia dev` from a newer "
-        f"checkout). Do not downgrade the database."
+        f"this Gaia expects; it accepts code from v{minimum}, so this Gaia keeps "
+        f"reading and writing. Run `gaia install` (or `gaia update`) in this "
+        f"installation to catch up before a breaking migration stops it."
     )
 
 
 def _schema_ahead(con: sqlite3.Connection, db_path: Path) -> str | None:
-    """The refusal message when ``db_path`` is newer than this code, else None."""
+    """The refusal message when ``db_path`` is past this code's window, else None.
+
+    The database state is read once per process per path, and a newer database
+    still inside the window is announced on stderr at that same single read.
+    """
     expected = _expected_schema_version()
     if expected is None:
         return None
     key = str(db_path.resolve())
     if key not in _SCHEMA_VERSION_BY_DB:
-        _SCHEMA_VERSION_BY_DB[key] = _read_schema_version(con)
-    live = _SCHEMA_VERSION_BY_DB[key]
-    if live is None or live <= expected:
+        live = _read_schema_version(con)
+        minimum = _read_min_code_version(con)
+        _SCHEMA_VERSION_BY_DB[key] = (live, minimum)
+        if live is not None and live > expected and not writes_refused(live, expected, minimum):
+            print(schema_compatible_notice(live, expected, minimum, db_path), file=sys.stderr)
+    live, minimum = _SCHEMA_VERSION_BY_DB[key]
+    if not writes_refused(live, expected, minimum):
         return None
-    return schema_ahead_message(live, expected, db_path)
+    return schema_ahead_message(live, expected, db_path, minimum)
 
 
-def schema_versions(db_path: Path) -> tuple[int | None, int | None]:
-    """(database version, version this code expects), None where unknown; never writes."""
+def schema_versions(db_path: Path) -> tuple[int | None, int | None, int | None]:
+    """(database version, version this code expects, database's min_code_version),
+    None where unknown; never writes."""
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         live = _read_schema_version(con)
+        minimum = _read_min_code_version(con)
     finally:
         con.close()
-    return live, _expected_schema_version()
+    return live, _expected_schema_version(), minimum
 
 
 def assert_schema_writable(db_path: Path) -> None:
-    """Raise SchemaAheadError when ``db_path`` is newer than this code.
+    """Raise SchemaAheadError when ``db_path`` is past this code's compatibility window.
 
     For the few writers that open their own connection instead of _connect.
     """
@@ -464,8 +544,8 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
     Returns:
         Open sqlite3.Connection with foreign_keys=ON and a busy_timeout set.
-        When the database is newer than this code, every write on it raises
-        SchemaAheadError; reads are unaffected.
+        When the database is past this code's compatibility window, every
+        write on it raises SchemaAheadError; reads are unaffected.
     """
     if db_path is None:
         db_path = _db_path()
@@ -7696,6 +7776,8 @@ def reserve_plan_command(
 ) -> dict | None:
     """Reserve the exact next command for one correlated Bash tool call.
 
+    An item whose sealed files changed since signing never matches, so the
+    grant stays unconsumed and the command asks for a new signature.
     An item sealed by gaia.approvals.core (it carries ``position``) matches only
     in its sealed ``cwd`` and only for the session and agent the grant is bound
     to; an item sealed before that carries neither and keeps its old reach.
@@ -7716,7 +7798,7 @@ def reserve_plan_command(
     """
     if not session_id or not tool_use_id:
         return None
-    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import command_fingerprint, files_unchanged
 
     con = _connect(db_path)
     now_iso = _now_iso()
@@ -7740,6 +7822,8 @@ def reserve_plan_command(
                 continue
             item = items[index]
             if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
+                continue
+            if not files_unchanged(item):
                 continue
             if "position" in item and not _sealed_item_binds(item, grant, cwd, session_id, agent_id):
                 continue
@@ -7821,9 +7905,10 @@ def find_pending_plan_command(command: str, *, db_path: Path | None = None) -> d
 
     Returns the ``approval_id`` that authorizes the command, the ``index`` it
     would consume and the stored ``fingerprint``; ``None`` when no live grant is
-    waiting for this command at the position it authorizes next.
+    waiting for this command at the position it authorizes next, or when a file
+    its item sealed changed since signing.
     """
-    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import command_fingerprint, files_unchanged
 
     fingerprint = command_fingerprint(command)
     con = _connect(db_path)
@@ -7834,7 +7919,10 @@ def find_pending_plan_command(command: str, *, db_path: Path | None = None) -> d
             if index >= len(items):
                 continue
             item = items[index]
-            if item.get("command") == command and item.get("fingerprint") == fingerprint:
+            if (
+                item.get("command") == command and item.get("fingerprint") == fingerprint
+                and files_unchanged(item)
+            ):
                 return {
                     "approval_id": grant["approval_id"],
                     "index": index,
@@ -7923,6 +8011,66 @@ def settle_plan_command(
             )
         con.commit()
         return True
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def release_plan_command(
+    approval_id: str,
+    *,
+    session_id: str,
+    tool_use_id: str,
+    db_path: Path | None = None,
+) -> bool:
+    """Free an exact reservation whose call never ran, leaving the set where it was.
+
+    Neither advances nor freezes: the index waits for a retry, which must come
+    as a new tool call because ``tool_use_id`` stays in the reserved history.
+    """
+    if not session_id or not tool_use_id:
+        return False
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET reservation_index=NULL, reservation_session_id=NULL, "
+            "reservation_tool_use_id=NULL, reservation_at=NULL "
+            "WHERE approval_id=? AND status='PENDING' "
+            "AND reservation_session_id=? AND reservation_tool_use_id=?",
+            (approval_id, session_id, tool_use_id),
+        ).rowcount
+        con.commit()
+        return changed == 1
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def restore_db_semantic_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Return a SCOPE_SEMANTIC_SIGNATURE grant spent by a call that never ran to PENDING.
+
+    Only a grant still inside its window is restored; an expired one stays spent.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET status='PENDING', consumed_at=NULL "
+            "WHERE approval_id=? AND scope='SCOPE_SEMANTIC_SIGNATURE' "
+            "AND status='CONSUMED' AND expires_at > ?",
+            (approval_id, _now_iso()),
+        ).rowcount
+        con.commit()
+        return changed == 1
     except Exception:
         con.rollback()
         raise

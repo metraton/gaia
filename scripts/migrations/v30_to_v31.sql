@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v30 -> v31: drop three duplicate (byte-identical) indexes.
 --
 -- Root cause (migrate_06 / migrate_08 inheritance):

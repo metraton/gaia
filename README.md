@@ -80,35 +80,72 @@ One turn, from your prompt to the answer:
 6. The orchestrator reads the row, not the message, and answers you.
 ```
 
-Gaia interacts with three things outside itself: the host, which loads the hooks in [`hooks/hooks.json`](./hooks/hooks.json) (Claude Code) or the plugin in [`opencode/plugin.ts`](./opencode/plugin.ts) (OpenCode); the `~/.gaia/` directory, where the database, evidence and logs live (`gaia paths` prints the resolved locations); and your repositories, which a specialist touches through its own git worktree (`gaia worktree`) and only mutates past the gate.
+Gaia interacts with three things outside itself: the host, which loads the hooks -- from [`hooks/hooks.json`](./hooks/hooks.json) on the Claude Code plugin, from `.claude/settings.local.json` on the npm package, through [`opencode/plugin.ts`](./opencode/plugin.ts) on OpenCode; the `~/.gaia/` directory, where the database, evidence and logs live (`gaia paths` prints the resolved locations); and your repositories, which a specialist touches through its own git worktree (`gaia worktree`) and only mutates past the gate.
 
 ## Requirements
 
 - One host: Claude Code >= 2.1.0 (the floor declared in [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)) or OpenCode.
-- Python >= 3.12 on `PATH` (the `engines` in [`package.json`](./package.json)); the CLI and the hooks are Python. Node.js >= 18 only for the npm route below.
+- Python >= 3.12 on `PATH` (the `engines` in [`package.json`](./package.json)); the CLI and the hooks are Python. On the plugin the hooks start through [`hooks/launch.sh`](./hooks/launch.sh), which needs `sh` and takes the first of `python3`, `python` or `py -3` that is really Python 3, so the python.org Windows install, which has no `python3`, works too.
+- Node.js >= 18 and npm or pnpm, only for the package channels below.
 - git, for the per-turn worktrees.
 - Nothing is installed behind your back: there is no `postinstall`, and the database is created lazily on the first `gaia` command (`_ensure_db_bootstrapped` in [`bin/gaia`](./bin/gaia)).
 
 ## How it is used
 
-**Install.** In Claude Code, as a plugin -- the host clones the repository at the tag of the current release, as pinned by `source.ref` in [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json), and reads its hooks from `hooks/hooks.json`:
+Gaia reaches a workspace through one of three channels. The workspace is the folder you install in: its repositories are what the first scan indexes.
+
+| Channel | Host | What you install | Where `gaia` runs from |
+|---|---|---|---|
+| Plugin | Claude Code | `gaia@gaia-marketplace`, from this repository | the plugin's own `bin/gaia`, run by the orchestrator |
+| Package | Claude Code | `@jaguilar87/gaia` from npm, then `gaia install` | `node_modules/.bin/gaia`, or `~/.local/bin` with `--path` |
+| OpenCode | OpenCode | the same package, then `gaia install --host opencode` | as for the package |
+
+A Claude Code workspace with both the plugin and the package runs each hook once, the plugin's: `gaia install` writes no hooks when the workspace settings enable the plugin, and every plugin session takes the package's registrations out of `.claude/settings.local.json` (`resolve_hook_channel` and `sync_workspace_hooks` in [`hooks/modules/core/plugin_setup.py`](./hooks/modules/core/plugin_setup.py)). `gaia doctor` names the channel it finds.
+
+**Plugin.** In Claude Code:
 
 ```
 /plugin marketplace add metraton/gaia
 /plugin install gaia@gaia-marketplace      # terminal: claude plugin install gaia@gaia-marketplace
 ```
 
-For Claude Code that is the whole install; no npm step is needed. The plugin carries its own CLI at `bin/gaia`, and each session publishes that absolute path to the orchestrator, which runs it from there. On the first session Gaia merges its permission set into `.claude/settings.local.json` and asks you to run `/reload-plugins` (or restart) to activate it. Auto-update is off for third-party marketplaces; to take a new release run `/plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace`.
+That is the whole install, and it does not put `gaia` on your terminal's `PATH`. The first session merges Gaia's permission set into `.claude/settings.local.json`, asks for `/reload-plugins` (or a restart), and starts the first scan of the folder in the background. Auto-update is off for third-party marketplaces; take a new release with `claude plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace` and a restart.
 
-Through npm -- the route for OpenCode, and the alternative for Claude Code when you want `gaia` on your own terminal and the workspace wiring below instead of the plugin. Pick one route per Claude Code workspace: the plugin and `gaia install` together register every hook twice.
+**Package and OpenCode.** From the folder that becomes the workspace:
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
-gaia install                      # Claude Code; or --host opencode / --host all
-gaia doctor                       # one line per check, PASS or FAIL
+npx gaia install                  # or: pnpm exec gaia install
+                                  #   --host opencode | --host all, --path
+npx gaia doctor                   # one line per check, PASS or FAIL
 ```
 
-`gaia install` bootstraps `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, and merges the permission set and Gaia's hook registrations into `.claude/settings.local.json` without removing what you already had there (when the workspace also enables the Gaia plugin, the plugin registers the hooks and install writes none). With `--host opencode` it writes `opencode.json` in the workspace pointing at the packaged plugin instead of touching `.claude/`. Run `gaia doctor` from the workspace, or pass `--workspace <path>`; the full walk-through and the troubleshooting table are in [INSTALL.md](./INSTALL.md).
+`gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. The first install registers the workspace under its folder name and scans the repositories beneath it. `--host opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`; `--path` also writes the `gaia` launcher to `~/.local/bin`. To take a new release: `npm install @jaguilar87/gaia@latest`, then `npx gaia update` (an alias of `gaia install`) with the same `--host`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
+
+**Database migrations.** A new release may move `~/.gaia/gaia.db` to a newer schema. `gaia install` and `gaia update` do it on their own, and so does the plugin at SessionStart when the database is behind. On its own means without asking: a backup goes to `backups/` beside the database, and the whole chain runs in one transaction. What decides whether it can go on alone is what the chain reaches:
+
+```
+chain only adds structure       -> applied on its own
+chain reaches rows that exist   -> stops, and the message (or the plugin's
+                                   startup notice) names the command to run:
+     gaia migrate plan                          # the chain and what it reaches
+     gaia migrate apply --consent-chain vA..vB  # consent once, for that chain
+```
+
+**Uninstall.** Each channel takes back only what it wrote. `~/.gaia/gaia.db` is never touched: delete `~/.gaia/` yourself if you want the memory gone too.
+
+```
+Plugin     <installPath>/bin/gaia uninstall    # installPath: claude plugin list --json
+           claude plugin uninstall gaia@gaia-marketplace
+           claude plugin marketplace remove gaia-marketplace   # optional
+Package    npx gaia uninstall            # --dry-run first shows what reverts
+           npm uninstall @jaguilar87/gaia     # or: pnpm remove @jaguilar87/gaia
+OpenCode   npx gaia uninstall --workspace <folder>, then the npm step above
+```
+
+Run `gaia uninstall` from the workspace folder before removing the package or the plugin, while `gaia` still exists. It reverts `.claude/gaia-manifest.json` -- every file, link and settings key back to its prior state, `opencode.json` and the `--path` launcher included -- and writes a gzip snapshot of the database to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. The plugin's sessions record what they write into the workspace in the same manifest -- the permissions and attribution merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts the plugin's writes too, including the user entries the merge replaced, and keeps what you added since; a plugin workspace from before that record is recognized by Gaia's permissions and attribution.
+
+On the plugin, `gaia` is not on your terminal's `PATH` and is gone once the plugin is removed, so run the plugin's own copy first. `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this workspace (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` in a terminal in the workspace folder -- it needs only Python on `PATH`. Inside a Claude Code session in the workspace the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you. Then remove the plugin.
 
 **First turn.** Start the host in the workspace and ask:
 
@@ -117,7 +154,7 @@ claude          # or: opencode
 > what is Gaia, and what can you do for me?
 ```
 
-The orchestrator answers with the picture above and the table of what it can offer. Then `gaia scan` (run by the orchestrator on a plugin-only install, or from your terminal on the npm route) indexes the repositories under the workspace so every later dispatch carries the project's shape, and `gaia status` shows what is wired.
+The orchestrator answers with the picture above and the table of what it can offer. `gaia scan` re-indexes the workspace's repositories when they change, and `gaia status` shows what is wired.
 
 ## Structure
 

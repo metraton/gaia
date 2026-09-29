@@ -1860,11 +1860,13 @@ END;
 -- One row per applied schema migration; the highest version is the current
 -- live schema. `gaia doctor` reads MAX(version) and compares against the
 -- EXPECTED_SCHEMA_VERSION constant baked into the CLI for the running build.
--- Bootstrap inserts row (1, ..., 'initial schema') -- future schema bumps
--- must add their own INSERT OR IGNORE in bootstrap_database.sh.
+-- min_code_version is the oldest code version that may still write to the
+-- database: each seal carries the previous value and only a migration marked
+-- `-- gaia-compat: breaking` raises it (scripts/migrations/README.md).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_version (
-    version     INTEGER PRIMARY KEY,
-    applied_at  TEXT NOT NULL,
-    description TEXT
+    version          INTEGER PRIMARY KEY,
+    applied_at       TEXT NOT NULL,
+    description      TEXT,
+    min_code_version INTEGER
 );

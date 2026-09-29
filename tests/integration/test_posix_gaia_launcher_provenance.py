@@ -82,6 +82,7 @@ def _install_real_package_through_public_flow(tmp_path: Path) -> dict:
             sys.executable,
             str(declared_target),
             "install",
+            "--path",
             "--workspace",
             str(workspace),
             "--host",

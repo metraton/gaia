@@ -414,7 +414,10 @@ class CapabilityDegradation:
 
 @dataclass(frozen=True)
 class ToolResult:
-    """Post-tool-use result data extracted from a HookEvent."""
+    """Post-tool-use result data extracted from a HookEvent.
+
+    ``ran`` is False when the host refused the call before running it.
+    """
 
     tool_name: str
     command: str
@@ -422,6 +425,7 @@ class ToolResult:
     exit_code: int
     session_id: str
     call_id: Optional[str] = None
+    ran: bool = True
 
 
 @dataclass(frozen=True)

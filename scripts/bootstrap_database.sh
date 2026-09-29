@@ -28,7 +28,7 @@ SCHEMA_FILE="${SCHEMA_FILE:-$SCRIPT_DIR/../gaia/store/schema.sql}"
 
 # Workspace cuya identidad se va a registrar en projects. Default: directorio
 # raíz del repo (dos niveles arriba de scripts/). Configurable vía env.
-WORKSPACE="${WORKSPACE:-$SCRIPT_DIR/..}"
+WORKSPACE="${WORKSPACE:-}"
 
 # Verificar que sqlite3 está instalado. Sin esto, todo lo demás falla con
 # errores oscuros; preferimos un mensaje claro al inicio.
@@ -49,7 +49,7 @@ mkdir -p "$(dirname "$GAIA_DB")"
 # Banner inicial: deja claro contra qué DB estamos operando antes de tocar nada.
 echo "[bootstrap] Initializing Gaia DB at $GAIA_DB"
 echo "[bootstrap] Using schema:  $SCHEMA_FILE"
-echo "[bootstrap] Using workspace: $WORKSPACE"
+echo "[bootstrap] Using workspace: ${WORKSPACE:-(none registered)}"
 
 # === Section 1.5: Pre-schema ADD COLUMN reconciliation (existing DBs) ===
 #
@@ -447,7 +447,11 @@ fi
 #
 # Fallback: si no hay remote, usamos el basename del workspace en lowercase.
 # Si tampoco eso, usamos 'global'.
+#
+# Solo con WORKSPACE explícito: la carpeta del paquete nunca es un workspace;
+# `gaia install` registra la carpeta donde corre mediante su primer escaneo.
 
+if [ -n "$WORKSPACE" ]; then
 WORKSPACE_IDENTITY=""
 RAW_REMOTE=""
 
@@ -494,6 +498,7 @@ INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('${WORKSPACE_IDENTITY}
 EOF
 
 echo "[bootstrap] Workspace registered (identity=${WORKSPACE_IDENTITY})"
+fi
 
 # === Section 5: FTS5 backfill ===
 
@@ -594,16 +599,6 @@ else
     ALL_OK=0
 fi
 
-# Check 3: al menos 1 workspace registrado (el actual). El bootstrap seedea
-# `workspaces`, no `projects`; el scanner es quien crea filas en `projects`
-# cuando descubre repos git dentro del workspace.
-WORKSPACE_COUNT="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM workspaces;")"
-if [ "$WORKSPACE_COUNT" -ge 1 ]; then
-    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- PASS"
-else
-    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- FAIL"
-    ALL_OK=0
-fi
 
 # Check 4: los 12 FTS5 triggers existen.
 # 3 por mirror (insert/delete/update) × 3 mirrors antiguos +

@@ -1,9 +1,12 @@
 """First-time plugin setup for SessionStart hook.
 
 Detects first run via marker file in CLAUDE_PLUGIN_DATA.
-On first run, merges gaia permissions into .claude/settings.local.json.
-Also owns the single writer of Gaia hook entries in workspace settings
-(sync_workspace_hooks), used by the session setup and by install/update.
+On every session, merges gaia permissions and attribution into
+.claude/settings.local.json; what that (or a marker and registry landing in
+.claude/ when CLAUDE_PLUGIN_DATA is unset) writes into the workspace is
+recorded in the install manifest (recorded_in_manifest), so `gaia uninstall`
+reverts it. Also owns the single writer of Gaia hook entries in workspace
+settings (sync_workspace_hooks), used by the session setup and by install/update.
 """
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ import json
 import logging
 import os
 import re
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path, PurePath
 
@@ -243,6 +247,16 @@ PERMISSIONS = {
 }
 
 
+# Claude Code's `attribution` setting with every part hidden: an empty string
+# drops the commit trailer and the PR footer, sessionUrl=false the claude.ai
+# session link (code.claude.com/docs/en/settings-reference, "Git and
+# attribution"). Written by every channel -- the plugin's session setup here
+# and `gaia install` -- because nothing Gaia publishes may carry Claude
+# attribution. includeGitInstructions is left alone: turning it off also
+# removes the git status snapshot, which has nothing to do with attribution.
+HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
+
+
 def is_first_run() -> bool:
     """Check if this is the first time the plugin runs."""
     marker = get_plugin_data_dir() / MARKER_FILE
@@ -251,12 +265,48 @@ def is_first_run() -> bool:
 
 def mark_initialized() -> None:
     """Mark the plugin as initialized."""
+    with recorded_in_manifest():
+        _write_marker()
+
+
+def _write_marker() -> None:
     marker = get_plugin_data_dir() / MARKER_FILE
     marker.write_text(json.dumps({
         "initialized_at": datetime.now().isoformat(),
         "mode": "gaia",
     }))
     logger.info("Plugin marked as initialized: %s", marker)
+
+
+@contextmanager
+def recorded_in_manifest():
+    """Record in the workspace's install manifest whatever the block writes into the workspace.
+
+    Recording never fails the session: a manifest that cannot be read or
+    written leaves the write in place and unrecorded, as before manifests.
+    """
+    tracked = manifest = version = None
+    try:
+        from gaia.install_root import installed_root
+        from modules.session.plugin_upgrade import _cli_module, package_version
+
+        workspace = installed_root()
+        manifest = _cli_module("_manifest")
+        version = package_version() or "unknown"
+        claude_dir = (workspace / ".claude").resolve()
+        data_dir = get_plugin_data_dir().resolve()
+        whole = data_dir == claude_dir or claude_dir in data_dir.parents
+        tracked = manifest.track(workspace, whole_claude_dir=whole)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Install manifest not tracked: %s", exc)
+    try:
+        yield
+    finally:
+        if tracked is not None:
+            try:
+                manifest.record_tracked(tracked, channel="plugin", version=version)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Install manifest not recorded: %s", exc)
 
 
 def _tool_name(entry: str) -> str:
@@ -296,9 +346,15 @@ def setup_project_permissions() -> bool:
     /reload-plugins picks up changes mid-session without restart.
     Preserves enabledPlugins and any existing user configuration.
 
-    Returns True if settings were modified (reload needed).
+    Returns True if settings were modified (reload needed); False, writing
+    nothing, when the cwd is inside a managed worktree.
     """
-    claude_dir = Path.cwd() / ".claude"
+    from gaia.install_root import InsideManagedWorktree, installed_root
+
+    try:
+        claude_dir = installed_root() / ".claude"
+    except InsideManagedWorktree:
+        return False
     settings_path = claude_dir / "settings.local.json"
 
     our_perms = PERMISSIONS
@@ -323,11 +379,16 @@ def setup_project_permissions() -> bool:
     merged_allow = _authoritative_merge(current_allow, our_allow)
     merged_deny = _authoritative_merge(current_deny, our_deny)
 
-    if current_allow == set(merged_allow) and current_deny == set(merged_deny):
+    attribution = existing.get("attribution")
+    attribution = dict(attribution) if isinstance(attribution, dict) else {}
+    attribution_current = all(attribution.get(k) == v for k, v in HIDDEN_ATTRIBUTION.items())
+
+    if current_allow == set(merged_allow) and current_deny == set(merged_deny) and attribution_current:
         logger.info("Project permissions already include gaia rules, skipping")
         return False
 
-    # Update only permissions, preserve everything else (enabledPlugins, etc.)
+    # Update only permissions and attribution, preserve everything else (enabledPlugins, etc.)
+    existing["attribution"] = {**attribution, **HIDDEN_ATTRIBUTION}
     existing.setdefault("permissions", {})
     existing["permissions"]["allow"] = merged_allow
     existing["permissions"]["deny"] = merged_deny
@@ -662,15 +723,21 @@ def _installed_under_node_modules() -> bool:
 
 
 def _sync_workspace_hooks() -> bool:
-    """Bring the cwd workspace's hook registration in line with this launch.
+    """Bring the installed workspace's hook registration in line with this launch.
 
     Any launch that is neither plugin nor npm writes nothing. That includes
     the workspace-registered copy an earlier plugin version left behind,
     which runs out of the plugin cache through the ``.claude/hooks`` link
     without ``CLAUDE_PLUGIN_ROOT``: merging from there would undo the
-    plugin's cleanup on every event. Returns True if settings changed.
+    plugin's cleanup on every event. So does a cwd inside a managed
+    worktree, which has no installed workspace. Returns True if settings changed.
     """
-    workspace = Path.cwd()
+    from gaia.install_root import InsideManagedWorktree, installed_root
+
+    try:
+        workspace = installed_root()
+    except InsideManagedWorktree:
+        return False
     channel = resolve_hook_channel(workspace, npm_copy=_installed_under_node_modules())
     if channel is None:
         return False
@@ -690,18 +757,19 @@ def run_first_time_setup(mark_done: bool = True) -> str | None:
                    (e.g., UserPromptSubmit marks after showing the welcome).
     """
     # Always ensure registry, permissions, and hooks exist (even on subsequent runs)
-    ensure_plugin_registry()
-    reload_needed = setup_project_permissions()
-    hooks_changed = _sync_workspace_hooks()
-    reload_needed = reload_needed or hooks_changed
+    with recorded_in_manifest():
+        ensure_plugin_registry()
+        reload_needed = setup_project_permissions()
+        hooks_changed = _sync_workspace_hooks()
+        reload_needed = reload_needed or hooks_changed
+        first_run = is_first_run()
+        if first_run and mark_done:
+            _write_marker()
 
-    if not is_first_run():
+    if not first_run:
         if reload_needed:
             return "Permissions updated. Run /reload-plugins to activate."
         return None
-
-    if mark_done:
-        mark_initialized()
 
     if reload_needed:
         return "GAIA setup complete. Run /reload-plugins to activate permissions."

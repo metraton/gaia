@@ -13,8 +13,8 @@ Parity coverage (cmd_install vs gaia-update.js fresh-install path):
   - manage_symlinks               -- exercised + verified call order
   - register_plugin               -- exercised + verified call order
 
-Scanning is decoupled from install: cmd_install never triggers a scan (the
-former Step 7 / _maybe_run_fresh_scan path is removed).
+The first scan install runs (gaia.install_root.first_scan) is covered by
+tests/cli/test_install_first_scan.py.
 """
 
 import argparse
@@ -1069,7 +1069,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
         self.assertIn("Access is denied", res["details"])
 
     def test_cmd_install_invokes_persist_on_windows(self):
-        """cmd_install (Windows branch, without --no-path) calls
+        """cmd_install (Windows branch, with the --path opt-in) calls
         _persist_workspace_env with the resolved workspace."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
@@ -1078,7 +1078,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
 
             ns = argparse.Namespace(
                 postinstall=False, quiet=True, verbose=False, db_path=None,
-                workspace=str(workspace), skip_workspace=False, no_path=False,
+                workspace=str(workspace), skip_workspace=False, path=True,
             )
 
             noop = {"action": "noop", "path": "x", "details": ""}
@@ -1446,7 +1446,7 @@ class TestLauncherShellBehavior(unittest.TestCase):
 
 
 class TestCmdInstallPathLauncher(unittest.TestCase):
-    """Verify cmd_install installs the launcher unless --no-path is set."""
+    """Verify cmd_install installs the launcher only when --path opts in."""
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
         ns = argparse.Namespace()
@@ -1456,7 +1456,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
         ns.db_path = overrides.get("db_path", None)
         ns.workspace = str(workspace) if workspace else None
         ns.skip_workspace = overrides.get("skip_workspace", False)
-        ns.no_path = overrides.get("no_path", False)
+        ns.path = overrides.get("path", True)
         return ns
 
     def _patch_helpers_noop(self):
@@ -1474,7 +1474,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
                   return_value=noop),
         ]
 
-    def test_default_installs_launcher(self):
+    def test_path_opt_in_installs_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -1508,7 +1508,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             self.assertTrue(link.is_symlink())
             self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
-    def test_no_path_flag_skips_launcher(self):
+    def test_without_path_opt_in_skips_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -1522,7 +1522,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             started = [p.start() for p in patches]
             try:
                 with redirect_stdout(io.StringIO()):
-                    rc = cmd_install(self._make_args(workspace, no_path=True))
+                    rc = cmd_install(self._make_args(workspace, path=False))
             finally:
                 for p in patches:
                     p.stop()

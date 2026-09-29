@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v42 -> v43: dispatch correlation + kernel payload on
 -- agent_contract_handoffs.
 --

@@ -258,6 +258,7 @@ Public API:
     ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]]
     ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]]
     ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]]
+    ALLOWED_BARE_READ_FLAGS: FrozenSet[str]
     EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]]
     is_orchestrator_role(hook_payload) -> bool
     is_trusted_gaia_binary(token) -> bool
@@ -606,6 +607,13 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
 
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
 
+# Top-level flags admitted only as the SOLE argument. `--version` is a read the
+# phrase tables cannot express: _check_stage strips leading flags, leaving no
+# phrase to match. Alone, bin/gaia prints the version and returns before any
+# dispatch; beside a subcommand it would still parse that subcommand's
+# arguments, so it is not admitted there.
+ALLOWED_BARE_READ_FLAGS: FrozenSet[str] = frozenset({"--version"})
+
 # Named on purpose, even though default-deny already rejects anything not in
 # ALLOWED_PHRASES: these are the verbs someone is most likely to add to the
 # allowlist later without re-reading this file's reasoning -- a plausible
@@ -942,6 +950,9 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
     if _is_help_or_bare_stage(rest):
         return True, None
 
+    if len(rest) == 1 and rest[0] in ALLOWED_BARE_READ_FLAGS:
+        return True, None
+
     i = 0
     while i < len(rest) and rest[i].startswith("-"):
         i += 1
@@ -1151,13 +1162,13 @@ def _validate_orchestrator_write(
     )
 
     if phrase == ("brief", "new"):
-        valid = "--headless" in args and any(a.startswith("--title=") for a in args)
+        valid = "--headless" in args and _has_value(args, "--title")
     elif phrase == ("brief", "edit"):
         valid = bool(args) and not args[0].startswith("-") and "--headless" in args
     elif phrase == ("brief", "set-status"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _BRIEF_STATUSES
     elif phrase[:2] == ("brief", "ac"):
-        valid = bool(args) and not args[0].startswith("-") and any(a.startswith("--id=") for a in args[1:])
+        valid = bool(args) and not args[0].startswith("-") and _has_value(args[1:], "--id")
     elif phrase == ("brief", "decision", "add"):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args, "--text")
     elif phrase == ("plan", "set-status"):

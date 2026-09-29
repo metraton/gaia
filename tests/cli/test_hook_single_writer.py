@@ -149,7 +149,8 @@ def test_d_workspace_path_with_backslashes_and_spaces(tmp_path, monkeypatch):
     assert plugin_setup._sync_workspace_hooks() is True
 
     commands = [c for _, _, c in _gaia_triples(ws, _settings(ws))]
-    assert f"python3 {_hooks_abs(ws)}/pre_tool_use.py" in commands
+    hooks_abs = _hooks_abs(ws)
+    assert f'sh "{hooks_abs}/launch.sh" "{hooks_abs}/pre_tool_use.py"' in commands
     assert "${CLAUDE_PLUGIN_ROOT}" not in json.dumps(_settings(ws))
     windows_dir = PureWindowsPath(r"C:\Users\Jo Doe\ws\.claude\hooks")
     rendered = plugin_setup.render_gaia_hooks({"PreToolUse": [_entry("Bash", GAIA_PRE)]}, windows_dir)

@@ -41,6 +41,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
+from tests.conftest import copy_bootstrapped_db
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
@@ -321,6 +325,11 @@ class TestUpgradeExistingDbToV28(unittest.TestCase):
 
 
 class TestV30ToV31DropDuplicateIndexes(unittest.TestCase):
+    @pytest.fixture(autouse=True)
+    def _fresh_install(self, bootstrapped_db_template):
+        """The session's real bootstrap output, standing in for a first run."""
+        self.fresh_install = bootstrapped_db_template
+
     """v30 -> v31 drops the three byte-identical duplicate indexes that
     migrate_06 created on the old `project` column and migrate_08 left behind
     after renaming that column to `workspace`.
@@ -415,8 +424,7 @@ class TestV30ToV31DropDuplicateIndexes(unittest.TestCase):
         carry only the *_workspace* variants, never the *_project* duplicates."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            res = _run_bootstrap(workspace)
-            self.assertEqual(res.returncode, 0, res.stderr)
+            copy_bootstrapped_db(self.fresh_install, workspace / "tmp_gaia.db")
             con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
             try:
                 names = self._index_names(con)
@@ -434,6 +442,11 @@ class TestV30ToV31DropDuplicateIndexes(unittest.TestCase):
 
 class TestBootstrapFloorModel(unittest.TestCase):
     """End-to-end coverage of Section 3b/3c under the floor model."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_install(self, bootstrapped_db_template):
+        """The session's real bootstrap output, standing in for a first run."""
+        self.fresh_install = bootstrapped_db_template
 
     def setUp(self):
         if not _BOOTSTRAP_SH.is_file():
@@ -524,8 +537,7 @@ class TestBootstrapFloorModel(unittest.TestCase):
         and adds no duplicate schema_version rows."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            res1 = _run_bootstrap(workspace)
-            self.assertEqual(res1.returncode, 0, res1.stderr)
+            copy_bootstrapped_db(self.fresh_install, workspace / "tmp_gaia.db")
             res2 = _run_bootstrap(workspace)
             self.assertEqual(res2.returncode, 0, res2.stderr)
 

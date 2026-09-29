@@ -1,37 +1,19 @@
 """
-gaia update -- Refresh DB schema, .claude/ config, and symlinks after a
-package upgrade.
+gaia update -- an alias of `gaia install`.
 
-Idempotent end-to-end. Where `gaia install` is "first-time setup",
-`gaia update` is "re-sync after npm install bumped the version" -- they
-share helpers but differ in orchestration and phrasing.
+`gaia install` is the only reconciler: it migrates the DB, runs the permission
+and routing seeds, wires the workspace, records the manifest, and exits
+non-zero when a step fails. `gaia update` takes the same flags and runs
+exactly that (`cli.install.cmd_install`), so the two can never drift.
 
-Order of operations:
-  1. `gaia migrate apply` (no-op if schema already current).
-  2. settings.json (create if missing).
-  3. settings.local.json -- merge permissions/env/agent.
-  4. settings.local.json -- register hooks through the single writer
-     (npm mode writes hooks.json's triples; plugin mode writes none).
-  5. settings.local.json -- force worktree.bgIsolation to "none".
-  6. Symlinks under .claude/ (recreate only if broken or stale).
-  7. plugin-registry.json (record current version).
-
-Verification (the `--verify` flag) reuses the existing checks so we don't
-duplicate doctor's logic. For the legacy 6-check report, see the
-`_run_verification` helper preserved here for backward compatibility with
-existing tests.
-
-Flags:
-  --dry-run   Detect what would change without mutating files.
-  --verbose   Show all check results (including passing ones).
-  --json      Machine-readable output.
-  --skip-bootstrap  Don't invoke the DB bootstrapper (helpful when DB is on a
-                    read-only mount or already known good).
-  --workspace PATH  Override workspace detection.
+The one thing update adds is `--dry-run` (with `--json`): a read-only preview
+of what the workspace helpers would change and the legacy health report
+(`_run_verification`). It never touches the DB or the filesystem.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -45,6 +27,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from cli import _install_helpers  # type: ignore  # noqa: E402
+from cli import install  # type: ignore  # noqa: E402
 from cli import migrate  # type: ignore  # noqa: E402
 
 _BOOTSTRAP_SCRIPT = migrate.ENGINE
@@ -321,72 +304,51 @@ def register(subparsers):
     """Register the 'update' subcommand."""
     p = subparsers.add_parser(
         "update",
-        help="Sync Gaia after a package upgrade (settings, hooks, symlinks, registry)",
+        help="Alias of `gaia install` (migrate, seed, wire, record the manifest)",
         description=(
-            "Sync Gaia after a package upgrade. Idempotent: every step is a\n"
-            "no-op when state is already current.\n"
+            "Alias of `gaia install`: same flags, same steps, same exit code --\n"
+            "non-zero when the DB migration or a required step fails. The\n"
+            "workspace defaults to the nearest directory holding .claude/.\n"
             "\n"
-            "  - Database: runs `gaia migrate apply` (backup, one transaction;\n"
-            "    a chain reaching existing rows stops and names the\n"
-            "    `gaia migrate apply --consent-chain vA..vB` that continues)\n"
-            "  - settings.json (create if missing)\n"
-            "  - settings.local.json (merge permissions, env, agent, hooks)\n"
-            "  - .claude/<name> symlinks (recreate broken/stale)\n"
-            "  - plugin-registry.json (record current version)\n"
-            "\n"
-            "--dry-run: print what would change without modifying files.\n"
+            "--dry-run [--json]: preview what the workspace helpers would change\n"
+            "and the health report, without touching the DB or any file.\n"
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    install.add_install_arguments(p)
     p.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
         default=False,
-        help="Detect what would change without mutating files",
-    )
-    p.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        default=False,
-        help="Show all check results (including passing ones)",
+        help="Preview what would change; runs nothing",
     )
     p.add_argument(
         "--json",
         action="store_true",
         default=False,
-        help="Output results as JSON",
-    )
-    p.add_argument(
-        "--skip-bootstrap",
-        dest="skip_bootstrap",
-        action="store_true",
-        default=False,
-        help="Skip bootstrap.sh invocation (advanced; helpful for ro mounts)",
-    )
-    p.add_argument(
-        "--workspace",
-        dest="workspace",
-        type=str,
-        default=None,
-        help="Override workspace detection (default: walk up from cwd)",
+        help="With --dry-run: output the preview as JSON",
     )
     return p
 
 
 def cmd_update(args) -> int:
-    """Execute the update subcommand."""
-    workspace_arg = getattr(args, "workspace", None)
-    if workspace_arg:
-        root = Path(workspace_arg).expanduser().resolve()
-    else:
-        root = _find_project_root()
+    """Run `gaia install` for the workspace, or the read-only preview with --dry-run."""
+    if not getattr(args, "workspace", None):
+        args.workspace = str(_find_project_root())
+    if getattr(args, "dry_run", False):
+        return _preview(args)
+    return install.cmd_install(args)
+
+
+def _preview(args) -> int:
+    """Report what the workspace helpers would change and the health checks; mutates nothing."""
+    root = Path(args.workspace).expanduser().resolve()
     pkg_root = _find_package_root()
     claude_dir = root / ".claude"
-    dry_run = getattr(args, "dry_run", False)
+    dry_run = True
     verbose = getattr(args, "verbose", False)
     as_json = getattr(args, "json", False)
-    skip_bootstrap = getattr(args, "skip_bootstrap", False)
 
     versions = _detect_versions(root, pkg_root)
 
@@ -400,11 +362,7 @@ def cmd_update(args) -> int:
         if dry_run:
             print("  (dry-run mode -- no files will be modified)\n")
 
-    # Step 1 -- bootstrap DB
-    if skip_bootstrap or dry_run:
-        bootstrap_result = {"action": "skipped", "details": "skipped (flag or dry-run)"}
-    else:
-        bootstrap_result = _run_bootstrap_idempotent(verbose=verbose)
+    bootstrap_result = {"action": "skipped", "details": "skipped (dry-run)"}
 
     # Steps 2-7 -- workspace helpers (each idempotent + dry-run aware).
     # Order matches `gaia install` so install/update share the same sequence.

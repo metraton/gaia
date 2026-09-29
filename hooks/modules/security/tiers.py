@@ -202,11 +202,17 @@ def classify_command_tier(
 
     # Check for blocked operations first (T3)
     # This must be done before caching since blocked_patterns come from module state
-    has_blocked = _matches_any(command, blocked_patterns)
+    # A raw pattern hit counts only when the floor itself agrees: the floor's
+    # carriers (a search pattern, a Gaia CLI value) quote a dangerous form
+    # without running it, and a tier the validator does not enforce is the
+    # layer disagreement this module exists to avoid.
+    has_blocked = (
+        _matches_any(command, blocked_patterns)
+        and is_blocked_command(command).is_blocked
+    )
 
-    # The patterns are run here directly rather than through
-    # ``is_blocked_command``, so the wrapper-normalization that function applies
-    # does not reach them: every deny regex is ``^``-anchored on the base
+    # The raw scan above needs both sides to match, and the raw side sees no
+    # wrapper-normalization: every deny regex is ``^``-anchored on the base
     # command, and a grouping character glued to the front moves that command
     # off position 0. ``(mkfs.ext4 /dev/sda1)`` classified T0 here while the
     # permanent floor blocked it -- the forms with no mutative-verb backup

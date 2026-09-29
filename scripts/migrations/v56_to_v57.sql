@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v56 -> v57: a plan that can be paused, versioned, and changed
 -- under management.
 --

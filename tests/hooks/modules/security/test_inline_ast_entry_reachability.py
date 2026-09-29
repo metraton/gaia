@@ -172,7 +172,7 @@ class TestTheReachabilityCheckHasTeeth:
 # ---------------------------------------------------------------------------
 # Every dotted entry, through the form a human types
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "dotted,label,category",
     _DANGEROUS_CALLS,
     ids=[entry[0] for entry in _DANGEROUS_CALLS],
@@ -196,8 +196,8 @@ def test_catalog_entry_fires_via_idiomatic_form(dotted, label, category):
 # ---------------------------------------------------------------------------
 # The cloud SDK lane, across both dimensions of its rule
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("prefix", sorted(_CLOUD_CHAINS))
-@pytest.mark.parametrize("verb", sorted(_CLOUD_SDK_MUTATIVE_VERBS))
+@pytest.mark.table("prefix", sorted(_CLOUD_CHAINS))
+@pytest.mark.table("verb", sorted(_CLOUD_SDK_MUTATIVE_VERBS))
 def test_cloud_verb_fires_for_every_prefix_snake_case(verb, prefix):
     source = _CLOUD_CHAINS[prefix].format(method=f"{verb}_resource")
     result = analyze_python_inline(source)
@@ -209,8 +209,8 @@ def test_cloud_verb_fires_for_every_prefix_snake_case(verb, prefix):
     assert result.category == "CLOUD_SDK"
 
 
-@pytest.mark.parametrize("prefix", sorted(_CLOUD_CHAINS))
-@pytest.mark.parametrize("verb", sorted(_CLOUD_SDK_MUTATIVE_VERBS))
+@pytest.mark.table("prefix", sorted(_CLOUD_CHAINS))
+@pytest.mark.table("verb", sorted(_CLOUD_SDK_MUTATIVE_VERBS))
 def test_cloud_verb_fires_for_every_prefix_camel_case(verb, prefix):
     camel = f"{verb}{'Resource'}"
     source = _CLOUD_CHAINS[prefix].format(method=camel)

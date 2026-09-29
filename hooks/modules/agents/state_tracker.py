@@ -3,7 +3,7 @@ State transition tracking for agent contracts.
 
 Tracks agent state across responses and validates that transitions
 follow the state machine defined in agent-protocol. Uses a JSON file
-in /tmp/ keyed by agent_id.
+in Gaia's tmp dir (``gaia.paths.tmp_dir()``) keyed by agent_id.
 
 Legal transitions (from agent-protocol):
     IN_PROGRESS -> COMPLETE                (T0/T1/T2 only)
@@ -29,6 +29,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from gaia.paths import tmp_dir
+
 # Canonical valid statuses imported from the SSOT (gaia.state). The
 # transition table below references these by literal name; the import is
 # defensive (legacy hook environments without gaia on sys.path keep
@@ -43,7 +45,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_STATE_FILE = Path("/tmp/gaia-agent-states.json")
+_STATE_FILE = tmp_dir() / "gaia-agent-states.json"
 
 # Maximum consecutive IN_PROGRESS transitions (retry cap)
 _MAX_IN_PROGRESS_RETRIES = 2
@@ -110,6 +112,7 @@ def _read_state_file() -> Dict[str, Any]:
 def _write_state_file(data: Dict[str, Any]) -> bool:
     """Write the state tracking file. Returns True on success."""
     try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _STATE_FILE.write_text(json.dumps(data, indent=2))
         return True
     except OSError as e:

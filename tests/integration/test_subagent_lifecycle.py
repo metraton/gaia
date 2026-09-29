@@ -292,7 +292,8 @@ class TestPhase1SkillsInjection:
             # Whatever bridge entries exist for this session, none preloads
             # project context.
             import json
-            cache_dir = Path("/tmp/gaia-context-cache")
+            from adapters.claude_code import ClaudeCodeAdapter
+            cache_dir = ClaudeCodeAdapter.CONTEXT_CACHE_DIR
             for f in cache_dir.glob(f"{session_marker}-*.json"):
                 cached = json.loads(f.read_text())
                 assert "# Project Context" not in cached.get("context", ""), \

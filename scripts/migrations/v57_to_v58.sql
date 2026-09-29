@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v57 -> v58: token usage per API message, and the change history of
 -- a brief.
 --

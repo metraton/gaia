@@ -47,6 +47,7 @@ def _request(n: int, question: str, branch: str | None = None) -> str:
         question=question,
         session_id=f"ses-d31-requester-{n}", agent_id="developer",
         requested_from="/tmp/d31-repo", rollback="Borrar la rama remota.",
+        verification="git ls-remote", shared_state="Sí: la rama remota.",
     )
 
 

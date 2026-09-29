@@ -43,12 +43,16 @@ def _isolate_home_globals(tmp_path, monkeypatch):
     their own monkeypatching.
     """
     fake_marker = tmp_path / "isolated-last-install-error.json"
-    fake_db = tmp_path / "isolated-gaia.db"
     monkeypatch.setattr(doctor_mod, "_INSTALL_ERROR_MARKER", fake_marker)
-    monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", fake_db)
-    # GAIA_DB env var is the higher-priority override read by
-    # check_schema_version -- clear it so tests start from a clean slate.
-    monkeypatch.delenv("GAIA_DB", raising=False)
+    # The DB checks resolve gaia.db through GAIA_DB, which outranks the
+    # per-test GAIA_DATA_DIR; tests that need a populated DB re-point it.
+    isolated_data = tmp_path / "isolated-data"
+    monkeypatch.setenv("GAIA_DATA_DIR", str(isolated_data))
+    monkeypatch.setenv("GAIA_DB", str(isolated_data / "gaia.db"))
+    # Channel detection reads the user's Claude Code settings and the plugin
+    # root the host exports; neither may leak in from the machine.
+    monkeypatch.setattr(doctor_mod, "_USER_SETTINGS_PATH", tmp_path / "isolated-user-settings.json")
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
 
     # check_hooks_active_fresh (order 150) reads the user-scoped session
     # registry and the host session-id env vars. On a developer machine both
@@ -109,15 +113,15 @@ def healthy_project(tmp_path):
     agents_dir = claude_dir / "agents"
     (agents_dir / "gaia-orchestrator.md").write_text("---\nname: gaia-orchestrator\nagent: gaia-orchestrator\n---")
 
-    # settings.local.json -- hooks carry the full canonical event set, matching
-    # what merge_local_hooks copies from hooks.json in npm mode.
+    # settings.local.json -- hooks are the shipped hooks.json rendered through
+    # the workspace's .claude/hooks, what the npm-channel writer registers.
+    shipped = json.loads((REPO_ROOT / "hooks" / "hooks.json").read_text())["hooks"]
+    rendered = json.loads(json.dumps(shipped).replace(
+        "${CLAUDE_PLUGIN_ROOT}/hooks/", f"{(claude_dir / 'hooks').as_posix()}/"
+    ))
     (claude_dir / "settings.local.json").write_text(json.dumps({
         "agent": "gaia-orchestrator",
-        "hooks": {ev: [{"command": "python"}] for ev in [
-            "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
-            "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
-            "SubagentStart", "PostCompact", "PreCompact",
-        ]},
+        "hooks": rendered,
         "permissions": {
             "allow": ["Bash(*)"],
             "deny": ["rm -rf /"],
@@ -132,7 +136,8 @@ def healthy_project(tmp_path):
     for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
               "session_start.py", "session_end_hook.py", "subagent_stop.py",
               "subagent_start.py", "stop_hook.py", "task_completed.py",
-              "pre_compact.py", "post_compact.py"]:
+              "pre_compact.py", "post_compact.py", "launch.sh",
+              *(p.name for p in (REPO_ROOT / "hooks").glob("*.py"))]:
         (hooks_dir / h).write_text("# hook stub")
 
     # project-context.json
@@ -462,7 +467,7 @@ class TestCheckAgentResolution:
             "gaia_system": "gaia-system",
             "app_ci_tooling": "developer",
         })
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db_path)
+        monkeypatch.setenv("GAIA_DB", str(db_path))
         r = doctor_mod.check_agent_resolution(healthy_project)
         assert r["severity"] == "pass"
 
@@ -471,7 +476,7 @@ class TestCheckAgentResolution:
         db_path = self._write_routing_db(tmp_path, {
             "iac": "platform-architect",  # no .md created
         })
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db_path)
+        monkeypatch.setenv("GAIA_DB", str(db_path))
         # reconnaissance_agent ("developer") isn't seeded as a .md either in
         # this fixture, but the assertion only needs to see the named agent.
         (healthy_project / ".claude" / "agents" / "developer.md").write_text("---\n---")
@@ -482,9 +487,8 @@ class TestCheckAgentResolution:
     def test_no_routing_table_is_info(self, healthy_project):
         """No gaia.db (table not yet seeded) is advisory, not an error.
 
-        _isolate_home_globals already redirects _DEFAULT_DB_PATH to a
-        nonexistent tmp path, so this exercises the not-seeded path with no
-        further setup.
+        _isolate_home_globals points GAIA_DB at a nonexistent tmp path, so
+        this exercises the not-seeded path with no further setup.
         """
         r = doctor_mod.check_agent_resolution(healthy_project)
         assert r["severity"] == "info"
@@ -493,7 +497,7 @@ class TestCheckAgentResolution:
     def test_empty_routing_table_is_info(self, healthy_project, tmp_path, monkeypatch):
         """A gaia.db that exists but has no surface_routing rows is also advisory."""
         db_path = self._write_routing_db(tmp_path, {})
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db_path)
+        monkeypatch.setenv("GAIA_DB", str(db_path))
         r = doctor_mod.check_agent_resolution(healthy_project)
         assert r["severity"] == "info"
         assert r["ok"] is True
@@ -570,8 +574,7 @@ class TestCheckProjectContext:
 
     def test_invalid_json(self, healthy_project):
         """Should report info when no contracts in DB (legacy json is no longer read)."""
-        # With no GAIA_DATA_DIR override, _DEFAULT_DB_PATH (isolated to
-        # empty tmp) has no contracts -> info (advisory) path.
+        # The per-test GAIA_DATA_DIR holds no contracts -> info (advisory) path.
         r = doctor_mod.check_project_context(healthy_project)
         assert r["severity"] == "info"
 
@@ -891,7 +894,7 @@ class TestCheckSchemaVersion:
     def test_no_db_info(self, monkeypatch, tmp_path):
         """Fresh machine, no gaia.db yet -> info (will be created on install)."""
         fake = tmp_path / "no-such-gaia.db"
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", fake)
+        monkeypatch.setenv("GAIA_DB", str(fake))
         r = doctor_mod.check_schema_version()
         assert r["severity"] == "info"
         assert "no DB" in r["detail"]
@@ -902,7 +905,7 @@ class TestCheckSchemaVersion:
         self._make_db(db, schema_version_rows=[
             (doctor_mod.EXPECTED_SCHEMA_VERSION, "2026-05-20T00:00:00Z", "initial"),
         ])
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        monkeypatch.setenv("GAIA_DB", str(db))
         r = doctor_mod.check_schema_version()
         assert r["severity"] == "pass"
         assert f"v{doctor_mod.EXPECTED_SCHEMA_VERSION}" in r["detail"]
@@ -914,7 +917,7 @@ class TestCheckSchemaVersion:
         db = tmp_path / "gaia.db"
         # Empty schema_version table -> MAX(version) = NULL -> treated as 0
         self._make_db(db, schema_version_rows=[])
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        monkeypatch.setenv("GAIA_DB", str(db))
         monkeypatch.setattr(doctor_mod, "EXPECTED_SCHEMA_VERSION", 5)
         r = doctor_mod.check_schema_version()
         assert r["severity"] == "warning"
@@ -922,45 +925,44 @@ class TestCheckSchemaVersion:
         assert "expects 5" in r["detail"]
         assert "gaia migrate apply" in r["fix"]
 
-    def test_db_higher_than_expected_warns(self, monkeypatch, tmp_path):
-        """Code BEHIND the DB (reverse direction): warn, name the direction and
-        the write refusal, and tell the user to install NEWER code, never to
-        downgrade the DB. Mirrors the store's write gate."""
+    def test_db_higher_without_recorded_minimum_errors(self, monkeypatch, tmp_path):
+        """Code BEHIND a DB that records no min_code_version: the store refuses
+        every write there, so doctor reports an error naming the refusal and
+        tells the user to install NEWER code, never to downgrade the DB."""
         db = tmp_path / "gaia.db"
         self._make_db(db, schema_version_rows=[
             (99, "2026-05-20T00:00:00Z", "future"),
         ])
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        monkeypatch.setenv("GAIA_DB", str(db))
         r = doctor_mod.check_schema_version()
-        assert r["severity"] == "warning"
-        assert "99" in r["detail"]
-        assert "BEHIND DB" in r["detail"]
-        assert "refuses every write" in r["detail"]
-        # Remedy is newer code via the install actors; never a DB downgrade.
-        assert "gaia dev" in r["fix"]
-        assert "Do NOT downgrade the DB" in r["fix"]
+        assert r["severity"] == "error"
+        assert "schema v99" in r["detail"]
+        assert "records no minimum code version" in r["detail"]
+        assert "reads keep working" in r["detail"]
+        assert "`gaia update`" in r["fix"]
+        assert "never downgrade the database" in r["fix"]
 
     def test_legacy_db_without_table_warns(self, monkeypatch, tmp_path):
         """A DB that predates the schema_version table -> warn, suggest
         re-running install to apply migrations."""
         db = tmp_path / "gaia.db"
         self._make_db(db, schema_version_rows="no_table")
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db)
+        monkeypatch.setenv("GAIA_DB", str(db))
         r = doctor_mod.check_schema_version()
         assert r["severity"] == "warning"
         assert "schema_version table missing" in r["detail"]
         assert "gaia install" in r["fix"]
 
     def test_gaia_db_env_var_takes_precedence(self, monkeypatch, tmp_path):
-        """GAIA_DB env var should override _DEFAULT_DB_PATH so users with
-        custom DB locations are not misdiagnosed."""
+        """GAIA_DB outranks GAIA_DATA_DIR, as in the store's resolver, so users
+        with custom DB locations are not misdiagnosed."""
         db_custom = tmp_path / "custom-gaia.db"
         self._make_db(db_custom, schema_version_rows=[
             (doctor_mod.EXPECTED_SCHEMA_VERSION, "2026-05-20T00:00:00Z", "initial"),
         ])
-        # Point _DEFAULT_DB_PATH at a non-existent file to prove the env
-        # var is what is read.
-        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", tmp_path / "nope.db")
+        # GAIA_DATA_DIR names a directory with no database, so a pass proves
+        # GAIA_DB is what is read.
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "no-db-here"))
         monkeypatch.setenv("GAIA_DB", str(db_custom))
         r = doctor_mod.check_schema_version()
         assert r["severity"] == "pass"
@@ -1069,8 +1071,10 @@ class TestCmdDoctorJson:
         #   ledger for the CURRENT host run; pass only with a recorded
         #   attestation, explicit absence -- never a false ok -- without one) +
         # 1 workspace-roots (order 49 -- active workspaces without the recorded
-        #   root that `gaia worktree create` requires).
-        assert len(data["checks"]) == 33
+        #   root that `gaia worktree create` requires) +
+        # 3 channel checks (install-channel 36, hook-registrations 72,
+        #   hook-commands 74 -- hooks counted across plugin and every settings file).
+        assert len(data["checks"]) == 36
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1298,8 +1302,9 @@ class TestDeriveWorkspace:
         assert result == consumer.resolve()
 
     def test_global_install_exits_with_error(self, tmp_path, monkeypatch, capsys):
-        """Script NOT inside any node_modules/@jaguilar87/gaia/ tree should
-        exit with the explicit error message -- no silent cwd fallback."""
+        """Script NOT inside any node_modules/@jaguilar87/gaia/ tree, run from a
+        folder no recorded workspace root contains, exits with the explicit
+        error message -- no silent cwd fallback."""
         # A path that has no node_modules/@jaguilar87/gaia/ ancestor
         script_path = tmp_path / "usr" / "local" / "lib" / "gaia" / "bin" / "cli" / "doctor.py"
         script_path.parent.mkdir(parents=True)
@@ -1311,7 +1316,7 @@ class TestDeriveWorkspace:
             doctor_mod._derive_workspace()
         assert exc.value.code == 2
         err = capsys.readouterr().err
-        assert "global or symlinked install detected" in err
+        assert "no workspace root recorded in gaia.db" in err
         assert "--workspace" in err
 
     def test_unresolvable_workspace_message_is_legible_and_actionable(

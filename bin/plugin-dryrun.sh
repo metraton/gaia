@@ -154,16 +154,21 @@ else
   fail=1
 fi
 
-# Deterministic CC validator (offline, no session) if the CLI is available.
+# Deterministic CC validator (offline, no session) if the CLI is available:
+# once on the packed plugin, once on the repo root as the gaia-marketplace
+# users add, whose gaia entry (source ".") is that same root. Not --strict:
+# plugin.json's generated engines/categories fields draw unknown-field warnings.
 if command -v claude >/dev/null 2>&1; then
   echo
   echo "=== claude plugin validate ==="
-  if claude plugin validate "${ROOT}"; then
-    echo "  [PASS] claude plugin validate"
-  else
-    echo "  [FAIL] claude plugin validate"
-    fail=1
-  fi
+  for target in "${ROOT}" "${REPO_ROOT}"; do
+    if claude plugin validate "${target}"; then
+      echo "  [PASS] claude plugin validate ${target}"
+    else
+      echo "  [FAIL] claude plugin validate ${target}"
+      fail=1
+    fi
+  done
 else
   echo "  [SKIP] claude CLI not on PATH -- skipping 'claude plugin validate'"
 fi

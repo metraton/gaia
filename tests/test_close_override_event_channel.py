@@ -135,7 +135,7 @@ def test_source_distinguishes_this_record_from_hook_written_telemetry():
     assert event.source == TASK_CLOSE_OVERRIDE_SOURCE == "cli"
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "reason",
     [None, "", "   ", "\n", "\t  \n ", 42, 0, [], {}, b"why", object()],
 )
@@ -162,7 +162,7 @@ def test_a_reason_is_recorded_stripped_but_otherwise_verbatim():
     assert event.meta["reason"] == reason.strip()
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "raw", [None, "", "   ", "\n", 42, [], object()],
 )
 def test_an_absent_dispatch_identity_is_recorded_as_a_human_caller(raw):

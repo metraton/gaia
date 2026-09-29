@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v50 -> v51: discard the deliberate-read capture taken by v49_to_v50.
 --
 -- WHAT THIS DESTROYS, STATED BEFORE THE CONSENT IS GIVEN

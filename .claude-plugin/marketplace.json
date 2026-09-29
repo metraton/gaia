@@ -1,6 +1,6 @@
 {
   "name": "gaia-marketplace",
-  "description": "GAIA — Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code. Distributes the Gaia plugin: specialized agents across the development lifecycle with codebase-aware context injection and risk-classified command gating.",
+  "description": "GAIA — Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code and OpenCode. Distributes the Gaia plugin for Claude Code (OpenCode runs on the npm package @jaguilar87/gaia): specialized agents across the development lifecycle with codebase-aware context injection and risk-classified command gating.",
   "owner": {
     "name": "jaguilar87",
     "email": "jorge.aguilar87@gmail.com"
@@ -8,19 +8,14 @@
   "plugins": [
     {
       "name": "gaia",
-      "description": "GAIA — Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code. Specialized agents cover the full development lifecycle — analysis, planning, execution, deployment — with codebase-aware context injection. Every command is risk-classified: read-only runs freely, state changes pause for your approval, and irreversible operations are permanently blocked.",
-      "version": "5.5.0-rc.3",
+      "description": "GAIA — Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code and OpenCode; this entry is the Claude Code plugin, and OpenCode runs on the npm package @jaguilar87/gaia. Specialized agents cover the full development lifecycle — analysis, planning, execution, deployment — with codebase-aware context injection. Every command is risk-classified: read-only runs freely, state changes pause for your approval, and irreversible operations are permanently blocked.",
       "category": "devops",
       "author": {
         "name": "jaguilar87",
         "email": "jorge.aguilar87@gmail.com"
       },
       "homepage": "https://github.com/metraton/gaia#readme",
-      "source": {
-        "source": "github",
-        "repo": "metraton/gaia",
-        "ref": "v5.5.0-rc.3"
-      }
+      "source": "."
     }
   ]
 }

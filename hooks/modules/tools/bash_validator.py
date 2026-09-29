@@ -1120,6 +1120,7 @@ class BashValidator:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=payload_cwd,
+                command=command, tool_use_id=tool_use_id,
             )
         else:
             result = self._validate_single_command(
@@ -1160,10 +1161,11 @@ class BashValidator:
         the header is classified (classifying it would mint a pending approval
         for the body-less string), and a sanitizer rewrite of the header would
         otherwise become updatedInput and drop the body from what runs. The
-        permanent-deny floor keeps reading the body; it is categorical.
+        permanent-deny floor reads the header too: the body is stdin the CLI
+        stores, so a force push it merely names runs nowhere.
         """
         header = data_heredoc_header(command)
-        if header is None or is_blocked_command(command).is_blocked:
+        if header is None or is_blocked_command(header).is_blocked:
             return None
         cwd = (hook_payload or {}).get("cwd") or None
         if detect_mutative_command(header, cwd=cwd).is_mutative:
@@ -1550,6 +1552,8 @@ class BashValidator:
         session_id: str = "",
         agent_type: str = "",
         cwd: Optional[str] = None,
+        command: str = "",
+        tool_use_id: str = "",
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
@@ -1560,6 +1564,9 @@ class BashValidator:
         intake on this path -- consent grouping is requested plan-first via
         ``gaia approvals request-set``, and execution stays one command per Bash
         call, so a chain is never the surface on which a set is discovered.
+        The one exception is a pipeline whose exact bytes (``command``) are a
+        live signed set item: request-set seals pipelines as one item, so that
+        item is matched and reserved here instead of denied.
 
         A chain with NO T3 component runs the per-component pass: each component
         is validated by ``_validate_single_command``, a blocked component fails
@@ -1597,6 +1604,12 @@ class BashValidator:
                 has_t3 = True
                 break
         if has_t3:
+            signed = self._match_signed_pipeline(
+                command, components, session_id=session_id, agent_type=agent_type,
+                tool_use_id=tool_use_id, cwd=cwd,
+            )
+            if signed is not None:
+                return signed
             reason = (
                 "Compound T3 execution is disabled. Create a plan-first "
                 "request-set and issue each command as a separate Bash call."
@@ -1663,6 +1676,49 @@ class BashValidator:
             tier=highest_tier,
             reason=f"All {len(components)} components validated",
             consumed_approval_id=consumed_approval_id,
+        )
+
+    def _match_signed_pipeline(
+        self,
+        command: str,
+        components: List[str],
+        *,
+        session_id: str,
+        agent_type: str,
+        tool_use_id: str,
+        cwd: Optional[str],
+    ) -> Optional[BashValidationResult]:
+        """Reserve a pipeline whose exact bytes are a live signed set item, else None.
+
+        Only a chain whose every separator is a pipe qualifies: the component
+        count must equal the unquoted pipe-stage count ``request-set`` sealed.
+        """
+        if not (command and session_id and tool_use_id):
+            return None
+        from gaia.approvals.command_set import pipe_stages
+        try:
+            if len(pipe_stages(command)) != len(components):
+                return None
+        except ValueError:
+            return None
+        try:
+            from gaia.approvals.core import match_command
+            cs_match = match_command(
+                command, cwd=cwd or os.getcwd(), session_id=session_id,
+                agent_id=agent_type or None, tool_use_id=tool_use_id,
+            )
+        except Exception as exc:
+            return BashValidationResult(
+                allowed=False, tier=SecurityTier.T3_BLOCKED,
+                reason=f"COMMAND_SET persistence failed closed: {exc}",
+            )
+        if cs_match is None:
+            return None
+        return BashValidationResult(
+            allowed=True, tier=SecurityTier.T3_BLOCKED,
+            reason="Ordered COMMAND_SET command reserved",
+            consumed_approval_id=cs_match["approval_id"],
+            command_set_reservation=cs_match,
         )
 
     def _phase4_check_composition(
@@ -2382,6 +2438,19 @@ def decide_t3_outcome(
     # modules.security.fail_open. Recorded before any branch so it holds no
     # matter which outcome this call produces.
     note_mutative_classification(command, verb, category)
+
+    from gaia.redaction import has_clear_secret
+
+    if has_orchestrator_above and has_clear_secret(command):
+        from gaia.approvals.core import CLEAR_SECRET_REFUSAL
+
+        reason = f"T3 {category.lower()} command refused: {CLEAR_SECRET_REFUSAL}."
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T3_BLOCKED,
+            reason=reason,
+            block_response=build_hook_permission_response("deny", reason),
+        )
 
     # A genuine multi-command chain is a set of >= 2 items. Anything else
     # collapses to the singular path so we never mint a COMMAND_SET for one

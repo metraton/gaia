@@ -102,7 +102,7 @@ def test_string_in_pending_steps_is_rejected_by_type():
     assert offending and offending[0].field == "agent_status.pending_steps"
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "field,value",
     [
         ("patterns_checked", "grep"),
@@ -231,7 +231,7 @@ def test_canonicalizing_a_clean_envelope_changes_nothing():
 # ---------------------------------------------------------------------------
 # The delicate part -- keys the SYSTEM writes must keep validating
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "key,value",
     [
         # Stamped on EVERY fence-parsed envelope by parse_contract, then fed

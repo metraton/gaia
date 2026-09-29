@@ -350,7 +350,7 @@ def test_failed_wiring_never_publishes_success_provenance(consumer):
 def test_record_failure_exposes_partial_install_without_success(consumer, monkeypatch, capsys):
     workspace, _, run = consumer
 
-    def denied(*args):
+    def denied(*args, **kwargs):
         """Simulate unavailable state storage after consumer wiring."""
         raise OSError("record storage denied")
 

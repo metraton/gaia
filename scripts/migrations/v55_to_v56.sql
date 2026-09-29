@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v55 -> v56: managed briefs and plans, the data a verdict and an
 -- acceptance rest on.
 --

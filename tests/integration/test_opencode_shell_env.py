@@ -14,7 +14,7 @@ from tests.integration.test_opencode_consent_retry_e2e import (
 )
 
 COMMAND = (
-    "GHX_ACCOUNT=metraton /home/jorge/bin/ghx -C /home/jorge/ws/me/gaia "
+    "GHX_ACCOUNT=metraton ghx -C /home/jorge/ws/me/gaia "
     "pr create --repo metraton/gaia --head fix/attestation-cli-fixture "
     "--title 'fixture regression' --body 'diagnostic only'"
 )

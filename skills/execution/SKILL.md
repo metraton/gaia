@@ -35,8 +35,16 @@ source changes. The same prohibition applies to fixtures and bulk operations.
    has succeeded for the set: continue with the next index. Any other failure
    stops the set; apply `command-execution`'s COMMAND_SET fail-fast rule, then
    use `agent-protocol` to reconcile the result for its consumer.
-5. A call that never reports back is recorded as no result, not as a failure,
-   and does not advance the set. Read its state before deciding anything, and
+   An unsigned step of the set (`gaia approvals show` marks it
+   `"signed": false`) runs in its position like any other command of yours:
+   it holds no index, so it neither spends nor advances the signature.
+5. A call the host refused before running it (Claude Code's
+   `Permission to use Bash ... has been denied`) spends nothing: the item
+   keeps its index and the single-command signature stays usable. Retry the
+   same sealed bytes once, as a new call; if the host refuses again, stop and
+   report the refusal with the approval id instead of requesting anew. A call
+   that never reports back is recorded as no result, not as a failure, and
+   does not advance the set. Read its state before deciding anything, and
    request anything still needed as a new request.
 6. After successful mutations, verify desired state with separate read-only
    checks. Success exit codes alone are insufficient.

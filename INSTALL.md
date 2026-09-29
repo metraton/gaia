@@ -6,35 +6,36 @@ This guide will help you install and configure Gaia in your project. The process
 
 Gaia is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
 
-Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (declared in `.claude-plugin/marketplace.json` with `source: github`, repo `metraton/gaia`, and `ref` pinned to the tag of the current release, `v<version>`), so there is no separate `dist/` bundle.
+Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (declared in `.claude-plugin/marketplace.json` with `source: "."` -- the repository root -- and no version in the entry; the version is the one in `.claude-plugin/plugin.json`), so there is no separate `dist/` bundle.
 
 ---
 
 ## 🚀 Installation
 
-Gaia reaches a workspace through **two surfaces**. Pick the one that matches how you run Claude Code.
+Gaia reaches a workspace through **three channels**, the same three [README.md](./README.md) lists: the npm/pnpm package wired into Claude Code with `gaia install` (Surface 1), the Claude Code plugin from `gaia-marketplace` (Surface 2), and OpenCode on the same package (Surface 3). Pick the one that matches the host you run.
 
 ### Surface 1: npm / pnpm
 
-Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). Install the package, then wire the workspace with `gaia install`:
+Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). From the folder that becomes the workspace, install the package, then wire the workspace with `gaia install`. A local install puts the CLI in `node_modules/.bin/`, not on your `PATH`, so it is invoked through the package manager:
 
 ```bash
-npm install @jaguilar87/gaia
-# or: pnpm add @jaguilar87/gaia
-
-gaia install
+npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
+npx gaia install                  # or: pnpm exec gaia install
+                                  #   add --path to also write the gaia launcher to ~/.local/bin
 ```
+
+With `--path`, a bare `gaia` works from any terminal afterwards; the examples below write `npx gaia` because that form works either way.
 
 **There is no `postinstall` hook.** The install is deliberately non-invasive (npm and pnpm both handle it identically — pnpm ignores lifecycle scripts by default, so relying on `postinstall` would have been fragile). Two things bootstrap on demand instead:
 
 - The database `~/.gaia/gaia.db` is created **lazily on the first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`). You do not have to run anything special — the first `gaia` command you run seeds it.
 - The workspace `.claude/` structure (symlinks + `settings.local.json` + registry) is written by running `gaia install` explicitly, or by the SessionStart hook.
 
-After install, `gaia doctor` verifies the result. If a bootstrap or wire-up step fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
+After install, `npx gaia doctor` verifies the result. If a bootstrap or wire-up step fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
 
 ### Surface 2: Claude Code plugin
 
-Claude Code consumes the plugin from GitHub (`source: github`, repo `metraton/gaia`, `ref` = the tag of the current release, per `.claude-plugin/marketplace.json`) — it clones that tag into its plugin cache. Add the marketplace (`gaia-marketplace`) and install the single plugin:
+Claude Code consumes the plugin from GitHub: the marketplace is the `metraton/gaia` repository and its `gaia` entry has `source: "."`, so the plugin is the code of whatever branch or tag you add the marketplace from (`metraton/gaia#v<version>` for a release; the default branch when no ref is given). Add the marketplace (`gaia-marketplace`) and install the single plugin:
 
 ```bash
 # Add the marketplace
@@ -44,14 +45,16 @@ Claude Code consumes the plugin from GitHub (`source: github`, repo `metraton/ga
 /plugin install gaia@gaia-marketplace
 ```
 
-The marketplace route loads the agents, skills and hooks. It does **not** put the `gaia` CLI on your terminal's `PATH` and does not wire the workspace (`.claude/` links, `settings.local.json` permissions, `opencode.json`): those still come from Surface 1, `npm install @jaguilar87/gaia` followed by `gaia install`. The hooks run as `python3 ${CLAUDE_PLUGIN_ROOT}/hooks/...`, so `python3` >= 3.12 must be on `PATH` on this route too.
+The marketplace route loads the agents, skills and hooks, and it does write into the workspace: the plugin's first session merges Gaia's permission set (`permissions` allow, deny and ask) and the hidden `attribution` setting into `.claude/settings.local.json` (`setup_project_permissions` in `hooks/modules/core/plugin_setup.py`), links `.claude/hooks`, then asks for `/reload-plugins` or a restart. Its sessions record those writes in `.claude/gaia-manifest.json`, the same manifest `gaia install` keeps, so `gaia uninstall` reverts them (see Uninstallation). What the plugin does **not** do is put the `gaia` CLI on your terminal's `PATH` (the orchestrator runs the plugin's own `bin/gaia`) or create the other `.claude/` links and `opencode.json`: those come from Surfaces 1 and 3. The hooks run as `sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/<entrypoint>.py"`; the launcher uses the first of `python3`, `python` or `py -3` that is Python 3, so a Python >= 3.12 under any of those names must be on `PATH` on this route too.
 
 Auto-update is off by default for third-party marketplaces, so a new release does not reach you on its own. Refresh the marketplace, then update the plugin:
 
 ```bash
-/plugin marketplace update gaia-marketplace
+claude plugin marketplace update gaia-marketplace
 claude plugin update gaia@gaia-marketplace
 ```
+
+Then restart Claude Code. The update only lands when the version in the fetched `.claude-plugin/plugin.json` differs from the installed one; the same version re-fetched installs nothing new.
 
 For a pre-release dry-run of the plugin surface without publishing, pack the exact tarball and validate the extracted root headless:
 
@@ -61,26 +64,27 @@ npm run gaia:plugin-dryrun   # pack -> temp extract -> structural asserts + `cla
 
 On the plugin surface, Claude Code reads hooks from the package root's inline `.claude-plugin/plugin.json` / `hooks/hooks.json` (generated from `build/gaia.manifest.json` at pack time) — **not** from `settings.local.json`.
 
+### Surface 3: OpenCode
+
+OpenCode runs on the same package as Surface 1. From the folder that becomes the workspace:
+
+```bash
+npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
+npx gaia install --host opencode  # --host all wires Claude Code and OpenCode together
+```
+
+`--host opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update --host opencode`.
+
 ### Project Scanner (on-demand, separate from install)
 
-To detect or refresh your project context (stack, GitOps directory, Terraform layout, GCP project, etc.), run the scanner. This is **not** the installer — it writes scan results to `~/.gaia/gaia.db`:
+The first `gaia install` (and the plugin's first session) registers the workspace under its folder name and scans the repositories beneath it. To re-index later, run the scanner; it classifies each git repository under a directory into the workspace and writes the rows to `~/.gaia/gaia.db`:
 
 ```bash
-gaia scan
+npx gaia scan --workspace <name>             # walks the current directory
+npx gaia scan --workspace <name> --dry-run   # reports the classification, writes nothing
 ```
 
-Or non-interactive:
-
-```bash
-gaia scan --non-interactive \
-  --gitops ./gitops \
-  --terraform ./terraform \
-  --app-services ./app-services \
-  --project-id my-gcp-project \
-  --cluster my-gke-cluster
-```
-
-**Important:** `gaia scan` and `gaia install` are separate flows. `gaia install` bootstraps the database and `.claude/` structure. `gaia scan` detects your project stack and writes the results to the DB. Running `gaia scan` never installs or creates symlinks; running `gaia install` never scans.
+`gaia scan` only indexes: it never installs Gaia or creates links. `gaia install` scans only on the first install of a workspace; later runs leave re-indexing to `gaia scan`.
 
 ---
 
@@ -93,7 +97,7 @@ User runs: npm install @jaguilar87/gaia   (or: pnpm add @jaguilar87/gaia)
         ↓
 (no postinstall — nothing runs automatically)
         ↓
-User runs: gaia install    (or the SessionStart hook wires the workspace)
+User runs: npx gaia install    (or the SessionStart hook wires the workspace)
         ↓
 [Bootstrap] first `gaia` use runs scripts/bootstrap_database.py (lazy)
    - Seeds ~/.gaia/gaia.db with current schema
@@ -119,8 +123,8 @@ Validates installation:
   ✅ DB bootstrapped
   ✅ Valid configuration
         ↓
-Ready! Run: gaia doctor
-Then optionally scan your project stack: gaia scan
+Ready! Run: npx gaia doctor
+Later, to re-index the repositories: npx gaia scan --workspace <name>
 ```
 
 ### Real Installation Example
@@ -130,74 +134,37 @@ Example: Install + scan in a project with GitOps and Terraform
 
 1. User: pnpm add @jaguilar87/gaia   (no postinstall runs)
    ↓
-2. User: gaia install
+2. User: pnpm exec gaia install
    ✅ ~/.gaia/gaia.db bootstrapped (lazy, on first `gaia` use)
    ✅ .claude/ created
    ✅ 6 directory symlinks + CHANGELOG.md link created
       (agents, tools, hooks, config, skills, opencode)
    ✅ settings.local.json merged
    ✅ plugin-registry.json written (name: gaia)
+   ✅ first install: workspace registered under the folder name,
+      the git repositories beneath it scanned into ~/.gaia/gaia.db
    ↓
-3. User: gaia scan (optional -- detects project stack)
-   ↓
-4. Detector finds:
-   ✅ ./gitops (52 YAML files detected)
-   ✅ ./terraform (15 .tf files detected)
-   ❌ ./app-services (not found)
-   ↓
-5. Scanner writes to ~/.gaia/gaia.db:
-   ✅ project_identity, stack, git, infrastructure sections recorded
-   ✅ No project-context.json file generated (DB is canonical)
-   ↓
-6. Result:
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-   ✅ Gaia installed and project scanned!
-
-   Next steps:
-   1. Run: gaia doctor
+3. Result -- next steps:
+   1. Run: pnpm exec gaia doctor
    2. Run: claude
    3. Ask: "Show me GKE clusters"
-   4. Or use: /scan-project to re-scan your project stack
 ```
 
 ---
 
 ## ⚙️ Installation Options
 
-### Environment Variables
-
-Configure before scanning to avoid prompts:
-
-```bash
-# Configure paths
-export CLAUDE_GITOPS_DIR="./gitops"
-export CLAUDE_TERRAFORM_DIR="./terraform"
-export CLAUDE_APP_SERVICES_DIR="./app-services"
-
-# Configure project
-export CLAUDE_PROJECT_ID="my-gcp-project"
-export CLAUDE_REGION="us-central1"
-export CLAUDE_CLUSTER_NAME="my-gke-cluster"
-
-# Scan without questions
-gaia scan --non-interactive
-```
-
-### Complete CLI Options
+The options each command accepts are the ones its `--help` prints; the ones this guide uses:
 
 ```
-gaia install [options]          # Bootstrap DB + .claude/ structure (run manually; no postinstall)
-
-gaia scan [options]             # Detect project stack, write to ~/.gaia/gaia.db
-
-gaia scan options:
-  --non-interactive          Skip prompts, use provided values or defaults
-  --gitops <path>           GitOps directory path
-  --terraform <path>        Terraform directory path
-  --app-services <path>     Applications directory path
-  --project-id <id>         GCP project ID
-  --region <region>         Primary region (default: us-central1)
-  --cluster <name>          Cluster name
+gaia install [--host {claude_code,opencode,all}] [--path] [--workspace W]
+                                 # bootstrap DB + wire the workspace (no postinstall)
+gaia update                      # alias of install, run after a package upgrade
+gaia scan --workspace NAME [--dry-run] [root]
+                                 # re-index the git repositories under root
+gaia uninstall [--workspace W] [--dry-run] [--no-backup]
+                                 # revert what install wrote (see Uninstallation)
+gaia doctor [--workspace PATH] [--fix]
 ```
 
 ---
@@ -229,7 +196,7 @@ your-project/
 
 Six directory symlinks (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus one `CHANGELOG.md` file link — the canonical list is `_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.
 
-Project context (stack, GitOps layout, Terraform layout, etc.) lives in `~/.gaia/gaia.db`, not in `.claude/project-context/`. Run `gaia scan` to populate it and `gaia context show` to inspect it.
+Project context (stack, GitOps layout, Terraform layout, etc.) lives in `~/.gaia/gaia.db`, not in `.claude/project-context/`. `npx gaia scan --workspace <name>` re-indexes it and `npx gaia context show` inspects it.
 
 **Wire-up verification:** after install, the same checklist applies to every install mode (live, npm-sandbox, plugin, registry). See `skills/gaia-verify/SKILL.md` → "Wire-up checklist".
 
@@ -270,7 +237,7 @@ ls -la .claude/
 
 ```bash
 # View project context (stored in DB)
-gaia context show
+npx gaia context show
 
 # View settings
 cat .claude/settings.local.json
@@ -290,7 +257,7 @@ claude
 "List deployments in production namespace"
 
 # Or, from the terminal, refresh the project context:
-gaia scan
+npx gaia scan --workspace <name>
 ```
 
 ---
@@ -316,8 +283,9 @@ Orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated vi
 # 1. Update package
 npm install @jaguilar87/gaia@latest   # or: pnpm add @jaguilar87/gaia@latest
 
-# 2. Re-sync the workspace (no postinstall does this for you):
-gaia update
+# 2. Re-sync the workspace (no postinstall does this for you), with the
+#    same --host the workspace was installed with:
+npx gaia update                       # or: pnpm exec gaia update
 #    - Refreshes DB schema, config, and symlinks after the version bump
 ```
 
@@ -341,12 +309,8 @@ which claude
 
 #### If You Have Multiple Installations
 
-**Option 1: Automatic Cleanup**
-```bash
-gaia cleanup
-```
+Remove the extra copy by hand. (`gaia cleanup` is not for this: it removes Gaia's own links and markers from the workspace and runs data retention.)
 
-**Option 2: Manual Cleanup**
 ```bash
 # Remove npm global installation (if exists)
 npm -g uninstall @anthropic-ai/claude-code
@@ -375,11 +339,7 @@ npm install -g @anthropic-ai/claude-code
 
 ### Problem: Multiple Claude Code Installations
 
-**Solution:**
-```bash
-# Automatic cleanup
-gaia cleanup
-```
+**Solution:** remove the extra copy by hand, as in "If You Have Multiple Installations" above.
 
 ---
 
@@ -403,11 +363,11 @@ echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 cat ~/.gaia/last-install-error.json
 
 # Re-run install (idempotent, re-entrant)
-gaia install
+npx gaia install
 
 # Or, if the DB itself is missing, just run any gaia command
 # (lazy bootstrap re-creates it):
-gaia doctor
+npx gaia doctor
 ```
 
 For the full symptom → cause → fix table, see `skills/gaia-release/reference.md` → "Diagnostic guide".
@@ -416,25 +376,32 @@ For the full symptom → cause → fix table, see `skills/gaia-release/reference
 
 ## 🧹 Uninstallation
 
-### Complete Uninstallation
+Each channel takes back only what it wrote, and `~/.gaia/gaia.db` is never touched: delete `~/.gaia/` yourself if you want the memory gone too.
+
+### Package (Surface 1) and OpenCode (Surface 3)
+
+Run `gaia uninstall` **before** removing the package, while the CLI still exists. `npm uninstall` does not do it for you: npm >= 7 does not run a package's `preuninstall` script, and pnpm does not run lifecycle scripts by default.
 
 ```bash
-# Interactive script (recommended)
-gaia uninstall
-
-# Forced uninstall (no questions)
-gaia uninstall --force --remove-all
+npx gaia uninstall --dry-run          # shows what reverts, changes nothing
+npx gaia uninstall                    # OpenCode-only folder: add --workspace <folder>
+npm uninstall @jaguilar87/gaia        # or: pnpm remove @jaguilar87/gaia
 ```
 
-### Manual Uninstallation
+`gaia uninstall` reverts `.claude/gaia-manifest.json`: every file, link and settings key `gaia install` wrote returns to its prior state (`opencode.json` and the `--path` launcher included), files Gaia did not create are never removed, and a gzip snapshot of the database goes to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. Do not delete `.claude/` by hand: it also holds your own settings and anything else you or other tools put there.
+
+### Claude Code plugin (Surface 2)
+
+Run `gaia uninstall` in the workspace **before** `claude plugin uninstall`, while the plugin's `gaia` still exists. The plugin does not put `gaia` on your terminal's `PATH`, so run its own copy: `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this workspace (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` from a terminal in the workspace folder -- it needs only Python on `PATH`. Inside a Claude Code session in the workspace the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you; with the package installed too, `npx gaia uninstall` does the same.
 
 ```bash
-# 1. Remove .claude/ directory
-rm -rf .claude/
-
-# 2. Uninstall npm package
-npm uninstall @jaguilar87/gaia
+<installPath>/bin/gaia uninstall --dry-run          # shows what reverts, changes nothing
+<installPath>/bin/gaia uninstall                    # reverts the plugin's workspace writes
+claude plugin uninstall gaia@gaia-marketplace
+claude plugin marketplace remove gaia-marketplace   # optional
 ```
+
+The plugin's sessions record what they write into the workspace in `.claude/gaia-manifest.json` -- the permissions and `attribution` merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts them, restores the user entries the merge replaced, and keeps what you added since. A plugin workspace from before that record is recognized by Gaia's permissions and attribution.
 
 ---
 
@@ -462,13 +429,13 @@ Gaia is designed with these principles:
 ### Frequently Asked Questions
 
 **Q: Can I use Gaia in multiple projects?**  
-A: Yes. Each project is a separate workspace in `~/.gaia/gaia.db`. Run `gaia scan` inside each project directory to populate its context. The DB is shared but context is per-workspace.
+A: Yes. Each project is a separate workspace in `~/.gaia/gaia.db`. The first `npx gaia install` inside each project directory registers it and scans its repositories; `npx gaia scan --workspace <name>` re-indexes one later. The DB is shared but context is per-workspace.
 
 **Q: Do symlinks work on Windows?**  
 A: Yes, but you need to enable developer mode or run as administrator.
 
 **Q: How do I update only documentation without changing code?**
-A: `npm update @jaguilar87/gaia` then `gaia update` - symlinks point to the new version automatically.
+A: `npm install @jaguilar87/gaia@latest` then `npx gaia update` - symlinks point to the new version automatically.
 
 ---
 

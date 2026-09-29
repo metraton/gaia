@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v19 -> v20: add multi_use and confirmed columns to approval_grants.
 --
 -- These two columns support the upcoming FS-grant-plane migration:

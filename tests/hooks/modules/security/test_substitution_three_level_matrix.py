@@ -227,7 +227,7 @@ def consent_level(command: str) -> str:
     return APPROVABLE if result.block_response is not None else CATEGORICAL
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,expected,command",
     MUTATION_THROUGH_SUBSTITUTION + PERMANENTLY_FORBIDDEN,
     ids=[c[0] for c in MUTATION_THROUGH_SUBSTITUTION + PERMANENTLY_FORBIDDEN],
@@ -242,7 +242,7 @@ def test_gated_forms_resolve_at_their_exact_level(case_id, expected, command):
     assert consent_level(command) == expected
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command", READ_ONLY_IDIOMS + QUOTED_MENTIONS,
     ids=[c[0] for c in READ_ONLY_IDIOMS + QUOTED_MENTIONS],
 )

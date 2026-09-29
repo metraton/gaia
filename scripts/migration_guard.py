@@ -8,8 +8,8 @@ moment one rewrites or removes rows: a commit in the source tree becomes a data
 mutation on the live database with no human in between.
 
 THE DISTINCTION DOES NOT DEPEND ON ANYONE DECLARING IT
-    A convention an author can forget is a suggestion, not a gate. So nothing
-    here reads a header, a marker, or a filename. Two facts decide, and neither
+    A convention an author can forget is a suggestion, not a gate. So the
+    consent gate reads no header, marker, or filename. Two facts decide, and neither
     can be omitted by a distracted author:
 
       * what the migration's own SQL does -- a statement cannot rewrite rows
@@ -223,6 +223,51 @@ def _excerpt(fragment: str, limit: int = 90) -> str:
 
 def assess(migration: str, sql: str, census: dict[str, int]) -> Verdict:
     return Verdict(migration, scan(sql, census))
+
+
+# Compatibility is the one thing the SQL cannot say about itself: whether code
+# written before this migration can still write afterwards. So, unlike the
+# consent gate above, it is declared -- one header line per file -- and a test
+# refuses a file without it, or one declared backward that rewrites rows.
+COMPAT_BACKWARD, COMPAT_BREAKING = "backward", "breaking"
+_COMPAT_RE = re.compile(r"^--\s*gaia-compat:\s*(\S+)\s*$", re.MULTILINE)
+
+
+def compat_mark(sql: str) -> str | None:
+    """The file's single valid ``-- gaia-compat:`` value, or None when absent,
+    repeated, or not one of backward/breaking."""
+    marks = _COMPAT_RE.findall(sql)
+    if len(marks) != 1 or marks[0] not in (COMPAT_BACKWARD, COMPAT_BREAKING):
+        return None
+    return marks[0]
+
+
+def destructive_statements(sql: str) -> list[str]:
+    """Statements that rewrite, remove or rename rows, whatever the table holds."""
+    return [
+        normalize(statement)
+        for statement in split_statements(sql)
+        if _classify(normalize(statement))[0] is not None
+    ]
+
+
+def is_breaking(sql: str) -> bool:
+    """Whether code older than this migration must stop writing after it.
+
+    An unmarked file counts as breaking, so a forgotten mark can only refuse an
+    older installation, never let it write to a structure it does not know.
+    """
+    return compat_mark(sql) != COMPAT_BACKWARD
+
+
+def last_breaking_version(migrations_dir: Path, version: int) -> int | None:
+    """The highest target version <= ``version`` whose migration is breaking."""
+    targets = []
+    for path in migrations_dir.glob("v*_to_v*.sql"):
+        target = int(path.stem.rsplit("_to_v", 1)[1])
+        if target <= version and is_breaking(path.read_text(encoding="utf-8")):
+            targets.append(target)
+    return max(targets, default=None)
 
 
 def chain_label(current: int, expected: int) -> str:

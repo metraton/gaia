@@ -200,7 +200,7 @@ EQUIVALENCE_COMMANDS = [
 class TestBehavioralEquivalence:
     """Verify adapter flow produces IDENTICAL results to direct flow."""
 
-    @pytest.mark.parametrize("command", EQUIVALENCE_COMMANDS)
+    @pytest.mark.table("command", EQUIVALENCE_COMMANDS)
     def test_adapter_matches_direct(self, command):
         """Adapter-based classification must match direct classification."""
         adapter_result = _classify_command_via_adapter(command)
@@ -312,7 +312,7 @@ CLASSIFICATION_SCENARIOS = [
 class TestClassificationCorrectness:
     """Verify command classification matches expected security tiers."""
 
-    @pytest.mark.parametrize(
+    @pytest.mark.table(
         "command,expected_allowed,expected_tier",
         CLASSIFICATION_SCENARIOS,
         ids=[f"{cmd[:40]}..." if len(cmd) > 40 else cmd for cmd, _, _ in CLASSIFICATION_SCENARIOS],

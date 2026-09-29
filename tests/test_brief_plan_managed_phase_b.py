@@ -319,7 +319,7 @@ def guard(monkeypatch):
     return g
 
 
-@pytest.mark.parametrize("command", [
+@pytest.mark.table("command", [
     "plan pause my-brief --reason=vendor",
     "plan resume my-brief",
     "plan history my-brief",
@@ -334,7 +334,7 @@ def test_the_orchestrator_may_coordinate_the_plan(guard, command):
     assert allowed is True, reason
 
 
-@pytest.mark.parametrize("command", [
+@pytest.mark.table("command", [
     "task gate set-status my-brief 1 3 pass",
     "task gate set-status my-brief 1 3 fail --cause=product",
     "task set-status my-brief 1 done --override --reason=x",

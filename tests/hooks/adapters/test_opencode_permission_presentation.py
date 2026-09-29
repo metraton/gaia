@@ -150,6 +150,7 @@ def _request_set(env, *, verification, rollback, commands=PRODUCED_COMMANDS):
         "--rationale", PRODUCED_RATIONALE,
         "--verification", verification,
         "--rollback", rollback,
+        "--shared-state", "Sí: publica en el remoto compartido.",
         "--agent-id", AGENT_ID,
         "--session-id", SESSION_ID,
         "--json",

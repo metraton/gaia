@@ -611,32 +611,19 @@ class PrePublishValidator {
         }
       }
 
-      // Check .claude-plugin/marketplace.json plugin versions
+      // The plugin version lives once, in plugin.json. A marketplace entry
+      // that declares its own version is drift waiting to happen: Claude Code
+      // lets plugin.json win and only warns, so nothing else would fail.
       const marketplacePath = path.join(baseDir, '.claude-plugin', 'marketplace.json');
       if (fs.existsSync(marketplacePath)) {
         const marketplaceData = JSON.parse(fs.readFileSync(marketplacePath, 'utf-8'));
         for (const plugin of (marketplaceData.plugins || [])) {
-          if (plugin.version !== expectedVersion) {
-            versionMismatches.push(`marketplace/${plugin.name}: ${plugin.version}`);
-          }
-          // For git/github object sources a `source.ref` pins `/plugin install`
-          // to a fixed release tag (`v<version>`). release:prepare's
-          // bumpMarketplace writes it atomically with the version. Tolerant
-          // when absent (refless resolves the repo's default HEAD -- a valid
-          // pre-pin state); strict when present so a stale/hand-edited ref that
-          // would serve the wrong tag is caught here rather than after publish.
-          const src = plugin.source;
-          if (src && typeof src === 'object' &&
-              (src.source === 'github' || src.source === 'git') &&
-              src.ref !== undefined) {
-            const expectedRef = `v${expectedVersion}`;
-            if (src.ref !== expectedRef) {
-              versionMismatches.push(`marketplace/${plugin.name}.source.ref: ${src.ref}`);
-            }
+          if (plugin.version !== undefined) {
+            versionMismatches.push(`marketplace/${plugin.name} declares version ${plugin.version} (version belongs only in plugin.json)`);
           }
         }
         if (!versionMismatches.some(m => m.startsWith('marketplace/'))) {
-          this.log(`  ✓ marketplace.json plugin versions${marketplaceData.plugins.some(p => p.source && p.source.ref) ? ' + source.ref pins' : ''} match`, 'success');
+          this.log('  ✓ marketplace.json entries declare no version (plugin.json is the one source)', 'success');
         }
       }
 
@@ -696,7 +683,7 @@ class PrePublishValidator {
         ];
         this.log(`✗ Version drift detected. Align all sources before publish: ${sources.join(', ')}`, 'error');
         throw new Error(
-          `Version drift: ${sources.join(', ')} — align all sources (package.json, plugin.json, marketplace.json, pyproject.toml, CHANGELOG.md top) before publish`
+          `Version drift: ${sources.join(', ')} — align all sources (package.json, plugin.json, pyproject.toml, CHANGELOG.md top; no version in marketplace.json entries) before publish`
         );
       }
 

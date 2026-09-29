@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v39 -> v40: harness run id on agent_contract_handoffs.
 --
 -- WHAT CHANGES

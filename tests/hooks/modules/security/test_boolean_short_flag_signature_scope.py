@@ -93,7 +93,7 @@ FLAGGED_GATED = [
 ]
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command,flag", FLAGGED_GATED, ids=[row[0] for row in FLAGGED_GATED]
 )
 def test_a_grant_still_matches_its_own_command(case_id, command, flag):
@@ -111,7 +111,7 @@ def test_a_grant_still_matches_its_own_command(case_id, command, flag):
     )
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command,flag", FLAGGED_GATED, ids=[row[0] for row in FLAGGED_GATED]
 )
 def test_the_unswallowed_token_stays_bound_to_the_signature(case_id, command, flag):
@@ -130,7 +130,7 @@ def test_the_unswallowed_token_stays_bound_to_the_signature(case_id, command, fl
     )
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command,flag", FLAGGED_GATED, ids=[row[0] for row in FLAGGED_GATED]
 )
 def test_a_grant_does_not_stretch_to_a_different_operation(case_id, command, flag):
@@ -175,7 +175,7 @@ def test_no_two_distinct_operations_share_a_signature():
             seen[key] = form
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command,flag", FLAGGED_GATED, ids=[row[0] for row in FLAGGED_GATED]
 )
 def test_flag_position_tolerance_is_the_one_the_long_form_already_had(

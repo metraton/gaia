@@ -5,12 +5,12 @@ The problem this solves: every `gaia dev` build ships the SAME semver as the
 released base it was packed from (see ``gaia.hooks_build`` for why the packed
 ``package.json`` version is deliberately never bumped), so "Gaia: 5.3.0" cannot
 tell the user whether they are on the pristine release or on their eleventh
-local iteration of it. The five version sources the release gate cross-checks
-(``package.json``, ``pyproject.toml``, ``.claude-plugin/plugin.json``,
-``.claude-plugin/marketplace.json``, the ``CHANGELOG.md`` header --
-``bin/pre-publish-validate.js`` requires all five to agree) are therefore NOT
-where the iteration count can live: writing there would both break the release
-gate and dirty a git-tracked file on every dev run. This sidecar is the answer
+local iteration of it. The four version sources the release gate cross-checks
+(``package.json``, ``pyproject.toml``, ``.claude-plugin/plugin.json``, the
+``CHANGELOG.md`` header -- ``bin/pre-publish-validate.js`` requires all four to
+agree, and rejects any version in a ``.claude-plugin/marketplace.json`` entry)
+are therefore NOT where the iteration count can live: writing there would both
+break the release gate and dirty a git-tracked file on every dev run. This sidecar is the answer
 -- state, not source.
 
 Identity of a build: the counter is keyed by BASE VERSION and advanced only

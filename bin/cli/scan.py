@@ -109,6 +109,11 @@ def _render_human(report, *, dry_run: bool) -> None:
         for e in report.errors:
             print(f"  - repo={e['repo']} --workspace={e['W']}: {e['suggestion']}")
 
+    if report.foreign_repos:
+        print(f"{prefix}left to their own workspace (installed inside this root):")
+        for f in report.foreign_repos:
+            print(f"  - repo={f['repo']} workspace={f['workspace']} path={f['path']}")
+
     # SV2: cross-DB detection blocks (alerts only -- the human adjudicates).
     if report.move_candidates:
         print(f"{prefix}MOVE CANDIDATES (remote match, human adjudicates):")
@@ -215,6 +220,11 @@ def register(subparsers) -> argparse.ArgumentParser:
             "promoted into the project_identity context contract. Pass "
             "--dry-run to report the same classification without writing "
             "anything.\n"
+            "\n"
+            "`gaia install` (and the plugin's first session) already runs this "
+            "once for the installed folder, named after it; run it again to "
+            "re-index. Repos inside the recorded root of another workspace are "
+            "left to that workspace.\n"
             "\n"
             "This command indexes only -- it never installs Gaia anywhere."
         ),

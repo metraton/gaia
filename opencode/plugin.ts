@@ -493,6 +493,23 @@ const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
 const gaiaBinDirectory = dirname(gaiaPath)
 
+let python: string[] | undefined
+
+/**
+ * The first working Python 3 among python3, python and `py -3`, probed once.
+ * Same order and probe as hooks/launch.sh: the python.org Windows installer
+ * ships no python3, and Windows' App Execution Alias answers to it anyway.
+ */
+function pythonCommand(): string[] {
+  if (python) return python
+  for (const candidate of [["python3"], ["python"], ["py", "-3"]]) {
+    if (!Bun.which(candidate[0])) continue
+    const probe = Bun.spawnSync([...candidate, "-c", "import sys; sys.exit(sys.version_info[0] != 3)"])
+    if (probe.exitCode === 0) return (python = candidate)
+  }
+  throw new Error("Gaia needs Python 3 on PATH (tried python3, python, py -3)")
+}
+
 /**
  * Create and return a dispatched child's own TMPDIR, or undefined when it
  * cannot exist. Mirrors gaia/paths/resolver.py::dispatch_tmp_dir, which owns
@@ -555,7 +572,7 @@ async function bridge(event: Record<string, unknown>, cwd: string | undefined): 
   if (process.env.GAIA_DEBUG) {
     console.error(`[gaia-opencode-bridge:request] ${JSON.stringify(traceableBridgeRequest(event))}`)
   }
-  const child = Bun.spawn(["python3", bridgePath, "--shell-env-v1"], {
+  const child = Bun.spawn([...pythonCommand(), bridgePath, "--shell-env-v1"], {
     cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
@@ -585,7 +602,7 @@ async function gaiaCapture(
   args: string[],
   cwd: string | undefined,
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const child = Bun.spawn(["python3", gaiaPath, ...args], {
+  const child = Bun.spawn([...pythonCommand(), gaiaPath, ...args], {
     cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdout: "pipe",

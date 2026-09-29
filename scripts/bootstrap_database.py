@@ -33,7 +33,9 @@ names that exact chain (D68: one consent for the whole chain).
 Configuration:
   - GAIA_DB    -- path of the DB. Default ~/.gaia/gaia.db.
   - SCHEMA_FILE-- override of schema.sql. Default <repo>/gaia/store/schema.sql.
-  - WORKSPACE  -- workspace whose identity is registered. Default = repo root.
+  - WORKSPACE  -- workspace whose identity is registered. Unset = none: the
+                  package folder is never a workspace; `gaia install` registers
+                  the folder it ran in through its first scan.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ SCHEMA_FILE = Path(
     or (_SCRIPT_DIR.parent / "gaia" / "store" / "schema.sql")
 ).expanduser()
 
-WORKSPACE = Path(os.environ.get("WORKSPACE") or _SCRIPT_DIR.parent).expanduser()
+WORKSPACE = Path(os.environ["WORKSPACE"]).expanduser() if os.environ.get("WORKSPACE") else None
 
 MIG_DIR = _SCRIPT_DIR / "migrations"
 DOCTOR_PY = _SCRIPT_DIR.parent / "bin" / "cli" / "doctor.py"
@@ -235,11 +237,52 @@ def _run_script(con: sqlite3.Connection, sql: str) -> None:
         con.execute(statement)
 
 
-def _stamp(con: sqlite3.Connection, version: int, description: str, now_utc: str) -> None:
+def _ledger_minimum(con: sqlite3.Connection) -> int | None:
+    """min_code_version of the newest seal; None without the column or a value."""
+    try:
+        row = con.execute(
+            "SELECT min_code_version FROM schema_version ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
+
+
+def _stamp(
+    con: sqlite3.Connection,
+    version: int,
+    description: str,
+    now_utc: str,
+    breaking: bool = False,
+) -> None:
+    """Seal ``version``; once the ledger has min_code_version, record it too.
+
+    The minimum is carried from the previous seal and raised to ``version``
+    only by a breaking migration. A ledger that never recorded one (sealed
+    before v59) falls back to the last breaking migration on disk.
+    """
+    has_minimum = _scalar(
+        con,
+        "SELECT COUNT(*) FROM pragma_table_info('schema_version') "
+        "WHERE name='min_code_version'",
+    )
+    if not has_minimum:
+        con.execute(
+            "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
+            "VALUES (?, ?, ?)",
+            (version, now_utc, description),
+        )
+        return
+    if breaking:
+        minimum = version
+    else:
+        minimum = _ledger_minimum(con)
+        if minimum is None:
+            minimum = migration_guard.last_breaking_version(MIG_DIR, version)
     con.execute(
-        "INSERT OR IGNORE INTO schema_version (version, applied_at, description) "
-        "VALUES (?, ?, ?)",
-        (version, now_utc, description),
+        "INSERT OR IGNORE INTO schema_version "
+        "(version, applied_at, description, min_code_version) VALUES (?, ?, ?, ?)",
+        (version, now_utc, description, minimum),
     )
 
 
@@ -276,8 +319,15 @@ def _apply_chain(
             _stamp(con, start, f"baseline floor: schema.sql at v{start}", now_utc)
         for n, mig_file in chain:
             _log(f"migration v{n - 1}->v{n}: applying {mig_file}")
-            _run_script(con, mig_file.read_text(encoding="utf-8"))
-            _stamp(con, n, f"applied migration {mig_file.name}", now_utc)
+            sql = mig_file.read_text(encoding="utf-8")
+            _run_script(con, sql)
+            _stamp(
+                con,
+                n,
+                f"applied migration {mig_file.name}",
+                now_utc,
+                breaking=migration_guard.is_breaking(sql),
+            )
         con.execute("COMMIT")
     except BaseException:
         if con.in_transaction:
@@ -309,6 +359,7 @@ def _plan(expected: int) -> int:
     con = _open_for_plan()
     census = migration_guard.take_census(con) if con else {}
     ledger = _ledger_version(con) if con else 0
+    minimum = _ledger_minimum(con) if con else None
     if con:
         con.close()
     state = _database_state(census, ledger)
@@ -321,7 +372,16 @@ def _plan(expected: int) -> int:
         return 0
     start = ledger if state == SEALED else SCHEMA_FLOOR
     if ledger > expected:
-        print(f"ledger v{ledger} is NEWER than this code (v{expected}); apply refuses.")
+        if minimum is not None and minimum <= expected:
+            print(
+                f"ledger v{ledger} is newer than this code (v{expected}) and accepts "
+                f"code from v{minimum}: nothing to apply, this code keeps writing."
+            )
+            return 0
+        print(
+            f"ledger v{ledger} is NEWER than this code (v{expected}) and requires "
+            f"code at v{minimum if minimum is not None else ledger}; apply refuses."
+        )
         return 1
     if start == expected and state == SEALED:
         print(f"ledger at v{ledger}: up to date, nothing to apply.")
@@ -363,7 +423,7 @@ def _apply(expected: int, consent_chain: str | None) -> int:
 
     _log(f"Initializing Gaia DB at {GAIA_DB}")
     _log(f"Using schema:  {SCHEMA_FILE}")
-    _log(f"Using workspace: {WORKSPACE}")
+    _log(f"Using workspace: {WORKSPACE or '(none registered)'}")
 
     now = datetime.now(timezone.utc)
     now_utc = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -389,20 +449,27 @@ def _apply(expected: int, consent_chain: str | None) -> int:
             )
             return 1
 
-        # Never install code OLDER than the database: stale code reading a
-        # newer schema is the drift that broke `gaia contract finalize`.
+        # A database newer than this code is never moved down. Within its
+        # compatibility window this code may still use it, so there is nothing
+        # to do; past a breaking migration the install must stop and name the fix.
         if ledger > expected:
+            minimum = _ledger_minimum(con)
+            if minimum is not None and minimum <= expected:
+                _log(
+                    f"schema_version: database v{ledger} is newer than this code "
+                    f"(v{expected}) and accepts code from v{minimum}; nothing to apply."
+                )
+                return 0
             _err(
                 f"ERROR: live DB schema_version={ledger} is NEWER than the "
-                f"schema this code expects (v{expected})."
+                f"schema this code expects (v{expected}), and a breaking "
+                f"migration requires code at v{minimum if minimum is not None else ledger} or newer."
             )
+            _err("Refusing -- the DB is left untouched (no clobber).")
             _err(
-                "This Gaia code is OLDER than the database it would run against. "
-                "Refusing -- the DB is left untouched (no clobber)."
-            )
-            _err(
-                f"Install a Gaia whose EXPECTED_SCHEMA_VERSION >= {ledger}, "
-                "then re-run. To validate without changing anything, run `gaia doctor`."
+                f"Install a Gaia whose EXPECTED_SCHEMA_VERSION >= "
+                f"{minimum if minimum is not None else ledger}, then re-run. "
+                "To validate without changing anything, run `gaia doctor`."
             )
             return 1
 
@@ -474,12 +541,13 @@ def _seed_and_check(con: sqlite3.Connection) -> int:
     _log("agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)")
     con.execute("DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator'")
 
-    workspace_identity = _resolve_workspace_identity()
-    con.execute(
-        "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
-        (workspace_identity, workspace_identity),
-    )
-    _log(f"Workspace registered (identity={workspace_identity})")
+    if WORKSPACE is not None:
+        workspace_identity = _resolve_workspace_identity()
+        con.execute(
+            "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
+            (workspace_identity, workspace_identity),
+        )
+        _log(f"Workspace registered (identity={workspace_identity})")
 
     con.executescript(
         """
@@ -529,9 +597,6 @@ def _seed_and_check(con: sqlite3.Connection) -> int:
         ("distinct agents >= 5",
          _scalar(con, "SELECT COUNT(DISTINCT agent_name) FROM agent_permissions"),
          lambda v: v >= 5),
-        ("workspaces rows >= 1",
-         _scalar(con, "SELECT COUNT(*) FROM workspaces"),
-         lambda v: v >= 1),
         ("FTS5 triggers == 12",
          _scalar(
              con,
