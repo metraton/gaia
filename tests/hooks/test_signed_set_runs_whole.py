@@ -50,6 +50,7 @@ def _request_set(data_dir, steps: list[tuple[str, str]]) -> subprocess.Completed
                  "--does", "Un paso de la entrega.", "--impact", "Cambia el remoto o el repo local."]
     argv += ["--what", "Publicar la rama y abrir el PR", "--question", "¿Publico la rama?",
              "--rollback", "Borrar la rama remota y cerrar el PR.",
+             "--verification", "gh pr view", "--shared-state", "Sí: la rama remota y el PR.",
              "--session-id", SESSION, "--agent-id", AGENT_TYPE, "--json"]
     env = {key: value for key, value in os.environ.items()
            if key not in ("GAIA_DB", "GAIA_DISPATCH_AGENT") and not key.startswith("CLAUDE")}
