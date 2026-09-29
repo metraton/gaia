@@ -1692,10 +1692,11 @@ function checkPage(page) {
   // sections that are all `columns: 1` read as parallel lanes, so unequal depth
   // shows as a ragged bottom edge once the row stretches them. It is often
   // DELIBERATE (a tall block beside a short one is a legitimate composition), so
-  // this informs and never fails.
+  // this informs and never fails. A `columns: 1` parent (`.sec-c1`) is a column:
+  // its sections stack one under another, so they are not lanes at all.
   for (const g of grids) {
     const sibs = g.children.filter(isSection);
-    if (sibs.length < 2) continue;
+    if (sibs.length < 2 || g.cols <= 1) continue;
     const stacks = sibs.filter(s => effectiveCols(s.columns, slotsOf(s.children), (s.children || []).some(isSection)) === 1);
     if (stacks.length < 2 || stacks.length !== sibs.length) continue;
     const depths = stacks.map(s => ({ id: s.id ?? '(no id)', n: (s.children || []).length }));
