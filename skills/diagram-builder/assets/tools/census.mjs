@@ -175,7 +175,7 @@ function main() {
   const built = staticCensus(root);
 
   const census = {
-    deck: deck.manifest.title ?? null, palette: deck.manifest.palette ?? 'neutral',
+    deck: deck.manifest.title ?? null, palette: (gen.ok && gen.doc.palette) || deck.manifest.palette || 'neutral',
     viewport: tokens.viewport.w, problems: built.problems,
     pages: deck.pages.map(({ entry, page }) =>
       censusOfPage(entry, page, deck.manifest, tokens.viewport.w, tokens.breakpoints.stack)),

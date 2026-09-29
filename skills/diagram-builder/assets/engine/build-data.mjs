@@ -13,7 +13,7 @@ import census from '../tools/static-census.cjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveDocTokens, resolveNodeTokens, cssVars } from './tokens.mjs';
+import { resolveDocTokens, resolveNodeTokens, cssVars, LOOKS } from './tokens.mjs';
 import chips from './chips.cjs';
 
 const { resolvePageFilters } = chips;
@@ -58,7 +58,7 @@ function readYaml(path) {
 //     and in order (engine/chips.cjs); a page's manifest entry drops one only by
 //     naming it in `omit_filters`, so the deck's chip coverage reads in one file.
 //     `harmony: true` opts the deck into the static gate's HARMONY check.
-const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'palette', 'palette_overrides', 'tokens', 'filters', 'harmony', 'pages']);
+const MANIFEST_FIELDS = new Set(['title', 'subtitle', 'version', 'look', 'palette', 'palette_overrides', 'tokens', 'filters', 'harmony', 'pages']);
 const MANIFEST_PAGE_FIELDS = new Set(['id', 'name', 'order', 'visible', 'file', 'omit_filters']);
 const PAGE_FIELDS = new Set([
   'id', 'layout', 'columns', 'filters', 'sections', 'form', 'text_fit',
@@ -555,9 +555,24 @@ checkFields(manifest, MANIFEST_FIELDS, 'manifest', '(document.yaml)', 'root');
 manifest.pages.forEach((p, i) =>
   checkFields(p, MANIFEST_PAGE_FIELDS, 'manifest page', '(document.yaml)', `pages[${i}] "${(p && p.id) || '?'}"`));
 
-// TOKENS — document.yaml `tokens:` over DEFAULT_TOKENS, validated. Resolved
-// before any page, because a node override is validated against it.
-const tokens = resolveDocTokens(manifest.tokens, suggest);
+// LOOK — the named visual intention (engine/tokens.mjs LOOKS). It chooses the
+// palette, so a deck that also writes `palette` would carry two answers to one
+// question; that is refused rather than resolved by a precedence nobody reads.
+const LOOK_NAMES = new Set(Object.keys(LOOKS));
+if (manifest.look !== undefined && !LOOK_NAMES.has(manifest.look)) {
+  const hint = suggest(String(manifest.look), LOOK_NAMES);
+  throw new Error(`[strict-schema] document.yaml: unknown look "${manifest.look}"` +
+    (hint ? ` — did you mean "${hint}"?` : '') + `\n  valid looks: ${[...LOOK_NAMES].join(', ')}`);
+}
+const look = manifest.look === undefined ? undefined : LOOKS[manifest.look];
+if (look && manifest.palette !== undefined)
+  throw new Error(`[strict-schema] document.yaml: \`look: ${manifest.look}\` already chooses the palette ` +
+    `("${look.palette}") — delete \`palette\`, or delete \`look\` to pick the palette yourself`);
+
+// TOKENS — document.yaml `tokens:` over the look's tokens over DEFAULT_TOKENS,
+// validated. Resolved before any page, because a node override is validated
+// against it.
+const tokens = resolveDocTokens(manifest.tokens, suggest, look?.tokens);
 
 // CORE CHIPS — validated like a page's chips, then inherited by every page.
 validateFilters(manifest.filters, '(document.yaml)', 'root');
@@ -566,7 +581,7 @@ if (manifest.harmony !== undefined && typeof manifest.harmony !== 'boolean')
 
 // PALETTE — document-level skin selector. Absent means `neutral`, which is the
 // palette every pre-2.1 deck renders with, so omitting it is a no-op.
-const palette = manifest.palette ?? 'neutral';
+const palette = look?.palette ?? manifest.palette ?? 'neutral';
 if (!PALETTES.has(palette)) {
   throw new Error(
     `[strict-schema] document.yaml: unknown palette "${palette}"` +
@@ -662,6 +677,7 @@ const doc = {
   // pre-populates it. Absent from the manifest -> absent on window.__DOC__ ->
   // engine.js's `if (barVer && doc.version)` guard skips rendering cleanly.
   version: manifest.version,
+  look: manifest.look,
   palette,
   palette_overrides: paletteOverrides,
   // The resolved tokens are what both gates read; `css_vars` is the projection

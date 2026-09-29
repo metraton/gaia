@@ -90,7 +90,7 @@ no `layout.row`, no layout modes.
 
 | Term | Where | Meaning |
 |------|-------|---------|
-| `document` | `data/document.yaml` | The whole deck: `title`, `subtitle`, `version`, `palette`, `palette_overrides`, `tokens`, `filters` (the core chips), `harmony`, `pages` (`MANIFEST_FIELDS`). Each `pages[]` entry carries `id`/`name`/`order`/`visible`/`file` and `omit_filters` (`MANIFEST_PAGE_FIELDS`). |
+| `document` | `data/document.yaml` | The whole deck: `title`, `subtitle`, `version`, `look` (a key of `LOOKS` in `engine/tokens.mjs`: it picks the palette and a token set, so it excludes `palette`; see [look.md](look.md)), `palette`, `palette_overrides`, `tokens`, `filters` (the core chips), `harmony`, `pages` (`MANIFEST_FIELDS`). Each `pages[]` entry carries `id`/`name`/`order`/`visible`/`file` and `omit_filters` (`MANIFEST_PAGE_FIELDS`). |
 | `page` | `document.pages[]` | One act. It IS the root section: owns `columns`, `filters` (its page chips), `sections` (the root's children), `form` and `text_fit`, plus the manifest-owned `name`/`order`/`visible` (`PAGE_FIELDS`). `layout` is deprecated: `grid` is its only value and the build warns where it appears. |
 | `section` | any node with `children` | A grid zone: `id`, `title`, `subtitle`, `variant`, `treatment`, `order`, `span`, `rowspan`, `columns`, `tokens`, `children` (`SECTION_FIELDS`). A child may itself be a section: a grid of grids. |
 | `component` | any leaf | Chooses a `type`: `box` (default) · `separator` · `rail` · `spacer` (`COMPONENT_TYPES`). Whitelist `COMPONENT_FIELDS`; a rail has `RAIL_FIELDS`; a spacer `SPACER_FIELDS`. |

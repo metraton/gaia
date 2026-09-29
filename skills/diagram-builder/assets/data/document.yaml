@@ -5,17 +5,15 @@ title: "Diagram Deck"
 subtitle: "A portable, data-driven diagram — edit data/ and run npm run build"
 version: "0.2.0"   # optional — shown in the header; bump it when the deck changes meaningfully
 
-# PALETTE — the deck's SKIN. The semantic roles are identical in every palette
-# (`bad` is always "high risk", `good` always "hardened", `muted` always "secondary
-# text"), so switching this changes how the deck LOOKS and never what it MEANS.
-#   neutral         the house palette (the default when this key is omitted)
-#   rose-pine       Rosé Pine — Dawn on the light theme, Main on the dark
-#   rose-pine-moon  the same, with Rosé Pine Moon on the dark theme
-#   contrast        high contrast, for projecting in a room
-# `npm run contrast` measures every palette against WCAG 2.1 AA.
-# The seed ships rose-pine so a fresh scaffold shows the palette axis working;
-# set it to `neutral` for the house look.
-palette: rose-pine
+# LOOK — where the deck will be seen. One line decides the colours and the text
+# sizes of every page; no box or section changes. Meaning never changes either:
+# `bad` is always "high risk" whatever the look.
+#   projector  a projector or a big room: high contrast, larger text
+#   report     a sober document read up close: the house colours, compact text
+#   brand      a deck that carries an identity: a coloured palette, house sizes
+# Every look keeps the minimum text sizes and the contrast floor.
+# Without `look`, `palette` picks the colours alone (see build.md).
+look: brand
 
 # CORE CHIPS — the deck's recurring actors, declared once. Every page inherits
 # them FIRST, in this order, with this label; a page adds its own chips after

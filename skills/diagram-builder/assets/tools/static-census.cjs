@@ -239,7 +239,10 @@ function staticCensus(root = DEFAULT_ROOT) {
   // Any page that could not be read at all is a census problem in its own right.
   problems.push(...deck.problems);
 
-  if ((manifest.palette ?? 'neutral') !== (gen.palette ?? 'neutral'))
+  if ((manifest.look ?? null) !== (gen.look ?? null))
+    problems.push(`look: document.yaml "${manifest.look ?? '(none)'}" != generated "${gen.look ?? '(none)'}"`);
+  // A look chooses the palette at build time, so only a deck without one authors it.
+  if (manifest.look === undefined && (manifest.palette ?? 'neutral') !== (gen.palette ?? 'neutral'))
     problems.push(`palette: document.yaml "${manifest.palette ?? 'neutral'}" != generated "${gen.palette ?? 'neutral'}"`);
   const authoredOverrides = Object.fromEntries(Object.entries(manifest.palette_overrides || {})
     .map(([theme, vars]) => [theme, Object.fromEntries(Object.entries(vars || {}).map(([k, v]) => [`--${k}`, String(v).trim()]))]));

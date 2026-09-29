@@ -51,8 +51,9 @@ The look has three dials, and each says one thing:
 - **treatment = structure.** It covers a dashed frame (`outside`), centred
   text, a vertical label, a frameless wrapper, and a short-row staircase. It
   changes how something is drawn, never what it means.
-- **palette = skin.** It sets how the whole deck looks (`neutral`, `rose-pine`,
-  `rose-pine-moon`, `contrast`) and never changes what anything means.
+- **look = where it will be seen.** One line in the document (`projector`,
+  `report`, `brand`) sets the colours and text sizes of the whole deck and never
+  changes what anything means. How to choose it is in [look.md](look.md).
 
 ## The map: from an idea to a piece
 
@@ -219,6 +220,8 @@ PATH and CATALOGUE hold both rules.
   one sentence, the sketch and its marks, the reading rules, the handoff.
 - [review.md](review.md): for you, after the build. The census read against the
   sketch in four classes, and how each difference is named.
+- [look.md](look.md): for you, facing the person. From where the deck will be
+  seen to the one-line look that colours and sizes it.
 - [build.md](build.md): for the subagent. It covers the build lane, the census,
   the vocabulary and every field, the per-form skeletons, the tokens, the
   engine's behaviour, and every check `model` runs.

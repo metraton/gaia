@@ -97,6 +97,24 @@ export const NODE_TOKEN_KEYS = freeze({
 // An explicit node override wins over the preset.
 export const PRESETS = freeze({ compact: { 'row.cell_h': 'row.compact_h' } });
 
+// A LOOK is the visual intention document.yaml names in `look:` — where the deck
+// will be seen — resolved to a palette and a token set, so an author changes the
+// look in one line without touching a box. A look's tokens pass the same schema
+// as authored ones, so no look can go below the legibility floors above; the
+// cell floor is model's LEGIBLE check. Larger type at the presentation tier needs
+// more clamp lines and taller rows, which is why `projector` raises all three.
+export const LOOKS = freeze({
+  projector: {
+    palette: 'contrast',
+    tokens: { row: { cell_h: 160 }, type: { title: { max_px: 18, lines: 3 }, desc: { px: 13, lines: 4 }, kicker: { px: 12 } } },
+  },
+  report: {
+    palette: 'neutral',
+    tokens: { type: { title: { min_px: 13, max_px: 15 }, desc: { px: 11 }, kicker: { px: 9.5 } } },
+  },
+  brand: { palette: 'rose-pine', tokens: {} },
+});
+
 const isMap = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 export function getPath(obj, path) {
@@ -170,12 +188,15 @@ function validateAuthored(raw, allowed, where, suggest) {
   return pairs;
 }
 
-// document.yaml `tokens:` merged over DEFAULT_TOKENS. Throws on an unknown key,
-// a value out of its schema range, or a broken relation.
-export function resolveDocTokens(raw, suggest) {
+// document.yaml `tokens:` merged over the chosen look's tokens, merged over
+// DEFAULT_TOKENS. Throws on an unknown key, a value out of its schema range, or
+// a broken relation.
+export function resolveDocTokens(raw, suggest, lookTokens) {
   const where = 'document.yaml';
+  const all = Object.keys(TOKEN_SCHEMA);
   const out = clone(DEFAULT_TOKENS);
-  for (const [p, v] of validateAuthored(raw, Object.keys(TOKEN_SCHEMA), where, suggest)) setPath(out, p, clone(v));
+  for (const [p, v] of validateAuthored(lookTokens, all, `${where} look`, suggest)) setPath(out, p, clone(v));
+  for (const [p, v] of validateAuthored(raw, all, where, suggest)) setPath(out, p, clone(v));
   checkRelations(out, where);
   return out;
 }
