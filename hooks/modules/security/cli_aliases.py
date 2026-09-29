@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 import re
 from functools import lru_cache
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 ENV_VAR = "GAIA_CLI_ALIASES"
 
@@ -55,6 +55,27 @@ def aliased_cli(base_cmd: str) -> Optional[str]:
 def is_cli(base_cmd: str, cli: str) -> bool:
     """True when *base_cmd* is *cli* itself or a wrapper the user declared for it."""
     return base_cmd == cli or aliased_cli(base_cmd) == cli
+
+
+@lru_cache(maxsize=8)
+def _wrapper_token(wrappers: Tuple[str, ...]) -> "re.Pattern[str]":
+    # A wrapper counts only as a whole token: `/usr/bin/ghwrap` and `$(ghwrap`
+    # qualify, `ghwrapper`, `x-ghwrap`, `$ghwrap` and `ghwrap=1` do not.
+    names = "|".join(re.escape(name) for name in sorted(wrappers, key=len, reverse=True))
+    return re.compile(rf"(?<![\w.$-])(?:{names})(?![\w.=-])")
+
+
+def with_wrappers_resolved(command: str) -> Optional[str]:
+    """Return *command* with every declared wrapper token replaced by its CLI, or None.
+
+    Unlike ``as_wrapped_cli`` this reaches every position, so a wrapper inside
+    a substitution, a group or a chain meets the rules its CLI would meet there.
+    """
+    aliases = _parse(os.environ.get(ENV_VAR, ""))
+    if not aliases or not command:
+        return None
+    resolved = _wrapper_token(tuple(aliases)).sub(lambda m: aliases[m.group(0)], command)
+    return resolved if resolved != command else None
 
 
 def as_wrapped_cli(command: str) -> Optional[str]:

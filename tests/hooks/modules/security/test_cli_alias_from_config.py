@@ -136,6 +136,52 @@ def test_declared_wrapper_is_blocked_at_the_bash_boundary(monkeypatch):
     assert not result.approval_id, "a declared wrapper got an approvable path to a gh block"
 
 
+# Positions off the head of the command where gh's unanchored rule still
+# matches; a declared wrapper must be held there too (D107).
+EMBEDDED_FORMS = [
+    "echo $({cli} {op})",
+    "echo `{cli} {op}`",
+    "(sudo {cli} {op})",
+    "true; {cli} {op}",
+    "true && {cli} {op}",
+]
+
+
+def _validate_as_subagent(command: str):
+    return BashValidator().validate(
+        command, is_subagent=True, session_id="s-782-embedded",
+        agent_type="developer",
+    )
+
+
+@pytest.mark.parametrize("form", EMBEDDED_FORMS)
+def test_embedded_wrapper_is_blocked_at_the_floor_wherever_gh_is(monkeypatch, form):
+    assert is_blocked_command(form.format(cli="gh", op=_REPO_DELETE)).is_blocked
+
+    _declare(monkeypatch, f"{WRAPPER}=gh")
+    command = form.format(cli=WRAPPER, op=_REPO_DELETE)
+    assert is_blocked_command(command).is_blocked, command
+
+
+@pytest.mark.parametrize("form", EMBEDDED_FORMS)
+def test_embedded_wrapper_is_denied_at_the_bash_boundary_like_gh(monkeypatch, form):
+    gh_result = _validate_as_subagent(form.format(cli="gh", op=_REPO_DELETE))
+    assert not gh_result.allowed and not gh_result.approval_id
+
+    _declare(monkeypatch, f"{WRAPPER}=gh")
+    command = form.format(cli=WRAPPER, op=_REPO_DELETE)
+    result = _validate_as_subagent(command)
+    assert not result.allowed, command
+    assert not result.approval_id, f"{command!r} got an approvable path to a gh block"
+
+
+@pytest.mark.parametrize("form", EMBEDDED_FORMS)
+def test_embedded_wrapper_resolves_only_as_a_whole_token(monkeypatch, form):
+    _declare(monkeypatch, f"{WRAPPER}=gh")
+    command = form.format(cli=f"{WRAPPER}er", op=_REPO_DELETE)
+    assert not is_blocked_command(command).is_blocked, command
+
+
 def test_undeclared_wrapper_gets_no_gh_block():
     assert not is_blocked_command(f"{WRAPPER} {_REPO_DELETE}").is_blocked
 

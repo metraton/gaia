@@ -30,7 +30,7 @@ import logging
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
-from .cli_aliases import as_wrapped_cli
+from .cli_aliases import with_wrappers_resolved
 from .command_semantics import CommandSemantics, analyze_command, _contains_ordered_sequence
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -688,8 +688,31 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
         return BlockedCommandResult(is_blocked=False)
 
     command = command.strip()
+    result = _classify_all_forms(command)
+    if result.is_blocked:
+        return result
 
-    # Classify the command as written.
+    # ------------------------------------------------------------------
+    # Declared-wrapper guard.
+    # ------------------------------------------------------------------
+    # Every rule here is keyed on a CLI's real name, so a wrapper the user
+    # declared in GAIA_CLI_ALIASES would reach the wrapped CLI's irreversible
+    # subcommands with an approval instead of a block. Resolving the wrapper
+    # at every token position -- not only at the head -- and running the same
+    # forms again holds it wherever the wrapped CLI's rule would match: inside
+    # a substitution, a group, or a chain. Strictly additive: the command as
+    # written was already classified above.
+    resolved = with_wrappers_resolved(command)
+    if resolved:
+        resolved_result = _classify_all_forms(resolved)
+        if resolved_result.is_blocked:
+            return resolved_result
+
+    return result
+
+
+def _classify_all_forms(command: str) -> BlockedCommandResult:
+    """Classify *command* as written, peeled, ungrouped, and per substitution."""
     result = _classify_stripped_command(command)
     if result.is_blocked:
         return result
@@ -743,20 +766,6 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
             inner_result = _classify_stripped_command(candidate)
             if inner_result.is_blocked:
                 return inner_result
-
-    # ------------------------------------------------------------------
-    # Declared-wrapper guard.
-    # ------------------------------------------------------------------
-    # Every rule here is keyed on a CLI's real name, so a wrapper the user
-    # declared in GAIA_CLI_ALIASES would reach the wrapped CLI's irreversible
-    # subcommands with an approval instead of a block. Classify the command
-    # as the wrapped CLI too. Strictly additive, like the guards above.
-    for candidate in (command, remainder if peeled else None, ungrouped):
-        wrapped = as_wrapped_cli(candidate) if candidate else None
-        if wrapped:
-            wrapped_result = _classify_stripped_command(wrapped.strip())
-            if wrapped_result.is_blocked:
-                return wrapped_result
 
     return result
 
