@@ -1,51 +1,54 @@
-# PRINCIPLE 9 — "The hole speaks."
+# DATA 6 OF 7 — an empty place is written too.
 #
-# One page, one principle. The page DEMONSTRATES the principle that names it,
-# and the content of every box EXPLAINS the tool that box is demonstrating —
-# so the deck is its own documentation and the guardrail keeps it honest.
+# A page of the tour's data step. Every place on the page is filled by
+# something the person writes, so an empty place is either a mistake or a
+# decision, and a reader cannot tell which. There are only two honest answers:
+# CLOSE it by changing the data around it, or DECLARE it with a `spacer`. The
+# same rule holds for lanes: two lanes that share a row must be written the same
+# length.
 #
-# An empty cell is not a neutral gap: it asserts that nothing belongs there, and
-# a reader cannot tell that assertion apart from an oversight. So there are only
-# two honest answers — CLOSE it, or DECLARE it. The second half of the principle
-# is the one this page can actually draw: a row SHARED by several lanes only
-# means something when every lane is the same length, which is exactly the foot
-# row of a real timeline.
-#
-# FORM: timeline. Deliberate, and the only form the seed had left unexercised:
-# the principle's second half is literally about lanes and the row beneath them,
-# which is what a timeline IS. The scope fits — `timeline` is the one form
-# excluded from the GRIDDED family (a long row of lanes is its legitimate shape,
-# so the dead-track, edge-fill and orphan/verticality judgements step back),
-# while the checks this page lives or dies by hold at EVERY form: rectangle
-# closure, interior holes, and LANE — rail-led swimlanes of unequal length are a
-# hard failure. That is why this page cannot author a real hole to show you: the
-# gate would reject the deck. The hole is therefore DECLARED in words, and the
-# one asymmetry that is legitimate — the taper a `rowspan` cuts — is named.
+# FORM: timeline. Deliberate: the page's second half is about lanes and the row
+# beneath them, which is what a timeline IS. `timeline` is excluded from the
+# GRIDDED family (the dead-track, edge-fill and orphan/verticality judgements
+# step back), while rectangle closure, interior holes, and LANE — rail-led
+# swimlanes of unequal length are a hard failure — hold at every form. That is
+# why this page cannot author a real hole: the model would reject the deck. The
+# hole is DECLARED in words, and the one legitimate asymmetry — the taper a
+# `rowspan` cuts — is named.
 #
 # WHAT IT EXERCISES: `type: rail` in BOTH orientations — two horizontal rails
 # leading two swimlanes of equal length (which is what arms the LANE check), and
 # a VERTICAL rail with `rowspan: 2` labelling a lane down two rows, with the four
 # siblings that create the rows it spans · a full-width foot row shared by both
 # lanes · the exempt rowspan taper explained rather than authored · `type:
-# spacer`, the instrument the DECLARE half of the principle was missing, shown by
-# drawing a band with it.
+# spacer`, shown by drawing a band with it.
 
 id: p9-the-hole
 form: timeline
-# Two root columns, so each of the three bands takes a full row: the claim, the
-# two lanes with the row they share, the lane labelled down the block axis, and
-# the band the spacer draws.
+# Two root columns, so each of the bands takes a full row: the claim, the two
+# lanes with the row they share, the lane labelled down the block axis, and the
+# band the spacer draws.
 columns: 2
 
 sections:
 
-  # ── ROW 1 · WHAT AN EMPTY CELL SAYS ───────────────────────────────────────
-  # Three single cells in three tracks. The third one carries the only legitimate
-  # hole in the dialect — the taper a rowspan cuts — which is stated here because
-  # the checker's exemption for it is narrow and worth naming exactly.
+  - id: p9-lead
+    order: 0
+    span: 2
+    lead: true
+    kicker: "DATA · 6 OF 7"
+    title: "An empty place is written too"
+    description:
+      - "a gap you mean is a spacer in the data; a gap you did not mean is a defect"
+    detail: "Every place on the page is filled by something you wrote. When a place must stay empty, write that as data: a <code>spacer</code> fills it and says the gap is meant. When the gap was not meant, change the data around it until it closes."
+
+  # ── ROW 1 · WHAT AN EMPTY PLACE SAYS ──────────────────────────────────────
+  # Three single cells in three tracks. The third one names the only legitimate
+  # hole — the taper a rowspan cuts — because the checker's exemption for it is
+  # narrow and worth naming exactly.
   - id: p9-speaks
-    title: "An empty cell asserts something"
-    subtitle: "it says nothing belongs here — and the reader cannot tell that from an oversight"
+    title: "An empty place says something"
+    subtitle: "it says nothing belongs here — and the reader cannot tell that from a mistake"
     variant: neutral
     order: 1
     span: 2
@@ -54,40 +57,39 @@ sections:
       - id: p9-s-claim
         order: 1
         kicker: CLAIM
-        title: "A hole is a statement"
+        title: "A gap is a statement"
         description:
           - "the gap says nothing"
           - "belongs in this place"
-        detail: "Every other cell in a grid carries a claim, so the empty one is read as a claim too: <em>this position is deliberately unoccupied</em>. Nothing distinguishes that from a cell the author forgot, a merge that did not fit, or a column count that was never earned — which is why a hole is treated as a defect until it is declared."
+        detail: "Every other place on the page carries something you wrote, so an empty one is read as a claim too: <em>nothing goes here, on purpose</em>. Nothing tells that apart from a box you forgot or a column you did not need, which is why a gap counts as a defect until it is declared."
         variant: neutral
       - id: p9-s-close
         order: 2
         kicker: CLOSE IT
         title: "If you did not mean it"
         description:
-          - "fill the track, merge a"
-          - "neighbour, drop a column"
-        detail: "Three ways to close a hole, in ascending order of honesty: author the missing cell, widen a neighbour with <code>span</code> so it consumes the empty track, or lower <code>columns</code> so the track was never declared. The third is usually the right one — a hole is very often a column count the content cannot fill, and the engine's grow-with-content clamp already tries to save you from it."
+          - "write the missing box, widen"
+          - "a neighbour, drop a column"
+        detail: "Three ways to close a gap by changing the data: write the missing box, give a neighbour a wider <code>span</code> so it takes the empty place, or lower the group's <code>columns</code> so the place was never asked for. The third is usually right: a gap is very often a column count the content cannot fill."
         variant: neutral
       - id: p9-s-declare
         order: 3
         kicker: DECLARE IT
         title: "If you did"
         description:
-          - "say so — the taper of a"
-          - "chart is the clean case"
-        detail: "One asymmetry is legitimate and the checker knows it by name: the rows a <code>rowspan</code> cell touches are EXEMPT from the closure identity, because a ladder of bars 1·2·3·4 tapers by design — the taper IS the chart (p1). That exemption is the whole of it. Any other gap has to be closed, or explained in the text of the cells around it, because the geometry cannot carry the explanation."
+          - "write a spacer; the taper"
+          - "of a chart is the one exception"
+        detail: "Write a <code>spacer</code> where the gap is meant, as the band at the bottom of this page does. One asymmetry needs no spacer: the rows a <code>rowspan</code> box touches are allowed to taper, because a ladder of bars 1·2·3·4 tapers by design and the taper IS the chart. Any other gap is closed or declared."
         variant: warn
 
   # ── ROW 2 · TWO LANES AND THE ROW THEY SHARE ──────────────────────────────
   # A rail at track 1 makes the row a SWIMLANE: the rail is the label and the
   # cells after it are its steps. TWO rails in one grid is what arms the LANE
   # check — it compares how far each lane reaches and FAILS on a ragged one. Both
-  # lanes reach track 4 here, which is the precondition that makes the foot row
-  # beneath them mean anything.
+  # lanes reach track 4 here, which makes the foot row beneath them meaningful.
   - id: p9-lanes
     title: "A shared row needs equal lanes"
-    subtitle: "two rail-led swimlanes of three steps each — then the row both of them meet in"
+    subtitle: "two lanes written three steps each — then the row both of them meet in"
     variant: neutral
     order: 2
     span: 2
@@ -102,21 +104,21 @@ sections:
         kicker: STEP 1
         title: "Commit"
         description: ["the lane's first step"]
-        detail: "A horizontal rail is a slim title-only banner (<code>.rail-h</code>) that labels the cells to its right. It is a structural leaf, not a card: no kicker, no description, no click — its whole payload is the lane's name."
+        detail: "The lane's name is a rail: you write <code>type: rail</code> and a title, and it shows as a slim label for the boxes to its right. It has no kicker, no description and no click; the lane's name is all it carries."
         variant: neutral
       - id: p9-l-package
         order: 3
         kicker: STEP 2
         title: "Package"
         description: ["the second step"]
-        detail: "The rail costs one track of the row, so a 4-column lane carries three steps. That is the trade a swimlane makes: the label is a cell like any other, and it is charged like one."
+        detail: "The rail takes one column of the row, so a four-column lane carries three steps. The label is written like any other box and takes a place like one."
         variant: neutral
       - id: p9-l-publish
         order: 4
         kicker: STEP 3
         title: "Publish"
         description: ["the third — the lane ends"]
-        detail: "With this cell the lane reaches track 4, which is where the row closes. The LANE check records that reach and compares it against the other rail's row."
+        detail: "With this box the lane reaches its last column and the row closes. The other lane has to be written just as long."
         variant: neutral
       - id: p9-l-rail-ship
         type: rail
@@ -127,21 +129,21 @@ sections:
         kicker: STEP 1
         title: "Stage"
         description: ["the second lane starts"]
-        detail: "The second rail wraps to a row of its own because the row above is full, and it lands at track 1 — which is what makes this row a lane rather than a continuation of the one above it."
+        detail: "The second rail starts a row of its own because the row above is full, and it lands in the first column, which is what makes this row a lane rather than the end of the one above."
         variant: neutral
       - id: p9-l-verify
         order: 7
         kicker: STEP 2
         title: "Verify"
         description: ["step 2 of the same lane"]
-        detail: "Two lanes in one grid must be of EQUAL length: <code>npm run model</code> fails a grid where one rail-led row reaches track 4 and another stops at 3, and it fails HARD, because unlike a short last row that is a collapse artefact, a ragged lane is authored."
+        detail: "Two lanes in one group must be written the same length: <code>npm run model</code> fails a group where one lane reaches the fourth column and another stops at the third, because a short lane is something you wrote, not something the screen did."
         variant: neutral
       - id: p9-l-release
         order: 8
         kicker: STEP 3
         title: "Release"
         description: ["and the lanes now match"]
-        detail: "Both lanes are three steps long, so the two rows are directly comparable: step 2 of Build sits above step 2 of Ship. That vertical alignment is a claim — and it is only true because the lengths agree."
+        detail: "Both lanes are three steps long, so the rows compare directly: step 2 of Build sits above step 2 of Ship. That alignment is a claim, and it is only true because the lengths agree."
         variant: neutral
       - id: p9-l-handoff
         order: 9
@@ -151,17 +153,16 @@ sections:
         description:
           - "it means one thing only"
           - "because the lanes match"
-        detail: "The foot of a real timeline: a full-width row (<code>span == columns</code>) that both lanes hand off to. Its meaning depends entirely on the equality above it — if Build were four steps and Ship two, this row would sit under two different points in time and assert a synchronisation that never happens. That is the second half of the principle: a shared row is a claim about SIMULTANEITY, and unequal lanes make it a lie."
+        detail: "The foot of a real timeline: a full-width row both lanes hand off to. Its meaning depends on the equal lengths above it: if Build were four steps and Ship two, this row would sit under two different moments and claim a hand-off that never happens together."
         variant: accent
 
   # ── ROW 3 · THE LANE LABELLED DOWN THE BLOCK AXIS ─────────────────────────
-  # A VERTICAL rail with `rowspan: 2` is the rail's best use: it labels a lane
-  # that runs down rather than across. Like every merge, it consumes rows that
-  # must ALREADY EXIST — the four cells beside it are what create them, and with
-  # them the band closes exactly (1×2 + 4×1 = 6 = 3 tracks × 2 rows).
+  # A VERTICAL rail with `rowspan: 2` labels a lane that runs down rather than
+  # across. It consumes rows that must ALREADY EXIST — the four cells beside it
+  # create them, and the band closes exactly (1×2 + 4×1 = 6 = 3 tracks × 2 rows).
   - id: p9-vlane
     title: "A lane labelled down the rows"
-    subtitle: "a vertical rail with rowspan: 2 — and the four cells that create the rows it spans"
+    subtitle: "a vertical rail with rowspan: 2 — and the four boxes that fill the rows it spans"
     variant: neutral
     order: 3
     span: 2
@@ -178,18 +179,18 @@ sections:
         kicker: ROW 1
         title: "What it labels"
         description:
-          - "the cells beside it are"
+          - "the boxes beside it are"
           - "one lane, two rows deep"
-        detail: "<code>treatment: [vertical]</code> rotates the rail's title onto the block axis (<code>writing-mode:vertical-rl</code>) and <code>align-self:stretch</code> makes it fill the rows it spans — so one label serves a block of cells instead of a single row. This is the rail's best use: the same swimlane idea turned ninety degrees."
+        detail: "Write <code>treatment: [vertical]</code> and <code>rowspan: 2</code> on a rail and its title turns on its side and runs down two rows, so one label serves a block of boxes instead of a single row."
         variant: neutral
       - id: p9-v-r1b
         order: 3
         kicker: ROW 1
         title: "The first row"
         description:
-          - "two tracks wide, beside"
+          - "two columns wide, beside"
           - "the label's one"
-        detail: "The rail takes track 1 in both rows, so each row of the lane is two cells wide. Nothing about these cells is different from an ordinary box — the lane is drawn entirely by the label's height."
+        detail: "The rail takes the first column in both rows, so each row of the lane is two boxes wide. These are ordinary boxes; the lane is drawn by the label's height alone."
         variant: neutral
       - id: p9-v-r2a
         order: 4
@@ -198,30 +199,26 @@ sections:
         description:
           - "the same label still"
           - "reaches down to here"
-        detail: "<code>rowspan: 2</code> on the rail is the vertical merge (<code>grid-row: span 2</code>) applied to a structural leaf. The rows a rowspan touches are exempt from the closure identity — but this band closes anyway, which is the honest way to author it: the exemption is there for a chart that tapers, not as a licence for a gap."
+        detail: "The rows a <code>rowspan</code> touches may taper, but this band closes anyway, which is the honest way to write it: the exception is there for a chart that tapers, not for a gap."
         variant: neutral
       - id: p9-v-r2b
         order: 5
         kicker: HOLDS
         title: "What holds it up"
         description:
-          - "these four cells create"
+          - "these four boxes fill"
           - "the rows the rail spans"
-        detail: "A merge consumes rows that must already exist (principle 1), so a rail spanning two rows needs two rows' worth of siblings beside it. Author the rail alone and there is nothing to span: the grid has one row, the rowspan is silently satisfied by it, and the label reads as a cell rather than a lane."
+        detail: "A rail two rows tall needs two rows of boxes beside it. Write the rail alone and there is nothing to label: the group has one row, and the label reads as a box rather than a lane."
         variant: neutral
 
   # ── ROW 4 · THE TOOL THAT DECLARES A HOLE ─────────────────────────────────
-  # The principle's first half finally has an instrument. "Close it, or declare
-  # it" left DECLARE with nothing to declare WITH: the only way to hold a cell
-  # open was to invent a box for it, and an empty card is a worse lie than a gap.
-  # `type: spacer` is that instrument, and this band is drawn BY it — the two
-  # spacers at the top of tracks 1 and 2 are what push their explaining cells
-  # down onto the base row the tall cell also ends in. So the geometry the reader
-  # sees IS the tool: two visibly empty cells that are nonetheless authored, and
-  # the band closes exactly (2 spacers + 1×2 + 2 = 6 = 3 tracks × 2 rows).
+  # `type: spacer` is the instrument DECLARE was missing, and this band is drawn
+  # BY it — the two spacers at the top of tracks 1 and 2 push their explaining
+  # cells down onto the base row the tall cell also ends in, and the band closes
+  # exactly (2 spacers + 1×2 + 2 = 6 = 3 tracks × 2 rows).
   - id: p9-spacer
-    title: "The hole you meant, spelled out"
-    subtitle: "type: spacer — a cell that occupies its track and draws nothing, so the rectangle closes without inventing content"
+    title: "The gap you meant, written down"
+    subtitle: "type: spacer — an entry that takes its place and shows nothing, so the rectangle closes without inventing content"
     variant: neutral
     order: 4
     span: 2
@@ -237,20 +234,20 @@ sections:
         order: 3
         rowspan: 2
         kicker: WHAT IT HOLDS
-        title: "Two rows, one cell"
+        title: "Two rows, one box"
         description:
-          - "the two empty cells above"
-          - "are the tool, not a hole"
-        detail: "This cell is two rows tall, and the two cells above its neighbours are <code>type: spacer</code>. That is the whole demonstration: without them the two boxes to the left would start in row 1 and this band would taper upward from a ragged floor; with them, every cell in the band ends in row 2. A spacer buys ALIGNMENT, and alignment is what makes neighbouring cells comparable."
+          - "the two empty places above"
+          - "are written, not forgotten"
+        detail: "This box is two rows tall, and the two places above its neighbours are <code>type: spacer</code>. Without them the two boxes to the left would start in the top row and the band would end on a ragged floor; with them, every box ends in the bottom row. A spacer buys ALIGNMENT, and alignment makes neighbours comparable."
         variant: accent
       - id: p9-sp-is
         order: 4
         kicker: WHAT IT IS
-        title: "A declared hole"
+        title: "A declared gap"
         description:
-          - "it occupies its cell and"
-          - "draws nothing at all"
-        detail: "A spacer is a leaf like a box, a rail or a separator: it takes a whole cell, it honours <code>span</code> and <code>rowspan</code>, and it renders no frame, no text and no click. The closure identity counts it, the census counts it, and the guardrail can therefore tell a hole you MEANT from one you forgot — which is the entire difference this principle is about."
+          - "it takes its place and"
+          - "shows nothing at all"
+        detail: "You write a spacer like a box: an <code>id</code>, <code>type: spacer</code>, an <code>order</code>, and a <code>span</code> or <code>rowspan</code> if it is larger. It shows no frame, no text and no click, but it is counted, so a gap you MEANT is told apart from one you forgot."
         variant: neutral
       - id: p9-sp-is-not
         order: 5
@@ -258,6 +255,6 @@ sections:
         title: "Not an empty card"
         description:
           - "no title, no colour, no"
-          - "filter — rejected by name"
-        detail: "A spacer carries <em>only</em> <code>id</code>, <code>type</code>, <code>order</code>, <code>span</code> and <code>rowspan</code>. Every other field is refused with a message naming it, because each one presupposes ink that is never drawn: a title would make it an empty card, a <code>variant</code> would colour a frame that does not exist, and a <code>filters</code> key would enrol an invisible cell as a member of a relation it can never light."
+          - "chip — refused by name"
+        detail: "A spacer takes <em>only</em> <code>id</code>, <code>type</code>, <code>order</code>, <code>span</code> and <code>rowspan</code>. Anything else is refused by name, because each field presumes something drawn: a title would make it an empty card, a <code>variant</code> would colour a frame that is not there, and a chip would light a box nobody can see."
         variant: warn

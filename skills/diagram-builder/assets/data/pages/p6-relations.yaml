@@ -1,22 +1,15 @@
-# PRINCIPLE 6 — "The grid does not draw relations: it lights them."
+# IDEAS 4 OF 4 — what crosses everything is a relation.
 #
-# One page, one principle. The page DEMONSTRATES the principle that names it,
-# and the content of every box EXPLAINS the tool that box is demonstrating —
-# so the deck is its own documentation and the guardrail keeps it honest.
+# A page of the tour's ideas step. It teaches the last question about the ideas:
+# what runs across the groups without belonging to one. A relation is named as a
+# question, it can have a direction (a path) or none (a theme), it needs at
+# least two ends, and one idea can sit in two relations at once. The page's own
+# chips are the example each box points at.
 #
-# A grid has no edges to draw, so there are no arrows anywhere in the dialect.
-# A relation is expressed as a FILTER CHIP: every component that declares the
-# chip's `key` belongs to it, and clicking the chip LIGHTS the membership and
-# dims everything else. Two kinds exist — a directional FLOW, made legible by
-# `order` because there is no arrowhead to point with, and a cross-cutting
-# CONCEPT that ignores section boundaries entirely.
-#
-# FORM: flow. Deliberate, and deliberately the SAME form as p3: the two pages
-# teach the two halves of one fact. p3 shows that `order` is the only coordinate;
-# this page shows that `order` is therefore the only thing that can make a
-# relation directional. `flow` also keeps the word-fit floor — right for a page
-# whose cells carry real sentences — and drops the orphan-row and verticality
-# checks, right for a page that is two bands over a paired row.
+# FORM: flow. Deliberate, and deliberately the SAME form as p3: a path is an
+# order that crosses groups. `flow` also keeps the word-fit floor — right for a
+# page whose cells carry real sentences — and drops the orphan-row and
+# verticality checks, right for a page that is two bands over a paired row.
 #
 # WHAT IT EXERCISES: a directional FLOW chip whose kickers and `order` read
 # 1 → 2 → 3 · a cross-cutting CONCEPT chip with members in three different
@@ -32,34 +25,41 @@ form: flow
 columns: 2
 
 filters:
-  # REUSED KEY. `packing` is also declared on p3, where it traces the packing
-  # order. The slug is per-page — the engine scopes chips and members to the
-  # active page — so reusing it makes no cross-page mess; what it does is
-  # project one page onto the other: the reader who lit `packing` on p3 finds the
-  # same relation named here, on the page that explains why it is directional.
-  # One relation, so one label: CHIP-X fails a key whose label differs by page.
+  # REUSED KEY. `packing` is also declared on p3, where it traces the order of
+  # the story. One relation, so one label: CHIP-X fails a key whose label
+  # differs by page.
   - key: packing
-    label: "In what order does it pack?"
+    label: "What comes first?"
     steps:
-      - "Click the chip to light the three cells of the flow, in the order they are authored."
-      - "There is no arrowhead: the direction is carried by <code>order</code> and by the kickers 1 · 2 · 3."
-      - "The same key is declared on page 3, where it traces the packing order — one slug, two pages."
+      - "Click the chip to light the three boxes of the path, in the order the story tells them."
+      - "A path is a relation with a direction: first, then, last."
+      - "The same question is asked on the page about order: one relation, two pages."
   - key: crosscut
     label: "What crosses the sections?"
     steps:
-      - "Click the chip to light members in THREE different sections at once."
-      - "A concept chip is not a path: nothing about it reads in an order, and it never leaves a section out."
-      - "One cell belongs to this relation AND to the flow above — membership is a list, not a category."
+      - "Click the chip to light boxes in THREE different groups at once."
+      - "A theme has no direction: nothing in it comes first, and it ignores the groups."
+      - "One box belongs to this relation AND to the path above: an idea can sit in two relations."
 
 sections:
 
-  # ── ROW 1 · WHAT A CHIP IS, AND WHY THERE ARE NO ARROWS ───────────────────
+  - id: p6-lead
+    order: 0
+    span: 2
+    lead: true
+    kicker: "IDEAS · 4 OF 4"
+    title: "What crosses everything is a relation"
+    description:
+      - "some ideas run across the groups; name each one as a question"
+    detail: "The last question about your ideas: what runs across the groups without belonging to one? A relation is asked as a question, like 'Which boxes are the gates?', and answered by lighting every box that shares it. Name the relations now; the piece that carries them comes in the next step."
+
+  # ── ROW 1 · what a relation is ────────────────────────────────────────────
   # Three single cells in three tracks. The third one carries the arity rule,
   # which is the only thing on this page that must be TOLD rather than shown:
   # the checker rejects a one-member chip, so the deck cannot demonstrate one.
   - id: p6-what
-    title: "It lights, it does not draw"
-    subtitle: "a chip is a relation expressed as membership — the grid has no edges"
+    title: "Name it as a question"
+    subtitle: "a relation is something several ideas share, across the groups they sit in"
     variant: neutral
     order: 1
     span: 2
@@ -67,40 +67,40 @@ sections:
     children:
       - id: p6-w-arrow
         order: 1
-        kicker: NO EDGE
-        title: "There are no arrows"
+        kicker: ASK
+        title: "What do they share?"
         description:
-          - "the grid draws cells"
-          - "never lines between them"
-        detail: "Nothing in the dialect can draw an edge from one cell to another — a <code>separator</code> is a divider, not a connector, and there is no coordinate space to route a line through. So a relation cannot be DRAWN, and the substitute is not a weaker arrow: it is membership."
+          - "a relation is something"
+          - "several ideas have in common"
+        detail: "Look across your groups and ask what several ideas share without belonging to one group: an owner, a risk, a status, a path the reader follows. Each answer is a relation, and it is told as a question, like 'Who owns this?' or 'Which steps can fail?'."
         variant: neutral
       - id: p6-w-chip
         order: 2
-        kicker: MEMBERS
-        title: "The cell owns its tags"
+        kicker: CROSSES
+        title: "It keeps the groups"
         description:
-          - "a component declares keys"
-          - "the chip is the index"
-        detail: "A component lists the keys it belongs to in <code>filters</code>, and the engine builds the inverse index by walking the tree — so there is no central node list to maintain. Lighting a chip adds <code>.lit</code> to every member and to its enclosing section, and dims the rest of the canvas."
+          - "a relation crosses groups"
+          - "and never breaks them up"
+        detail: "A relation does not move ideas out of their groups. The groups stay what the story said they are, and the relation runs across them, lit when the reader asks its question."
         variant: neutral
       - id: p6-w-arity
         order: 3
-        kicker: ARITY
+        kicker: TWO ENDS
         title: "Two ends or nothing"
         description:
-          - "one member is no relation"
-          - "and it blacks out the page"
-        detail: "A one-member chip cannot be shown on this page, because <code>npm run model</code> FAILS it (CHIP arity): a relation needs two ends, and since an active chip dims everything it does not name, a chip with a single member switches the whole canvas off to spotlight one box. A chip with ZERO members fails the same check from the other direction. The rule is enforced, so the defect is stated here in words instead of authored."
+          - "one idea alone is not"
+          - "a relation to anything"
+        detail: "A relation needs at least two ideas. If only one idea answers the question, it is not a relation: it is a property of that idea, and it belongs in its own box. <code>npm run model</code> refuses a relation with a single member, so the seed states the rule here instead of showing it."
         variant: warn
 
-  # ── ROW 2 · THE FLOW CHIP — direction carried by `order` ──────────────────
+  # ── ROW 2 · the path — a relation with a direction ────────────────────────
   # Three cells, orders 1 · 2 · 3, all members of `packing`. The kickers repeat
   # the number so the direction survives a reader who never clicks the chip.
   # The middle cell also belongs to `crosscut`, which is what shows that
   # membership is a LIST rather than a classification.
   - id: p6-flow
-    title: "A flow, read in one direction"
-    subtitle: "no arrowhead exists — so order and position carry the direction"
+    title: "A path has a direction"
+    subtitle: "some relations are a route: this first, then this, then that"
     variant: neutral
     order: 2
     span: 2
@@ -111,9 +111,9 @@ sections:
         kicker: "1"
         title: "Where it starts"
         description:
-          - "first in order"
-          - "so leftmost in the row"
-        detail: "This cell is the flow's first end. It reads as first for two independent reasons: it is authored first, and its kicker says so. Neither is an arrow, and together they are enough."
+          - "the first idea on the path"
+          - "comes first in the story"
+        detail: "A path is a relation whose members come in order. Say where it starts; the first idea is the one the reader meets first when the question is asked."
         variant: neutral
         filters: [packing]
       - id: p6-f-2
@@ -121,9 +121,9 @@ sections:
         kicker: "2"
         title: "The middle, twice over"
         description:
-          - "second in the flow"
-          - "and in the concept too"
-        detail: "The only cell on this page in TWO relations: it lists both <code>packing</code> and <code>crosscut</code>. Membership is a list, so a cell can sit on a path and also belong to a theme that cuts across the page — the two chips light overlapping, not exclusive, sets."
+          - "second on the path"
+          - "and part of a theme too"
+        detail: "The only idea on this page in TWO relations: it is a step on the path and it also shares the theme below. An idea can answer several questions, so relations overlap rather than divide the page."
         variant: accent
         filters: [packing, crosscut]
       - id: p6-f-3
@@ -131,9 +131,9 @@ sections:
         kicker: "3"
         title: "Where it ends"
         description:
-          - "last in order"
-          - "so last in the reading"
-        detail: "The far end of the relation. When the chip lights, these three cells are the only lit ones in this section, and the eye reads them left to right because that is where <code>order</code> put them. Change the orders and the flow reverses — there is nothing else to edit."
+          - "the last idea on the path"
+          - "comes last in the reading"
+        detail: "The far end of the path. When the question is asked, these three ideas light in the order the story tells them. If the path went back or jumped between groups, the question's own steps would say so."
         variant: neutral
         filters: [packing]
 
@@ -141,8 +141,8 @@ sections:
   # Two cells: one is a member, one is not, so the dimming is visible inside a
   # single section rather than only between sections.
   - id: p6-left
-    title: "One section"
-    subtitle: "a member and a non-member, side by side"
+    title: "One group"
+    subtitle: "an idea that shares the theme, and one that does not"
     variant: neutral
     order: 3
     span: 1
@@ -150,30 +150,29 @@ sections:
     children:
       - id: p6-l-in
         order: 1
-        kicker: CONCEPT
-        title: "Tagged here"
+        kicker: THEME
+        title: "Shares it here"
         description:
-          - "a member of the chip"
-          - "in this section"
-        detail: "One end of the <code>crosscut</code> relation. A concept chip groups by theme, status or ownership — anything true of several cells at once — and it has no direction: there is no first or last member, only membership."
+          - "this idea answers the"
+          - "theme's question"
+        detail: "One end of a theme: a relation with no direction. A theme groups by owner, status or risk, anything true of several ideas at once, and nothing in it comes first or last."
         variant: neutral
         filters: [crosscut]
       - id: p6-l-out
         order: 2
-        kicker: DIMMED
-        title: "Not tagged"
+        kicker: NOT IN IT
+        title: "Does not share it"
         description:
-          - "declares no key"
-          - "so it dims when lit"
-        detail: "A non-member in the same section. When the chip is active this cell dims while its neighbour lights, which is why the section itself also gains <code>.lit</code> — the zone frame tells you the relation reaches in here, and the cells tell you how far."
+          - "same group, but it does"
+          - "not answer the question"
+        detail: "A neighbour in the same group that does not share the theme. Sitting together in a group and sharing a relation are two different ideas, and the page keeps them apart."
         variant: muted
 
   # ── ROW 3, RIGHT · the other end, in a DIFFERENT section ──────────────────
-  # Same shape as the left, which is what makes the crossing legible: the
-  # relation is identical on both sides of a boundary the grid drew.
+  # Same shape as the left, which is what makes the crossing legible.
   - id: p6-right
-    title: "Another section"
-    subtitle: "the same relation, across a boundary the grid drew"
+    title: "Another group"
+    subtitle: "the same theme, across the boundary between two groups"
     variant: neutral
     order: 4
     span: 1
@@ -181,20 +180,20 @@ sections:
     children:
       - id: p6-r-in
         order: 1
-        kicker: CONCEPT
-        title: "Tagged there too"
+        kicker: THEME
+        title: "Shares it there too"
         description:
-          - "the other end"
-          - "in a different section"
-        detail: "The second end, in a section of its own. Nothing connects the two cells structurally — no span, no nesting, no line. They are related because they name the same key, which is the whole mechanism: a relation is a shared name, not a shared position."
+          - "the other end, in a"
+          - "different group"
+        detail: "The second end, in a group of its own. Nothing ties the two ideas together but the question they both answer, and that is the whole relation: a shared answer, not a shared place."
         variant: neutral
         filters: [crosscut]
       - id: p6-r-out
         order: 2
-        kicker: DIMMED
-        title: "Also not tagged"
+        kicker: NOT IN IT
+        title: "Also outside it"
         description:
-          - "position never implies"
-          - "membership"
-        detail: "Its neighbour is a member and it is not, although they sit in the same cell grid — which is the negative case that makes the point: being beside a member is not being related. Only the declared key is."
+          - "being near a member"
+          - "is not being related"
+        detail: "Its neighbour shares the theme and it does not, although they sit side by side. Being beside an idea never makes two ideas related; only answering the same question does."
         variant: muted

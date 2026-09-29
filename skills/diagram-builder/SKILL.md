@@ -193,14 +193,25 @@ after of that section.
 
 ## The seed is the showcase
 
-`assets/data/` holds a seed deck with no domain. Its job is to exercise every
-piece this skill names: sections side by side and nested, the four leaves,
-height as magnitude, a partial merge, the collapse, a flow whose phases are
-sections (`p10-flow-phases`), colour and rails (`p11-colour-and-rails`), and the
-ring and the staircase (`p12-shapes`). Open it: a piece you can see rendered
-teaches more than the same piece described. What the skill names, the seed
-shows, and what the seed shows, the skill names. When either side changes,
-check the other.
+`assets/data/` holds a seed deck with no domain. It is a tour for a person
+learning the skill, in the order of the flow above, and every page names its
+step in its tab:
+
+1. **Story**: what the story does. It moves (`p10-flow-phases`), or it comes
+   back or climbs (`p12-shapes`).
+2. **Ideas**: what is distinct (`p7-structure`), what goes together
+   (`p2-cells-or-zones`), what comes in order (`p3-sequence`) and what crosses
+   everything (`p6-relations`).
+3. **Pieces**: the catalogue, one entry per piece this skill names (the
+   `pieces-*` pages).
+4. **Data**: how the values you write fill the look (`p1-merged-cell`,
+   `p4-slots`, `p5-channels`, `p11-colour-and-rails`, `p8-does-not-fit`,
+   `p9-the-hole`, and `overview` for values that combine).
+
+Open it: a piece you can see rendered teaches more than the same piece
+described. What the skill names, the seed shows, and what the seed shows, the
+skill names. When either side changes, check the other. The `test` guards
+PATH and CATALOGUE hold both rules.
 
 ## Where the rest lives
 

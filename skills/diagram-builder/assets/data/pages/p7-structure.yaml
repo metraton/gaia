@@ -1,22 +1,15 @@
-# PRINCIPLE 7 — "Structure is the assertion."
+# IDEAS 1 OF 4 — name what is distinct before you group it.
 #
-# One page, one principle. The page DEMONSTRATES the principle that names it,
-# and the content of every box EXPLAINS the tool that box is demonstrating —
-# so the deck is its own documentation and the guardrail keeps it honest.
-#
-# Distinct things are distinct SECTIONS; parts of one thing are COMPONENTS
-# inside its section. That mapping is the whole claim a diagram makes, and it is
-# the one claim NO MACHINE CAN VERIFY: the two blocks on row 1 carry the same
-# information, one folded into a single zone and one split into two, and every
-# gate in this repo passes both. So the page shows the contrast rather than
-# describing it, and the band beneath says what the absence of a check costs.
+# A page of the tour's ideas step, and its first question. The two blocks on
+# row 1 carry the same information, one folding two distinct things into one
+# group and one giving each thing its own, and every check in this repo passes
+# both. So the page shows the contrast, and the band beneath says who decides it:
+# the person who knows what the story means.
 #
 # FORM: comparison. Deliberate: the page's entire argument is one body of
-# information side by side with itself, folded wrong and folded right — which is
-# a comparison and nothing else. `comparison` also keeps the orphan-row check
-# (the two blocks must group their cells uniformly, or the contrast is confounded
-# by a ragged row) and drops the word-fit floor, correct for cells whose titles
-# are short structural claims rather than prose.
+# information side by side with itself, folded wrong and split right. It also
+# keeps the orphan-row check (the two blocks must group their cells uniformly,
+# or the contrast is confounded by a ragged row) and drops the word-fit floor.
 #
 # WHAT IT EXERCISES: `variant: bad` and `variant: good` at SECTION level — the
 # colour role on the frame, which is where a verdict about STRUCTURE belongs ·
@@ -31,6 +24,16 @@ form: comparison
 columns: 2
 
 sections:
+
+  - id: p7-lead
+    order: 0
+    span: 2
+    lead: true
+    kicker: "IDEAS · 1 OF 4"
+    title: "Name what is distinct before you group it"
+    description:
+      - "two different things never share one group just to fill a rectangle"
+    detail: "With the story said, list its ideas: what is distinct, what goes together, what comes in order, what crosses everything. This page is the first question. One side folds two different things into one group and every check stays green; the other splits them. Only you can tell which is right, because only you know what the story means."
 
   # ── ROW 1, LEFT · THE FOLD — two things in one zone ───────────────────────
   # Four single cells in two tracks close a 2×2 rectangle. The cells stay
@@ -51,7 +54,7 @@ sections:
         description:
           - "one of the two things"
           - "folded in here"
-        detail: "A message queue: a runtime component with parts of its own. It is a DISTINCT thing from the policy beside it — different lifecycle, different owner, different failure mode — and nothing in this zone says so."
+        detail: "A message queue: something that runs, with parts of its own. It is a DISTINCT thing from the policy beside it (a different lifecycle, a different owner, a different way to fail) and nothing in this group says so."
         variant: neutral
       - id: p7-fd-policy
         order: 2
@@ -60,36 +63,35 @@ sections:
         description:
           - "the other thing"
           - "same frame, same rank"
-        detail: "An access policy: a rule, not a running component. Sharing a frame with the queue makes the two read as siblings of one kind, which is a claim the idea never made."
+        detail: "An access policy: a rule, not something that runs. Sharing a frame with the queue makes the two read as siblings of one kind, which is a claim the story never made."
         variant: neutral
       - id: p7-fd-frame
         order: 3
         kicker: THE FRAME
         title: "The frame asserts"
         description:
-          - "one zone says these"
+          - "one group says these"
           - "belong to one thing"
-        detail: "A section frame is not decoration — it is a statement that everything inside it is part of ONE thing. Here that statement is false, and the reader has no way to recover the boundary the author dropped: the cells are peers, so any grouping they suggest is inference."
+        detail: "A group says that everything inside it is part of ONE thing. Here that statement is false, and the reader has no way to recover the boundary the author dropped: the boxes are peers, so any split they suggest is a guess."
         variant: neutral
       - id: p7-fd-green
         order: 4
         kicker: STILL GREEN
         title: "And it passes"
         description:
-          - "2 tracks, 2 rows"
+          - "2 columns, 2 rows"
           - "the rectangle closes"
-        detail: "This is the uncomfortable half of the principle: <code>npm run model</code> measures 2 tracks × 2 rows = 4 cells and reports a closed rectangle, and <code>npm run census</code> counts every cell where the YAML put it. Both checks are RIGHT — a fold is not a geometry defect. It is a semantic one, and no arithmetic reaches it."
+        detail: "This is the uncomfortable half: <code>npm run model</code> reports a closed rectangle and <code>npm run census</code> counts every box where the YAML put it. Both checks are RIGHT, because a fold is not a geometry defect. It is a mistake about the ideas, and no arithmetic reaches it."
         variant: neutral
 
   # ── ROW 1, RIGHT · THE SPLIT — the same cells, two framed zones ────────────
   # `treatment: [plain]` makes this wrapper a bare structural container: no
-  # frame, no background, no padding (`.zone.plain`). That is exactly what is
-  # wanted here — a wrapper that draws nothing ASSERTS nothing, so the only two
-  # frames on this side are the two real distinctions, and the reader counts
-  # two things rather than three.
+  # frame, no background, no padding (`.zone.plain`). A wrapper that draws
+  # nothing ASSERTS nothing, so the only two frames on this side are the two
+  # real distinctions, and the reader counts two things rather than three.
   - id: p7-distinct
     title: "Split into two"
-    subtitle: "the same information — two things, so two sections"
+    subtitle: "the same information — two things, so two groups"
     variant: neutral
     treatment: [plain]
     order: 2
@@ -106,20 +108,20 @@ sections:
           - id: p7-q-thing
             order: 1
             kicker: THING
-            title: "Its own zone"
+            title: "Its own group"
             description:
               - "a distinct thing gets"
               - "a frame of its own"
-            detail: "The queue is a section now, and the frame says the true thing: what is inside belongs to the queue. Its <code>variant: good</code> is a colour role on the SECTION — the enum there is narrower than a box's (<code>neutral</code>, <code>good</code>, <code>bad</code>) because a zone tints a whole region and only a few roles survive being read at that size."
+            detail: "The queue has its own group now, and the frame says the true thing: what is inside belongs to the queue. The question that decided it was simple: is the queue the same kind of thing as the policy? It is not."
             variant: neutral
           - id: p7-q-part
             order: 2
             kicker: PART
             title: "Its parts, inside"
             description:
-              - "a component belongs to"
+              - "a part belongs to"
               - "the thing above it"
-            detail: "A part of one thing is a COMPONENT in that thing's section — never a section of its own. Promoting a part to a zone claims it is a peer of the whole, which is the same error as the fold, made in the other direction."
+            detail: "A part of one thing stays inside that thing's group, never in a group of its own. Promoting a part to its own group claims it is a peer of the whole, which is the fold's mistake made in the other direction."
             variant: neutral
       - id: p7-d-policy
         title: "The policy"
@@ -131,11 +133,11 @@ sections:
           - id: p7-p-thing
             order: 1
             kicker: THING
-            title: "A second zone"
+            title: "A second group"
             description:
               - "the second thing, named"
               - "and framed apart"
-            detail: "The policy gets its own frame and its own name. Nothing structural connects it to the queue, which is correct: they are related by rule, not by containment — and a relation that is not containment is a CHIP (principle 6), never a shared frame."
+            detail: "The policy gets its own group and its own name. Nothing places it inside the queue, which is correct: the policy governs the queue, it is not part of it, and 'governs' is a relation the last ideas question names, never a shared frame."
             variant: neutral
           - id: p7-p-part
             order: 2
@@ -143,17 +145,17 @@ sections:
             title: "Parts, again"
             description:
               - "same rule, other thing"
-              - "parts stay components"
-            detail: "The same mapping applied twice is what makes the page readable: every frame is a thing, every cell inside it is a part of that thing. Once that holds everywhere, the layout can be read as the idea instead of as a picture of it."
+              - "parts stay inside"
+            detail: "The same question asked twice is what makes the page readable: every group is a thing, every box inside it is a part of that thing. Once that holds everywhere, the page reads as the idea instead of as a picture of it."
             variant: neutral
 
-  # ── ROW 2 · WHAT THE ABSENCE OF A CHECK COSTS ─────────────────────────────
-  # Three single cells in three tracks. This is the hard consequence: the two
-  # blocks above are indistinguishable to every gate in the repo, so the only
-  # verification that exists for this principle is a person saying WHY.
+  # ── ROW 2 · WHO DECIDES IT ────────────────────────────────────────────────
+  # Three single cells in three tracks. The two blocks above are
+  # indistinguishable to every check in the repo, so the only judge of this
+  # question is a person saying WHY.
   - id: p7-judge
-    title: "No machine can verify this"
-    subtitle: "both blocks above pass every gate — the difference is meaning, not geometry"
+    title: "Only you can tell"
+    subtitle: "both blocks above pass every check — the difference is meaning, not geometry"
     variant: neutral
     order: 3
     span: 2
@@ -161,28 +163,28 @@ sections:
     children:
       - id: p7-j-blind
         order: 1
-        kicker: UNCHECKABLE
-        title: "The gates are blind"
+        kicker: YOUR CALL
+        title: "The checks cannot see it"
         description:
-          - "closure, tracks, pixels"
-          - "none of them see this"
-        detail: "<code>npm run model</code> asserts arithmetic (closure, dead tracks, orphan rows, chip arity) and <code>npm run census</code> states what each page holds. Neither has any notion of what a section MEANS, so a green run says <em>it is not broken</em> and never <em>it is right</em>."
+          - "they count and measure"
+          - "they never read meaning"
+        detail: "<code>npm run model</code> checks arithmetic and <code>npm run census</code> states what each page holds. Neither knows what your story means, so a green run says <em>it is not broken</em> and never <em>it is right</em>. Whether two things are distinct is decided by the person who tells the story."
         variant: neutral
       - id: p7-j-why
         order: 2
         kicker: THE TEST
-        title: "Say why, element by element"
+        title: "Say why, idea by idea"
         description:
-          - "why a section, why here"
-          - "why this merge"
-        detail: "The substitute for a check is the question asked of every element: why is this a section rather than a cell, why does it sit here, why this column count, why this merge. An element with no answer is decoration, and decoration is what the fold on the left is made of."
+          - "why its own group"
+          - "why together, why apart"
+        detail: "Ask it of every idea: why is this its own thing rather than a part of another, why does it sit with these and not those? An idea with no answer is decoration, and decoration is what the fold on the left is made of."
         variant: neutral
       - id: p7-j-line
         order: 3
         kicker: THE LINE
         title: "Diagram or decoration"
         description:
-          - "structure is the only"
-          - "thing separating them"
-        detail: "Every other principle can be got wrong and still leave a diagram that says something. Get this one wrong and the boxes are arranged rather than asserted — which is the whole difference between a diagram and an illustration of one."
+          - "naming what is distinct"
+          - "is what separates them"
+        detail: "Every other choice can be got wrong and still leave a diagram that says something. Get this one wrong and the boxes are arranged rather than meant, which is the whole difference between a diagram and an illustration of one."
         variant: warn
