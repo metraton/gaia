@@ -1,0 +1,27 @@
+{
+  "pages": [
+    {
+      "page": "p10-flow-phases",
+      "audio": "audio/p10-flow-phases.wav",
+      "sentences": [
+        { "say": "A story that moves is told in phases.", "show": ["p10-lead"] },
+        { "say": "The first phase sets the scene.", "show": ["p10-phase-1"] },
+        { "say": "The second carries it forward.", "show": ["p10-phase-2"] },
+        { "say": "The third lands it.", "show": ["p10-phase-3"] },
+        { "say": "The chip traces the way the story runs.", "chip": "path" }
+      ]
+    },
+    {
+      "page": "p6-relations",
+      "audio": "audio/p6-relations.wav",
+      "sentences": [
+        { "say": "Some ideas cross every section.", "show": ["p6-lead"] },
+        { "say": "First, what the page is about.", "show": ["p6-what"] },
+        { "say": "Then the flow it follows.", "show": ["p6-flow"] },
+        { "say": "Two sides sit next to each other.", "show": ["p6-left", "p6-right"] },
+        { "say": "One chip says what comes first.", "chip": "packing" },
+        { "say": "Another lights what crosses the sections.", "chip": "crosscut" }
+      ]
+    }
+  ]
+}

@@ -158,7 +158,9 @@ Read an existing deck's `data/` first.
    review moment, in [review.md](review.md).
 7. **The person looks.** They open the deck and judge whether it says what they
    meant.
-8. **Offer the video last, as an option.** It is made from this deck only.
+8. **Offer the video last, as an option,** once the person has closed the
+   deck. It is made from this deck only: its pages, their sections, their chips
+   and their order. What it takes and the steps are in [video.md](video.md).
 
 When the person asks for a change, **recalculate, never nudge**: name the
 dials the change touches, say how the rows repack, and show the before and
@@ -181,8 +183,9 @@ after of that section.
   Passing checks mean "not broken", never "right".
 - **Never propose a browser check, a screenshot or a render for a diagram.** The
   diagram has none, on purpose.
-- **Playwright is only for the video**: capturing frames and `video:check`.
-  Raise it only when the person asks for a video.
+- **Playwright is only for the video**: `video:check`, `video:contact` and
+  `video:capture`. Raise it only when the person asks for a video. Without it,
+  each of the three stops on one line that gives the install command.
 - **To know whether it is present, look in the video's own manifest.** That is
   the `package.json` under the deck's `tools/video/`, which lists `playwright`.
   `npm ls playwright --prefix <deck>/tools/video` says whether it is installed.
@@ -227,5 +230,7 @@ PATH and CATALOGUE hold both rules.
 - [build.md](build.md): for the subagent. It covers the build lane, the census,
   the vocabulary and every field, the per-form skeletons, the tokens, the
   engine's behaviour, and every check `model` runs.
+- [video.md](video.md): for you, after the deck is closed. What the video takes
+  from the deck, the script, and the steps from script to clips.
 - [assets/README.md](assets/README.md): the portable engine (`index.html`,
   `engine/`, `data/`, `tools/`) and how to serve it.

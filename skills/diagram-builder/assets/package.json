@@ -9,6 +9,13 @@
     "model": "node tools/check-layout.mjs",
     "census": "node tools/census.mjs",
     "test": "node tools/test-guards.mjs",
-    "contrast": "node tools/contrast-audit.cjs"
+    "contrast": "node tools/contrast-audit.cjs",
+    "video:script": "node tools/video/script.mjs",
+    "video:align": "node tools/video/align.mjs",
+    "video:plan": "node tools/video/plan.mjs",
+    "video:check": "node tools/video/check.mjs",
+    "video:contact": "node tools/video/contact.mjs",
+    "video:capture": "node tools/video/capture.mjs",
+    "video:split": "node tools/video/split.mjs"
   }
 }

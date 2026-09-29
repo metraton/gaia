@@ -1,0 +1,18 @@
+// Prints the plan derived from the deck and its script: each page's slot and
+// the second every cue fires. Writes nothing.
+//
+//   npm run video:plan [-- --pages id,id]
+import { readScript, requireDeck } from './deck.mjs';
+import { buildPlan, loadTimeline, readAlign, selectedPages } from './timeline.mjs';
+
+const doc = requireDeck();
+const timeline = loadTimeline(doc, readScript());
+const plan = buildPlan(timeline, readAlign(), selectedPages(timeline));
+for (const p of plan.pages) {
+  console.log(`${p.page}: ${p.start.toFixed(2)}-${p.end.toFixed(2)} s, timing ${p.method}, ` +
+    `shown from the start: ${p.base.join(', ') || 'nothing'}`);
+  for (const c of p.cues) {
+    console.log(`  ${c.t.toFixed(2)} s  sentence ${c.s}  ${c.reveal ? 'show ' + c.reveal.join(', ') : 'chip ' + c.chip}`);
+  }
+}
+console.log(`total ${plan.duration.toFixed(2)} s`);

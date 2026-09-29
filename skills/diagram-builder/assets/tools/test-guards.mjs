@@ -1404,5 +1404,111 @@ function pathDivergence(pages) {
   }
 }
 
+// ── VIDEO PIPELINE — made from a deck only, Playwright from one place ───────
+// tools/video is copied into each fixture WITHOUT its node_modules, so these
+// cases hold whether or not Playwright is installed for the real deck.
+const VIDEO_TOOLS = path.join(ROOT, 'tools', 'video');
+const VIDEO_SCRIPTS = ['script', 'align', 'plan', 'check', 'contact', 'capture', 'split'];
+const BROWSER_SCRIPTS = ['check', 'contact', 'capture'];
+const FIXTURE_SCRIPT = { pages: [{ page: 'overview', audio: 'audio/overview.wav', sentences: [
+  { say: 'This page has one section.', show: ['section-e'] },
+  { say: 'The flow chip lights three of its cells.', chip: 'flow' }] }] };
+function copyVideoTools(dir) {
+  const to = path.join(dir, 'tools', 'video');
+  fs.mkdirSync(to, { recursive: true });
+  if (!fs.existsSync(VIDEO_TOOLS)) return;
+  for (const f of fs.readdirSync(VIDEO_TOOLS)) {
+    if (f !== 'node_modules') fs.copyFileSync(path.join(VIDEO_TOOLS, f), path.join(to, f));
+  }
+}
+function mkVideoDeck(engineSrc = ENGINE_SRC, script = FIXTURE_SCRIPT) {
+  const dir = mkDeck();
+  fs.writeFileSync(path.join(dir, 'engine', 'engine.js'), engineSrc, 'utf8');
+  copyVideoTools(dir);
+  fs.mkdirSync(path.join(dir, 'video'));
+  fs.writeFileSync(path.join(dir, 'video', 'script.json'), JSON.stringify(script), 'utf8');
+  return dir;
+}
+const runVideo = (dir, name, ...args) => runNode([path.join(dir, 'tools', 'video', `${name}.mjs`), ...args]);
+const excerpt = out => JSON.stringify(out.trim().slice(0, 300));
+
+{
+  const name = 'VIDEO: every pipeline script refuses a tree with no deck, and a deck with no ?video hook';
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'diagram-guard-'));
+  copyVideoTools(bare);
+  const hookless = mkVideoDeck(ENGINE_SRC.replace(/window\.__deck\s*=/, 'window.__noDeck ='));
+  try {
+    const bad = [];
+    for (const s of VIDEO_SCRIPTS) {
+      const a = runVideo(bare, s);
+      if (a.code === 0 || !/no deck/.test(a.out)) bad.push(`${s} with no deck: exit ${a.code} ${excerpt(a.out)}`);
+      const b = runVideo(hookless, s);
+      if (b.code === 0 || !/\?video hook/.test(b.out)) bad.push(`${s} with no hook: exit ${b.code} ${excerpt(b.out)}`);
+    }
+    report(name, bad.length === 0, bad.join(' | '));
+  } finally {
+    rmDeck(bare);
+    rmDeck(hookless);
+  }
+}
+
+{
+  const name = 'VIDEO: with no Playwright in tools/video, check, contact and capture stop on one line naming the install, before any work';
+  const dir = mkVideoDeck();
+  try {
+    const install = `npm install --prefix ${fs.realpathSync(path.join(dir, 'tools', 'video'))}`;
+    const bad = [];
+    for (const s of BROWSER_SCRIPTS) {
+      const { code, out } = runVideo(dir, s, '--page', 'overview', '--at', '1');
+      const ok = code !== 0 && out.trim().split('\n').length === 1 && /Playwright/.test(out)
+        && out.includes(install) && !/ERR_MODULE_NOT_FOUND|\n\s+at /.test(out)
+        && !fs.existsSync(path.join(dir, 'out'));
+      if (!ok) bad.push(`${s}: exit ${code} ${excerpt(out)}`);
+    }
+    report(name, bad.length === 0, bad.join(' | '));
+  } finally {
+    rmDeck(dir);
+  }
+}
+
+{
+  const name = 'VIDEO: the script exports per page as only what is said, and a provider field in it is refused';
+  const dir = mkVideoDeck();
+  try {
+    const exported = runVideo(dir, 'script');
+    const file = path.join(dir, 'out', 'video', 'script', '01-overview.txt');
+    const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+    const want = FIXTURE_SCRIPT.pages[0].sentences.map(s => s.say).join('\n') + '\n';
+    const voiced = JSON.parse(JSON.stringify(FIXTURE_SCRIPT));
+    voiced.pages[0].sentences[0].voice = 'am_michael';
+    fs.writeFileSync(path.join(dir, 'video', 'script.json'), JSON.stringify(voiced), 'utf8');
+    const refused = runVideo(dir, 'script');
+    report(name, exported.code === 0 && text === want && refused.code !== 0 && /"voice"/.test(refused.out),
+      `export exit ${exported.code} text=${JSON.stringify(text)} | voice field: exit ${refused.code} ${excerpt(refused.out)}`);
+  } finally {
+    rmDeck(dir);
+  }
+}
+
+{
+  const name = 'VIDEO: the timeline follows the deck — its order is kept, and a section shown before its parent is refused';
+  const outOfOrder = JSON.parse(JSON.stringify(FIXTURE_SCRIPT));
+  outOfOrder.pages[0].sentences = [
+    { say: 'A cell first.', show: ['item-1'] },
+    { say: 'Then the section that holds it.', show: ['section-e'] }];
+  const good = mkVideoDeck();
+  const bad = mkVideoDeck(ENGINE_SRC, outOfOrder);
+  try {
+    const planned = runVideo(good, 'plan');
+    const refused = runVideo(bad, 'plan');
+    report(name, planned.code === 0 && /overview/.test(planned.out)
+      && refused.code !== 0 && /deck's order/.test(refused.out),
+    `plan exit ${planned.code} ${excerpt(planned.out)} | out of order: exit ${refused.code} ${excerpt(refused.out)}`);
+  } finally {
+    rmDeck(good);
+    rmDeck(bad);
+  }
+}
+
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);
 process.exit(failures === 0 ? 0 : 1);

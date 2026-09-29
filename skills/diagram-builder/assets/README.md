@@ -57,11 +57,16 @@ assets/
 │   ├── test-guards.mjs      the negative-test suite (`npm test`) — fabricates one
 │   │                        broken deck per case in a temp dir and asserts the
 │   │                        guard FAILS as claimed
-│   └── contrast-audit.cjs   WCAG 2.1 contrast audit of the swappable palettes
-│                            (`npm run contrast`), reading the tokens out of
-│                            index.html so a palette edit is audited by construction
-├── package.json          the five scripts (build · model · census · test · contrast); no
-│                         dependencies — Node alone runs all of them
+│   ├── contrast-audit.cjs   WCAG 2.1 contrast audit of the swappable palettes
+│   │                        (`npm run contrast`), reading the tokens out of
+│   │                        index.html so a palette edit is audited by construction
+│   └── video/               the optional narrated video, made from this deck only
+│                            (`npm run video:*`); its own package.json is the one
+│                            place Playwright lives — see ../video.md
+├── package.json          the diagram scripts (build · model · census · test · contrast)
+│                         and the video:* scripts; no dependencies
+├── .gitignore            keeps tools/video/node_modules and out/ out of git
+├── video/script.json     the seed's video script: what each page says and shows
 └── data/                 ── the only part you edit ──
     ├── document.yaml     manifest: title/subtitle/version, tokens, core chips, and
     │                     which pages, in order
