@@ -36,16 +36,8 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 def _resolve_workspace(explicit: str | None) -> str:
-    if explicit:
-        return explicit
-    try:
-        from gaia.project import current as _project_current
-        ws = _project_current()
-        if ws:
-            return ws
-    except Exception:
-        pass
-    return "me"
+    from gaia.project import cli_workspace
+    return cli_workspace(explicit)
 
 
 def _err(msg: str, as_json: bool = False) -> int:
@@ -393,7 +385,7 @@ def register(subparsers) -> None:
     add_p.add_argument("--negative", action="store_true", default=False,
                        help="Record evidence that refutes; it never accepts the AC.")
     add_p.add_argument("--workspace", default=None, metavar="W",
-                       help="Workspace identity. Default: gaia.project.current() or 'me'.")
+                       help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').")
     add_p.add_argument("--json", action="store_true", default=False,
                        help="Emit JSON output.")
 
@@ -433,7 +425,7 @@ def register(subparsers) -> None:
     list_p.add_argument("--ac", default=None, metavar="AC_ID",
                         help="Filter to a specific AC (optional).")
     list_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity. Default: gaia.project.current() or 'me'.")
+                        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'me').")
     list_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON output.")
 

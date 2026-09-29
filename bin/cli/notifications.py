@@ -42,16 +42,8 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 def _resolve_workspace(explicit: str | None) -> str:
-    if explicit:
-        return explicit
-    try:
-        from gaia.project import current as _project_current
-        ws = _project_current()
-        if ws:
-            return ws
-    except Exception:
-        pass
-    return "me"
+    from gaia.project import cli_workspace
+    return cli_workspace(explicit)
 
 
 def _err(msg: str, as_json: bool = False) -> int:

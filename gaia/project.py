@@ -408,6 +408,40 @@ def containing_workspace(cwd: Path | str | None = None) -> str:
     return best_workspace or current(cwd)
 
 
+def cli_workspace(
+    explicit: str | None = None,
+    cwd: Path | str | None = None,
+    *,
+    fallback: str = "me",
+) -> str:
+    """Return the workspace a CLI call without ``--workspace`` operates on.
+
+    Resolution order: ``explicit`` > ``GAIA_DISPATCH_WORKSPACE`` >
+    ``GAIA_WORKSPACE`` > :func:`containing_workspace` of ``cwd`` > ``fallback``.
+
+    Every CLI that accepts ``--workspace`` (brief, plan, task, ac, evidence,
+    milestone, memory, ...) delegates here: when each carried its own copy,
+    brief named the directory while memory asked which project contains it,
+    so the same cwd read two different workspaces. ``"global"`` counts as
+    unresolved because it holds no coordination or curated rows.
+    """
+    if explicit:
+        return explicit
+    import os as _os
+
+    for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
+        value = _os.environ.get(env_key)
+        if value:
+            return value
+    try:
+        ws = containing_workspace(cwd)
+    except Exception:
+        ws = ""
+    if ws and ws != "global":
+        return ws
+    return fallback
+
+
 # ---------------------------------------------------------------------------
 # Discovery: list_known()
 # ---------------------------------------------------------------------------

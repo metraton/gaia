@@ -2565,6 +2565,26 @@ def initiative_from_project_ref(project_ref: str | None) -> str | None:
     return normalize_initiative(base)
 
 
+def canonical_project_key(
+    project_ref: str | None = None,
+    initiative: str | None = None,
+) -> str | None:
+    """Resolve a memory row's project columns to its one canonical project key.
+
+    Rows name a project by ``initiative`` (v32) or by a ``project_ref`` that may
+    be a git-common-dir path, a bare name or a remote identity; all resolve
+    to the same key (``/x/gaia/.git``, ``gaia``, ``github.com/metraton/gaia``
+    -> ``"gaia"``). An explicit initiative outranks the anchor, matching the
+    write path. Existing rows are resolved as stored, never rewritten
+    (decision D-a of brief ``una-gaia-cualquier-instalacion``), and writers
+    persist this key in ``initiative``. ``None`` when neither column names a
+    project.
+    """
+    if initiative is not None and str(initiative).strip():
+        return normalize_initiative(initiative)
+    return initiative_from_project_ref(project_ref)
+
+
 def upsert_memory(
     workspace: str,
     name: str,
@@ -2634,12 +2654,7 @@ def upsert_memory(
     """
     _assert_dispatch_can_write_memory()
 
-    # initiative: explicit value wins (normalized); otherwise derive from the
-    # git anchor. None when neither is available -- never guessed.
-    if initiative is not None:
-        initiative = normalize_initiative(initiative)
-    elif project_ref is not None:
-        initiative = initiative_from_project_ref(project_ref)
+    initiative = canonical_project_key(project_ref, initiative)
 
     # Host-scope: gaia_system (and any future HOST_SCOPED_INITIATIVES) always
     # lands in the sentinel workspace, ignoring whatever --workspace/env/cwd
@@ -2895,10 +2910,13 @@ def reanchor_memory_project_ref(
 
         before = row["project_ref"]
         now = _now_iso()
+        # initiative is only filled, never replaced: an existing value may be
+        # an explicit logical initiative, which outranks the anchor.
         con.execute(
-            "UPDATE memory SET project_ref = ?, updated_at = ? "
+            "UPDATE memory SET project_ref = ?, "
+            "initiative = COALESCE(initiative, ?), updated_at = ? "
             "WHERE workspace = ? AND name = ?",
-            (project_ref, now, workspace, name),
+            (project_ref, canonical_project_key(project_ref), now, workspace, name),
         )
         con.commit()
         return {

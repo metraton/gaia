@@ -588,33 +588,9 @@ def _cmd_conflicts(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _resolve_workspace(explicit: str | None) -> str:
-    """Return the workspace whose curated memory this call should read.
-
-    Honours the dispatch env vars ahead of the cwd, mirroring
-    ``gaia.project.resolve_workspace``: a dispatched agent runs from a cwd that
-    is not necessarily its target workspace, and the env var carries the
-    intended attribution. The cwd step asks which workspace CONTAINS the
-    directory rather than what the directory is called -- naming it directly
-    made a read from inside a project resolve to the project, which is how
-    agents working in the gaia repo read an empty corpus.
-
-    Falls back to ``"me"`` rather than ``resolve_workspace``'s ``"global"``:
-    this is the personal-memory surface and "global" holds no curated rows.
-    """
-    if explicit:
-        return explicit
-    for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
-        value = os.environ.get(env_key)
-        if value:
-            return value
-    try:
-        from gaia.project import containing_workspace
-        ws = containing_workspace()
-        if ws:
-            return ws
-    except Exception:
-        pass
-    return "me"
+    """Return the workspace whose curated memory this call should read."""
+    from gaia.project import cli_workspace
+    return cli_workspace(explicit)
 
 
 # ---------------------------------------------------------------------------
