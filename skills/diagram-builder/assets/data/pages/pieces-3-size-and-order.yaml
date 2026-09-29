@@ -1,0 +1,228 @@
+# PIECES 3 OF 4 — width, height, bands, and order.
+# Entry shape and guard: see the header of pieces-1-frame-and-leaves.yaml.
+# The lead band entry cannot draw a nested lead band (the build refuses one
+# that is not the page's first root child), so its live drawing is this page's
+# own lead band, and its YAML box quotes that band.
+
+id: pieces-3-size-and-order
+form: dashboard
+columns: 1
+
+sections:
+
+  - id: pieces-3-lead
+    order: 1
+    span: 1
+    lead: true
+    kicker: "PIECES · 3 OF 4"
+    title: "Width is reach, height is magnitude"
+    description:
+      - "and order is the sequence that survives any screen"
+
+  - id: piece-span
+    order: 2
+    title: "span"
+    subtitle: "width says reach"
+    columns: 3
+    children:
+      - id: piece-span-live
+        span: 1
+        columns: 3
+        treatment: [plain]
+        children:
+          - { id: piece-span-one, title: "One" }
+          - { id: piece-span-wide, title: "Reaches two", span: 2 }
+          - { id: piece-span-all, title: "Reaches all three", span: 3 }
+      - id: piece-span-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-span-yaml
+            kicker: "YAML"
+            title: "span: 2"
+            description: ["in a section of columns: 3"]
+            detail: "<code>columns: 3</code><br><code>children:</code><br><code>  - { id: one, title: One }</code><br><code>  - { id: wide, title: Reaches two, span: 2 }</code><br><code>  - { id: all, title: Reaches all three, span: 3 }</code>"
+          - id: piece-span-says
+            kicker: "WHAT IT SAYS"
+            title: "Reach"
+            description: ["A box across more columns covers more ground."]
+          - id: piece-span-neighbour
+            kicker: "NEIGHBOUR · ROWSPAN"
+            title: "An amount"
+            description: ["Choose height when the size is a magnitude."]
+
+  - id: piece-rowspan
+    order: 3
+    title: "rowspan"
+    subtitle: "“this one is bigger”"
+    columns: 3
+    children:
+      - id: piece-rowspan-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-rowspan-tall, title: "Twice", rowspan: 2 }
+          - { id: piece-rowspan-floor, type: spacer }
+          - { id: piece-rowspan-short, title: "Once" }
+      - id: piece-rowspan-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-rowspan-yaml
+            kicker: "YAML"
+            title: "rowspan: 2"
+            description: ["a spacer over the short bar"]
+            detail: "<code>columns: 2</code><br><code>children:</code><br><code>  - { id: twice, title: Twice, rowspan: 2 }</code><br><code>  - { id: floor, type: spacer }</code><br><code>  - { id: once, title: Once }</code>"
+          - id: piece-rowspan-says
+            kicker: "WHAT IT SAYS"
+            title: "Magnitude"
+            description: ["From one shared floor, a taller box is a bigger amount."]
+          - id: piece-rowspan-neighbour
+            kicker: "NEIGHBOUR · TITLE"
+            title: "The number"
+            description: ["Choose the title when the number is the message."]
+
+  - id: piece-band
+    order: 4
+    title: "band"
+    subtitle: "“this runs across everything”"
+    columns: 3
+    children:
+      - id: piece-band-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-band-a, title: "A" }
+          - { id: piece-band-b, title: "B" }
+          - { id: piece-band-under, title: "Under everything", span: 2 }
+      - id: piece-band-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-band-yaml
+            kicker: "YAML"
+            title: "span: 2"
+            description: ["of a section's columns: 2"]
+            detail: "<code>columns: 2</code><br><code>children:</code><br><code>  - { id: a, title: A }</code><br><code>  - { id: b, title: B }</code><br><code>  - { id: under, title: Under everything, span: 2 }</code>"
+          - id: piece-band-says
+            kicker: "WHAT IT SAYS"
+            title: "Under all of it"
+            description: ["It spans every column: a layer with content of its own."]
+          - id: piece-band-neighbour
+            kicker: "NEIGHBOUR · CHIP"
+            title: "No content of its own"
+            description: ["Choose a chip when what crosses only relates boxes."]
+
+  - id: piece-lead-band
+    order: 5
+    title: "lead band"
+    subtitle: "“this page says X”"
+    columns: 3
+    children:
+      - id: piece-lead-band-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - id: piece-lead-band-pointer
+            kicker: "LIVE AT THE TOP"
+            title: "This page's first band"
+            description: ["the full-width box above is one"]
+      - id: piece-lead-band-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-lead-band-yaml
+            kicker: "YAML"
+            title: "lead: true"
+            description: ["kicker: PIECES · 3 OF 4"]
+            detail: "<code>- id: pieces-3-lead</code><br><code>  order: 1</code><br><code>  span: 1</code><br><code>  lead: true</code><br><code>  kicker: PIECES · 3 OF 4</code><br><code>  title: Width is reach, height is magnitude</code><br>It is the page's first root child and spans every root column."
+          - id: piece-lead-band-says
+            kicker: "WHAT IT SAYS"
+            title: "The claim first"
+            description: ["The page states its claim before its parts."]
+          - id: piece-lead-band-neighbour
+            kicker: "NEIGHBOUR · SECTION TITLE"
+            title: "One zone"
+            description: ["Choose a section title to name one zone, not the page."]
+
+  - id: piece-order
+    order: 6
+    title: "order"
+    subtitle: "“this goes in order”"
+    columns: 3
+    children:
+      - id: piece-order-live
+        span: 1
+        columns: 3
+        treatment: [plain]
+        children:
+          - { id: piece-order-1, order: 1, kicker: "STEP 1 OF 3", title: "Draft" }
+          - { id: piece-order-2, order: 2, kicker: "STEP 2 OF 3", title: "Check" }
+          - { id: piece-order-3, order: 3, kicker: "STEP 3 OF 3", title: "Look" }
+      - id: piece-order-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-order-yaml
+            kicker: "YAML"
+            title: "order: 2"
+            description: ["kicker: STEP 2 OF 3"]
+            detail: "<code>- { id: draft, order: 1, kicker: STEP 1 OF 3, title: Draft }</code><br><code>- { id: check, order: 2, kicker: STEP 2 OF 3, title: Check }</code><br><code>- { id: look, order: 3, kicker: STEP 3 OF 3, title: Look }</code>"
+          - id: piece-order-says
+            kicker: "WHAT IT SAYS"
+            title: "The sequence"
+            description: ["Reading order, kept when the screen narrows."]
+          - id: piece-order-neighbour
+            kicker: "NEIGHBOUR · CHIP"
+            title: "It goes back"
+            description: ["Choose a chip's steps when the path jumps or returns."]
+
+  - id: piece-comparison
+    order: 7
+    title: "comparison"
+    subtitle: "one section per option"
+    columns: 3
+    children:
+      - id: piece-comparison-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - id: piece-comparison-a
+            title: "Option A"
+            columns: 1
+            children:
+              - { id: piece-comparison-a1, kicker: "COST", title: "Low" }
+              - { id: piece-comparison-a2, kicker: "SPEED", title: "Slow" }
+          - id: piece-comparison-b
+            title: "Option B"
+            columns: 1
+            children:
+              - { id: piece-comparison-b1, kicker: "COST", title: "High" }
+              - { id: piece-comparison-b2, kicker: "SPEED", title: "Fast" }
+      - id: piece-comparison-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-comparison-yaml
+            kicker: "YAML"
+            title: "title: Option A"
+            description: ["one section per option"]
+            detail: "<code>- id: option-a</code><br><code>  title: Option A</code><br><code>  columns: 1</code><br><code>  children:</code><br><code>    - { id: a-cost, kicker: COST, title: Low }</code><br><code>    - { id: a-speed, kicker: SPEED, title: Slow }</code><br>Option B is the same section with its own values."
+          - id: piece-comparison-says
+            kicker: "WHAT IT SAYS"
+            title: "Row against row"
+            description: ["Each option has its own parts, lined up to compare."]
+          - id: piece-comparison-neighbour
+            kicker: "NEIGHBOUR · SECTION"
+            title: "Pick one"
+            description: ["Choose one section of peer boxes when options have no parts."]

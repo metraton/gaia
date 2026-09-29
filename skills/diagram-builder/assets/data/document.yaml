@@ -117,13 +117,41 @@ pages:
     order: 12
     visible: true
     file: pages/p12-shapes.yaml
+  # ── THE CATALOGUE · the pieces step. One entry per piece SKILL.md names, and
+  # nothing else: the piece live, its YAML, what it says, and its neighbour.
+  # A contiguous block, so the deck's order can move it as one; the CATALOGUE
+  # guard in tools/test-guards.mjs finds it by the `pieces-` id prefix.
+  - id: pieces-1-frame-and-leaves
+    name: "Pieces · frame and leaves"
+    order: 13
+    visible: true
+    file: pages/pieces-1-frame-and-leaves.yaml
+    omit_filters: [gate]
+  - id: pieces-2-slots
+    name: "Pieces · slots"
+    order: 14
+    visible: true
+    file: pages/pieces-2-slots.yaml
+    omit_filters: [gate]
+  - id: pieces-3-size-and-order
+    name: "Pieces · size and order"
+    order: 15
+    visible: true
+    file: pages/pieces-3-size-and-order.yaml
+    omit_filters: [gate]
+  - id: pieces-4-colour-and-relation
+    name: "Pieces · colour and relation"
+    order: 16
+    visible: true
+    file: pages/pieces-4-colour-and-relation.yaml
+    omit_filters: [gate]
   # ── LAST · not a principle. The compositions and edge cases the pages above
   # do not need but the engine must keep supporting — three of them are the
   # only live subjects invariants G and X have. It sits at the END because a
   # reader should meet the principles before the borderline cases they permit.
   - id: overview
     name: "Compositions & edge cases"
-    order: 13
+    order: 17
     visible: true
     file: pages/overview.yaml
     omit_filters: [gate]

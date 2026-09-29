@@ -1,0 +1,256 @@
+# PIECES 4 OF 4 — colour, structure, skin, and relation.
+# Entry shape and guard: see the header of pieces-1-frame-and-leaves.yaml.
+# The palette entry's live drawing is this very page: a palette skins the whole
+# deck, so the two boxes show the current skin painting two roles.
+
+id: pieces-4-colour-and-relation
+form: dashboard
+columns: 1
+
+filters:
+  - key: pair
+    label: "Which boxes share an answer?"
+    steps:
+      - "A chip is a question. Clicking it lights every box that shares the answer."
+
+sections:
+
+  - id: pieces-4-lead
+    order: 1
+    span: 1
+    lead: true
+    kicker: "PIECES · 4 OF 4"
+    title: "Colour means, treatment draws, a chip relates"
+    description:
+      - "three dials and one relation, each saying one thing"
+
+  - id: piece-variant
+    order: 2
+    title: "variant"
+    subtitle: "colour carries a claim"
+    columns: 3
+    children:
+      - id: piece-variant-live
+        span: 1
+        columns: 3
+        treatment: [plain]
+        children:
+          - { id: piece-variant-neutral, variant: neutral, title: "neutral" }
+          - { id: piece-variant-good, variant: good, title: "good" }
+          - { id: piece-variant-warn, variant: warn, title: "warn" }
+          - { id: piece-variant-bad, variant: bad, title: "bad" }
+          - { id: piece-variant-accent, variant: accent, title: "accent" }
+          - { id: piece-variant-muted, variant: muted, title: "muted" }
+      - id: piece-variant-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-variant-yaml
+            kicker: "YAML"
+            title: "variant: good"
+            description: ["one value per box"]
+            detail: "<code>- { id: hardened, variant: good, title: good }</code><br>The six roles: <code>neutral</code>, <code>good</code>, <code>warn</code>, <code>bad</code>, <code>accent</code>, <code>muted</code>."
+          - id: piece-variant-says
+            kicker: "WHAT IT SAYS"
+            title: "The colour"
+            description: ["A colour carries one claim, and the page declares it."]
+          - id: piece-variant-neighbour
+            kicker: "NEIGHBOUR · TREATMENT"
+            title: "Drawn, not meant"
+            description: ["Choose a treatment to change the drawing, not the meaning."]
+
+  - id: piece-verdict-variant
+    order: 3
+    title: "verdict variant"
+    subtitle: "safe or dangerous"
+    columns: 3
+    children:
+      - id: piece-verdict-variant-live
+        span: 1
+        columns: 3
+        treatment: [plain]
+        children:
+          - { id: piece-verdict-good, variant: good, title: "Hardened" }
+          - { id: piece-verdict-warn, variant: warn, title: "Some risk" }
+          - { id: piece-verdict-bad, variant: bad, title: "High risk" }
+      - id: piece-verdict-variant-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-verdict-variant-yaml
+            kicker: "YAML"
+            title: "variant: bad"
+            description: ["good · warn · bad"]
+            detail: "<code>- { id: hardened, variant: good, title: Hardened }</code><br><code>- { id: some-risk, variant: warn, title: Some risk }</code><br><code>- { id: high-risk, variant: bad, title: High risk }</code>"
+          - id: piece-verdict-variant-says
+            kicker: "WHAT IT SAYS"
+            title: "A verdict"
+            description: ["Green, amber and red say safe, careful, dangerous."]
+          - id: piece-verdict-variant-neighbour
+            kicker: "NEIGHBOUR · HUE"
+            title: "Only kinds"
+            description: ["Choose a hue when the colour only tells kinds apart."]
+
+  - id: piece-hue
+    order: 4
+    title: "hue"
+    subtitle: "“these are different kinds”"
+    columns: 3
+    children:
+      - id: piece-hue-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-hue-blue, variant: blue, title: "blue" }
+          - { id: piece-hue-violet, variant: violet, title: "violet" }
+          - { id: piece-hue-gold, variant: gold, title: "gold" }
+          - { id: piece-hue-clay, variant: clay, title: "clay" }
+      - id: piece-hue-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-hue-yaml
+            kicker: "YAML"
+            title: "variant: blue"
+            description: ["blue · violet · gold · clay"]
+            detail: "<code>- { id: kind-1, variant: blue, title: blue }</code><br><code>- { id: kind-2, variant: violet, title: violet }</code><br><code>- { id: kind-3, variant: gold, title: gold }</code><br><code>- { id: kind-4, variant: clay, title: clay }</code><br>A legend band after the lead band says what each hue means."
+          - id: piece-hue-says
+            kicker: "WHAT IT SAYS"
+            title: "Different kinds"
+            description: ["Up to four peers told apart, with no verdict."]
+          - id: piece-hue-neighbour
+            kicker: "NEIGHBOUR · VERDICT VARIANT"
+            title: "Safe or not"
+            description: ["Choose a verdict when the colour must say safe or not."]
+
+  - id: piece-treatment
+    order: 5
+    title: "treatment"
+    subtitle: "structure, never meaning"
+    columns: 3
+    children:
+      - id: piece-treatment-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-treatment-centered, title: "Centred", treatment: [centered] }
+          - { id: piece-treatment-vertical, title: "Vertical", treatment: [vertical] }
+      - id: piece-treatment-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-treatment-yaml
+            kicker: "YAML"
+            title: "treatment: [centered]"
+            description: ["treatment: [vertical]"]
+            detail: "<code>- { id: centred, title: Centred, treatment: [centered] }</code><br><code>- { id: vertical, title: Vertical, treatment: [vertical] }</code><br>The others: <code>outside</code> (dashed frame), <code>plain</code> (frameless wrapper, which holds every entry on these pages), <code>compact</code> (short-row staircase)."
+          - id: piece-treatment-says
+            kicker: "WHAT IT SAYS"
+            title: "How it is drawn"
+            description: ["It changes the drawing, never what the piece means."]
+          - id: piece-treatment-neighbour
+            kicker: "NEIGHBOUR · VARIANT"
+            title: "It must mean"
+            description: ["Choose a variant when the look must carry a meaning."]
+
+  - id: piece-outside
+    order: 6
+    title: "outside"
+    subtitle: "“this is outside the scope”"
+    columns: 3
+    children:
+      - id: piece-outside-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-outside-in, title: "In scope" }
+          - { id: piece-outside-out, title: "Outside", treatment: [outside] }
+      - id: piece-outside-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-outside-yaml
+            kicker: "YAML"
+            title: "treatment: [outside]"
+            description: ["dashed frame, no colour"]
+            detail: "<code>- { id: in-scope, title: In scope }</code><br><code>- { id: outside, title: Outside, treatment: [outside] }</code>"
+          - id: piece-outside-says
+            kicker: "WHAT IT SAYS"
+            title: "Out of scope"
+            description: ["A dashed frame with no colour, so colour stays free."]
+          - id: piece-outside-neighbour
+            kicker: "NEIGHBOUR · SECTION"
+            title: "Several, with parts"
+            description: ["Choose a section when the outside things have parts."]
+
+  - id: piece-palette
+    order: 7
+    title: "palette"
+    subtitle: "the skin of the whole deck"
+    columns: 3
+    children:
+      - id: piece-palette-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-palette-good, variant: good, title: "good" }
+          - { id: piece-palette-bad, variant: bad, title: "bad" }
+      - id: piece-palette-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-palette-yaml
+            kicker: "YAML"
+            title: "palette: rose-pine"
+            description: ["in data/document.yaml"]
+            detail: "<code>palette: rose-pine</code> in <code>data/document.yaml</code>. The values: <code>neutral</code>, <code>rose-pine</code>, <code>rose-pine-moon</code>, <code>contrast</code>. These two boxes are painted by it, like everything on this page."
+          - id: piece-palette-says
+            kicker: "WHAT IT SAYS"
+            title: "The look"
+            description: ["It changes how the deck looks, never what it means."]
+          - id: piece-palette-neighbour
+            kicker: "NEIGHBOUR · VARIANT"
+            title: "One box"
+            description: ["Choose a variant when one box, not the deck, changes."]
+
+  - id: piece-chip
+    order: 8
+    title: "chip"
+    subtitle: "a relation, lit on click"
+    columns: 3
+    children:
+      - id: piece-chip-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-chip-a, title: "Shares it", filters: [pair] }
+          - { id: piece-chip-b, title: "Shares it too", filters: [pair] }
+      - id: piece-chip-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-chip-yaml
+            kicker: "YAML"
+            title: "filters: [pair]"
+            description: ["on each box, and the key on the page"]
+            detail: "<code>filters:</code><br><code>  - key: pair</code><br><code>    label: Which boxes share an answer?</code><br>and on each member: <code>filters: [pair]</code>. Click the chip at the top of this page."
+          - id: piece-chip-says
+            kicker: "WHAT IT SAYS"
+            title: "A question"
+            description: ["Clicking it lights every box that shares the answer."]
+          - id: piece-chip-neighbour
+            kicker: "NEIGHBOUR · BAND"
+            title: "It has content"
+            description: ["Choose a band when what crosses has content of its own."]

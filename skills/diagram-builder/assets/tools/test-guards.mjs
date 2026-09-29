@@ -1198,5 +1198,95 @@ function runEngine(search) {
   }
 }
 
+// ── 18. CATALOGUE — what the skill names, the seed shows, and nothing else ──
+// The vocabulary is read from SKILL.md, never restated here: the bold terms of
+// "What the person has", the bold terms of the map's Use and Neighbour columns,
+// and the lowercase fields its Use column names in backticks (`rowspan`,
+// `span`). An entry is a root section `piece-<slug>` on a visible `pieces-*`
+// page, holding its live drawing and the three readings beside it; the
+// neighbour its `NEIGHBOUR · <piece>` kicker names must be a piece too. A
+// scaffolded deck ships without SKILL.md, so there the case is skipped, never
+// passed.
+const PIECE_PARTS = ['live', 'yaml', 'says', 'neighbour'];
+
+function skillSection(md, heading) {
+  const at = md.indexOf(`\n## ${heading}\n`);
+  if (at < 0) throw new Error(`SKILL.md has no "## ${heading}" section`);
+  const end = md.indexOf('\n## ', at + 1);
+  return md.slice(at, end < 0 ? md.length : end);
+}
+function pieceTerm(raw) {
+  return raw.replace(/`/g, '').split(' = ')[0].replace(/\.$/, '').replace(/^one /, '').trim().toLowerCase();
+}
+function skillVocabulary(md) {
+  const bold = text => [...text.matchAll(/\*\*(.+?)\*\*/g)].map(m => pieceTerm(m[1]));
+  const terms = new Set(bold(skillSection(md, 'What the person has')));
+  const rows = skillSection(md, 'The map: from an idea to a piece').split('\n')
+    .filter(line => line.startsWith('| "'));
+  if (!rows.length) throw new Error('the map in SKILL.md has no rows');
+  for (const row of rows) {
+    const [, , use, , neighbour] = row.split('|');
+    for (const term of [...bold(use), ...bold(neighbour)]) terms.add(term);
+    for (const m of use.matchAll(/`([a-z]+)`/g)) terms.add(m[1]);
+  }
+  return terms;
+}
+function catalogueEntries(root) {
+  const docFile = path.join(root, 'data', 'document.yaml');
+  const manifest = yaml.parse(fs.readFileSync(docFile, 'utf8'), docFile);
+  const entries = new Map();
+  for (const entry of manifest.pages || []) {
+    if (!entry.id.startsWith('pieces-') || entry.visible !== true) continue;
+    const file = path.join(root, 'data', entry.file);
+    const page = yaml.parse(fs.readFileSync(file, 'utf8'), file);
+    for (const node of page.sections || []) {
+      const m = /^piece-(.+)$/.exec(node.id || '');
+      if (m) entries.set(m[1].replace(/-/g, ' '), { page: entry.id, node });
+    }
+  }
+  return entries;
+}
+function catalogueDivergence(vocabulary, entries) {
+  const bad = [];
+  const unshown = [...vocabulary].filter(term => !entries.has(term));
+  if (unshown.length) bad.push(`named by the skill, no live entry: ${unshown.join(', ')}`);
+  const unnamed = [...entries.keys()].filter(term => !vocabulary.has(term));
+  if (unnamed.length) bad.push(`shown, not named by the skill: ${unnamed.join(', ')}`);
+  for (const [term, { page, node }] of entries) {
+    const kickers = new Map();
+    (function walk(n) { kickers.set(n.id, n.kicker); (n.children || []).forEach(walk); })(node);
+    const missing = PIECE_PARTS.filter(part => !kickers.has(`${node.id}-${part}`));
+    if (missing.length) { bad.push(`${page}/${node.id} lacks ${missing.join(', ')}`); continue; }
+    const kicker = kickers.get(`${node.id}-neighbour`) || '';
+    const said = /^NEIGHBOUR · (.+)$/.exec(kicker)?.[1].toLowerCase();
+    if (!said || said === term || !vocabulary.has(said))
+      bad.push(`${page}/${node.id} names no neighbour piece: "${kicker}"`);
+  }
+  return bad;
+}
+{
+  const name = 'CATALOGUE: every piece SKILL.md names has a live entry, and no entry shows an unnamed piece';
+  const skillFile = path.join(ROOT, '..', 'SKILL.md');
+  if (!fs.existsSync(skillFile)) {
+    console.log(`[SKIP] ${name} — no SKILL.md beside this deck (a scaffold, not the skill)`);
+  } else {
+    try {
+      const vocabulary = skillVocabulary(fs.readFileSync(skillFile, 'utf8'));
+      const entries = catalogueEntries(ROOT);
+      const bad = catalogueDivergence(vocabulary, entries);
+      report(name, bad.length === 0, `${vocabulary.size} named, ${entries.size} shown; ${bad.join(' | ')}`);
+      const seeded = new Map(entries);
+      seeded.delete([...vocabulary][0]);
+      seeded.set('arrow', { page: 'seeded', node: { id: 'piece-arrow', children: [] } });
+      const caught = catalogueDivergence(vocabulary, seeded);
+      report('CATALOGUE/teeth: a missing entry and an unnamed piece are both reported',
+        caught.some(b => b.startsWith('named by the skill')) && caught.some(b => b.startsWith('shown, not named')),
+        caught.join(' | ') || 'the comparator accepted a seeded divergence');
+    } catch (e) {
+      report(name, false, e.message);
+    }
+  }
+}
+
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);
 process.exit(failures === 0 ? 0 : 1);

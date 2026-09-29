@@ -2806,6 +2806,1739 @@ window.__DOC__ = {
       "order": 12
     },
     {
+      "id": "pieces-1-frame-and-leaves",
+      "form": "dashboard",
+      "columns": 1,
+      "sections": [
+        {
+          "id": "pieces-1-lead",
+          "order": 1,
+          "span": 1,
+          "lead": true,
+          "kicker": "PIECES · 1 OF 4",
+          "title": "A section arranges, a component carries",
+          "description": [
+            "each entry: the piece live, its YAML, what it says, and its neighbour"
+          ]
+        },
+        {
+          "id": "piece-section",
+          "order": 2,
+          "title": "section",
+          "subtitle": "“these go together”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-section-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-section-frame",
+                  "title": "One thing",
+                  "columns": 2,
+                  "children": [
+                    {
+                      "id": "piece-section-a",
+                      "title": "Part A"
+                    },
+                    {
+                      "id": "piece-section-b",
+                      "title": "Part B"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-section-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-section-yaml",
+                  "kicker": "YAML",
+                  "title": "title: One thing",
+                  "description": [
+                    "columns: 2",
+                    "children: [part-a, part-b]"
+                  ],
+                  "detail": "<code>- id: one-thing</code><br><code>  title: One thing</code><br><code>  columns: 2</code><br><code>  children:</code><br><code>    - { id: part-a, title: Part A }</code><br><code>    - { id: part-b, title: Part B }</code>"
+                },
+                {
+                  "id": "piece-section-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "One thing, its parts",
+                  "description": [
+                    "The frame says these are one thing; its boxes are the parts."
+                  ]
+                },
+                {
+                  "id": "piece-section-neighbour",
+                  "kicker": "NEIGHBOUR · SEPARATOR",
+                  "title": "Only a pause",
+                  "description": [
+                    "Choose it when both sides are parts of the same thing."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-component",
+          "order": 3,
+          "title": "component",
+          "subtitle": "a leaf that carries",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-component-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-component-box",
+                  "title": "A box"
+                },
+                {
+                  "id": "piece-component-rail",
+                  "type": "rail",
+                  "title": "A rail"
+                }
+              ]
+            },
+            {
+              "id": "piece-component-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-component-yaml",
+                  "kicker": "YAML",
+                  "title": "type: rail",
+                  "description": [
+                    "box · separator · rail · spacer"
+                  ],
+                  "detail": "<code>- { id: a-box, title: A box }</code><br><code>- { id: a-rail, type: rail, title: A rail }</code><br>A component without <code>type</code> is a box."
+                },
+                {
+                  "id": "piece-component-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "A leaf",
+                  "description": [
+                    "A component carries content and never holds other pieces."
+                  ]
+                },
+                {
+                  "id": "piece-component-neighbour",
+                  "kicker": "NEIGHBOUR · SECTION",
+                  "title": "It has parts",
+                  "description": [
+                    "Choose a section when the thing has parts of its own."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-box",
+          "order": 4,
+          "title": "box",
+          "subtitle": "the card",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-box-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-box-card",
+                  "kicker": "STEP 1",
+                  "title": "A card",
+                  "description": [
+                    "one short line"
+                  ],
+                  "detail": "The detail waits behind the click."
+                }
+              ]
+            },
+            {
+              "id": "piece-box-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-box-yaml",
+                  "kicker": "YAML",
+                  "title": "title: A card",
+                  "description": [
+                    "kicker: STEP 1",
+                    "description: one short line"
+                  ],
+                  "detail": "<code>- id: a-card</code><br><code>  kicker: STEP 1</code><br><code>  title: A card</code><br><code>  description: [one short line]</code><br><code>  detail: The detail waits behind the click.</code>"
+                },
+                {
+                  "id": "piece-box-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The card",
+                  "description": [
+                    "The one piece with a kicker, a title, a description and a detail."
+                  ]
+                },
+                {
+                  "id": "piece-box-neighbour",
+                  "kicker": "NEIGHBOUR · RAIL",
+                  "title": "Only a label",
+                  "description": [
+                    "Choose a rail when the thing is only a lane or level name."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-separator",
+          "order": 5,
+          "title": "separator",
+          "subtitle": "a pause inside one thing",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-separator-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-separator-a",
+                  "title": "Part A"
+                },
+                {
+                  "id": "piece-separator-b",
+                  "title": "Part B"
+                },
+                {
+                  "id": "piece-separator-line",
+                  "type": "separator",
+                  "span": 2,
+                  "style": "dotted",
+                  "text": "a pause"
+                },
+                {
+                  "id": "piece-separator-c",
+                  "title": "Part C"
+                },
+                {
+                  "id": "piece-separator-d",
+                  "title": "Part D"
+                }
+              ]
+            },
+            {
+              "id": "piece-separator-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-separator-yaml",
+                  "kicker": "YAML",
+                  "title": "type: separator",
+                  "description": [
+                    "span: 2",
+                    "text: a pause"
+                  ],
+                  "detail": "<code>- { id: a-pause, type: separator, span: 2, style: dotted, text: a pause }</code><br>Its <code>span</code> is the section's columns, so the line crosses the whole section."
+                },
+                {
+                  "id": "piece-separator-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "Same thing, a pause",
+                  "description": [
+                    "A line inside one section: both sides are parts of it."
+                  ]
+                },
+                {
+                  "id": "piece-separator-neighbour",
+                  "kicker": "NEIGHBOUR · SECTION",
+                  "title": "Different things",
+                  "description": [
+                    "Choose sections when the two sides are different things."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-rail",
+          "order": 6,
+          "title": "rail",
+          "subtitle": "“label this lane, this level”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-rail-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-rail-0",
+                  "type": "rail",
+                  "indent": 0,
+                  "title": "Level one"
+                },
+                {
+                  "id": "piece-rail-1",
+                  "type": "rail",
+                  "indent": 1,
+                  "title": "Level two"
+                },
+                {
+                  "id": "piece-rail-2",
+                  "type": "rail",
+                  "indent": 2,
+                  "title": "Level three"
+                }
+              ]
+            },
+            {
+              "id": "piece-rail-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-rail-yaml",
+                  "kicker": "YAML",
+                  "title": "type: rail",
+                  "description": [
+                    "title: Level two",
+                    "indent: 1"
+                  ],
+                  "detail": "<code>- { id: level-1, type: rail, indent: 0, title: Level one }</code><br><code>- { id: level-2, type: rail, indent: 1, title: Level two }</code><br><code>- { id: level-3, type: rail, indent: 2, title: Level three }</code>"
+                },
+                {
+                  "id": "piece-rail-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "A label",
+                  "description": [
+                    "A title-only label for a lane or one level of a tree."
+                  ]
+                },
+                {
+                  "id": "piece-rail-neighbour",
+                  "kicker": "NEIGHBOUR · SECTION TITLE",
+                  "title": "It heads a frame",
+                  "description": [
+                    "Choose a section title when the label heads a group."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-spacer",
+          "order": 7,
+          "title": "spacer",
+          "subtitle": "“nothing goes here, on purpose”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-spacer-live",
+              "span": 1,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-spacer-a",
+                  "title": "One"
+                },
+                {
+                  "id": "piece-spacer-hole",
+                  "type": "spacer",
+                  "span": 1
+                },
+                {
+                  "id": "piece-spacer-c",
+                  "title": "Three"
+                }
+              ]
+            },
+            {
+              "id": "piece-spacer-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-spacer-yaml",
+                  "kicker": "YAML",
+                  "title": "type: spacer",
+                  "description": [
+                    "span: 1"
+                  ],
+                  "detail": "<code>- { id: one, title: One }</code><br><code>- { id: the-hole, type: spacer, span: 1 }</code><br><code>- { id: three, title: Three }</code>"
+                },
+                {
+                  "id": "piece-spacer-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The gap is meant",
+                  "description": [
+                    "A declared hole: it closes the grid and draws nothing."
+                  ]
+                },
+                {
+                  "id": "piece-spacer-neighbour",
+                  "kicker": "NEIGHBOUR · SPAN",
+                  "title": "Close the gap",
+                  "description": [
+                    "Choose span when the gap was not meant: merge into it."
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "name": "Pieces · frame and leaves",
+      "order": 13
+    },
+    {
+      "id": "pieces-2-slots",
+      "form": "dashboard",
+      "columns": 1,
+      "sections": [
+        {
+          "id": "pieces-2-lead",
+          "order": 1,
+          "span": 1,
+          "lead": true,
+          "kicker": "PIECES · 2 OF 4",
+          "title": "Every slot has a character",
+          "description": [
+            "small, loud, short, unlimited: write each thing in the slot that fits it"
+          ]
+        },
+        {
+          "id": "piece-kicker",
+          "order": 2,
+          "title": "kicker",
+          "subtitle": "“this is measured, that is estimated”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-kicker-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-kicker-box",
+                  "kicker": "MEASURED",
+                  "title": "42 ms"
+                }
+              ]
+            },
+            {
+              "id": "piece-kicker-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-kicker-yaml",
+                  "kicker": "YAML",
+                  "title": "kicker: MEASURED",
+                  "description": [
+                    "title: 42 ms"
+                  ],
+                  "detail": "<code>- { id: latency, kicker: MEASURED, title: 42 ms }</code>"
+                },
+                {
+                  "id": "piece-kicker-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The qualifier",
+                  "description": [
+                    "The small line above the title: a step, a code, a certainty."
+                  ]
+                },
+                {
+                  "id": "piece-kicker-neighbour",
+                  "kicker": "NEIGHBOUR · OUTSIDE",
+                  "title": "A whole page",
+                  "description": [
+                    "Choose the dashed frame when a page must split them at a glance."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-title",
+          "order": 3,
+          "title": "title",
+          "subtitle": "the loud line",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-title-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-title-box",
+                  "title": "97%",
+                  "description": [
+                    "of the checks pass"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-title-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-title-yaml",
+                  "kicker": "YAML",
+                  "title": "title: 97%",
+                  "description": [
+                    "description: [of the checks pass]"
+                  ],
+                  "detail": "<code>- { id: pass-rate, title: \"97%\", description: [of the checks pass] }</code>"
+                },
+                {
+                  "id": "piece-title-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The loud line",
+                  "description": [
+                    "The number goes here when the number is the message."
+                  ]
+                },
+                {
+                  "id": "piece-title-neighbour",
+                  "kicker": "NEIGHBOUR · ROWSPAN",
+                  "title": "The proportion",
+                  "description": [
+                    "Choose height when the proportion is the message."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-description",
+          "order": 4,
+          "title": "description",
+          "subtitle": "short, and it clamps",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-description-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-description-box",
+                  "title": "A card",
+                  "description": [
+                    "one short line of context"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-description-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-description-yaml",
+                  "kicker": "YAML",
+                  "title": "description:",
+                  "description": [
+                    "[one short line of context]"
+                  ],
+                  "detail": "<code>- id: a-card</code><br><code>  title: A card</code><br><code>  description: [one short line of context]</code>"
+                },
+                {
+                  "id": "piece-description-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The context",
+                  "description": [
+                    "A line or two under the title; it clamps, never grows."
+                  ]
+                },
+                {
+                  "id": "piece-description-neighbour",
+                  "kicker": "NEIGHBOUR · DETAIL",
+                  "title": "More to say",
+                  "description": [
+                    "Choose the detail when it takes more than two lines."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-detail",
+          "order": 5,
+          "title": "detail",
+          "subtitle": "“there is too much to say”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-detail-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-detail-box",
+                  "title": "Click this card",
+                  "description": [
+                    "the rest waits behind the click"
+                  ],
+                  "detail": "This is the detail. It has no limit, so the card never grows: what does not fit moves here instead of shrinking."
+                }
+              ]
+            },
+            {
+              "id": "piece-detail-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-detail-yaml",
+                  "kicker": "YAML",
+                  "title": "detail: …",
+                  "description": [
+                    "the click panel, no limit"
+                  ],
+                  "detail": "<code>- id: click-this</code><br><code>  title: Click this card</code><br><code>  description: [the rest waits behind the click]</code><br><code>  detail: \"This is the detail. It has no limit, …\"</code>"
+                },
+                {
+                  "id": "piece-detail-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The rest",
+                  "description": [
+                    "Unlimited text behind a click, so a cell never grows."
+                  ]
+                },
+                {
+                  "id": "piece-detail-neighbour",
+                  "kicker": "NEIGHBOUR · SECTION",
+                  "title": "Parts at once",
+                  "description": [
+                    "Choose a section of boxes when all parts must be seen."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-section-title",
+          "order": 6,
+          "title": "section title",
+          "subtitle": "names one zone",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-section-title-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-section-title-zone",
+                  "title": "The checks",
+                  "subtitle": "run before anyone looks",
+                  "columns": 2,
+                  "children": [
+                    {
+                      "id": "piece-section-title-a",
+                      "title": "Build"
+                    },
+                    {
+                      "id": "piece-section-title-b",
+                      "title": "Model"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-section-title-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-section-title-yaml",
+                  "kicker": "YAML",
+                  "title": "title: The checks",
+                  "description": [
+                    "subtitle: run before anyone looks"
+                  ],
+                  "detail": "<code>- id: the-checks</code><br><code>  title: The checks</code><br><code>  subtitle: run before anyone looks</code><br><code>  columns: 2</code><br><code>  children: [ … ]</code>"
+                },
+                {
+                  "id": "piece-section-title-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "A zone's name",
+                  "description": [
+                    "It names one framed group, not the whole page."
+                  ]
+                },
+                {
+                  "id": "piece-section-title-neighbour",
+                  "kicker": "NEIGHBOUR · LEAD BAND",
+                  "title": "The page's claim",
+                  "description": [
+                    "Choose the lead band to say what the whole page says."
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "name": "Pieces · slots",
+      "order": 14
+    },
+    {
+      "id": "pieces-3-size-and-order",
+      "form": "dashboard",
+      "columns": 1,
+      "sections": [
+        {
+          "id": "pieces-3-lead",
+          "order": 1,
+          "span": 1,
+          "lead": true,
+          "kicker": "PIECES · 3 OF 4",
+          "title": "Width is reach, height is magnitude",
+          "description": [
+            "and order is the sequence that survives any screen"
+          ]
+        },
+        {
+          "id": "piece-span",
+          "order": 2,
+          "title": "span",
+          "subtitle": "width says reach",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-span-live",
+              "span": 1,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-span-one",
+                  "title": "One"
+                },
+                {
+                  "id": "piece-span-wide",
+                  "title": "Reaches two",
+                  "span": 2
+                },
+                {
+                  "id": "piece-span-all",
+                  "title": "Reaches all three",
+                  "span": 3
+                }
+              ]
+            },
+            {
+              "id": "piece-span-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-span-yaml",
+                  "kicker": "YAML",
+                  "title": "span: 2",
+                  "description": [
+                    "in a section of columns: 3"
+                  ],
+                  "detail": "<code>columns: 3</code><br><code>children:</code><br><code>  - { id: one, title: One }</code><br><code>  - { id: wide, title: Reaches two, span: 2 }</code><br><code>  - { id: all, title: Reaches all three, span: 3 }</code>"
+                },
+                {
+                  "id": "piece-span-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "Reach",
+                  "description": [
+                    "A box across more columns covers more ground."
+                  ]
+                },
+                {
+                  "id": "piece-span-neighbour",
+                  "kicker": "NEIGHBOUR · ROWSPAN",
+                  "title": "An amount",
+                  "description": [
+                    "Choose height when the size is a magnitude."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-rowspan",
+          "order": 3,
+          "title": "rowspan",
+          "subtitle": "“this one is bigger”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-rowspan-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-rowspan-tall",
+                  "title": "Twice",
+                  "rowspan": 2
+                },
+                {
+                  "id": "piece-rowspan-floor",
+                  "type": "spacer"
+                },
+                {
+                  "id": "piece-rowspan-short",
+                  "title": "Once"
+                }
+              ]
+            },
+            {
+              "id": "piece-rowspan-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-rowspan-yaml",
+                  "kicker": "YAML",
+                  "title": "rowspan: 2",
+                  "description": [
+                    "a spacer over the short bar"
+                  ],
+                  "detail": "<code>columns: 2</code><br><code>children:</code><br><code>  - { id: twice, title: Twice, rowspan: 2 }</code><br><code>  - { id: floor, type: spacer }</code><br><code>  - { id: once, title: Once }</code>"
+                },
+                {
+                  "id": "piece-rowspan-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "Magnitude",
+                  "description": [
+                    "From one shared floor, a taller box is a bigger amount."
+                  ]
+                },
+                {
+                  "id": "piece-rowspan-neighbour",
+                  "kicker": "NEIGHBOUR · TITLE",
+                  "title": "The number",
+                  "description": [
+                    "Choose the title when the number is the message."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-band",
+          "order": 4,
+          "title": "band",
+          "subtitle": "“this runs across everything”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-band-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-band-a",
+                  "title": "A"
+                },
+                {
+                  "id": "piece-band-b",
+                  "title": "B"
+                },
+                {
+                  "id": "piece-band-under",
+                  "title": "Under everything",
+                  "span": 2
+                }
+              ]
+            },
+            {
+              "id": "piece-band-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-band-yaml",
+                  "kicker": "YAML",
+                  "title": "span: 2",
+                  "description": [
+                    "of a section's columns: 2"
+                  ],
+                  "detail": "<code>columns: 2</code><br><code>children:</code><br><code>  - { id: a, title: A }</code><br><code>  - { id: b, title: B }</code><br><code>  - { id: under, title: Under everything, span: 2 }</code>"
+                },
+                {
+                  "id": "piece-band-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "Under all of it",
+                  "description": [
+                    "It spans every column: a layer with content of its own."
+                  ]
+                },
+                {
+                  "id": "piece-band-neighbour",
+                  "kicker": "NEIGHBOUR · CHIP",
+                  "title": "No content of its own",
+                  "description": [
+                    "Choose a chip when what crosses only relates boxes."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-lead-band",
+          "order": 5,
+          "title": "lead band",
+          "subtitle": "“this page says X”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-lead-band-live",
+              "span": 1,
+              "columns": 1,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-lead-band-pointer",
+                  "kicker": "LIVE AT THE TOP",
+                  "title": "This page's first band",
+                  "description": [
+                    "the full-width box above is one"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-lead-band-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-lead-band-yaml",
+                  "kicker": "YAML",
+                  "title": "lead: true",
+                  "description": [
+                    "kicker: PIECES · 3 OF 4"
+                  ],
+                  "detail": "<code>- id: pieces-3-lead</code><br><code>  order: 1</code><br><code>  span: 1</code><br><code>  lead: true</code><br><code>  kicker: PIECES · 3 OF 4</code><br><code>  title: Width is reach, height is magnitude</code><br>It is the page's first root child and spans every root column."
+                },
+                {
+                  "id": "piece-lead-band-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The claim first",
+                  "description": [
+                    "The page states its claim before its parts."
+                  ]
+                },
+                {
+                  "id": "piece-lead-band-neighbour",
+                  "kicker": "NEIGHBOUR · SECTION TITLE",
+                  "title": "One zone",
+                  "description": [
+                    "Choose a section title to name one zone, not the page."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-order",
+          "order": 6,
+          "title": "order",
+          "subtitle": "“this goes in order”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-order-live",
+              "span": 1,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-order-1",
+                  "order": 1,
+                  "kicker": "STEP 1 OF 3",
+                  "title": "Draft"
+                },
+                {
+                  "id": "piece-order-2",
+                  "order": 2,
+                  "kicker": "STEP 2 OF 3",
+                  "title": "Check"
+                },
+                {
+                  "id": "piece-order-3",
+                  "order": 3,
+                  "kicker": "STEP 3 OF 3",
+                  "title": "Look"
+                }
+              ]
+            },
+            {
+              "id": "piece-order-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-order-yaml",
+                  "kicker": "YAML",
+                  "title": "order: 2",
+                  "description": [
+                    "kicker: STEP 2 OF 3"
+                  ],
+                  "detail": "<code>- { id: draft, order: 1, kicker: STEP 1 OF 3, title: Draft }</code><br><code>- { id: check, order: 2, kicker: STEP 2 OF 3, title: Check }</code><br><code>- { id: look, order: 3, kicker: STEP 3 OF 3, title: Look }</code>"
+                },
+                {
+                  "id": "piece-order-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The sequence",
+                  "description": [
+                    "Reading order, kept when the screen narrows."
+                  ]
+                },
+                {
+                  "id": "piece-order-neighbour",
+                  "kicker": "NEIGHBOUR · CHIP",
+                  "title": "It goes back",
+                  "description": [
+                    "Choose a chip's steps when the path jumps or returns."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-comparison",
+          "order": 7,
+          "title": "comparison",
+          "subtitle": "one section per option",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-comparison-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-comparison-a",
+                  "title": "Option A",
+                  "columns": 1,
+                  "children": [
+                    {
+                      "id": "piece-comparison-a1",
+                      "kicker": "COST",
+                      "title": "Low"
+                    },
+                    {
+                      "id": "piece-comparison-a2",
+                      "kicker": "SPEED",
+                      "title": "Slow"
+                    }
+                  ]
+                },
+                {
+                  "id": "piece-comparison-b",
+                  "title": "Option B",
+                  "columns": 1,
+                  "children": [
+                    {
+                      "id": "piece-comparison-b1",
+                      "kicker": "COST",
+                      "title": "High"
+                    },
+                    {
+                      "id": "piece-comparison-b2",
+                      "kicker": "SPEED",
+                      "title": "Fast"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-comparison-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-comparison-yaml",
+                  "kicker": "YAML",
+                  "title": "title: Option A",
+                  "description": [
+                    "one section per option"
+                  ],
+                  "detail": "<code>- id: option-a</code><br><code>  title: Option A</code><br><code>  columns: 1</code><br><code>  children:</code><br><code>    - { id: a-cost, kicker: COST, title: Low }</code><br><code>    - { id: a-speed, kicker: SPEED, title: Slow }</code><br>Option B is the same section with its own values."
+                },
+                {
+                  "id": "piece-comparison-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "Row against row",
+                  "description": [
+                    "Each option has its own parts, lined up to compare."
+                  ]
+                },
+                {
+                  "id": "piece-comparison-neighbour",
+                  "kicker": "NEIGHBOUR · SECTION",
+                  "title": "Pick one",
+                  "description": [
+                    "Choose one section of peer boxes when options have no parts."
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "name": "Pieces · size and order",
+      "order": 15
+    },
+    {
+      "id": "pieces-4-colour-and-relation",
+      "form": "dashboard",
+      "columns": 1,
+      "filters": [
+        {
+          "key": "pair",
+          "label": "Which boxes share an answer?",
+          "steps": [
+            "A chip is a question. Clicking it lights every box that shares the answer."
+          ]
+        }
+      ],
+      "sections": [
+        {
+          "id": "pieces-4-lead",
+          "order": 1,
+          "span": 1,
+          "lead": true,
+          "kicker": "PIECES · 4 OF 4",
+          "title": "Colour means, treatment draws, a chip relates",
+          "description": [
+            "three dials and one relation, each saying one thing"
+          ]
+        },
+        {
+          "id": "piece-variant",
+          "order": 2,
+          "title": "variant",
+          "subtitle": "colour carries a claim",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-variant-live",
+              "span": 1,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-variant-neutral",
+                  "variant": "neutral",
+                  "title": "neutral"
+                },
+                {
+                  "id": "piece-variant-good",
+                  "variant": "good",
+                  "title": "good"
+                },
+                {
+                  "id": "piece-variant-warn",
+                  "variant": "warn",
+                  "title": "warn"
+                },
+                {
+                  "id": "piece-variant-bad",
+                  "variant": "bad",
+                  "title": "bad"
+                },
+                {
+                  "id": "piece-variant-accent",
+                  "variant": "accent",
+                  "title": "accent"
+                },
+                {
+                  "id": "piece-variant-muted",
+                  "variant": "muted",
+                  "title": "muted"
+                }
+              ]
+            },
+            {
+              "id": "piece-variant-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-variant-yaml",
+                  "kicker": "YAML",
+                  "title": "variant: good",
+                  "description": [
+                    "one value per box"
+                  ],
+                  "detail": "<code>- { id: hardened, variant: good, title: good }</code><br>The six roles: <code>neutral</code>, <code>good</code>, <code>warn</code>, <code>bad</code>, <code>accent</code>, <code>muted</code>."
+                },
+                {
+                  "id": "piece-variant-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The colour",
+                  "description": [
+                    "A colour carries one claim, and the page declares it."
+                  ]
+                },
+                {
+                  "id": "piece-variant-neighbour",
+                  "kicker": "NEIGHBOUR · TREATMENT",
+                  "title": "Drawn, not meant",
+                  "description": [
+                    "Choose a treatment to change the drawing, not the meaning."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-verdict-variant",
+          "order": 3,
+          "title": "verdict variant",
+          "subtitle": "safe or dangerous",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-verdict-variant-live",
+              "span": 1,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-verdict-good",
+                  "variant": "good",
+                  "title": "Hardened"
+                },
+                {
+                  "id": "piece-verdict-warn",
+                  "variant": "warn",
+                  "title": "Some risk"
+                },
+                {
+                  "id": "piece-verdict-bad",
+                  "variant": "bad",
+                  "title": "High risk"
+                }
+              ]
+            },
+            {
+              "id": "piece-verdict-variant-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-verdict-variant-yaml",
+                  "kicker": "YAML",
+                  "title": "variant: bad",
+                  "description": [
+                    "good · warn · bad"
+                  ],
+                  "detail": "<code>- { id: hardened, variant: good, title: Hardened }</code><br><code>- { id: some-risk, variant: warn, title: Some risk }</code><br><code>- { id: high-risk, variant: bad, title: High risk }</code>"
+                },
+                {
+                  "id": "piece-verdict-variant-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "A verdict",
+                  "description": [
+                    "Green, amber and red say safe, careful, dangerous."
+                  ]
+                },
+                {
+                  "id": "piece-verdict-variant-neighbour",
+                  "kicker": "NEIGHBOUR · HUE",
+                  "title": "Only kinds",
+                  "description": [
+                    "Choose a hue when the colour only tells kinds apart."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-hue",
+          "order": 4,
+          "title": "hue",
+          "subtitle": "“these are different kinds”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-hue-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-hue-blue",
+                  "variant": "blue",
+                  "title": "blue"
+                },
+                {
+                  "id": "piece-hue-violet",
+                  "variant": "violet",
+                  "title": "violet"
+                },
+                {
+                  "id": "piece-hue-gold",
+                  "variant": "gold",
+                  "title": "gold"
+                },
+                {
+                  "id": "piece-hue-clay",
+                  "variant": "clay",
+                  "title": "clay"
+                }
+              ]
+            },
+            {
+              "id": "piece-hue-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-hue-yaml",
+                  "kicker": "YAML",
+                  "title": "variant: blue",
+                  "description": [
+                    "blue · violet · gold · clay"
+                  ],
+                  "detail": "<code>- { id: kind-1, variant: blue, title: blue }</code><br><code>- { id: kind-2, variant: violet, title: violet }</code><br><code>- { id: kind-3, variant: gold, title: gold }</code><br><code>- { id: kind-4, variant: clay, title: clay }</code><br>A legend band after the lead band says what each hue means."
+                },
+                {
+                  "id": "piece-hue-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "Different kinds",
+                  "description": [
+                    "Up to four peers told apart, with no verdict."
+                  ]
+                },
+                {
+                  "id": "piece-hue-neighbour",
+                  "kicker": "NEIGHBOUR · VERDICT VARIANT",
+                  "title": "Safe or not",
+                  "description": [
+                    "Choose a verdict when the colour must say safe or not."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-treatment",
+          "order": 5,
+          "title": "treatment",
+          "subtitle": "structure, never meaning",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-treatment-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-treatment-centered",
+                  "title": "Centred",
+                  "treatment": [
+                    "centered"
+                  ]
+                },
+                {
+                  "id": "piece-treatment-vertical",
+                  "title": "Vertical",
+                  "treatment": [
+                    "vertical"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-treatment-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-treatment-yaml",
+                  "kicker": "YAML",
+                  "title": "treatment: [centered]",
+                  "description": [
+                    "treatment: [vertical]"
+                  ],
+                  "detail": "<code>- { id: centred, title: Centred, treatment: [centered] }</code><br><code>- { id: vertical, title: Vertical, treatment: [vertical] }</code><br>The others: <code>outside</code> (dashed frame), <code>plain</code> (frameless wrapper, which holds every entry on these pages), <code>compact</code> (short-row staircase)."
+                },
+                {
+                  "id": "piece-treatment-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "How it is drawn",
+                  "description": [
+                    "It changes the drawing, never what the piece means."
+                  ]
+                },
+                {
+                  "id": "piece-treatment-neighbour",
+                  "kicker": "NEIGHBOUR · VARIANT",
+                  "title": "It must mean",
+                  "description": [
+                    "Choose a variant when the look must carry a meaning."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-outside",
+          "order": 6,
+          "title": "outside",
+          "subtitle": "“this is outside the scope”",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-outside-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-outside-in",
+                  "title": "In scope"
+                },
+                {
+                  "id": "piece-outside-out",
+                  "title": "Outside",
+                  "treatment": [
+                    "outside"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-outside-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-outside-yaml",
+                  "kicker": "YAML",
+                  "title": "treatment: [outside]",
+                  "description": [
+                    "dashed frame, no colour"
+                  ],
+                  "detail": "<code>- { id: in-scope, title: In scope }</code><br><code>- { id: outside, title: Outside, treatment: [outside] }</code>"
+                },
+                {
+                  "id": "piece-outside-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "Out of scope",
+                  "description": [
+                    "A dashed frame with no colour, so colour stays free."
+                  ]
+                },
+                {
+                  "id": "piece-outside-neighbour",
+                  "kicker": "NEIGHBOUR · SECTION",
+                  "title": "Several, with parts",
+                  "description": [
+                    "Choose a section when the outside things have parts."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-palette",
+          "order": 7,
+          "title": "palette",
+          "subtitle": "the skin of the whole deck",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-palette-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-palette-good",
+                  "variant": "good",
+                  "title": "good"
+                },
+                {
+                  "id": "piece-palette-bad",
+                  "variant": "bad",
+                  "title": "bad"
+                }
+              ]
+            },
+            {
+              "id": "piece-palette-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-palette-yaml",
+                  "kicker": "YAML",
+                  "title": "palette: rose-pine",
+                  "description": [
+                    "in data/document.yaml"
+                  ],
+                  "detail": "<code>palette: rose-pine</code> in <code>data/document.yaml</code>. The values: <code>neutral</code>, <code>rose-pine</code>, <code>rose-pine-moon</code>, <code>contrast</code>. These two boxes are painted by it, like everything on this page."
+                },
+                {
+                  "id": "piece-palette-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "The look",
+                  "description": [
+                    "It changes how the deck looks, never what it means."
+                  ]
+                },
+                {
+                  "id": "piece-palette-neighbour",
+                  "kicker": "NEIGHBOUR · VARIANT",
+                  "title": "One box",
+                  "description": [
+                    "Choose a variant when one box, not the deck, changes."
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "piece-chip",
+          "order": 8,
+          "title": "chip",
+          "subtitle": "a relation, lit on click",
+          "columns": 3,
+          "children": [
+            {
+              "id": "piece-chip-live",
+              "span": 1,
+              "columns": 2,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-chip-a",
+                  "title": "Shares it",
+                  "filters": [
+                    "pair"
+                  ]
+                },
+                {
+                  "id": "piece-chip-b",
+                  "title": "Shares it too",
+                  "filters": [
+                    "pair"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "piece-chip-read",
+              "span": 2,
+              "columns": 3,
+              "treatment": [
+                "plain"
+              ],
+              "children": [
+                {
+                  "id": "piece-chip-yaml",
+                  "kicker": "YAML",
+                  "title": "filters: [pair]",
+                  "description": [
+                    "on each box, and the key on the page"
+                  ],
+                  "detail": "<code>filters:</code><br><code>  - key: pair</code><br><code>    label: Which boxes share an answer?</code><br>and on each member: <code>filters: [pair]</code>. Click the chip at the top of this page."
+                },
+                {
+                  "id": "piece-chip-says",
+                  "kicker": "WHAT IT SAYS",
+                  "title": "A question",
+                  "description": [
+                    "Clicking it lights every box that shares the answer."
+                  ]
+                },
+                {
+                  "id": "piece-chip-neighbour",
+                  "kicker": "NEIGHBOUR · BAND",
+                  "title": "It has content",
+                  "description": [
+                    "Choose a band when what crosses has content of its own."
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "name": "Pieces · colour and relation",
+      "order": 16
+    },
+    {
       "id": "overview",
       "columns": 2,
       "filters": [
@@ -3542,7 +5275,7 @@ window.__DOC__ = {
         }
       ],
       "name": "Compositions & edge cases",
-      "order": 13
+      "order": 17
     }
   ]
 };
