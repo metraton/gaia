@@ -1110,7 +1110,8 @@ function runEngine(search) {
 
 // ── 16. CENSUS — the width the grid GIVES a node, not the one authored ──────
 // section-e authors 8 columns but its content fills 6 (six single cells and one
-// span-2), so a census that echoed the YAML would report 8 and "2/8".
+// span-2), so a census that echoed the YAML would report 8 and "1/4" (2 of 8)
+// instead of "1/3" (2 of 6).
 {
   const dir = mkDeck();
   const name = 'CENSUS: reports resolved columns/width, the variant in use and the chip members by authored id';
@@ -1127,7 +1128,7 @@ function runEngine(search) {
       width: section.children.find(c => c.id === 'item-c').width,
       blue: page.variants.blue, flow: page.chips.find(c => c.key === 'flow').members };
     const ok = code === 0 && got.section === 'section-e'
-      && got.columns.authored === 8 && got.columns.effective === 6 && got.width === '2/6'
+      && got.columns.authored === 8 && got.columns.effective === 6 && got.width === '1/3'
       && JSON.stringify(got.blue) === '["item-a"]' && got.flow.join(',') === 'item-1,item-3,item-7';
     report(name, ok, JSON.stringify(got));
   } catch (e) {
