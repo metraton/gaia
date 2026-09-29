@@ -236,33 +236,46 @@ def _load_single_plugin(stem):
 # So the epilog is organized by LANE, not by name: what reads, what the
 # coordinator itself may write, and what must be delegated -- with the owner
 # named on every delegated line, because "you may not run this" is only
-# actionable next to "they can". The read + coordinator-write lanes mirror
-# ALLOWED_READ_PHRASES / ALLOWED_WRITE_PHRASES in
-# hooks/modules/security/gaia_cli_only_guard.py; that guard is closed by
-# default, so this text is a map OF the enforcement, never a second source of
-# truth for it. When the allowlist changes, this epilog changes with it.
+# actionable next to "they can". The READ lane must equal ALLOWED_READ_PHRASES
+# plus ALLOWED_BARE_READ_FLAGS, and the coordinator-WRITE lane must equal
+# ALLOWED_WRITE_PHRASES, in hooks/modules/security/gaia_cli_only_guard.py:
+# that guard is closed by default, so this text is a map OF the enforcement.
+# tests/cli/test_help_lanes_match_guard.py parses these two lanes from the
+# printed help and fails on drift either way, so a lane row keeps its grammar:
+# two-space indent, the command head, then on the SAME line only its verb spec
+# (`a | b` alternatives, `x|y` within a token, a trailing `|` continues onto
+# the next line; empty for the bare command); prose goes on deeper lines.
 _EPILOG = """\
 lanes -- what runs where, and who owns the rest:
 
 READ -- changes nothing. The orchestrator runs these itself.
+  --version
+                 the installed gaia version, as the only argument.
   contract       view | list | validate
                  `contract list --state DISPATCHED` names the turns that were
                  dispatched and never came back with a contract -- the way to
                  see cut subagents instead of blind-resuming them.
-  query          THE event reader: one read-only query across curated memory,
+  query
+                 THE event reader: one read-only query across curated memory,
                  agent episodes, and harness_events -- the hook event log,
                  one append-only row per hook firing.
-  defects        row-level triage: subagent anomalies (episode_anomalies) and
+  defects
+                 row-level triage: subagent anomalies (episode_anomalies) and
                  the hook-log failures graded above `info`.
-  doctor         health checks, read-only. `doctor --fix` MUTATES and is NOT
+  doctor
+                 health checks, read-only. `doctor --fix` MUTATES and is NOT
                  in this lane -- see `gaia doctor --help`.
-  status         workspace status: agents, hooks, contracts.
-  history        recent agent sessions.
-  metrics        dashboard: tiers, commands, agents, anomalies.
-  usage          show --plan N | --session ID
-                 tokens per session and per agent from Claude Code
-                 transcripts; for a plan, split bound / unbound / main.
-                 What a task or re-dispatch cost, where a plan's spend went.
+  status
+                 workspace status: agents, hooks, contracts.
+  history
+                 recent agent sessions.
+  metrics
+                 dashboard: tiers, commands, agents, anomalies.
+  usage          show
+                 `--plan N` or `--session ID`: tokens per session and per
+                 agent from Claude Code transcripts; for a plan, split bound /
+                 unbound / main. What a task or re-dispatch cost, where a
+                 plan's spend went.
   context        show | get | get-contract | project
                  `get-contract --section <s>` is the only verb that reads a
                  project-context contract row (the names an agent's
@@ -280,11 +293,13 @@ READ -- changes nothing. The orchestrator runs these itself.
   memory         search | show | list | stats | get-relevant | conflicts |
                  episode-show | story
   notifications  list | show
-  approvals      list | pending | show | history | stats
-  worktree       list | show
+  approvals      list | pending | show | question | history | stats
+  worktree       list | show | show-capture
                  inspect a specialist's own isolated git worktree (never
                  create or release it -- those are the specialist's own
                  governed writes, below).
+  session        preview
+                 render the SessionStart manifest in-process.
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
   brief          new | edit | set-status | ac add|edit|remove | decision add
@@ -293,12 +308,18 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
                  proposes and applies a change, a verifier records verdicts.
   task           set-status (no --override) | gate reverify
   notifications  ack
+  approvals      reject | revoke
+                 withdraw ONE approval by id -- both only take back consent
+                 Gaia issued. Granting and sweeping stay outside this lane.
   memory         add | append | reclassify | link | checkpoint
-  scan           re-index this workspace's repos into (workspace, project)
+  scan
+                 re-index this workspace's repos into (workspace, project)
                  rows -- how the coordinator keeps its own context current.
                  `scan --dry-run` previews the same result without writing.
-  context scan   re-run the project scanner behind `context show`/`get`.
-  paths          report the resolved storage paths (data, db, snapshot, logs,
+  context        scan
+                 re-run the project scanner behind `context show`/`get`.
+  paths
+                 report the resolved storage paths (data, db, snapshot, logs,
                  events) and materialize the ~/.gaia layout if it is missing.
                  It reads like a read and is not one: all three handlers call
                  ensure_layout(), which creates those directories at 0700.
@@ -309,9 +330,8 @@ WRITE a specialist owns -- DELEGATE; do not run it here.
                  workspace merge | schedule register|remove|sync |
                  usage ingest (load transcripts into token_usage)
   gaia-system    install | update | uninstall | cleanup | dev | release
-  consent flow   approvals approve|revoke|reject|reject-all|clean|replay|
-                 request-set -- consent is granted by the user, not by a
-                 CLI call
+  consent flow   approvals approve|reject-all|clean|replay|request-set --
+                 consent is granted by the user, not by a CLI call
   owning agent   ac | milestone | evidence add | plan save|delete |
                  plan change propose|apply (planner) |
                  task add|remove|reorder|cover|depend (planner) |
