@@ -344,12 +344,14 @@
 
   /* ── the one panel: a box's detail and a chip's relation share it ──
      A vertical, see-through, draggable card docked at the tokens.panel.dock
-     corner (engine.js placeCard sets its width, min-height and dragged
-     position; the --panel-<side> properties are `auto` off the dock). */
+     corner (engine.js placeCard sets its width and dragged position; the
+     --panel-<side> properties are `auto` off the dock). Its height is its
+     text's, capped at 65vh so a short detail never covers the diagram and a
+     long one scrolls inside the card. */
   .panel { position:absolute; z-index:60;
     left:var(--panel-left, 24px); bottom:var(--panel-bottom, 24px);
     right:var(--panel-right, auto); top:var(--panel-top, auto);
-    max-height:calc(100% - 2 * var(--panel-inset, 24px)); overflow-y:auto; padding:18px 22px 20px;
+    max-height:min(65vh, calc(100% - 2 * var(--panel-inset, 24px))); overflow-y:auto; padding:18px 22px 20px;
     border-radius:16px; background:color-mix(in srgb, var(--surface) 88%, transparent);
     backdrop-filter:blur(2px); border:1px solid var(--line); border-left:4px solid var(--clay);
     box-shadow:0 18px 52px rgba(0,0,0,0.24); text-align:left; display:none; }

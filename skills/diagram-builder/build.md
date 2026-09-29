@@ -594,7 +594,7 @@ read `var()`. TOKENS fails when the `:root` defaults in `index.html` differ from
 | `indent_step` | 32 | 8..96 px | doc | one rail tree level |
 | `dim.box` / `dim.label` | 0.18 / 0.34 | 0.05..0.9 | doc | how far a chip dims the rest |
 | `panel.dock` | bottom-left | 4 corners | doc | where the detail card docks |
-| `panel.inset` / `aspect` / `width_cols` | 24 / 1.25 / 2 | 0..96 / 0.5..3 / 1..4 | doc | card inset, shape, width |
+| `panel.inset` / `width_cols` | 24 / 2 | 0..96 / 1..4 | doc | card inset and width; its height follows its text, capped at 65vh |
 | `breakpoints.stack` / `two` / `one` | 1440 / 1000 / 640 | 320..7680 px | doc | the collapse tiers |
 | `viewport.w` / `h` | 1920 / 1080 | 320..7680 / 240..4320 px | doc | the presentation screen |
 | `default_columns` | 2 | 1..12 | doc | columns when a section declares none |

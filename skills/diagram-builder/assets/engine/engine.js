@@ -746,17 +746,16 @@
     // One placement for both panel contents, a box's detail and a chip's
     // relation. The card is `panel.width_cols` times as wide as the narrowest
     // root section the deck can draw (this page's plane split by the widest
-    // page's root columns), floored at that many readable cells, and
-    // `panel.aspect` times as tall as it is wide; both stay inside the stage
-    // less the dock inset on each side. A dragged position is kept for the page.
+    // page's root columns), floored at that many readable cells, and kept
+    // inside the stage less the dock inset on each side. Its height is left to
+    // its text (the .panel rule caps it). A dragged position is kept for the page.
     let draggedTo = null;
     function placeCard() {
       const plane = act.querySelector('.sec-plane');
-      const { inset, aspect, width_cols: cols } = TOKENS.panel;
+      const { inset, width_cols: cols } = TOKENS.panel;
       const width = Math.min(stage.clientWidth - 2 * inset,
         Math.max(cols * TOKENS.cell_min_w, cols * plane.clientWidth / widestRootColumns));
       panelEl.style.width = width + 'px';
-      panelEl.style.minHeight = Math.min(aspect * width, stage.clientHeight - 2 * inset) + 'px';
       if (draggedTo) moveCardTo(draggedTo.left, draggedTo.top);
     }
     function moveCardTo(left, top) {
