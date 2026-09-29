@@ -27,23 +27,20 @@
 // CLOSES and the data is sound, and it has never seen a pixel. Whether the page
 // LOOKS right is a human review of the rendered deck.
 //
-// WHAT THIS REPLACES: the browser width SWEEP. A render gate used to draw 5 widths ×
-// 2 themes × 5 reloads to prove the …→2→1 collapse cascade. But the collapse is a
-// CONTAINER QUERY: the cuts at 640 / 1000 / 1440 px depend on NOTHING except the
-// stage container's width, so "a 4-column grid renders 2 tracks at 900px" is a PURE
-// FUNCTION of (authoredColumns, containerWidth) — `tracksFor` below. Once that is
-// arithmetic, re-measuring it in a browser five times is re-confirming a
-// multiplication table. The sweep is gone; the identity is checked at all five of
-// its former widths here, in milliseconds.
+// WHY ARITHMETIC IS ENOUGH: the collapse is a CONTAINER QUERY. The cuts at
+// 640 / 1000 / 1440 px depend on NOTHING except the stage container's width, so
+// "a 4-column grid renders 2 tracks at 900px" is a PURE FUNCTION of
+// (authoredColumns, containerWidth) — `tracksFor` below — checked here at five
+// container widths in milliseconds.
 //
 // WHAT IT ASSERTS
 //   RECT   the closure identity above, per grid, per tier. Reports any deficit as
-//          an exact cell area. Supersedes the render-time L (cells fill width).
+//          an exact cell area.
 //   HOLE   interior holes enumerated by coordinate — a merge that did not fit in
 //          the tracks left on its row and dropped down, leaving a gap ABOVE it.
-//   TRACK  a dead track: a column the content never reaches. Supersedes E.
+//   TRACK  a dead track: a column the content never reaches.
 //   ROW    an orphan row: a lone single cell on its own row while a sibling row
-//          holds two or more. Supersedes P.
+//          holds two or more.
 //   LANE   rail-led swimlanes of unequal length within one grid (hard), and
 //          parallel single-column stacks of unequal depth (advisory).
 //   FROZEN an undeclared hole UNDER an element that cannot grow: a `vertical`
@@ -52,16 +49,15 @@
 //   BAND   band placement: a band owns its whole row, and a declared span never
 //          exceeds the columns it is placed in.
 //   TIER   the derived tracks-per-tier table, and the monotonicity of the cascade
-//          (tracks never grow as the container narrows). Supersedes F.
+//          (tracks never grow as the container narrows).
 //   CHIP   filter referential integrity in BOTH directions, plus ARITY: a chip
 //          with a single member does not express a relation, and since an active
 //          chip dims everything it does not name, a one-member chip switches the
-//          deck off. Supersedes K, which only closed the join.
+//          deck off.
 //   CHIP-X a chip key carries one label on every page: a core chip (declared in
 //          document.yaml) is inherited first, and a page chip reusing a key agrees.
 //   HARMONY opt-in: every box and rail belongs to at least one chip, the lead
-//          band exempt. The lead's own shape is refused at build (checkLead);
-//          that it is DRAWN full-width is render invariant LEAD in validate.
+//          band exempt. The lead's own shape is refused at build (checkLead).
 //   LIT   a filter declared on a leaf type the engine never lights (separator,
 //          spacer): the CHIP join closes and the render cannot show it.
 //   RAILT  a thin rail's title past its two-line ceiling: the rail row is `auto`
@@ -77,21 +73,19 @@
 //          shorter row included), on every page not declared `text_fit: advisory`.
 //   HEADER a section title/subtitle against its clamp at the zone's inner width.
 //   HEIGHT the page height predicted from the placement model against the
-//          `document.yaml` viewport (ADVISORY; validate VH measures it).
+//          `document.yaml` viewport (ADVISORY).
 //   SPAN   the stylesheet implements the span→tracks rules every width here
 //          assumes.
-//   CENSUS data/*.yaml vs data/data.generated.js (shared with validate, via
-//          tools/static-census.cjs — one parse path, so the two gates cannot
-//          disagree about what the data says).
+//   CENSUS data/*.yaml vs data/data.generated.js (via tools/static-census.cjs,
+//          the one parse path every tool shares).
 //
 // WHAT IT CANNOT SEE, ON PURPOSE
 // Arithmetic knows the rectangle closes; it does not know the text fits inside it.
-// Pixel legibility, mid-word wrapping, description clamping, the flex wrap point,
-// real rendered proportions, and sibling collision are RENDER truths and stay in
-// `validate`. This file never claims them, and never pretends a green run here is
-// a verdict on how the deck LOOKS.
+// Pixel legibility, mid-word wrapping, the flex wrap point and real rendered
+// proportions are for the person looking at the deck. This file never claims them,
+// and never pretends a green run here is a verdict on how the deck LOOKS.
 //
-// NO FALSE GREEN. Two structural rules, mirroring validate's own:
+// NO FALSE GREEN. Two structural rules:
 //   • a run that asserted NOTHING is RED, never green (the `total === 0` gate).
 //   • the deck root is taken from argv/env so this gate can be pointed at a BROKEN
 //     FIXTURE outside the repo and be SHOWN to fail. A guardrail only ever run
@@ -280,11 +274,9 @@ const rowspanOf = n => Math.max(1, Math.floor(Number(n && n.rowspan) || 1));
 // The direction is chosen, not incidental. The DEMAND is over-estimated (the
 // monospace advance below is the CEILING of the families the CSS names) and the
 // CELL is derived from the stylesheet's own chrome, so a text flagged here is
-// genuinely near its limit, and a text that fails the render gate's N is
-// necessarily flagged here first. The converse does not hold — which is exactly
-// why every finding is an ADVISORY ([INFO], never a failure). `validate`'s N
-// measures the real font with real font metrics and is the VERDICT. The two
-// COMPOSE: this is the fast warning where no browser exists, N is the ruling.
+// genuinely near its limit. The converse does not hold — a text that passes here
+// can still wrap badly in a real font — which is exactly why every finding is an
+// ADVISORY ([INFO], never a failure) and the person looking at the deck rules.
 // This file never claims an authority the arithmetic does not have.
 //
 // THE KICKER TOKEN IS THE ONE ROLE WITH NO RULING ABOVE IT, AND IT IS STILL AN
@@ -515,7 +507,7 @@ function cssTextTokens(root) {
 // grid's tracks and gaps -> the box's border and padding. Every subtraction is a
 // declaration in index.html, which is why the numbers above are mirrored and
 // asserted rather than tuned: the chain reproduces `.zone` 636px -> grid 602px
-// and a 6-track band cell of 201px, the widths the render gate reports.
+// and a 6-track band cell of 201px, the widths the browser draws.
 
 // What the canvas leaves for the content plane at a container width.
 function planeWidth(cw) {
@@ -561,7 +553,7 @@ function nestedTrackArea(g, child, cw) {
 
 // The width a box's TEXT gets: its cell (w of the grid's tracks, plus the gaps
 // it swallows) less the box's own border and lateral padding. `.t` carries no
-// padding of its own, so this is what the render gate measures as availW.
+// padding of its own, so this is the width the text really wraps in.
 function cellTextWidth(gridW, tracks, w) {
   const track = (gridW - (tracks - 1) * CSS_TEXT.gap) / tracks;
   return track * w + (w - 1) * CSS_TEXT.gap - 2 * (CSS_TEXT.boxBorder + CSS_TEXT.boxPad);
@@ -608,7 +600,7 @@ function wrapLines(text, cap) {
 // its clamp, the KICKER TOKEN against the cell, and the DESCRIPTION against its
 // own clamp. Returns how many assertions ran, any advisory findings, and every
 // MARGIN it measured — so a passing run can report its tightest margin instead of
-// a bare "holds", the way the render gate's M reports its narrowest cell. Each
+// a bare "holds". Each
 // finding carries the number MEASURED, the number AVAILABLE and the exact CELL: a
 // budget whose message is generic advice teaches nothing and gets silenced by
 // writing a structural value at random.
@@ -667,8 +659,8 @@ function textBudget(leaf, ctx) {
   // against — a two-line kicker is a layout judgement the arithmetic cannot make,
   // while a token wider than the cell is an unambiguous mid-word fracture.
   //
-  // FORM-SCOPED to WORDFIT (dashboard / flow) for the same reason the render
-  // gate's N is: those are the forms whose kicker carries a real symbol name. A
+  // FORM-SCOPED to WORDFIT (dashboard / flow): those are the forms whose kicker
+  // carries a real symbol name. A
   // planner's `TODO` or a timeline's phase code is short by construction, and
   // failing them would be judging a form on a constraint it does not have.
   const kicker = String(leaf.kicker ?? '').trim();
@@ -759,8 +751,7 @@ const escapeForBundle = s => JSON.stringify(s).slice(1, -1);
 // browser drew. When the two disagree INK reports the model and stays green:
 // measured, it passed a title at 47.4px of a 63.0px slot while Chromium clamped
 // that very title, because the real cell was 179.5px wide instead of the modelled
-// 236.6px. The arithmetic was right and the render was wrong. Real clamping is
-// `validate` TXT (scrollHeight vs clientHeight in the browser); the divergence
+// 236.6px. The arithmetic was right and the render was wrong; the divergence
 // that produced it is now caught by the CSS span->tracks shapes above.
 //
 // OPT-OUT, not opt-in: every page is asserted unless it declares
@@ -768,8 +759,7 @@ const escapeForBundle = s => JSON.stringify(s).slice(1, -1);
 // only at the presentation tier (`document.yaml` `viewport.w`) — the width the
 // deck is shown at — and advises at the others. The three-line description clamp
 // puts a full box at ~128 of 130px, so a box that fails here is one whose text
-// the author should move into the detail. The render-side ruling on the same text
-// is validate's TXT row, scoped by the same page field.
+// the author should move into the detail.
 
 // The one assumed constant on this axis, and the analogue of MONO_ADVANCE_EM:
 // `.box .k` and `.box .t` declare no line-height, so they render at the family's
@@ -1109,9 +1099,8 @@ function headerBudget(sec, innerPx, cw, m = CSS_TEXT) {
 // bound INK uses, and every value comes in as a parameter.
 //
 // `chromePx` is the page outside the canvas box — the canvas's top offset and
-// the frame below it — which no single declaration gives. validate's VH row
-// measures and prints it (`chrome NNpx`); 207 is the seed's measurement at
-// 1920x1080, and a deck whose VH chrome differs passes its own value in.
+// the frame below it — which no single declaration gives. 207 is the seed's
+// measurement at 1920x1080, and a deck whose chrome differs passes its own value in.
 const PAGE_CHROME_PX = 207;
 
 function predictPageHeight(page, cw, m = CSS_TEXT, chromePx = PAGE_CHROME_PX) {
@@ -1358,8 +1347,7 @@ function checkPage(page) {
       const { placed, occ, rowCount } = place(items, tracks);
       const area = placed.reduce((n, p) => n + p.w * p.h, 0);
       const rect = tracks * rowCount;
-      // The rows a rowspan cell TOUCHES are exempt from the closure, exactly as
-      // the render-time L and P exempt a row a `.mrsp` cell touches: a cell-graph
+      // The rows a rowspan cell TOUCHES are exempt from the closure: a cell-graph
       // / bar-chart row legitimately tapers (that IS the chart), and a swimlane
       // rail legitimately fills a column no single-row cell reaches.
       const exempt = new Set();
@@ -1380,7 +1368,7 @@ function checkPage(page) {
         } else if (!closes) {
           info('RECT', `${g.label} @${tier.w}px`,
             `Σ area ${area} vs ${tracks}×${rowCount}=${rect} (short ${rect - area}) — a short LAST row at a ` +
-            `collapsed tier is the legitimate cascade, not a hole (the render gate never asserted fill below 1200px either).`);
+            `collapsed tier is the legitimate cascade, not a hole.`);
         }
       } else {
         // Per-row form: every NON-exempt row must be fully occupied.
@@ -1539,7 +1527,7 @@ function checkPage(page) {
           `are declared but no cell ever reaches them (a reserved empty column).`);
 
       // ROW — an orphan row: a lone single-track cell on its own row while a
-      // sibling row holds two or more. Scoped exactly as the render-time P was:
+      // sibling row holds two or more. Scoped to
       // grid-dense forms only, more than one track, and rows a rowspan touches
       // exempt (a tapering chart row is not an orphan).
       if (tracks > 1 && GRID_DENSE.has(form)) {
@@ -1998,7 +1986,7 @@ function main() {
   const unasserted = findings.filter(f => f.sev === 'not-asserted').length;
   const censusFail = sc.ok ? 0 : 1;
   console.log('\n══════════════════════════════════════════════════════════════');
-  // ZERO ASSERTIONS IS RED, NEVER GREEN — the same rule validate's verdict holds.
+  // ZERO ASSERTIONS IS RED, NEVER GREEN.
   // `failed === 0` is a VACUOUS truth when nothing was asserted, and a guardrail
   // that measured nothing has no business printing a pass.
   if (asserted === 0) {

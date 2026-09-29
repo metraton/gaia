@@ -5,457 +5,207 @@ description: Use when the user wants to build or extend a diagram deck of nested
 
 # Diagram Builder
 
-Diagram-builder draws a diagram of any kind — a system architecture, a timeline,
-a slide-style presentation, a process flow, a comparison, a mind-map, a planner
-board — as nested boxes authored in plain YAML and rendered by a generic engine:
-no framework, no server, opens under `file://`. Its whole material is two
-primitives — a recursive **section** that ARRANGES and a **component** that
-CARRIES — and its work is to find the form that teaches THIS idea best and lower
-it into that geometry. How the idea is explained before it is drawn — the four
-decisions, the fixed order, the two registers — is the shared discipline of
-`technical-explanation`; this skill lowers that explanation into a deck and does
-not restate it. Everything domain-specific lives in the data; nothing
-about a domain lives in the engine. Everything on the canvas invites the reader
-toward the centre: the layout centres its content, a click opens a bottom-centre
-panel, a chip spotlights a relation.
+This skill teaches a PERSON what they have and how to draw with it. It gives
+them one standard, easy way to make a diagram: they fill in data — what the
+parts are, what goes together, what comes first, what crosses everything — and
+the look follows from that data. Nobody places a box by hand.
+
+Everything starts from a diagram. A deck of pages is the unit of work. A video
+can only come from a deck and animates that deck's structure, never a structure
+of its own.
+
+This file is for you, the orchestrator. You understand the idea with the
+person, choose the pieces with them, and read the result back. A subagent
+builds; its instructions are in [build.md](build.md). How the idea is explained
+before it is drawn — the intent, the fixed order, the two registers — is
+`technical-explanation`; this skill takes that explanation and turns it into a
+deck.
 
 ```
 idea
  └─ document        the deck: title, palette, tokens, core chips, pages
-     └─ page        one act/view (also the ROOT section: its columns + sections)
-         └─ section     a grid zone; nests other sections freely (a grid of grids)
-             └─ component   a leaf: a card, a divider, a lane label, a declared hole
-   filters light a relation: core chips on the document, page chips after them
+     └─ page        one act (also the ROOT section)
+         └─ section     a frame that groups; nests other sections freely
+             └─ component   a leaf: a box, a separator, a rail, a spacer
+   chips light a relation: core chips on the document, page chips after them
 ```
 
-## The governing definition (the anchor)
+## What the person has
 
-Internalize this before anything else. Every design decision is judged against
-it, and the adversarial critique at the end of the cycle is run against it:
+Two primitives: a **section** ARRANGES and a **component** CARRIES. A
+component is a **box** (the card), a **separator** (a line inside a section), a
+**rail** (a title-only label for a lane or one level of a tree) or a **spacer**
+(a hole left on purpose). A **chip** is a question at the top of the page;
+clicking it lights every box that shares the answer.
 
-> A diagram is a **semantic design tool: nested boxes, one inside another**.
-> Some boxes are **sections** — they group other sections or groups of
-> components. Sections divide into **columns**, vertically and horizontally.
-> **Components expand horizontally and vertically** — a merge on **two axes**:
-> a span of columns plus a row-span of rows — and they sit in columns, or in
-> cells flowing downward. The objective is **compaction and symmetry**: the
-> canvas **fills** inside a **centered width cap** (max-width ≈ 1280px — a
-> medium resolution, no horizontal scroll). It neither expands to arbitrary
-> width nor leaves holes — **full rectangles**.
+Each box has four slots, and each slot has a character: the **kicker** is small
+(a qualifier, a code, a step), the **title** is loud (a number goes here when
+the number is the message), the **description** is short and clamps, and the
+**detail** has no limit and sits behind a click.
 
-The engine implements this model: both merge axes are real, the canvas fills to
-the centered cap, cells keep a readable minimum width (columns collapse before a
-cell degrades), a guardrail asserts form-scoped invariants against the real
-rendered geometry, and a strict schema rejects any unknown field loudly at build
-time. So design, discuss, and critique against the definition knowing the engine
-renders it — the exact geometry and the field-by-field schema live in
-`reference.md`, the dialect's terms and value sets in `GLOSSARY.md`.
+The look has three dials, and each says one thing:
 
-## The nine principles
+- **variant = colour.** Six roles carry a verdict (`neutral`, `good`, `warn`,
+  `bad`, `accent`, `muted`). Four hues (`blue`, `violet`, `gold`, `clay`) carry
+  none: they only tell up to four peers apart.
+- **treatment = structure.** It covers a dashed frame (`outside`), centred
+  text, a vertical label, a frameless wrapper, and a short-row staircase. It
+  changes how something is drawn, never what it means.
+- **palette = skin.** It sets how the whole deck looks (`neutral`, `rose-pine`,
+  `rose-pine-moon`, `contrast`) and never changes what anything means.
 
-Nine principles, not a menu of features. Every capability of the engine is a
-consequence of one of them, so hold the principles and the possibilities open by
-themselves.
+## The map: from an idea to a piece
 
-### How the canvas works
+When the person says something about their idea, look it up here. Every row
+names the piece, why it is that piece, the neighbour piece they might confuse it
+with, and when the neighbour is the right choice instead. Name the neighbour to
+the person only where the choice was close.
 
-**1 · Everything you see is a merged cell.** There is no other geometry: one
-uniform cell, and two axes to merge it on. Width is REACH; height is MAGNITUDE.
-A merge consumes rows or columns that must already exist — something has to sit
-beside it creating them. Ask: what do I want bigger, in which direction, and
-what holds it up?
+| The person says | Use | Why | Neighbour | Choose the neighbour when |
+|-----------------|-----|-----|-----------|---------------------------|
+| "These go together" | a **section** — si agrupo, uso una sección | The frame says "these are one thing" and its boxes are its parts. The structure is the claim. | a **separator** inside one section | Both sides are parts of the SAME thing and you only want a pause. If they are different things, a line understates it. If the group runs across several sections, use a chip. |
+| "This goes in order" | **order**. Phases are sections side by side in reading order, steps are boxes inside them, and the kicker says `STEP n OF m`. | Order is the only thing that moves boxes, and it is also the stacking order when the screen narrows, so the sequence survives on any screen. | a **chip** whose `steps` narrate the path | The path goes back or jumps between sections or pages. Order cannot run backwards, and a chip's narration can carry direction. |
+| "This runs across everything" | a **chip**, or a core chip when it crosses pages | A relation is shared membership, lit on click. Turning it into structure would break up the groups it crosses. | a full-width **band**, a section or box spanning every column | The thing that crosses has content of its own and needs boxes, like a layer under everything. Width says reach. |
+| "These are options, pick one" | boxes side by side in **one section** with the same variant. The kicker says `OPTION A`, `OPTION B`, and the section title says the choice. | One section is one decision, and the same colour says they are peers. Order alone would suggest a sequence, so the kicker and the title say there is none. Never `STEP n OF m`. | a **comparison**: one section per option, side by side | Each option has parts of its own that the reader compares row against row. |
+| "This is measured, that is estimated" | the **kicker**: `MEASURED` or `ESTIMATE`, with the number in the title | The kicker is the qualifier slot. The word travels with its box on every screen and needs no legend. | the dashed frame (`outside`) on the estimates, declared in a legend band | A whole page must separate them at a glance, and nothing else in the deck uses the dashed frame. Never use a verdict colour: amber and red say risk, not certainty. |
+| "This one is bigger" | height (`rowspan`) for magnitude, width (`span`) for reach, with spacers under the shorter bars so all bars start from one floor | Magnitudes are only comparable from a shared floor, and the eye sees the proportion before it reads a number. | the number in the **title** | The number is the message, not the proportion. |
+| "This page says X" | the **lead band**: the first full-width box, whose title is the claim and whose kicker says `PART n OF m` | The page states its claim before its parts. | a **section title** | You are naming one zone, not the whole page. |
+| "Label this lane" or "this level of the tree" | a **rail** | A title-only label fills its track, can be indented one level per step, and can join a chip. | a **section title** | The label heads a framed group. A rail used as a heading takes space from the grid. |
+| "These are different kinds" | a **hue** per kind, declared once in a legend band after the lead band | Hues carry no verdict, and the legend makes the colour mean the same on every page. | a **verdict variant** (`good`, `warn`, `bad`) | The colour must say safe or dangerous. |
+| "This is outside the scope" | the **`outside`** treatment (dashed frame, no colour) | Border style is its own channel, so colour stays free. | a separate **section** | The outside things are several and have parts. |
+| "Nothing goes here, on purpose" | a **spacer** | A declared hole closes the rectangle and says the gap is meant. | close the gap (move or merge the neighbour) | The gap was not meant. An undeclared hole is a defect. |
+| "There is too much to say" | the **detail** behind a click | A cell never grows. What does not fit moves; it does not shrink. | split it into a **section** of boxes | The text has parts the reader must see at once. |
 
-**2 · A grid holds cells or zones, and mixing them changes what every dial
-means.** One nested section among components turns the whole level into a row of
-zones: `columns` stops creating tracks, `span` becomes a relative weight,
-`rowspan` ceases to exist, and the cell invariants stop measuring that level.
-You will mix sometimes — a timeline of sections divided by separators is a good
-reason. Mix knowing what you give up.
+No case in this map lacks a piece. The two cases older versions left open,
+options and measured versus estimated, are answered with slots that already
+exist (kicker, section title, legend band). No new field was needed.
 
-**3 · You author a sequence, not positions.** There is no cell coordinate, only
-`order`. That same order is the packing order and the stacking order when
-everything collapses to one column. And filling runs forward: nothing goes back
-to fill the hole a tall cell left. Whatever belongs beside something tall goes
-before it.
+## The rules the pieces follow
 
-### How you speak through it
+1. **Everything you see is a merged cell.** Width is reach; height is magnitude.
+   A merge uses rows or columns that something beside it creates.
+2. **A grid holds cells or zones; mixing them changes every dial.** One section
+   among boxes turns the level into a row of zones, where `span` becomes a
+   weight.
+3. **You write a sequence, not positions.** Filling runs forward: whatever
+   belongs beside something tall goes before it.
+4. **Every slot has a character** (above). If you read it wrong, the layout
+   fights you.
+5. **Every visual channel carries one claim**, and the page declares it (in a
+   legend band, a section title, or a kicker that spells it out). A channel
+   nobody declares is decoration.
+6. **The grid draws no arrows; it lights relations.** A chip needs two ends.
+   One key on two pages means one thing.
+7. **Structure is the claim.** Distinct things are distinct sections, and the
+   parts of one thing are boxes in its section. No machine can check this.
+8. **What does not fit does not shrink; it moves**: into the detail, into a
+   merge, or into a nested section.
+9. **The hole speaks.** Close it, or declare it with a spacer.
 
-**4 · Every field is a slot with a character, not a meaning.** The field decides
-SIZE and PROMINENCE; you decide the meaning. The kicker is small — a qualifier,
-a code, a step. The title is the loud one, and that is where a number goes when
-the number is the message. The description is brief and clamps. The detail is
-unbounded, behind a click. Read a slot's character wrong and the layout fights
-you: a lane label pressed into service as a section heading grows, steals space,
-and distorts the grid — a section that needs a heading has one.
+The meaning rules over the geometry. A hole or an asymmetry is fine only when it
+says something. Never fold two distinct things together to make a rectangle
+come out full.
 
-**5 · Every visual channel carries one claim.** Position, size, colour, border
-style, kicker — independent of each other. Double them to reinforce (a bar that
-grows and turns red says magnitude twice) or split them to say two things. A
-channel's meaning is declared on the page and holds for the whole DECK, and
-declaring it is obligatory — but no schema field holds it: you declare it in
-the CONTENT, as a legend band, a section heading, or a box that spells the code
-out. An undeclared channel is decoration.
-
-**6 · The grid does not draw relations: it lights them.** There are no arrows.
-Every relation is shared membership in a chip — a directed path, which `order`
-makes readable, or a concept that cuts across sections. A relation needs two
-ends; a chip with a single member dims the page and lights nothing. The same key
-on two pages projects one onto the other, so it carries one label everywhere.
-
-### What judges it
-
-**7 · Structure is the assertion.** Distinct things are distinct sections; parts
-of one thing are components inside its section. No machine can verify this, and
-it is the only thing separating a diagram from decoration.
-
-**8 · What does not fit does not shrink: it moves.** A cell never grows by
-content. Every "it doesn't fit" is answered by moving text into the detail, by
-merging, or by collapsing columns through nesting — never by squeezing. An
-unreadable cell is a defect even when the geometry closes.
-
-**9 · The hole speaks.** An empty cell asserts something. If you did not mean to
-say it, close it; if you did, declare it — `type: spacer` is the leaf that
-declares it, occupying its cell and drawing nothing. Reach for it whenever
-placement has to rest on a BASE instead of hanging from the ceiling: filling runs
-forward and top-down (principle 3), so bars written first all start in row 1 and
-taper downward, and magnitudes are only comparable from a shared floor. Open each
-short column with spacers above its bar and every bottom edge lands in the same
-row — the alignment is bought with holes you MEANT, and the rectangle closes
-exactly instead of leaning on an exemption. And a shared row only means something
-when every lane is the same length.
-
-## What the guardrail can and cannot see
-
-The guardrail is not a design judge. It measures the real rendered geometry, so
-it reaches exactly the principles that ARE geometry:
-
-| Principle | Automatic check |
-|-----------|-----------------|
-| 1 merged cell · 2 cells-or-zones · 3 sequence | **yes** — the merge, the compound level, and the packing order are all measured on the render |
-| 8 does not shrink · 9 the hole speaks | **yes** — clamped content, the readable floor, empty tracks and orphan cells are all asserted |
-| 6 relations | **half** — the chip↔component join is asserted in both directions; whether the relation is the RIGHT one is unreachable |
-| 4 slot character · 5 one claim per channel · 7 structure is the assertion | **no** — nothing measurable distinguishes a meaningful section from a convenient one |
-
-Therefore: **a green guardrail means "it is not broken", never "it is right".**
-Reading the render and running the adversarial critique are not an elegant
-closing ritual — they are the ONLY verification that exists for four of the nine
-principles (4, 5, 7, and the half of 6 no machine can reach). A verdict that
-rests on green alone has verified the geometry and asserted the meaning.
-
-That table is also why the evidence classes under **The verdict** are three and
-not two. The **yes** rows are reached by two different gates that both compute a
-number and can disagree with each other: one derives the geometry from the
-authored YAML, the other observes the geometry the browser actually drew. The
-**no** row is reached by neither — only by looking.
-
-## Conceptualizing the user's problem
-
-The form is the LAST decision, not the first. Before it:
-
-1. **Understand the problem — the kind of input decides your first read.** What
-   is the idea, who reads it, what should they walk away knowing? The two kinds
-   of input below split the first move. An input that already carries its
-   structure — above all an existing deck, whose path the harness usually hands
-   you — is read FIRST: that deck's own `data/` is the source of truth for what
-   it really says rather than what you assume, so read its real pages, sections,
-   and components (the knowledge, not just how the engine works) before
-   proposing anything. An open idea has no deck and no `data/` to read; there the
-   first read is the seed below, and the choice of form comes out of it.
-2. **Help develop it.** A vague idea is not a blocker; developing it is the
-   work. Name the entities, ask what is distinct from what, surface the
-   relations the user has not named yet.
-3. **Summarize and adapt the information to the components.** Each thing must
-   survive as a qualifier, one loud line, a brief gloss that clamps, and
-   whatever is unbounded behind a click. Information that cannot be compressed
-   that way is not yet a component — it is a section, or it is detail.
-4. **Only then choose the form.**
-
-**Two kinds of input.** A specific, structured document (a spec, an itemized
-doc) already carries its structure — MIRROR it: its parts become sections, its
-items components; inventing a different shape discards the author's own
-assertion. An open idea carries no structure — EXPLORE which form teaches it
-before drawing anything.
-
-**Choosing the form is a criterion, not a lookup.** Two questions settle it: does
-the idea MOVE or STAND? (a process wants a timeline or a flow; a structure wants
-a dashboard, a comparison, a mind-map, a planner) — and does the reading
-CONVERGE on one thing or DIVERGE into many? (a mind-map and a comparison
-converge; a planner and a dashboard diverge). One caveat the geometry imposes:
-the engine is a GRID and cannot radiate, so a mind-map is symmetric nested
-sections around a central band — never present a radial burst as something it
-draws. For a wider inventory of visualization forms and what each one teaches,
-<https://www.visual-literacy.org/periodic_table/periodic_table.html>. The
-copyable YAML skeleton for each form is in `reference.md` ("Per-form seed
-skeletons") — do not rebuild it from memory.
-
-## The semantic doctrine (the layout mirrors the idea)
-
-The structure of the layout IS a mirror of the structure of the idea, so the
-mapping is never stylistic — it is the meaning:
-
-- **Distinct things are distinct sections; parts of one thing are components in
-  one section.** Folding two distinct things together for visual convenience
-  erases the distinction the idea makes.
-- **A cross-cutting relation is a CHIP, not structure.** Beyond "what are the
-  sections?", ask "what should the reader be able to spotlight?".
-- **A separator is a WEAK divider.** A line divides only WITHIN a section. If
-  the two sides are distinct things, they are sections — reaching for a line
-  where a boundary belongs understates the distinction.
-- **Every element is justified by MEANING, nothing by decoration.** For each
-  placement you must be able to say why: why a section, why this column count,
-  why this merge, why on the right, why the base band. That "why" IS the design
-  critique, run element by element.
-- **The doctrine RULES over the geometry.** Compaction, symmetry, and full
-  rectangles are targets, not the meaning. A hole or an asymmetry is legitimate
-  only when it ENCODES an intention; when it does not, it is a defect. Never
-  fold, drop, or distort a semantic distinction to make a rectangle come out
-  full — the geometry serves the idea, never the reverse.
-- **When the idea MOVES, the layout is the path.** Phases are sections in
-  reading `order`; steps are ordered components inside their phase; the path is
-  ONE chip whose members sit in every phase-section, so the relation crosses
-  the section boundaries; the disclosure level is the page; and the kicker
-  carries the step index (`STEP n OF m`) as a convention — the engine renders no
-  progress affordance, no counter and no arrowhead, so the count is text the
-  author keeps true. Whether the idea moves, and what its phases, steps, path
-  and levels are, is decided in `technical-explanation` before the deck exists;
-  this doctrine only fixes where each lands. The shape is in the seed
-  (`p10-flow-phases`) and in the "flow — phases as sections" skeleton in
-  `reference.md`.
-
-## The fields that carry the story
-
-Each capability is a field, and each exists for one reason. The schema, value
-sets and gate consequences are in `reference.md`; the terms in `GLOSSARY.md`.
-
-- **Rails are labels, first-class.** A `rail` is a title-only banner: a lane
-  label, or one word of a tree. It joins a chip through `filters`, takes one of
-  the four hues, sits `centered`, and steps into a tree with `indent: 0..3` —
-  the frame moves onto the title while the cell still fills its track, so every
-  cell gate measures it unchanged. A heading is a section title or the lead
-  band, never a rail (principle 4).
-- **`compact`** shortens the rows of one leaf grid, so a rowspan staircase stays
-  small; its boxes lose the description clamp because their height is the
-  rowspan. **`middle`** centres a short section's grid inside the height its
-  compound row stretches it to. **`copy`** puts a copy button on a box whose
-  title IS what the reader pastes: a command, a path, an identifier.
-- **Tokens** are every tunable number — row height, clamps, type, breakpoints,
-  the viewport — set once in `document.yaml` `tokens:` and read by the engine and
-  both gates alike (`reference.md`, "Tokens").
-- **Text fit, viewport and page height.** `tokens.viewport` is the screen the deck
-  is shown on. At that width a title, description or section header past its
-  clamp FAILS `check`, because that is where a cut sentence costs the reader;
-  at every other width it advises. Each page's height is predicted against the
-  viewport and reported, never failed, because a deck may mean to scroll.
-  `text_fit: advisory` is the one per-page opt-out, for a page honestly read in
-  the detail panel.
-
-## Colour that earns its place
-
-Two families. The six semantic variants (`neutral`, `good`, `warn`, `bad`,
-`accent`, `muted`) carry a verdict of risk or state. The four categorical hues
-(`blue`, `violet`, `gold`, `clay`, on boxes and on rails) carry none: they tell
-up to four peers apart. Colour earns its place when it saves the reader a word:
-
-- **A hue per actor, across pages.** Give each recurring actor one hue and keep
-  it on every page: the reader recognises the actor before reading its title.
-- **A hue per phase.** In a flow, a hue per phase makes the path's segments
-  legible at a glance, and it survives collapse because it travels with the box.
-- **A legend band.** Declare the mapping once, as a band with one box per hue
-  whose title says what the hue means, right after the lead band.
-- **A verdict colour only for a verdict.** `good` and `bad` assert safe and
-  dangerous; borrowed for grouping, they assert a verdict the content never made.
-- **A brand colour through `palette_overrides`.** `document.yaml` may replace a
-  palette's colour tokens per theme; `npm run contrast` fails the override that
-  misses WCAG AA (see `reference.md`).
+**Choosing the form.** Two questions decide it. Does the idea MOVE or STAND?
+(A process is a timeline or a flow; a structure is a dashboard, a comparison, a
+mind-map or a planner.) Does the reading CONVERGE on one thing or DIVERGE into
+many? The grid cannot radiate, so a mind-map is sections placed symmetrically
+around a central band. When the input already has its own structure (a spec, an
+existing deck), MIRROR it: its parts become sections and its items become boxes.
+Read an existing deck's `data/` first.
 
 ## Telling it across a deck
 
-**The lead band.** A page opens with one full-width box whose title is the
-page's CLAIM and whose kicker places it in the arc (`PART 2 OF 5`). Mark it
-`lead: true`: the build checks that it is a box, the first root child and as wide
-as the root, and HARMONY exempts it. It is a marker on a box, not a page field,
-because a box already has every slot a heading needs and every gate already
-measures it; a page field would need its own render path and its own geometry
-in both gates for no new capability.
+- **Each page opens with its claim**, in the lead band, and the kicker places it
+  in the arc. The count in `PART n OF m` is text you keep true.
+- **The deck's recurring actors are core chips**, declared once and inherited by
+  every page. A page adds a few chips of its own. Write each chip as the
+  question it answers ("Which boxes are the gates?"): clicking it is the reader
+  asking.
+- **The same hue or chip means the same thing on every page.** Keep a recurring
+  anchor in the same place, and open with an overview before the drill-downs.
+- **Never show a return leg with reversed order.** It reads backwards when the
+  page narrows. Give the return leg its own row or section, placed after the
+  outbound leg, and let the kicker (`BACK TO 1`) and the chip's `steps` carry
+  the direction.
+- **Four page shapes** come from the fields:
+  - **ring**: two legs in natural order and one chip across them;
+  - **staircase**: height by `rowspan`, with spacers so every step rests on one floor;
+  - **ladder**: phases as sections in order, crossed by one chip;
+  - **lanes**: a rail at the start of each row, every lane the same length.
 
-**Core chips and page chips.** The deck's recurring actors or concerns are CORE
-chips, declared once in `document.yaml` `filters:`; every page inherits them
-first, in their order, with one label. A page adds its own PAGE chips after
-them, few and local. Label a chip as the question it answers ("Which boxes are
-the gates?"): clicking it is the reader asking. A page that does not carry a core actor names it in its
-manifest entry's `omit_filters`, so the deck's coverage reads in one file; an
-inherited chip with no member fails CHIP like any empty chip. The build refuses
-a page that redeclares a core key with another label or steps, and CHIP-X fails
-a page-chip key that carries two labels across pages: a key the reader meets
-twice must mean one thing.
+## The flow, and who does what
 
-**The harmony switch.** `harmony: true` in `document.yaml` makes `check` fail any
-box or rail that belongs to no chip, the lead band exempt. It is opt-in: a
-chip-driven deck, where a relation reaches every element, turns it on; a deck
-that uses chips partially, as the seed's teaching pages do, leaves it off.
+1. **Understand the story with the person**, develop the idea, and name what is
+   distinct, what goes together, what comes in order, and what crosses
+   everything. Propose; do not wait to be told.
+2. **Map each idea to a piece** with the map above.
+3. **Draw the sketch before any YAML exists.** Draw it in ASCII, one mark per
+   piece; do not narrate it. The person answers "yes", "like this" or "change
+   X", and none of those answers needs a field name. How to draw it and how to
+   teach it without overloading the person is the conversation moment, which
+   comes in its own reference.
+4. **Ask where the deck lives** before anything is saved.
+5. **Hand off to a subagent** with [build.md](build.md). Give it the agreed
+   sketch and the values each piece carries, not field names. It returns the
+   YAML, the check results and the census as JSON.
+6. **Read the census against the sketch.** Check the number of sections, how
+   they nest, their widths, their colours and each chip's members. Name every
+   difference before the person sees the deck. How to read it closely is the
+   review moment, which comes in its own reference.
+7. **The person looks.** They open the deck and judge whether it says what they
+   meant.
+8. **Offer the video last, as an option.** It is made from this deck only.
 
-**The four sequence channels.** Choosing among them is the storytelling decision:
+When the person asks for a change, **recalculate, never nudge**: name the
+dials the change touches, say how the rows repack, and show the before and
+after of that section.
 
-| Channel | What it is | Survives collapse? |
-|---------|------------|--------------------|
-| `order` | geometry: the packing order and the one-column stacking order | it IS the collapse |
-| kicker `STEP n OF m` | the story index, as text | yes, the text travels with its box |
-| a chip | membership to spotlight, on click | yes |
-| `steps` | the chip's narration | yes |
+## How a diagram is checked
 
-`order` is the only channel that moves boxes, so it must always read as the true
-sequence; the other three carry what it cannot: direction, grouping, narration.
+- **The diagram's checks are build, model, census and contrast.** None of them
+  opens a browser. The subagent runs them as the build lane in
+  [build.md](build.md):
+  - **build** refuses any field the schema does not know;
+  - **model** proves the layout closes, as arithmetic;
+  - **census** states what each page is;
+  - **contrast** measures every colour pair.
 
-**The return-leg rule.** Never encode direction by a reversed `order`: a leg laid
-right to left by descending `order` reads backwards the moment the page collapses
-to one column. Put each leg in its own row or section, give it the `order` after
-the outbound leg, and carry the direction in the kicker (`STEP 4 OF 6`,
-`BACK TO 1`) and in the chip's `steps`.
+  `test` is only for someone who changes the checks themselves.
+- **The visual review is human.** The person opens `index.html` and looks.
+  Whether a section is the right section, whether a colour says one thing, and
+  whether the page reads are judged by their eye, and no script reaches them.
+  Passing checks mean "not broken", never "right".
+- **Never propose a browser check, a screenshot or a render for a diagram.** The
+  diagram has none, on purpose.
+- **Playwright is only for the video**: capturing frames and `video:check`.
+  Raise it only when the person asks for a video.
+- **To know whether it is present, look in the video's own manifest.** That is
+  the `package.json` under the deck's `tools/video/`, which lists `playwright`.
+  `npm ls playwright --prefix <deck>/tools/video` says whether it is installed.
+  Chromium is present when `~/.cache/ms-playwright` holds a `chromium-<n>`
+  build.
+- **Install it only with the user's consent.** Both installs download and write:
+  `npm install --prefix <deck>/tools/video` and then
+  `npm exec --prefix <deck>/tools/video -- playwright install chromium`.
+  Request them as one signed set that says what each does. Never run them on
+  your own, and never as part of building a diagram.
 
-**The shapes a page can take.** The grid cannot radiate or draw an arrow; these
-four shapes come from its fields:
+## The seed is the showcase
 
-| Shape | Fields that produce it | Seed |
-|-------|------------------------|------|
-| ring | two legs, each a section in natural `order`; one chip across both; the last kicker says where the path returns | `p12-shapes` |
-| staircase | `rowspan` for each step's height, `spacer`s above each step so all rest on one floor, `compact` to keep the rows short — or rail `indent` for a tree | `p12-shapes`, `p11-colour-and-rails` |
-| ladder | phases as sibling sections in `order`, steps inside each, one chip crossing them | `p10-flow-phases` |
-| lanes | a `rail` leading each row, every lane the same length (LANE fails unequal ones) | `overview` |
-
-**Deck-level harmony.** A hue or a chip means the same on every page: the reader
-who learned on page 2 that gold is the static gate reads gold on page 7 the same
-way. Keep a recurring anchor — the same core section, the same hue for the same
-actor — in the same place, and open with an overview before the drill-downs.
-
-## The conversational cycle and the handoff to the builder
-
-The cycle is generic: whoever HOLDS the idea drives it, person or agent, and it
-opens by two doors — the same two kinds of input as above:
-
-**open idea → develop · existing deck (the usual case) → read what it says and
-name the DELTA, its form already chosen** → **propose → sketch → iterate →
-build → validate → adjust by recalculating.**
-
-- **Propose; do not wait to be told.** From a vague idea — a suggestion or a
-  direct mandate — naming the entities, how they group, and which form teaches
-  them is your move.
-- **Be explanatory, not verbose.** Do not assume the other side knows the jargon
-  or the app. Say what a section, a band, or a chip does FOR THEIR IDEA, one
-  plain sentence, when it earns its place.
-- **The sketch is spoken, not notated.** Describe the shape in the shared
-  vocabulary — "two sections side by side, the left one three cells wide, a
-  full-width base band beneath them with a labelled divider" — and decide NO
-  component detail here: no title wording, no kicker, no positions. The sketch
-  is cheap to redo; that is its whole value, and detail is what makes it
-  expensive.
-- **The handoff to the builder is the agreed FORM plus the VALUES, in the
-  natural language of the dialect.** You hand over the shape and the meaning —
-  which sections, which merges, which relations, and the content each component
-  carries. The builder holds the schema (`reference.md`, `GLOSSARY.md`) and
-  lowers it into fields; you do not need the field names to hand off well.
-- **Adjust means RECALCULATE, never nudge.** When a datum arrives — "mount it in
-  that section", "this belongs at the base" — name the dials it touches, reason
-  how the rows repack and where the collapse lands, and show the before/after of
-  the changed section instead of re-reading the whole deck.
-- **Ask WHERE before saving anything.** Never assume a path; the scaffolding
-  modes are in `reference.md`.
-
-**The verdict.** Editing the data is the fast path — the diagram is decided in
-the YAML, not in the pixels — and a change is not done until its verdict is
-earned. Build, then run the engine's own guardrail (the loop, the commands, and
-the invariant table are in `reference.md`), and never declare done on red. On top
-of that:
-
-- **The engine and the bundle move together.** `index.html`, `engine/engine.js`
-  and `data/data.generated.js` are one coupled trio: swapping the engine or
-  rewriting the YAML without re-running the build pairs a new engine with the old
-  bundle, which does not fail — it renders the stale deck silently (the coupling
-  is in `reference.md`, the serving-side cache-busting in `assets/README.md`).
-- **Every verdict names THREE evidence classes.** **MODELLED** — arithmetic over
-  the authored YAML (`npm run model`): it proves the rectangle closes, and it has
-  never seen a pixel. **MEASURED** — the real render in a browser
-  (`npm run render`): it proves the stylesheet actually IMPLEMENTS what the model
-  assumed. **SEEN** — a human or an agent looking: the only class that reaches
-  principles 4, 5, 7 and the half of 6 no machine can. Two classes obscured
-  three, and that is how a computation came to be reported as an observation —
-  `ALL PASS` out of the arithmetic, cited as the verdict, over a page the browser
-  was drawing wrong.
-- **MODELLED and MEASURED are both mandatory, always.** `npm run gate` runs the
-  pair and is the only thing a verdict may cite. Requiring the browser one costs
-  nothing, which is what makes this safe: `render` resolves Playwright lazily and,
-  where no browser exists, prints `SKIPPED (no browser)` and exits 0 — so the
-  verdict then says `MEASURED: unavailable` in words instead of resting silently
-  on MODELLED. The two disagree exactly where it matters: a rule the stylesheet
-  never implemented leaves the arithmetic closing a rectangle the browser draws at
-  a third of its width.
-- **SEEN is required on a first build, a change of form or of model, or any
-  intention no invariant covers — and it names a command.**
-  `DIAGRAM_SHOTS_DIR=<a readable path> npm run verify` renders every page at the
-  deck's `tokens.viewport` and at 1440 in both themes and writes the PNGs where you can open them; then load
-  `visual-verify` for the looking discipline. Do NOT write a browser probe:
-  `verify.mjs` already resolves a Chromium that is on disk (no download) and
-  handles the capture trap — `.canvas` is `position:absolute` with
-  `overflow:auto`, so a naive full-page screenshot truncates to viewport height.
-  A verdict names all three classes: "MODELLED 4540 assertions / 0 not-asserted ·
-  MEASURED 170 checks · SEEN p2 at 1920, both themes". `ALL PASS` is not a
-  verdict.
-- **The RATCHET rule.** Every defect the eye catches becomes an invariant before
-  the change closes — the guardrail only grows. A defect fixed without a new
-  invariant will be reintroduced by the next change the guardrail cannot see.
-  Invariants are form-scoped and retirable (one can supersede another), which is
-  what lets the guardrail grow without ossifying: a rule tuned to a dashboard
-  must not fail a legitimate timeline. **And a new invariant is not landed until
-  it has been SEEN TO FAIL.** Break the rule it guards, watch it go red, restore
-  it. An invariant that has never failed is not an invariant — it is a comment
-  with a pass count: one was added inside a mirror, the rule it guarded was
-  deleted, and the gate still printed ALL PASS with the count moving 6019 → 6018.
-  A mirrored assertion is the one shape that can fail OPEN, so: a mirror asserts a
-  rule's PRESENCE as a hard failure and only its ABSENT FILE as an advisory. Never
-  the reverse.
-- **The adversarial critique closes the work.** Walk the rendered layout against
-  the governing definition and demand the doctrine's "why" for every element,
-  and that every intended relation has a chip. An element without a "why" fails
-  the critique.
-- **Headless changes the counterpart, not the method.** With no interactive user,
-  "iterate" resolves as adversarial SELF-critique against the doctrine before
-  building — the sketch is still made, then interrogated element by element. An
-  ambiguity that survives the self-critique is a REPORT FINDING, never a guess.
-
-## The seed is the showcase — open it
-
-`assets/data/` carries a domain-free seed deck whose only job is to EXERCISE
-every tool the engine offers: inline sections side by side, nesting, the
-structural leaves, height-as-magnitude, a partial merge, the collapse cascade at
-a wide column count, span-weighted zones, a flow whose phases are sections
-crossed by one chip, the deliberate mixing of cells and zones that principle 2
-warns about, and two feature pages: `p11-colour-and-rails` (a lead band, a
-legend of the four hues, a rail tree by `indent`, `copy` boxes in a `middle`
-section) and `p12-shapes` (a ring with its return leg, a `compact` staircase),
-both carrying the deck's core chip beside a page chip. It is the fastest path
-from "is this possible?" to seeing it rendered.
-
-**Open it.** A capability read in a seed that renders is worth more than the same
-capability described in prose, and the seed is where a claim gets falsified.
-
-**Coherence runs both ways.** Every tool this skill names is exercised in the
-seed, and every tool the seed exercises is named in this skill. A capability
-present on only one side is a defect: either the seed lost its demo, or the skill
-grew a claim nothing renders. Check the pair whenever either side changes.
+`assets/data/` holds a seed deck with no domain. Its job is to exercise every
+piece this skill names: sections side by side and nested, the four leaves,
+height as magnitude, a partial merge, the collapse, a flow whose phases are
+sections (`p10-flow-phases`), colour and rails (`p11-colour-and-rails`), and the
+ring and the staircase (`p12-shapes`). Open it: a piece you can see rendered
+teaches more than the same piece described. What the skill names, the seed
+shows, and what the seed shows, the skill names. When either side changes,
+check the other.
 
 ## Where the rest lives
 
-- `GLOSSARY.md` — the canonical dialect terms and their value sets; the shared
-  vocabulary the skill and the rendered app both speak.
-- `reference.md` — the field-by-field schema, the fill geometry, the per-form
-  skeletons, the positioning recipes, the engine gotchas, the authoring modes,
-  and the build → validate loop with the form-scoped invariant table.
-- `assets/` — the portable engine, ready to scaffold into any repo: `index.html`,
-  `engine/`, the seed `data/` above, and `tools/`, where the verification lives.
-  Two gates, both mandatory, because they answer different questions:
-  `check-layout.mjs` over `static-census.cjs` COMPUTES the layout from the
-  authored YAML (`npm run model`), and `validate-layout.cjs` OBSERVES the layout
-  the browser drew (`npm run render`) — a verdict needs both, and `npm run gate` is
-  the pair. Beside them: `test-guards.mjs`, the negative suite that proves the
-  gates detect what they claim; `contrast-audit.cjs`; and `verify.mjs`, the
-  screenshot sweep SEEN runs on. Scaffold without `tools/` and the deck has no way
-  to earn a verdict.
+- [build.md](build.md): for the subagent. It covers the build lane, the census,
+  the vocabulary and every field, the per-form skeletons, the tokens, the
+  engine's behaviour, and every check `model` runs.
+- [assets/README.md](assets/README.md): the portable engine (`index.html`,
+  `engine/`, `data/`, `tools/`) and how to serve it.
