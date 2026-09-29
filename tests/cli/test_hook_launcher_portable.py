@@ -24,8 +24,9 @@ if str(_HOOKS_DIR) not in sys.path:
 
 from modules.core.plugin_setup import render_gaia_hooks  # noqa: E402
 
-SH = shutil.which("sh")
-pytestmark = pytest.mark.skipif(SH is None, reason="the launcher is a POSIX sh script")
+from tests.conftest import require_tool  # noqa: E402
+
+SH = require_tool("sh")
 
 
 def _generated_hooks() -> dict:

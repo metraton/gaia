@@ -68,8 +68,9 @@ from cli.release import (  # noqa: E402
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _node_available() -> bool:
-    return shutil.which("node") is not None
+from tests.conftest import require_tool  # noqa: E402
+
+require_tool("node")
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +254,6 @@ class TestGatePrePublishValidateMocked(unittest.TestCase):
         self.assertIn("node not found", res["detail"])
 
 
-@unittest.skipUnless(_node_available(), "node not available in this environment")
 class TestGatePrePublishValidateReal(unittest.TestCase):
     """Real, read-only invocation against the actual source tree.
 

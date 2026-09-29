@@ -33,7 +33,6 @@ that it no longer false-fails on version comparisons.
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -70,11 +69,11 @@ def _non_ci_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in _CI_ENV_VARS}
 
 
-def _node_available() -> bool:
-    return shutil.which("node") is not None
+from tests.conftest import require_tool  # noqa: E402
+
+require_tool("node")
 
 
-@unittest.skipUnless(_node_available(), "node not available in this environment")
 class TestPrePublishDryRunRepresentative(unittest.TestCase):
     """Real (unmocked) `node bin/pre-publish-validate.js --dry-run` invocation.
 

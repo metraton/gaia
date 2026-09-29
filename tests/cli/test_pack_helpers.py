@@ -8,7 +8,6 @@ via `dest_dir=` -- never into the real source tree and never relying on
 out to `npm pack`), so no GAIA_DATA_DIR isolation is required here.
 """
 
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,8 +24,9 @@ from cli import _pack_helpers  # noqa: E402
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _npm_available() -> bool:
-    return shutil.which("npm") is not None
+from tests.conftest import require_tool  # noqa: E402
+
+require_tool("npm")
 
 
 class TestPackTarballMocked(unittest.TestCase):
@@ -123,7 +123,6 @@ class TestPackTarballMocked(unittest.TestCase):
             self.assertTrue(dest.is_dir())
 
 
-@unittest.skipUnless(_npm_available(), "npm not available in this environment")
 class TestPackTarballReal(unittest.TestCase):
     """Integration: run the REAL `npm pack` against the actual source tree.
 

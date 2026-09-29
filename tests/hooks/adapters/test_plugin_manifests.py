@@ -692,9 +692,14 @@ def _node_modules_dir() -> Path | None:
 @pytest.fixture
 def repo_copy(tmp_path: Path) -> Path:
     """A disposable copy of the source tree that release:prepare may rewrite."""
+    from tests.conftest import require_tool
+
+    require_tool("node")
+    require_tool("npm")
     node_modules = _node_modules_dir()
-    if shutil.which("node") is None or shutil.which("npm") is None or node_modules is None:
-        pytest.skip("release:prepare needs node, npm and an installed node_modules")
+    if node_modules is None:
+        pytest.fail("release:prepare needs an installed node_modules: run `npm ci` in the checkout",
+                    pytrace=False)
     copy = tmp_path / "repo"
     shutil.copytree(
         PROJECT_ROOT, copy,
