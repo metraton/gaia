@@ -110,6 +110,7 @@ first use with mode 0700.
 |-----------------|----------------|----------------------------------------|
 | `GAIA_DATA_DIR` | `~/.gaia`      | Override the root data directory (ROOT-scoped: moves the database and every sibling directory) |
 | `GAIA_DB`       | `<root>/gaia.db` | Override the database file alone (FILE-scoped: leaves scratch, evidence and logs under the root) |
+| `GAIA_CLI_ALIASES` | unset (no aliases) | Declare your own wrappers as the CLI they wrap, e.g. `mywrapper=gh` (see below) |
 
 Precedence for the database file, highest first: **`GAIA_DB`**, then
 **`GAIA_DATA_DIR`**, then `~/.gaia/gaia.db`. `GAIA_DB` outranks `GAIA_DATA_DIR`
@@ -121,6 +122,29 @@ database-path resolver in the tree already ranks it that way
 Setting both at *different* places prints a warning to stderr naming which one
 won; setting both at the same file is the established isolation idiom and stays
 silent. The ladder is pinned by `tests/paths/test_db_path_precedence.py`.
+
+### Declaring a wrapper as another CLI (`GAIA_CLI_ALIASES`)
+
+The security hooks gate some commands by the CLI that runs them -- `gh workflow
+run`, `gh run rerun`, `gh pr update-branch`, and the publish-attribution guard on
+`gh pr|issue|release|api`. A wrapper you installed around a CLI (a launcher that
+pins an account, for example) runs the same subcommands under another name, so
+by default those gates do not recognize it. Gaia ships no wrapper names; declare
+yours in the environment the host (Claude Code, OpenCode) is started from:
+
+```bash
+export GAIA_CLI_ALIASES="mywrapper=gh"          # one wrapper
+export GAIA_CLI_ALIASES="mywrapper=gh,kc=kubectl" # several, comma-separated
+```
+
+Each pair is `wrapper=cli`, matched against the command's base name. With the
+variable unset there is no alias. A declared wrapper gains the wrapped CLI's
+gates on top of its own and never loses any, so a wrong entry can only cost an
+extra consent prompt. A leading `-C <dir>` on a declared `gh` wrapper is skipped
+before the publish guard reads the subcommand. Malformed pairs are ignored. The
+hooks read the variable at start-up, so restart the host after changing it.
+Implemented in `hooks/modules/security/cli_aliases.py`; pinned by
+`tests/hooks/modules/security/test_cli_alias_from_config.py`.
 
 ## Standalone use
 

@@ -23,6 +23,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
+from .cli_aliases import aliased_cli
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
     CommandSemantics,
@@ -670,8 +671,7 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 _GH_ACCOUNT_GUIDANCE = (
     "The active gh account is global state shared with every other session on "
     "this machine -- name the account on the invocation instead of switching "
-    'it: GH_TOKEN="$(gh auth token --user <account>)" gh ... , or the `ghx` '
-    "wrapper, which resolves the account from the repository's remote. "
+    'it: GH_TOKEN="$(gh auth token --user <account>)" gh ... . '
     "`gh auth status` lists the accounts; `gh auth login` adds a missing one."
 )
 
@@ -798,11 +798,6 @@ def _validated_anchor_table(
                         f"coverage and classifies nothing."
                     )
     return table
-
-
-# A CLI that is another CLI under a different name answers to its anchors.
-# `ghx` is the account-pinned `gh` launcher: same subcommands, same effects.
-_ANCHOR_CLI_ALIASES: Dict[str, str] = {"ghx": "gh"}
 
 
 # Keyed by base_cmd; the anchors of one CLI are tried in declaration order and
@@ -4665,8 +4660,12 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # win; BEFORE the Step 4 verb scan, so an anchor is still reached when a
     # read-only noun sits at the head of the path and would short-circuit there.
     if semantics.non_flag_tokens:
-        anchor_cli = _ANCHOR_CLI_ALIASES.get(base_cmd, base_cmd)
-        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(anchor_cli, ()):
+        # A wrapper the user declared answers to the wrapped CLI's anchors on
+        # top of its own, never instead of them.
+        anchors = COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ()) + (
+            COMMAND_PATH_MUTATIVE_UPGRADES.get(aliased_cli(base_cmd) or "", ())
+        )
+        for anchor in anchors:
             anchor_flags = anchor.matched_flags(semantics)
             if anchor_flags is None:
                 continue

@@ -730,7 +730,7 @@ class BashValidator:
 
         # ================================================================
         # PUBLISH ATTRIBUTION GUARD
-        # Refuse a publishing command (gh/ghx pr|issue|release|api, git
+        # Refuse a publishing command (gh pr|issue|release|api, git
         # commit) whose text still carries Claude attribution after the strip
         # above -- in the command string or in a body file it names. Runs
         # before tier classification so a refused command never mints an

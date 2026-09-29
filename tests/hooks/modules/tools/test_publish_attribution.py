@@ -20,6 +20,9 @@ from modules.tools.bash_validator import BashValidator  # noqa: E402
 
 MARKER = "[CLAUDE_ATTRIBUTION]"
 
+# A wrapper around gh, declared the way a user declares one.
+GH_WRAPPER = "ghwrap"
+
 FOOTERS = {
     "generated_with": "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
     "co_authored_by": "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
@@ -41,8 +44,8 @@ FILE_COMMANDS = [
     "gh issue comment 3 -F {f}",
     "gh release create v1.0.0 --notes-file {f}",
     "gh release edit v1.0.0 -F {f}",
-    "ghx -C /home/jorge/ws/me/gaia pr create --title t --body-file {f}",
-    "ghx issue comment 7 --body-file {f}",
+    GH_WRAPPER + " -C /home/jorge/ws/me/gaia pr create --title t --body-file {f}",
+    GH_WRAPPER + " issue comment 7 --body-file {f}",
     "gh api repos/o/r/issues/1/comments -F body=@{f}",
     "git commit -F {f}",
     "git commit --file={f}",
@@ -51,7 +54,7 @@ FILE_COMMANDS = [
 INLINE_COMMANDS = [
     # The body IS the footer: no preceding newline for the stripper to anchor on.
     'gh pr create --title t --body "' + FOOTERS["generated_with"] + '"',
-    'ghx pr edit 4 --body "' + FOOTERS["co_authored_by"] + '"',
+    GH_WRAPPER + ' pr edit 4 --body "' + FOOTERS["co_authored_by"] + '"',
     # A session link on its own line is detected but never stripped.
     'gh pr comment 5 --body "Done.\n\n' + FOOTERS["session_link"] + '"',
     'gh issue comment 5 --body "Fixed.\n\n' + FOOTERS["generated_with"] + '"',
@@ -63,6 +66,11 @@ INLINE_COMMANDS = [
     'gh pr review 9 --approve --body "LGTM\n\n' + FOOTERS["session_link"] + '"',
     'git commit -m "fix: thing\n\n' + FOOTERS["session_link"] + '"',
 ]
+
+
+@pytest.fixture(autouse=True)
+def declared_gh_wrapper(monkeypatch):
+    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{GH_WRAPPER}=gh")
 
 
 @pytest.fixture

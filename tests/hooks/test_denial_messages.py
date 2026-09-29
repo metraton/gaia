@@ -198,4 +198,4 @@ def test_gh_auth_switch_denial_names_the_per_process_alternative():
         guidance=result.guidance,
     )
     assert 'GH_TOKEN="$(gh auth token --user <account>)"' in message
-    assert "ghx" in message
+    assert "`gh auth status`" in message

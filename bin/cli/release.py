@@ -909,8 +909,8 @@ def _check_gh_push_permission(repo_root: Path, *, repo: str = _PUBLISH_REPO, tim
             return (
                 f"the active gh account does NOT have push access to {repo}. Re-run "
                 f"the release with an account that does, resolved per process: "
-                f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...` '
-                f"(or `ghx` if installed). `gh auth status` lists the accounts you "
+                f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...`. '
+                f"`gh auth status` lists the accounts you "
                 f"have. Do NOT `gh auth switch` -- the active account is global "
                 f"state shared with every other session on this machine."
             )
@@ -922,8 +922,8 @@ def _check_gh_push_permission(repo_root: Path, *, repo: str = _PUBLISH_REPO, tim
         return (
             f"no authenticated gh account with push access to {repo}. If an "
             f"account in `gh auth status` has push/admin, resolve it per process: "
-            f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...` (or '
-            f"`ghx` if installed). If none does, `gh auth login` adds one. Do NOT "
+            f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...`. '
+            f"If none does, `gh auth login` adds one. Do NOT "
             f"`gh auth switch` -- the active account is global state shared with "
             f"every other session on this machine."
         )

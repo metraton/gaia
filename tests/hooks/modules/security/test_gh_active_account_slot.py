@@ -175,7 +175,8 @@ def test_denial_names_the_per_process_alternative(case_id, command):
         f"{case_id}: guidance must name the per-process form -- "
         f"got {result.guidance!r}"
     )
-    assert "ghx" in result.guidance
+    assert "`gh auth status`" in result.guidance
+    assert "`gh auth login`" in result.guidance
     assert result.guidance in result.reason, (
         f"{case_id}: the reason the classifier reports must carry the guidance, "
         f"or callers that surface only the reason drop it -- got {result.reason!r}"

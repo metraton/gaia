@@ -40,6 +40,9 @@ FREE = "free"
 
 _DB = "/home/someone/.gaia/gaia.db"
 
+# A wrapper around gh, declared the way a user declares one.
+GH_WRAPPER = "ghwrap"
+
 # (case_id, command, expected_outcome)
 CASES = [
     # -- Rewriting a branch that may already exist --------------------------
@@ -50,14 +53,14 @@ CASES = [
     ("twin-checkout-existing-branch", "git checkout main", FREE),
     # -- Moving a pull request's remote branch -------------------------------
     ("gh-pr-update-branch", "gh pr update-branch 42", CONSENT),
-    ("ghx-pr-update-branch", "ghx pr update-branch 42 --rebase", CONSENT),
+    ("wrapper-pr-update-branch", f"{GH_WRAPPER} pr update-branch 42 --rebase", CONSENT),
     ("twin-gh-pr-view", "gh pr view 42", FREE),
-    ("twin-ghx-pr-view", "ghx pr view 42", FREE),
-    # -- Provoking CI through the account-pinned wrapper ---------------------
-    ("ghx-workflow-run", "ghx workflow run ci.yml --ref main", CONSENT),
-    ("ghx-run-rerun", "ghx run rerun 123456", CONSENT),
-    ("twin-ghx-run-view", "ghx run view 123456", FREE),
-    ("twin-ghx-workflow-list", "ghx workflow list", FREE),
+    ("twin-wrapper-pr-view", f"{GH_WRAPPER} pr view 42", FREE),
+    # -- Provoking CI through a gh wrapper declared in GAIA_CLI_ALIASES ------
+    ("wrapper-workflow-run", f"{GH_WRAPPER} workflow run ci.yml --ref main", CONSENT),
+    ("wrapper-run-rerun", f"{GH_WRAPPER} run rerun 123456", CONSENT),
+    ("twin-wrapper-run-view", f"{GH_WRAPPER} run view 123456", FREE),
+    ("twin-wrapper-workflow-list", f"{GH_WRAPPER} workflow list", FREE),
     # -- Deleting a Cloud Storage bucket -------------------------------------
     ("gcloud-storage-buckets-delete", "gcloud storage buckets delete gs://prod-data", CONSENT),
     ("gcloud-storage-rm-recursive", "gcloud storage rm -r gs://prod-data", CONSENT),
@@ -137,7 +140,8 @@ def _clear_classifier_caches():
 
 
 @pytest.fixture(autouse=True)
-def fresh_classifier():
+def fresh_classifier(monkeypatch):
+    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{GH_WRAPPER}=gh")
     _clear_classifier_caches()
     yield
     _clear_classifier_caches()
