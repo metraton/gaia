@@ -125,8 +125,9 @@ silent. The ladder is pinned by `tests/paths/test_db_path_precedence.py`.
 
 ### Declaring a wrapper as another CLI (`GAIA_CLI_ALIASES`)
 
-The security hooks gate some commands by the CLI that runs them -- `gh workflow
-run`, `gh run rerun`, `gh pr update-branch`, and the publish-attribution guard on
+The security hooks gate some commands by the CLI that runs them -- the
+permanent blocks (`gh repo delete`), consent anchors such as `gh workflow run`,
+`gh run rerun` and `gh pr update-branch`, and the publish-attribution guard on
 `gh pr|issue|release|api`. A wrapper you installed around a CLI (a launcher that
 pins an account, for example) runs the same subcommands under another name, so
 by default those gates do not recognize it. Gaia ships no wrapper names; declare
@@ -138,9 +139,11 @@ export GAIA_CLI_ALIASES="mywrapper=gh,kc=kubectl" # several, comma-separated
 ```
 
 Each pair is `wrapper=cli`, matched against the command's base name. With the
-variable unset there is no alias. A declared wrapper gains the wrapped CLI's
-gates on top of its own and never loses any, so a wrong entry can only cost an
-extra consent prompt. A leading `-C <dir>` on a declared `gh` wrapper is skipped
+variable unset there is no alias. A declared wrapper is classified both as
+written and as the CLI it wraps, and the stricter verdict stands: it is blocked
+wherever that CLI is blocked, asks consent wherever that CLI asks, and never
+loses a gate of its own, so a wrong entry can only cost an extra prompt or
+block. A leading `-C <dir>` on a declared `gh` wrapper is skipped
 before the publish guard reads the subcommand. Malformed pairs are ignored. The
 hooks read the variable at start-up, so restart the host after changing it.
 Implemented in `hooks/modules/security/cli_aliases.py`; pinned by

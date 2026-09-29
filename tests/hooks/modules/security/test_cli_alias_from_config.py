@@ -19,6 +19,8 @@ for entry in (str(_REPO_ROOT), str(_HOOKS_DIR)):
         sys.path.insert(0, entry)
 
 from modules.security import tiers as tiers_module  # noqa: E402
+from modules.security.blocked_commands import is_blocked_command  # noqa: E402
+from modules.tools.bash_validator import BashValidator  # noqa: E402
 from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
 from modules.security.publish_attribution_guard import (  # noqa: E402
     check as check_publish_attribution,
@@ -105,6 +107,43 @@ def test_declared_wrapper_is_held_to_the_publish_attribution_guard(monkeypatch, 
     allowed, reason = check_publish_attribution(command, str(tmp_path))
     assert not allowed, "a declared gh wrapper published Claude attribution"
     assert reason
+
+
+# Built from parts so this file never spells the irreversible command itself.
+_REPO_DELETE = " ".join(("repo", "del" + "ete", "o/r", "--yes"))
+
+
+def test_declared_wrapper_inherits_gh_permanent_blocks(monkeypatch):
+    assert is_blocked_command(f"gh {_REPO_DELETE}").is_blocked
+
+    _declare(monkeypatch, f"{WRAPPER}=gh")
+    for command in (
+        f"{WRAPPER} {_REPO_DELETE}",
+        f"FOO=1 {WRAPPER} {_REPO_DELETE}",
+        f"sudo {WRAPPER} {_REPO_DELETE}",
+        f"/usr/local/bin/{WRAPPER} {_REPO_DELETE}",
+    ):
+        assert is_blocked_command(command).is_blocked, command
+
+
+def test_declared_wrapper_is_blocked_at_the_bash_boundary(monkeypatch):
+    _declare(monkeypatch, f"{WRAPPER}=gh")
+    result = BashValidator().validate(
+        f"{WRAPPER} {_REPO_DELETE}", is_subagent=True, session_id="s-782",
+        agent_type="developer",
+    )
+    assert not result.allowed
+    assert not result.approval_id, "a declared wrapper got an approvable path to a gh block"
+
+
+def test_undeclared_wrapper_gets_no_gh_block():
+    assert not is_blocked_command(f"{WRAPPER} {_REPO_DELETE}").is_blocked
+
+
+def test_declared_alias_cycle_terminates(monkeypatch):
+    _declare(monkeypatch, "a1=a2,a2=a1")
+    assert not detect_mutative_command("a1 status").is_mutative
+    assert not is_blocked_command("a1 status").is_blocked
 
 
 def test_undeclared_wrapper_is_not_read_as_gh_by_the_guard(tmp_path):
