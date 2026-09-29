@@ -22,20 +22,12 @@
 //
 // That matters beyond speed. Gaia is installed in places where no browser exists.
 // A guardrail that needs Chromium is a guardrail that is ABSENT precisely where a
-// deck is most likely to be authored blind. So the division of labour is:
+// deck is most likely to be authored blind. So `npm run model` — this file,
+// static, arithmetic, no dependency — is the mandatory gate: it proves the layout
+// CLOSES and the data is sound, and it has never seen a pixel. Whether the page
+// LOOKS right is a human review of the rendered deck.
 //
-//   npm run model     MANDATORY, this file. Static, arithmetic, js-yaml only
-//                     (already a build dependency). Proves the layout CLOSES and
-//                     the data is sound. It has never seen a pixel.
-//   npm run render    MANDATORY too. Renders one width in Chromium and asserts
-//                     only what genuinely needs PIXELS (legibility, word fit, text
-//                     truncation, flex wrap points, real geometry) — the only half
-//                     that can tell whether the stylesheet IMPLEMENTS what this
-//                     file assumed. It skips cleanly and exits 0 where no browser
-//                     exists, which is why requiring it costs nothing.
-//   npm run gate      Both, in order. The only thing a verdict may cite.
-//
-// WHAT THIS REPLACES: the browser width SWEEP. `validate` used to render 5 widths ×
+// WHAT THIS REPLACES: the browser width SWEEP. A render gate used to draw 5 widths ×
 // 2 themes × 5 reloads to prove the …→2→1 collapse cascade. But the collapse is a
 // CONTAINER QUERY: the cuts at 640 / 1000 / 1440 px depend on NOTHING except the
 // stage container's width, so "a 4-column grid renders 2 tracks at 900px" is a PURE
@@ -112,7 +104,7 @@ import censusLib from './static-census.cjs';
 import { DEFAULT_TOKENS, mergeTokens, resolveNodeTokens, cssVars, space } from '../engine/tokens.mjs';
 
 const { loadAuthoredDeck, staticCensus, cssBreakpoints, loadGenerated,
-  DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, isTextFitStrict } = censusLib;
+  DEFAULT_ROOT, FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE, WORDFIT, isTextFitStrict } = censusLib;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The deck root: argv wins, then the env override, then the normal location.
@@ -135,6 +127,11 @@ const ROOT = process.argv[2] ? path.resolve(process.argv[2])
 // bundle's `__DOC__.tokens`) sets them before any page is checked; importers
 // get DEFAULT_TOKENS.
 let BP_STACK, BP_TWO, BP_ONE, TIERS, PRESENT, SWEEP, DEFAULT_SECTION_COLUMNS, TOKENS;
+// MIN_LEGIBLE is the readable leaf-cell floor (`cell_min_w`, index.html
+// `--cell-min-w`): a gridded cell modelled narrower than it shows a character or
+// two per line, so its grid should have collapsed columns first.
+let MIN_LEGIBLE;
+const LEGIBLE_TOL = 6;
 
 // One sample width inside each collapse band (the 1-track endpoint, the 2-track
 // intermediate, the first fully-authored tier) and two side-by-side tiers. The
@@ -162,6 +159,7 @@ function applyTokens(tokens) {
   PRESENT = { ...tokens.viewport };
   SWEEP = sweepFor(PRESENT.w);
   DEFAULT_SECTION_COLUMNS = tokens.default_columns;
+  MIN_LEGIBLE = tokens.cell_min_w;
   Object.assign(CSS_TEXT, metricsFrom(tokens));
 }
 
@@ -329,7 +327,6 @@ const FIXED = {
 };
 // The rendered line box of one mono rail-title line, as a multiple of its font
 // size: 13px renders a 15px line, which is what makes a one-line rail 33px.
-// validate-layout.cjs derives its rail-row band from the same factor.
 const RAIL_LINE_EM = 1.15;
 
 // The model's metrics, derived from a resolved token set: the width chain
@@ -1183,6 +1180,10 @@ const notAsserted = (check, where, detail) =>
 function checkPage(page) {
   const pageId = page.id ?? '(no id)';
   const form = page.form ?? DEFAULT_FORM;
+  asserted++;
+  if (!FORMS.includes(form))
+    fail('FORM', `page "${pageId}"`, `form "${form}" is not one of [${FORMS.join(', ')}] — every ` +
+      `form-scoped check would judge this page by the wrong rules (the build refuses it too).`);
   const grids = discoverGrids(page);
   const trackTable = [];
   // The TEXT budget's worst finding per (box, kind) across the tier sweep, and
@@ -1439,6 +1440,13 @@ function checkPage(page) {
       // dominates. Findings are DEDUPED to the worst tier per (box, kind) rather
       // than emitted five times — the advisory is about the text, not the sweep.
       const gridW = g.widthAt(tier.w);
+      if (GRIDDED.has(form) && tracks > 0) {
+        asserted++;
+        const trackW = (gridW - (tracks - 1) * CSS_TEXT.gap) / tracks;
+        if (trackW < MIN_LEGIBLE - LEGIBLE_TOL)
+          fail('LEGIBLE', `${g.label} @${tier.w}px`, `a cell is ${Math.round(trackW)}px wide, below the ` +
+            `${MIN_LEGIBLE}px legible floor (cell_min_w) — the grid should collapse columns first.`);
+      }
       const fontPx = titlePx(tier.w);
       for (const p of placed) {
         const slot = g.slots.find(s => (s.node.id ?? '(no id)') === p.id);
@@ -1931,7 +1939,9 @@ function main() {
   }
 
   const CHECKS = [
+    ['FORM', 'every page declares one of the layout forms (FORMS) the build accepts'],
     ['RECT', 'rectangle closure — Σ(spanCols × rowspanRows) == tracks × rowCount'],
+    ['LEGIBLE', 'no gridded cell narrower than the legible floor (MIN_LEGIBLE = cell_min_w) at any tier'],
     ['HOLE', 'interior holes (a merge that did not fit and dropped down)'],
     ['TRACK', 'no dead track (a declared column the content never reaches)'],
     ['ROW', 'no orphan row (a lone cell while a sibling row is grouped)'],
@@ -1952,17 +1962,16 @@ function main() {
     // holds, so a pass reports a number instead of a bare "holds everywhere".
     ['TEXT', 'character budget: title token, kicker token, title clamp, description clamp, section ' +
       'header clamps (a line overflow FAILS at the presentation tier of a page not declared ' +
-      '`text_fit: advisory`; everything else is ADVISORY — `validate` N/TXT are the render verdicts)', textHeadline],
+      '`text_fit: advisory`; everything else is ADVISORY — the rendered text is a human review)', textHeadline],
     ['WORDS', 'every authored string is present verbatim in data/data.generated.js ' +
       '(the text-only staleness CENSUS cannot see, because node counts do not move)'],
     ['INK', 'ink height vs the MODELLED slot — overflow fails, an undeclared void advises ' +
       '(OPT-OUT: every page not declared `text_fit: advisory`, failing at the presentation tier. ' +
       'A `compact` grid is budgeted at its own row. ARITHMETIC, NOT OBSERVED: the slot is the ' +
       'one the model derives from the authored spans, so a PASS here says the text fits the cell the ' +
-      'stylesheet OWES the box — not that the browser drew that cell. `validate` TXT is the verdict ' +
-      'on real clamping)', inkHeadline],
+      'stylesheet OWES the box — not that the browser drew that cell)', inkHeadline],
     ['HEIGHT', 'page height predicted from the placement model vs the document.yaml viewport ' +
-      '(ADVISORY — `validate` VH measures it)', heightHeadline],
+      '(ADVISORY)', heightHeadline],
     ['CSS', 'the mirrored breakpoints and text metrics match index.html'],
     ['SPAN', 'index.html implements the span→tracks rules every width in this report assumes ' +
       '(a missing rule FAILS: unlike a metric there is no mirrored constant to fall back to)',

@@ -4,11 +4,12 @@
 // normal <script src> with zero runtime fetch/CORS concerns under file://.
 //
 // @version 2.1.0  (part of the diagram-builder skill; keep the engine generation
-//                  in sync with engine/engine.js + tools/validate-layout.cjs)
+//                  in sync with engine/engine.js + tools/check-layout.mjs)
 //
 // Run: npm run build  (or: node engine/build-data.mjs)
 // Re-run whenever a YAML file under data/ changes.
-import yaml from 'js-yaml';
+import yaml from './yaml.cjs';
+import census from '../tools/static-census.cjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +23,7 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(ROOT, '..', 'data');
 
 function readYaml(path) {
-  return yaml.load(readFileSync(path, 'utf8'));
+  return yaml.parse(readFileSync(path, 'utf8'), path);
 }
 
 // ── STRICT SCHEMA ──────────────────────────────────────────────────────────
@@ -135,8 +136,7 @@ const PALETTES = new Set(['neutral', 'rose-pine', 'rose-pine-moon', 'contrast'])
 //   • `form: dashboards` — the guardrail scopes its invariant table by form
 //     MEMBERSHIP, so an undeclared form matched no row at all and the page was
 //     reported with ZERO checks ("ALL PASS — 0 checks", exit 0). Closed here at
-//     the door AND fail-closed at the guardrail (invariant A + the `total === 0`
-//     gate in tools/validate-layout.cjs).
+//     the door AND at the model (its FORM check reads the same FORMS list).
 //   • `layout: gird` — engine.js's `renderable` filter DROPS the page with a
 //     console.warn nobody reads, so the page silently vanishes from the deck.
 //     Closing it is also what makes the guardrail's page CENSUS sound: rendered
@@ -151,9 +151,7 @@ const PALETTES = new Set(['neutral', 'rose-pine', 'rose-pine-moon', 'contrast'])
 // Same shape as PALETTES above: a closed Set, a `.has()` gate, and a `suggest()`
 // near-miss hint naming the valid values.
 //
-// FORMS is the SAME six names as `FORMS` in tools/validate-layout.cjs and must be
-// kept in sync with it — that table is the consumer of this field.
-const FORMS = new Set(['dashboard', 'timeline', 'flow', 'comparison', 'mindmap', 'planner']);
+const FORMS = new Set(census.FORMS);
 // The engine renders exactly one page layout (engine.js: `(p.layout || 'grid') === 'grid'`).
 const LAYOUTS = new Set(['grid']);
 // The leaf `type` dispatch in engine.js buildGrid: separator | rail | spacer |
@@ -474,9 +472,8 @@ function resolveNodeOverride(node, kind, pageId, label) {
 // Validate the chips of a `filters[]` list. Previously NOT validated at all: a
 // typo in a `key` was invisible — the chip rendered, matched nothing, and dimmed
 // the entire canvas with no error anywhere. The referential half of this (every
-// declared chip has a member, every referenced key is declared) is asserted on the
-// real render by invariant K in tools/validate-layout.cjs; here we only guarantee
-// the SHAPE.
+// declared chip has a member, every referenced key is declared) is asserted by
+// the model's CHIP check; here we only guarantee the SHAPE.
 function validateFilters(filters, pageId, where) {
   if (filters === undefined || filters === null) return;
   if (!Array.isArray(filters))

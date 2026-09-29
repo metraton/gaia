@@ -640,7 +640,6 @@
     // later act, so a page gets reported under its neighbour's name AND its
     // neighbour's `form` — which then scopes the wrong invariants and reads the
     // wrong authored spans). Stamping the id lets a consumer join by identity.
-    // See the id-keyed lookups in tools/validate-layout.cjs (discovery, measure).
     const act = el('section', pageIndex === 0 ? 'act active' : 'act',
       { 'data-act': String(pageIndex), 'data-page-id': String(page.id) });
 
@@ -910,6 +909,8 @@
       canvas.addEventListener('pointerup', endDrag);
       canvas.addEventListener('pointercancel', endDrag);
     }
+
+    return { setFlow, closePanel };
   }
 
   // ── mount ──
@@ -944,7 +945,7 @@
   // The detail card's width is measured against the WIDEST root grid in the
   // deck, so it is the same card on every page (see placeCard).
   const widestRootColumns = Math.max(1, ...renderable.map(p => p.columns || 1));
-  built.forEach(b => wireAct(b.act, b.detailRegistry, b.filters, widestRootColumns));
+  const wired = built.map(b => wireAct(b.act, b.detailRegistry, b.filters, widestRootColumns));
 
   // ── page navigator ──
   // Page names render as VISIBLE tabs in `order`; the current one is
@@ -1001,6 +1002,17 @@
     else if (e.key === 'ArrowRight') show(current + 1);
   });
   show(0);
+
+  // The narrated-video capture drives pages and chips through this handle. It
+  // exists only under `?video`, so the interactive deck exposes no global state.
+  if (new URLSearchParams(location.search).has('video')) {
+    window.__deck = {
+      acts,
+      show,
+      setFlow: (i, key) => wired[i].setFlow(key),
+      closePanel: i => wired[i].closePanel()
+    };
+  }
 
   // theme toggle
   const themeToggle = document.getElementById('themeToggle');

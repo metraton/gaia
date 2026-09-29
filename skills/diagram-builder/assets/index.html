@@ -316,17 +316,16 @@
        isThinRowLeaf): a `.sep-v` draws a line whose LENGTH IS the row height,
        so thinning its row would shorten the ink instead of matching it.
        Applied per-row by the engine as a `grid-auto-rows` TRACK LIST
-       (--row-tracks / --row-tracks-2 / --row-tracks-1, one per collapse tier);
-       asserted by invariant U's third height family in tools/validate-layout.cjs
-       (keep in sync with SEP_ROW_H there). */
+       (--row-tracks / --row-tracks-2 / --row-tracks-1, one per collapse tier).
+       Its default is the `row.sep_h` token, which the model's CSS mirror checks. */
     --sep-row-h:40px;
     /* MINIMO LEGIBLE — the readable floor for a leaf cell. A cell narrower than
        this can only show ~1 character per line (a short title stops being
        readable). It is the FLOOR of the leaf-grid track min below, so a grid
        never shrinks a cell below it: instead the section's compound parent
        WRAPS/STACKS (collapses columns) before the cell degrades to illegible
-       text. Kept in sync with MIN_LEGIBLE in tools/validate-layout.cjs (the M
-       invariant asserts it on the real render). ~120px fits a short mono title. */
+       text. Its default is the `cell_min_w` token (MIN_LEGIBLE in the model,
+       which fails a modelled cell below it). ~120px fits a short mono title. */
     --cell-min-w:120px;
     /* grab & pan (configurable; read by engine.js): pointer travel, in px,
        below which a pointerdown→up on the canvas is a CLICK (opens a box's

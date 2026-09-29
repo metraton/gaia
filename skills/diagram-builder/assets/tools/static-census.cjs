@@ -7,26 +7,12 @@
 //                  visible/order resolution, it does not re-implement it)
 //
 // WHY THIS IS ITS OWN MODULE
-// Two tools need to read the deck's AUTHORED data with no browser involved:
-//   • tools/check-layout.mjs — the STATIC gate: parses data/*.yaml and proves the
-//     layout closes arithmetically (no render, no Playwright, no dependency
-//     beyond the js-yaml the build already uses).
-//   • tools/validate-layout.cjs — the RENDER gate: runs this census as a
-//     pre-flight before launching Chromium, so a run against stale generated
-//     data fails fast.
-// It used to live inside validate-layout.cjs, which means anything wanting the
-// census had to `require()` a file whose first line is `require('playwright')`.
-// That is exactly backwards: the census is the part that must work where NO
-// browser exists. Extracting it here is what makes the static gate independent
-// of the optional one — the two tools now share ONE parse path (so a divergence
-// between them is impossible) and neither pulls the other's dependencies in.
-//
-// The same reasoning governs everything else here: this file holds what BOTH
-// gates need and NEITHER owns. A constant one gate alone consumes belongs in
-// that gate, not here — only a value the two would otherwise keep two copies of
-// is promoted, because two copies is the drift this module exists to prevent.
-// It is deliberately CommonJS and dependency-free (js-yaml is lazy) so the ESM
-// static gate and the CJS render gate can both consume it.
+// The build (engine/build-data.mjs), the model (tools/check-layout.mjs) and the
+// tests read the deck's AUTHORED data and its form taxonomy with no browser
+// involved. This file holds what more than one of them needs and none of them
+// owns, so there is ONE parse path and ONE form list — two copies is the drift
+// this module exists to prevent. It is CommonJS and dependency-free (the YAML
+// reader is engine/yaml.cjs) so both the ESM and the CJS consumers require it.
 //
 // EVERY ENTRY POINT TAKES A ROOT. The deck root defaults to the parent of this
 // tools/ directory (the normal case), but both functions accept an explicit one
@@ -37,27 +23,31 @@
 const path = require('path');
 const fs = require('fs');
 const { resolvePageFilters } = require('../engine/chips.cjs');
+const yaml = require('../engine/yaml.cjs');
 
 // The deck root: tools/ lives directly under it.
 const DEFAULT_ROOT = path.join(__dirname, '..');
 
 // ── THE SHARED FORM TAXONOMY ───────────────────────────────────────────────
-// A page declares its FORM (page YAML `form:`). Both gates scope checks by it,
-// so the default and the shared subsets are defined once here rather than once
-// per gate. GRIDDED is still consumed by the render gate alone and stays there.
+// A page declares its FORM (page YAML `form:`). The build refuses any other
+// value and the model scopes its checks by it, so the list, the default and the
+// shared subsets are defined once here.
+const FORMS = ['dashboard', 'timeline', 'flow', 'comparison', 'mindmap', 'planner'];
 const DEFAULT_FORM = 'dashboard';
+// GRIDDED — the forms whose leaf cells must stay legible (MIN_LEGIBLE in the
+// model). A timeline's content is legitimately one long row, so it is exempt.
+const GRIDDED = new Set(['dashboard', 'comparison', 'flow', 'mindmap', 'planner']);
 // The forms that should EARN a wide canvas by composing sections side by side
 // and grouping cells, so a lone cell stranded on its own row is worth failing
-// (render invariants P/V, static ROW). A timeline/flow/mindmap may legitimately
+// (static ROW). A timeline/flow/mindmap may legitimately
 // be sparse or linear, so those checks do not judge them.
 const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
 // WORDFIT — the narrative forms whose cells carry real SYMBOL text: a
 // human-language title, and the machine name above it. Those are the forms
 // where a token too long for its cell fractures mid-word and reads as a defect;
 // a planner's `TODO`/`DONE` code or a timeline's phase label is short by
-// construction and is not judged. Consumed by BOTH gates — the render gate's N
-// (title token) and the static gate's TEXT budget (title AND kicker token) — so
-// it lives here rather than in either one of them.
+// construction and is not judged. The model's TEXT budget judges the title AND
+// kicker token by it.
 const WORDFIT = new Set(['dashboard', 'flow']);
 
 // ── THE TOKENS BOTH GATES COMPUTE WITH ─────────────────────────────────────
@@ -140,19 +130,6 @@ function tokenProblems(manifest, deckPages, genPages, gen) {
   return out;
 }
 
-// js-yaml is resolved LAZILY and its absence is reported as a PROBLEM, never
-// thrown and never silently skipped. A census that cannot run is a hole, not a
-// pass: skipping it would restore the exact stale-data false green it exists to
-// close.
-function loadYamlLib() {
-  try { return { yaml: require('js-yaml') }; }
-  catch (e) {
-    return { yaml: null, problem:
-      'js-yaml is not resolvable, so the authored YAML could not be read. ' +
-      'A guardrail cannot certify data it did not read: install the deck dependencies (`npm install`).' };
-  }
-}
-
 // ── THE AUTHORED DECK ──────────────────────────────────────────────────────
 // Read data/document.yaml + every visible page file it names, resolved in the
 // SAME order the build resolves them (build-data.mjs: filter visible !== false,
@@ -163,15 +140,12 @@ function loadYamlLib() {
 function loadAuthoredDeck(root = DEFAULT_ROOT) {
   const dataDir = path.join(root, 'data');
   const problems = [];
-  const { yaml, problem } = loadYamlLib();
-  if (!yaml) return { ok: false, problems: [problem], pages: [], dataDir };
-
   const manifestPath = path.join(dataDir, 'document.yaml');
   if (!fs.existsSync(manifestPath))
     return { ok: false, problems: [`data/document.yaml does not exist under "${root}".`], pages: [], dataDir };
 
   let manifest;
-  try { manifest = yaml.load(fs.readFileSync(manifestPath, 'utf8')); }
+  try { manifest = yaml.parse(fs.readFileSync(manifestPath, 'utf8'), 'data/document.yaml'); }
   catch (e) { return { ok: false, problems: [`data/document.yaml is not parseable YAML (${e.message}).`], pages: [], dataDir }; }
   if (!manifest || !Array.isArray(manifest.pages))
     return { ok: false, problems: ['data/document.yaml has no top-level `pages` list.'], pages: [], dataDir };
@@ -186,7 +160,7 @@ function loadAuthoredDeck(root = DEFAULT_ROOT) {
       problems.push(`page "${entry.id}": file "${entry.file}" is missing on disk`); continue;
     }
     let page;
-    try { page = yaml.load(fs.readFileSync(file, 'utf8')); }
+    try { page = yaml.parse(fs.readFileSync(file, 'utf8'), `data/${entry.file}`); }
     catch (e) { problems.push(`page "${entry.id}": ${entry.file} is not parseable YAML (${e.message})`); continue; }
     if (!page || typeof page !== 'object') {
       problems.push(`page "${entry.id}": ${entry.file} did not parse to a mapping`); continue;
@@ -204,21 +178,19 @@ function loadAuthoredDeck(root = DEFAULT_ROOT) {
 // ─────────────────────────────────────────────────────────────────────────
 // STATIC CENSUS (pre-flight): data/*.yaml  vs  data/data.generated.js
 //
-// `validate` is DECOUPLED from `build` ON PURPOSE (it is pure-read), which has one
-// sharp edge: it asserts the LAST BUILT data, and nothing ever told you the build
-// was stale. Edit a YAML, forget `npm run build`, run `npm run render` — it goes
-// green on the OLD deck and you read that as a verdict on the change you just
-// made. That is a false green with no defect anywhere in the geometry.
+// The model is DECOUPLED from `build` ON PURPOSE (it is pure-read), which has one
+// sharp edge: it asserts the LAST BUILT data. Edit a YAML, forget `npm run build`,
+// and the page on screen is the OLD deck — a false green with no defect anywhere
+// in the geometry.
 //
-// So before the browser is even launched, re-parse the YAML with the same js-yaml
-// the build uses and compare a CENSUS of it against the generated file (which is
+// So re-parse the YAML with the same reader the build uses and compare a CENSUS
+// of it against the generated file (which is
 // JSON literal behind `window.__DOC__ = `). A mismatch does not try to guess which
 // side is right — it says RUN BUILD, and exits non-zero.
 //
 // This stays a CENSUS, not a re-implementation of the build: page identity/order,
 // palette, per-page form/layout/columns, filter keys, and the node counts. It is an
 // INDEPENDENT recount, which is exactly why it catches drift.
-// Runs BEFORE Chromium, so a stale-data run fails fast and needs no browser at all.
 // ─────────────────────────────────────────────────────────────────────────
 function nodeCensus(sections) {
   const out = { sections: 0, boxes: 0, seps: 0, rails: 0, spacers: 0, halves: 0, ids: [] };
@@ -305,5 +277,5 @@ function staticCensus(root = DEFAULT_ROOT) {
     summary: `${wantIds.length} page(s), palette "${gen.palette ?? 'neutral'}"` };
 }
 
-module.exports = { DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, WORDFIT, cssBreakpoints,
+module.exports = { DEFAULT_ROOT, FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE, WORDFIT, cssBreakpoints,
   isTextFitStrict, loadGenerated, loadAuthoredDeck, nodeCensus, pageCensus, staticCensus };

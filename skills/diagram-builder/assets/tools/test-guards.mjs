@@ -1,6 +1,6 @@
 // test-guards.mjs — permanent NEGATIVE-test suite for the diagram-builder
-// guards (check-layout.mjs, build-data.mjs strict-schema, validate-layout.cjs
-// invariant A). `check` is now the mandatory gate for every deck edit; this
+// guards (check-layout.mjs, build-data.mjs strict-schema, the YAML reader and
+// the engine's video hook). `model` is the mandatory gate for every deck edit; this
 // suite exists to prove the gate actually DETECTS what it claims to, not just
 // that it runs. Each case fabricates one broken deck in os.tmpdir() (never
 // inside the repo), runs the real guard against it, and asserts the guard
@@ -14,9 +14,8 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import yaml from 'js-yaml';
 import { widthAtTier, isBandAtTier, isBandClass, place,
-  textBudget, capacityFor, MONO_ADVANCE_EM, isThinRowLeaf, inkBudget,
+  textBudget, capacityFor, isThinRowLeaf, inkBudget,
   railTitleFit, railTitleWidth, headerBudget, predictPageHeight, pageHeightAdvisory,
   CSS_TEXT } from './check-layout.mjs';
 import { DEFAULT_TOKENS } from '../engine/tokens.mjs';
@@ -28,12 +27,11 @@ const BUILD = path.join(ROOT, 'engine', 'build-data.mjs');
 const TOKENS_MODULE = path.join(ROOT, 'engine', 'tokens.mjs');
 const INDEX = path.join(ROOT, 'index.html');
 // Every fixture number below derives from the defaults, so a moved default moves
-// the fixtures with it. The render gate's expectations are set from them too:
-// a case that calls an invariant directly runs against DEFAULT_TOKENS.
+// the fixtures with it.
 const T = DEFAULT_TOKENS;
-const VALIDATE = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-VALIDATE.applyTokens(T);
-const RX = VALIDATE.renderExpectations(T);
+const yaml = require(path.join(ROOT, 'engine', 'yaml.cjs'));
+// Fixtures are written as JSON: one line of it is a flow mapping of the dialect.
+const dumpYaml = data => JSON.stringify(data);
 
 let failures = 0;
 function report(name, ok, detail) {
@@ -80,24 +78,26 @@ function mkDeck() {
   fs.mkdirSync(path.join(dir, 'data', 'pages'), { recursive: true });
   fs.writeFileSync(
     path.join(dir, 'data', 'document.yaml'),
-    yaml.dump(FIXTURE_DOCUMENT),
+    dumpYaml(FIXTURE_DOCUMENT),
     'utf8',
   );
   fs.writeFileSync(
     path.join(dir, 'data', 'pages', 'overview.yaml'),
-    yaml.dump(FIXTURE_OVERVIEW),
+    dumpYaml(FIXTURE_OVERVIEW),
     'utf8',
   );
   fs.mkdirSync(path.join(dir, 'engine'));
+  fs.mkdirSync(path.join(dir, 'tools'));
   fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
   fs.copyFileSync(TOKENS_MODULE, path.join(dir, 'engine', 'tokens.mjs'));
-  fs.copyFileSync(path.join(ROOT, 'engine', 'chips.cjs'), path.join(dir, 'engine', 'chips.cjs'));
+  for (const f of ['chips.cjs', 'yaml.cjs'])
+    fs.copyFileSync(path.join(ROOT, 'engine', f), path.join(dir, 'engine', f));
+  fs.copyFileSync(path.join(ROOT, 'tools', 'static-census.cjs'), path.join(dir, 'tools', 'static-census.cjs'));
   // The real stylesheet, so the CSS MIRROR is actually asserted in every case.
   // Without it every fixture here ran with the mirror unread — the guard quiet in
   // the whole suite whose reason for existing is that a quiet guard is the silent
   // false negative. Case 9 removes it again, deliberately, to assert that state.
   fs.copyFileSync(INDEX, path.join(dir, 'index.html'));
-  fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
   execFileSync('node', [path.join(dir, 'engine', 'build-data.mjs')], {
     cwd: dir,
     stdio: 'ignore',
@@ -106,9 +106,9 @@ function mkDeck() {
 }
 function loadOverview(dir) {
   const p = path.join(dir, 'data', 'pages', 'overview.yaml');
-  return { p, doc: yaml.load(fs.readFileSync(p, 'utf8')) };
+  return { p, doc: yaml.parse(fs.readFileSync(p, 'utf8'), p) };
 }
-function saveOverview(p, doc) { fs.writeFileSync(p, yaml.dump(doc), 'utf8'); }
+function saveOverview(p, doc) { fs.writeFileSync(p, dumpYaml(doc), 'utf8'); }
 function findNode(doc, id) {
   const walk = list => { for (const n of list || []) { if (n.id === id) return n;
     if (Array.isArray(n.children)) { const r = walk(n.children); if (r) return r; } } return null; };
@@ -176,12 +176,16 @@ function rebuild(dir) {
   rmDeck(dir);
 }
 
-// ── 2b. Invariant A, layer 2 — runInvariants({}, {form:'dashboards'}) ──────
+// ── 2b. FORM — the model refuses a form outside FORMS, as the build does ────
 {
-  const { runInvariants } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const checks = runInvariants({}, { form: 'dashboards' });
-  const ok = checks.length === 1 && checks[0].id === 'A' && checks[0].ok === false;
-  report('A/runInvariants: single check A, ok:false', ok, JSON.stringify(checks));
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  doc.form = 'dashboards';
+  saveOverview(p, doc);
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = code !== 0 && out.includes('form "dashboards" is not one of');
+  report('FORM/model: unknown page form "dashboards" fails the model', ok, `exit=${code}`);
+  rmDeck(dir);
 }
 
 // ── 2c. SCHEMA — the fields a rail and a box gained, each refused BY NAME ──
@@ -284,74 +288,6 @@ function rebuild(dir) {
   rmDeck(dir);
 }
 
-// ── 3d. U/rail — the render gate's rail-row band must SPEAK UP both ways ────
-// The render gate's U models the same thin-row rule the engine and the static
-// gate carry (the third copy — measured: teaching only two of the three turned
-// every rail row into a false 'must stay 130px' dura failure). A rail thin row
-// is `auto`, asserted as the band 33..48: a 130px track means the auto row was
-// never applied, a 52px track means a third title line slipped past RAILT's
-// static estimate. Both directions are exercised, plus the in-band positive.
-{
-  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
-  const mFor = tracks => ({
-    heights: [T.row.cell_h], halfSlots: [],
-    rowTracks: [{ zone: 'fixture', tracks,
-      rows: tracks.map(() => ({ n: 1, sepH: 0, hole: 0, railH: 1 })), overflow: [] }],
-  });
-  const notApplied = U.check(mFor([T.row.cell_h]));
-  const threeLines = U.check(mFor([RX.RAIL_ROW_MAX + 4]));
-  const inBand = U.check(mFor([RX.RAIL_ROW_MIN, RX.RAIL_ROW_MAX]));
-  const ok = U && notApplied.ok === false && notApplied.detail.includes('rail row is auto')
-    && threeLines.ok === false && inBand.ok === true;
-  report(`U/rail: a rail row outside ${RX.RAIL_ROW_MIN}..${RX.RAIL_ROW_MAX}px fails the render gate, in-band passes`, ok,
-    `cell -> ${notApplied && notApplied.ok} | over -> ${threeLines && threeLines.ok} | band -> ${inBand && inBand.ok}`);
-}
-
-// ── 3e. U/compact — a short row is legal ONLY in a grid that declares it ────
-// `compact` (index.html `.zone.compact`) gives one leaf grid a shorter row. The
-// render gate must fail a grid that runs that row WITHOUT declaring it, and
-// accept the same row once it does. Box rows (railH 0), so the band rule for
-// rails does not apply.
-{
-  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
-  const short = T.row.compact_h;
-  const mFor = (compact) => ({
-    heights: [T.row.cell_h], halfSlots: [],
-    rowTracks: [{ zone: 'fixture', tracks: [short, short], cellH: short, compact,
-      declaredCellH: compact ? short : undefined,
-      rows: [0, 1].map(() => ({ n: 1, sepH: 0, hole: 0, railH: 0 })), overflow: [] }],
-  });
-  const undeclared = U.check(mFor(false));
-  const declared = U.check(mFor(true));
-  const ok = U && undeclared.ok === false && undeclared.detail.includes('without a declared row override')
-    && declared.ok === true;
-  report(`U/compact: a ${short}px row fails without a declared override, passes with it`, ok,
-    `undeclared -> ${undeclared && undeclared.ok} | declared -> ${declared && declared.ok}\n${undeclared && undeclared.detail}`);
-}
-
-// ── 3f. U/thin — a sep+spacer row is thin, a trailing thin row is a floor ───
-// The engine thins a row of rules and DECLARED HOLES alike, and lets a trailing
-// one absorb a stretched section's slack (minmax(--sep-row-h, 1fr)). U must hold
-// both: a mixed separator+spacer row at 40px passes, a trailing one at 72px
-// passes, the same 72px on a NON-trailing row fails.
-{
-  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const U = INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
-  const thinRow = { n: 2, sepH: 1, hole: 1, railH: 0 };
-  const boxRow = { n: 1, sepH: 0, hole: 0, railH: 0 };
-  const cell = T.row.cell_h, sep = T.row.sep_h, grown = T.row.sep_h + 32;
-  const mFor = (tracks, rows) => ({ heights: [cell], halfSlots: [],
-    rowTracks: [{ zone: 'fixture', tracks, rows, overflow: [] }] });
-  const mixed = U.check(mFor([cell, sep, cell], [boxRow, thinRow, boxRow]));
-  const trailing = U.check(mFor([cell, grown], [boxRow, thinRow]));
-  const interior = U.check(mFor([cell, grown, cell], [boxRow, thinRow, boxRow]));
-  const ok = mixed.ok === true && trailing.ok === true && interior.ok === false;
-  report('U/thin: sep+spacer row is thin; only a TRAILING thin row may grow', ok,
-    `mixed -> ${mixed.ok} | trailing 72 -> ${trailing.ok} | interior 72 -> ${interior.ok}`);
-}
-
 // ── 3g. SPAN — a stylesheet without the partial-span rules FAILS the gate ───
 // Every width the static gate reports assumes a span of M occupies M tracks, and
 // that assumption is four CSS rules. Remove the two `.mspan` rules and the model
@@ -402,58 +338,6 @@ function rebuild(dir) {
   const ok = over && over.slack < 0 && fits && fits.slack > 0 && skip === null;
   report('INK: an overfull half box has negative slack, a title-only box fits, a separator is skipped', ok,
     `over=${over && over.slack.toFixed(1)} fits=${fits && fits.slack.toFixed(1)} skip=${skip}`);
-}
-
-// ── 3k. SLICE — a grid root's row packing is not a wrap ────────────────────
-// A root with bands is a CSS grid: four span-1 sections in a 2-column root pack
-// into two rows BY DESIGN (expectedLines 2), while the same two lines in a flex
-// row (expectedLines 1), or a third line in the grid, is the wrap SLICE names.
-{
-  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const SLICE = INVARIANTS.find(inv => inv.id === 'SLICE');
-  const row = (lines, expectedLines) => ({ compoundRows: [{ zone: '(root)', n: 4, lines, expectedLines,
-    equalSpans: true, wSpread: 0, column: false,
-    slices: [0, 1, 2, 3].map(i => ({ id: `s${i}`, w: 600, top: i < 2 ? 0 : 300, span: 1 })) }] });
-  const packed = SLICE.check(row(2, 2));
-  const flexWrap = SLICE.check(row(2, 1));
-  const gridWrap = SLICE.check(row(3, 2));
-  const ok = packed.ok === true && flexWrap.ok === false && gridWrap.ok === false
-    && flexWrap.detail.includes('pack into 1');
-  report('SLICE: a grid root packing its spans into rows passes, a line beyond the packing fails', ok,
-    `packed=${packed.ok} flexWrap=${flexWrap.ok} gridWrap=${gridWrap.ok}`);
-}
-
-// ── 3j. FILL / TXT — the ratchet rows speak up on a pure measurement ────────
-// Both run on every page not declared `text_fit: advisory`; their `check` is
-// called directly: a root span rendered at 40% of its declared width and a
-// clamped description must fail, and the clean measurements must pass.
-{
-  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const FILL = INVARIANTS.find(inv => inv.id === 'FILL');
-  const TXT = INVARIANTS.find(inv => inv.id === 'TXT');
-  const fillBad = FILL.check({ spanFill: [{ id: 's', span: 5, cols: 6, w: 400, expected: 1000, offPct: 60 }] });
-  const fillOk = FILL.check({ spanFill: [{ id: 's', span: 5, cols: 6, w: 999, expected: 1000, offPct: 0.1 }] });
-  const txtBad = TXT.check({ clamps: [{ id: 'b', part: 'desc', over: 14, text: 'cut' }], nBoxes: 1 });
-  const txtOk = TXT.check({ clamps: [], nBoxes: 1 });
-  const ok = fillBad.ok === false && fillOk.ok === true && txtBad.ok === false && txtOk.ok === true;
-  report('FILL/TXT: a short root span and a clamped block fail, clean measurements pass', ok,
-    `fill 60% -> ${fillBad.ok} | fill 0.1% -> ${fillOk.ok} | txt cut -> ${txtBad.ok} | txt clean -> ${txtOk.ok}`);
-}
-
-// ── 3k. LEAD — a lead band narrower than its root fails ────────────────────
-// The measured defect: a lead in a columns:1 root drew 496px of a 1280px root
-// while FILL (zones only) stayed green. Both directions, and the tolerance edge.
-{
-  const { INVARIANTS } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const LEAD = INVARIANTS.find(inv => inv.id === 'LEAD');
-  const shrunk = LEAD.check({ leadFill: [{ id: 'lead', w: 496, inner: 1280 }] });
-  const edgeOut = LEAD.check({ leadFill: [{ id: 'lead', w: 1277, inner: 1280 }] });
-  const edgeIn = LEAD.check({ leadFill: [{ id: 'lead', w: 1278, inner: 1280 }] });
-  const full = LEAD.check({ leadFill: [{ id: 'lead', w: 1280, inner: 1280 }] });
-  const none = LEAD.check({ leadFill: [] });
-  const ok = !!LEAD && shrunk.ok === false && edgeOut.ok === false && edgeIn.ok === true && full.ok === true && none.ok === true;
-  report('LEAD: a lead band shrunk below its root fails, a full-width one passes', ok,
-    `496/1280 -> ${shrunk.ok} | 1277/1280 -> ${edgeOut.ok} | 1278/1280 -> ${edgeIn.ok} | 1280/1280 -> ${full.ok} | none -> ${none.ok}`);
 }
 
 // ── 4. control positive — the intact owned fixture must pass ───────────────
@@ -645,38 +529,14 @@ function thinCorpus() {
     'the pre-rail thin predicate was accepted as equal');
 }
 
-// ── 6/7. TEXT — the character budget AGREES IN DIRECTION with the render's N ─
-// The budget is the one APPROXIMATE check in the static gate, so the only thing
-// that earns it its line is DIRECTION: a title the render gate would fail must be
-// flagged HERE FIRST, and a title that fits must NOT be flagged at all. An
-// advisory that points the other way is worse than no advisory, because the first
-// person to see it contradict the verdict learns to ignore it.
-//
-// Both halves are asserted over ONE cell: N's own predicate is called with the
-// SAME available width and the SAME monospace demand the static budget computes
-// with, so this is an agreement between the two DECISIONS and not a re-run of one
-// of them. N is pure over `m.wordFit`, which is why no browser is needed — the
-// same reason the placement cases above can lift the engine's own functions.
+// ── 6/7. TEXT — the character budget points in the right DIRECTION ─────────
+// The budget is the one APPROXIMATE check in the model, so what earns it its
+// line is direction: a title token wider than its cell is flagged, and a title
+// that fits is not flagged at all. An advisory that flags everything teaches its
+// reader to ignore it. Both halves use ONE cell width and font size.
 const N_CELL_PX = 270.5;   // a span-1 cell of the seed's 4-track, 1246px band grid
 const N_FONT_PX = T.type.title.max_px;   // .box .t at the two widest tiers
 
-// A measurement stub carrying only what the invariant table reads. Every other
-// invariant is free to come back red on it — only N's verdict is read.
-function nVerdict(word) {
-  const { runInvariants } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
-  const m = { clipped: 0, overflowX: 0, topZones: [], leftPad: 0, rightPad: 0,
-    collisions: [], balloons: [], stackOverflow: [], leafGrids: [], spanRatios: [],
-    rootRowMax: 2, halfSlots: [], heights: [], rowTracks: [],
-    census: { diffs: [], authored: {}, rendered: {}, nActs: 0, nAuthoredPages: 0, pageId: 'x' },
-    wordFit: [{ zone: 'z', k: 'x', word, vertical: false,
-      wordW: Math.round(word.length * N_FONT_PX * MONO_ADVANCE_EM),
-      availW: Math.round(N_CELL_PX) }] };
-  const ctx = { form: 'dashboard', tier: 'ultra', w: 2560, WIDE: true, PASSES: 3,
-    deterministic: true, sigs: [], uniqueSigs: [], robustOk: true, robustDetail: '',
-    captureOk: true, captureDetail: '' };
-  const n = runInvariants(m, ctx).find(c => c.id === 'N');
-  return n ? n.ok : null;
-}
 const staticFlags = word => textBudget({ id: 'x', title: word },
   { availPx: N_CELL_PX, fontPx: N_FONT_PX, half: false, cell: 'cell' })
   .findings.some(f => f.kind === 'token');
@@ -685,7 +545,7 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
 {
   const LONG = 'Orquestacionmultiregionconsolidada';   // 34 chars, one token
   const cap = capacityFor(N_CELL_PX, N_FONT_PX);
-  const budgetFlags = staticFlags(LONG), nOk = nVerdict(LONG);
+  const budgetFlags = staticFlags(LONG);
 
   // …and the real gate says so on a real deck, naming the numbers. The line must
   // be an [INFO]: the budget is an advisory, so it reports without failing. The
@@ -702,9 +562,9 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
     && line.includes('the cell holds') && line.includes('track(s) in a');
   rmDeck(dir);
 
-  report('TEXT/agree: a token N fails is flagged (advisory) by the static budget',
-    budgetFlags === true && nOk === false && gateSpeaks,
-    `budget=${budgetFlags} N.ok=${nOk} gate=${gateSpeaks} (${LONG.length} chars vs cap ${cap} @${N_CELL_PX}px) line=${line.trim().slice(0, 120)}`);
+  report('TEXT/agree: a token wider than its cell is flagged (advisory) by the static budget',
+    budgetFlags === true && gateSpeaks,
+    `budget=${budgetFlags} gate=${gateSpeaks} (${LONG.length} chars vs cap ${cap} @${N_CELL_PX}px) line=${line.trim().slice(0, 120)}`);
 }
 
 // 7 — TEETH IN THE OTHER DIRECTION: a token that fits must be flagged by NEITHER.
@@ -712,7 +572,7 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
 {
   const SHORT = 'Orden';                               // 5 chars, comfortably inside
   const cap = capacityFor(N_CELL_PX, N_FONT_PX);
-  const budgetFlags = staticFlags(SHORT), nOk = nVerdict(SHORT);
+  const budgetFlags = staticFlags(SHORT);
 
   const dir = mkDeck();
   const { p, doc } = loadOverview(dir);
@@ -722,9 +582,9 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
   const quiet = !out.includes(`title token "${SHORT}"`);
   rmDeck(dir);
 
-  report('TEXT/teeth: a title that fits is flagged by neither gate',
-    budgetFlags === false && nOk === true && quiet,
-    `budget=${budgetFlags} N.ok=${nOk} quiet=${quiet} (${SHORT.length} chars vs cap ${cap} @${N_CELL_PX}px)`);
+  report('TEXT/teeth: a title that fits is not flagged',
+    budgetFlags === false && quiet,
+    `budget=${budgetFlags} quiet=${quiet} (${SHORT.length} chars vs cap ${cap} @${N_CELL_PX}px)`);
 }
 
 // ── 8. SPACER — the payload rejection, and the bare spacer that must pass ──
@@ -773,7 +633,7 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
 // the viewport moves the failing tier with it. The fixture's 4-track band gives
 // item-a a ~270px cell at every wide tier, so four authored lines always need 4.
 const writeDocument = (dir, extra) => fs.writeFileSync(path.join(dir, 'data', 'document.yaml'),
-  yaml.dump({ ...FIXTURE_DOCUMENT, ...extra }), 'utf8');
+  dumpYaml({ ...FIXTURE_DOCUMENT, ...extra }), 'utf8');
 const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
 {
   const dir = mkDeck();
@@ -891,7 +751,7 @@ const FOUR_LINES = ['first line', 'second line', 'third line', 'a fourth line'];
 // its `flow` chip matches the fixture's label unless a case changes it.
 const CORE = { key: 'core', label: 'Is it core?' };
 function withSecondPage(dir, { entry = {}, flowLabel = 'Fixture flow', core = true } = {}) {
-  fs.writeFileSync(path.join(dir, 'data', 'pages', 'second.yaml'), yaml.dump({
+  fs.writeFileSync(path.join(dir, 'data', 'pages', 'second.yaml'), dumpYaml({
     id: 'second', columns: 1, filters: [{ key: 'flow', label: flowLabel }],
     sections: [{ id: 'second-s', title: 'Second page', columns: 2, children: [
       { id: 'second-a', title: 'A', filters: ['flow'] }, { id: 'second-b', title: 'B', filters: ['flow'] }] }],
@@ -1069,9 +929,9 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
 }
 
 // ── 11. TOKENS — the data is the only input ────────────────────────────────
-// THREE-LAYER AGREEMENT. One edit to document.yaml (row.cell_h 130 -> 110,
-// type.desc.lines 3 -> 2) must move the engine's CSS properties, the static
-// gate's model and the render gate's expectations together; each layer is
+// TWO-LAYER AGREEMENT. One edit to document.yaml (row.cell_h 130 -> 110,
+// type.desc.lines 3 -> 2) must move the engine's CSS properties and the static
+// gate's model together; each layer is
 // asserted by what it DOES with the value, and the case fails on the first one
 // that ignores it.
 {
@@ -1093,17 +953,9 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
   const failDesc = '[FAIL] overview:root > section-e > item-a @1920px: description needs 3';
   const staticOk = !before.out.includes(failDesc) && after.out.includes('row 110px')
     && after.out.includes('desc 12px/2ln') && after.out.includes(failDesc);
-  // render gate: its expectations follow, and U holds a 110px grid to them.
-  const rx = VALIDATE.renderExpectations(gen.tokens);
-  const U = VALIDATE.INVARIANTS.find(inv => inv.id === 'U' && inv.name === 'uniform slot height');
-  const mFor = h => ({ heights: [h], halfSlots: [],
-    rowTracks: [{ zone: 'fixture', tracks: [h], cellH: h, rows: [{ n: 1, sepH: 0, hole: 0, railH: 0 }], overflow: [] }] });
-  VALIDATE.applyTokens(gen.tokens);
-  const renderOk = rx.CELL_H === 110 && U.check(mFor(110)).ok === true && U.check(mFor(T.row.cell_h)).ok === false;
-  VALIDATE.applyTokens(T);
-  report('TOKENS/agree: cell_h 110 + desc.lines 2 move the engine vars, the static model and the render expectations',
-    engineOk && staticOk && renderOk,
-    `engine=${engineOk} static=${staticOk} render=${renderOk}\n${after.out.split('\n').filter(l => /TOKENS|row \d+px|item-a/.test(l)).join('\n')}`);
+  report('TOKENS/agree: cell_h 110 + desc.lines 2 move the engine vars and the static model',
+    engineOk && staticOk,
+    `engine=${engineOk} static=${staticOk}\n${after.out.split('\n').filter(l => /TOKENS|row \d+px|item-a/.test(l)).join('\n')}`);
   rmDeck(dir);
 }
 
@@ -1151,9 +1003,7 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
 // are refused by the build.
 {
   const dir = mkDeck();
-  fs.mkdirSync(path.join(dir, 'tools'));
-  for (const f of ['contrast-audit.cjs', 'static-census.cjs'])
-    fs.copyFileSync(path.join(ROOT, 'tools', f), path.join(dir, 'tools', f));
+  fs.copyFileSync(path.join(ROOT, 'tools', 'contrast-audit.cjs'), path.join(dir, 'tools', 'contrast-audit.cjs'));
   const audit = () => runNode([path.join(dir, 'tools', 'contrast-audit.cjs')]);
   const build = () => runNode([path.join(dir, 'engine', 'build-data.mjs')]);
   const misses = [];
@@ -1181,6 +1031,81 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
   report('PALETTE/overrides: a legible override ships and passes, a contrast miss fails, bad keys are refused',
     misses.length === 0, misses.join('\n'));
   rmDeck(dir);
+}
+
+// ── 14. YAML — the reader reads the dialect and refuses the rest by line ────
+{
+  const src = [
+    '# a comment', 'title: "Deck — v1"   # trailing', 'n: 3', 'f: 1.5', 'on: true', 'none:', 'word: no',
+    'list:', '  - plain text', '  - { id: a, kicker: "STEP 1 →", tags: [x, y] }',
+    '  - id: b', '    description: ["one",', '      "two"]', 'nested:', "  deep: 'it''s'",
+  ].join('\n');
+  const want = { title: 'Deck — v1', n: 3, f: 1.5, on: true, none: null, word: 'no',
+    list: ['plain text', { id: 'a', kicker: 'STEP 1 →', tags: ['x', 'y'] }, { id: 'b', description: ['one', 'two'] }],
+    nested: { deep: "it's" } };
+  let got;
+  try { got = JSON.stringify(yaml.parse(src, 't')); } catch (e) { got = e.message; }
+  const rejects = [['a: &x 1', 1], ['a: *x', 1], ['a:\n\tb: 1', 2], ['a: |\n  text', 1], ['a: 1\na: 2', 2],
+    ['a: b: c', 1], ['a: 2024-01-01', 1], ['a:\n  - x\n   y', 3], ['---\na: 1', 1]];
+  const silent = rejects.filter(([text, line]) => {
+    try { yaml.parse(text, 't'); return true; }
+    catch (e) { return !(e instanceof yaml.YamlError && e.message.startsWith(`t:${line}: `)); }
+  });
+  report('YAML: the dialect reads as js-yaml would; anchors, aliases, tabs, block scalars, duplicates, ' +
+    'inline mappings, timestamps, multi-line plain scalars and document markers are refused by line',
+    got === JSON.stringify(want) && silent.length === 0,
+    `parsed=${got} | not refused by line: ${JSON.stringify(silent)}`);
+}
+
+// ── 15. VIDEO — the capture handle exists under ?video, and only there ──────
+// The engine runs on the seed's generated data against inert stand-ins for the
+// browser: every DOM object is a callable proxy that absorbs reads, writes and
+// calls, so the real IIFE mounts every page and reaches its final wiring.
+function inert() {
+  const self = new Proxy(function () {}, {
+    get: (_, k) => (k === Symbol.toPrimitive ? () => '' : k === Symbol.iterator ? function* () {}
+      : k === 'length' ? 0 : k === 'then' ? undefined : self),
+    set: () => true,
+    apply: () => self,
+    construct: () => self,
+  });
+  return self;
+}
+function runEngine(search) {
+  const win = { location: { search } };
+  const windowProxy = new Proxy(win, {
+    get: (t, k) => (k in t ? t[k] : inert()),
+    set: (t, k, v) => { t[k] = v; return true; },
+  });
+  const noTimer = () => 0;
+  const own = { window: windowProxy, location: win.location, document: inert(), navigator: inert(),
+    localStorage: inert(), setTimeout: noTimer, setInterval: noTimer, requestAnimationFrame: noTimer,
+    queueMicrotask: noTimer };
+  // `with` resolves every name the engine does not declare: ours first, then a
+  // real global (Math, JSON, URLSearchParams…), then an inert browser object.
+  const scope = new Proxy(own, {
+    has: (t, k) => k in t || !(k in globalThis),
+    get: (t, k) => (k in t ? t[k] : k === Symbol.unscopables ? undefined : inert()),
+  });
+  const run = code => new Function('scope', `with (scope) {\n${code}\n}`)(scope);
+  run(fs.readFileSync(path.join(ROOT, 'data', 'data.generated.js'), 'utf8'));
+  run(ENGINE_SRC);
+  return win;
+}
+{
+  let plain, video, driven = false;
+  try {
+    plain = runEngine('');
+    video = runEngine('?video');
+    const d = video.__deck;
+    d.show(1); d.setFlow(0, 'all'); d.closePanel(0);
+    driven = true;
+  } catch (e) { driven = e.message; }
+  const deck = video && video.__deck;
+  const ok = !!plain && !('__deck' in plain) && !!deck && Array.isArray(deck.acts) && deck.acts.length > 0
+    && ['show', 'setFlow', 'closePanel'].every(k => typeof deck[k] === 'function') && driven === true;
+  report('VIDEO: ?video exposes window.__deck {acts, show, setFlow, closePanel} driving the wired acts; without it, none',
+    ok, `plain __deck=${plain ? '__deck' in plain : 'n/a'} | video __deck=${deck ? Object.keys(deck).join(',') : 'none'} | driven=${driven}`);
 }
 
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);

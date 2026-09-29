@@ -42,30 +42,23 @@ assets/
 │   │                     unknown fields are a loud build error (with a
 │   │                     did-you-mean suggestion), never a no-op
 │   ├── tokens.mjs        the design tokens: defaults, schema and CSS projection
-│   └── chips.cjs         core-chip inheritance, shared by the build and the census
+│   ├── chips.cjs         core-chip inheritance, shared by the build and the census
+│   └── yaml.cjs          the reader for the YAML dialect — refuses, by line,
+│                         anything outside it
 ├── tools/
-│   ├── check-layout.mjs     the MODELLED gate, mandatory (`npm run model`) — proves
-│   │                        the grid CLOSES arithmetically over the authored YAML;
-│   │                        NO browser, js-yaml only, exit≠0 on any [FAIL]
-│   ├── static-census.cjs    the browser-free authored-data reader BOTH gates
-│   │                        import — one parse path, so they cannot disagree
+│   ├── check-layout.mjs     the gate, mandatory (`npm run model`) — proves the
+│   │                        grid CLOSES arithmetically over the authored YAML;
+│   │                        NO browser, exit≠0 on any [FAIL]
+│   ├── static-census.cjs    the authored-data reader and the form list (FORMS)
+│   │                        the build and the model share — one parse path
 │   ├── test-guards.mjs      the negative-test suite (`npm test`) — fabricates one
 │   │                        broken deck per case in a temp dir and asserts the
 │   │                        guard FAILS as claimed
-│   ├── validate-layout.cjs  the MEASURED gate, mandatory (`npm run render`) —
-│   │                        renders in Chromium at ONE width (3 reloads) and
-│   │                        asserts only what genuinely needs PIXELS; PURE-READ
-│   │                        (build first); shots to a system temp dir; SKIPS and
-│   │                        exits 0 where Playwright is absent, which is why
-│   │                        requiring it costs nothing
-│   ├── contrast-audit.cjs   WCAG 2.1 contrast audit of the swappable palettes
-│   │                        (`npm run contrast`), reading the tokens out of
-│   │                        index.html so a palette edit is audited by construction
-│   └── verify.mjs           lighter render QA (root grid renders, no top-level cell
-│                            collisions, screenshots widths × themes)
-├── package.json          the scripts (build · model · render · gate · test ·
-│                         contrast · verify, plus check/validate kept as aliases
-│                         of model/render) + js-yaml + playwright devDeps
+│   └── contrast-audit.cjs   WCAG 2.1 contrast audit of the swappable palettes
+│                            (`npm run contrast`), reading the tokens out of
+│                            index.html so a palette edit is audited by construction
+├── package.json          the four scripts (build · model · test · contrast); no
+│                         dependencies — Node alone runs all of them
 └── data/                 ── the only part you edit ──
     ├── document.yaml     manifest: title/subtitle/version, tokens, core chips, and
     │                     which pages, in order
@@ -80,24 +73,14 @@ assets/
 
 - **View immediately:** open `index.html` in any browser. The committed
   `data/data.generated.js` means it renders with no tooling.
-- **Author:** edit the YAML under `data/`, then `npm install` once and
-  `npm run build` to regenerate `data/data.generated.js` (the build also
-  enforces the strict field schema). Then **`npm run gate` — both mandatory
-  halves, and the only thing a verdict may cite.** `npm run model` computes:
-  arithmetic over the authored YAML, no browser, nothing beyond the `js-yaml` the
-  build already needs. `npm run render` observes: it renders in Chromium and
-  asserts only what genuinely needs pixels — the half that can tell whether the
-  stylesheet IMPLEMENTS what the model assumed — and is decoupled from build
-  (pure-read: it asserts the EXISTING generated data, so build first). Where
-  Playwright is absent it prints `SKIPPED (no browser)` and **exits 0**, so
-  requiring it never blocks a deck; the verdict then says `MEASURED: unavailable`
-  rather than presenting the arithmetic as an observation. Never declare a layout
-  change done until the gate is green. (`npm run check` and `npm run validate`
-  still work as aliases of `model` and `render`.) `npm test` runs the negative-test suite over the
-  guards themselves, `npm run contrast` audits the palettes against WCAG 2.1,
-  and `npm run verify` is the lighter headless QA. All screenshots go to a
-  **system temp dir** (`os.tmpdir()`, override with `DIAGRAM_SHOTS_DIR`), not
-  into the project — the repo stays clean.
+- **Author:** edit the YAML under `data/`, then `npm run build` to regenerate
+  `data/data.generated.js` (the build also enforces the strict field schema).
+  Nothing to install: the deck has no npm dependencies. Then **`npm run model`
+  — the mandatory gate**: arithmetic over the authored YAML, no browser. Never
+  declare a layout change done until it is green. Whether the page LOOKS right
+  is a human review: open `index.html` and look. `npm test` runs the
+  negative-test suite over the guards themselves, and `npm run contrast` audits
+  the palettes against WCAG 2.1.
 - **The dialect** (every field + the `status`/`variant` enums) is documented in
   the diagram-builder skill: `../GLOSSARY.md` and `../reference.md`.
 - **`document.yaml`'s optional `version`** renders in the header — bump it on a
@@ -170,6 +153,5 @@ whatever the target repo's deploy layer turns out to be:
 Vendored from a frozen reference architecture-diagram artifact (HUD included)
 and made domain-free: neutral title/subtitle placeholders (the engine overwrites
 them from `document.yaml`), domain names stripped from comments, a generic
-`package.json` name, a `verify.mjs` with generic collision assertions (no
-diagram-specific zone names), and a domain-free seed `data/`. No absolute paths;
-`js-yaml` is a bare import resolved from `node_modules`.
+`package.json` name, and a domain-free seed `data/`. No absolute paths and no
+`node_modules`: the YAML is read by the deck's own `engine/yaml.cjs`.
