@@ -476,7 +476,8 @@ def request_command_set(
 
     commands = [item.get("command") for item in items]
     try:
-        validate_request_set(commands)
+        cwds = [item.get("cwd") for item in items]
+        validate_request_set(commands, cwds=cwds if all(cwds) else None)
     except CommandSetValidationError as exc:
         raise SealError(str(exc)) from exc
     _require_phrases(what, question, items, rollback)

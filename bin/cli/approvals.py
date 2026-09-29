@@ -2538,7 +2538,15 @@ def register(subparsers) -> None:
     p_request_set = sub.add_parser(
         "request-set", help="Create a governed plan-first COMMAND_SET request"
     )
-    p_request_set.add_argument("--command", action="append", required=True)
+    p_request_set.add_argument(
+        "--command", action="append", required=True,
+        help=(
+            "One exact T3 command, repeated per item: a single program (an interpreter "
+            "with a script, -c or -e included) or a pipeline whose highest stage is T3; "
+            "never a chain, an interactive program, or an unquoted parenthesis -- quote "
+            "it yourself, the signed bytes are the bytes that run"
+        ),
+    )
     p_request_set.add_argument(
         "--what",
         help="Required title: what the set does, in one human sentence (120 characters at most)",
