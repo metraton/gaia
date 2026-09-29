@@ -49,12 +49,95 @@ per line, to `out/video/script/NN-<page>.txt`. That text is what any voice
 reads, and it carries no marks from any provider. The voice step writes each
 page's audio to the path the script declares.
 
+## The voice
+
+`npm run video:voice --prefix <deck> -- --provider kokoro|manual` voices every
+page of the script. Every provider keeps the same contract:
+
+- **In:** the page's exported text, `out/video/script/NN-<page>.txt`. The step
+  refuses to run when that text is missing or no longer matches the script, and
+  asks for `video:script` first.
+- **Out:** the page's audio at the path the script declares and, when the
+  provider can time words, `<audio>.words.json` beside it: a list of
+  `{ "word", "start", "end" }` in seconds inside that audio.
+
+Two providers ship:
+
+- **`kokoro`** (the default) runs an existing local Kokoro install and installs
+  nothing. It looks in `~/.local/share/gaia-tts/kokoro` (`--kokoro-dir` points
+  elsewhere) for `.venv/bin/python` and `kokoro_say.py`, voices each page with
+  `am_michael`, an American male voice (`--voice` picks another), and writes
+  the words file too. When the install is absent, or Kokoro fails on a page,
+  the step says so on one line and continues as `manual`. That is not an
+  error: the video never depends on a voice being installed.
+- **`manual`** is always there. It prints, per page, the text to voice and the
+  path to leave its audio at, or that the audio is already there. Any voice
+  can be used this way: record it, generate it in a web tool, or run a local
+  model by hand, then leave the WAV at the declared path.
+
+`video:align` prefers the words file. Each sentence then runs from its first
+word to its last (`method=words`). It uses the file only when it is at least as
+new as the audio and its words spell the page's sentences; audio left later by
+hand was not timed by it. Otherwise the page falls back to silencedetect,
+which matches sentence ends to pauses in the audio (`method=silencedetect`),
+or, when the pauses do not fit, to an estimate by length (`method=chars`).
+Kokoro in Spanish, Qwen3-TTS and most manual audio have no word timings and
+take that fallback without error.
+
+### Which local voice to use
+
+Both run on this machine with no key and no account. The script is the same
+for both; only the voice step changes.
+
+- **Kokoro-82M is the default.** Use it for English. It runs on CPU, a little
+  faster than real time for a page, gives per-word timings in English, and
+  every page uses the same fixed voice. Its Spanish voices exist
+  (`ef_dora`, `em_alex`), but its own model card calls non-English support
+  thin, and in Spanish it gives no word timings. It has fixed voices, with no
+  cloning and no control of tone.
+- **Qwen3-TTS is the alternative.** Use it for a video in Spanish, for a voice
+  cloned from a 3-second sample, or for a tone set by an instruction ("calm",
+  "excited"). It gives no word timings, so `video:align` uses silencedetect.
+  Its examples all run on a CUDA GPU, and its speed on a CPU is not
+  documented. Its output is sampled, so the delivery may change between runs:
+  voice the whole video in one sitting. It has no adapter here: it is used
+  through `manual`.
+
+**Kokoro, once.** Apache-2.0, about 330 MB of weights.
+
+1. `python3 -m venv ~/.local/share/gaia-tts/kokoro/.venv`
+2. `~/.local/share/gaia-tts/kokoro/.venv/bin/pip install "kokoro>=0.9.4" soundfile`
+   (`uv pip install --torch-backend cpu` installs the CPU-only torch and skips CUDA).
+3. `hf download hexgrad/Kokoro-82M config.json kokoro-v1_0.pth voices/am_michael.pt --local-dir ~/.local/share/gaia-tts/kokoro/model`
+4. `kokoro_say.py` in that folder takes `--text-file`, `--voice`, `--out` and
+   `--words`, loads the model from `model/` offline, and writes a 24 kHz mono
+   WAV and the word list from Kokoro's token timestamps. Each line of the text
+   is one segment.
+
+Then `npm run video:voice --prefix <deck>` uses it. The first letter of the
+voice sets the language: `a` American English, `b` British, `e` Spanish.
+
+**Qwen3-TTS, once.** Apache-2.0, 2.5 GB (0.6B) to 4.5 GB (1.7B) downloaded on
+first use.
+
+1. A fresh Python 3.12 venv, for example `~/.local/share/gaia-tts/qwen3/.venv`.
+2. `<venv>/bin/pip install -U qwen-tts`
+3. In Python, `Qwen3TTSModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", device_map="cuda:0")`
+   and `generate_custom_voice(text, language, speaker)` for a stock voice with
+   an optional `instruct` for tone. Use the `-Base` model with a 3-second sample and its
+   transcript (`ref_text`) to clone a voice. Write the result with
+   `soundfile.write`. The `0.6B` models are lighter, and VoiceDesign exists
+   only in 1.7B.
+4. Voice each `out/video/script/NN-<page>.txt`, save it at the page's declared
+   audio path, and run `npm run video:voice --prefix <deck> -- --provider manual`
+   to confirm every page has its audio.
+
 ## The steps
 
 Every step is `npm run <step> --prefix <deck>`.
 
 1. `video:script`: export the text to be voiced.
-2. The voice step turns each text into its page's declared audio.
+2. `video:voice` turns each text into its page's declared audio (see above).
 3. `video:align` measures where each sentence starts and ends in the audio and
    writes `video/align.json`. It needs `ffmpeg` and `ffprobe`.
 4. `video:plan` prints each page's slot and the second at which every cue

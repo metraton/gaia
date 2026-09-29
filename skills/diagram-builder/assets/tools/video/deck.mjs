@@ -97,6 +97,20 @@ export function audioPath(page) {
   return file;
 }
 
+/** Returns the exported text of the page at `index` of the timeline: out/video/script/NN-<page>.txt. */
+export function scriptTextPath(page, index) {
+  return join(OUT_DIR, 'script', `${String(index + 1).padStart(2, '0')}-${page.page}.txt`);
+}
+
+/**
+ * Returns where a voice provider leaves the page's per-word timings, beside its
+ * audio: `<audio without extension>.words.json`, a list of {word, start, end} in
+ * seconds inside that audio.
+ */
+export function wordsPath(page) {
+  return audioPath(page).replace(/\.[^./]+$/, '') + '.words.json';
+}
+
 /** Returns the value after `flag` on the command line, or `fallback`. */
 export function argValue(flag, fallback) {
   const i = process.argv.indexOf(flag);

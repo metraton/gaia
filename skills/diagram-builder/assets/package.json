@@ -11,6 +11,7 @@
     "test": "node tools/test-guards.mjs",
     "contrast": "node tools/contrast-audit.cjs",
     "video:script": "node tools/video/script.mjs",
+    "video:voice": "node tools/video/voice.mjs",
     "video:align": "node tools/video/align.mjs",
     "video:plan": "node tools/video/plan.mjs",
     "video:check": "node tools/video/check.mjs",
