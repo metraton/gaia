@@ -525,21 +525,28 @@ function planeWidth(cw) {
 // carries `flex: var(--span,1) 1 0`, while a `.box` / `.sep` / `.rail` sibling is
 // `flex:0 0 auto` — content-sized. So the row's width is divided among the
 // SECTION children by their spans, and every child still costs a gap.
+// A columns:1 compound (`.sec-c1`) is a column at every tier: its span clamps to
+// 1 of 1, so each child owns its row.
 // ACCEPTED LIMITATION: a content-sized sibling's own width is not knowable
 // without a render, so it is counted as zero. That over-states its section
 // siblings' width, which can only make this budget quieter — never a false alarm.
-function sectionOuterWidth(g, child, cw) {
-  const gw = g.widthAt(cw);
-  if (cw <= BP_STACK) return gw;
+// rowShare is that rule as a share of `g`'s width — `span` of `total`, or null
+// for a content-sized leaf of a nested row — so the census reads the same rule.
+function rowShare(g, child, cw) {
   const spanOf = n => Math.max(1, Math.min(Number(n && n.span) || 1, g.cols));
   const span = spanOf(child);
-  if (span >= g.cols) return gw;                        // a band owns its row
-  if (g.isRoot)
-    return (gw - (g.cols - 1) * CSS_TEXT.gap) * span / g.cols + (span - 1) * CSS_TEXT.gap;
   const kids = (g.children || []).filter(n => spanOf(n) < g.cols);
-  const growers = kids.filter(isSection);
-  const total = growers.reduce((n, x) => n + spanOf(x), 0) || 1;
-  return (gw - Math.max(0, kids.length - 1) * CSS_TEXT.gap) * span / total;
+  if (cw <= BP_STACK || span >= g.cols) return { span: 1, total: 1, gaps: 0 };
+  if (g.isRoot) return { span, total: g.cols, gaps: g.cols - 1 };
+  if (!isSection(child)) return null;
+  const total = kids.filter(isSection).reduce((n, x) => n + spanOf(x), 0) || 1;
+  return { span, total, gaps: Math.max(0, kids.length - 1) };
+}
+function sectionOuterWidth(g, child, cw) {
+  const gw = g.widthAt(cw);
+  const { span, total, gaps } = rowShare(g, child, cw);
+  const share = (gw - gaps * CSS_TEXT.gap) * span / total;
+  return g.isRoot && total > 1 ? share + (span - 1) * CSS_TEXT.gap : share;
 }
 
 // The TRACK AREA of a nested section's own grid: its outer width less its zone
@@ -2027,7 +2034,7 @@ function main() {
 if (process.argv[1]?.endsWith(`${path.sep}check-layout.mjs`)) main();
 
 export { applyTokens, metricsFrom, tiersFor, widthAtTier, isBandAtTier, isBandClass, place, tracksFor,
-  orderedChildren, slotsOf, effectiveCols, DEFAULT_SECTION_COLUMNS,
+  orderedChildren, slotsOf, effectiveCols, rowShare, rowspanOf, RESET_CHIP, DEFAULT_SECTION_COLUMNS,
   planeWidth, cellTextWidth, titlePx, capacityFor, wrapLines, longestToken,
   textBudget, cssTextTokens, CSS_TEXT, MONO_ADVANCE_EM, isThinRowLeaf,
   inkBudget, slotHeightPx, railTitleWidth, railTitleFit, headerBudget, zoneTitlePx,

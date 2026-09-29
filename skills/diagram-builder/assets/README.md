@@ -52,8 +52,8 @@ assets/
 │   ├── static-census.cjs    the authored-data reader and the form list (FORMS)
 │   │                        the build and the model share — one parse path
 │   ├── census.mjs           the per-page summary (`npm run census [-- --json]`):
-│   │                        sections and nesting, resolved columns/span/width,
-│   │                        colours and chip members, by authored id
+│   │                        sections and nesting, resolved columns/span/width
+│   │                        and start cell, colours and chip scope, by authored id
 │   ├── test-guards.mjs      the negative-test suite (`npm test`) — fabricates one
 │   │                        broken deck per case in a temp dir and asserts the
 │   │                        guard FAILS as claimed
@@ -83,7 +83,23 @@ assets/
   declare a layout change done until it is green. Whether the page LOOKS right
   is a human review: open `index.html` and look. `npm run census -- --json`
   prints what each page resolved to, so it can be checked against the sketch
-  agreed before building without reading the YAML. `npm test` runs the
+  agreed before building without reading the YAML. Its fields, at the
+  presentation viewport:
+  - `width` has ONE normal form: the reduced fraction of the parent's width
+    (`1/1` is the whole row, `1/2` half, `2/3` two thirds), or `content` for a
+    component sitting directly in a flex row. The share comes from
+    `check-layout.mjs` `rowShare`, the rule the model's width chain uses.
+  - `start` is `{row, col}`, 1-based within the parent: the grid cell, or the
+    line and position on it in a flex row. A section's `grid` says which:
+    `tracks` and a root holding a band are grids, `row` is a flex row, `stack`
+    (`columns: 1`) puts one child per row — so two groups side by side share a
+    row, and two stacked groups do not.
+  - `variant_source` is `authored`, `default` (an unset colour is neutral; the
+    engine never inherits one from a section) or `colourless` (separator, spacer).
+  - a chip's `scope` is `members`, `all` (the reserved reset, which declares no
+    members and lights everything) or `none`.
+
+  `npm test` runs the
   negative-test suite over the guards themselves, and `npm run contrast` audits
   the palettes against WCAG 2.1.
 - **The dialect** (every field and the `variant`/`treatment` sets) is documented

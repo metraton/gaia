@@ -1137,5 +1137,65 @@ function runEngine(search) {
   }
 }
 
+// ── 17. CENSUS — read against a sketch, the JSON alone must be unambiguous ─
+// `lanes` is a columns:1 compound: its groups STACK (`.sec-c1` is a column), so
+// they start on two rows at 1/1. `pair` is a columns:2 row: its groups sit side
+// by side on one row at 1/2. A census that reported both pairs "full" in a "row"
+// could not tell the two apart. `anchor` is the forward-filling control: the
+// rowspan-2 cell pushes under-1 to row 2, column 2.
+{
+  const dir = mkDeck();
+  const name = 'CENSUS: start per node, one width form, stacked vs side by side, variant source, chip scope';
+  try {
+    const { p, doc } = loadOverview(dir);
+    const box = id => ({ id, title: id });
+    const group = (id, ...ids) => ({ id, columns: 1, children: ids.map(box) });
+    doc.columns = 2;
+    doc.filters.push({ key: 'all', label: 'All' });
+    findNode(doc, 'section-e').span = 2;
+    doc.sections.push(
+      { id: 'lanes', span: 1, columns: 1, children: [group('lane-1', 'l1'), group('lane-2', 'l2', 'l3')] },
+      { id: 'pair', span: 1, columns: 2, children: [group('side-1', 's1'), group('side-2', 's2')] },
+      { id: 'anchor', span: 2, columns: 3, children: [
+        { id: 'a-anchor', title: 'Tall', rowspan: 2 }, box('beside-1'), box('beside-2'),
+        box('under-1'), box('under-2'), { id: 'a-sep', type: 'separator', span: 3 },
+        { id: 'a-rail', type: 'rail', title: 'Rail' }, box('a-2'), box('a-3')] });
+    saveOverview(p, doc);
+    rebuild(dir);
+    const { code, out } = runNode([path.join(ROOT, 'tools', 'census.mjs'), dir, '--json']);
+    const page = JSON.parse(out).pages[0];
+    const nodes = [];
+    (function walk(list) { for (const n of list) { nodes.push(n); walk(n.children || []); } })(page.sections);
+    const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+    const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+    const normal = w => w === 'content' || (/^(\d+)\/(\d+)$/.test(w) && gcd(...w.split('/').map(Number)) === 1);
+    const at = id => byId[id] && byId[id].start;
+    const bad = [];
+    const [l1, l2, s1, s2] = ['lane-1', 'lane-2', 'side-1', 'side-2'].map(id => byId[id] || {});
+    if (!(at('lane-1')?.row === 1 && at('lane-2')?.row === 2 && l1.width === '1/1' && l2.width === '1/1'))
+      bad.push(`lanes (columns:1) must stack: lane-1 ${JSON.stringify(at('lane-1'))} ${l1.width}, lane-2 ${JSON.stringify(at('lane-2'))} ${l2.width}, grid ${byId.lanes?.grid}`);
+    if (!(at('side-1')?.row === at('side-2')?.row && at('side-1')?.col !== at('side-2')?.col
+      && s1.width === '1/2' && s2.width === '1/2'))
+      bad.push(`pair (columns:2) must sit side by side: side-1 ${JSON.stringify(at('side-1'))} ${s1.width}, side-2 ${JSON.stringify(at('side-2'))} ${s2.width}`);
+    const unplaced = nodes.filter(n => !(Number.isInteger(n.start?.row) && Number.isInteger(n.start?.col))).map(n => n.id);
+    if (unplaced.length) bad.push(`no start: ${unplaced.join(', ')}`);
+    if (!(at('under-1')?.row === 2 && at('under-1')?.col === 2))
+      bad.push(`under-1 must start at row 2 col 2 beside the rowspan-2 anchor: ${JSON.stringify(at('under-1'))}`);
+    const offForm = nodes.filter(n => !normal(n.width)).map(n => `${n.id}=${n.width}`);
+    if (offForm.length) bad.push(`width not in the one reduced form: ${offForm.join(', ')}`);
+    const SOURCES = { authored: v => v != null, default: v => v === 'neutral', colourless: v => v == null };
+    const unsaid = nodes.filter(n => !SOURCES[n.variant_source]?.(n.variant)).map(n => `${n.id}=${n.variant}/${n.variant_source}`);
+    if (unsaid.length) bad.push(`variant without its source: ${unsaid.join(', ')}`);
+    const chipScope = page.chips.filter(c => !c.members.length && !['all', 'none'].includes(c.scope));
+    if (chipScope.length || page.chips.find(c => c.key === 'all')?.scope !== 'all')
+      bad.push(`empty chip without a scope: ${JSON.stringify(page.chips.map(c => [c.key, c.scope]))}`);
+    report(name, code === 0 && bad.length === 0, `exit ${code}; ${bad.join(' | ')}`);
+  } catch (e) {
+    report(name, false, e.message);
+  } finally {
+    rmDeck(dir);
+  }
+}
+
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);
 process.exit(failures === 0 ? 0 : 1);
