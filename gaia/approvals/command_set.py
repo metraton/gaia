@@ -1,11 +1,13 @@
 """Plan-first COMMAND_SET validation and immutable command fingerprints.
 
 Requests contain Bash invocations that have already been shown to the user.
-The runtime accepts one or more exact T3 commands, each a single program or a
-pipeline whose highest stage is T3. Chains, protected paths, interactive
-programs, unquoted parentheses, and commands that are safe or permanently
-blocked are rejected before an approval row can be minted: a request the
-runtime could only refuse after the user signed is refused here instead.
+The runtime accepts an ordered sequence of steps, each a single program or a
+pipeline whose highest stage decides its tier, holding at least one exact T3
+command; a step that does not classify T3 is kept as an unsigned step of the
+same sequence. Chains, protected paths, interactive programs, unquoted
+parentheses, and permanently blocked commands are rejected before an approval
+row can be minted: a request the runtime could only refuse after the user
+signed is refused here instead.
 """
 
 from __future__ import annotations
@@ -190,11 +192,12 @@ def validate_request_set(
                 and flag.outcome == OUTCOME_MUTATIVE
                 and not flag.command_family.startswith("git_")
             )
-        if not is_t3:
-            raise CommandSetValidationError(f"command[{index}] is not classified T3")
         normalized.append(
-            {"command": raw, "fingerprint": command_fingerprint(raw), "rationale": ""}
+            {"command": raw, "fingerprint": command_fingerprint(raw), "rationale": "",
+             "signed": bool(is_t3)}
         )
+    if not any(item["signed"] for item in normalized):
+        raise CommandSetValidationError("COMMAND_SET requires at least one command classified T3")
     return normalized
 
 

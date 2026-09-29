@@ -8010,6 +8010,66 @@ def settle_plan_command(
         con.close()
 
 
+def release_plan_command(
+    approval_id: str,
+    *,
+    session_id: str,
+    tool_use_id: str,
+    db_path: Path | None = None,
+) -> bool:
+    """Free an exact reservation whose call never ran, leaving the set where it was.
+
+    Neither advances nor freezes: the index waits for a retry, which must come
+    as a new tool call because ``tool_use_id`` stays in the reserved history.
+    """
+    if not session_id or not tool_use_id:
+        return False
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET reservation_index=NULL, reservation_session_id=NULL, "
+            "reservation_tool_use_id=NULL, reservation_at=NULL "
+            "WHERE approval_id=? AND status='PENDING' "
+            "AND reservation_session_id=? AND reservation_tool_use_id=?",
+            (approval_id, session_id, tool_use_id),
+        ).rowcount
+        con.commit()
+        return changed == 1
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def restore_db_semantic_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Return a SCOPE_SEMANTIC_SIGNATURE grant spent by a call that never ran to PENDING.
+
+    Only a grant still inside its window is restored; an expired one stays spent.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET status='PENDING', consumed_at=NULL "
+            "WHERE approval_id=? AND scope='SCOPE_SEMANTIC_SIGNATURE' "
+            "AND status='CONSUMED' AND expires_at > ?",
+            (approval_id, _now_iso()),
+        ).rowcount
+        con.commit()
+        return changed == 1
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
 def update_approval_grant_status(
     approval_id: str,
     status: str,

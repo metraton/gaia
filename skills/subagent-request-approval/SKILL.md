@@ -41,9 +41,16 @@ command; the default is where you run the request) and
 e.g. `2=1`). Details names a command's folder when it runs somewhere other
 than where you asked from, or when the command uses relative paths.
 
-One request holds at most 4 commands, because the host shows at most 4
-questions at a time and each command is its own question. More than that goes
-in another request.
+One request holds at most 4 signed commands, because the host shows at most 4
+questions at a time and each signed command is its own question. More than
+that goes in another request.
+
+A step of the same plan that is not T3 -- a local `git commit` between two
+pushes, a test run -- goes in the request in its position, with its own
+`--does` and `--impact`. Gaia seals it unsigned: the user sees it in order,
+marked `UNSIGNED STEP`, but it asks no question and holds no place in the
+signature, so you run it like any other command of yours. A request with no
+T3 step at all is refused.
 
 A command sealed in another directory than the one your Bash runs in is run
 as exactly `cd <sealed directory> && <sealed command>`, with the directory and

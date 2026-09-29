@@ -139,6 +139,11 @@ def resolve_requester(session_id: object, agent_id: object) -> dict:
     return {"session_id": session, "agent_id": agent}
 
 
+def is_signed(item: Mapping[str, Any]) -> bool:
+    """Whether a sealed item asks a signature; an unsigned step is only shown in its position."""
+    return item.get("signed", True) is not False
+
+
 def _expected_exits(raw: object, position: int) -> list[int]:
     codes = list(raw or [])
     for code in codes:
@@ -168,6 +173,8 @@ def _seal_items(kind: str, items: Iterable[Mapping[str, Any]]) -> list[dict]:
             cwd = raw.get("cwd")
             expect_exit = _expected_exits(raw.get("expect_exit"), position)
             item = {"command": target, "rationale": raw.get("rationale") or ""}
+            if raw.get("signed") is False:
+                item["signed"] = False
         for phrase in ("does", "impact"):
             if _optional_text(raw.get(phrase)):
                 item[phrase] = raw[phrase].strip()
@@ -249,11 +256,14 @@ def seal_request(
             raise SealError("requested_from must be an absolute directory")
         payload["requested_from"] = requested_from
     if kind == "command_set":
+        # Unsigned steps stay in ``items``, shown in their position; the grant
+        # is built from ``command_set`` alone, so only signed steps are reserved.
+        signed = [item for item in sealed if is_signed(item)]
         payload.update(
             request_type="COMMAND_SET",
             operation="Execute an ordered T3 command set",
-            command_set=sealed,
-            request_fingerprint=request_key,
+            command_set=signed,
+            request_fingerprint=request_fingerprint([item["command"] for item in signed]),
             scope="COMMAND_SET",
             risk_level="high",
         )
@@ -468,7 +478,8 @@ def request_command_set(
 ) -> str:
     """Validate a plan-first set, seal it and persist the pending request; return its approval_id.
 
-    Every phrase is required (:class:`NotPresentableError` names each one
+    A step that does not classify T3 is sealed as an unsigned step: shown in
+    its position, never asked, never reserved. Every phrase is required (:class:`NotPresentableError` names each one
     missing), and the requester's phraseless reactive requests the set covers
     are replaced. ``requested_from`` is the requester's shell folder.
     """
@@ -477,9 +488,10 @@ def request_command_set(
     commands = [item.get("command") for item in items]
     try:
         cwds = [item.get("cwd") for item in items]
-        validate_request_set(commands, cwds=cwds if all(cwds) else None)
+        validated = validate_request_set(commands, cwds=cwds if all(cwds) else None)
     except CommandSetValidationError as exc:
         raise SealError(str(exc)) from exc
+    items = [{**item, "signed": checked["signed"]} for item, checked in zip(items, validated)]
     _require_phrases(what, question, items, rollback)
     payload = seal_request(
         "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
@@ -1067,6 +1079,44 @@ def close_call(
         ),
     )
     return outcome
+
+
+#: ``reason_code`` of the NOOP event recording a signed call its host refused before it ran.
+HOST_DENIED_REASON = "host_denied_before_execution"
+
+
+def release_call(
+    approval_id: str,
+    *,
+    command: str,
+    session_id: str,
+    tool_use_id: str,
+    reserved: bool,
+    host: str,
+    detail: str = "",
+) -> bool:
+    """Undo the consumption of an authorized call its host refused before it ran; return whether it was undone.
+
+    Only the call's own terminal event, reporting that the host never ran it,
+    may call this. A ``reserved`` set item gives back its index without
+    advancing or freezing the set; a single-command grant returns to PENDING
+    while its window lasts. Either way the retry is the same signed bytes under
+    the same signature, and the refusal is recorded as a NOOP on the chain.
+    """
+    from gaia.approvals import store
+    from gaia.approvals.command_set import command_fingerprint
+    from gaia.store.writer import release_plan_command, restore_db_semantic_grant
+
+    if reserved:
+        released = release_plan_command(approval_id, session_id=session_id, tool_use_id=tool_use_id)
+    else:
+        released = restore_db_semantic_grant(approval_id)
+    store.record_execution_denial(
+        approval_id, HOST_DENIED_REASON, host=host, session_id=session_id or None,
+        call_id=tool_use_id or None, command_fingerprint=command_fingerprint(command),
+        detail=detail or None,
+    )
+    return released
 
 
 def grant_lookup_filter(*, cwd: str, session_id: object, agent_id: object) -> dict:

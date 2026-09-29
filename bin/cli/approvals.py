@@ -1759,7 +1759,8 @@ def cmd_request_set(args) -> int:
     ``--question``, and one ``--does`` and ``--impact`` per command. Each
     command carries its ``--cwd`` and ``--expect-exit`` declarations, and the
     requester is the explicit ``--session-id``/``--agent-id`` or the dispatch
-    environment.
+    environment. ``steps`` in the output lists every step in order, an
+    unsigned one marked ``"signed": false``; ``command_set`` only the signed.
 
     ``--rollback`` is required too (D38): how to undo the set, or a sentence
     saying it cannot be undone. ``--verification`` stays optional; omitted,
@@ -1787,13 +1788,19 @@ def cmd_request_set(args) -> int:
         _print_error(f"COMMAND_SET request rejected: {exc}", args)
         return 1
     items = sealed["command_set"]
+    steps = sealed["items"]
     result = {
-        "status": "pending", "approval_id": approval_id, "command_set": items, "replaced": replaced,
+        "status": "pending", "approval_id": approval_id, "command_set": items,
+        "steps": steps, "replaced": replaced,
     }
     if args.json:
         print(json.dumps(result))
     else:
-        print(f"Requested {approval_id} for {len(items)} ordered T3 commands")
+        unsigned = len(steps) - len(items)
+        print(
+            f"Requested {approval_id} for {len(items)} ordered T3 commands"
+            + (f" and {unsigned} unsigned steps shown in position" if unsigned else "")
+        )
         _print_replaced(replaced)
     return 0
 
@@ -2541,10 +2548,13 @@ def register(subparsers) -> None:
     p_request_set.add_argument(
         "--command", action="append", required=True,
         help=(
-            "One exact T3 command, repeated per item: a single program (an interpreter "
-            "with a script, -c or -e included) or a pipeline whose highest stage is T3; "
-            "never a chain, an interactive program, or an unquoted parenthesis -- quote "
-            "it yourself, the signed bytes are the bytes that run"
+            "One step of the plan, in order: a single program (an interpreter with a "
+            "script, -c or -e included) or a pipeline, whose highest stage decides its "
+            "tier; never a chain, an interactive program, or an unquoted parenthesis -- "
+            "quote it yourself, the signed bytes are the bytes that run. A T3 step is "
+            "signed and runs only in its turn; any other step (a local git commit, a "
+            "test) is shown in its position as unsigned and is neither asked nor "
+            "reserved. At least one step must be T3"
         ),
     )
     p_request_set.add_argument(

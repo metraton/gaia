@@ -62,6 +62,19 @@ logger = logging.getLogger(__name__)
 # approval core never defaults an identity, so the adapter names it explicitly.
 PRIMARY_AGENT = "claude-code-primary"
 
+# Host name recorded on an approval's chain when this host refuses a signed call.
+HOST_NAME = "claude_code"
+
+# The PostToolUseFailure ``error`` Claude Code sends when its permission layer,
+# or the user at its prompt, refused a call: the command never ran, so the
+# signature it matched must not be spent. Anchored at the start, where a real
+# exit reads "Exit code N", so a command's own output never matches.
+_HOST_REFUSAL = re.compile(
+    r"(?:Error:\s*)?(?:Permission to use \S+ with command .* has been denied"
+    r"|The user doesn't want to proceed with this tool use)",
+    re.DOTALL,
+)
+
 # Claude Code's PreToolUse responses nest their permission fields under this
 # top-level key. The literal shape is OWNED by this adapter layer: business
 # logic must never index it directly. The accessors below let business modules
@@ -1034,6 +1047,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     """
 
     PRIMARY_AGENT_TYPE = PRIMARY_AGENT
+    HOST_NAME = HOST_NAME
 
     # ------------------------------------------------------------------ #
     # parse_event: stdin JSON -> HookEvent
@@ -1390,6 +1404,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         failed = False
         output = ""
         exit_code = 0
+        ran = True
 
         if raw.get("hook_event_name") == HookEventType.POST_TOOL_USE_FAILURE.value:
             # A failed call has no tool_response; its outcome is the top-level
@@ -1397,6 +1412,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             output = str(raw.get("error") or "")
             failed = True
             exit_code = self._extract_exit_code_from_result(output)
+            ran = _HOST_REFUSAL.match(output) is None
         elif isinstance(tool_response, str):
             # Failure form: the harness passed the error text as a bare string.
             output = tool_response
@@ -1431,6 +1447,7 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             output=output,
             exit_code=exit_code,
             session_id=session_id,
+            ran=ran,
         )
 
     # ------------------------------------------------------------------ #

@@ -233,10 +233,12 @@ class ToolPolicy:
 
     ``PRIMARY_AGENT_TYPE`` names the requester of a Bash call whose event
     carries no agent; the approval core never defaults an identity, so a host
-    whose main session sends none declares its own name here.
+    whose main session sends none declares its own name here. ``HOST_NAME`` is
+    the host an approval's chain names when that host refused a signed call.
     """
 
     PRIMARY_AGENT_TYPE = ""
+    HOST_NAME = "unattributed"
 
     # ------------------------------------------------------------------ #
     # Before the call
@@ -952,20 +954,33 @@ class ToolPolicy:
             # This is the call's terminal event; the pre_state keyed by its
             # tool_use_id says which approval the call consumed. An interrupted
             # call closes nothing: its outcome is unknown, so it stays without
-            # result and its reservation waits to be reclaimed.
+            # result and its reservation waits to be reclaimed. A call the host
+            # refused never ran, so it gives its signature back.
             consumed_approval_id = (
                 pre_state.metadata.get("consumed_approval_id") if pre_state else None
             )
             if tool_name == "Bash" and consumed_approval_id:
+                reservation = pre_state.metadata.get("command_set_reservation") or {}
                 if hook_data.get("is_interrupt") is True:
                     logger.info(
                         "Interrupted call left without result: approval_id=%s tool_use_id=%s",
                         consumed_approval_id[:16], tool_use_id[:16],
                     )
+                elif not tool_result.ran:
+                    from gaia.approvals.core import release_call
+
+                    release_call(
+                        consumed_approval_id,
+                        command=reservation.get("command") or pre_state.command,
+                        session_id=post_session_id,
+                        tool_use_id=tool_use_id,
+                        reserved=bool(reservation),
+                        host=self.HOST_NAME,
+                        detail=str(output),
+                    )
                 else:
                     from gaia.approvals.core import close_call
 
-                    reservation = pre_state.metadata.get("command_set_reservation") or {}
                     outcome = close_call(
                         consumed_approval_id,
                         command=reservation.get("command") or pre_state.command,
