@@ -13,8 +13,10 @@ sys.path.insert(0, str(_hooks_dir))
 _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
+from modules.core.plugin_setup import recorded_in_manifest
 from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
-ensure_workspace_hooks_link()
+with recorded_in_manifest():
+    ensure_workspace_hooks_link()
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +281,8 @@ if __name__ == "__main__":
         upgrade_notice = ""
         try:
             from modules.session.plugin_upgrade import reconcile_plugin_install
-            upgrade_notice = reconcile_plugin_install(workspace_root)
+            with recorded_in_manifest():
+                upgrade_notice = reconcile_plugin_install(workspace_root)
         except Exception as _upgrade_exc:
             logger.warning("plugin upgrade check failed (non-fatal): %s", _upgrade_exc)
             upgrade_notice = f"Gaia could not check its database at session start: {_upgrade_exc}"

@@ -1,19 +1,25 @@
 """
-Install manifest -- the record of what `gaia install` wrote, so `gaia uninstall` takes back exactly that.
+Install manifest -- the record of what Gaia wrote into a workspace, so `gaia uninstall` takes back exactly that.
+
+Two channels write it: `gaia install`, and the plugin's session hooks, whose
+permission and attribution merge (and, on a legacy launch with no plugin data
+directory, its marker and registry) land in the workspace too. The plugin
+records only when a session actually wrote (``track`` / ``record_tracked``).
 
 One manifest per workspace, at ``.claude/gaia-manifest.json``. It is never
-edited incrementally: every install captures the entries it may touch, derives
+edited incrementally: every write captures the entries it may touch, derives
 the pre-Gaia BASELINE of those entries, runs, captures again, and rewrites the
 manifest as the diff baseline -> after. Deriving the baseline is what keeps a
-reinstall exact:
+reinstall, or a later session, exact:
 
   * a manifest already exists -> the baseline is the current state with that
     manifest reverted in memory, so the original pre-Gaia state carries over;
-  * no manifest but Gaia is already wired (an install that predates manifests)
-    -> the workspace is ADOPTED: Gaia's known footprint is stripped in memory
-    (its links, markers, registry entry and settings keys -- hooks through the
-    single ownership predicate of ``plugin_setup``) and everything else counts
-    as the user's;
+  * no manifest but Gaia is already wired (an install that predates manifests,
+    or a plugin workspace whose only trace is Gaia's permissions and
+    attribution) -> the workspace is ADOPTED: Gaia's known footprint is
+    stripped in memory (its links, markers, registry entry and settings keys
+    -- hooks through the single ownership predicate of ``plugin_setup``) and
+    everything else counts as the user's;
   * neither -> the baseline is the current state.
 
 An entry records a path (workspace-relative, or absolute for the opt-in writes
@@ -52,6 +58,10 @@ _GAIA_LINK_NAMES = frozenset({
     "CHANGELOG.md", "README.md", "README.en.md",
 })
 _GAIA_MARKERS = (".plugin-initialized", ".gaia-symlink-fallback.json")
+# What a plugin session writes into .claude/ when its data directory lives
+# elsewhere: the permission and attribution merge, and the hooks link
+# ``workspace_bootstrap`` creates for hosts that resolve hook paths there.
+_PLUGIN_SESSION_ENTRIES = ("settings.local.json", "hooks")
 _WINDOWS_ENV_NAME = "GAIA_WORKSPACE_PATH"
 
 
@@ -317,7 +327,28 @@ def is_unmanifested_install(workspace: Path) -> bool:
     if isinstance(registry, dict) and _gaia_registry_entries(registry):
         return True
     local = _json_or_none(_read_bytes(claude_dir / "settings.local.json"))
-    return isinstance(local, dict) and local.get("agent") == "gaia-orchestrator"
+    return isinstance(local, dict) and (local.get("agent") == "gaia-orchestrator" or _holds_gaia_settings(local))
+
+
+def _holds_gaia_settings(local: dict) -> bool:
+    """True when *local* carries what the plugin session writes: Gaia's hidden attribution or its deny rules.
+
+    A plugin-only workspace has no link, marker or agent key in the workspace
+    -- those live in the plugin's data directory -- so this footprint is the
+    only one left to adopt it by.
+    """
+    from cli import _install_helpers as helpers  # noqa: PLC0415
+    from cli import cleanup  # noqa: PLC0415
+
+    attribution = local.get("attribution")
+    if isinstance(attribution, dict) and all(
+        attribution.get(k) == v for k, v in helpers._HIDDEN_ATTRIBUTION.items()
+    ):
+        return True
+    permissions = local.get("permissions")
+    deny = permissions.get("deny") if isinstance(permissions, dict) else None
+    gaia_deny = cleanup._gaia_managed_permission_sets()[1]
+    return isinstance(deny, list) and bool(gaia_deny) and gaia_deny <= set(deny)
 
 
 def _read_bytes(path: Path) -> bytes:
@@ -390,6 +421,50 @@ def baseline_for(workspace: Path, extra: Iterable[Path] = ()) -> tuple[dict[str,
     if is_unmanifested_install(workspace):
         return adopted_baseline(workspace, current), "adopted"
     return current, "fresh"
+
+
+def track(workspace: Path, *, whole_claude_dir: bool) -> dict:
+    """What a session write must be compared against: the entries it may touch, as they are now.
+
+    The plugin channel runs on every session start, so this reads only the
+    entries its sessions write (``_PLUGIN_SESSION_ENTRIES``) -- unless
+    *whole_claude_dir*, the legacy launch whose plugin data directory is the
+    workspace's ``.claude`` itself. How the baseline will be derived is decided
+    here too: after the write, Gaia's own settings and hooks link would make a
+    fresh workspace look like an unmanifested install.
+    """
+    if whole_claude_dir:
+        states = capture(workspace)
+    else:
+        paths = (workspace / ".claude" / name for name in _PLUGIN_SESSION_ENTRIES)
+        states = {_key(workspace, p): _state_of(p) for p in paths}
+    if load(workspace) is not None:
+        source = "manifest"
+    else:
+        source = "adopted" if is_unmanifested_install(workspace) else "fresh"
+    return {"workspace": workspace, "states": states, "whole": whole_claude_dir, "source": source}
+
+
+def record_tracked(tracked: dict, *, channel: str, version: str) -> dict | None:
+    """Record what changed since *tracked* was taken; None, and no manifest write, when nothing did."""
+    workspace, states = tracked["workspace"], tracked["states"]
+    if tracked["whole"]:
+        if capture(workspace) == states:
+            return None
+    elif all(_state_of(_abs(workspace, k)) == state for k, state in states.items()):
+        return None
+    manifest = load(workspace)
+    now = capture(workspace, external_paths(manifest))
+    before = {**now, **states}
+    if tracked["whole"]:
+        before.update({k: {"type": "absent"} for k in now if k not in states})
+    if tracked["source"] == "manifest" and manifest is not None:
+        baseline = revert_states(before, manifest["entries"])
+    elif tracked["source"] == "adopted":
+        baseline = adopted_baseline(workspace, before)
+    else:
+        baseline = before
+    return record(workspace, baseline, channel=channel, version=version)
 
 
 def record(

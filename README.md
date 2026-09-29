@@ -142,7 +142,7 @@ Package    npx gaia uninstall            # --dry-run first shows what reverts
 OpenCode   npx gaia uninstall --workspace <folder>, then the npm step above
 ```
 
-Run `gaia uninstall` before removing the package, while `gaia` still exists. It reverts `.claude/gaia-manifest.json` -- every file, link and settings key back to its prior state, `opencode.json` and the `--path` launcher included -- and writes a gzip snapshot of the database to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. The plugin writes no manifest, so the permission entries its first session merged into `.claude/settings.local.json` stay after uninstall and are removed by hand.
+Run `gaia uninstall` before removing the package, while `gaia` still exists. It reverts `.claude/gaia-manifest.json` -- every file, link and settings key back to its prior state, `opencode.json` and the `--path` launcher included -- and writes a gzip snapshot of the database to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. The plugin's sessions record what they write into the workspace in the same manifest -- the permissions and attribution merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts the plugin's writes too, including the user entries the merge replaced, and keeps what you added since; a plugin workspace from before that record is recognized by Gaia's permissions and attribution. Run it before `claude plugin uninstall`.
 
 **First turn.** Start the host in the workspace and ask:
 

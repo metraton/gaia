@@ -1,14 +1,16 @@
 """
-gaia uninstall -- take back exactly what `gaia install` wrote.
+gaia uninstall -- take back exactly what `gaia install` and the plugin's sessions wrote.
 
 Reverts the workspace's install manifest (`cli/_manifest.py`): every file,
-link and settings key install recorded returns to the state it had before
-Gaia -- files Gaia did not create (a CLAUDE.md, a settings.json, a hook script
-of the user's own) are never removed, and keys the user added since are kept.
-The opt-in writes outside the workspace (`--path` launcher, Windows setx)
-are reverted too. A workspace installed before manifests existed is adopted:
-its known Gaia footprint is reverted and nothing else. It runs on its own --
-nothing depends on `npm uninstall`.
+link and settings key install or a plugin session recorded returns to the
+state it had before Gaia -- files Gaia did not create (a CLAUDE.md, a
+settings.json, a hook script of the user's own) are never removed, and keys
+the user added since are kept. The opt-in writes outside the workspace
+(`--path` launcher, Windows setx) are reverted too. A workspace wired before
+manifests existed -- including a plugin workspace whose only trace is Gaia's
+permissions and attribution -- is adopted: its known Gaia footprint is
+reverted and nothing else. It runs on its own -- nothing depends on
+`npm uninstall`.
 
 Also:
   * a gzip snapshot of ~/.gaia/gaia.db, taken by DEFAULT before cleanup
@@ -113,13 +115,14 @@ def register(subparsers):
     """Register the 'uninstall' subcommand."""
     p = subparsers.add_parser(
         "uninstall",
-        help="Revert exactly what gaia install wrote here (the DB is never touched)",
+        help="Revert exactly what Gaia (install or plugin) wrote here (the DB is never touched)",
         description=(
             "Revert the workspace's install manifest: every file, link and\n"
-            "settings key `gaia install` wrote returns to its prior state, and\n"
-            "the --path launcher / Windows setx it recorded are taken back.\n"
-            "Files Gaia did not create are never removed. A workspace installed\n"
-            "before manifests existed is adopted and reverted the same way.\n"
+            "settings key `gaia install` or a plugin session wrote returns to its\n"
+            "prior state, and the --path launcher / Windows setx it recorded are\n"
+            "taken back. Files Gaia did not create are never removed. A workspace\n"
+            "wired before manifests existed (a plugin one included) is adopted\n"
+            "and reverted the same way.\n"
             "\n"
             "The user DB at ~/.gaia/gaia.db is NEVER modified or deleted. A gzip\n"
             "snapshot of it is written by default; --no-backup skips it.\n"
