@@ -136,24 +136,41 @@
     return errors;
   }
 
-  function seek(t) {
+  // Everything seek(t) sets on the page. seek applies nothing else, so two
+  // instants with the same state draw the same frame.
+  function stateAt(t) {
     const pages = video.pages;
     const pg = pages.find(p => t < p.end) || pages[pages.length - 1];
+    const opacity = clamp01((t - pg.start) / video.fade) * clamp01((pg.end - t) / video.fade);
+    const filters = pg.reveals.map(r => {
+      const e = easeOutCubic(clamp01((t - r.t) / video.reveal.duration));
+      return e >= 1 ? '' : `opacity(${e})`;
+    });
+    let key = 'all';
+    for (const c of pg.chips) if (c.t <= t) key = c.key;
+    return { pg, opacity, filters, key };
+  }
+
+  /** One string per frame naming its state; equal strings are equal frames. */
+  function frameStates(count, fps) {
+    const states = [];
+    for (let f = 0; f < count; f++) {
+      const { pg, opacity, filters, key } = stateAt(f / fps);
+      states.push(JSON.stringify([pg.page, opacity, pg.reveals.map((r, i) => [idOf(r.el), filters[i]]), key]));
+    }
+    return states;
+  }
+
+  function seek(t) {
+    const { pg, opacity, filters, key } = stateAt(t);
     if (pg.index !== shownIndex) {
       if (shownIndex >= 0 && appliedChip !== 'all') deck.setFlow(shownIndex, 'all');
       deck.show(pg.index);
       shownIndex = pg.index;
       appliedChip = 'all';
     }
-    pg.act.style.opacity = String(clamp01((t - pg.start) / video.fade) * clamp01((pg.end - t) / video.fade));
-
-    for (const r of pg.reveals) {
-      const e = easeOutCubic(clamp01((t - r.t) / video.reveal.duration));
-      r.el.style.filter = e >= 1 ? '' : `opacity(${e})`;
-    }
-
-    let key = 'all';
-    for (const c of pg.chips) if (c.t <= t) key = c.key;
+    pg.act.style.opacity = String(opacity);
+    pg.reveals.forEach((r, i) => { r.el.style.filter = filters[i]; });
     if (key !== appliedChip) {
       deck.setFlow(pg.index, key);
       deck.closePanel(pg.index);
@@ -163,4 +180,5 @@
 
   window.__videoLoad = load;
   window.__seek = seek;
+  window.__frameStates = frameStates;
 })();

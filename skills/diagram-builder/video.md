@@ -173,13 +173,30 @@ Every step is `npm run <step> --prefix <deck>`.
    fires. It writes nothing. Until a page has audio, its timing is an estimate
    from the length of the text.
 5. `video:check` validates the whole timeline against the rendered deck.
-6. `video:contact -- --page <id> --at 1,3` takes stills of one page at the end
-   of the chosen sentences and writes them to `out/video/contact/`. Use it to
-   judge the framing without rendering the video.
-7. `video:capture` renders every frame and encodes the video with its audio to
+6. `video:contact -- --page <id> --at 2.5,14,31.2` takes stills of one page at
+   the chosen seconds and tiles them, in that order, into one contact sheet,
+   `out/video/contact/<id>.png`, beside the stills. Seconds count from the
+   start of the page's slot, the same clock as its clip from `video:split`;
+   without `--at` the stills are the ends of its sentences. It takes a few
+   seconds, so use it to judge framing and reveals without rendering.
+7. `video:capture` renders the video and encodes it with its audio to
    `out/video/deck.mp4`. It refuses to run on estimated timing.
 8. `video:split` cuts that video into one clip per page, under
    `out/video/pages/`.
+
+`video:capture` only takes a frame where the picture can change. Between cues
+the page holds still, so it captures the fades and the reveals, one frame per
+chip change, and holds the last capture through every still stretch; several
+browsers share the work. Each capture is kept in `out/video/frames/`, named by
+the deck, the browser and what the frame shows. A capture that is stopped
+keeps what it took: run the same command again and it takes only what is
+missing, printing how many frames were already in the cache and how many of
+those it took again, which is always 0. A change to the script or the audio
+reuses every frame whose picture it leaves as it was; a change to
+`index.html`, `engine/`, the built data or the video driver takes every frame
+again. A stopped run may leave `.partial` files there, which are never read.
+The folder only grows: delete it whenever you like, the next run rebuilds it.
+Because it writes that cache, running `video:capture` asks for consent.
 
 Steps 5, 6 and 7 need a browser. Playwright is listed only in
 `tools/video/package.json`, and it is loaded only from that folder: a
