@@ -577,7 +577,10 @@ class TestCmdUninstallFootprint(unittest.TestCase):
 
             data = json.loads(buf.getvalue())
             # Second pass: nothing Gaia-owned left to revert.
-            self.assertEqual(data["manifest"], {"source": "none", "reverted": [], "env": []})
+            self.assertEqual(
+                data["manifest"],
+                {"source": "none", "reverted": [], "env": [], "artifacts": [], "kept": []},
+            )
             self.assertTrue(db.exists())
 
     def test_footprint_dry_run_touches_nothing(self):

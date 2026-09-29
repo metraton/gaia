@@ -49,6 +49,7 @@ MANIFEST_VERSION = 1
 # Workspace-root entries a Gaia channel may write (OpenCode config; CLAUDE.md
 # and AGENTS.md so an adopted legacy footprint is visible, never claimed).
 _ROOT_CANDIDATES = ("opencode.json", ".opencode", "AGENTS.md", "CLAUDE.md")
+_OPENCODE_SKILLS = Path(".opencode") / "skills"
 
 # Names Gaia links (or copies, where symlinks are unavailable) into .claude/,
 # current and retired; an entry under one of these names found as a link in an
@@ -118,11 +119,15 @@ def _abs(workspace: Path, key: str) -> Path:
 
 
 def capture(workspace: Path, extra: Iterable[Path] = ()) -> dict[str, dict]:
-    """State of ``.claude`` and its direct entries, the root candidates, and *extra* paths."""
+    """State of ``.claude`` and its direct entries, the root candidates, OpenCode's skill links, and *extra* paths."""
     claude_dir = workspace / ".claude"
+    opencode_skills = workspace / _OPENCODE_SKILLS
     paths = [claude_dir, *(workspace / name for name in _ROOT_CANDIDATES), *extra]
     if claude_dir.is_dir() and not claude_dir.is_symlink():
         paths.extend(p for p in claude_dir.iterdir() if p.name != MANIFEST_NAME)
+    if opencode_skills.is_dir() and not opencode_skills.is_symlink():
+        paths.append(opencode_skills)
+        paths.extend(opencode_skills.iterdir())
     return {_key(workspace, p): _state_of(p) for p in paths}
 
 
@@ -255,14 +260,15 @@ def revert_states(current: dict[str, dict], entries: list[dict]) -> dict[str, di
 
     A path the user changed after install keeps the user's change: a file Gaia
     created or edited that no longer holds Gaia's bytes is reverted key by key
-    when it is JSON and left as it is otherwise.
+    when it is JSON and left as it is otherwise. A link Gaia made and Gaia
+    itself later re-pointed (``_repointed_by_gaia``) is still Gaia's.
     """
     target = dict(current)
     for entry in entries:
         key = entry["path"]
         prior, written = _decode(entry["prior"]), _decode(entry["written"])
         now = current.get(key, {"type": "absent"})
-        if now == written:
+        if now == written or _repointed_by_gaia(key, now, written):
             target[key] = prior
         elif now["type"] == "file" and "json_ops" in entry:
             doc = revert_json(_json_or_none(now["bytes"]), entry["json_ops"])
@@ -273,13 +279,57 @@ def revert_states(current: dict[str, dict], entries: list[dict]) -> dict[str, di
     return target
 
 
-def apply_states(workspace: Path, current: dict[str, dict], target: dict[str, dict]) -> list[str]:
+def _repointed_by_gaia(key: str, now: dict, written: dict) -> bool:
+    """True for a link Gaia wrote that now points elsewhere and is still Gaia's to take back.
+
+    Inside the workspace that is a link under one of Gaia's ``.claude`` names,
+    which Gaia re-points itself (a hooks link follows the install it belongs
+    to). Outside, the path is shared by every install, so a link that still
+    resolves belongs to whichever install re-pointed it; only a dangling one is
+    taken back.
+    """
+    if now["type"] != "symlink" or written["type"] != "symlink":
+        return False
+    if Path(key).is_absolute():
+        return not os.path.exists(key)
+    parts = Path(key).parts
+    return len(parts) == 2 and parts[0] == ".claude" and parts[1] in _GAIA_LINK_NAMES
+
+
+def unreverted(workspace: Path, current: dict[str, dict], target: dict[str, dict], entries: list[dict]) -> list[dict]:
+    """Entries whose path stays as it is, each with the reason -- a link or file that is not Gaia's now."""
+    kept = []
+    for entry in entries:
+        key = entry["path"]
+        now, prior = current.get(key, {"type": "absent"}), _decode(entry["prior"])
+        if target.get(key) != now or now == prior or now["type"] not in ("symlink", "file"):
+            continue
+        if now["type"] == "symlink":
+            reason = f"a link that now points at {now['target']}, which another install owns"
+        else:
+            reason = "changed since install, and not a settings file Gaia can revert key by key"
+        kept.append({"path": str(_abs(workspace, key)), "reason": reason})
+    return kept
+
+
+def apply_states(
+    workspace: Path,
+    current: dict[str, dict],
+    target: dict[str, dict],
+    *,
+    dry_run: bool = False,
+    gone: Iterable[Path] = (),
+) -> list[str]:
     """Make the filesystem hold *target* wherever it differs from *current*; return the paths changed.
 
     Directories are handled last, deepest first, and removed only when empty
     -- except the copy install made in place of a link -- so a directory Gaia
-    created that now holds the user's files survives.
+    created that now holds the user's files survives. With *dry_run* nothing
+    is written and the same list comes back: a directory counts as empty when
+    everything left in it is being removed, here or in *gone* (paths the
+    caller removes itself).
     """
+    removed = set(gone)
 
     def order(key: str) -> tuple:
         removes_dir = target[key]["type"] == "absent" and current.get(key, {}).get("type") == "dir"
@@ -291,35 +341,45 @@ def apply_states(workspace: Path, current: dict[str, dict], target: dict[str, di
         if want == have:
             continue
         path = _abs(workspace, key)
-        if have["type"] == "dir" and want["type"] == "absent":
-            if path.name == ".claude" or not _is_gaia_copy(workspace, path):
+        if have["type"] == "dir":
+            gaia_copy = _is_gaia_copy(workspace, path)
+            if want["type"] != "absent" or not (gaia_copy or _holds_only(path, removed)):
+                continue
+            if not dry_run:
                 try:
-                    path.rmdir()
+                    shutil.rmtree(path) if gaia_copy else path.rmdir()
                 except OSError:
                     continue
-            else:
-                shutil.rmtree(path)
-            changed.append(key)
-            continue
-        if _is_junction(path):
-            path.rmdir()
-        elif have["type"] in ("symlink", "file"):
-            path.unlink()
-        elif have["type"] == "dir":
-            continue
-        if want["type"] == "symlink":
-            path.symlink_to(want["target"])
-        elif want["type"] == "file":
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(want["bytes"])
-        elif want["type"] == "dir":
-            path.mkdir(parents=True, exist_ok=True)
+        elif not dry_run:
+            if _is_junction(path):
+                path.rmdir()
+            elif have["type"] in ("symlink", "file"):
+                path.unlink()
+            if want["type"] == "symlink":
+                path.symlink_to(want["target"])
+            elif want["type"] == "file":
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(want["bytes"])
+            elif want["type"] == "dir":
+                path.mkdir(parents=True, exist_ok=True)
+        if want["type"] == "absent":
+            removed.add(path)
         changed.append(key)
     return changed
 
 
+def _holds_only(directory: Path, removed: set[Path]) -> bool:
+    """True when nothing in *directory* survives *removed* -- an absent directory holds nothing."""
+    try:
+        return all(child in removed for child in directory.iterdir())
+    except OSError:
+        return True
+
+
 def _is_gaia_copy(workspace: Path, path: Path) -> bool:
-    """A directory under .claude/ named like a Gaia link is the copy install made in its place."""
+    """A directory Gaia's install copied in place of a link: under a Gaia name in .claude/, or one of OpenCode's skills."""
+    if path.parent == workspace / _OPENCODE_SKILLS:
+        return True
     return path.parent == workspace / ".claude" and path.name in _GAIA_LINK_NAMES
 
 
@@ -509,29 +569,41 @@ def record(
     return manifest
 
 
-def uninstall(workspace: Path, *, dry_run: bool = False) -> dict:
+def uninstall(workspace: Path, *, dry_run: bool = False, package_manager_owns_package: bool = False) -> dict:
     """Revert *workspace* to its pre-Gaia state as its manifest (or adoption) records it.
 
-    Returns ``{"source", "reverted", "env"}``: whether the manifest existed or
-    was derived by adoption, the paths changed (or that would change), and the
-    user environment variables restored.
+    Returns ``{"source", "reverted", "env", "artifacts", "kept"}``: whether the
+    manifest existed or was derived by adoption, the manifest paths changed (or
+    that would change), the user environment variables restored, the leftovers
+    outside the manifest removed or edited (``_leftovers``), and what stays
+    with the reason. A dry run returns what the real run returns.
+    *package_manager_owns_package* leaves the package entry, dependency and
+    lockfiles to the `npm uninstall` that is running.
     """
+    from cli import _leftovers  # noqa: PLC0415 -- _leftovers imports this module
+
     manifest = load(workspace)
     if manifest is None and not is_unmanifested_install(workspace):
-        return {"source": "none", "reverted": [], "env": []}
+        return {"source": "none", "reverted": [], "env": [], "artifacts": [], "kept": []}
     current = capture(workspace, external_paths(manifest))
     if manifest is not None:
         target, source, env = revert_states(current, manifest["entries"]), "manifest", manifest.get("env", {})
+        kept = unreverted(workspace, current, target, manifest["entries"])
     else:
-        target, source, env = adopted_baseline(workspace, current), "adopted", {}
-    if dry_run:
-        return {"source": source, "reverted": sorted(k for k in target if target[k] != current.get(k)), "env": sorted(env)}
-    try:
-        manifest_path(workspace).unlink()
-    except OSError:
-        pass
-    reverted = apply_states(workspace, current, target)
-    return {"source": source, "reverted": reverted, "env": [_restore_env(n, p) for n, p in env.items()]}
+        target, source, env, kept = adopted_baseline(workspace, current), "adopted", {}, []
+    artifacts, leftover_kept = _leftovers.plan(workspace, package_manager_owns_package=package_manager_owns_package)
+    kept += leftover_kept
+    if not dry_run:
+        artifacts, failed = _leftovers.apply(artifacts)
+        kept += failed
+        try:
+            manifest_path(workspace).unlink()
+        except OSError:
+            pass
+    gone = [Path(a["path"]) for a in artifacts if a["action"] == "remove"] + [manifest_path(workspace)]
+    reverted = sorted(apply_states(workspace, current, target, dry_run=dry_run, gone=gone))
+    restored = sorted(env) if dry_run else [_restore_env(n, p) for n, p in sorted(env.items())]
+    return {"source": source, "reverted": reverted, "env": restored, "artifacts": artifacts, "kept": kept}
 
 
 def _restore_env(name: str, prior: str | None) -> str:
