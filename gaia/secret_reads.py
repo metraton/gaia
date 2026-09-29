@@ -32,6 +32,7 @@ _KUBECTL_FLAGS_WITH_VALUES = frozenset(
 _SECRET_STORES = frozenset({"vault", "bao"})
 _STORE_KV_READS = frozenset({"get", "read"})
 _GREPS = frozenset({"grep", "egrep", "fgrep"})
+_GIT_FLAGS_WITH_VALUES = frozenset({"-C", "-c", "--git-dir", "--work-tree", "--namespace"})
 
 
 def redaction_profile(command: str) -> str | None:
@@ -62,14 +63,15 @@ def _stages(command: str) -> list[list[str]]:
             stages.append([])
         else:
             stages[-1].append(token)
-    return [_without_assignments(stage) for stage in stages if stage]
+    return [_unwrapped(stage) for stage in stages if stage]
 
 
-def _without_assignments(stage: list[str]) -> list[str]:
-    index = 0
-    while index < len(stage) and "=" in stage[index] and stage[index].split("=", 1)[0].isidentifier():
-        index += 1
-    return stage[index:]
+def _unwrapped(stage: list[str]) -> list[str]:
+    """Drop the leading wrappers and assignments the T3 detector also peels, leaving the read itself."""
+    from modules.security.mutative_verbs import _peel_leading_command_wrappers
+
+    remainder, _ = _peel_leading_command_wrappers(shlex.join(stage))
+    return shlex.split(remainder)
 
 
 def _stage_profile(tokens: list[str]) -> str | None:
@@ -83,7 +85,7 @@ def _stage_profile(tokens: list[str]) -> str | None:
         return PROFILE_SECRET_STORE
     if program == "rg" or (program in _GREPS and _grep_is_recursive(args)):
         return PROFILE_TEXT
-    if program == "git" and _positionals(args)[:1] == ["grep"]:
+    if program == "git" and _positionals(args, _GIT_FLAGS_WITH_VALUES)[:1] == ["grep"]:
         return PROFILE_TEXT
     return None
 
