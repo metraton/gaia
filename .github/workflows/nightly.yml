@@ -40,3 +40,34 @@ jobs:
         run: >-
           python -m pytest -n 0 -q --tb=short
           tests/integration/test_opencode_protected_edit_bootstrap.py::test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge
+
+  # The pull-request suite leaves out tests/conftest.py's NIGHTLY_ONLY (mutant
+  # kills and the eval-harness tests); naming each entry here runs it anyway.
+  nightly-only:
+    name: Mutant kills and eval harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install test dependencies
+        run: pip install pytest==8.3.5 pyyaml pytest-xdist
+
+      - name: Run nightly-only tests
+        run: >-
+          python -m pytest -q --tb=short
+          $(python -c "from tests.conftest import NIGHTLY_ONLY; print(' '.join(NIGHTLY_ONLY))")
