@@ -90,7 +90,7 @@ sections:
   # land below — never back up into a track left open above.
   - id: p3-anchor
     title: "What must come before what"
-    subtitle: "each idea goes after the one it needs; ideas with no order sit side by side"
+    subtitle: "each idea after what it needs; the rest sit side by side"
     variant: neutral
     order: 2
     span: 2

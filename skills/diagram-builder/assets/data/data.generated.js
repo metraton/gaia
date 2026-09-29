@@ -84,7 +84,6 @@ window.__DOC__ = {
     "panel": {
       "dock": "bottom-left",
       "inset": 24,
-      "aspect": 1.25,
       "width_cols": 2
     },
     "breakpoints": {
@@ -1149,8 +1148,8 @@ window.__DOC__ = {
         },
         {
           "id": "p3-anchor",
-          "title": "What must sit beside what",
-          "subtitle": "tell a big idea first, and what belongs beside it right after",
+          "title": "What must come before what",
+          "subtitle": "each idea after what it needs; the rest sit side by side",
           "variant": "neutral",
           "order": 2,
           "span": 2,
@@ -3100,11 +3099,11 @@ window.__DOC__ = {
                 {
                   "id": "piece-palette-yaml",
                   "kicker": "YAML",
-                  "title": "palette: rose-pine",
+                  "title": "look: brand",
                   "description": [
-                    "in data/document.yaml"
+                    "picks the rose-pine palette"
                   ],
-                  "detail": "<code>palette: rose-pine</code> in <code>data/document.yaml</code>. The values: <code>neutral</code>, <code>rose-pine</code>, <code>rose-pine-moon</code>, <code>contrast</code>. These two boxes are painted by it, like everything on this page."
+                  "detail": "<code>look: brand</code> in <code>data/document.yaml</code> picks the <code>rose-pine</code> palette, and these two boxes are painted by it, like everything on this page. A person usually reaches a palette through that one-line look (<code>projector</code>, <code>report</code>, <code>brand</code>), which picks the palette and the text sizes together; how to choose it is in <code>look.md</code>. Without a look, <code>palette:</code> names one of <code>neutral</code>, <code>rose-pine</code>, <code>rose-pine-moon</code>, <code>contrast</code>; a document carries a look or a palette, never both."
                 },
                 {
                   "id": "piece-palette-says",
