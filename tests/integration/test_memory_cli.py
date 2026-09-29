@@ -177,7 +177,7 @@ def test_add_json_action_is_inserted_then_updated(tmp_db, tmp_path,
     from cli.memory import _cmd_add
 
     monkeypatch.chdir(tmp_path)
-    base = dict(name="action-mem", type="user", workspace="me",
+    base = dict(name="atom_action_mem", type="atom", workspace="me",
                 description=None, json=True)
 
     rc1 = _cmd_add(argparse.Namespace(body="b1", **base))
