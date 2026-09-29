@@ -414,19 +414,14 @@ def _settings_sources(project_root: Path) -> "list[tuple[str, Path]]":
 def _gaia_plugin_decisions(project_root: Path) -> "dict[str, tuple[bool, str]]":
     """key -> (enabled, settings label) for every ``gaia@<marketplace>`` key the settings name.
 
-    The first source naming a key decides it, in the order Claude Code applies
-    them (workspace local, workspace, user), so a ``false`` in the workspace
-    outranks a ``true`` in the user's file. The channel check and the
-    plugin-tree pick both read this, so doctor cannot contradict itself.
+    The rule is ``plugin_setup.gaia_plugin_decisions`` -- the one the hook
+    writer decides its channel by -- so doctor cannot contradict it, nor
+    itself: the channel check and the plugin-tree pick both read this.
     """
-    decided: dict = {}
-    for label, path in _settings_sources(project_root):
-        settings = _read_json(path)
-        plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
-        for key, enabled in (plugins if isinstance(plugins, dict) else {}).items():
-            if key.split("@", 1)[0] == "gaia":
-                decided.setdefault(key, (enabled is True, label))
-    return decided
+    from cli import _install_helpers  # noqa: F401, PLC0415 -- puts hooks/ on sys.path
+    from modules.core.plugin_setup import gaia_plugin_decisions  # noqa: PLC0415
+
+    return gaia_plugin_decisions(_settings_sources(project_root))
 
 
 def _active_channels(project_root: Path) -> dict:

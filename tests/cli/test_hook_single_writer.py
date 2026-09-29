@@ -220,3 +220,28 @@ def test_g_npm_copy_defers_to_a_plugin_enabled_in_the_workspace(workspace, monke
     plugin_setup._sync_workspace_hooks()
 
     assert _gaia_triples(workspace, _settings(workspace)) == []
+
+
+def test_h_channel_follows_doctors_precedence_workspace_local_then_workspace_then_user(workspace, tmp_path, monkeypatch):
+    """A `false` in a higher settings file outranks a `true` below it, and the user's file counts."""
+    from cli import doctor  # noqa: PLC0415
+
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr(doctor, "_USER_SETTINGS_PATH", home / ".claude" / "settings.json")
+    enabled = {"enabledPlugins": {"gaia@gaia-marketplace": True}}
+    disabled = {"enabledPlugins": {"gaia@gaia-marketplace": False}}
+    (workspace / ".claude" / "settings.json").write_text(json.dumps(enabled))
+    _write_settings(workspace, disabled)
+
+    assert plugin_setup.resolve_hook_channel(workspace, npm_copy=True) == "npm"
+    assert not any(on for on, _ in doctor._gaia_plugin_decisions(workspace).values())
+
+    _write_settings(workspace, {})
+    (workspace / ".claude" / "settings.json").write_text("{}")
+    (home / ".claude" / "settings.json").write_text(json.dumps(enabled))
+
+    assert plugin_setup.resolve_hook_channel(workspace, npm_copy=True) == "plugin"
+    assert any(on for on, _ in doctor._gaia_plugin_decisions(workspace).values())

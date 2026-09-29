@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path, PurePath
@@ -639,20 +640,36 @@ def merge_workspace_hooks(
     return merged
 
 
-def _workspace_enables_gaia_plugin(workspace: Path) -> bool:
-    """True when the workspace's own settings enable a ``gaia@...`` plugin."""
-    for name in ("settings.json", "settings.local.json"):
+def gaia_plugin_decisions(sources: Iterable[tuple[str, Path]]) -> dict[str, tuple[bool, str]]:
+    """key -> (enabled, source label) for every ``gaia@<marketplace>`` key the settings name.
+
+    The first source naming a key decides it, so *sources* go in the order
+    Claude Code applies them -- workspace local, workspace, user: a ``false``
+    in the workspace outranks a ``true`` in the user's file. The hook writer
+    and ``gaia doctor`` both read this, so they cannot disagree on the channel.
+    """
+    decided: dict[str, tuple[bool, str]] = {}
+    for label, path in sources:
         try:
-            data = json.loads((workspace / ".claude" / name).read_text())
+            data = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
         plugins = data.get("enabledPlugins") if isinstance(data, dict) else None
-        if isinstance(plugins, dict) and any(
-            key.split("@", 1)[0] == "gaia" and enabled is True
-            for key, enabled in plugins.items()
-        ):
-            return True
-    return False
+        for key, enabled in (plugins if isinstance(plugins, dict) else {}).items():
+            if key.split("@", 1)[0] == "gaia":
+                decided.setdefault(key, (enabled is True, label))
+    return decided
+
+
+def _workspace_enables_gaia_plugin(workspace: Path) -> bool:
+    """True when the settings Claude Code reads for *workspace* leave a ``gaia@...`` plugin enabled."""
+    claude = workspace / ".claude"
+    sources = [
+        ("settings.local.json", claude / "settings.local.json"),
+        ("settings.json", claude / "settings.json"),
+        ("user settings", Path.home() / ".claude" / "settings.json"),
+    ]
+    return any(enabled for enabled, _ in gaia_plugin_decisions(sources).values())
 
 
 def resolve_hook_channel(workspace: Path, *, npm_copy: bool) -> str | None:
