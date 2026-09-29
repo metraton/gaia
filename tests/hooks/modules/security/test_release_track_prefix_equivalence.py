@@ -155,8 +155,8 @@ def with_track(command: str, track: str) -> str:
     return f"{tool} {track} {rest}"
 
 
-@pytest.mark.parametrize("track", RELEASE_TRACKS)
-@pytest.mark.parametrize(
+@pytest.mark.table("track", RELEASE_TRACKS)
+@pytest.mark.table(
     "case_id,command,expected_mutative",
     CORPUS,
     ids=[row[0] for row in CORPUS],
@@ -261,7 +261,7 @@ ORDINARY_WORD_PAIRS = [
 ]
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,with_word,with_neutral",
     ORDINARY_WORD_PAIRS,
     ids=[row[0] for row in ORDINARY_WORD_PAIRS],
@@ -353,7 +353,7 @@ def test_the_track_slot_is_peeled_to_the_exact_remainder(case_id, command, expec
     )
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command",
     UNTOUCHED_FORMS,
     ids=[row[0] for row in UNTOUCHED_FORMS],

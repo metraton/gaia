@@ -181,7 +181,7 @@ INSERTIONS = [
 ]
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command,flag,expected_mutative",
     INSERTIONS,
     ids=[row[0] for row in INSERTIONS],
@@ -244,7 +244,7 @@ WITNESS_PAIRS = [
 ]
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command,short,long_form",
     WITNESS_PAIRS,
     ids=[row[0] for row in WITNESS_PAIRS],

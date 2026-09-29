@@ -156,7 +156,7 @@ NEW_READ_COMMANDS = [
 ]
 
 
-@pytest.mark.parametrize("argline", NEW_READ_COMMANDS)
+@pytest.mark.table("argline", NEW_READ_COMMANDS)
 def test_substrate_read_verbs_are_admitted(run_guard, argline) -> None:
     allowed, reason = run_guard(argline)
     assert allowed is True, reason
@@ -179,7 +179,7 @@ def test_approval_consent_surface_uses_the_existing_show_read_phrase(run_guard) 
     )
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "argline",
     [
         "scan",
@@ -245,7 +245,7 @@ DOCTOR_FIX_SPELLINGS = [
 ]
 
 
-@pytest.mark.parametrize("argline", DOCTOR_FIX_SPELLINGS)
+@pytest.mark.table("argline", DOCTOR_FIX_SPELLINGS)
 def test_doctor_fix_is_denied_in_every_reachable_spelling(run_guard, argline) -> None:
     allowed, reason = run_guard(argline)
     assert allowed is False, f"{argline!r} reached --fix without a denial"
@@ -322,7 +322,7 @@ NEW_DENIED_COMMANDS = [
 ]
 
 
-@pytest.mark.parametrize("argline", NEW_DENIED_COMMANDS)
+@pytest.mark.table("argline", NEW_DENIED_COMMANDS)
 def test_substrate_surgery_and_lifecycle_verbs_are_denied(run_guard, argline) -> None:
     allowed, reason = run_guard(argline)
     assert allowed is False, f"{argline!r} was admitted"
@@ -353,13 +353,13 @@ def test_context_scan_tracks_top_level_scan(run_guard) -> None:
 # Table reachability -- every entry must fire through the real code path
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("phrase", sorted(ALLOWED_READ_PHRASES))
+@pytest.mark.table("phrase", sorted(ALLOWED_READ_PHRASES))
 def test_every_allowed_read_phrase_is_reachable(run_guard, phrase) -> None:
     allowed, reason = run_guard(" ".join(phrase))
     assert allowed is True, f"{phrase!r} is in the table but denied: {reason}"
 
 
-@pytest.mark.parametrize("phrase", sorted(EXPLICITLY_DENIED_PHRASES))
+@pytest.mark.table("phrase", sorted(EXPLICITLY_DENIED_PHRASES))
 def test_every_denied_phrase_reaches_its_own_denial(run_guard, phrase) -> None:
     """A denied entry must produce the EXPLICIT denial, not the generic one.
 
@@ -399,7 +399,7 @@ def test_scan_is_labelled_a_write_because_it_writes() -> None:
 # Non-regression
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "argline",
     [
         "contract view a123",
@@ -422,7 +422,7 @@ def test_previously_admitted_commands_still_pass(run_guard, argline) -> None:
     assert allowed is True, reason
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "argline",
     [
         "contract finalize --draft-id d",
@@ -439,7 +439,7 @@ def test_previously_denied_commands_stay_denied(run_guard, argline) -> None:
     assert "explicitly excluded" in reason
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "argline",
     ["rm -rf /", "contract view a1; rm -rf /", "contract view $(whoami)", "frobnicate"],
 )

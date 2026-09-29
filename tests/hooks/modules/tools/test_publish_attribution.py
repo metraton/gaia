@@ -79,8 +79,8 @@ def _published_text_is_clean(result, command):
 
 
 class TestBodyFilesAreScanned:
-    @pytest.mark.parametrize("template", FILE_COMMANDS)
-    @pytest.mark.parametrize("footer", sorted(FOOTERS))
+    @pytest.mark.table("template", FILE_COMMANDS)
+    @pytest.mark.table("footer", sorted(FOOTERS))
     def test_attribution_in_body_file_is_refused(self, validator, tmp_path, template, footer):
         body = tmp_path / "body.md"
         body.write_text(f"## Summary\n\nReal description.\n\n{FOOTERS[footer]}\n", encoding="utf-8")
@@ -99,7 +99,7 @@ class TestBodyFilesAreScanned:
 
         assert MARKER in (result.reason or "")
 
-    @pytest.mark.parametrize("template", FILE_COMMANDS)
+    @pytest.mark.table("template", FILE_COMMANDS)
     def test_clean_body_file_is_not_refused(self, validator, tmp_path, template):
         body = tmp_path / "body.md"
         body.write_text(
@@ -122,7 +122,7 @@ class TestBodyFilesAreScanned:
 
 
 class TestInlineTextNeverPublishesAttribution:
-    @pytest.mark.parametrize("command", INLINE_COMMANDS)
+    @pytest.mark.table("command", INLINE_COMMANDS)
     def test_inline_attribution_is_refused_or_stripped(self, validator, command):
         result = validator.validate(command)
 

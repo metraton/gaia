@@ -26,7 +26,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.shell_substitution import extract_substitutions
 
 
-@pytest.mark.parametrize("command,expected", [
+@pytest.mark.table("command,expected", [
     # The three spellings the shell actually executes.
     ("echo $(rm -rf /)", ["rm -rf /"]),
     ("echo `rm -rf /`", ["rm -rf /"]),
@@ -71,7 +71,7 @@ def test_executing_substitutions_are_extracted(command, expected):
     assert extract_substitutions(command) == expected
 
 
-@pytest.mark.parametrize("command", [
+@pytest.mark.table("command", [
     # SINGLE quotes suspend every expansion: this is a mention, not a use, and
     # each of these is a shape an agent genuinely types when reporting a
     # finding about the very family this module gates.
