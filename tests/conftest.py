@@ -571,12 +571,10 @@ def temp_gaia_db(tmp_path):
 # ============================================================================
 # FULL-BOOTSTRAP DB TEMPLATE (perf: build once, copy per test)
 #
-# scripts/bootstrap_database.sh materializes the full production schema and
-# seeds it (agent_permissions, schema_version floor, FTS5 backfill) by spawning
-# dozens of individual `sqlite3` CLI subprocesses. Re-running it per test in a
-# fixture cost 10-17s of *setup* per test (see --durations), which serialized
-# the tests/test_writer_*.py tail onto a single xdist worker while the others
-# sat idle.
+# scripts/bootstrap_database.py materializes the full production schema and
+# seeds it (agent_permissions, schema_version floor, FTS5 backfill). Re-running
+# it per test in a fixture serialized the tests/test_writer_*.py tail onto a
+# single xdist worker while the others sat idle.
 #
 # This session-scoped fixture runs that bootstrap EXACTLY ONCE per run (shared
 # by the xdist workers) into an immutable template .db file. Per-test fixtures then
@@ -591,13 +589,14 @@ def temp_gaia_db(tmp_path):
 def bootstrapped_db_template(tmp_path_factory):
     """Build the full bootstrapped Gaia DB once per session; return its Path.
 
-    Built via the real ``scripts/bootstrap_database.sh`` so the template is
-    byte-for-byte what a live bootstrap produces (schema + agent_permissions +
+    Built via the real ``scripts/bootstrap_database.py`` -- the engine `gaia
+    install` and the lazy bootstrap in `bin/gaia` run -- so the template is
+    what a live bootstrap produces (schema + agent_permissions +
     schema_version floor + FTS5 mirrors). Immutable after creation -- consumers
     copy it, never mutate it.
     """
     repo_root = Path(__file__).resolve().parents[1]
-    bootstrap = repo_root / "scripts" / "bootstrap_database.sh"
+    bootstrap = repo_root / "scripts" / "bootstrap_database.py"
     # One build serves every xdist worker: the workers share the parent of
     # their base temp, and the lock makes the first one build while the rest
     # wait and reuse it. Without fcntl (Windows) each worker builds its own.
@@ -624,11 +623,12 @@ def bootstrapped_db_template(tmp_path_factory):
 def _build_template(bootstrap: Path, env, template: Path) -> None:
     """Run the real bootstrap into ``template`` and fail loudly if it did not produce one."""
     import subprocess
+    import sys
 
     # WORKSPACE only sets the bootstrap's seeded workspaces.identity row; the
     # writer tests insert their own 'me' workspace and never rely on it.
     res = subprocess.run(
-        ["bash", str(bootstrap)],
+        [sys.executable, str(bootstrap)],
         env=env,
         capture_output=True,
         text=True,
