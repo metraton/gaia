@@ -24,7 +24,9 @@ Developer opts into higher layers:
 ```
 CI pipeline triggered on push/PR
         |
-Runs Layer 1 only (--ignore=layer2 --ignore=layer3)
+Runs Layer 1 only (testpaths minus LAYER1_EXCLUDED in conftest.py)
+        |
+Nightly workflow runs NIGHTLY_ONLY (mutant kills, eval harness, slow integration)
         |
 Pre-release pipeline additionally runs Layer 3 against published artifact
 ```
@@ -43,9 +45,10 @@ Pre-release pipeline additionally runs Layer 3 against published artifact
 tests/
 ├── conftest.py                      # Shared fixtures and markers
 ├── promptfoo.yaml                   # Promptfoo evaluation config (Layer 2)
-├── test_*.py                        # Top-level cross-cutting suites (cross-layer consistency,
-│                                    #   smoke hook pipeline, state-machine permissions,
-│                                    #   verifier registry/e2e, store writer invariants, …)
+├── test_*.py                        # Top-level cross-cutting suites (smoke hook pipeline,
+│                                    #   state-machine permissions, verifier registry/e2e,
+│                                    #   store writer invariants, …) and test_layer1_admission.py,
+│                                    #   the check that refuses a new layer-1 test pinning prose
 ├── hooks/                           # Layer 1: hook and security module tests
 │   └── modules/
 │       ├── security/                # mutative_verbs, blocked_commands, tiers
@@ -60,14 +63,14 @@ tests/
 ├── paths/                           # Layer 1: path resolution and layout tests
 ├── retention/                       # Layer 1: scratch/tmp/cache + worktree/branch retention rules
 ├── snapshots/                       # Layer 1: scanner output snapshot tests
-├── skills/                          # Layer 1: skill-resolution and skill-format tests
-├── evals/                           # Layer 1: grader / trace evaluation tests
-├── layer1_prompt_regression/        # Layer 1: prompt and skill regression tests
+├── skills/                          # Layer 1: the read-map verbs a skill names are real CLI verbs
+├── evals/                           # grader / trace tests of the eval harness (some nightly)
+├── layer1_prompt_regression/        # Layer 1: routing-table regression
 ├── layer2_llm_evaluation/           # Layer 2: LLM behavior evaluation (manual, uses LLM tokens)
 ├── layer3_e2e/                      # Layer 3: end-to-end with real Claude Code session (pre-release)
 ├── ci/                              # CI-only smoke (e.g. windows_smoke.py)
 ├── performance/                     # Performance benchmarks
-├── system/                          # Layer 1: structure, permissions, agents, configuration, schema
+├── system/                          # Layer 1: agent definitions and fixture-precondition audit
 ├── tools/                           # Layer 1: context_provider, episodic tests +
 │                                    #   route_agent_id_constants.py (codemod, not collected)
 ├── cli/                             # CLI subcommand tests
@@ -133,7 +136,7 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 
 **Codemods:** [`tools/route_agent_id_constants.py`](./tools/route_agent_id_constants.py) is a rewriter, not a test — pytest does not collect it (the name does not match `test_*.py`). It rewrites a module-level `AGENT_ID = "a1234abcd"` constant into `valid_agent_id("a1234abcd")` and reports every short handle it left alone, so a raised floor can be applied across the suite without the residual being guessed. It lives here rather than in `scripts/` because its blast radius is the test tree only, mirroring `ci/windows_smoke.py` as a non-collected helper that lives beside what it operates on.
 
-**New tests:** Place in the directory matching the component under test (`hooks/modules/security/`, `tools/`, `system/`, etc.). If the test calls an LLM, it belongs in `layer2_llm_evaluation/`. If it spawns a Claude Code session, it belongs in `layer3_e2e/`.
+**New tests:** Place in the directory matching the component under test (`hooks/modules/security/`, `tools/`, `cli/`, etc.). A layer-1 test protects a behavior a user or a release would feel and says which in its docstring; `test_layer1_admission.py` refuses one that does not, and the rule is written in `skills/gaia-patterns/reference.md`. If the test calls an LLM, it belongs in `layer2_llm_evaluation/`. If it spawns a Claude Code session, it belongs in `layer3_e2e/`.
 
 **Dependencies:**
 
