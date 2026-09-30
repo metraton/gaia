@@ -283,6 +283,8 @@ class TestBootstrapScriptIntegration(unittest.TestCase):
         tmp_db = workspace / "tmp_gaia.db"
         env = os.environ.copy()
         env["GAIA_DB"] = str(tmp_db)
+        env["GAIA_DATA_DIR"] = str(workspace)
+        env["HOME"] = str(workspace)
         env["WORKSPACE"] = str(workspace)
         return subprocess.run(
             [sys.executable, str(self._BOOTSTRAP_PY)],
@@ -364,88 +366,42 @@ class TestBootstrapScriptIntegration(unittest.TestCase):
                 "agent_permissions count must remain 13 after second run",
             )
 
-    def test_bootstrap_passes_with_legacy_gaia_operator_row(self):
-        """Regression: a pre-existing DB carrying the legacy 'gaia-operator' row
-        from older Gaia versions must NOT block bootstrap.
-
-        Pass 6 fixed the seed SQL so bootstrap reaches Section 6. Pass 7 fixed
-        the strict-equality check in Section 6 that was incompatible with the
-        idempotent INSERT OR IGNORE semantics. This test simulates the exact
-        condition observed in qxo (~/.gaia/gaia.db had both 'gaia-operator'
-        legacy + 'gaia-system' current), proving bootstrap now exits 0 and
-        cleans up the legacy row.
-        """
+    def test_bootstrap_keeps_permission_rows_of_a_live_agent(self):
+        """gaia-operator is a live agent (agents/gaia-operator.md): a bootstrap
+        must never delete its agent_permissions rows, and must leave every
+        other agent's rows as they were."""
         import sqlite3
+        select_rows = (
+            "SELECT table_name, agent_name, allow_write FROM agent_permissions "
+            "ORDER BY table_name, agent_name"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            tmp_db = workspace / "tmp_gaia.db"
+            first = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(first.returncode, 0, first.stderr)
 
-            # Pre-seed the DB with the schema + a legacy gaia-operator row,
-            # mimicking an upgraded install where the old agent name persists.
-            schema_path = self._SCHEMA_SQL
-            con = sqlite3.connect(str(tmp_db))
+            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
             try:
-                con.executescript(schema_path.read_text())
                 con.execute(
-                    "INSERT OR IGNORE INTO agent_permissions "
-                    "(table_name, agent_name, allow_write) "
-                    "VALUES ('clusters', 'gaia-operator', 1)"
+                    "INSERT INTO agent_permissions (table_name, agent_name, allow_write) "
+                    "VALUES ('integrations', 'gaia-operator', 1)"
                 )
                 con.commit()
+                rows_before = con.execute(select_rows).fetchall()
             finally:
                 con.close()
 
-            # Sanity: the legacy row is present before bootstrap.
-            con = sqlite3.connect(str(tmp_db))
+            second = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(second.returncode, 0, second.stderr)
+
+            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
             try:
-                pre_legacy = con.execute(
-                    "SELECT COUNT(*) FROM agent_permissions "
-                    "WHERE agent_name = 'gaia-operator'"
-                ).fetchone()[0]
-            finally:
-                con.close()
-            self.assertEqual(
-                pre_legacy, 1,
-                "test setup did not seed the legacy gaia-operator row",
-            )
-
-            res = self._run_bootstrap_against_tmp_db(workspace)
-            self.assertEqual(
-                res.returncode, 0,
-                f"bootstrap MUST tolerate a legacy gaia-operator row "
-                f"(Pass 7 fix). Got rc={res.returncode}\n"
-                f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}",
-            )
-
-            # Section 3a cleanup: legacy row should be gone after bootstrap.
-            con = sqlite3.connect(str(tmp_db))
-            try:
-                post_legacy = con.execute(
-                    "SELECT COUNT(*) FROM agent_permissions "
-                    "WHERE agent_name = 'gaia-operator'"
-                ).fetchone()[0]
-                distinct_agents = con.execute(
-                    "SELECT COUNT(DISTINCT agent_name) FROM agent_permissions"
-                ).fetchone()[0]
+                rows_after = con.execute(select_rows).fetchall()
             finally:
                 con.close()
 
-            self.assertEqual(
-                post_legacy, 0,
-                "Section 3a must DELETE legacy gaia-operator rows -- the "
-                "DELETE is the migration that fixes the distinct-agents drift",
-            )
-            self.assertGreaterEqual(
-                distinct_agents, 5,
-                "After cleanup, distinct agents must be >= 5 (the canonical set)",
-            )
-
-            # Section 6 Check 2 should report '>=' wording, not strict '=='.
-            self.assertIn(
-                "distinct agents >= 5", res.stdout,
-                "Check 2 must use the lenient '>=' formulation (Pass 7 fix); "
-                "strict equality regressed when DBs survived a Gaia upgrade",
-            )
+            self.assertIn(("integrations", "gaia-operator", 1), rows_after)
+            self.assertEqual(rows_after, rows_before)
 
 
 class TestCmdInstallOrchestration(unittest.TestCase):

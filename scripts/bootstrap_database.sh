@@ -201,24 +201,6 @@ EOF
 
 echo "[bootstrap] agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)"
 
-# === Section 3a: Cleanup legacy agent_permissions rows ===
-#
-# Section 3 (above) inserts the canonical "gaia-system" name. A previous
-# version of this bootstrap (or the legacy scripts/seed_agent_permissions.py)
-# inserted rows under the old name "gaia-operator" -- see the rename note in
-# Section 3 above (line 83-86). Those legacy rows persist across upgrades
-# because INSERT OR IGNORE never removes anything. Without cleanup, the
-# distinct-agents check below sees 6 agents on upgraded DBs instead of 5,
-# and the strict equality variant of the check (pre-fix) used to fail.
-#
-# DELETE is safe here: the legacy "gaia-operator" rows have no live consumer
-# in the current model -- the gaia-system agent owns its own table_name set
-# (gaia_installations, integrations) which never collided with the legacy
-# row's table_name. We are pruning orphan data, not migrating it.
-sqlite3 "$GAIA_DB" <<'EOF'
-DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator';
-EOF
-
 # === Section 3b: Seed schema_version baseline (floor) ===
 #
 # Modelo de FLOOR (piso de schema), reemplaza al viejo "seed v1 + camina
@@ -586,8 +568,8 @@ fi
 # gitops-operator, gaia-system, cloud-troubleshooter). Uses -ge for the same
 # reason Checks 1, 3, 5 do: the seed is INSERT OR IGNORE (idempotent), so a
 # DB carrying rows from prior Gaia versions may legitimately have additional
-# distinct agent_name values (e.g. the legacy "gaia-operator" before the
-# rename to "gaia-system" documented in Section 3 above). Strict equality
+# distinct agent_name values (e.g. the live "gaia-operator" agent, whose rows
+# a bootstrap never deletes). Strict equality
 # breaks every install on machines where ~/.gaia/gaia.db survived a Gaia
 # upgrade -- contradicts the "idempotent over many runs" principle declared
 # at line 12 of this script.

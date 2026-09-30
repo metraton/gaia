@@ -539,7 +539,6 @@ def _seed_and_check(con: sqlite3.Connection) -> int:
         _perms,
     )
     _log("agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)")
-    con.execute("DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator'")
 
     if WORKSPACE is not None:
         workspace_identity = _resolve_workspace_identity()
