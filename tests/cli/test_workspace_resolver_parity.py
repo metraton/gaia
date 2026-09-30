@@ -34,6 +34,7 @@ _CLI_MODULES = (
     "cli.schedule",
     "cli.query",
     "cli.defects",
+    "cli.contract",
 )
 
 
@@ -114,6 +115,20 @@ def test_env_workspace_wins_over_cwd_for_every_cli(layout, monkeypatch, env_key)
     monkeypatch.setenv(env_key, "forced_ws")
     resolved = _resolved_by_every_cli()
     assert set(resolved.values()) == {"forced_ws"}, resolved
+
+
+def test_unresolvable_workspace_lands_on_global_for_every_cli(layout, monkeypatch):
+    """No flag, no env and a failing lookup name no installation's workspace."""
+    import gaia.project
+
+    def unresolvable(*_args, **_kwargs):
+        raise RuntimeError("no workspace resolves here")
+
+    monkeypatch.chdir(layout["elsewhere"])
+    monkeypatch.setattr(gaia.project, "containing_workspace", unresolvable)
+    monkeypatch.setattr(gaia.project, "current", unresolvable)
+    resolved = _resolved_by_every_cli()
+    assert set(resolved.values()) == {"global"}, resolved
 
 
 def test_explicit_flag_wins_over_env_for_every_cli(layout, monkeypatch):

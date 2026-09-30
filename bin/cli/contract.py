@@ -1721,26 +1721,16 @@ def cmd_chain(args) -> int:
     return 0
 
 
-def _resolve_finalize_workspace(explicit: Optional[str]) -> str:
+def _resolve_workspace(explicit: Optional[str]) -> str:
     """Resolve the workspace to record this finalize's row under.
 
-    Harness-agnostic (decision #1): an explicit ``--workspace`` always wins;
-    otherwise this reads ``gaia.project.current()`` -- Gaia's OWN path-based
-    workspace resolution, never a Claude-Code env var -- and falls back to
-    ``"me"``, exactly mirroring every other bin/cli/*.py plugin's
-    ``_resolve_workspace`` (see bin/cli/task.py).
+    The shared CLI resolver ``gaia.project.cli_workspace``: an explicit
+    ``--workspace`` wins, then the dispatch env, then the project containing
+    the cwd, else ``"global"``.
     """
-    if explicit:
-        return explicit
-    try:
-        from gaia.project import current as _project_current
+    from gaia.project import cli_workspace
 
-        ws = _project_current()
-        if ws:
-            return ws
-    except Exception:
-        pass
-    return "me"
+    return cli_workspace(explicit)
 
 
 def _finalize_worktree_scope() -> str:
@@ -1809,7 +1799,7 @@ def cmd_finalize(args) -> int:
     agent_status = envelope.get("agent_status") or {}
     agent_id = agent_status.get("agent_id")
     agent_state = agent_status.get("agent_state")
-    workspace = _resolve_finalize_workspace(getattr(args, "workspace", None))
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
 
     # Identity coherence, made VISIBLE at the last seam before the row lands.
     # A draft id IS ``{agent_id}.{token}`` and resolution globs on that prefix
@@ -2531,7 +2521,8 @@ def _build_subcommands(sub) -> None:
         dest="workspace",
         metavar="WORKSPACE",
         default=None,
-        help="Workspace to record the row under (default: gaia.project.current() or 'me')",
+        help="Workspace to record the row under. Default: gaia.project.cli_workspace() "
+             "(env, then the project containing the cwd, else 'global')",
     )
     # Attribution flags -- SUPPLIED by the caller from its dispatch envelope,
     # never read from the environment (see the module docstring's "Attribution
