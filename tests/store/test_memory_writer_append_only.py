@@ -91,6 +91,49 @@ def test_upsert_does_not_restore_a_deleted_row_without_replace_intent(db):
     assert _rows(db)[("me", "atom_cadence")][1] is not None
 
 
+def test_replace_does_not_restore_a_deleted_row(db):
+    writer.upsert_memory("me", "atom_cadence", type="atom", body="weekly",
+                         initiative="bildwiz")
+    writer.delete_memory("me", "atom_cadence")
+
+    with pytest.raises(writer.MemoryNameExistsError):
+        writer.upsert_memory("me", "atom_cadence", type="atom", body="daily",
+                             initiative="bildwiz", replace=True)
+
+    assert _rows(db)[("me", "atom_cadence")][1] is not None
+
+
+def test_append_to_a_deleted_row_is_refused(db):
+    writer.upsert_memory("me", "atom_cadence", type="atom", body="weekly",
+                         initiative="bildwiz")
+    writer.delete_memory("me", "atom_cadence")
+
+    with pytest.raises(ValueError, match="deleted"):
+        writer.update_memory_field("me", "atom_cadence", "body", "daily")
+
+    assert _rows(db)[("me", "atom_cadence")][0] == "weekly"
+
+
+def test_update_memory_field_appends_and_never_overwrites(db):
+    writer.upsert_memory("me", "atom_cadence", type="atom", body="weekly",
+                         initiative="bildwiz")
+
+    writer.update_memory_field("me", "atom_cadence", "body", "daily")
+
+    assert _rows(db)[("me", "atom_cadence")][0] == "weekly\n\ndaily"
+
+
+def test_replace_with_a_failing_class_step_writes_nothing(db):
+    writer.upsert_memory("me", "atom_cadence", type="atom", body="weekly",
+                         initiative="bildwiz")
+
+    with pytest.raises(ValueError, match="status only applies"):
+        writer.upsert_memory("me", "atom_cadence", type="atom", body="daily",
+                             initiative="bildwiz", status="open", replace=True)
+
+    assert _rows(db)[("me", "atom_cadence")][0] == "weekly"
+
+
 def test_a_deleted_user_row_is_never_restored_even_with_replace(db):
     writer.upsert_memory("me", "user_prefers_plain", type="user", body="plain")
     writer.delete_memory(USER, "user_prefers_plain")

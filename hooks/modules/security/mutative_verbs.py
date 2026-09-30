@@ -493,9 +493,10 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # The verb scan reads the ATOM'S OWN TEXT, so without this a payload that
     # is itself a mutative word (`--body apply`) gated the write on the content
     # of the note. An atom body is data -- no verb spelled inside it executes.
-    # Two forms stay T3: `delete`, through the global deny-verb guard, and the
-    # in-place rewrite `add --replace`, anchored in
-    # COMMAND_PATH_MUTATIVE_UPGRADES, which is consulted before this table.
+    # Three forms stay T3: `delete`, through the global deny-verb guard, and
+    # the in-place rewrite `add --replace` and the edge removal
+    # `link --delete`, anchored in COMMAND_PATH_MUTATIVE_UPGRADES, which is
+    # consulted before this table.
     # The orthogonal subagent_memory_write_guard still denies memory
     # WRITES from a dispatched subagent regardless of tier -- this exception
     # changes the tier, never who is allowed to write.
@@ -813,6 +814,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
                 "run `gaia memory link <new> <old> --kind=supersedes`."
             ),
         ),
+        # memory_links keeps no history, so removing an edge -- a supersedes
+        # one returns the old row to every injection -- is as unrecoverable
+        # as `delete`.
+        MutativeAnchor(path=("memory", "link"), flags=frozenset({"--delete"})),
     ),
     "gcloud": (
         # `set-password` sits three tokens below the gcloud root, beyond the

@@ -124,10 +124,37 @@ def test_add_replace_re_anchors_a_row_written_under_the_wrong_project(tmp_db, ca
     assert _run(capsys, "show", SLUG)[1]["project_ref"] == "github.com/me/right"
 
 
+def test_a_failing_step_of_replace_leaves_the_row_unchanged(tmp_db, capsys):
+    """A status on a log row fails after the body rewrite was already staged."""
+    _seed(capsys)
+    before = _run(capsys, "show", SLUG)[1]
+
+    rc, out = _add(capsys, "daily", "--replace", "--audience=executor",
+                   "--project-ref=github.com/me/right", "--status=open")
+
+    assert rc == 1, out
+    after = _run(capsys, "show", SLUG)[1]
+    for field in ("body", "audience", "project_ref", "class", "status"):
+        assert after[field] == before[field], field
+
+
+def test_replace_does_not_restore_a_deleted_row(tmp_db, capsys):
+    _seed(capsys)
+    assert _run(capsys, "delete", SLUG, "--workspace=me", "--yes")[0] == 0
+
+    rc, out = _add(capsys, "daily", "--replace")
+
+    assert rc == 1
+    assert out["code"] == "name_exists"
+    assert "deleted" in out["error"]
+
+
 @pytest.mark.parametrize("command,signed", [
     (f"gaia memory add --name={SLUG} --type=decision --body=daily --replace", True),
     (f"gaia memory add --name {SLUG} --replace --body daily", True),
     (f"gaia memory delete {SLUG} --yes", True),
+    (f"gaia memory link new_row {SLUG} --kind=supersedes --delete", True),
+    (f"gaia memory link new_row {SLUG} --delete --kind relates_to", True),
     (f"gaia memory add --name={SLUG} --type=decision --body=daily", False),
     (f"gaia memory append {SLUG} --body=more", False),
     (f"gaia memory reclassify {SLUG} --class=anchor", False),

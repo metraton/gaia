@@ -2016,8 +2016,8 @@ def _refuse_existing_name(con, workspace: str, name: str, *, replace: bool) -> b
     """Raise unless ``name`` may be written in ``workspace``; True when a row already holds it.
 
     Curated memory is append-only: a changed agreement is a new row that
-    supersedes the old one. A user-scope name, live or deleted, is never
-    overwritten nor restored; any other existing name is rewritten only with
+    supersedes the old one. A deleted name is never restored, and a user-scope
+    name is never overwritten; any other live name is rewritten only with
     ``replace``, the explicit intent to correct an error.
     """
     existing = con.execute(
@@ -2033,6 +2033,12 @@ def _refuse_existing_name(con, workspace: str, name: str, *, replace: bool) -> b
             f"the change as a new row and run `gaia memory link <new> {name} "
             f"--kind=supersedes`, or pick another name.",
             code="user_name_collision",
+        )
+    if existing["deleted_at"] is not None:
+        raise MemoryNameExistsError(
+            f"memory {name!r} in workspace {workspace!r} is deleted, and a "
+            f"deleted row is never restored, not even by --replace. Write the "
+            f"fact under a new name."
         )
     if not replace:
         raise MemoryNameExistsError(
@@ -2432,6 +2438,7 @@ def upsert_memory(
     initiative: str | None = None,
     audience: str | None = None,
     class_: str | None = None,
+    status: str | None = None,
     replace: bool = False,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
@@ -2441,10 +2448,12 @@ def upsert_memory(
     Without ``replace`` an existing name, live or deleted, raises
     :class:`MemoryNameExistsError`; a ``type='user'`` name raises
     ``user_name_collision`` either way (see :func:`_refuse_existing_name`).
-    ``replace`` rewrites the row in place, restoring a deleted one, and the
+    ``replace`` rewrites a live row in place, never a deleted one, and the
     ``trg_memory_history`` AFTER UPDATE trigger archives the tracked
     before/after fields into ``memory_history``; hard deletion and workspace
-    cascade remain outside that recovery guarantee.
+    cascade remain outside that recovery guarantee. The whole write, class and
+    status included, is one transaction: a failing step leaves the row as it
+    was.
 
     ``project_ref`` -- forward-only remote-stable project anchor (N3, scan-v2
     SV3 follow-up). The v25/v26 columns/migration exist, but the automatic
@@ -2489,8 +2498,9 @@ def upsert_memory(
     ``class_`` -- the class a brand-new row is born with. ``None`` means
     ``anchor`` for a ``type='user'`` row, because what the user tells Gaia
     about himself is standing until a newer row supersedes it, and the
-    schema's ``log`` for every other type. An update never changes the class;
-    that is :func:`reclassify_memory`'s job.
+    schema's ``log`` for every other type. ``class_`` and ``status`` given
+    explicitly are applied with :func:`reclassify_memory`'s rules, so an update
+    changes the class only when the caller names one.
     """
     _assert_dispatch_can_write_memory()
 
@@ -2509,11 +2519,10 @@ def upsert_memory(
             f"invalid memory audience {audience!r}; must be one of "
             f"{list(VALID_MEMORY_AUDIENCES)}"
         )
-    if class_ is None:
-        class_ = "anchor" if type == "user" else "log"
-    if class_ not in VALID_MEMORY_CLASSES:
+    born_class = class_ or ("anchor" if type == "user" else "log")
+    if born_class not in VALID_MEMORY_CLASSES:
         raise ValueError(
-            f"invalid class {class_!r}; must be one of "
+            f"invalid class {born_class!r}; must be one of "
             f"{list(VALID_MEMORY_CLASSES)}"
         )
     if not body or not body.strip():
@@ -2549,7 +2558,6 @@ def upsert_memory(
                     initiative        = COALESCE(excluded.initiative, initiative),
                     origin_session_id = excluded.origin_session_id,
                     updated_at        = excluded.updated_at,
-                    deleted_at        = NULL,
                     audience          = COALESCE(?, audience)
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
@@ -2569,10 +2577,9 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, class_, audience),
+                 now, born_class, audience),
             )
-            con.commit()
-            return {
+            result = {
                 "status": "applied",
                 "action": action,
                 "name": name,
@@ -2581,6 +2588,12 @@ def upsert_memory(
                 # caller's requested workspace when host-scope forced it.
                 "workspace": workspace,
             }
+            if class_ is not None or status is not None:
+                result["class"], result["memory_status"] = _apply_class_status(
+                    con, workspace, name, class_=class_, status=status, now=now,
+                )
+            con.commit()
+            return result
         except Exception:
             con.rollback()
             raise
@@ -2595,6 +2608,22 @@ def upsert_memory(
 _MEMORY_PATCHABLE_FIELDS = ("description", "body")
 
 
+def _live_memory_row(con, workspace: str, name: str, columns: str) -> sqlite3.Row:
+    """Return ``columns`` of the live row ``(workspace, name)``; ValueError when absent or deleted."""
+    row = con.execute(
+        f"SELECT deleted_at, {columns} FROM memory WHERE workspace = ? AND name = ?",
+        (workspace, name),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"memory '{name}' not found in workspace '{workspace}'")
+    if row["deleted_at"] is not None:
+        raise ValueError(
+            f"memory '{name}' in workspace '{workspace}' is deleted; a deleted "
+            f"row is never written to"
+        )
+    return row
+
+
 def delete_memory(
     workspace: str,
     name: str,
@@ -2606,8 +2635,8 @@ def delete_memory(
 
     By default this is a SOFT delete: the row's ``deleted_at`` column is stamped
     with the current UTC timestamp instead of the row being physically removed.
-    The row and its ``body`` survive (recoverable, and re-addable via
-    :func:`upsert_memory`, which clears the tombstone). The ``trg_memory_history``
+    The row and its ``body`` survive, and no writer restores or rewrites the
+    tombstoned row, :func:`upsert_memory` included. The ``trg_memory_history``
     trigger records the tombstone transition (before_deleted_at NULL -> after
     non-NULL). All read paths filter ``deleted_at IS NULL`` so a tombstoned row
     is invisible to normal queries.
@@ -2655,10 +2684,9 @@ def update_memory_field(
     field: str,
     content: str,
     *,
-    append: bool = False,
     db_path: Path | None = None,
 ) -> dict:
-    """Patch a single column on a curated memory row."""
+    """Append ``content`` to one text column of a live curated memory row, never overwriting it."""
     _assert_dispatch_can_write_memory()
     if field not in _MEMORY_PATCHABLE_FIELDS:
         raise ValueError(
@@ -2670,22 +2698,9 @@ def update_memory_field(
 
     con = _connect(db_path)
     try:
-        row = con.execute(
-            f"SELECT {field}, body FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory '{name}' not found in workspace '{workspace}'"
-            )
-
-        existing = row[field] or ""
-        if append and existing:
-            new_value = f"{existing}\n\n{content}"
-            action = "appended"
-        else:
-            new_value = content
-            action = "overwritten"
+        existing = _live_memory_row(con, workspace, name, field)[field]
+        new_value = f"{existing}\n\n{content}" if existing else content
+        action = "appended"
 
         if field == "body" and not new_value.strip():
             raise ValueError("memory body cannot be empty")
@@ -2742,16 +2757,7 @@ def reanchor_memory_project_ref(
 
     con = _connect(db_path)
     try:
-        row = con.execute(
-            "SELECT project_ref FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory '{name}' not found in workspace '{workspace}'"
-            )
-
-        before = row["project_ref"]
+        before = _live_memory_row(con, workspace, name, "project_ref")["project_ref"]
         now = _now_iso()
         # initiative is only filled, never replaced: an existing value may be
         # an explicit logical initiative, which outranks the anchor.
@@ -2817,16 +2823,7 @@ def set_memory_audience(
 
     con = _connect(db_path)
     try:
-        row = con.execute(
-            "SELECT audience FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory '{name}' not found in workspace '{workspace}'"
-            )
-
-        before = row["audience"]
+        before = _live_memory_row(con, workspace, name, "audience")["audience"]
         now = _now_iso()
         con.execute(
             "UPDATE memory SET audience = ?, updated_at = ? "
@@ -3152,17 +3149,41 @@ def reclassify_memory(
     """
     _assert_dispatch_can_write_memory()
 
+    if class_ is None and status is None:
+        raise ValueError(
+            "reclassify_memory requires at least one of class_ or status"
+        )
+
+    con = _connect(db_path)
+    try:
+        now = _now_iso()
+        new_class, new_status = _apply_class_status(
+            con, workspace, name, class_=class_, status=status, now=now,
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "reclassified",
+            "workspace": workspace,
+            "name": name,
+            "class": new_class,
+            "memory_status": new_status,  # avoid colliding with envelope 'status'
+            "updated_at": now,
+        }
+    finally:
+        con.close()
+
+
+def _apply_class_status(
+    con, workspace: str, name: str, *, class_: str | None, status: str | None, now: str,
+) -> tuple[str, str | None]:
+    """Apply :func:`reclassify_memory`'s rules to a live row on ``con``, uncommitted; return (class, status)."""
     # Disambiguate the three input modes for status:
     #   * status is None        -> do not touch the column
     #   * status == ""          -> explicit clear (write NULL)
     #   * status == "<value>"   -> set to value; must be in enum
     status_explicit_clear = (status == "")
     status_touches_column = (status is not None)
-
-    if class_ is None and not status_touches_column:
-        raise ValueError(
-            "reclassify_memory requires at least one of class_ or status"
-        )
 
     if class_ is not None and class_ not in VALID_MEMORY_CLASSES:
         raise ValueError(
@@ -3178,63 +3199,40 @@ def reclassify_memory(
             f"{list(VALID_MEMORY_STATUSES)} (or empty string to clear)"
         )
 
-    con = _connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT class, status FROM memory "
-            "WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory {name!r} not found in workspace {workspace!r}"
-            )
+    row = _live_memory_row(con, workspace, name, "class, status")
+    current_class = row["class"]
+    current_status = row["status"]
 
-        current_class = row["class"]
-        current_status = row["status"]
+    new_class = class_ if class_ is not None else current_class
 
-        new_class = class_ if class_ is not None else current_class
+    # Decide the new status value:
+    #   * Caller passed status explicit-clear -> NULL.
+    #   * Caller passed status="<value>"      -> that value (already
+    #                                            enum-checked above).
+    #   * Caller did NOT pass status, AND class moved from thread to
+    #     non-thread -> auto-NULL.
+    #   * Otherwise -> leave current_status untouched.
+    if status_touches_column:
+        new_status = None if status_explicit_clear else status
+    elif (current_class == "thread"
+          and class_ is not None
+          and class_ != "thread"):
+        new_status = None  # auto-clear on demotion / promotion
+    else:
+        new_status = current_status
 
-        # Decide the new status value:
-        #   * Caller passed status explicit-clear -> NULL.
-        #   * Caller passed status="<value>"      -> that value (already
-        #                                            enum-checked above).
-        #   * Caller did NOT pass status, AND class moved from thread to
-        #     non-thread -> auto-NULL.
-        #   * Otherwise -> leave current_status untouched.
-        if status_touches_column:
-            new_status = None if status_explicit_clear else status
-        elif (current_class == "thread"
-              and class_ is not None
-              and class_ != "thread"):
-            new_status = None  # auto-clear on demotion / promotion
-        else:
-            new_status = current_status
-
-        if new_status is not None and new_class != "thread":
-            raise ValueError(
-                "status only applies to class=thread "
-                f"(resulting class={new_class!r}, status={new_status!r})"
-            )
-
-        now = _now_iso()
-        con.execute(
-            "UPDATE memory SET class = ?, status = ?, updated_at = ? "
-            "WHERE workspace = ? AND name = ?",
-            (new_class, new_status, now, workspace, name),
+    if new_status is not None and new_class != "thread":
+        raise ValueError(
+            "status only applies to class=thread "
+            f"(resulting class={new_class!r}, status={new_status!r})"
         )
-        con.commit()
-        return {
-            "status": "applied",
-            "action": "reclassified",
-            "workspace": workspace,
-            "name": name,
-            "class": new_class,
-            "memory_status": new_status,  # avoid colliding with envelope 'status'
-            "updated_at": now,
-        }
-    finally:
-        con.close()
+
+    con.execute(
+        "UPDATE memory SET class = ?, status = ?, updated_at = ? "
+        "WHERE workspace = ? AND name = ?",
+        (new_class, new_status, now, workspace, name),
+    )
+    return new_class, new_status
 
 
 # ---------------------------------------------------------------------------

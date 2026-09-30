@@ -594,17 +594,19 @@ class AmbiguousSlugError(Exception):
         self.workspaces = workspaces
 
 
-def _workspace_holding(workspace: str, name: str, *,
+def _workspace_holding(workspace: str, name: str, *, explicit: bool,
                        include_deleted: bool = False) -> str:
     """Workspace that stores the row ``name`` for a by-name verb.
 
     Tried in order: the caller's workspace, the ``_gaia_user`` and
-    ``_gaia_host`` sentinels, then any workspace holding ``name`` as a row of
-    a project, since a project's memory follows the project rather than the
-    workspace that wrote it. A row with no project is never reached from
-    another workspace. Only live rows count unless ``include_deleted`` (a hard
-    delete reaches a tombstone). Returns ``workspace`` when no row is found
-    (the verb reports its own not-found) or when the store cannot be read.
+    ``_gaia_host`` sentinels, then -- only when ``explicit`` is False, i.e.
+    the caller gave no --workspace -- any workspace holding ``name`` as a row
+    of a project, since a project's memory follows the project rather than the
+    workspace that wrote it. A workspace the caller named is never swapped for
+    another one. A row with no project is never reached from another
+    workspace. Only live rows count unless ``include_deleted`` (a hard delete
+    reaches a tombstone). Returns ``workspace`` when no row is found (the verb
+    reports its own not-found) or when the store cannot be read.
 
     Raises AmbiguousSlugError when project rows in more than one other
     workspace share ``name``: picking one would guess which project was meant.
@@ -615,6 +617,8 @@ def _workspace_holding(workspace: str, name: str, *,
         for candidate in dict.fromkeys((workspace, USER_WORKSPACE, HOST_WORKSPACE)):
             if get_memory(candidate, name, include_deleted=include_deleted) is not None:
                 return candidate
+        if explicit:
+            return workspace
         holders = project_row_workspaces(name, include_deleted=include_deleted)
     except Exception:
         return workspace
@@ -623,16 +627,23 @@ def _workspace_holding(workspace: str, name: str, *,
     return holders[0] if holders else workspace
 
 
+def _flag_workspace_holding(args, name: str, *, include_deleted: bool = False) -> str:
+    """:func:`_workspace_holding` for the verb's own --workspace flag."""
+    flag = getattr(args, "workspace", None)
+    return _workspace_holding(
+        _resolve_workspace(flag), name,
+        explicit=bool(flag), include_deleted=include_deleted,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handler: add (DB-only writer)
 # ---------------------------------------------------------------------------
 #
-# T5 note: ``add`` accepts optional ``--class`` and ``--status``
-# flags. After the primary upsert completes, if either flag was
-# supplied, the same ``reclassify_memory`` writer is invoked so the row's
-# semantic role and lifecycle state land in a single CLI call. The CLI is
+# T5 note: ``add`` accepts optional ``--class`` and ``--status`` flags, which
+# ``upsert_memory`` applies in the same transaction as the row. The CLI is
 # the only surface that translates ``--status=null`` into the empty-string
-# clear-sentinel that ``reclassify_memory`` expects.
+# clear-sentinel that the writer expects.
 # ---------------------------------------------------------------------------
 
 
@@ -807,7 +818,7 @@ def _cmd_add(args) -> int:
 
     try:
         from gaia.store.writer import (
-            upsert_memory, reclassify_memory, resolve_project_ref,
+            upsert_memory, resolve_project_ref,
             project_workspaces, VALID_MEMORY_TYPES,
             normalize_initiative, initiative_from_project_ref,
             HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
@@ -907,6 +918,7 @@ def _cmd_add(args) -> int:
         previous_body=stored["body"] if stored else None,
     )
 
+    _, status_for_writer = _normalize_status_flag(status_flag)
     try:
         res = upsert_memory(
             workspace,
@@ -918,6 +930,7 @@ def _cmd_add(args) -> int:
             initiative=initiative,
             audience=audience_flag,
             class_=class_flag,
+            status=status_for_writer,
             replace=getattr(args, "replace", False),
         )
     except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
@@ -934,47 +947,13 @@ def _cmd_add(args) -> int:
 
     # Host-scope forces the row into HOST_WORKSPACE regardless of the
     # requested --workspace/env/cwd; `res["workspace"]` is the writer's
-    # authoritative answer, so every downstream use (reclassify, output)
-    # follows it rather than re-deriving the same rule here.
+    # authoritative answer, so the output follows it rather than re-deriving
+    # the same rule here.
     host_scoped_notice = (
         initiative in HOST_SCOPED_INITIATIVES and mem_type != "user"
     )
     user_scoped_notice = mem_type == "user"
     workspace = res.get("workspace", workspace)
-
-    # upsert_memory never overwrites a set project_ref or audience, so a
-    # correction of either is applied by its dedicated writer.
-    if stored is not None:
-        try:
-            if project_ref is not None and project_ref != stored.get("project_ref"):
-                from gaia.store.writer import reanchor_memory_project_ref
-                reanchor_memory_project_ref(workspace, name, project_ref)
-            if audience_flag is not None:
-                from gaia.store.writer import set_memory_audience
-                set_memory_audience(workspace, name, audience_flag)
-        except (ValueError, PermissionError) as exc:
-            return _err(str(exc), as_json)
-
-    # T5: apply class/status if either flag was supplied. The reclassify
-    # writer handles enum validation, the status-only-on-thread rule, and
-    # the auto-clear-on-demotion semantics. If reclassify fails we surface
-    # the message but the primary upsert has already landed -- not ideal
-    # but acceptable for an interactive CLI surface; tests pin the
-    # behaviour so callers know what to expect.
-    reclassify_result = None
-    status_touches, status_for_writer = _normalize_status_flag(status_flag)
-    if class_flag is not None or status_touches:
-        try:
-            reclassify_result = reclassify_memory(
-                workspace,
-                name,
-                class_=class_flag,
-                status=status_for_writer,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
 
     snippet = body.strip().replace("\n", " ")
     if len(snippet) > 80:
@@ -997,9 +976,9 @@ def _cmd_add(args) -> int:
             out["initiative"] = initiative
         if audience_flag is not None:
             out["audience"] = audience_flag
-        if reclassify_result is not None:
-            out["class"] = reclassify_result["class"]
-            out["memory_status"] = reclassify_result["memory_status"]
+        if "class" in res:
+            out["class"] = res["class"]
+            out["memory_status"] = res["memory_status"]
         if host_scoped_notice:
             out["host_scoped"] = True
         if user_scoped_notice:
@@ -1029,10 +1008,10 @@ def _cmd_add(args) -> int:
                 f"  type user sin workspace: escrita en {USER_WORKSPACE}, "
                 f"--workspace ignorado"
             )
-        if reclassify_result is not None:
+        if "class" in res:
             print(
-                f"  class={reclassify_result['class']}, "
-                f"status={reclassify_result['memory_status']}"
+                f"  class={res['class']}, "
+                f"status={res['memory_status']}"
             )
     _emit_write_warnings(warnings, as_json)
     return 0
@@ -2432,7 +2411,7 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
             name = r.get("name") or ""
             desc = (r.get("description") or "").strip()
             if not desc:
-                full = get_memory(_workspace_holding(workspace, name), name) or {}
+                full = get_memory(_flag_workspace_holding(args, name), name) or {}
                 body = (full.get("body") or "").strip().replace("\n", " ")
                 desc = body[:60] + ("..." if len(body) > 60 else "")
             line = f"- {name}: {desc}" if desc else f"- {name}"
@@ -2596,9 +2575,7 @@ def _cmd_curated_show(args) -> int:
     """
     as_json = getattr(args, "json", False)
     name = args.name
-    workspace = _workspace_holding(
-        _resolve_workspace(getattr(args, "workspace", None)), name,
-    )
+    workspace = _flag_workspace_holding(args, name)
     want_links = getattr(args, "links", False)
     want_history = getattr(args, "history", False)
 
@@ -2717,10 +2694,21 @@ def _cmd_delete(args) -> int:
     name = args.name
     skip_confirm = getattr(args, "yes", False)
     hard = getattr(args, "hard", False)
-    workspace = _workspace_holding(
-        _resolve_workspace(getattr(args, "workspace", None)), name,
-        include_deleted=hard,
-    )
+    requested = _resolve_workspace(getattr(args, "workspace", None))
+    # The signed command is the consent, so a delete never follows a slug into
+    # another workspace's project row; one found there is refused and named.
+    workspace = _workspace_holding(requested, name, explicit=True,
+                                   include_deleted=hard)
+    holder = _workspace_holding(requested, name, explicit=False,
+                                include_deleted=hard)
+    if holder != workspace:
+        return _err_structured(
+            f"memory '{name}' is stored in workspace '{holder}', not "
+            f"'{workspace}'; a delete never follows a slug into another "
+            f"workspace: repeat it with --workspace {holder}",
+            as_json, code="workspace_not_named", workspace=workspace,
+            found_in=holder,
+        )
 
     try:
         from gaia.store.writer import get_memory, delete_memory
@@ -2822,16 +2810,14 @@ def _cmd_append(args) -> int:
     body (separator ``\\n\\n``); the prior body survives in ``memory_history``
     via the ``trg_memory_history`` trigger. This is the primary verb for
     "sum something" to a carry-forward note or running thread, written by
-    ``update_memory_field`` with ``append=True``.
+    ``update_memory_field``, which refuses a deleted row.
 
     Classified NON-mutative (T0): ``append`` is not in MUTATIVE_VERBS, so it
     needs no T3 approval -- appending only grows the record.
     """
     as_json = getattr(args, "json", False)
     name = args.name
-    workspace = _workspace_holding(
-        _resolve_workspace(getattr(args, "workspace", None)), name,
-    )
+    workspace = _flag_workspace_holding(args, name)
     body = getattr(args, "body", None)
     body_file = getattr(args, "body_file", None)
 
@@ -2854,9 +2840,7 @@ def _cmd_append(args) -> int:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
     try:
-        result = update_memory_field(
-            workspace, name, "body", body, append=True,
-        )
+        result = update_memory_field(workspace, name, "body", body)
     except ValueError as exc:
         return _err(str(exc), as_json)
     except PermissionError as exc:
@@ -2899,9 +2883,7 @@ def _cmd_reclassify(args) -> int:
     """
     as_json = getattr(args, "json", False)
     name = args.name
-    workspace = _workspace_holding(
-        _resolve_workspace(getattr(args, "workspace", None)), name,
-    )
+    workspace = _flag_workspace_holding(args, name)
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
 
@@ -2964,10 +2946,9 @@ def _cmd_link(args) -> int:
     """
     as_json = getattr(args, "json", False)
     src_name = args.src_name
-    caller_workspace = _resolve_workspace(getattr(args, "workspace", None))
-    workspace = _workspace_holding(caller_workspace, src_name)
+    workspace = _flag_workspace_holding(args, src_name)
     dst_name = args.dst_name
-    dst_workspace = _workspace_holding(caller_workspace, dst_name)
+    dst_workspace = _flag_workspace_holding(args, dst_name)
     kind = args.kind
     do_delete = getattr(args, "delete", False)
 
@@ -3492,8 +3473,10 @@ def register(subparsers):
     reclass_p.set_defaults(func=_cmd_reclassify)
 
     # -- link ---------------------------------------------------------------
+    # No abbreviations: the signature matches the literal --delete.
     link_p = actions.add_parser(
         "link",
+        allow_abbrev=False,
         help="Create or delete a graph edge between two curated memory rows",
         description=(
             "Create (default) or --delete a row in memory_links. Both src and "
@@ -3532,7 +3515,7 @@ def register(subparsers):
     )
     link_p.add_argument(
         "--delete", action="store_true", default=False,
-        help="Delete the link instead of creating it. bool.",
+        help="Delete the link instead of creating it; signed (T3) like delete. bool.",
     )
     link_p.add_argument(
         "--json", action="store_true", default=False,
