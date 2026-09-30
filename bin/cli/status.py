@@ -71,11 +71,15 @@ def _read_episodic_index(project_root: Path):
         con = _store_connect()
         try:
             if ws:
+                from gaia.store.workspace_retire import workspace_scope
+
+                scope = workspace_scope(con, ws)
                 rows = con.execute(
                     "SELECT episode_id, workspace, timestamp, agent, plan_status, "
                     "outcome, exit_code, output_tokens_approx "
-                    "FROM episodes WHERE workspace = ? ORDER BY timestamp ASC",
-                    (ws,),
+                    f"FROM episodes WHERE workspace IN ({','.join('?' * len(scope))}) "
+                    "ORDER BY timestamp ASC",
+                    scope,
                 ).fetchall()
             else:
                 rows = con.execute(

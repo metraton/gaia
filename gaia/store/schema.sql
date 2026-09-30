@@ -38,6 +38,21 @@ CREATE TABLE IF NOT EXISTS workspaces (
 CREATE INDEX IF NOT EXISTS idx_workspaces_identity ON workspaces(identity);
 
 -- ---------------------------------------------------------------------------
+-- workspace_aliases: a retired workspace name and the workspace it now means
+-- (v60). Written only by `gaia workspace retire`, which re-keys what the alias
+-- owned and leaves its history rows keyed to it; readers of `target` also read
+-- rows keyed to `alias`. `ledger` is the undo ledger of that retire.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workspace_aliases (
+    alias      TEXT NOT NULL PRIMARY KEY,
+    target     TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ledger     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_aliases_target ON workspace_aliases(target);
+
+-- ---------------------------------------------------------------------------
 -- projects: git-bearing source projects within a workspace (formerly `repos`).
 -- A project is the unit of code -- it has a git remote, primary language, etc.
 -- ---------------------------------------------------------------------------

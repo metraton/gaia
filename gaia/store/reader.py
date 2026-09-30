@@ -36,6 +36,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from gaia.store.workspace_retire import workspace_scope
+
 
 # ---------------------------------------------------------------------------
 # Connection helper -- reuse writer's _connect to inherit schema bootstrap
@@ -791,8 +793,9 @@ def _query_episodes(
     where = []
     params: list[Any] = []
     if workspace:
-        where.append("workspace = ?")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"workspace IN ({','.join('?' * len(scope))})")
+        params.extend(scope)
     if since_iso:
         where.append("timestamp >= ?")
         params.append(since_iso)
@@ -886,8 +889,9 @@ def _query_harness_events(
     where = []
     params: list[Any] = []
     if workspace:
-        where.append("(workspace = ? OR workspace IS NULL)")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"(workspace IN ({','.join('?' * len(scope))}) OR workspace IS NULL)")
+        params.extend(scope)
     if since_iso:
         where.append("ts >= ?")
         params.append(since_iso)
@@ -1321,8 +1325,9 @@ def _query_subagent_defects(
     where: list[str] = []
     params: list[Any] = []
     if workspace:
-        where.append("ea.workspace = ?")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"ea.workspace IN ({','.join('?' * len(scope))})")
+        params.extend(scope)
     if since_iso:
         where.append("ea.timestamp >= ?")
         params.append(since_iso)
@@ -1386,8 +1391,9 @@ def _query_orchestrator_defects(
     ]
     params: list[Any] = list(NON_DEFECT_EVENT_SEVERITIES)
     if workspace:
-        where.append("(workspace = ? OR workspace IS NULL)")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"(workspace IN ({','.join('?' * len(scope))}) OR workspace IS NULL)")
+        params.extend(scope)
     if since_iso:
         where.append("ts >= ?")
         params.append(since_iso)
@@ -1561,14 +1567,15 @@ def search_episodes_fts(
         return []
     try:
         if workspace:
+            scope = workspace_scope(con, workspace)
             rows = con.execute(
                 "SELECT e.*, rank AS fts_rank "
                 "FROM episodes_fts "
                 "JOIN episodes e ON e.rowid = episodes_fts.rowid "
-                "WHERE episodes_fts MATCH ? AND e.workspace = ? "
+                f"WHERE episodes_fts MATCH ? AND e.workspace IN ({','.join('?' * len(scope))}) "
                 "ORDER BY rank "
                 "LIMIT ?",
-                (query, workspace, limit),
+                (query, *scope, limit),
             ).fetchall()
         else:
             rows = con.execute(

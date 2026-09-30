@@ -327,7 +327,7 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
 WRITE a specialist owns -- DELEGATE; do not run it here.
   gaia-operator  context wipe|prune-workspaces|move-contracts|move-memory|
                  move-project (destructive surgery on the substrate) |
-                 workspace merge | schedule register|remove|sync |
+                 workspace merge|retire | schedule register|remove|sync |
                  usage ingest (load transcripts into token_usage)
   gaia-system    install | update | uninstall | cleanup | dev | release
   consent flow   approvals approve|reject-all|clean|replay|request-set --

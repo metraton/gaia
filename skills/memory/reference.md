@@ -16,6 +16,16 @@ its original `workspace` key unless a human runs `move-memory`). A
 that fact durably rather than only implicitly through the workspace it
 happens to live in today.
 
+Folding a whole workspace into another is `gaia workspace retire <source>
+--into <target>` (T3; `--dry-run` reports per table first). It re-keys every
+curated row: `type=user` to `_gaia_user`, host-scoped to `_gaia_host`, the
+rest to the target, with the links whose endpoints land together; a link
+whose endpoints land in different scopes is dropped into the undo ledger.
+Episodes and the other history rows keep the source name and are read
+through the recorded alias, and `--workspace <source>` then resolves to the
+target. A name collision aborts the whole retire unless `--on-conflict
+memory=keep-target|keep-source` settles it; `--undo <ledger>` reverses it.
+
 `memory.project_ref` (schema v25, scan-v2 SV1) is the stable anchor for
 this: it should hold the project's `project_identity` -- the same
 vantage-independent identity scan writes onto `projects.project_identity`

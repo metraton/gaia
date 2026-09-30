@@ -416,6 +416,8 @@ def cli_workspace(
 
     Resolution order: ``explicit`` > ``GAIA_DISPATCH_WORKSPACE`` >
     ``GAIA_WORKSPACE`` > :func:`containing_workspace` of ``cwd`` > ``"global"``.
+    A name retired by ``gaia workspace retire`` then resolves to the
+    workspace it was folded into.
 
     Every CLI that accepts ``--workspace`` (brief, plan, task, ac, evidence,
     milestone, memory, ...) delegates here: when each carried its own copy,
@@ -427,18 +429,37 @@ def cli_workspace(
     baked into the code.
     """
     if explicit:
-        return explicit
+        return _retired_into(explicit)
     import os as _os
 
     for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
         value = _os.environ.get(env_key)
         if value:
-            return value
+            return _retired_into(value)
     try:
         ws = containing_workspace(cwd)
     except Exception:
         ws = ""
-    return ws or "global"
+    return _retired_into(ws) if ws else "global"
+
+
+def _retired_into(workspace: str) -> str:
+    """Return the workspace ``workspace`` was retired into, else ``workspace``."""
+    try:
+        import sqlite3
+        from gaia.paths import db_path
+        from gaia.store.workspace_retire import alias_target
+
+        db_file = db_path()
+        if not db_file or not db_file.exists():
+            return workspace
+        con = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+        try:
+            return alias_target(con, workspace)
+        finally:
+            con.close()
+    except Exception:
+        return workspace
 
 
 # ---------------------------------------------------------------------------

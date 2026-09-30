@@ -4,11 +4,14 @@ gaia workspace -- Workspace identity and consolidate operations.
 Subcommands:
   workspace current               Print current workspace identity (resolved from cwd)
   workspace info                  Print structured info about the current workspace
-  workspace merge <from> <to>     Preview/execute workspace merge (--confirm to apply)
+  workspace retire <source> --into <target>
+                                  Fold a workspace's rows in gaia.db into another
+  workspace merge <from> <to>     Preview/execute a merge of workspace FILES (--confirm to apply)
 
 Patterns inspired by engram (MIT). No runtime dependency on engram.
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -117,6 +120,102 @@ def _cmd_merge(args) -> int:
     return 1 if result.conflicts else 0
 
 
+def _parse_on_conflict(values: list[str]) -> dict[str, str]:
+    resolved = {}
+    for value in values or []:
+        table, sep, strategy = value.partition("=")
+        if not sep:
+            raise ValueError(f"--on-conflict {value!r}: expected TABLE=STRATEGY")
+        resolved[table.strip()] = strategy.strip()
+    return resolved
+
+
+def _render_retire(report: dict) -> None:
+    mode = report.get("mode")
+    print(f"# workspace retire {report.get('source')} -> {report.get('target')}: {mode}")
+    for table, counts in (report.get("tables") or {}).items():
+        shown = {k: v for k, v in counts.items() if v}
+        if shown:
+            print(f"  {table:<28} " + "  ".join(f"{k}={v}" for k, v in shown.items()))
+    for table, keys in (report.get("collisions") or {}).items():
+        print(f"  COLLISION {table}: {', '.join(keys)}")
+    for table, keys in (report.get("resolved") or {}).items():
+        print(f"  resolved {table}: {', '.join(keys)}")
+    for row in report.get("user_rows_to_adjudicate") or []:
+        print(f"  user row with a project to adjudicate: {row['name']} "
+              f"(initiative={row['initiative']}, project_ref={row['project_ref']})")
+    history = {t: n for t, n in (report.get("history") or {}).items() if n}
+    if history:
+        print("  history kept under the source, read through the alias: "
+              + ", ".join(f"{t}={n}" for t, n in history.items()))
+    for table, n in (report.get("left_behind") or {}).items():
+        print(f"  left under the source: {table}={n}")
+    for key in ("backup", "ledger"):
+        if report.get(key):
+            print(f"  {key}: {report[key]}")
+
+
+def _cmd_retire(args) -> int:
+    """Handle `gaia workspace retire <source> --into <target>` and `--undo LEDGER`."""
+    import json
+
+    from gaia.store.workspace_retire import (
+        WorkspaceRetireError, apply_retire, plan_retire, undo_retire,
+    )
+
+    as_json = bool(args.json)
+
+    def emit(report: dict) -> None:
+        if as_json:
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            _render_retire(report)
+
+    try:
+        if args.undo:
+            if args.dry_run or args.yes or _confirmed(f"undo the retire recorded in {args.undo}"):
+                report = undo_retire(args.undo, dry_run=args.dry_run)
+                emit(report)
+                return 0
+            return 1
+        if not args.source or not args.into:
+            print("gaia workspace retire: give <source> --into <target>, or --undo LEDGER",
+                  file=sys.stderr)
+            return 2
+        on_conflict = _parse_on_conflict(args.on_conflict)
+        plan = plan_retire(args.source, args.into, on_conflict=on_conflict)
+        if args.dry_run or plan["mode"] == "noop":
+            emit(plan)
+            return 0
+        if not (args.yes or _confirmed(f"retire workspace {args.source!r} into {args.into!r}")):
+            emit(plan)
+            return 1
+        emit(apply_retire(args.source, args.into, on_conflict=on_conflict))
+        return 0
+    except (WorkspaceRetireError, ValueError) as exc:
+        report = getattr(exc, "report", None) or {}
+        report.setdefault("error", str(exc))
+        if as_json:
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            if report.get("tables"):
+                _render_retire(report)
+            print(f"gaia workspace retire: {exc}", file=sys.stderr)
+        return 2
+
+
+def _confirmed(action: str) -> bool:
+    try:
+        answer = input(f"gaia workspace: about to {action}. The DB is backed up first. "
+                       f"Type 'yes' to confirm: ")
+    except (EOFError, OSError):
+        answer = ""
+    if answer.strip().lower() != "yes":
+        print("Aborted (no confirmation; pass --yes).", file=sys.stderr)
+        return False
+    return True
+
+
 def _report_duplicate_identities() -> int:
     """Query the store and print workspaces rows with duplicate identity values.
 
@@ -185,7 +284,60 @@ def register(subparsers):
     info_p = actions.add_parser("info", help="Print structured info about the current workspace")
     info_p.set_defaults(func=_cmd_info)
 
-    merge_p = actions.add_parser("merge", help="Preview/execute workspace merge")
+    retire_p = actions.add_parser(
+        "retire",
+        help="Fold a workspace's rows in gaia.db into another (dry-run, backup, undo)",
+        description=(
+            "Retire <source> into <target>. Re-keys what the source owns -- projects "
+            "and their scanner rows, briefs (with their plans), context contracts, "
+            "integrations, scheduled tasks, notifications, memory and its links -- "
+            "to the target; type=user memory goes to the _gaia_user scope and "
+            "host-scoped memory to _gaia_host. History (episodes, episode_anomalies, "
+            "harness_events, agent_contract_handoffs) is not rewritten: an alias "
+            "source -> target is recorded, readers of the target include it, and "
+            "--workspace <source> resolves to the target. Before writing it backs "
+            "the database up with the sqlite backup API and writes an undo ledger "
+            "beside the backup (<db dir>/backups). A collision on a unique name "
+            "aborts without writing unless --on-conflict resolves it. Running it "
+            "again once done does nothing."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  gaia workspace retire me --into ws --dry-run\n"
+            "  gaia workspace retire me --into ws --on-conflict integrations=keep-target --yes\n"
+            "  gaia workspace retire --undo ~/.gaia/backups/gaia-pre-workspace-retire-...-ledger.json\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    retire_p.add_argument("source", nargs="?", help="Workspace to retire")
+    retire_p.add_argument("--into", metavar="TARGET", help="Workspace that takes its rows")
+    retire_p.add_argument(
+        "--on-conflict", action="append", default=[], metavar="TABLE=STRATEGY",
+        help="Resolve a name collision in memory, integrations or "
+             "project_context_contracts: keep-target drops the source row, "
+             "keep-source replaces the target row; both land in the undo ledger. "
+             "Repeatable.",
+    )
+    retire_p.add_argument(
+        "--undo", metavar="LEDGER",
+        help="Put back what the retire recorded in LEDGER changed",
+    )
+    retire_p.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", default=False,
+        help="Report per table what would move, collide or stay, writing nothing",
+    )
+    retire_p.add_argument(
+        "--yes", action="store_true", default=False,
+        help="Skip the interactive confirmation",
+    )
+    retire_p.add_argument("--json", action="store_true", default=False, help="JSON output")
+    retire_p.set_defaults(func=_cmd_retire)
+
+    merge_p = actions.add_parser(
+        "merge",
+        help="Preview/execute a merge of the files under ~/.gaia/workspaces "
+             "(rows in gaia.db: use `workspace retire`)",
+    )
     merge_p.add_argument("from_id", help="Source workspace identity")
     merge_p.add_argument("to_id", help="Target workspace identity")
     merge_p.add_argument(

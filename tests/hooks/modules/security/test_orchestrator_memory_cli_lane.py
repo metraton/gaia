@@ -308,6 +308,7 @@ NEW_DENIED_COMMANDS = [
     "context move-memory --from a --to b",
     "context move-project --decision movido",
     "workspace merge a b",
+    "workspace retire a --into b",
     "evidence add --brief demo --ac AC-1",
     "schedule register nightly",
     "schedule remove nightly",

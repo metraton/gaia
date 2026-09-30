@@ -12246,8 +12246,11 @@ def list_agent_contract_handoffs(
         clauses: list[str] = []
         params: list[Any] = []
         if workspace is not None:
-            clauses.append("workspace = ?")
-            params.append(workspace)
+            from gaia.store.workspace_retire import workspace_scope
+
+            scope = workspace_scope(con, workspace)
+            clauses.append(f"workspace IN ({','.join('?' * len(scope))})")
+            params.extend(scope)
         if agent_id is not None:
             clauses.append("agent_id = ?")
             params.append(agent_id)

@@ -671,6 +671,7 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("context", "move-memory"),
     ("context", "move-project"),
     ("workspace", "merge"),
+    ("workspace", "retire"),
     ("evidence", "add"),
     # Schedule's desired state and its materialization into the OS scheduler:
     # `list`/`show`/`status` read it, these three write it (and `sync` reaches

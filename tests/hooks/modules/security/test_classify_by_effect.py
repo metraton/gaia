@@ -112,6 +112,14 @@ CASES = [
     ("nice-checkout-B", "nice git checkout -B main origin/main", CONSENT),
     ("twin-timeout-read", "timeout 30 git status", FREE),
     ("twin-time-read", "time ls -la", FREE),
+    # -- Retiring a workspace re-keys its rows in gaia.db ---------------------
+    ("gaia-workspace-retire-apply", "gaia workspace retire me --into ws --yes", CONSENT),
+    ("gaia-workspace-retire-bare", "gaia workspace retire me --into ws", CONSENT),
+    ("gaia-workspace-retire-undo",
+     "gaia workspace retire --undo /home/someone/.gaia/backups/retire-ledger.json",
+     CONSENT),
+    ("twin-gaia-workspace-retire-dry-run",
+     "gaia workspace retire me --into ws --dry-run", FREE),
 ]
 
 

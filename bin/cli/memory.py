@@ -291,9 +291,13 @@ def _query_episodes_from_db(workspace: str | None = None) -> list[dict]:
         con = _store_connect()
         try:
             if ws:
+                from gaia.store.workspace_retire import workspace_scope
+
+                scope = workspace_scope(con, ws)
                 rows = con.execute(
-                    "SELECT * FROM episodes WHERE workspace = ? ORDER BY timestamp DESC",
-                    (ws,),
+                    f"SELECT * FROM episodes WHERE workspace IN ({','.join('?' * len(scope))}) "
+                    "ORDER BY timestamp DESC",
+                    scope,
                 ).fetchall()
             else:
                 rows = con.execute(
@@ -326,8 +330,12 @@ def _count_episodes_from_db(workspace: str | None = None) -> int:
         con = _store_connect()
         try:
             if ws:
+                from gaia.store.workspace_retire import workspace_scope
+
+                scope = workspace_scope(con, ws)
                 row = con.execute(
-                    "SELECT COUNT(*) FROM episodes WHERE workspace = ?", (ws,)
+                    f"SELECT COUNT(*) FROM episodes WHERE workspace IN ({','.join('?' * len(scope))})",
+                    scope,
                 ).fetchone()
             else:
                 row = con.execute("SELECT COUNT(*) FROM episodes").fetchone()

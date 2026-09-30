@@ -96,9 +96,17 @@ gaia paths db                   # Print only db_path()
 
 gaia workspace current          # Print resolved workspace identity
 gaia workspace info             # Structured info: identity, cwd, paths
-gaia workspace merge FROM TO    # Preview a workspace merge
+gaia workspace merge FROM TO    # Preview a merge of workspace files
 gaia workspace merge FROM TO --confirm  # Execute the merge
+gaia workspace retire SRC --into DST --dry-run  # Report what folding SRC's gaia.db rows into DST moves
+gaia workspace retire SRC --into DST --yes      # Fold them (backup + undo ledger; T3)
+gaia workspace retire --undo LEDGER --yes       # Put back what that retire changed
 ```
+
+`workspace retire` re-keys what SRC owns (projects, briefs, contracts,
+integrations, schedules, memory) and leaves its history rows keyed to SRC,
+recording the alias `SRC -> DST` that readers of DST follow
+(`gaia/store/workspace_retire.py`).
 
 `gaia paths` always invokes `ensure_layout()` before printing so that the
 directory tree under `~/.gaia/` (or `$GAIA_DATA_DIR`) is materialized on

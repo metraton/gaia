@@ -834,6 +834,11 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # Anchored at the leaf like `context prune-workspaces` because `release
         # publish` is already MUTATIVE by verb.
         MutativeAnchor(path=("release", "check")),
+        # `gaia workspace retire` re-keys a workspace's rows in gaia.db into
+        # another and records an alias; `--undo` reverses it. `workspace` and
+        # `retire` carry no verb in MUTATIVE_VERBS, so both would run free;
+        # `--dry-run` stays free as a SIMULATION_FLAG resolved above.
+        MutativeAnchor(path=("workspace", "retire")),
     ),
     "gcloud": (
         # `set-password` sits three tokens below the gcloud root, beyond the
