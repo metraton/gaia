@@ -157,7 +157,9 @@ def inspect_install(workspace: Path, dependency_spec: str | None, *,
 
     *channel* selects the record: ``"plugin"`` reads the plugin channel's, any
     other value the package channels' shared one. A record without a channel
-    predates the field and is a package-channel record.
+    predates the field and is a package-channel record. ``diagnostics`` are
+    drift; ``notes`` are observations that are not drift, such as a source
+    removed after the install.
     """
     workspace = workspace.resolve()
     plugin = channel == PLUGIN_CHANNEL
@@ -193,21 +195,29 @@ def inspect_install(workspace: Path, dependency_spec: str | None, *,
 
     source = Path(data["source_path"])
     behind = None
+    notes: list[str] = []
     try:
-        if source.resolve(strict=True) != source:
-            diagnostics.append("source path diverged")
-        current_git = git_metadata(source)
-        for key in ("commit", "branch", "dirty"):
-            if data.get(key) is None or current_git[key] is None:
-                diagnostics.append(f"source {key} unavailable")
-            elif current_git[key] != data[key]:
-                diagnostics.append(f"source {key} diverged")
-        if "source commit diverged" in diagnostics:
-            behind = commits_behind(source, data["commit"])
-        if source_snapshot_hash(source) != data["source_hash"]:
-            diagnostics.append("source content/hash diverged")
-    except (OSError, ValueError, RuntimeError) as exc:
+        source.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        notes.append(f"source removed since install: {source}")
+    except OSError as exc:
         diagnostics.append(f"source unavailable: {exc}")
+    else:
+        try:
+            if source.resolve(strict=True) != source:
+                diagnostics.append("source path diverged")
+            current_git = git_metadata(source)
+            for key in ("commit", "branch", "dirty"):
+                if data.get(key) is None or current_git[key] is None:
+                    diagnostics.append(f"source {key} unavailable")
+                elif current_git[key] != data[key]:
+                    diagnostics.append(f"source {key} diverged")
+            if "source commit diverged" in diagnostics:
+                behind = commits_behind(source, data["commit"])
+            if source_snapshot_hash(source) != data["source_hash"]:
+                diagnostics.append("source content/hash diverged")
+        except (OSError, ValueError, RuntimeError) as exc:
+            diagnostics.append(f"source unavailable: {exc}")
 
     expected = Path(data["tarball_path"]) if kind == "tarball" else source
     if not plugin:
@@ -232,4 +242,4 @@ def inspect_install(workspace: Path, dependency_spec: str | None, *,
             diagnostics.append("installed content/hash diverged")
     except (OSError, ValueError, RuntimeError) as exc:
         diagnostics.append(f"installed destination unavailable: {exc}")
-    return {**data, "behind": behind, "diagnostics": diagnostics}
+    return {**data, "behind": behind, "diagnostics": diagnostics, "notes": notes}

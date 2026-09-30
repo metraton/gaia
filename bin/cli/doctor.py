@@ -1709,9 +1709,11 @@ def _provenance_summary(record: dict) -> str:
     line = f"{record.get('channel', 'npm')} channel from {commit[:12]}"
     if record.get("behind"):
         line += f", {record['behind']} commit(s) behind the source HEAD"
-    diagnostics = record.get("diagnostics") or []
-    return f"{line}: " + ("; ".join(diagnostics) if diagnostics
-                          else "recorded source, artifact and destination match")
+    notes = record.get("notes") or []
+    findings = record.get("diagnostics") or [
+        "recorded artifact and destination match" if notes
+        else "recorded source, artifact and destination match"]
+    return f"{line}: " + "; ".join(notes + findings)
 
 
 @register_check("Install provenance", order=57)
@@ -1726,8 +1728,9 @@ def check_install_provenance(project_root: Path) -> dict:
     ) if record is not None]
     if records:
         diagnostics = [d for record in records for d in record["diagnostics"]]
+        noted = any(record.get("notes") for record in records)
         summary = "; ".join(_provenance_summary(record) for record in records)
-        result = _result(name, "error" if diagnostics else "pass", summary,
+        result = _result(name, "error" if diagnostics else "info" if noted else "pass", summary,
                          "Inspect provenance and reinstall from the selected source if intended")
         result["provenance"] = records[0]
         result["provenance_by_channel"] = {record.get("channel", "npm"): record for record in records}
