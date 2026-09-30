@@ -48,11 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # test_opencode_early_child_attestation compares the plugin against a
-      # baseline commit read with `git show`, which a shallow clone lacks.
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -78,5 +74,5 @@ jobs:
 
       - name: Run nightly-only tests
         run: >-
-          python -m pytest -q --tb=short
+          python -m pytest -q -rA --tb=short
           $(python -c "from tests.conftest import NIGHTLY_ONLY; print(' '.join(NIGHTLY_ONLY))")
