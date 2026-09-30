@@ -172,8 +172,11 @@ and does not close it has moved that thread's cost onto every session after it.
 - The CLI is the other teaching surface: `gaia memory add --help` carries the
   claim vocabulary and the three owners, and every write warns on the form and
   closes with a pointer back here.
-- `reference.md` contains exact CLI forms, enums, scope rules, retrieval,
-  checkpoint payloads, access telemetry, history coverage, and graph mechanics.
+- `reference.md` contains the write path (scope rules, enums, warnings) and
+  retrieval; three siblings hold the rest, loaded by subject:
+  `reference-curation.md` (lifecycle, links, checkpoint payloads, history
+  coverage, graph), `reference-defect-promotion.md` (the `gaia_system` defect
+  shape) and `reference-access-telemetry.md` (the read counters).
 - `examples.md` contains worked create, change, bug-as-rule and checkpoint cases.
 
 ## Anti-patterns

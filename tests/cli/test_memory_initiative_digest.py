@@ -246,7 +246,7 @@ class TestMemoryPendingByProject:
 # Whole-corpus retrieval: body projected, description untruncated
 # ---------------------------------------------------------------------------
 
-# The fixed body shape of a promoted defect (skills/memory/reference.md). The
+# The fixed body shape of a promoted defect (skills/memory/reference-defect-promotion.md). The
 # retrieval surface must return it intact: the consumer splits on "## " to
 # recover the fields, so a body truncated anywhere destroys the last field.
 _DEFECT_HEADINGS = ("## Symptom", "## Component", "## Evidence",
