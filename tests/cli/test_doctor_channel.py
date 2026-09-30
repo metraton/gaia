@@ -77,6 +77,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
     monkeypatch.delenv("GAIA_DB", raising=False)
     monkeypatch.setattr(doctor_mod, "_USER_SETTINGS_PATH", tmp_path / "user-settings.json", raising=False)
+    monkeypatch.setattr(doctor_mod, "_KNOWN_MARKETPLACES_PATH", tmp_path / "known_marketplaces.json", raising=False)
 
 
 @pytest.fixture
@@ -267,6 +268,43 @@ def test_workspace_false_beats_user_true_for_the_channel_too(tmp_path, workspace
     assert channels["plugin"] is False, channels
     assert doctor_mod._plugin_tree(workspace) is None
     assert r["severity"] == "warning" and "not enabled" in r["detail"], r
+
+
+def _gaia_dev_marketplace(tmp_path: Path, workspace: Path, monkeypatch, kind: str) -> "tuple[Path, Path]":
+    """gaia@gaia-dev enabled in the workspace, recorded with a versioned cache copy
+    as installPath (stale, no identity) and a marketplace location (live) of *kind*."""
+    home = tmp_path / "home"
+    stale = _package(home / ".claude" / "plugins" / "cache" / "gaia-dev" / "gaia" / "5.5.0")
+    live = _package(tmp_path / "dev-plugin")
+    (live / "agents").mkdir()
+    (live / "agents" / "gaia-orchestrator.md").write_text("# orchestrator\n")
+    (live / "settings.json").write_text(json.dumps({"agent": "gaia-orchestrator"}))
+    source = {"source": "directory", "path": str(live)} if kind == "directory" else {"source": kind, "repo": "o/r"}
+    plugins = home / ".claude" / "plugins"
+    (plugins / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {
+        "gaia@gaia-dev": [{"scope": "local", "projectPath": str(workspace), "installPath": str(stale)}],
+    }}))
+    (plugins / "known_marketplaces.json").write_text(json.dumps({
+        "gaia-dev": {"source": source, "installLocation": str(live)},
+    }))
+    monkeypatch.setattr(doctor_mod, "_INSTALLED_PLUGINS_PATH", plugins / "installed_plugins.json")
+    monkeypatch.setattr(doctor_mod, "_KNOWN_MARKETPLACES_PATH", plugins / "known_marketplaces.json", raising=False)
+    _settings(workspace, "settings.local.json", {"enabledPlugins": {"gaia@gaia-dev": True}})
+    return stale, live
+
+
+def test_a_directory_marketplace_is_read_where_the_host_loads_it(tmp_path, workspace, monkeypatch):
+    _, live = _gaia_dev_marketplace(tmp_path, workspace, monkeypatch, "directory")
+
+    assert doctor_mod._plugin_tree(workspace) == live
+    identity = doctor_mod.check_identity(workspace)
+    assert identity["severity"] == "pass", identity
+
+
+def test_a_git_marketplace_is_read_from_its_install_path(tmp_path, workspace, monkeypatch):
+    install_path, _ = _gaia_dev_marketplace(tmp_path, workspace, monkeypatch, "github")
+
+    assert doctor_mod._plugin_tree(workspace) == install_path
 
 
 def test_installed_but_none_enabled_says_so(tmp_path, workspace, monkeypatch):

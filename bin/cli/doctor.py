@@ -301,6 +301,8 @@ _NPM_PACKAGE_DIR = Path("node_modules") / "@jaguilar87" / "gaia"
 # Claude Code's record of every installed plugin and the project or user scope it serves.
 _INSTALLED_PLUGINS_PATH = Path("~/.claude/plugins/installed_plugins.json").expanduser()
 
+_KNOWN_MARKETPLACES_PATH = Path("~/.claude/plugins/known_marketplaces.json").expanduser()
+
 
 def _db_path() -> Path:
     """gaia.db as the store resolves it: GAIA_DB > GAIA_DATA_DIR > ~/.gaia."""
@@ -464,6 +466,23 @@ def _installed_gaia_installs() -> "dict[str, list]":
     return installed
 
 
+def _served_tree(key: str, install: dict) -> Path:
+    """The tree Claude Code loads *install* of *key* from.
+
+    A directory marketplace is loaded in place, so its installPath is only the
+    copy taken at the first install and goes stale on every rebuild.
+    """
+    known = _read_json(_KNOWN_MARKETPLACES_PATH)
+    marketplace = known.get(key.partition("@")[2]) if isinstance(known, dict) else None
+    if isinstance(marketplace, dict):
+        source = marketplace.get("source")
+        location = marketplace.get("installLocation")
+        if (isinstance(source, dict) and source.get("source") == "directory"
+                and isinstance(location, str) and location and Path(location).is_dir()):
+            return Path(location)
+    return Path(install["installPath"])
+
+
 def _plugin_tree(project_root: Path) -> "Path | None":
     """The plugin install that serves *project_root*, or None off the plugin channel.
 
@@ -481,12 +500,12 @@ def _plugin_tree(project_root: Path) -> "Path | None":
         return channels["plugin_root"]
     by_key = _installed_gaia_installs()
     enabled = [key for key, (on, _) in _gaia_plugin_decisions(project_root).items() if on]
-    installs = [install for key in enabled for install in by_key.get(key, [])]
-    local = [i for i in installs if i.get("scope") == "local"
+    installs = [(key, install) for key in enabled for install in by_key.get(key, [])]
+    local = [(k, i) for k, i in installs if i.get("scope") == "local"
              and Path(i.get("projectPath", "")).resolve() == project_root.resolve()]
-    user = [i for i in installs if i.get("scope") == "user"]
+    user = [(k, i) for k, i in installs if i.get("scope") == "user"]
     chosen = local + user
-    return Path(chosen[0]["installPath"]) if chosen else None
+    return _served_tree(*chosen[0]) if chosen else None
 
 
 def _shipped_hooks(channels: dict) -> dict:
