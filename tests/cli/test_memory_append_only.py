@@ -105,6 +105,16 @@ def test_add_replace_rewrites_and_keeps_the_prior_value_in_history(tmp_db, capsy
     assert "weekly" in _history_bodies(tmp_db)
 
 
+def test_an_abbreviation_of_replace_is_refused_by_the_parser(tmp_db, capsys):
+    """The signature matches the literal flag; `--repl` must not reach it."""
+    _seed(capsys)
+
+    with pytest.raises(SystemExit):
+        _add(capsys, "daily", "--repl")
+
+    assert _run(capsys, "show", SLUG)[1]["body"] == "weekly"
+
+
 def test_add_replace_re_anchors_a_row_written_under_the_wrong_project(tmp_db, capsys):
     assert _add(capsys, "weekly", "--project-ref=github.com/me/wrong")[0] == 0
 

@@ -3535,8 +3535,11 @@ def register(subparsers):
     # -- add ----------------------------------------------------------------
     from gaia.store.memory_claims import MEMORY_CLAIM_KINDS
 
+    # No abbreviations: the signature and the orchestrator lane both match the
+    # literal --replace, and an abbreviation argparse expanded would bypass both.
     add_p = actions.add_parser(
         "add",
+        allow_abbrev=False,
         help="Write a new curated memory row (DB-only)",
         description=(
             "Insert by (workspace, name); an existing name is refused unless "

@@ -1292,6 +1292,11 @@ def _validate_orchestrator_write(
         valid = _is_bounded_single_id(args, until, required=until)
     elif phrase == ("notifications", "cancel"):
         valid = _is_bounded_single_id(args, frozenset())
+    elif phrase == ("memory", "add") and "--replace" in args:
+        # Rewriting a row in place is delegated under T3 exactly like
+        # `memory delete`; the add parser disables abbreviation, so only
+        # this spelling reaches it.
+        return _explicitly_denied_reason(("memory", "add", "--replace"))
     else:
         # Memory's curator verbs, the two `scan` spellings and `paths` retain
         # their own mature CLI validation -- there is no coordination-shaped

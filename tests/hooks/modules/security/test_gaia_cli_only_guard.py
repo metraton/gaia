@@ -166,6 +166,26 @@ def test_every_previously_denied_write_verb_still_denied(command):
     assert reason is not None
 
 
+def test_memory_in_place_rewrite_is_excluded_like_delete():
+    """`add --replace` and `delete` are both delegated under T3 (skill
+    memory), so the orchestrator lane refuses both outright."""
+    allowed, reason = _check(
+        f"{_GAIA} memory add --name=foo --type=atom --body=x --workspace=me --replace"
+    )
+    assert allowed is False
+    assert "explicitly excluded" in reason
+    allowed, reason = _check(f"{_GAIA} memory delete foo --yes")
+    assert allowed is False
+    assert "explicitly excluded" in reason
+
+
+def test_memory_add_of_a_new_row_stays_on_the_orchestrator_lane():
+    allowed, reason = _check(
+        f"{_GAIA} memory add --name=foo --type=atom --body=x --workspace=me"
+    )
+    assert allowed is True, reason
+
+
 def test_approval_verbs_stay_categorically_denied_not_approvable():
     """Approval verbs specifically: no approval_id, no T3-style escape --
     reason text must say denied outright, matching the module's own
