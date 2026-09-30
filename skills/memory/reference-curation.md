@@ -46,11 +46,13 @@ gaia memory link atom_node_20 anchor_routing --kind=relates_to
 # Retire an obsolete decision without losing the history: NEW first, OLD second
 gaia memory link decision_new decision_old --kind=supersedes
 
-# Drop a link that turned out wrong
+# Drop a link that turned out wrong -- signed (T3), like delete
 gaia memory link a b --kind=relates_to --delete
 ```
 
-Both endpoints must exist as curated rows. The command is
+Removing an edge needs the same consent as `delete`: `memory_links` keeps no
+history, and dropping a `supersedes` edge puts the old row back into every
+injection. Both endpoints must exist as live curated rows. The command is
 idempotent: re-running the same link is a no-op. The four kinds map
 to the four reasons one note refers to another -- a generic
 relationship (`relates_to`), an obsolescence (`supersedes`), a
@@ -66,9 +68,10 @@ it replaces. Every injection drops the dst
 the newer row by birth (`created_at`, or `updated_at` before v50) -- a
 warning, since a corrected old row can legitimately be newer.
 
-Each end is found in `--workspace`, in the user and host scopes, or in the
-workspace holding it as a project row (`bin/cli/memory.py::_workspace_holding`,
-`ambiguous_slug` when two other workspaces do), so the two can have different
+Each end is found in `--workspace`, in the user and host scopes, or -- only
+when `--workspace` is absent -- in the workspace holding it as a project row
+(`bin/cli/memory.py::_workspace_holding`, `ambiguous_slug` when two other
+workspaces do), so the two can have different
 owners: a user row in `_gaia_user` supersedes its predecessor still under a
 project workspace. The link is stored under the src's workspace with the
 dst's in `memory_links.dst_workspace` (v61; NULL when both share one), which

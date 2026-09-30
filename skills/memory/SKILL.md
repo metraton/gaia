@@ -107,10 +107,12 @@ holds what is true.
    sweep is what finds it. An empty
    `gaia memory get-relevant --initiative` is the complete answer for that
    project: it reads every workspace by the canonical project key
-   (`gaia.store.reader::pending_threads_by_project`). A slug verb also reaches
-   a project's row stored under another workspace
+   (`gaia.store.reader::pending_threads_by_project`). Without `--workspace`, a
+   slug verb also reaches a project's row stored under another workspace
    (`bin/cli/memory.py::_workspace_holding`, refusing with `ambiguous_slug`
-   when two other workspaces hold it), but a search stays scoped to the
+   when two other workspaces hold it); a named `--workspace` is never swapped
+   for another, and `delete` never makes that jump -- it refuses with
+   `workspace_not_named` and names the `--workspace` to sign. A search stays scoped to the
    caller's workspace plus `_gaia_host` and `_gaia_user`
    (`bin/cli/memory.py::_reader_workspaces`), so an empty search or a missing
    row without a project is a scoping hypothesis — confirm with the right
@@ -140,10 +142,10 @@ holds what is true.
 
    | Operation | Handling |
    |---|---|
-   | `add`/`append`/`reclassify`/`link` on rows not about the user or a user decision | autonomous, brief report |
+   | `add`/`append`/`reclassify`/`link` (creating an edge) on rows not about the user or a user decision | autonomous, brief report |
    | `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the user scope, and a name already there is reported, never overwritten — a changed preference is a new row that supersedes it, which a link reaches from any workspace |
    | contradicting or superseding a user `decision_*` row | ask first |
-   | `add --replace`/`delete` | T3 approval flow; delegate to a specialist and never autoexecute |
+   | `add --replace`/`delete`/`link --delete` | T3 approval flow; delegate to a specialist and never autoexecute. `memory_links` keeps no history, so removing an edge is as unrecoverable as a delete |
    | `checkpoint` | autonomous after the milestone test; it is one atomic operation and remains all-or-nothing |
    | closing an objectively verifiable brief/plan | autonomous, report; run `gaia brief verify` by hand before `set-status` — `close` (which runs verification for free, `bin/cli/brief.py::_cmd_close`) is not on the orchestrator's `gaia` CLI lane, only `set-status` is |
    | promoting a TASK | never direct — dispatch `gaia-verifier` |

@@ -114,6 +114,38 @@ def test_append_to_a_deleted_row_is_refused(db):
     assert _rows(db)[("me", "atom_cadence")][0] == "weekly"
 
 
+def test_append_refuses_a_row_deleted_between_check_and_write(db, monkeypatch):
+    writer.upsert_memory("me", "atom_cadence", type="atom", body="weekly",
+                         initiative="bildwiz")
+    checked = writer._live_memory_row
+
+    def check_then_delete(con, workspace, name, columns):
+        row = checked(con, workspace, name, columns)
+        con.execute("UPDATE memory SET deleted_at = '2026-09-30T00:00:00Z' "
+                    "WHERE workspace = ? AND name = ?", (workspace, name))
+        con.commit()
+        return row
+
+    monkeypatch.setattr(writer, "_live_memory_row", check_then_delete)
+
+    with pytest.raises(ValueError, match="deleted before the append"):
+        writer.update_memory_field("me", "atom_cadence", "body", "daily")
+
+    assert _rows(db)[("me", "atom_cadence")][0] == "weekly"
+
+
+@pytest.mark.parametrize("deleted_end", ["src", "dst"])
+def test_link_refuses_a_deleted_row_at_either_end(db, deleted_end):
+    for name in ("atom_new", "atom_old"):
+        writer.upsert_memory("me", name, type="atom", body=name, initiative="bildwiz")
+    writer.delete_memory("me", "atom_new" if deleted_end == "src" else "atom_old")
+
+    with pytest.raises(ValueError, match=f"{deleted_end} memory .* is deleted"):
+        writer.insert_memory_link("me", "atom_new", "atom_old", "supersedes")
+
+    assert _links(db) == set()
+
+
 def test_update_memory_field_appends_and_never_overwrites(db):
     writer.upsert_memory("me", "atom_cadence", type="atom", body="weekly",
                          initiative="bildwiz")

@@ -2706,11 +2706,16 @@ def update_memory_field(
             raise ValueError("memory body cannot be empty")
 
         now = _now_iso()
-        con.execute(
+        cur = con.execute(
             f"UPDATE memory SET {field} = ?, updated_at = ? "
-            "WHERE workspace = ? AND name = ?",
+            "WHERE workspace = ? AND name = ? AND deleted_at IS NULL",
             (new_value, now, workspace, name),
         )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"memory '{name}' in workspace '{workspace}' was deleted before "
+                f"the append landed; nothing was written"
+            )
         con.commit()
         return {
             "status": "applied",
@@ -2860,7 +2865,7 @@ def set_memory_audience(
 # for callers that need to detect drift (e.g. reclassify pipelines verifying
 # that an edge they expected to be a one-time event did not silently re-fire).
 #
-# Existence enforcement: src_name MUST already exist in the ``memory`` table
+# Existence enforcement: src_name MUST already exist live in the ``memory`` table
 # for the workspace and dst_name for its own workspace (``dst_workspace``, the
 # same one unless the edge crosses owners). Links to non-existent slugs would
 # leave dangling edges that the injector cannot resolve -- the writer raises
@@ -2943,14 +2948,19 @@ def insert_memory_link(
             ("src", workspace, src_name), ("dst", dst_home, dst_name),
         ):
             row = con.execute(
-                "SELECT COALESCE(created_at, updated_at) AS born FROM memory "
-                "WHERE workspace = ? AND name = ?",
+                "SELECT COALESCE(created_at, updated_at) AS born, deleted_at "
+                "FROM memory WHERE workspace = ? AND name = ?",
                 (end_workspace, end_name),
             ).fetchone()
             if row is None:
                 raise ValueError(
                     f"{end} memory {end_name!r} not found in workspace "
                     f"{end_workspace!r}"
+                )
+            if row["deleted_at"] is not None:
+                raise ValueError(
+                    f"{end} memory {end_name!r} in workspace {end_workspace!r} "
+                    f"is deleted; a link never points at a deleted row"
                 )
             born[end] = row["born"]
 
