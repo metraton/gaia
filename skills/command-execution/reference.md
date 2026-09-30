@@ -60,10 +60,15 @@ python3 /abs/path/to/script.py
 ```
 
 `bash -c`, `sh -c`, and `eval` hide the real command inside a string argument,
-so the security classifier cannot see it — the runtime forces an "ask"
+so the security classifier cannot see it. A subagent that launches one is
+refused with the correct form in the message; the orchestrator gets a
 confirmation dialog even when the inner command would otherwise pass cleanly.
-Run the discrete command, or commit the logic to a script file and invoke it
-directly.
+Run the discrete command directly, or commit the logic to a script file and
+invoke it.
+
+The exit code is reported by the Bash tool itself: a non-zero code comes back as
+`Exit code N`, zero as a normal result. Never wrap a command in a shell
+(`bash -c`, `sh -c`, `eval`) or append `echo $?` to capture it.
 
 ### Absolute Paths (Rule 4)
 

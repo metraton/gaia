@@ -90,6 +90,10 @@ continues to enforce one atomic invocation per call.
 
 ## After the call
 
+The Bash tool reports the exit code itself. Never wrap a command in a shell
+(`bash -c`, `sh -c`, `eval`, `echo $?`) to capture it; a subagent that does is
+refused and told to run the command directly.
+
 Record the exact command and one result. On success, verify the desired state
 with a separate read-only command or file inspection. On failure, preserve the
 exact exit status, stderr/stdout excerpt, affected component, and remaining

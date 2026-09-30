@@ -333,13 +333,17 @@ class BashValidator:
             return command
         return "".join(pieces)
 
-    def _detect_indirect_execution(self, command: str) -> Optional[BashValidationResult]:
+    def _detect_indirect_execution(
+        self, command: str, is_subagent: bool = False,
+    ) -> Optional[BashValidationResult]:
         """Detect indirect execution wrappers that can bypass regex blocking.
 
         Commands like 'bash -c "az group delete"' hide the real command inside
         a string.  We classify these as T2 (mutative) so they require user
         approval via the nonce workflow, giving the human a chance to inspect
-        what will actually run.
+        what will actually run.  A shell wrapper launched by a subagent is
+        refused with the correct form instead: the user cannot meaningfully
+        answer a dialog for a shape the subagent should not have composed.
 
         Returns BashValidationResult if indirect execution detected, else None.
         """
@@ -400,6 +404,22 @@ class BashValidator:
                             f"Indirect execution detected: inner mutative verb "
                             f"'{inner_result.verb}' — requires confirmation"
                         )
+                if is_subagent:
+                    deny_msg = (
+                        "Shell wrapper refused (bash -c, sh -c, eval). Run the "
+                        "command directly as one command; the Bash tool reports "
+                        "its exit code itself, so do not wrap it in a shell to "
+                        "capture it. For multi-step logic, commit a script file "
+                        "and invoke that, or use python3 <file>."
+                    )
+                    return BashValidationResult(
+                        allowed=False,
+                        tier=SecurityTier.T2_DRY_RUN,
+                        reason=deny_msg,
+                        block_response=build_hook_permission_response(
+                            "deny", deny_msg,
+                        ),
+                    )
                 dialog_msg = (
                     "Indirect execution detected. The command uses a shell "
                     "wrapper (bash -c, eval, etc.) that can bypass "
@@ -964,7 +984,9 @@ class BashValidator:
                 ),
             )
 
-        indirect_result = self._detect_indirect_execution(command)
+        indirect_result = self._detect_indirect_execution(
+            command, is_subagent=is_subagent,
+        )
         if indirect_result is not None:
             return indirect_result
 
@@ -1269,7 +1291,9 @@ class BashValidator:
         # When validate() splits "cd /tmp && python3 -c '...'" into parts,
         # the python3 -c component needs the same indirect execution gate
         # that the full command gets in validate().
-        indirect_result = self._detect_indirect_execution(command)
+        indirect_result = self._detect_indirect_execution(
+            command, is_subagent=is_subagent,
+        )
         if indirect_result is not None:
             return indirect_result
 
