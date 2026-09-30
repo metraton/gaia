@@ -209,9 +209,13 @@ class TestSectionsModeInjection:
             # The scenario is pinned to the CONTENT budget the renderer is left
             # with, not to a raw number: the pointer's width is reserved off
             # max_chars first, so hardcoding the total re-tunes the fixture
-            # every time the pointer's wording changes.
+            # every time the pointer's wording changes. The anchor header's
+            # width counts toward the content budget for the same reason.
             "workspace": _WORKSPACE, "limit": 8,
-            "max_chars": 306 + memory_mod._MEMORY_POINTER_RESERVE,
+            "max_chars": (
+                273 + len(memory_mod._SECTION_HEADERS["anchor"])
+                + memory_mod._MEMORY_POINTER_RESERVE
+            ),
             "types": None, "sections": "anchor,thread_open",
             "initiative": None, "json": True,
             "func": memory_mod._cmd_get_relevant,
