@@ -153,8 +153,10 @@ if __name__ == "__main__":
         except Exception as _pin_exc:
             logger.debug("pinned_build computation failed (non-fatal): %s", _pin_exc)
 
-        # A compaction continues the same main thread, so the identity it
-        # started with stands even if the compact event omits agent_type; a
+        # A resume or compaction continues an attested main thread, so an event
+        # that omits agent_type keeps its identity and only a named agent
+        # replaces it. clear and fork start a new session id with nothing to
+        # keep, so they are judged by what the host names, like a startup. A
         # subagent's event never replaces the session's identity.
         source = event_data.get("source", "")
         identity = None
@@ -166,7 +168,8 @@ if __name__ == "__main__":
             _adapter = ClaudeCodeAdapter()
             _agent_type = _adapter.session_agent_type(event_data)
             identity = session_identity(_sid)
-            if _agent_type is not None and not (source == "compact" and identity):
+            keeps_identity = identity and not _agent_type and source in ("resume", "compact")
+            if _agent_type is not None and not keeps_identity:
                 identity = attest(
                     _agent_type,
                     build=(_pinned_build or {}).get("hooks_hash") or "unknown",

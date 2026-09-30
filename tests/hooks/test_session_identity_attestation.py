@@ -118,14 +118,26 @@ def test_a_cleared_or_forked_session_is_attested_and_reborn(env, source):
     assert _prompt(workspace, values)["decision"] == "block"
 
 
-def test_compaction_keeps_the_identity_the_session_started_with(env):
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_a_continuation_without_agent_type_keeps_the_attested_identity(env, source):
     workspace, values = env
     _start(workspace, values, agent_type="gaia:gaia-orchestrator")
 
-    _start(workspace, values, source="compact")
+    _start(workspace, values, source=source)
 
     assert _attestation(values)["agent_type"] == "gaia-orchestrator"
     assert "decision" not in _prompt(workspace, values)
+
+
+@pytest.mark.parametrize("source", ["resume", "compact"])
+def test_a_continuation_naming_another_agent_replaces_the_identity(env, source):
+    workspace, values = env
+    _start(workspace, values, agent_type="gaia:gaia-orchestrator")
+
+    _start(workspace, values, source=source, agent_type="general-purpose")
+
+    assert _attestation(values)["agent_type"] == "general-purpose"
+    assert _prompt(workspace, values)["decision"] == "block"
 
 
 def test_subagent_event_does_not_replace_the_session_identity(env):
