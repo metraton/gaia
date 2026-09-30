@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook — refreshes session liveness and emits sparse notices."""
+"""UserPromptSubmit hook — refreshes liveness, gates prompts on the session identity, emits notices."""
 
 import sys
 import json
@@ -29,11 +29,9 @@ def _extract_user_prompt(raw_input: str) -> str:
     """
     try:
         event = json.loads(raw_input)
-        # Try known field names from Claude Code hook events
         for field in ("user_message", "prompt", "message", "content"):
             if field in event and isinstance(event[field], str):
                 return event[field]
-        # Check nested hookEventInput
         hook_input = event.get("hookEventInput", {})
         if isinstance(hook_input, dict):
             for field in ("user_message", "prompt", "message", "content"):
@@ -82,9 +80,6 @@ if __name__ == "__main__":
     try:
         raw_input = sys.stdin.read()
 
-        # Parse the event JSON once so subsequent helpers can read fields
-        # (session_id, prompt). Defensive: an unreadable payload becomes
-        # an empty dict so the rest of the hook still runs.
         try:
             event_data = json.loads(raw_input) if raw_input else {}
             if not isinstance(event_data, dict):
@@ -92,38 +87,34 @@ if __name__ == "__main__":
         except (json.JSONDecodeError, TypeError):
             event_data = {}
 
-        # Refresh liveness heartbeat for this session. Throttled inside
-        # touch_session(), fully non-fatal. The session_id must come from
-        # the stdin event because CLAUDE_SESSION_ID is not guaranteed to
-        # be exported into the hook subprocess.
+        # The session id comes from the stdin event: CLAUDE_SESSION_ID is not
+        # guaranteed to be exported into the hook subprocess.
+        from modules.core.state import resolve_session_id
+        session_id = resolve_session_id(event_data)
+
         try:
             from modules.session.session_registry import touch_session
-            from modules.core.state import resolve_session_id
-            touch_session(resolve_session_id(event_data))
+            touch_session(session_id)
         except Exception as _hb_exc:
             logger.debug("touch_session failed (non-fatal): %s", _hb_exc)
 
-        # Build sparse additionalContext. DB-backed routing remains available
-        # to diagnostic tools but is no longer injected into each user turn.
-        # Identity now lives in agents/gaia-orchestrator.md (agent definition).
-        # Pending approvals moved to SessionStart via session_manifest
-        # (Phase 4) -- they are session-scoped, not turn-scoped, so
-        # re-evaluating on every prompt added noise without changing the
-        # answer.
+        try:
+            from modules.session.identity_attestation import prompt_block_reason
+            from modules.session.session_registry import session_identity
+
+            block_reason = prompt_block_reason(session_identity(session_id))
+        except Exception as _id_exc:
+            logger.warning("identity gate unavailable (prompt allowed): %s", _id_exc)
+            block_reason = None
+        if block_reason:
+            print(json.dumps({"decision": "block", "reason": block_reason}))
+            sys.exit(0)
+
         context_parts = []
 
-        # Prompt extraction is retained for liveness diagnostics only.
-        prompt_text = _extract_user_prompt(raw_input)
-
-        # NOTE: Approval activation does not happen here. An answered
-        # AskUserQuestion arrives on PostToolUse, not
-        # UserPromptSubmit, so approval detection lives there now.
-
-        if not prompt_text:
+        if not _extract_user_prompt(raw_input):
             logger.info("Could not extract user prompt")
 
-        # Counter of notifications due now. Cheap (one COUNT) and zero-token
-        # when there are none.
         notif_counter = _build_notifications_counter()
         if notif_counter:
             context_parts.append(notif_counter)

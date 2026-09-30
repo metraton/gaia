@@ -26,6 +26,13 @@ Storage format:
                 "pinned_build": {              # optional; added by session_start
                     "hooks_path": "<realpath of the running .claude/hooks>",
                     "hooks_hash": "<8-hex content digest of that hooks tree>"
+                },
+                "identity": {                  # optional; added by session_start
+                    "agent_type": "<agent the host started, '' for none>",
+                    "build": "<hooks_hash of the running build>",
+                    "channel": "<plugin|npm>",
+                    "workspace": "<cwd of the session>",
+                    "attested_at": "<ISO-8601 string>"
                 }
             }
         }
@@ -61,6 +68,7 @@ Public API:
     register_session(session_id, started_at=None, is_headless=False) -> None
     unregister_session(session_id) -> None
     is_session_alive(session_id) -> bool
+    session_identity(session_id) -> dict | None
     touch_session(session_id) -> None
     get_live_sessions(include_headless=True) -> set[str]
     cleanup_stale_entries(grace_seconds=86400) -> int
@@ -183,6 +191,7 @@ def register_session(
     started_at: Optional[str] = None,
     is_headless: bool = False,
     pinned_build: Optional[dict] = None,
+    identity: Optional[dict] = None,
 ) -> None:
     """Register a session as active in the user-scoped registry.
 
@@ -210,6 +219,8 @@ def register_session(
             ``--continue``/``--resume`` or a ``/compact``, since the
             SessionStart matcher is ``startup|resume|compact`` and this hook
             re-pins on every fire regardless of ``source``.
+        identity: Optional attestation of the agent the host started this
+            session as (``identity_attestation.attest``); omitted -> none kept.
 
     Raises:
         SessionRegistryError: If session_id is empty or saving fails.
@@ -232,6 +243,8 @@ def register_session(
             "hooks_path": str(pinned_build.get("hooks_path", "")),
             "hooks_hash": str(pinned_build["hooks_hash"]),
         }
+    if isinstance(identity, dict):
+        entry["identity"] = dict(identity)
 
     data = _load_registry()
     data["sessions"][session_id] = entry
@@ -277,6 +290,15 @@ def is_session_alive(session_id: str) -> bool:
         return False
     data = _load_registry()
     return session_id in data["sessions"]
+
+
+def session_identity(session_id: str) -> Optional[dict]:
+    """Return the identity attestation recorded for *session_id*, or None."""
+    if not session_id:
+        return None
+    entry = _load_registry()["sessions"].get(session_id)
+    identity = entry.get("identity") if isinstance(entry, dict) else None
+    return identity if isinstance(identity, dict) else None
 
 
 def touch_session(session_id: str) -> None:

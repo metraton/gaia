@@ -2342,7 +2342,7 @@ def check_symbol_anchors(project_root: Path) -> dict:
 
 @register_check("Identity", order=60)
 def check_identity(project_root: Path) -> dict:
-    """Check orchestrator agent is configured.
+    """Check orchestrator agent is configured, and that the host last ran it here.
 
     On the plugin channel the orchestrator file and the ``agent`` default come
     from the plugin; a workspace ``agent`` field still overrides that default,
@@ -2381,11 +2381,34 @@ def check_identity(project_root: Path) -> dict:
     if claude_md.is_file():
         infos.append("Legacy CLAUDE.md present (no longer used)")
 
+    attestation = _last_workspace_attestation(project_root)
+    if attestation is None:
+        ran = "no session attested in this workspace yet"
+    else:
+        ran = (f"last session here ran as {attestation.get('agent_type') or 'no agent'} "
+               f"(build {attestation.get('build')}, {attestation.get('channel')} channel, "
+               f"{attestation.get('attested_at')})")
+        if attestation.get("agent_type") != "gaia-orchestrator":
+            issues.append(f"{ran}; start a new session once the identity is fixed")
+
     if issues:
         return _result("Identity", "error", "; ".join(issues), "Run `gaia scan` or `gaia update`")
     if infos:
-        return _result("Identity", "info", f"Orchestrator configured -- {'; '.join(infos)}")
-    return _result("Identity", "pass", "Orchestrator agent configured")
+        return _result("Identity", "info", f"Orchestrator configured -- {'; '.join(infos)}; {ran}")
+    return _result("Identity", "pass", f"Orchestrator agent configured; {ran}")
+
+
+def _last_workspace_attestation(project_root: Path) -> dict | None:
+    """The newest identity a SessionStart in *project_root* attested, or None."""
+    registry = _read_json(_SESSION_REGISTRY_PATH) if _SESSION_REGISTRY_PATH.is_file() else None
+    sessions = registry.get("sessions") if isinstance(registry, dict) else None
+    workspace = str(project_root.resolve())
+    attested = [
+        entry["identity"] for entry in (sessions or {}).values()
+        if isinstance(entry, dict) and isinstance(entry.get("identity"), dict)
+        and entry["identity"].get("workspace") == workspace
+    ]
+    return max(attested, key=lambda identity: str(identity.get("attested_at", "")), default=None)
 
 
 def _load_host_attestation():
