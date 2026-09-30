@@ -153,32 +153,6 @@ if __name__ == "__main__":
         except Exception as _pin_exc:
             logger.debug("pinned_build computation failed (non-fatal): %s", _pin_exc)
 
-        # A resume or compaction continues an attested main thread, so an event
-        # that omits agent_type keeps its identity and only a named agent
-        # replaces it. clear and fork start a new session id with nothing to
-        # keep, so they are judged by what the host names, like a startup. A
-        # subagent's event never replaces the session's identity.
-        source = event_data.get("source", "")
-        identity = None
-        try:
-            from adapters.claude_code import ClaudeCodeAdapter
-            from modules.session.identity_attestation import attest
-            from modules.session.session_registry import session_identity
-
-            _adapter = ClaudeCodeAdapter()
-            _agent_type = _adapter.session_agent_type(event_data)
-            identity = session_identity(_sid)
-            keeps_identity = identity and not _agent_type and source in ("resume", "compact")
-            if _agent_type is not None and not keeps_identity:
-                identity = attest(
-                    _agent_type,
-                    build=(_pinned_build or {}).get("hooks_hash") or "unknown",
-                    channel=_adapter.detect_distribution().channel,
-                    workspace=str(Path.cwd()),
-                )
-        except Exception as _id_exc:
-            logger.warning("identity attestation failed (non-fatal): %s", _id_exc)
-
         # Register this session in the user-scoped session registry.
         # Heartbeat-only liveness: PID isn't tracked because the hook
         # process is ephemeral. Failures are non-fatal — a missing
@@ -190,7 +164,6 @@ if __name__ == "__main__":
                     session_id=_sid,
                     is_headless=_is_headless,
                     pinned_build=_pinned_build,
-                    identity=identity,
                 )
         except SessionRegistryError as _reg_exc:
             logger.warning("session_registry register failed (non-fatal): %s", _reg_exc)
@@ -363,20 +336,8 @@ if __name__ == "__main__":
         # scan/memory/environment content on every compaction would be both
         # redundant (already delivered at true session start) and heavier
         # than the lightweight refresh this moment calls for.
-        identity_line = ""
-        if identity is not None:
-            try:
-                from modules.session.identity_attestation import status_line
-                from modules.session.session_manifest import _read_gaia_version
-
-                identity_line = status_line(identity, _read_gaia_version() or "?")
-            except Exception as _line_exc:
-                logger.warning("identity line failed (non-fatal): %s", _line_exc)
-        notices = {
-            "## Identity": identity_line,
-            "## Database upgrade": upgrade_notice,
-            "## Data home": data_home_notice,
-        }
+        source = event_data.get("source", "")
+        notices = {"## Database upgrade": upgrade_notice, "## Data home": data_home_notice}
         shown = {title: text for title, text in notices.items() if text}
         alarms = [f"{title}\n{text}" for title, text in shown.items()]
         additional_context = ""

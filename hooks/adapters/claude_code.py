@@ -1252,18 +1252,6 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         return HookResponse(output=output, exit_code=0)
 
-    def session_agent_type(self, raw: dict) -> Optional[str]:
-        """Return the canonical agent the host runs the session's main thread as.
-
-        ``""`` when the host named none; ``None`` when the event fires inside a
-        subagent, whose agent is not the session's identity.
-        """
-        if raw.get("agent_id"):
-            return None
-        from gaia.agent_identity import canonical_agent_name
-
-        return canonical_agent_name(raw.get("agent_type"))
-
     # ------------------------------------------------------------------ #
     # detect_distribution: declare the host's channel + root (NPM vs PLUGIN)
     # ------------------------------------------------------------------ #

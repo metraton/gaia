@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook — refreshes liveness, gates prompts on the session identity, emits notices."""
+"""UserPromptSubmit hook — refreshes session liveness and emits sparse notices."""
 
 import sys
 import json
@@ -97,18 +97,6 @@ if __name__ == "__main__":
             touch_session(session_id)
         except Exception as _hb_exc:
             logger.debug("touch_session failed (non-fatal): %s", _hb_exc)
-
-        try:
-            from modules.session.identity_attestation import prompt_block_reason
-            from modules.session.session_registry import session_identity
-
-            block_reason = prompt_block_reason(session_identity(session_id))
-        except Exception as _id_exc:
-            logger.warning("identity gate unavailable (prompt allowed): %s", _id_exc)
-            block_reason = None
-        if block_reason:
-            print(json.dumps({"decision": "block", "reason": block_reason}))
-            sys.exit(0)
 
         context_parts = []
 

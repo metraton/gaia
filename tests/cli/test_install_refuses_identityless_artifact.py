@@ -51,9 +51,30 @@ def test_plugin_channel_refuses_a_tree_without_the_identity(tmp_path, dropped):
     assert not directory.exists()
 
 
-def test_package_install_refuses_a_package_without_the_orchestrator(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("agent_text", [
+    "---\nname: developer\n---\n",
+    "---\ndescription: name: gaia-orchestrator\n---\n",
+    "name: gaia-orchestrator\n",
+])
+def test_plugin_channel_refuses_an_orchestrator_file_declaring_another_name(tmp_path, agent_text):
+    files = {**_PLUGIN_FILES, "agents/gaia-orchestrator.md": agent_text}
+    directory = tmp_path / "plugin"
+
+    result = _dev_plugin.extract_plugin(_tarball(tmp_path, files), directory)
+
+    assert result["action"] == "error"
+    assert "does not declare name: gaia-orchestrator" in result["details"]
+    assert not directory.exists()
+
+
+@pytest.mark.parametrize("agent_text", [None, "---\nname: developer\n---\n"])
+def test_package_install_refuses_a_package_without_the_orchestrator(
+    tmp_path, monkeypatch, capsys, agent_text,
+):
     package = tmp_path / "package"
     (package / "agents").mkdir(parents=True)
+    if agent_text is not None:
+        (package / "agents" / "gaia-orchestrator.md").write_text(agent_text)
     monkeypatch.setattr(_install_helpers, "_PACKAGE_ROOT", package)
     workspace = tmp_path / "ws"
     workspace.mkdir()

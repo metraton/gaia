@@ -192,7 +192,6 @@ def register_session(
     started_at: Optional[str] = None,
     is_headless: bool = False,
     pinned_build: Optional[dict] = None,
-    identity: Optional[dict] = None,
 ) -> None:
     """Register a session as active in the user-scoped registry.
 
@@ -220,8 +219,6 @@ def register_session(
             ``--continue``/``--resume`` or a ``/compact``, since the
             SessionStart matcher is ``startup|resume|clear|compact|fork`` and this hook
             re-pins on every fire regardless of ``source``.
-        identity: Optional attestation of the agent the host started this
-            session as (``identity_attestation.attest``); omitted -> none kept.
 
     Raises:
         SessionRegistryError: If session_id is empty or saving fails.
@@ -244,8 +241,6 @@ def register_session(
             "hooks_path": str(pinned_build.get("hooks_path", "")),
             "hooks_hash": str(pinned_build["hooks_hash"]),
         }
-    if isinstance(identity, dict):
-        entry["identity"] = dict(identity)
 
     data = _load_registry()
     data["sessions"][session_id] = entry
@@ -291,15 +286,6 @@ def is_session_alive(session_id: str) -> bool:
         return False
     data = _load_registry()
     return session_id in data["sessions"]
-
-
-def session_identity(session_id: str) -> Optional[dict]:
-    """Return the identity attestation recorded for *session_id*, or None."""
-    if not session_id:
-        return None
-    entry = _load_registry()["sessions"].get(session_id)
-    identity = entry.get("identity") if isinstance(entry, dict) else None
-    return identity if isinstance(identity, dict) else None
 
 
 def touch_session(session_id: str) -> None:
