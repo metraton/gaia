@@ -512,11 +512,15 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
     """Put back what the retire recorded in ``ledger_path`` wrote.
 
     A row that has left the workspace the retire moved it to since then is
-    not pulled back; it is reported under ``diverged``.
+    not pulled back; it is reported under ``diverged``. Rows written since the
+    retire are never deleted: they stay where they are, or, when they conflict
+    with a row the undo would put back (same key, or a child of a moved
+    project), the undo is refused whole.
 
     Raises:
-        WorkspaceRetireError: the ledger is unreadable, or its retire is not
-            the one in force (never applied, or already undone).
+        WorkspaceRetireError: the ledger is unreadable, its retire is not
+            the one in force (never applied, or already undone), or rows
+            written since conflict with what it would put back.
     """
     from gaia.paths import db_path as _db_path
     from gaia.store.writer import _connect
@@ -589,6 +593,15 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
                 if _references(con, workspace) == 0:
                     con.execute("DELETE FROM workspaces WHERE name = ?", (workspace,))
             con.commit()
+        except sqlite3.IntegrityError as exc:
+            con.rollback()
+            report["mode"] = "refused"
+            raise WorkspaceRetireError(
+                f"cannot undo the retire of {source!r}: rows written since then conflict with "
+                f"the rows it would put back ({exc}). Nothing was changed; the database "
+                f"as it was is at {backup}",
+                report,
+            ) from exc
         except BaseException:
             con.rollback()
             raise
