@@ -33,8 +33,9 @@ Construction patterns for building Gaia components. Every component type follows
    `gaia-orchestrator.md`'s frontmatter carries no `skills:` field.)
    |
 4. SubagentStart hook claims the born row and injects the KERNEL:
-   "# Your Contract" (incl. project + can_read/can_write menu),
-   "# Your CLI", "# What I know about you". Project context is NOT
+   "# Your Contract" (incl. project, its declared workflow when
+   there is one, can_read/can_write menu), "# Your CLI",
+   "# How the user works". Project context is NOT
    preloaded -- the agent pulls sections on demand, with the verbs in
    agent-protocol/read-map.md, within its can_read menu.
    |
@@ -88,7 +89,7 @@ cli:
 
 `skills:` and `cli:` are read by two different parties, not one -- this is why the example shows both. `skills:` is preloaded by the HOST (Claude Code), not by any Gaia hook, and only for a dispatched SUBAGENT: the primary agent (`gaia-orchestrator.md`) carries no `skills:` field, because Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread. `cli:` is the one frontmatter field Gaia itself reads, at subagent birth (`context/kernel_builder.py::_agent_cli_extras`): its lines are appended verbatim to the "# Your CLI" kernel block. It is optional and no shipped agent declares it yet -- shown here so the two fields' different owners (host vs. Gaia) are visible side by side, not to imply it is required.
 
-A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by the host from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # What I know about you, rendered from the born row) + orchestrator request. The primary agent skips the skills step entirely. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand -- the verb that reaches them, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
+A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by the host from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # How the user works, rendered from the born row) + orchestrator request. The primary agent skips the skills step entirely. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand -- the verb that reaches them, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
 
 ## Routing Patterns
 

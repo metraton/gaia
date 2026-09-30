@@ -11,7 +11,8 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 ## Evidence ladder
 
 1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
-   `project`, the `can_read` menu) and `# What I know about you`. Do not
+   `project` and its declared `workflow`, the `can_read` menu) and
+   `# How the user works`. Do not
    re-derive facts it already supplies.
 2. Pull what the goal needs from the substrate on demand -- none of it is
    preloaded, and a coordinate in the goal (a contract id, a memory slug, a

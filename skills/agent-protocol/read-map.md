@@ -55,7 +55,7 @@ persisting. It belongs to the write cycle, not to a coordinate; that cycle is in
 | `gaia memory search '<term>'` | `--workspace` | FTS5 across curated rows and episodes, scored. The handle to use when you have a topic and not a name. |
 | `gaia memory list` | `--type project\|user\|feedback\|atom\|decision\|negative`, `--json` | Name, type and one-line description per row -- the index, not the bodies. |
 | `gaia memory story <slug>` | `--workspace` | The row's lineage as one fused timeline: related/derivative/graduated nodes with depth, then events in order. |
-| `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` or `--project <name>` | The compact block SessionStart injects, on demand; with a project, its whole live-pending set from every workspace. |
+| `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` or `--project <name>` | The compact block SessionStart injects, on demand; with a project, its whole live-pending set from every workspace; `--initiative <k> --sections anchor` returns that project's live standing notes with their bodies, from every workspace, a superseded one excluded. |
 | `gaia memory stats` / `gaia memory conflicts` | -- | Counts and FTS coverage; contradiction scan across rows. |
 | `gaia memory episode-show <episode_id>` | -- | One episode with score, age, tags and retrieval count. Episode ids come from `gaia query --surface episodes`. |
 

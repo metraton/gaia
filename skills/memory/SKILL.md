@@ -61,8 +61,10 @@ the answer decides who will ever read it:
   the user's, with no project, and it reaches every session and every agent.
 - **Is it a short, fixed value an agent working one project must obey without
   reading anything else** -- how that project integrates, where it releases?
-  Then it is a declared fact of that project, not memory: a rule an agent has
-  to go looking for is a rule it will not follow.
+  Then it is a declared fact of that project, not memory: the `workflow` key of
+  its `project_identity` entry, which every specialist dispatched to that
+  project receives in its kernel. A rule an agent has to go looking for is a
+  rule it will not follow.
 - **Is it history, reasons or something still owed about one project?** Then
   it is that project's memory, read when that project is worked on.
 
@@ -84,14 +86,18 @@ holds what is true.
 1. **Know what a session is born with, then sweep what you are about to
    touch.** Every session opens with four sections: the projects, each with its
    live-pending count; the environment it stands in; the user; and the user's
-   preferences. The last two are the user's standing rows, whole, and every
-   dispatched subagent receives the same ones. Project memory — anchors,
-   threads, their bodies — never loads at birth: a count is a signal to ask,
-   not the corpus. It arrives when that project is worked on: before writing
-   into an initiative, or whenever the question is what it still owes, read its
-   whole live-pending set with `gaia memory get-relevant --initiative=<key>`,
-   uncapped and with bodies. A reader who only sees the counts can add rows and
-   never retire one. `gaia session preview` shows the birth block without
+   preferences. The last two are the user's standing rows, whole; every
+   dispatched subagent receives them too, minus the rows whose audience is the
+   orchestrator alone, so a row about how the orchestrator should report spends
+   no specialist's attention. Project memory — anchors, threads, their bodies —
+   never loads at birth and never reaches a specialist's kernel: a count is a
+   signal to ask, not the corpus, and what a dispatched turn needs of it travels
+   as a reference in its goal. It arrives when that project is worked on: before
+   writing into an initiative, or whenever the question is what it still owes,
+   read its whole live-pending set with
+   `gaia memory get-relevant --initiative=<key>`, uncapped and with bodies, and
+   its standing notes with `--sections anchor` added. A reader who only sees the
+   counts can add rows and never retire one. `gaia session preview` shows the birth block without
    recording anything.
 2. **Search before writing; do not read silence as absence.** Find the topic's
    existing owner and its lineage — a duplicate divides relevance instead of

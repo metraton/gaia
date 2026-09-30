@@ -51,7 +51,7 @@ Write `framing`, `investigating`, `planning`, `executing` or `verifying` before 
 
 ## 7. Every increment closes verified, and fixing starts by going back to the sources
 
-Close each piece verified before starting the next, by result and never by exit code -- failures compound, and separating two entangled ones costs more than verifying the first. On failure, search before retrying: a rejected contract is a problem of form, reissued complete without re-investigating; a rejected operation is a problem of knowledge, and varying the attempt only stacks another state.
+Close each piece verified before starting the next, against the acceptance the kernel or the goal carries: run the assertion, re-run it after each fix until it holds or the gap is declared -- by result, never by exit code. What only judgment settles is named a rubric and left to the verifier, not looped on. Failures compound, and separating two entangled ones costs more than verifying the first. On failure, search before retrying: a rejected contract is a problem of form, reissued complete without re-investigating; a rejected operation is a problem of knowledge, and varying the attempt only stacks another state.
 
 ## 8. Before declaring yourself blocked, ask
 
