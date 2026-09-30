@@ -240,6 +240,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("context", "prune-workspaces"),
             ("scan",),
             ("release", "check"),
+            ("workspace", "retire"),
         }
 
     def test_cloud_cli_paths_are_the_reviewed_mutative_forms(self):
