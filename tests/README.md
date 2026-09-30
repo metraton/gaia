@@ -96,11 +96,11 @@ is expected to fail, with `strict=True`. Setup errors and nonempty incorrect con
 remain failures; restored current-contract context is an unexpected pass requiring graduation.
 
 The deferred debt is `feedback_opencode_compaction_contexto_ambiguo_tras_resume`.
-The retained comparison runs baseline `c407aadd643051d320a3fc90ffbcbe3fdf75cb5a`
-in legacy mode and the candidate against the same backend. Empty compaction context
-was observed in both (comparison handoff `a9a53c512721e9aad.078a62d3492c`);
-transport delivery does not claim that context recovery is healthy. Deferring this
-specific debt does not waive transport or grant failures.
+A one-off comparison against baseline `c407aadd643051d320a3fc90ffbcbe3fdf75cb5a`
+(a commit that exists on no remote) observed empty compaction context in both
+plugins (comparison handoff `a9a53c512721e9aad.078a62d3492c`); the test now runs
+only the current plugin. Transport delivery does not claim that context recovery
+is healthy. Deferring this specific debt does not waive transport or grant failures.
 
 **Running the pyramid:**
 
