@@ -1630,15 +1630,14 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 "       class, status, project_ref "
                 "FROM memory "
                 f"WHERE workspace IN ({ws_ph}) "
-                # scan-v2 SV3: a soft-deleted (tombstoned) row must not be
+                # A soft-deleted (tombstoned) row must not be
                 # injected into the SessionStart memory block.
                 "  AND deleted_at IS NULL "
                 f"  AND {not_superseded()} "
             )
             base_params: list = list(section_workspaces)
 
-            # v32: cwd anchoring removed. Rows are workspace-scoped only; the
-            # launch directory neither filters nor prioritises them. order_prefix
+            # The launch directory neither filters nor prioritises rows. order_prefix
             # is kept as an empty string so the ORDER BY clauses below stay
             # unchanged in shape.
             order_prefix = ""
@@ -1707,7 +1706,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
     items_flat: list[dict] = []
 
-    # P1 injection telemetry bookkeeping, kept OUT of items_flat/block on
+    # Injection telemetry bookkeeping, kept OUT of items_flat/block on
     # purpose: this renderer SELECTS more rows than it ultimately EMITS (the
     # char-budget trim below removes lines from `lines` after items_flat is
     # already built), and injection must count only what a reader actually
@@ -1908,7 +1907,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
         # Space was reserved above, so this always fits under max_chars.
         block = block + _overflow_footer(total_dropped)
 
-    # P1 injection telemetry: bump only rows that survived every cap above
+    # Injection telemetry: bump only rows that survived every cap above
     # (the carry_forward sub-cap already excluded, the char-budget trim
     # mirrored into telemetry_names_by_section) -- one bump per row a reader
     # actually saw, never per row merely selected. Fired after the block/
@@ -1944,10 +1943,10 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
 
 # ---------------------------------------------------------------------------
-# v32: initiative-grouped renderers (transversal digest + project mode)
+# Initiative-grouped renderers (transversal digest + project mode)
 # ---------------------------------------------------------------------------
 
-# "Pending vivo" query: LIVE pending threads only. class='thread' AND status IN
+# Live pending query: LIVE pending threads only. class='thread' AND status IN
 # ('carry_forward','open) -- anchors, logs, and resolved/snapshot threads are
 # excluded BY DESIGN (a worklist, not a knowledge dump). Soft-deleted and
 # supersedes-destination rows are excluded exactly as the section renderer does.
@@ -2235,7 +2234,7 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     lines: list[str] = []
     items: list[dict] = []
     if rows:
-        lines.extend([f"## Memory — Pendientes de {label}", ""])
+        lines.extend([f"## Memory — Pending in {label}", ""])
     for r in rows:
         name = r.get("name") or ""
         description = r.get("description") or ""
@@ -2389,7 +2388,7 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
             if len(block) + len(footer) <= max_chars:
                 block = block + footer
 
-    # P1 injection telemetry: the char-budget trim above always removes from
+    # Injection telemetry: the char-budget trim above always removes from
     # the TAIL of the remaining "- " lines, in the same order items_flat was
     # appended (one append per bullet, strictly left to right), so the
     # surviving rendered rows are exactly items_flat's first

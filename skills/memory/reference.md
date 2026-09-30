@@ -200,8 +200,8 @@ this section holds the query mechanics behind it.
   Its query filters `class='thread' AND status IN ('carry_forward',
   'open')`, so an `anchor` row is invisible to it regardless of budget.
   Its own overflow mechanism trims whole initiatives from the tail
-  (top-K initiatives, with a global "+N más" and a per-initiative "+N
-  más en X" hint) when the ~1500-char cap is exceeded -- it never
+  (top-K initiatives, with a global "+N more projects" and a
+  per-initiative "+N more in X" hint) when the ~1500-char cap is exceeded -- it never
   competes with anchors for that budget.
 - **The anchor call (`sections=["anchor"]`) never carries pendings at
   all.** Its query filters `class='anchor'` only, and is additionally

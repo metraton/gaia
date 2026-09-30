@@ -210,7 +210,7 @@ class TestMemoryPendingByProject:
         names = {i["name"] for i in payload["items"]}
         assert inits == {"gaia"}
         assert "balance_x" not in names
-        assert "Pendientes de gaia" in payload["block"]
+        assert "Pending in gaia" in payload["block"]
 
     def test_project_mode_returns_whole_corpus_uncapped(self, tmp_db, capsys):
         # Well past any historical top-N: every row must come back, and the

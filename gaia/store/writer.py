@@ -2432,8 +2432,8 @@ def upsert_memory(
     status included, is one transaction: a failing step leaves the row as it
     was.
 
-    ``project_ref`` -- forward-only remote-stable project anchor. The v25/v26 columns/migration exist, but the automatic
-    backfill in ``scripts/migrations/v25_to_v26.sql`` (guarded on "workspace
+    ``project_ref`` -- forward-only remote-stable project anchor. The column
+    exists, but the automatic backfill in ``scripts/migrations/v25_to_v26.sql`` (guarded on "workspace
     hosts exactly one active project") is a one-time, already-applied
     historical statement that populated 0 rows in practice -- the
     memory-row-to-project mapping is ambiguous whenever a workspace hosts more
