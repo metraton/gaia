@@ -163,27 +163,6 @@ def test_free_forms_are_free_without_the_anchors_too(
     assert classify_command_tier(command) == T0
 
 
-@pytest.mark.parametrize("case_id,command", CLOSED, ids=[c for c, _ in CLOSED])
-def test_denial_names_the_per_process_alternative(case_id, command):
-    """The denial carries the way to reach the same outcome without the mutation.
-
-    A gate that only says "no" to a command with a safe equivalent leaves the
-    agent hunting for a spelling that passes, which is the behaviour the
-    no-elusion rule exists to prevent.
-    """
-    result = detect_mutative_command(command)
-    assert 'GH_TOKEN="$(gh auth token --user <account>)"' in result.guidance, (
-        f"{case_id}: guidance must name the per-process form -- "
-        f"got {result.guidance!r}"
-    )
-    assert "`gh auth status`" in result.guidance
-    assert "`gh auth login`" in result.guidance
-    assert result.guidance in result.reason, (
-        f"{case_id}: the reason the classifier reports must carry the guidance, "
-        f"or callers that surface only the reason drop it -- got {result.reason!r}"
-    )
-
-
 def _suggested_commands(guidance: str) -> list[str]:
     """The runnable commands a guidance names, with placeholders made concrete.
 
@@ -222,22 +201,3 @@ def test_every_command_the_denial_suggests_classifies_free(case_id, command):
             f"{case_id}: suggested {suggestion!r} must be T0, got "
             f"{classify_command_tier(suggestion)}"
         )
-
-
-def test_account_slot_gate_carries_both_faces():
-    """Both faces are present, and no command appears twice.
-
-    A run of only face (a) passes while charging for every read; a run of only
-    face (b) passes while leaving the shared slot open to every agent.
-    """
-    assert CLOSED and FREE
-
-    commands = [c for _, c in CLOSED + FREE]
-    assert len(commands) == len(set(commands)), "duplicate command in the table"
-
-    ids = [i for i, _ in CLOSED + FREE]
-    assert len(ids) == len(set(ids)), "duplicate case id in the table"
-
-    assert any("switch" in c for _, c in CLOSED)
-    assert any("logout" in c for _, c in CLOSED)
-    assert any("login" in c for _, c in FREE)

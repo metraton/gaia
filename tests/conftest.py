@@ -118,7 +118,10 @@ def bun():
 #   - NIGHTLY_ONLY: the *_mutants.py files pin the branch direction of concrete
 #     cosmic-ray mutants rather than an observable behavior, and the tests/evals
 #     files test the LLM eval harness, not Gaia. nightly.yml imports this tuple
-#     and names every entry, so the mutation score is still measured.
+#     and names every entry, so the mutation score is still measured. The
+#     integration entries drive the real OpenCode plugin or npm's own validator
+#     end to end: worth running, too slow for every pull request, and each has
+#     a faster pull-request test of the same promise.
 # ============================================================================
 
 NIGHTLY_ONLY = (
@@ -138,6 +141,11 @@ NIGHTLY_ONLY = (
     "tests/evals/test_runner.py",
     "tests/evals/test_skill_injection_consumer.py",
     "tests/evals/test_skill_injection_dispatch_reality.py",
+    "tests/hooks/modules/security/test_gh_active_account_slot.py::test_account_slot_counterfactual_without_the_anchor",
+    "tests/hooks/modules/security/test_gh_active_account_slot.py::test_free_forms_are_free_without_the_anchors_too",
+    "tests/integration/test_opencode_consent_retry_e2e.py",
+    "tests/integration/test_opencode_early_child_attestation.py",
+    "tests/cli/test_pre_publish_dry_run_representative.py",
 )
 
 LAYER1_EXCLUDED = (

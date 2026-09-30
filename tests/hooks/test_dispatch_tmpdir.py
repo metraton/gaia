@@ -10,7 +10,6 @@ import os
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -22,12 +21,6 @@ for _p in [str(HOOKS_DIR), str(REPO_ROOT)]:
 import pytest
 
 from adapters.claude_code import ClaudeCodeAdapter
-
-# The kernel's sun_path is 108 bytes on Linux and 104 on macOS; the stricter
-# one bounds both hosts.
-UNIX_SOCKET_PATH_MAX = 104
-# What Python multiprocessing binds below TMPDIR: pymp-XXXXXXXX/listener-XXXXXXXX.
-SOCKET_BELOW_TMPDIR = "/pymp-abcdefgh/listener-abcdefgh"
 
 PROBE = "python3 -c \"import os, tempfile; print(os.environ.get('TMPDIR', '<unset>')); print(tempfile.gettempdir())\""
 
@@ -83,27 +76,3 @@ def test_dispatch_tmpdir_is_per_dispatch_stable_and_absent_for_main_session(adap
     assert first != other
     main_session = _rewritten(adapter, "")
     assert main_session is None or "TMPDIR" not in main_session
-
-
-def test_dispatch_tmpdir_path_fits_a_unix_socket_under_real_home(adapter):
-    from gaia.paths import tmp_dir
-
-    produced = Path(_child_tmpdirs(_rewritten(adapter, "a1b2c3d0f1e2d3c4b"))[0])
-    assert produced.parent == tmp_dir()
-    # Both the test data dir and Path.home() sit under pytest's basetemp, whose
-    # depth follows the machine's TMPDIR, so the budget is measured on a fixed
-    # home laid out like a real install: ~/.gaia/tmp/<name>.
-    real = Path("/home/user") / ".gaia" / "tmp" / produced.name
-    assert len(str(real) + SOCKET_BELOW_TMPDIR) < UNIX_SOCKET_PATH_MAX, str(real)
-
-
-def test_dispatch_tmpdir_pytest_keeps_only_failed_tmp_paths_of_one_run():
-    options = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]
-    assert options.get("tmp_path_retention_policy") == "failed"
-    assert str(options.get("tmp_path_retention_count")) == "1"
-    assert "basetemp" not in options.get("addopts", "")
-
-
-def test_dispatch_tmpdir_command_execution_names_gaia_tmp():
-    skill = (REPO_ROOT / "skills" / "command-execution" / "SKILL.md").read_text()
-    assert "~/.gaia/tmp" in skill

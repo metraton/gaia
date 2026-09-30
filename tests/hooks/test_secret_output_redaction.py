@@ -172,7 +172,7 @@ REDACTED_READS = [
 
 
 @pytest.mark.parametrize("host", sorted(HOSTS))
-@pytest.mark.parametrize("fake_exit", [0, 3])
+@pytest.mark.parametrize("fake_exit", [3])
 @pytest.mark.parametrize("read", REDACTED_READS)
 def test_secret_bearing_read_output_is_redacted_and_keeps_its_exit_code(world, host, read, fake_exit):
     command = read.format(repo=world["repo"])

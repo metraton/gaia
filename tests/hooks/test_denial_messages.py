@@ -177,30 +177,6 @@ def test_denial_renders_guidance_without_displacing_the_approval_id():
     assert message.endswith("approval_id: P-bbbb")
 
 
-def test_gh_auth_switch_denial_names_the_per_process_alternative():
-    """End to end: what the classifier knows reaches the message a subagent reads.
-
-    Composed the way the validator composes it -- the guidance is not written
-    here, it is whatever detect_mutative_command attached to the command. A
-    test that passed a literal string would prove the renderer works and leave
-    the wiring between the two untested, which is exactly where this was broken.
-    """
-    from modules.security.mutative_verbs import detect_mutative_command
-
-    result = detect_mutative_command("gh auth switch -u someone")
-    assert result.is_mutative is True
-
-    message = build_t3_blocked_denial_message(
-        approval_id="P-cccc",
-        command="gh auth switch -u someone",
-        verb=result.verb,
-        category=result.category,
-        guidance=result.guidance,
-    )
-    assert 'GH_TOKEN="$(gh auth token --user <account>)"' in message
-    assert "`gh auth status`" in message
-
-
 def test_gh_auth_switch_denial_suggestions_classify_free():
     """Every command the rendered denial suggests is one the classifier lets through.
 

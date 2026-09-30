@@ -202,6 +202,43 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 | L2 | `npm run test:layer2` | ~$0.10 | Minutes | ~11 |
 | L3 | `npm run test:layer3` | Free | Minutes | ~13 |
 
+### Layer-1 test admission
+
+A test enters layer 1 only if it catches a regression a user or a release
+would feel: install, upgrade or uninstall; security classification; approvals;
+contract and gate integrity; data safety; a CLI contract other components
+depend on. Before writing one, break that behaviour and watch the test fail;
+a test that cannot fail for its regression is not evidence.
+
+Not admitted, and deleted rather than repaired when found:
+
+- **Text** -- a phrase of a skill, agent, README or workflow file. Prose that a
+  program parses is a contract, not text: a denial's `approval_id` line, a
+  CLI's JSON, a frontmatter field the host reads.
+- **Internal detail** -- a helper's shape, a dataclass default, a private
+  function whose break no user-visible path shows. Deleting one names the kept
+  test that fails for the same break, shown by a mutation.
+- **Environment** -- a test that passes or fails with the machine. The suite
+  takes for granted only the own toolchain (D111): python and python3 by name,
+  git, sh, bash, node, npm, bun and gaia (`OWN_TOOLCHAIN` in
+  `tests/conftest.py`); anything else is a fixture the test writes.
+- **Duplicate** -- a second test of a promise another test already fails for.
+- **Slow boundary duplicate** -- one more subprocess bootstrap, install or
+  upgrade of a path already driven. A test slower than 1 s must replace two or
+  more tests.
+- **Live or expensive integration** -- valuable but too slow for every pull
+  request: it goes to `NIGHTLY_ONLY` in `tests/conftest.py`, which
+  `.github/workflows/nightly.yml` runs.
+
+Every test declares the behaviour it protects -- its docstring, its class's or
+its module's. `tests/test_layer1_admission.py` enforces the mechanical part on
+every layer-1 file and fails naming `file:line` and rule: R1, a Markdown file
+of `skills/` or `agents/` read and asserted with a literal `in`; R2, a
+workflow under `.github/workflows` read and asserted against a literal; R3, a
+test with no declaration. Its `ADMISSION_ALLOWLIST` is closed: each entry names
+file, rule and reason, and exists only while the pinned text is a parsed
+contract.
+
 ### L1 Categories (46 test files)
 
 | Category | Directory | What it tests |
