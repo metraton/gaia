@@ -5,7 +5,8 @@ has correlated the starting subagent to its born ``agent_contract_handoffs``
 row:
 
   * ``# Your Contract``  -- identity, goal, role/surface, the project the
-    dispatch ran from (v44, ``dispatch_project``), section scope, and
+    dispatch ran from (v44, ``dispatch_project``) with the workflow that
+    project declared in its ``project_identity`` entry, section scope, and
     (for a plan-task-bound turn) the task's acceptance gates. DATA ONLY: the
     block carries no instructions; the pedagogy lives in the agent-protocol
     skill, which documents every field.
@@ -21,17 +22,19 @@ row:
     declaration pattern as ``routing:``) and rendered verbatim when present,
     additive to the base lines. Declaring is NOT permitting: tiers and
     guards still gate every execution.
-  * ``# How the user works`` -- the user's standing rows, the same selection
-    and the same facts/preferences sections the session birth block carries
+  * ``# How the user works`` -- the user's standing rows the session birth
+    block carries, minus those whose ``audience`` is the orchestrator alone,
+    in the same facts/preferences sections
     (``gaia.store.reader.user_anchor_rows`` rendered by
     ``modules.context.user_sections``), BODY inline, not slugs: a slug cost a
     further ``gaia memory show`` call the agent in practice never made.
     Omitted entirely when no row is selected -- never an empty heading.
 
 Everything renders from the ROW (goal from ``dispatch_prompt``, scope from
-``kernel_sections`` persisted at birth) plus two reads: ``task_gates`` for the
-acceptance block and ``memory`` for the user's rows. No project context is
-rebuilt here.
+``kernel_sections`` persisted at birth) plus three reads: ``task_gates`` for
+the acceptance block, the dispatch project's ``project_identity`` entry for its
+declared workflow, and ``memory`` for the user's rows. No other project context
+is rebuilt here.
 
 Gotchas:
   * ``kernel_sections`` arrives as a JSON string on the row; this module
@@ -80,6 +83,7 @@ _CLI_BASE_LINES = (
     "  gaia memory list --type <t>      # t: project|user|feedback|atom|decision|negative",
     "  gaia memory show <slug>          # cuerpo completo de una fila curada",
     "  gaia memory get-relevant --initiative <k>   # pendientes vivos de UN proyecto",
+    "  gaia memory get-relevant --initiative <k> --sections anchor   # one project's standing notes, bodies included",
     "  gaia memory get-relevant --sections <s>      # s: carry_forward|anchor|thread_open",
     "  gaia contract view / list / validate         # tu contrato: lectura",
     "  gaia contract set / add / fill / finalize    # tu contrato: llenado incremental y cierre",
@@ -174,6 +178,35 @@ def _acceptance_lines(plan_task_id: int, db_path=None) -> list:
     return lines
 
 
+def _declared_workflow(workspace: str, dispatch_project: str, db_path=None) -> str:
+    """The workflow the dispatch's project declared, as one data line, or "" when it declared none.
+
+    A mapping renders its scalar values as ``key=value`` pairs in stored order,
+    a string renders as written; whitespace runs collapse so the value stays one
+    line, and anything else declares nothing renderable.
+    """
+    try:
+        from ..core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from gaia.identity_shape import DECLARED_WORKFLOW_KEY
+        from tools.context.context_provider import dispatch_project_entry
+
+        entry = dispatch_project_entry(workspace, dispatch_project, db_path=db_path)
+    except Exception:
+        logger.debug("declared workflow read failed (non-fatal)", exc_info=True)
+        return ""
+    declared = (entry or {}).get(DECLARED_WORKFLOW_KEY)
+    if isinstance(declared, str):
+        return " ".join(declared.split())
+    if isinstance(declared, dict):
+        return ", ".join(
+            f"{key}={' '.join(str(value).split())}" for key, value in declared.items()
+            if isinstance(value, (str, int, float)) and str(value).strip()
+        )
+    return ""
+
+
 def build_dispatch_kernel(
     row: Mapping[str, Any], *, db_path=None,
 ) -> Optional[str]:
@@ -217,6 +250,11 @@ def build_dispatch_kernel(
     dispatch_project = row.get("dispatch_project")
     if dispatch_project:
         parts.append(f"project: {dispatch_project}")
+        workflow = _declared_workflow(
+            str(row.get("workspace") or ""), dispatch_project, db_path=db_path,
+        )
+        if workflow:
+            parts.append(f"  workflow: {workflow}")
 
     plan_task_id = row.get("plan_task_id")
     if plan_task_id is not None:
@@ -324,13 +362,17 @@ def build_memory_block(*, db_path=None) -> str:
     """Render ``# How the user works`` from the user's standing rows, or "" when there are none.
 
     Whatever workspace the dispatch ran from: user memory belongs to no
-    workspace, and the session birth block reads the same rows.
+    workspace. The rows are the session birth block's minus those addressed
+    only to the orchestrator, which a specialist has no use for.
     """
     from gaia.store.reader import user_anchor_rows
 
     from .user_sections import render_user_sections
 
-    rows = [r for r in user_anchor_rows(db_path) if (r.get("body") or "").strip()]
+    rows = [
+        r for r in user_anchor_rows(db_path, audience="executor")
+        if (r.get("body") or "").strip()
+    ]
     sections = render_user_sections(rows)
     if not sections:
         return ""

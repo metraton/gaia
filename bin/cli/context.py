@@ -931,6 +931,9 @@ def _cmd_project(args) -> int:
             )
             print(f"{label} -- index only, use `gaia memory show <slug>` "
                   f"for the full body:")
+            if initiative:
+                print(f"  (its anchors whole: `gaia memory get-relevant "
+                      f"--initiative {initiative} --sections anchor`)")
             for m in memory_shown:
                 desc = m.get("description") or ""
                 print(f"  - {m['name']}: {desc}" if desc else f"  - {m['name']}")

@@ -1573,7 +1573,8 @@ def _cmd_get_relevant(args) -> int:
       * ``--types=...``  -> legacy per-type flow (unchanged, back-compat).
       * ``--initiative=X`` or ``--project=X`` -> PROJECT MODE: the WHOLE
         live-pending corpus of the ONE requested project, from every
-        workspace, uncapped and body-bearing.
+        workspace, uncapped and body-bearing; ``--sections`` picks among its
+        live anchors and its pending threads.
       * ``--sections=...`` -> SECTION renderer: the class/status sections
         (carry_forward / anchor / thread_open). This is the subagent-dispatch
         path (``--sections=anchor`` gives a dispatched subagent the durable
@@ -2198,6 +2199,25 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
     return 0
 
 
+# Project mode's thread sections, each to the one thread status it selects.
+_PROJECT_MODE_THREAD_STATUS = {"carry_forward": "carry_forward", "thread_open": "open"}
+
+
+def _project_mode_item(row: dict, label: str, section: str) -> dict:
+    """One project-mode JSON item: the row's identity, classification and whole body."""
+    return {
+        "name": row.get("name") or "",
+        "workspace": row.get("workspace"),
+        "type": row.get("type"),
+        "initiative": label,
+        "class": row.get("class"),
+        "memory_status": row.get("status"),
+        "section": section,
+        "description": row.get("description") or "",
+        "body": row.get("body"),
+    }
+
+
 def _render_project_mode(args, workspace: str, initiative_arg: str | None,
                          as_json: bool, *, project_arg: str | None = None) -> int:
     """Project mode: the WHOLE live-pending corpus of ONE requested project.
@@ -2216,11 +2236,17 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     and applying it to an explicitly requested corpus would silently withhold
     part of the answer. See the note above ``_DIGEST_HEADER``.
 
+    ``--sections`` chooses which of the project's rows come back: ``anchor``
+    its live anchors, whose bodies the text block prints in full because a
+    standing note is read, not swept; ``carry_forward``/``thread_open`` its
+    pending threads of that status. Without it, the live-pending threads alone
+    -- the corpus every pending count is measured against.
+
     Every row returned bumps deliberate-read telemetry in both output shapes:
     naming the project is what identified them, so the text block's
     collapsed rendering is the same request as the JSON payload's.
     """
-    from gaia.store.reader import pending_threads_by_project
+    from gaia.store.reader import anchors_by_project, pending_threads_by_project
     from gaia.store.writer import canonical_project_key
 
     if initiative_arg:
@@ -2228,37 +2254,47 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     else:
         key = canonical_project_key(project_ref=project_arg)
 
+    sections_arg = getattr(args, "sections", None)
+    requested = (
+        {s.strip() for s in str(sections_arg).split(",") if s.strip()}
+        if sections_arg else set(_PROJECT_MODE_THREAD_STATUS)
+    )
+    statuses = {
+        status for section, status in _PROJECT_MODE_THREAD_STATUS.items()
+        if section in requested
+    }
+
     if key == _OTHERS_BUCKET or key is None:
         rows = _fetch_pending_vivo(workspace, "  AND initiative IS NULL ")
+        anchors: list[dict] = []
         label = _OTHERS_BUCKET
     else:
         rows = pending_threads_by_project([key])
+        anchors = anchors_by_project([key]) if "anchor" in requested else []
         label = key
+    rows = [r for r in rows if r.get("status") in statuses]
 
-    if not rows:
+    if not rows and not anchors:
         if as_json:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    header = f"## Memory — Pendientes de {label}"
-    lines = [header, ""]
+    lines: list[str] = []
     items: list[dict] = []
+    if rows:
+        lines.extend([f"## Memory — Pendientes de {label}", ""])
     for r in rows:
         name = r.get("name") or ""
         description = r.get("description") or ""
         bullet = _collapse_desc(description)
         lines.append(f"- {name}: {bullet}" if bullet else f"- {name}")
-        items.append({
-            "name": name,
-            "workspace": r.get("workspace"),
-            "type": r.get("type"),
-            "initiative": label,
-            "class": r.get("class"),
-            "memory_status": r.get("status"),
-            "section": "project",
-            "description": description,
-            "body": r.get("body"),
-        })
+        items.append(_project_mode_item(r, label, "project"))
+    if anchors:
+        lines.extend(([""] if lines else []) + [f"## Memory — Anchors of {label}", ""])
+    for r in anchors:
+        lines.append(f"- {r.get('name') or ''}:")
+        lines.extend(f"  {line}" for line in (r.get("body") or "").splitlines())
+        items.append(_project_mode_item(r, label, "anchor"))
 
     for item in items:
         _bump_memory_telemetry(item["workspace"], [item["name"]], "deliberate")
@@ -3957,8 +3993,10 @@ def register(subparsers):
             "an explicitly named corpus would silently withhold part of the "
             "answer; an initiative with zero live-pending rows and a "
             "made-up initiative key produce the SAME empty, exit-0 result "
-            "-- there is no initiative registry to tell them apart. With "
-            "--sections=..., the class/status SECTION renderer runs instead "
+            "-- there is no initiative registry to tell them apart; with "
+            "--sections=anchor it returns that project's live anchors instead, "
+            "bodies whole, from every workspace. With --sections=... alone, "
+            "the class/status SECTION renderer runs instead "
             "(the subagent-dispatch path). Composes with 'gaia memory show "
             "<slug>' for one row's full body -- get-relevant is the sweep, "
             "show is the deep read."
@@ -3966,7 +4004,8 @@ def register(subparsers):
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory get-relevant --workspace=qxo\n"
-               "  gaia memory get-relevant --types=atom,decision --limit=6\n",
+               "  gaia memory get-relevant --types=atom,decision --limit=6\n"
+               "  gaia memory get-relevant --initiative=gaia --sections=anchor\n",
     )
     rel_p.add_argument(
         "--workspace", default=None, metavar="W",
@@ -3992,6 +4031,9 @@ def register(subparsers):
              "(carry_forward,anchor,thread_open). When set, uses the class/"
              "status section renderer -- the subagent-dispatch path passes "
              "--sections=anchor to inject only 'What the user has established'. "
+             "With --initiative/--project it selects that project's rows "
+             "instead: anchor for its live anchors with their bodies, "
+             "carry_forward/thread_open for its pending threads (the default). "
              "When omitted (and no --initiative/--types), the transversal "
              "initiative digest is emitted instead.",
     )
@@ -4001,7 +4043,8 @@ def register(subparsers):
         help="Project mode (v32): return EVERY live-pending row of the ONE "
              "named initiative (normalised like the write side) from every "
              "workspace, uncapped -- not just the top ones, and --max-chars "
-             "is ignored here. The value 'otros' targets the NULL-initiative "
+             "is ignored here; with --sections=anchor, its live anchors with "
+             "their bodies. The value 'otros' targets the NULL-initiative "
              "bucket of the resolved workspace. When omitted, the "
              "cross-project transversal digest is emitted instead.",
     )

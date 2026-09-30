@@ -286,10 +286,7 @@ def resolve_project_by_name(
             continue
         entry_name = entry.get("name")
         if entry_name and str(entry_name).lower() == wanted.lower():
-            local_path = entry.get("local_path")
-            if local_path:
-                return f"{entry_name} ({local_path})"
-            return str(entry_name)
+            return _project_display(entry)
     return wanted
 
 
@@ -338,7 +335,35 @@ def resolve_dispatch_project(
                 best = (depth, str(name), str(local_path))
     if best is None:
         return None
-    return f"{best[1]} ({best[2]})"
+    return _project_display({"name": best[1], "local_path": best[2]})
+
+
+def _project_display(entry: dict) -> str:
+    """The ``dispatch_project`` value of a ``project_identity`` entry: ``"name (/abs/path)"``, or the bare name."""
+    name = str(entry.get("name"))
+    local_path = entry.get("local_path")
+    return f"{name} ({local_path})" if local_path else name
+
+
+def dispatch_project_entry(
+    workspace: str,
+    dispatch_project: Optional[str],
+    db_path: Optional[Path] = None,
+) -> Optional[dict]:
+    """The ``project_identity`` entry a born row's ``dispatch_project`` names, or None.
+
+    Inverts :func:`resolve_project_by_name` and :func:`resolve_dispatch_project`,
+    which both format through :func:`_project_display`; a project named at
+    dispatch that the substrate does not know matches nothing.
+    """
+    if not workspace or not dispatch_project:
+        return None
+    for entry in _project_identity_entries(workspace, db_path=db_path).values():
+        if isinstance(entry, dict) and entry.get("name") and (
+            _project_display(entry) == dispatch_project
+        ):
+            return entry
+    return None
 
 
 # ============================================================================

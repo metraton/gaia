@@ -242,7 +242,7 @@ def test_cli_block_renders_frontmatter_extras(tmp_path):
 
 def test_cli_block_without_extras_is_just_the_base(tmp_path):
     block = build_cli_block("no-such-agent", agents_dir=tmp_path)
-    assert len(block.splitlines()) == 12  # heading + blank + 10 base lines
+    assert len(block.splitlines()) == 13  # heading + blank + 11 base lines
 
 
 def test_cli_block_workspace_line_points_at_get_contract_not_get():
@@ -279,10 +279,9 @@ def test_memory_block_inlines_the_users_live_anchors_whole_and_only_those(tmp_pa
             con, name="user_prefers_live_verification",
             body="Live state and code outrank memory when they disagree.",
         )
-        # Audience no longer selects: a row once kept from executors arrives too.
         _seed_memory_row(
             con, name="user_orchestrator_audience_anchor", audience="orchestrator",
-            body="Anchor once marked orchestrator-only.",
+            body="Anchor addressed to the orchestrator alone.",
         )
         _seed_memory_row(
             con, name="atom_not_a_user_row", type_="atom", class_="log",
@@ -308,7 +307,7 @@ def test_memory_block_inlines_the_users_live_anchors_whole_and_only_those(tmp_pa
     block = build_memory_block(db_path=db)
     assert block.splitlines()[0] == "# How the user works"
     assert "Live state and code outrank memory when they disagree." in block
-    assert "Anchor once marked orchestrator-only." in block
+    assert "Anchor addressed to the orchestrator alone." not in block
     assert "An atom, not a user row." not in block
     assert "A user log entry, not a standing rule." not in block
     assert "Prefers plain-language reports" not in block  # soft-deleted

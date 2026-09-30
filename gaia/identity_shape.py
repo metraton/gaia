@@ -55,6 +55,13 @@ WORKSPACE_META_KEY = "_workspace"
 # silently. NOT a reserved slug -- it is a key INSIDE a project entry.
 MISSING_MARK_KEY = "missing_since"
 
+# Entry key holding how work lands in the project -- integration (direct or
+# pull request), target branch, channel -- as the project declared it. Written
+# by an agent through update_contracts (agent-owned, so promotion never touches
+# it) and read into the dispatch kernel (hooks/modules/context/kernel_builder.py);
+# an entry without it declares nothing, and nothing is inferred in its place.
+DECLARED_WORKFLOW_KEY = "workflow"
+
 
 def is_reserved_slug(slug: str) -> bool:
     """True when a map key is a reserved slot, not a project entry."""

@@ -1,8 +1,9 @@
 """Every subagent knows the user by the same rows the orchestrator was born with.
 
 A rule the user established must reach a dispatched subagent exactly when it
-reaches the session, and a row the user retired -- replaced through a
-supersedes link, or kept only as a log -- must reach neither. Runs against a
+reaches the session, unless the user addressed it to the orchestrator alone,
+and a row the user retired -- replaced through a supersedes link, or kept only
+as a log -- must reach neither. Runs against a
 temporary HOME, GAIA_DATA_DIR and GAIA_DB.
 """
 
@@ -83,4 +84,4 @@ def test_the_kernel_carries_exactly_the_birth_blocks_user_rows(tmp_path, monkeyp
     )
 
     assert _present(birth) == LIVE
-    assert _present(kernel) == LIVE
+    assert _present(kernel) == {name for name in LIVE if ROWS[name][1] != "orchestrator"}

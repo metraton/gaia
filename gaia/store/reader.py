@@ -177,7 +177,7 @@ def get_notification(
 
 
 # ---------------------------------------------------------------------------
-# memory reads -- a project's live-pending threads
+# memory reads -- a project's live-pending threads and standing anchors
 # ---------------------------------------------------------------------------
 
 def not_superseded(row: str = "memory") -> str:
@@ -226,6 +226,37 @@ def pending_threads_by_project(
     Returns ``[]`` for empty ``keys`` and on any DB error -- never raises,
     since callers render it as an optional annotation or a best-effort read.
     """
+    return _rows_of_projects(_PENDING_THREADS_WITH_A_PROJECT, keys, db_path)
+
+
+_LIVE_ANCHORS_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
+    "       m.initiative, m.project_ref, m.class, m.status "
+    "FROM memory m "
+    "WHERE m.deleted_at IS NULL "
+    "  AND m.class = 'anchor' "
+    "  AND (COALESCE(m.initiative, '') != '' OR COALESCE(m.project_ref, '') != '') "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC"
+)
+
+
+def anchors_by_project(
+    keys: list[str],
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Live anchor rows of the projects in ``keys``, freshest first, bodies included.
+
+    The project's standing notes, from every workspace and matched by
+    ``canonical_project_key`` exactly as :func:`pending_threads_by_project`
+    matches its threads; a row another row supersedes is excluded. Returns
+    ``[]`` for empty ``keys`` and on any DB error.
+    """
+    return _rows_of_projects(_LIVE_ANCHORS_WITH_A_PROJECT, keys, db_path)
+
+
+def _rows_of_projects(select: str, keys: list[str], db_path: Path | None) -> list[dict]:
+    """Rows of ``select`` whose canonical project key is in ``keys``; ``[]`` on any error."""
     if not keys:
         return []
     try:
@@ -236,7 +267,7 @@ def pending_threads_by_project(
     try:
         wanted = set(keys)
         return [
-            dict(r) for r in con.execute(_PENDING_THREADS_WITH_A_PROJECT)
+            dict(r) for r in con.execute(select)
             if canonical_project_key(r["project_ref"], r["initiative"]) in wanted
         ]
     except Exception:
@@ -276,23 +307,28 @@ _USER_ANCHORS = (
     "FROM memory m "
     "WHERE m.type = 'user' AND m.class = 'anchor' AND m.deleted_at IS NULL "
     f"  AND {not_superseded('m')} "
+    "  AND (? IS NULL OR COALESCE(m.audience, 'any') IN (?, 'any')) "
     "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
 )
 
 
-def user_anchor_rows(db_path: Path | None = None) -> list[dict]:
+def user_anchor_rows(
+    db_path: Path | None = None, *, audience: str | None = None,
+) -> list[dict]:
     """The user's standing rows: live ``type='user'`` anchors no row supersedes.
 
     The one selection behind both the session birth block and the dispatch
     kernel, so the orchestrator and every subagent know the user by the same
-    rows. Returns ``[]`` on any DB error.
+    rows. ``audience`` names the reader's role: given, only rows addressed to
+    that role or to ``any`` come back; omitted, every row does, which is what
+    the orchestrator's birth block reads. Returns ``[]`` on any DB error.
     """
     try:
         con = _connect(db_path)
     except Exception:
         return []
     try:
-        return [dict(r) for r in con.execute(_USER_ANCHORS)]
+        return [dict(r) for r in con.execute(_USER_ANCHORS, (audience, audience))]
     except Exception:
         return []
     finally:
