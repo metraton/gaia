@@ -156,6 +156,8 @@ class TestHooksJson:
         around compaction -- PreCompact and PostCompact's hookSpecificOutput
         is not part of Claude Code's validated schema and is never consumed
         by the runtime (see hooks/pre_compact.py and hooks/post_compact.py).
+        "clear" and "fork" start a new session id, which must be attested and
+        given the birth block like any other new session.
         Checked in both the generated hooks/hooks.json (the file Claude Code
         actually reads) and the source manifest it is derived from
         (build/gaia.manifest.json), so drift between the two is caught here
@@ -165,18 +167,18 @@ class TestHooksJson:
         installed_matchers = {
             entry["matcher"] for entry in data["hooks"]["SessionStart"]
         }
-        assert installed_matchers == {"startup|resume|compact"}, (
+        assert installed_matchers == {"startup|resume|clear|compact|fork"}, (
             f"hooks/hooks.json SessionStart matcher must be "
-            f"'startup|resume|compact', got {installed_matchers}"
+            f"'startup|resume|clear|compact|fork', got {installed_matchers}"
         )
 
         manifest_matchers = {
             entry["matcher"]
             for entry in gaia_manifest["hooks"]["matchers"]["SessionStart"]
         }
-        assert manifest_matchers == {"startup|resume|compact"}, (
+        assert manifest_matchers == {"startup|resume|clear|compact|fork"}, (
             f"build/gaia.manifest.json SessionStart matcher must be "
-            f"'startup|resume|compact', got {manifest_matchers}"
+            f"'startup|resume|clear|compact|fork', got {manifest_matchers}"
         )
 
     def test_every_registered_command_starts_its_hook_from_a_root_with_spaces(self, tmp_path):

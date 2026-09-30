@@ -3153,7 +3153,7 @@ def check_hooks_active_fresh(project_root: Path) -> dict:
                              a false pass: it self-heals on the next SessionStart
                              fire for this session id, and that includes a plain
                              `claude --resume`/`--continue` (SessionStart's
-                             matcher is `startup|resume|compact`, so resuming
+                             matcher is `startup|resume|clear|compact|fork`, so resuming
                              -- or a `/compact` -- re-reads settings and
                              re-runs the hook, which re-pins the marker
                              regardless of `source`) -- not only a brand-new

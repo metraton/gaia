@@ -108,6 +108,16 @@ def test_session_never_attested_is_not_blocked(env):
     assert "decision" not in _prompt(workspace, values)
 
 
+@pytest.mark.parametrize("source", ["clear", "fork"])
+def test_a_cleared_or_forked_session_is_attested_and_reborn(env, source):
+    workspace, values = env
+
+    response = _start(workspace, values, source=source)
+
+    assert "## Environment" in response["hookSpecificOutput"]["additionalContext"]
+    assert _prompt(workspace, values)["decision"] == "block"
+
+
 def test_compaction_keeps_the_identity_the_session_started_with(env):
     workspace, values = env
     _start(workspace, values, agent_type="gaia:gaia-orchestrator")

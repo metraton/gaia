@@ -11,7 +11,7 @@ The hooks form a pipeline. A session opens at `session_start.py`, which emits a 
 ```
 Session opens
         |
-[session_start.py] <- fires on SessionStart (matcher: startup|resume|compact)
+[session_start.py] <- fires on SessionStart (matcher: startup|resume|clear|compact|fork)
         |  Registers session in heartbeat-based session_registry
         |  Sweeps stale registry entries and expired approval files
         |  Emits one-shot hookSpecificOutput.additionalContext manifest

@@ -32,7 +32,7 @@
       ],
       "PostToolUseFailure": [{"matcher": "Bash"}],
       "SubagentStop": [{"matcher": "*"}],
-      "SessionStart": [{"matcher": "startup|resume|compact"}],
+      "SessionStart": [{"matcher": "startup|resume|clear|compact|fork"}],
       "SessionEnd": [{}],
       "PreCompact": [{}],
       "PostCompact": [{}],

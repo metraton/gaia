@@ -48,8 +48,9 @@ Storage format:
     fresh" check) MUST treat an absent ``pinned_build`` as UNKNOWN, never as a
     match/pass — the marker is rewritten by a fresh session (source
     "startup"), a ``--continue``/``--resume`` of an existing session id
-    (source "resume"), AND a ``/compact`` (source "compact"): SessionStart's
-    matcher is ``startup|resume|compact``, so Claude Code re-reads settings
+    (source "resume"), a ``/compact`` (source "compact"), AND the new session
+    id of a ``/clear`` or a fork: SessionStart's matcher is
+    ``startup|resume|clear|compact|fork``, so Claude Code re-reads settings
     and re-fires this hook on resume and on compact too, and this hook does
     not branch on ``source`` for registration/pinning -- it always
     re-registers and re-pins regardless (only the *content* of
@@ -217,7 +218,7 @@ def register_session(
             marker (doctor reports UNKNOWN). This self-heals on the next
             SessionStart fire for this session id -- which includes a plain
             ``--continue``/``--resume`` or a ``/compact``, since the
-            SessionStart matcher is ``startup|resume|compact`` and this hook
+            SessionStart matcher is ``startup|resume|clear|compact|fork`` and this hook
             re-pins on every fire regardless of ``source``.
         identity: Optional attestation of the agent the host started this
             session as (``identity_attestation.attest``); omitted -> none kept.

@@ -7,13 +7,12 @@ delegation belong to the orchestrator, so a main thread started as anything else
 has every prompt refused until a session starts with the right identity.
 
 A session with no attestation is not refused: it started before this check was
-installed, or through a SessionStart source the hook does not match (``clear``,
-``fork``), and refusing it would lock out sessions nothing has judged.
+installed, and refusing it would lock out sessions nothing has judged.
 
 ``GAIA_ALLOW_NON_ORCHESTRATOR=1`` in the host's environment lifts the refusal and
-keeps the warning. It exists because the verdict depends on the host reporting
-its agent: a host release that stops sending ``agent_type`` would otherwise
-refuse every correctly configured session.
+keeps the warning. It is TEMPORARY: it stays only until a live Claude Code
+session confirms that ``agent_type`` reaches SessionStart when the agent comes
+from the ``agent`` setting rather than ``--agent``, and is removed after that.
 """
 
 from __future__ import annotations
