@@ -442,7 +442,7 @@ install_package() {
 # (~/.local/bin/gaia), and a throwaway sandbox must never become the gaia the
 # user's shells run.
 wire_workspace() {
-  local install_args=(--workspace "${WORKSPACE}")
+  local install_args=(--channel npm --workspace "${WORKSPACE}")
   if [[ "${TARGET}" == "sandbox" ]]; then
     install_args+=(--no-path)
   fi

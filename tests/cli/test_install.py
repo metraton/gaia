@@ -138,7 +138,7 @@ class TestCmdInstallDispatch(unittest.TestCase):
     """
 
     def _make_args(self, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", False)
         ns.verbose = overrides.get("verbose", False)
@@ -190,7 +190,7 @@ class TestCmdInstallBootstrapMarker(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", True)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)
@@ -343,7 +343,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)  # quiet by default for tests
         ns.verbose = overrides.get("verbose", False)
@@ -439,7 +439,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
                 return {"action": "noop", "path": "x", "details": ""}
 
             ns = argparse.Namespace(
-                postinstall=False, quiet=True, verbose=False,
+                channel="npm", postinstall=False, quiet=True, verbose=False,
                 db_path=None, workspace=None, skip_workspace=False,
             )
             with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
@@ -479,7 +479,7 @@ class TestCmdInstallCreatesClaudeDir(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)
@@ -959,7 +959,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
             (workspace / ".claude").mkdir()
 
             ns = argparse.Namespace(
-                postinstall=False, quiet=True, verbose=False, db_path=None,
+                channel="npm", postinstall=False, quiet=True, verbose=False, db_path=None,
                 workspace=str(workspace), skip_workspace=False, path=True,
             )
 
@@ -1002,7 +1002,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
             (workspace / ".claude").mkdir()
 
             ns = argparse.Namespace(
-                postinstall=False, quiet=True, verbose=False, db_path=None,
+                channel="npm", postinstall=False, quiet=True, verbose=False, db_path=None,
                 workspace=str(workspace), skip_workspace=False, no_path=True,
             )
             noop = {"action": "noop", "path": "x", "details": ""}
@@ -1216,7 +1216,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
     """Verify cmd_install installs the launcher only when --path opts in."""
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)
@@ -1386,7 +1386,7 @@ class TestInstallErrorMarker(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides):
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)

@@ -63,10 +63,11 @@ Flags:
                      forwarded to bootstrap.sh via the GAIA_DB env var).
    --workspace PATH   Workspace where settings/symlinks/registry are
                       written (default: cwd).
-   --host HOST        Target host: claude_code (default), opencode, or `all`
-                      to wire every supported host in one run. The global
-                      steps (1) run once regardless; only steps 2-6 repeat
-                      per host.
+   --channel CHANNEL  Required: npm wires Claude Code through this package,
+                      opencode wires OpenCode. npm refuses while the Claude
+                      Code plugin is enabled for the workspace; opencode
+                      joins either. `--host claude_code|opencode` is the
+                      older alias.
   --skip-workspace   Bootstrap the DB only; skip workspace configuration.
                      Useful when running install just to refresh the DB
                      schema from a non-Gaia directory.
@@ -113,12 +114,11 @@ _SEED_CONTRACT_PERMS = _PACKAGE_ROOT / "tools" / "scan" / "seed_contract_permiss
 _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing.py"
 
 # ---------------------------------------------------------------------------
-# Host selection
+# Channel selection
 # ---------------------------------------------------------------------------
 #
-# The hosts `--host` can wire, and the set `all` expands to. One point of truth
-# for this parser AND `gaia dev`'s, which imports these names rather than
-# repeating the tuple.
+# The hosts the package channels wire. One point of truth for this parser AND
+# `gaia dev`'s, which imports these names rather than repeating them.
 #
 # Deliberately NOT derived from `hooks/adapters/registry.py::_REGISTRY` at
 # runtime, for two reasons that hold at import time:
@@ -133,18 +133,63 @@ _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing
 # tripwire in `tests/cli/test_host_multi_install.py`, which does import the
 # registry and fails if the two sets stop matching.
 SUPPORTED_HOSTS = ("claude_code", "opencode")
-DEFAULT_HOST = "claude_code"
-ALL_HOSTS = "all"
-HOST_CHOICES = SUPPORTED_HOSTS + (ALL_HOSTS,)
+PACKAGE_CHANNELS = {"npm": "claude_code", "opencode": "opencode"}
+HOST_ALIASES = {host: channel for channel, host in PACKAGE_CHANNELS.items()}
+CHANNEL_SUMMARIES = {
+    "npm": "Claude Code, wired through this package into .claude/",
+    "plugin": "Claude Code plugin gaia@gaia-dev, served from this build into the workspace",
+    "opencode": "OpenCode, wired through this package into opencode.json; joins either Claude Code channel",
+}
+_PLUGIN_SCOPES = {"settings.local.json": "local", "settings.json": "project", "user settings": "user"}
 
 
-def resolve_hosts(host: str) -> tuple[str, ...]:
-    """Validate a CLI selection and expand it into ordered supported hosts."""
-    if host not in HOST_CHOICES:
-        raise ValueError(f"unsupported host {host!r}; choose from {', '.join(HOST_CHOICES)}")
-    if host == ALL_HOSTS:
-        return SUPPORTED_HOSTS
-    return (host,)
+def require_supported_host(host: str) -> None:
+    """Raise ValueError unless *host* is one the package channels wire."""
+    if host not in SUPPORTED_HOSTS:
+        raise ValueError(f"unsupported host {host!r}; choose from {', '.join(SUPPORTED_HOSTS)}")
+
+
+def missing_channel_message(choices: Sequence[str]) -> str:
+    """The error for a command run without a channel, listing *choices*."""
+    lines = ["name a channel with --channel; there is no default:"]
+    lines += [f"  {name:<9} {CHANNEL_SUMMARIES[name]}" for name in choices]
+    if "plugin" not in choices:
+        lines.append("The Claude Code plugin is installed by Claude Code: claude plugin install "
+                     "gaia@gaia-marketplace, or gaia dev --channel plugin for a source build.")
+    return "\n".join(lines)
+
+
+def resolve_channel(channel: str | None, host: str | None, choices: Sequence[str]) -> str:
+    """The channel --channel names, or its --host alias; ValueError listing *choices* when neither is named."""
+    if channel is None and host is None:
+        raise ValueError(missing_channel_message(choices))
+    resolved = channel if channel is not None else HOST_ALIASES.get(host)
+    if resolved not in choices:
+        raise ValueError(f"unsupported channel {channel or host!r}; choose from {', '.join(choices)}")
+    return resolved
+
+
+def channel_conflict(workspace: Path, channel: str) -> str | None:
+    """Why *channel* cannot be installed in *workspace*, or None when nothing excludes it.
+
+    npm and plugin both register Gaia's hooks with Claude Code, so each refuses
+    while the other is present; opencode writes no Claude Code wiring and joins either.
+    """
+    # Imported here: plugin sessions load this module, and the hooks package must stay optional at import.
+    from modules.core.plugin_setup import enabled_gaia_plugins, workspace_registers_gaia_hooks  # type: ignore
+
+    beside = "OpenCode can still be added beside it: --channel opencode"
+    plugins = enabled_gaia_plugins(workspace) if channel == "npm" else []
+    if plugins:
+        key, label = plugins[0]
+        return (f"the plugin channel is present in {workspace}: {key} is enabled in {label}, "
+                "and the npm channel would register Gaia's hooks a second time.\n"
+                f"Remove it first: claude plugin uninstall {key} --scope {_PLUGIN_SCOPES[label]}\n{beside}")
+    if channel == "plugin" and workspace_registers_gaia_hooks(workspace):
+        return (f"the npm channel is present in {workspace}: Gaia's hooks are registered in "
+                ".claude/settings.local.json, and the plugin would run them a second time.\n"
+                f"Remove it first: gaia uninstall --workspace {workspace}\n{beside}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1138,14 +1183,9 @@ def _print_next_steps(
     *,
     quiet: bool,
     postinstall: bool,
-    hosts: Sequence[str] = (DEFAULT_HOST,),
+    hosts: Sequence[str],
 ) -> None:
-    """Print the post-install steps for every host that was wired.
-
-    Accumulative, not exclusive: with `--host all` each wired host contributes
-    its own restart line, so no host's instructions are dropped. `gaia doctor`
-    verifies the whole install once, so it is emitted last and only once.
-    """
+    """Print the post-install steps for the wired hosts, `gaia doctor` once."""
     if quiet:
         return
     restart_steps: list[str] = []
@@ -1246,18 +1286,24 @@ def add_install_arguments(p: argparse.ArgumentParser) -> None:
         default=None,
         help="Workspace where .claude/ is configured (default: cwd)",
     )
-    p.add_argument(
-        "--host",
-        choices=HOST_CHOICES,
-        default=DEFAULT_HOST,
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--channel",
+        choices=tuple(PACKAGE_CHANNELS),
+        default=None,
         help=(
-            "Host to configure, or `all` to configure every supported host in "
-            "one run (default: claude_code). The global steps -- DB bootstrap, "
-            "permission and routing seeds -- run once regardless; only the "
-            "per-host wiring repeats. With `all`, a host that fails is named "
-            "and the others are still wired; the command fails only if every "
-            "host fails."
+            "Channel to wire, required: npm wires Claude Code through this package, "
+            "opencode wires OpenCode. npm refuses while the Claude Code plugin is "
+            "enabled for the workspace and names how to remove it; opencode joins "
+            "either. The Claude Code plugin itself is installed with `claude plugin "
+            "install gaia@gaia-marketplace`."
         ),
+    )
+    selection.add_argument(
+        "--host",
+        choices=SUPPORTED_HOSTS,
+        default=None,
+        help="Alias kept for compatibility: claude_code = --channel npm, opencode = --channel opencode",
     )
     p.add_argument(
         "--skip-workspace",
@@ -1287,8 +1333,28 @@ def add_install_arguments(p: argparse.ArgumentParser) -> None:
     )
 
 
+def recorded_channels(workspace: Path) -> tuple[str, ...]:
+    """The package channels `gaia install` recorded in *workspace*'s manifest, in wiring order."""
+    recorded = (_manifest.load(workspace) or {}).get("package_channels", ())
+    return tuple(channel for channel in PACKAGE_CHANNELS if channel in recorded)
+
+
 def cmd_install(args: argparse.Namespace) -> int:
-    """Execute the install subcommand."""
+    """Execute the install subcommand; --skip-workspace alone needs no channel, since it wires nothing."""
+    no_channel = getattr(args, "channel", None) is None and getattr(args, "host", None) is None
+    if no_channel and getattr(args, "skip_workspace", False):
+        return install_channels(args, ())
+    try:
+        channel = resolve_channel(getattr(args, "channel", None), getattr(args, "host", None),
+                                  tuple(PACKAGE_CHANNELS))
+    except ValueError as exc:
+        print(f"gaia install: {exc}", file=sys.stderr)
+        return 1
+    return install_channels(args, (channel,))
+
+
+def install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str = "gaia install") -> int:
+    """Bootstrap the DB once, then wire each of *channels* into the workspace and record them."""
     postinstall = bool(getattr(args, "postinstall", False))
     quiet = bool(getattr(args, "quiet", False))
     verbose = bool(getattr(args, "verbose", False))
@@ -1297,17 +1363,19 @@ def cmd_install(args: argparse.Namespace) -> int:
     opt_path = bool(getattr(args, "path", False))
     strict_wiring = bool(getattr(args, "strict_wiring", False))
     workspace_arg = getattr(args, "workspace", None)
-    try:
-        hosts = resolve_hosts(getattr(args, "host", DEFAULT_HOST))
-    except ValueError as exc:
-        print(f"gaia install: {exc}", file=sys.stderr)
-        return 1
+    hosts = tuple(PACKAGE_CHANNELS[channel] for channel in channels)
 
     workspace = (
         Path(workspace_arg).expanduser().resolve()
         if workspace_arg
         else Path(os.environ.get("INIT_CWD", os.getcwd())).resolve()
     )
+    if not skip_workspace:
+        for channel in channels:
+            conflict = channel_conflict(workspace, channel)
+            if conflict:
+                print(f"{command}: {conflict}", file=sys.stderr)
+                return 1
 
     _print_header(postinstall=postinstall, quiet=quiet, workspace=workspace)
 
@@ -1364,35 +1432,25 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     wired: list[str] = []
     failed: list[str] = []
-    for host_key in hosts:
-        if _configure_host(
-            host_key,
+    for channel in channels:
+        configured = _configure_host(
+            PACKAGE_CHANNELS[channel],
             workspace=workspace,
             postinstall=postinstall,
             quiet=quiet,
             verbose=verbose,
             strict=strict_wiring,
-        ):
-            wired.append(host_key)
-        else:
-            failed.append(host_key)
+        )
+        (wired if configured else failed).append(channel)
 
     if failed and not quiet:
-        print(
-            f"  [!] host configuration failed: {', '.join(failed)}",
-            file=sys.stderr,
-        )
+        print(f"  [!] channel configuration failed: {', '.join(failed)}", file=sys.stderr)
 
     if strict_wiring and failed:
         return 1
 
     if not wired:
-        # Every requested host failed, so there is nothing to finish wiring --
-        # skip the remaining shared steps, exactly as the single-host path did.
-        # A partial failure is NOT fatal: one host the user does not care about
-        # must not break an install that wired the other. postinstall stays
-        # fail-soft here for the same reason it is at bootstrap: a non-zero exit
-        # aborts the consumer's package install.
+        # postinstall stays fail-soft: a non-zero exit aborts the consumer's package install.
         return 0 if postinstall else 1
 
     # Step 6.5 -- PATH launcher (~/.local/bin/gaia), only with --path: the one
@@ -1430,6 +1488,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         version=_install_helpers._read_plugin_version(_PACKAGE_ROOT) or "unknown",
         extra=outside,
         env=env_prior,
+        package_channels=wired,
     )
     _report_step(
         name="manifest",
@@ -1449,5 +1508,6 @@ def cmd_install(args: argparse.Namespace) -> int:
     # failed bootstrap attempt.
     _clear_install_error_marker()
 
-    _print_next_steps(quiet=quiet, postinstall=postinstall, hosts=wired)
+    _print_next_steps(quiet=quiet, postinstall=postinstall,
+                      hosts=[PACKAGE_CHANNELS[channel] for channel in wired])
     return 0

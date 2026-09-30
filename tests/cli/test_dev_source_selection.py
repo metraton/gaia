@@ -59,7 +59,7 @@ def test_selected_source_reexecutes_with_exact_ref(source_pair, tmp_path):
     parser = argparse.ArgumentParser()
     dev.register(parser.add_subparsers())
     args = parser.parse_args(["dev", "--from-worktree", str(source), "--ref", commit,
-                              "--workspace", str(tmp_path)])
+                              "--workspace", str(tmp_path), "--host", "opencode"])
     with patch.object(dev, "_is_source_checkout", return_value=True), \
          patch.object(dev, "validate_source_ref", return_value=commit), \
          patch.object(dev.subprocess, "run", return_value=subprocess.CompletedProcess([], 7)) as run, \
@@ -67,7 +67,7 @@ def test_selected_source_reexecutes_with_exact_ref(source_pair, tmp_path):
         assert dev.cmd_dev(args) == 7
     assert run.call_args.args[0] == [dev.sys.executable, str(source / "bin/gaia"), "dev",
                                     "--workspace", str(tmp_path), "--ref", commit,
-                                    "--host", "all"]
+                                    "--channel", "opencode"]
     pack.assert_not_called()
 
 

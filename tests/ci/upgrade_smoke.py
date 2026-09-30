@@ -152,7 +152,8 @@ def main() -> int:
     _require(final == expected, f"ledger at v{final}, expected v{expected}")
     print(f"migrated v{args.base} -> v{final}")
 
-    installed = _run([*gaia, "install", "--workspace", str(npm_ws), "--db-path", str(db)], env=env, cwd=npm_ws)
+    installed = _run([*gaia, "install", "--channel", "npm", "--workspace", str(npm_ws), "--db-path", str(db)],
+                     env=env, cwd=npm_ws)
     _require(installed.returncode == 0, "gaia install failed")
     registered = {}
     for settings in sorted((npm_ws / ".claude").glob("settings*.json")):

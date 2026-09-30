@@ -515,7 +515,7 @@ def test_removing_bs_install_leaves_a_working_and_the_database_untouched(one_hom
          patch.object(install, "_warn_launcher_dir_absent", return_value=None):
         assert install.cmd_install(argparse.Namespace(
             postinstall=False, quiet=True, verbose=False, db_path=None,
-            workspace=str(one_home.b.root), host="all", skip_workspace=False, path=True,
+            workspace=str(one_home.b.root), host="claude_code", skip_workspace=False, path=True,
             no_path=False, strict_wiring=False)) == 0
     assert os.path.lexists(one_home.b.root / ".claude" / "hooks")
     a_before, db_before = _tree(one_home.a.root), _checksums(one_home.db)

@@ -39,7 +39,7 @@ How bootstrap treats each case:
   handled like a fresh build over existing data -- backed up and gated.
 * **DB below the floor** (`1 <= version < 18`): **no longer supported** for
   in-place upgrade. Bootstrap aborts with a clear message asking you to
-  recreate the DB (back up, delete `~/.gaia/gaia.db`, re-run `gaia install`).
+  recreate the DB (back up, delete `~/.gaia/gaia.db`, run `gaia update`).
 
 There are no `_fresh` / `_merge` variants under the floor model. Those existed
 only because the old baseline was v1 and the whole chain was walked on every

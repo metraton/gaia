@@ -16,7 +16,8 @@ _IGNORED = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}
 
 # The package channels share one node_modules copy and so one record; the plugin
 # channel serves Claude Code from its own directory and keeps a second record,
-# because `gaia dev --channel all` leaves both installed side by side.
+# because OpenCode on the package can stay installed beside the plugin.
+# `npm+opencode` is kept only to read records written before each channel was installed on its own.
 PACKAGE_CHANNELS = ("npm", "opencode", "npm+opencode")
 PLUGIN_CHANNEL = "plugin"
 

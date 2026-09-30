@@ -97,10 +97,10 @@ Gaia reaches a workspace through one of three channels. The workspace is the fol
 | Channel | Host | What you install | Where `gaia` runs from |
 |---|---|---|---|
 | Plugin | Claude Code | `gaia@gaia-marketplace`, from this repository | the plugin's own `bin/gaia`, run by the orchestrator |
-| Package | Claude Code | `@jaguilar87/gaia` from npm, then `gaia install` | `node_modules/.bin/gaia`, or `~/.local/bin` with `--path` |
-| OpenCode | OpenCode | the same package, then `gaia install --host opencode` | as for the package |
+| Package | Claude Code | `@jaguilar87/gaia` from npm, then `gaia install --channel npm` | `node_modules/.bin/gaia`, or `~/.local/bin` with `--path` |
+| OpenCode | OpenCode | the same package, then `gaia install --channel opencode` | as for the package |
 
-A Claude Code workspace with both the plugin and the package runs each hook once, the plugin's: `gaia install` writes no hooks when the workspace settings enable the plugin, and every plugin session takes the package's registrations out of `.claude/settings.local.json` (`resolve_hook_channel` and `sync_workspace_hooks` in [`hooks/modules/core/plugin_setup.py`](./hooks/modules/core/plugin_setup.py)). `gaia doctor` names the channel it finds.
+`gaia install` and `gaia dev` take the channel with `--channel`; there is no default and no `all`. The package channel and the plugin exclude each other in a Claude Code workspace, since each registers Gaia's hooks: `gaia install --channel npm` refuses while the workspace settings enable a `gaia@...` plugin and names `claude plugin uninstall <plugin> --scope <scope>`, and `gaia dev --channel plugin` refuses while the package's hooks are registered in `.claude/settings.local.json` and names `gaia uninstall --workspace <folder>` (`channel_conflict` in [`bin/cli/install.py`](./bin/cli/install.py)). OpenCode joins either. `gaia update` re-wires the channels `gaia install` recorded in `.claude/gaia-manifest.json`. `gaia doctor` names the channel it finds.
 
 **Plugin.** In Claude Code:
 
@@ -115,12 +115,12 @@ That is the whole install, and it does not put `gaia` on your terminal's `PATH`.
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
-npx gaia install                  # or: pnpm exec gaia install
-                                  #   --host opencode | --host all, --path
+npx gaia install --channel npm    # or: pnpm exec gaia install --channel npm
+                                  #   --channel opencode for OpenCode; --path
 npx gaia doctor                   # one line per check, PASS or FAIL
 ```
 
-`gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. The first install registers the workspace under its folder name and scans the repositories beneath it. `--host opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`; `--path` also writes the `gaia` launcher to `~/.local/bin`. To take a new release: `npm install @jaguilar87/gaia@latest`, then `npx gaia update` (an alias of `gaia install`) with the same `--host`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
+`gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. The first install registers the workspace under its folder name and scans the repositories beneath it. `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can sit beside either Claude Code channel; `--path` also writes the `gaia` launcher to `~/.local/bin`. To take a new release: `npm install @jaguilar87/gaia@latest`, then `npx gaia update`, which re-wires the channels recorded in `.claude/gaia-manifest.json`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
 
 **Database migrations.** A new release may move `~/.gaia/gaia.db` to a newer schema. `gaia install` and `gaia update` do it on their own, and so does the plugin at SessionStart when the database is behind. On its own means without asking: a backup goes to `backups/` beside the database, and the whole chain runs in one transaction. What decides whether it can go on alone is what the chain reaches:
 
@@ -164,7 +164,7 @@ gaia/
 ├── skills/          # 39 techniques loaded by description match
 ├── hooks/           # host lifecycle entry points + security/context modules
 ├── gaia/            # host-neutral core: approvals, SQLite store, worktrees
-├── opencode/        # the OpenCode plugin; registered by --host opencode
+├── opencode/        # the OpenCode plugin; registered by --channel opencode
 ├── config/          # context contracts, git standards and rules the hooks read
 ├── build/           # gaia.manifest.json -> plugin.json + hooks.json at pack
 ├── bin/             # the gaia CLI and its subcommands (bin/cli/)

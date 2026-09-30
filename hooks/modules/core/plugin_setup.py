@@ -661,15 +661,40 @@ def gaia_plugin_decisions(sources: Iterable[tuple[str, Path]]) -> dict[str, tupl
     return decided
 
 
-def _workspace_enables_gaia_plugin(workspace: Path) -> bool:
-    """True when the settings Claude Code reads for *workspace* leave a ``gaia@...`` plugin enabled."""
+def enabled_gaia_plugins(workspace: Path) -> list[tuple[str, str]]:
+    """``(key, source label)`` for each ``gaia@...`` plugin the settings Claude Code reads for *workspace* leave enabled."""
     claude = workspace / ".claude"
     sources = [
         ("settings.local.json", claude / "settings.local.json"),
         ("settings.json", claude / "settings.json"),
         ("user settings", Path.home() / ".claude" / "settings.json"),
     ]
-    return any(enabled for enabled, _ in gaia_plugin_decisions(sources).values())
+    return [(key, label) for key, (enabled, label) in gaia_plugin_decisions(sources).items() if enabled]
+
+
+def _workspace_enables_gaia_plugin(workspace: Path) -> bool:
+    """True when the settings Claude Code reads for *workspace* leave a ``gaia@...`` plugin enabled."""
+    return bool(enabled_gaia_plugins(workspace))
+
+
+def workspace_registers_gaia_hooks(workspace: Path) -> bool:
+    """True when *workspace*'s settings.local.json holds a Gaia hook registration, the npm channel's mark."""
+    try:
+        settings = json.loads((workspace / ".claude" / "settings.local.json").read_text())
+    except (OSError, ValueError):
+        return False
+    hooks = settings.get("hooks") if isinstance(settings, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    entrypoints = _gaia_hook_entrypoints()
+    for entries in hooks.values():
+        for entry in entries if isinstance(entries, list) else ():
+            handlers = entry.get("hooks") if isinstance(entry, dict) else None
+            for handler in handlers if isinstance(handlers, list) else ():
+                command = handler.get("command") if isinstance(handler, dict) else None
+                if is_gaia_hook_command(command, workspace, entrypoints):
+                    return True
+    return False
 
 
 def resolve_hook_channel(workspace: Path, *, npm_copy: bool) -> str | None:

@@ -95,7 +95,7 @@ A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by 
 
 The DB-backed `surface_routing` table maps user intent to agents. The source of truth is each agent's `routing:` frontmatter block (`agents/*.md`): `surface`, `adjacent_surfaces`, `signals` (`commands`/`artifacts`), `required_checks`, optional `sub_surfaces`. Keywords were retired as a signal source -- the matcher (`tools/context/surface_router.py::_score_surface`) scores `commands` and `artifacts` only; a legacy `keywords` key in a signals block is ignored by scoring. The surface's `intent` is the agent's `description`; `contract_sections` derives from `project_context_contracts.read`. `tools/scan/seed_surface_routing.py` seeds the table at install time (mirror of `seed_contract_permissions.py`); `tools/context/surface_router.py` reads it via `tools/context/surface_router.py::load_surface_routing_config`.
 
-**To add a surface:** Add a `routing:` block to the owning agent's frontmatter, register the agent in `build/gaia.manifest.json`, re-run `gaia install`, and update the surface-router tests.
+**To add a surface:** Add a `routing:` block to the owning agent's frontmatter, register the agent in `build/gaia.manifest.json`, run `gaia update`, and update the surface-router tests.
 **To add a signal:** Add command/artifact patterns to the owning agent's `routing:` block.
 
 ## CLI Tool Patterns

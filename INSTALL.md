@@ -14,13 +14,15 @@ Gaia ships as a **single, unified plugin** named `gaia` — one artifact carryin
 
 Gaia reaches a workspace through **three channels**, the same three [README.md](./README.md) lists: the npm/pnpm package wired into Claude Code with `gaia install` (Surface 1), the Claude Code plugin from `gaia-marketplace` (Surface 2), and OpenCode on the same package (Surface 3). Pick the one that matches the host you run.
 
+`gaia install` and `gaia dev` take the channel explicitly with `--channel`; there is no default and no `all`, and run without one they fail listing the channels. The package channel (`npm`) and the plugin exclude each other in one workspace, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package). OpenCode joins either.
+
 ### Surface 1: npm / pnpm
 
-Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). From the folder that becomes the workspace, install the package, then wire the workspace with `gaia install`. A local install puts the CLI in `node_modules/.bin/`, not on your `PATH`, so it is invoked through the package manager:
+Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). From the folder that becomes the workspace, install the package, then wire the workspace with `gaia install --channel npm`. A local install puts the CLI in `node_modules/.bin/`, not on your `PATH`, so it is invoked through the package manager:
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
-npx gaia install                  # or: pnpm exec gaia install
+npx gaia install --channel npm    # or: pnpm exec gaia install --channel npm
                                   #   add --path to also write the gaia launcher to ~/.local/bin
 ```
 
@@ -70,10 +72,10 @@ OpenCode runs on the same package as Surface 1. From the folder that becomes the
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
-npx gaia install --host opencode  # --host all wires Claude Code and OpenCode together
+npx gaia install --channel opencode
 ```
 
-`--host opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update --host opencode`.
+`--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can be added beside either Claude Code channel. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update`, which re-wires every channel `gaia install` recorded in `.claude/gaia-manifest.json` and fails naming `gaia install --channel` when none is recorded.
 
 ### Project Scanner (on-demand, separate from install)
 
@@ -97,7 +99,7 @@ User runs: npm install @jaguilar87/gaia   (or: pnpm add @jaguilar87/gaia)
         ↓
 (no postinstall — nothing runs automatically)
         ↓
-User runs: npx gaia install    (or the SessionStart hook wires the workspace)
+User runs: npx gaia install --channel npm    (or the SessionStart hook wires the workspace)
         ↓
 [Bootstrap] first `gaia` use runs scripts/bootstrap_database.py (lazy)
    - Seeds ~/.gaia/gaia.db with current schema
@@ -134,7 +136,7 @@ Example: Install + scan in a project with GitOps and Terraform
 
 1. User: pnpm add @jaguilar87/gaia   (no postinstall runs)
    ↓
-2. User: pnpm exec gaia install
+2. User: pnpm exec gaia install --channel npm
    ✅ ~/.gaia/gaia.db bootstrapped (lazy, on first `gaia` use)
    ✅ .claude/ created
    ✅ 6 directory symlinks + CHANGELOG.md link created
@@ -157,9 +159,9 @@ Example: Install + scan in a project with GitOps and Terraform
 The options each command accepts are the ones its `--help` prints; the ones this guide uses:
 
 ```
-gaia install [--host {claude_code,opencode,all}] [--path] [--workspace W]
+gaia install --channel {npm,opencode} [--path] [--workspace W]
                                  # bootstrap DB + wire the workspace (no postinstall)
-gaia update                      # alias of install, run after a package upgrade
+gaia update                      # re-wires the recorded channels after a package upgrade
 gaia scan --workspace NAME [--dry-run] [root]
                                  # re-index the git repositories under root
 gaia uninstall [--workspace W] [--dry-run] [--no-backup]
@@ -283,10 +285,11 @@ Orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated vi
 # 1. Update package
 npm install @jaguilar87/gaia@latest   # or: pnpm add @jaguilar87/gaia@latest
 
-# 2. Re-sync the workspace (no postinstall does this for you), with the
-#    same --host the workspace was installed with:
+# 2. Re-sync the workspace (no postinstall does this for you):
 npx gaia update                       # or: pnpm exec gaia update
 #    - Refreshes DB schema, config, and symlinks after the version bump
+#    - Re-wires every channel recorded in .claude/gaia-manifest.json;
+#      fails naming gaia install --channel when none is recorded
 ```
 
 ---
@@ -363,7 +366,7 @@ echo 'export PATH=~/.npm-global/bin:$PATH' >> ~/.bashrc
 cat ~/.gaia/last-install-error.json
 
 # Re-run install (idempotent, re-entrant)
-npx gaia install
+npx gaia install --channel npm
 
 # Or, if the DB itself is missing, just run any gaia command
 # (lazy bootstrap re-creates it):
@@ -431,7 +434,7 @@ Gaia is designed with these principles:
 ### Frequently Asked Questions
 
 **Q: Can I use Gaia in multiple projects?**  
-A: Yes. Each project is a separate workspace in `~/.gaia/gaia.db`. The first `npx gaia install` inside each project directory registers it and scans its repositories; `npx gaia scan --workspace <name>` re-indexes one later. The DB is shared but context is per-workspace.
+A: Yes. Each project is a separate workspace in `~/.gaia/gaia.db`. The first `npx gaia install --channel npm` inside each project directory registers it and scans its repositories; `npx gaia scan --workspace <name>` re-indexes one later. The DB is shared but context is per-workspace.
 
 **Q: Do symlinks work on Windows?**  
 A: Yes, but you need to enable developer mode or run as administrator.

@@ -35,7 +35,7 @@ The folder currently holds only this README; it remains for future data files an
 
 **Git commit standards (not in this folder):** The Conventional Commits rules are inlined as module-level constants (`TYPE_ALLOWED`, `SUBJECT_MAX_LENGTH`, `SUBJECT_RULES`, `BODY_MAX_LINE_LENGTH`, `ENFORCEMENT`) in `hooks/modules/validation/commit_validator.py`.
 
-**Adding a new surface:** Add a `routing:` block to the owning agent's frontmatter, add the agent to `build/gaia.manifest.json`, and re-run `gaia install` to re-seed the `surface_routing` table. Update the surface-router tests.
+**Adding a new surface:** Add a `routing:` block to the owning agent's frontmatter, add the agent to `build/gaia.manifest.json`, and run `gaia update` to re-seed the `surface_routing` table. Update the surface-router tests.
 
 ## See also
 

@@ -39,7 +39,7 @@ BOTH surfaces, reproducing CI" -- plus the shared drift-free convergence gate:
   6. opencode:surface -- the OpenCode channel rides the npm package, so this
      inspects the SAME tarball gate 2 installs, without starting OpenCode: it
      extracts it, wires it into a throwaway workspace through the wiring
-     `gaia install --host opencode` uses (`_install_helpers.configure_opencode_plugin`),
+     `gaia install --channel opencode` uses (`_install_helpers.configure_opencode_plugin`),
      and FAILs naming whatever is missing -- opencode/plugin.ts, a file it
      resolves relative to itself (./bridge.py, ../bin/gaia, an imported
      module), an inventoried agent or `{file:...}` prompt, a skill link. The
@@ -600,7 +600,7 @@ def gate_opencode_surface(pack: dict[str, Any]) -> dict[str, Any]:
 
 
 def _opencode_surface_problems(package: Path, workspace: Path) -> list[str]:
-    """Wire *package* into *workspace* as `gaia install --host opencode` does and name what does not resolve.
+    """Wire *package* into *workspace* as `gaia install --channel opencode` does and name what does not resolve.
 
     Checked: opencode/plugin.ts and every relative reference it (or a module it
     imports) resolves; every agent the inventory names, since the wiring skips a
@@ -1239,7 +1239,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "                                    schema drift (live DB newer than the artifact)\n"
             "  6. opencode:surface           -- the OpenCode surface of gate 2's tarball,\n"
             "                                    without starting OpenCode: wires it into a\n"
-            "                                    temp workspace as `gaia install --host\n"
+            "                                    temp workspace as `gaia install --channel\n"
             "                                    opencode` does and FAILs naming what is\n"
             "                                    missing (opencode/plugin.ts, ./bridge.py,\n"
             "                                    ../bin/gaia, an agent {file:...}, a skill link)\n"

@@ -846,7 +846,7 @@ class TestCheckLastInstallError:
         assert "project scan" in r["detail"]
         assert "context provider crashed" in r["detail"]
         assert "/home/x/proj" in r["detail"]
-        assert "gaia install" in r["fix"]
+        assert "gaia update" in r["fix"]
 
     def test_unreadable_marker_warns(self, monkeypatch, tmp_path):
         """Marker exists but is not valid JSON -> warning with a manual-fix
@@ -1338,7 +1338,7 @@ class TestDeriveWorkspace:
         # Legible framing (not a raw CRITICAL) + both concrete remedies.
         assert "could not resolve a workspace" in err
         assert "gaia doctor --workspace" in err
-        assert "gaia install --workspace" in err
+        assert "gaia update --workspace" in err
 
     def test_env_workspace_path_used_before_file_derivation(self, tmp_path, monkeypatch):
         """GAIA_WORKSPACE_PATH (baked by the Windows launcher) with a valid

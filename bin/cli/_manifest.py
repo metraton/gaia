@@ -548,8 +548,13 @@ def record(
     version: str,
     extra: Iterable[Path] = (),
     env: dict | None = None,
+    package_channels: Iterable[str] = (),
 ) -> dict:
-    """Write the manifest for the install that just ran; returns it."""
+    """Write the manifest for the install that just ran; returns it.
+
+    ``package_channels`` accumulates the channels `gaia install` wired here
+    (npm, opencode), which `gaia update` re-wires; a session write keeps them.
+    """
     previous = load(workspace)
     after = capture(workspace, [*extra, *external_paths(previous)])
     env_entries = dict((previous or {}).get("env", {}))
@@ -558,6 +563,7 @@ def record(
     manifest = {
         "manifest_version": MANIFEST_VERSION,
         "channel": channel,
+        "package_channels": sorted({*(previous or {}).get("package_channels", ()), *package_channels}),
         "gaia_version": version,
         "workspace": str(workspace),
         "entries": diff(baseline, after),

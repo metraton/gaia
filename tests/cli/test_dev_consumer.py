@@ -149,7 +149,7 @@ def consumer(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     monkeypatch.setattr(dev.subprocess, "run", runner)
 
     def run():
-        return dev.cmd_dev(argparse.Namespace(workspace=str(workspace),
+        return dev.cmd_dev(argparse.Namespace(channel="npm", workspace=str(workspace),
                                              pack_dest=str(tmp_path / "packs"), quiet=True))
     return workspace, state, run
 

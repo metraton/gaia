@@ -25,7 +25,7 @@ If the user does not name a mode, ask: "Which mode -- live, npm-sandbox, plugin,
 
 Validates a workspace that is already wired (npm/pnpm surface). No build, no temp dir, no cleanup.
 
-Run against the workspace: `gaia doctor` then `gaia status`, then the **wire-up checklist** below. This is the mode `gaia-release` Layer 1 and Layer 3 call after installing into the target (via `gaia dev --workspace <TARGET>`, the one-command install).
+Run against the workspace: `gaia doctor` then `gaia status`, then the **wire-up checklist** below. This is the mode `gaia-release` Layer 1 and Layer 3 call after installing into the target (via `gaia dev --channel <channel> --workspace <TARGET>`, the one-command install).
 
 ## Mode: npm-sandbox
 

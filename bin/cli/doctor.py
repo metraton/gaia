@@ -235,7 +235,7 @@ def _derive_workspace(override: str = None) -> Path:
         "  Fix it one of two ways:\n"
         "    - run `gaia doctor --workspace <path>` to check a specific "
         "workspace now, or\n"
-        "    - reinstall with `gaia install --workspace <path>` (on Windows "
+        "    - reinstall with `gaia update --workspace <path>` (on Windows "
         "this also persists GAIA_WORKSPACE_PATH so doctor resolves the "
         "workspace automatically).",
         file=sys.stderr,
@@ -576,9 +576,9 @@ def _hook_fix(project_root: Path, channels: dict) -> str:
     if channels["plugin"]:
         return f"`gaia uninstall --workspace {ws}` (the plugin registers the hooks itself)"
     if channels["npm"]:
-        return f"`gaia install --workspace {ws}`"
+        return f"`gaia install --channel npm --workspace {ws}`"
     return (
-        f"`gaia install --workspace {ws}` from the Gaia you run, or "
+        f"`gaia install --channel npm --workspace {ws}` from the Gaia you run, or "
         f"`claude plugin install gaia@gaia-marketplace` to use the plugin"
     )
 
@@ -707,7 +707,7 @@ def check_last_install_error() -> dict:
             "Last install error",
             "warning",
             f"marker present at {_INSTALL_ERROR_MARKER} but unreadable",
-            "Delete the marker manually and re-run `gaia install`.",
+            "Delete the marker manually and run `gaia update`.",
         )
 
     step = data.get("step", "unknown step")
@@ -718,7 +718,7 @@ def check_last_install_error() -> dict:
         "Last install error",
         "error",
         f"postinstall failed at step '{step}' ({ts}) in {workspace}: {detail}",
-        "Re-run `gaia install` in the affected workspace to repair. "
+        "Run `gaia update` in the affected workspace to repair. "
         "If the same step fails again, file a bug with this marker attached.",
     )
 
@@ -803,7 +803,7 @@ def check_workspace_initialized(project_root: Path) -> dict:
             "Workspace initialized",
             "error",
             f"missing: {', '.join(missing)}",
-            f"Run: `gaia install --workspace {project_root}`",
+            f"Run: `gaia install --channel npm --workspace {project_root}`",
         )
     return _result("Workspace initialized", "pass", "Gaia-aware workspace")
 
@@ -850,7 +850,7 @@ def check_plugin_mode(project_root: Path) -> dict:
     registry_path = project_root / ".claude" / "plugin-registry.json"
     if not registry_path.is_file():
         return _result("Plugin registered", "warning", "No plugin-registry.json",
-                       f"`gaia install --workspace {shlex.quote(str(project_root))}` or restart Claude Code")
+                       f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}` or restart Claude Code")
 
     data = _read_json(registry_path)
     if not data:
@@ -888,7 +888,7 @@ def check_schema_version() -> dict:
         return _result(
             "Schema version",
             "info",
-            f"no DB at {db_path} (will be created on first `gaia install`)",
+            f"no DB at {db_path} (created by the first `gaia` command)",
         )
 
     try:
@@ -898,7 +898,7 @@ def check_schema_version() -> dict:
             "Schema version",
             "warning",
             f"could not open {db_path}: {exc}",
-            "Delete the corrupt DB and re-run `gaia install`.",
+            "Delete the corrupt DB and run `gaia install --skip-workspace`.",
         )
 
     try:
@@ -914,7 +914,7 @@ def check_schema_version() -> dict:
                 "Schema version",
                 "warning",
                 "schema_version table missing (legacy DB)",
-                "Run `gaia install` to upgrade the DB schema.",
+                "Run `gaia install --skip-workspace` to upgrade the DB schema.",
             )
 
         cur.execute("SELECT MAX(version) FROM schema_version")
@@ -925,7 +925,7 @@ def check_schema_version() -> dict:
             "Schema version",
             "warning",
             f"could not read schema_version: {exc}",
-            "Re-run `gaia install` to repair the DB.",
+            "Run `gaia install --skip-workspace` to repair the DB.",
         )
     finally:
         con.close()
@@ -995,7 +995,7 @@ def check_episodes_growth() -> dict:
         return _result(
             "Episodes growth",
             "info",
-            f"no DB at {db_path} (created on first `gaia install`)",
+            f"no DB at {db_path} (created by the first `gaia` command)",
         )
 
     try:
@@ -1135,7 +1135,7 @@ def check_schema_v12_tables() -> dict:
             "Schema v12 tables",
             "warning",
             f"could not open {db_path}: {exc}",
-            "Delete the corrupt DB and re-run `gaia install`.",
+            "Delete the corrupt DB and run `gaia install --skip-workspace`.",
         )
 
     try:
@@ -1178,7 +1178,7 @@ def check_schema_v12_tables() -> dict:
             "Schema v12 tables",
             "warning",
             f"could not query sqlite_master: {exc}",
-            "Re-run `gaia install` to repair the DB.",
+            "Run `gaia install --skip-workspace` to repair the DB.",
         )
     finally:
         con.close()
@@ -1194,7 +1194,7 @@ def check_schema_v12_tables() -> dict:
             "Schema v12 tables",
             "error",
             "; ".join(issues),
-            "Live DDL is missing v12 objects. Re-run `gaia install` to apply migration.",
+            "Live DDL is missing v12 objects. Run `gaia install --skip-workspace` to apply migration.",
         )
 
     return _result(
@@ -1266,7 +1266,7 @@ def check_schema_ddl_consistency() -> dict:
             "Schema DDL consistency",
             "warning",
             f"could not open {db_path}: {exc}",
-            "Delete the corrupt DB and re-run `gaia install`.",
+            "Delete the corrupt DB and run `gaia install --skip-workspace`.",
         )
 
     drifts: list[str] = []
@@ -1308,7 +1308,7 @@ def check_schema_ddl_consistency() -> dict:
             "Schema DDL consistency",
             "warning",
             f"could not read sqlite_master: {exc}",
-            "Re-run `gaia install` to repair the DB.",
+            "Run `gaia install --skip-workspace` to repair the DB.",
         )
     finally:
         con.close()
@@ -1319,7 +1319,7 @@ def check_schema_ddl_consistency() -> dict:
             "error",
             "; ".join(drifts),
             "Live DDL is behind schema.sql -- the schema_version ledger is "
-            "lying. Re-run `gaia install` to apply pending migrations.",
+            "lying. Run `gaia install --skip-workspace` to apply pending migrations.",
         )
 
     return _result(
@@ -1428,7 +1428,7 @@ def check_symlinks(project_root: Path) -> dict:
 
     severity = "error" if has_critical_missing else "warning"
     return _result("Symlinks", severity, f"{valid}/{total} valid",
-                   f"`gaia install --workspace {shlex.quote(str(project_root))}`")
+                   f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`")
 
 
 def _semver_tuple(v) -> tuple:
@@ -1505,7 +1505,7 @@ def check_symlinks_freshness(project_root: Path) -> dict:
                 return _result(
                     name, "warning",
                     f".claude/hooks is a copy of gaia {stamped_ver} but {installed_ver} is installed",
-                    "Run `gaia update` (or `gaia install`) to refresh the copied hooks",
+                    "Run `gaia update` to refresh the copied hooks",
                 )
             return _result(
                 name, "pass",
@@ -1517,7 +1517,7 @@ def check_symlinks_freshness(project_root: Path) -> dict:
     except OSError:
         return _result(
             name, "warning", ".claude/hooks does not resolve",
-            "Run `gaia install` to repair symlinks",
+            "Run `gaia update` to repair symlinks",
         )
 
     # resolved is <pkg>/hooks -> its parent is the package root.
@@ -1531,7 +1531,7 @@ def check_symlinks_freshness(project_root: Path) -> dict:
         return _result(
             name, "warning",
             f".claude/hooks resolves to gaia {target_ver} but {installed_ver} is installed",
-            "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the current package",
+            "Run `gaia update` (or `gaia dev --workspace <ws> --channel npm` from source) to re-point hooks at the current package",
         )
 
     # Signal 2 (content): same (or newer) semver, but does the resolved hooks
@@ -1548,7 +1548,7 @@ def check_symlinks_freshness(project_root: Path) -> dict:
                 name, "warning",
                 f".claude/hooks resolves to a DIFFERENT build (content {resolved_hash}) "
                 f"than installed (content {installed_hash}); both report v{target_ver}",
-                "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the current build",
+                "Run `gaia update` (or `gaia dev --workspace <ws> --channel npm` from source) to re-point hooks at the current build",
             )
         if resolved_hash and installed_hash:
             return _result(
@@ -1651,7 +1651,7 @@ def check_source_parity(project_root: Path) -> dict:
     except OSError:
         return _result(
             name, "warning", "node_modules/@jaguilar87/gaia does not resolve",
-            f"Run `gaia dev --workspace {project_root}` to reinstall",
+            f"Run {_package_dev_command(project_root)} to reinstall",
         )
 
     if installed_root == source_root:
@@ -1680,9 +1680,19 @@ def check_source_parity(project_root: Path) -> dict:
         f"{len(divergent)} of {report['compared']} shipped files diverge from the source "
         f"checkout at {source_root}: {named}{more}",
         "That code is written but NOT running -- Claude Code loads hooks, agents and skills "
-        f"from the install, not from the source tree. Rebuild with `gaia dev --workspace "
-        f"{project_root}`, then restart Claude Code.",
+        f"from the install, not from the source tree. Rebuild with "
+        f"{_package_dev_command(project_root)}, then restart Claude Code.",
     )
+
+
+def _package_dev_command(project_root: Path) -> str:
+    """One runnable `gaia dev` line per package channel `gaia install` recorded for *project_root*."""
+    manifest = _read_json(project_root / ".claude" / "gaia-manifest.json") or {}
+    recorded = [channel for channel in ("npm", "opencode") if channel in manifest.get("package_channels", ())]
+    if not recorded:
+        return (f"`gaia dev --workspace {project_root} --channel <channel>` "
+                "(`gaia dev --help` lists the channels)")
+    return " and ".join(f"`gaia dev --workspace {project_root} --channel {channel}`" for channel in recorded)
 
 
 def _gaia_dep_spec(project_root: Path) -> "str | None":
@@ -1764,7 +1774,7 @@ def check_install_provenance(project_root: Path) -> dict:
             return _result(
                 name, "warning",
                 "local (file:) install but node_modules/@jaguilar87/gaia does not resolve",
-                f"Run `gaia dev --workspace {project_root}` to reinstall",
+                f"Run {_package_dev_command(project_root)} to reinstall",
             )
         return _result(
             name, "pass",
@@ -1998,7 +2008,7 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
         return _result(
             name, "warning",
             f"node_modules/@jaguilar87/gaia does not resolve ({nm_gaia})",
-            f"Run `gaia dev --workspace {project_root}` to reinstall",
+            f"Run {_package_dev_command(project_root)} to reinstall",
         )
 
     parity = _load_source_parity()
@@ -2025,7 +2035,7 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
         f"installed from the pinned tarball {spec} (the normal tarball install); "
         "whether a source link was replaced is not recorded here -- see Install provenance",
         f"If you expected this workspace to run a live source checkout, run "
-        f"`gaia dev --workspace {project_root}` to repack and reinstall from source.",
+        f"{_package_dev_command(project_root)} to repack and reinstall from source.",
     )
 
 
@@ -2517,13 +2527,13 @@ def check_agent_resolution(project_root: Path) -> dict:
     except Exception as exc:
         return _result(
             "Agent routing", "warning", f"could not query surface_routing table: {exc}",
-            "Run `gaia install` to reseed",
+            "Run `gaia install --skip-workspace` to reseed",
         )
 
     if not isinstance(data, dict) or data.get("version") == "missing":
         return _result(
             "Agent routing", "info", "surface_routing table not seeded",
-            "Run `gaia install` (seeds via tools/scan/seed_surface_routing.py)",
+            "Run `gaia install --skip-workspace` (seeds via tools/scan/seed_surface_routing.py)",
         )
 
     plugin = _plugin_tree(project_root)
@@ -2541,7 +2551,7 @@ def check_agent_resolution(project_root: Path) -> dict:
     if not referenced:
         return _result(
             "Agent routing", "warning", "no agents referenced in surface_routing table",
-            "Run `gaia install` to reseed",
+            "Run `gaia install --skip-workspace` to reseed",
         )
 
     unresolved = sorted(
@@ -2553,7 +2563,7 @@ def check_agent_resolution(project_root: Path) -> dict:
         return _result(
             "Agent routing", "error",
             f"{len(unresolved)} routed agent(s) not found: {', '.join(unresolved)}",
-            "Run `gaia install` to recreate agent files",
+            "Run `gaia update` to recreate agent files",
         )
 
     return _result("Agent routing", "pass", f"{len(referenced)} routed agents resolve")
@@ -2565,7 +2575,7 @@ def check_settings(project_root: Path) -> dict:
 
     Hook registration is counted across every channel by check_hook_registrations.
     """
-    fix = f"`gaia install --workspace {shlex.quote(str(project_root))}`"
+    fix = f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`"
     local_path = project_root / ".claude" / "settings.local.json"
     if not local_path.is_file():
         return _result("Settings", "error", "settings.local.json missing", fix)
@@ -2643,7 +2653,7 @@ def check_hook_commands(project_root: Path) -> dict:
     commands = sorted({(source, command) for source, _, _, command in registrations})
     ws = shlex.quote(str(project_root))
     if channels["npm"] or (project_root / ".claude" / "hooks").exists():
-        fix = f"`gaia install --workspace {ws}`"
+        fix = f"`gaia install --channel npm --workspace {ws}`"
     else:
         fix = f"`gaia uninstall --workspace {ws}` (removes registrations whose package is gone)"
     if not commands:
@@ -2701,13 +2711,13 @@ def check_hook_files(project_root: Path) -> dict:
 
     if errors:
         return _result("Hook files", "error", "; ".join(errors),
-                       f"`gaia install --workspace {shlex.quote(str(project_root))}`")
+                       f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`")
     if warnings:
         return _result(
             "Hook files",
             "warning",
             f"{valid}/{total} found (missing: {', '.join(warnings)})",
-            f"`gaia install --workspace {shlex.quote(str(project_root))}`",
+            f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`",
         )
     return _result("Hook files", "pass", f"{valid}/{total} found")
 
@@ -3102,7 +3112,7 @@ def check_memory_dirs(project_root: Path) -> dict:
         # Deliberately not the .sh: that reference path applies pending
         # migrations with no consent gate, and this hint is shown to a user
         # whose database already holds data.
-        "Run: gaia install",
+        "Run: gaia install --skip-workspace",
     )
 
 
@@ -3149,7 +3159,7 @@ def check_hooks_active_fresh(project_root: Path) -> dict:
     except OSError:
         return _result(
             name, "warning", ".claude/hooks does not resolve",
-            "Run `gaia install` to repair symlinks",
+            "Run `gaia update` to repair symlinks",
         )
 
     hooks_content_hash = _load_hooks_content_hash()
@@ -3170,7 +3180,7 @@ def check_hooks_active_fresh(project_root: Path) -> dict:
                 name, "warning",
                 f".claude/hooks (build {wired_hash}) does not match the installed "
                 f"package (build {installed_hash})",
-                "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the installed build",
+                "Run `gaia update` (or `gaia dev --workspace <ws> --channel npm` from source) to re-point hooks at the installed build",
             )
 
     # Live-session freshness needs the session id + its pinned marker.

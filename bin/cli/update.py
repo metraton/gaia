@@ -309,6 +309,9 @@ def register(subparsers):
             "Alias of `gaia install`: same flags, same steps, same exit code --\n"
             "non-zero when the DB migration or a required step fails. The\n"
             "workspace defaults to the nearest directory holding .claude/.\n"
+            "Without --channel it re-wires the channels `gaia install` recorded\n"
+            "in the workspace manifest, and fails naming `gaia install --channel`\n"
+            "when none is recorded.\n"
             "\n"
             "--dry-run [--json]: preview what the workspace helpers would change\n"
             "and the health report, without touching the DB or any file.\n"
@@ -333,12 +336,23 @@ def register(subparsers):
 
 
 def cmd_update(args) -> int:
-    """Run `gaia install` for the workspace, or the read-only preview with --dry-run."""
+    """Re-run `gaia install` for the channels the workspace recorded, or the read-only preview with --dry-run.
+
+    A --channel (or --host) names the channel instead, exactly as `gaia install` takes it.
+    """
     if not getattr(args, "workspace", None):
         args.workspace = str(_find_project_root())
     if getattr(args, "dry_run", False):
         return _preview(args)
-    return install.cmd_install(args)
+    if getattr(args, "channel", None) or getattr(args, "host", None):
+        return install.cmd_install(args)
+    workspace = Path(args.workspace).expanduser().resolve()
+    channels = install.recorded_channels(workspace)
+    if not channels:
+        print(f"gaia update: no install channel is recorded for {workspace}; install one first: "
+              f"gaia install --channel npm|opencode --workspace {workspace}", file=sys.stderr)
+        return 1
+    return install.install_channels(args, channels, command="gaia update")
 
 
 def _preview(args) -> int:

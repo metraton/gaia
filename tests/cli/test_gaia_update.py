@@ -249,7 +249,7 @@ class TestCmdUpdate(unittest.TestCase):
     def _make_args(self, dry_run=False, verbose=False, as_json=False,
                    skip_bootstrap=True, workspace=None):
         import argparse
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.dry_run = dry_run
         ns.verbose = verbose
         ns.json = as_json
@@ -311,7 +311,7 @@ class TestCmdUpdateOrchestration(unittest.TestCase):
 
     def _make_args(self, workspace=None, dry_run=False):
         import argparse
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.dry_run = dry_run
         ns.verbose = False
         ns.json = True  # JSON to silence print

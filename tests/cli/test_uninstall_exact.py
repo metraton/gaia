@@ -89,11 +89,11 @@ def _npm_workspace(workspace: Path) -> None:
 def _install(env, **overrides) -> None:
     args = argparse.Namespace(
         postinstall=False, quiet=True, verbose=False, db_path=None, workspace=str(env.workspace),
-        host="all", skip_workspace=False, path=True, no_path=False, strict_wiring=False,
+        skip_workspace=False, path=True, no_path=False, strict_wiring=False,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
-    assert install.cmd_install(args) == 0
+    assert install.install_channels(args, ("npm", "opencode")) == 0
 
 
 def _uninstall(env, *, dry_run: bool = False, preuninstall: bool = False) -> dict:

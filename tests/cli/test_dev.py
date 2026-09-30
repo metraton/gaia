@@ -97,7 +97,7 @@ class TestSimpleDevPolicy:
         if kind == "file":
             target.write_text("sentinel")
         with patch.object(dev_mod, "_run_pack_mode") as pack:
-            assert cmd_dev(argparse.Namespace(workspace=str(target))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(target))) == 1
         pack.assert_not_called()
 
     @pytest.mark.parametrize("host", ["claude_code", "opencode"])
@@ -169,7 +169,7 @@ class TestRecoveryPrerequisites:
              patch.object(dev_mod, "install_tarball", return_value={
                  "action": "error", "path": "x", "details": "injected",
              }):
-            assert cmd_dev(argparse.Namespace(workspace=str(workspace), pack_dest=str(custom))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(workspace), pack_dest=str(custom))) == 1
         assert foreign.read_bytes() == b"foreign"
         assert len(list(custom.glob("attempt-*/*.tgz"))) == 1
 
@@ -193,7 +193,7 @@ class TestRecoveryPrerequisites:
         with patch.object(dev_mod._pack_helpers, "pack_tarball") as pack, \
              patch.object(dev_mod, "install_tarball") as install, \
              patch.object(dev_mod, "wire_workspace_via_installed_gaia") as wire:
-            assert cmd_dev(argparse.Namespace(workspace=str(tmp_path))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(tmp_path))) == 1
         pack.assert_not_called()
         install.assert_not_called()
         wire.assert_not_called()
@@ -231,7 +231,7 @@ class TestRecoveryPrerequisites:
              patch.object(dev_mod, "rewrite_workspace_dep_spec", side_effect=result("spec")), \
              patch.object(dev_mod, "wire_workspace_via_installed_gaia", side_effect=result("wire")), \
              patch.object(dev_mod, "record_dev_build") as build:
-            assert cmd_dev(argparse.Namespace(workspace=str(workspace), pack_dest=str(dest))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(workspace), pack_dest=str(dest))) == 1
         assert calls == ["install", "spec", "wire"][:["install", "spec", "wire"].index(stage) + 1]
         assert old.read_bytes() == b"rollback package"
         assert foreign.read_bytes() == b"foreign package"
@@ -257,7 +257,8 @@ class TestRegisterSubcommand(unittest.TestCase):
         register(subparsers)
         args = parser.parse_args(["dev"])
         self.assertEqual(args.subcommand, "dev")
-        self.assertEqual(args.host, "all")
+        self.assertIsNone(args.channel)
+        self.assertIsNone(args.host)
 
     def test_invalid_host_rejected_at_parse_time(self):
         parser = argparse.ArgumentParser()
@@ -478,7 +479,7 @@ class TestInstallTarball(unittest.TestCase):
 class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
     def test_errors_when_installed_entrypoint_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            res = wire_workspace_via_installed_gaia(Path(tmp))
+            res = wire_workspace_via_installed_gaia(Path(tmp), host="claude_code")
             self.assertEqual(res["action"], "error")
             self.assertIn("not found", res["details"])
 
@@ -496,7 +497,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, "Gaia ready.", "")
 
             with patch("cli.dev.subprocess.run", side_effect=fake_run):
-                res = wire_workspace_via_installed_gaia(workspace, quiet=True)
+                res = wire_workspace_via_installed_gaia(workspace, quiet=True, host="claude_code")
 
             self.assertEqual(res["action"], "created")
             self.assertIn(str(entrypoint), captured["cmd"])
@@ -506,7 +507,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
             self.assertIn("--quiet", captured["cmd"])
             self.assertIn("--no-path", captured["cmd"])
             self.assertIn("--strict-wiring", captured["cmd"])
-            self.assertEqual(captured["cmd"][captured["cmd"].index("--host") + 1], "all")
+            self.assertEqual(captured["cmd"][captured["cmd"].index("--host") + 1], "claude_code")
 
     def test_nonzero_exit_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -519,7 +520,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
                 "cli.dev.subprocess.run",
                 return_value=subprocess.CompletedProcess([], 1, "", "boom"),
             ):
-                res = wire_workspace_via_installed_gaia(workspace)
+                res = wire_workspace_via_installed_gaia(workspace, host="claude_code")
 
             self.assertEqual(res["action"], "error")
             self.assertIn("boom", res["details"])
@@ -531,7 +532,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
 
 class TestCmdDevRefusesNonSourceCheckout(unittest.TestCase):
     def _make_args(self, workspace) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.workspace = str(workspace)
         ns.mode = "pack"
         ns.quiet = True
@@ -613,7 +614,7 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
         self._data_dir_ctx.cleanup()
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.workspace = str(workspace)
         ns.mode = overrides.get("mode", "pack")
         ns.quiet = overrides.get("quiet", True)
@@ -877,6 +878,7 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
             }
 
             args = argparse.Namespace(
+                channel="npm",
                 workspace=str(workspace),
                 quiet=True,
                 verbose=False,
@@ -1157,7 +1159,7 @@ class TestPackModeReportsTheDevIteration(unittest.TestCase):
         self._data_dir_ctx.cleanup()
 
     def _args(self, workspace) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.workspace = str(workspace)
         ns.mode = "pack"
         ns.quiet = False
@@ -1274,7 +1276,7 @@ def fake_claude(tmp_path, monkeypatch):
 
 
 def _channel_args(workspace, **overrides):
-    values = {"workspace": str(workspace), "channel": None, "host": "all", "quiet": True,
+    values = {"workspace": str(workspace), "channel": None, "host": None, "quiet": True,
               "verbose": False, "keep_tarball": False, "pack_dest": None,
               "no_global_link": False, "from_worktree": None, "ref": None}
     values.update(overrides)
@@ -1292,11 +1294,9 @@ def test_channel_plugin_builds_the_directory_claude_code_loads(tmp_path, monkeyp
     monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm-cache"))
     workspace = tmp_path / "ws"
     (workspace / ".claude").mkdir(parents=True)
-    npm_hook = f"python3 {workspace / '.claude' / 'hooks' / 'pre_tool_use.py'}"
     (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
         "enabledPlugins": {"other@elsewhere": True},
         "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
-            {"type": "command", "command": npm_hook},
             {"type": "command", "command": "echo mine"},
         ]}]},
     }))
@@ -1373,16 +1373,25 @@ def test_channel_host_alias_installs_the_same_package(tmp_path, monkeypatch, ali
 
 
 @pytest.mark.parametrize("channel,expected", [
-    (None, [("pack", "all")]),
+    ("npm", [("pack", "claude_code")]),
+    ("opencode", [("pack", "opencode")]),
     ("plugin", [("plugin",)]),
-    ("all", [("pack", "all"), ("plugin",)]),
 ])
-def test_channel_selection_runs_package_channels_before_the_plugin(tmp_path, monkeypatch, channel, expected):
+def test_channel_selection_serves_exactly_the_named_channel(tmp_path, monkeypatch, channel, expected):
     calls = []
     monkeypatch.setattr(dev_mod, "_run_pack_mode", lambda ws, **kw: calls.append(("pack", kw["host"])) or 0)
     monkeypatch.setattr(dev_mod, "_run_plugin_channel", lambda ws, **kw: calls.append(("plugin",)) or 0)
     assert cmd_dev(_channel_args(tmp_path, channel=channel)) == 0
     assert calls == expected
+
+
+@pytest.mark.parametrize("channel", [None, "all"])
+def test_channel_is_required_and_all_is_not_one(tmp_path, monkeypatch, channel, capsys):
+    monkeypatch.setattr(dev_mod, "_run_pack_mode", lambda ws, **kw: pytest.fail("packed without a channel"))
+    monkeypatch.setattr(dev_mod, "_run_plugin_channel", lambda ws, **kw: pytest.fail("served without a channel"))
+    assert cmd_dev(_channel_args(tmp_path, channel=channel)) == 1
+    expected = "name a channel with --channel" if channel is None else "unsupported channel 'all'"
+    assert expected in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("argv", [["dev", "--channel", "plugin", "--host", "opencode"],
@@ -1400,7 +1409,7 @@ def test_channel_help_documents_channel_and_host_alias():
     with redirect_stdout(io.StringIO()) as out, pytest.raises(SystemExit):
         parser.parse_args(["dev", "--help"])
     text = out.getvalue()
-    assert "--channel {npm,plugin,opencode,all}" in text
+    assert "--channel {npm,plugin,opencode}" in text and "no `all`" in text
     assert "/reload-plugins" in text and "Alias kept for compatibility" in text
 
 

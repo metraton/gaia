@@ -82,7 +82,7 @@ def test_install_registers_and_scans_the_folder_it_ran_in(tmp_path):
     _git_repo(workspace / "billing")
 
     proc = subprocess.run(
-        [sys.executable, str(_REPO / "bin" / "gaia"), "install",
+        [sys.executable, str(_REPO / "bin" / "gaia"), "install", "--channel", "npm",
          "--workspace", str(workspace), "--quiet"],
         env=_env(tmp_path, db), capture_output=True, text=True, timeout=600,
     )
