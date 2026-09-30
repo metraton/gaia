@@ -147,6 +147,20 @@ def get_notification(
 # memory reads -- a project's live-pending threads
 # ---------------------------------------------------------------------------
 
+def not_superseded(row: str = "memory") -> str:
+    """SQL condition true while the ``memory`` row ``row`` is not the old end of a supersedes link.
+
+    ``row`` is the table name or alias of that row in the enclosing query. The
+    old end is matched by workspace and name, since a link across owners keeps
+    it in ``dst_workspace`` rather than the link's own workspace.
+    """
+    return (
+        "NOT EXISTS (SELECT 1 FROM memory_links sl "
+        f"WHERE sl.kind = 'supersedes' AND sl.dst_name = {row}.name "
+        f"AND COALESCE(sl.dst_workspace, sl.workspace) = {row}.workspace)"
+    )
+
+
 _PENDING_THREADS_WITH_A_PROJECT = (
     "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
     "       m.initiative, m.project_ref, m.class, m.status "
@@ -155,11 +169,7 @@ _PENDING_THREADS_WITH_A_PROJECT = (
     "  AND m.class = 'thread' "
     "  AND m.status IN ('carry_forward', 'open') "
     "  AND (COALESCE(m.initiative, '') != '' OR COALESCE(m.project_ref, '') != '') "
-    "  AND NOT EXISTS ("
-    "    SELECT 1 FROM memory_links l "
-    "    WHERE l.workspace = m.workspace AND l.dst_name = m.name "
-    "      AND l.kind = 'supersedes'"
-    "  ) "
+    f"  AND {not_superseded('m')} "
     "ORDER BY COALESCE(m.updated_at, '') DESC"
 )
 
@@ -175,8 +185,8 @@ def pending_threads_by_project(
     filters the rows: a row belongs to a project when
     ``gaia.store.writer.canonical_project_key`` of its ``initiative`` and
     ``project_ref`` is in ``keys``. The thread predicate is
-    ``bin/cli/memory.py::_PENDING_VIVO_SELECT``'s, with a supersedes link
-    read in the row's own workspace; keep the two aligned, since this set is
+    ``bin/cli/memory.py::_PENDING_VIVO_SELECT``'s, both excluding superseded
+    rows through :func:`not_superseded`; keep the two aligned, since this set is
     what ``gaia memory get-relevant --initiative`` returns and every
     "N more live-pending" count must equal it.
 
@@ -1668,6 +1678,33 @@ def get_memory_class_status(
         con.close()
 
 
+_LINK_COLUMNS = (
+    "src_name, dst_name, kind, created_at, workspace AS src_workspace, "
+    "COALESCE(dst_workspace, workspace) AS dst_workspace"
+)
+
+
+def _links_from(con: sqlite3.Connection, workspace: str, names: list[str]) -> list:
+    """Edges whose src is one of ``names`` in ``workspace``."""
+    ph = ",".join("?" * len(names))
+    return con.execute(
+        f"SELECT {_LINK_COLUMNS} FROM memory_links "
+        f"WHERE workspace = ? AND src_name IN ({ph})",
+        [workspace, *names],
+    ).fetchall()
+
+
+def _links_into(con: sqlite3.Connection, workspace: str, names: list[str]) -> list:
+    """Edges whose dst is one of ``names`` in ``workspace``, whichever workspace stores the edge."""
+    ph = ",".join("?" * len(names))
+    return con.execute(
+        f"SELECT {_LINK_COLUMNS} FROM memory_links "
+        f"WHERE dst_name IN ({ph}) "
+        f"AND ((dst_workspace IS NULL AND workspace = ?) OR dst_workspace = ?)",
+        [*names, workspace, workspace],
+    ).fetchall()
+
+
 def memory_links_for(
     workspace: str,
     names,
@@ -1676,26 +1713,18 @@ def memory_links_for(
 ) -> list[dict]:
     """Batch-load every ``memory_links`` edge that touches any of ``names``.
 
-    Two index-aligned IN-list queries (outgoing on src, incoming on dst),
-    merged and de-duplicated by ``(src_name, dst_name, kind)``. Never one query
-    per node. Each edge dict: ``{src_name, dst_name, kind, created_at}``.
+    Two IN-list queries (outgoing on src, incoming on dst -- an incoming
+    edge may be stored under another owner's workspace), merged and
+    de-duplicated by ``(src_name, dst_name, kind)``. Never one query per node.
+    Each edge dict: ``{src_name, dst_name, kind, created_at}``.
     """
     names = _dedup_preserve(names)
     if not names:
         return []
     con = _ro_connect(db_path)
     try:
-        ph = ",".join("?" * len(names))
-        out_rows = con.execute(
-            f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-            f"WHERE workspace = ? AND src_name IN ({ph})",
-            [workspace, *names],
-        ).fetchall()
-        in_rows = con.execute(
-            f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-            f"WHERE workspace = ? AND dst_name IN ({ph})",
-            [workspace, *names],
-        ).fetchall()
+        out_rows = _links_from(con, workspace, names)
+        in_rows = _links_into(con, workspace, names)
     finally:
         con.close()
     edges: list[dict] = []
@@ -1785,9 +1814,10 @@ def memory_lineage(
     """BFS the ``memory_links`` graph from ``slug`` in BOTH directions.
 
     Uses a visited-set (cycle-safe) and stops after ``max_depth`` hops. At each
-    depth level it issues exactly TWO batch queries (outgoing over the frontier
-    IN-list, incoming over the frontier IN-list) -- never one per node -- so a
-    deep lineage costs ``2 * hops`` queries, not ``2 * nodes``.
+    depth level it issues TWO batch queries (outgoing over the frontier
+    IN-list, incoming over the frontier IN-list) per workspace the frontier
+    spans -- never one per node. A link across owners carries the walk into
+    the other end's workspace, which ``home`` records per node.
 
     Returns::
 
@@ -1796,6 +1826,7 @@ def memory_lineage(
             "nodes":  [name, ...],            # sorted, includes seed
             "depth":  {name: hop_count},
             "role":   {name: role_label},     # seed -> "queried"
+            "home":   {name: workspace},
             "edges":  [{src_name, dst_name, kind, created_at}, ...],
         }
     """
@@ -1804,26 +1835,19 @@ def memory_lineage(
         visited = {slug}
         depth = {slug: 0}
         role = {slug: "queried"}
+        home = {slug: workspace}
         edges: list[dict] = []
         edge_seen: set = set()
         frontier = [slug]
         hop = 0
         while frontier and hop < max_depth:
-            ph = ",".join("?" * len(frontier))
-            out_rows = con.execute(
-                f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-                f"WHERE workspace = ? AND src_name IN ({ph})",
-                [workspace, *frontier],
-            ).fetchall()
-            in_rows = con.execute(
-                f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-                f"WHERE workspace = ? AND dst_name IN ({ph})",
-                [workspace, *frontier],
-            ).fetchall()
+            found: list[tuple] = []
+            for frontier_workspace in dict.fromkeys(home[n] for n in frontier):
+                names = [n for n in frontier if home[n] == frontier_workspace]
+                found += [(x, "out") for x in _links_from(con, frontier_workspace, names)]
+                found += [(x, "in") for x in _links_into(con, frontier_workspace, names)]
             next_frontier: list[str] = []
-            for r, direction in (
-                [(x, "out") for x in out_rows] + [(x, "in") for x in in_rows]
-            ):
+            for r, direction in found:
                 key = (r["src_name"], r["dst_name"], r["kind"])
                 if key not in edge_seen:
                     edge_seen.add(key)
@@ -1833,11 +1857,13 @@ def memory_lineage(
                         "kind": r["kind"],
                         "created_at": r["created_at"],
                     })
-                neighbor = r["dst_name"] if direction == "out" else r["src_name"]
+                end = "dst" if direction == "out" else "src"
+                neighbor = r[f"{end}_name"]
                 if neighbor not in visited:
                     visited.add(neighbor)
                     depth[neighbor] = hop + 1
                     role[neighbor] = _role_for_edge(r["kind"], direction)
+                    home[neighbor] = r[f"{end}_workspace"]
                     next_frontier.append(neighbor)
             frontier = next_frontier
             hop += 1
@@ -1848,6 +1874,7 @@ def memory_lineage(
         "nodes": sorted(visited),
         "depth": depth,
         "role": role,
+        "home": home,
         "edges": edges,
     }
 
@@ -2014,20 +2041,31 @@ def build_memory_story(
 
         {
             "seed": slug,
-            "nodes": [{name, depth, role}, ...],
+            "nodes": [{name, depth, role, workspace}, ...],
             "edges": [{src_name, dst_name, kind, created_at}, ...],
             "timeline": [event, ...],
             "final_states": [{name, class, status, type, ...}, ...],
         }
+
+    History and final state are read in each node's own workspace, which
+    differs from ``workspace`` past a link across owners.
     """
     lin = memory_lineage(workspace, slug, max_depth=max_depth, db_path=db_path)
     names = lin["nodes"]
     node_set = set(names)
-    history = memory_history_for(workspace, names, db_path=db_path)
-    finals = memory_final_states(workspace, names, lin["role"], db_path=db_path)
+    history: list[dict] = []
+    finals_by_name: dict[str, dict] = {}
+    for node_workspace in dict.fromkeys(lin["home"][n] for n in names):
+        group = [n for n in names if lin["home"][n] == node_workspace]
+        history += memory_history_for(node_workspace, group, db_path=db_path)
+        for state in memory_final_states(node_workspace, group, lin["role"], db_path=db_path):
+            finals_by_name[state["name"]] = state
+    history.sort(key=lambda h: (h["changed_at"] or "", h["id"]))
+    finals = [finals_by_name[n] for n in names]
     timeline = _fuse_timeline(node_set, history, lin["edges"])
     nodes = [
-        {"name": n, "depth": lin["depth"].get(n), "role": lin["role"].get(n)}
+        {"name": n, "depth": lin["depth"].get(n), "role": lin["role"].get(n),
+         "workspace": lin["home"][n]}
         for n in names
     ]
     return {

@@ -1067,23 +1067,30 @@ END;
 -- memory_links (v4): graph primitives between curated memory rows.
 -- kind enum enforced via CHECK because it is a fresh table -- no rebuild risk.
 --   relates_to     -- general association
---   supersedes     -- src replaces dst; injector excludes rows that are
---                     dst of an active supersedes edge
+--   supersedes     -- src (the new row) replaces dst (the old row);
+--                     injector excludes rows that are dst of an active
+--                     supersedes edge
 --   derived_from   -- src is a refinement / instance of dst
 --   graduated_to   -- thread row graduated into an anchor row
+-- `workspace` is the src row's; `dst_workspace` (v61) names the dst row's
+-- when the edge crosses owners -- a user row in _gaia_user replacing one still
+-- under a project workspace -- and is NULL when both ends share `workspace`.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS memory_links (
-    workspace  TEXT NOT NULL,  -- FK -> workspaces.name
-    src_name   TEXT NOT NULL,
-    dst_name   TEXT NOT NULL,
-    kind       TEXT NOT NULL CHECK (kind IN ('relates_to', 'supersedes', 'derived_from', 'graduated_to')),
-    created_at TEXT,
+    workspace     TEXT NOT NULL,  -- FK -> workspaces.name
+    src_name      TEXT NOT NULL,
+    dst_name      TEXT NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('relates_to', 'supersedes', 'derived_from', 'graduated_to')),
+    created_at    TEXT,
+    dst_workspace TEXT,
     PRIMARY KEY (workspace, src_name, dst_name, kind),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS memory_links_src ON memory_links(workspace, src_name);
 CREATE INDEX IF NOT EXISTS idx_memory_links_dst_kind ON memory_links(workspace, dst_name, kind);
+CREATE INDEX IF NOT EXISTS idx_memory_links_dst_workspace
+    ON memory_links(dst_workspace, dst_name, kind) WHERE dst_workspace IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- memory_history: provenance / version audit trail for `memory` rows

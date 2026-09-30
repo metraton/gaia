@@ -308,7 +308,8 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
     Selects exactly ``type='user' AND audience='executor'`` for the
     workspace plus the workspace-less user sentinel (``USER_WORKSPACE``) --
     not ``class='anchor'`` (which mixed in anchors from unrelated projects
-    sharing the same workspace). Returns ``workspace`` and ``name`` plus
+    sharing the same workspace), minus rows another row supersedes. Returns
+    ``workspace`` and ``name`` plus
     ``body`` -- the name never renders in the block (that would cost a
     further ``gaia memory show`` call the agent in practice never made) but
     is needed so the kernel-axis telemetry in ``build_memory_block`` can
@@ -323,6 +324,7 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
     try:
         con = _connect(db_path)
         try:
+            from gaia.store.reader import not_superseded
             from gaia.store.writer import USER_WORKSPACE
             workspaces = [workspace] + [
                 w for w in (USER_WORKSPACE,) if w != workspace
@@ -331,7 +333,7 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
                 "SELECT workspace, name, body FROM memory "
                 f"WHERE workspace IN ({', '.join('?' for _ in workspaces)}) "
                 "AND type = 'user' AND audience = 'executor' "
-                "AND deleted_at IS NULL "
+                f"AND deleted_at IS NULL AND {not_superseded()} "
                 "ORDER BY updated_at DESC LIMIT ?",
                 (*workspaces, _MEMORY_ROW_LIMIT),
             ).fetchall()

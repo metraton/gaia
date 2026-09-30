@@ -3071,11 +3071,12 @@ def set_memory_audience(
 # for callers that need to detect drift (e.g. reclassify pipelines verifying
 # that an edge they expected to be a one-time event did not silently re-fire).
 #
-# Existence enforcement: both src_name and dst_name MUST already exist in the
-# ``memory`` table for the workspace. Links to non-existent slugs would leave
-# dangling edges that the injector cannot resolve -- the writer raises ValueError
-# instead of accepting them. ON DELETE CASCADE on workspace handles the deeper
-# integrity guarantees at the SQLite layer.
+# Existence enforcement: src_name MUST already exist in the ``memory`` table
+# for the workspace and dst_name for its own workspace (``dst_workspace``, the
+# same one unless the edge crosses owners). Links to non-existent slugs would
+# leave dangling edges that the injector cannot resolve -- the writer raises
+# ValueError instead of accepting them. ON DELETE CASCADE on workspace handles
+# the deeper integrity guarantees at the SQLite layer.
 # ---------------------------------------------------------------------------
 
 VALID_MEMORY_LINK_KINDS = ("relates_to", "supersedes", "derived_from", "graduated_to")
@@ -3087,21 +3088,26 @@ def insert_memory_link(
     dst_name: str,
     kind: str,
     *,
+    dst_workspace: str | None = None,
     if_exists: str = "skip",
     db_path: Path | None = None,
 ) -> dict:
     """Insert a row into ``memory_links``. Idempotent by default.
 
-    Both ``src_name`` and ``dst_name`` must already exist in the ``memory``
-    table for ``workspace`` -- otherwise the writer refuses to create a
-    dangling edge.
+    ``src_name`` must already exist in ``workspace`` and ``dst_name`` in
+    ``dst_workspace`` -- otherwise the writer refuses to create a dangling
+    edge.
 
     Args:
-        workspace:  Workspace name (FK -> workspaces.name).
-        src_name:   Source memory slug (must exist in memory).
-        dst_name:   Destination memory slug (must exist in memory).
+        workspace:  Workspace of the src row (FK -> workspaces.name).
+        src_name:   Source memory slug (must exist in memory). For
+                    ``supersedes`` this is the NEW row.
+        dst_name:   Destination memory slug (must exist in memory). For
+                    ``supersedes`` this is the OLD row it replaces.
         kind:       One of VALID_MEMORY_LINK_KINDS. The schema enforces this
                     via CHECK; the writer validates first for clearer errors.
+        dst_workspace: Workspace of the dst row when it differs from
+                    ``workspace`` (a link across owners); None means the same.
         if_exists:  ``"skip"`` (default) -> idempotent re-insert returns
                     ``action="noop"``. ``"error"`` -> raise ValueError when
                     the (workspace, src, dst, kind) row already exists.
@@ -3110,10 +3116,14 @@ def insert_memory_link(
     Returns:
         {"status": "applied", "action": "inserted"|"noop",
          "workspace": ..., "src_name": ..., "dst_name": ..., "kind": ...,
-         "created_at": ...}
+         "dst_workspace": ..., "created_at": ...,
+         "src_born": ..., "dst_born": ...}
+        ``dst_workspace`` is always the dst row's workspace; ``*_born`` is
+        each row's ``created_at``, or ``updated_at`` for a row older than v50.
 
     Raises:
-        ValueError: invalid kind, missing src/dst, or if_exists="error" on dup.
+        ValueError: invalid kind, missing src/dst, the same edge already
+            pointing at another dst workspace, or if_exists="error" on dup.
         MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
     """
     _assert_dispatch_can_write_memory()
@@ -3131,68 +3141,70 @@ def insert_memory_link(
         raise ValueError("src_name cannot be empty")
     if not dst_name or not dst_name.strip():
         raise ValueError("dst_name cannot be empty")
+    dst_home = dst_workspace or workspace
+    stored_dst_workspace = dst_home if dst_home != workspace else None
 
     con = _connect(db_path)
     try:
         # Validate endpoints exist. Without these checks we silently create
         # edges to slugs that do not (yet) exist -- the injector and graph
         # walkers cannot recover from that.
-        src_row = con.execute(
-            "SELECT name FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, src_name),
-        ).fetchone()
-        if src_row is None:
-            raise ValueError(
-                f"src memory {src_name!r} not found in workspace "
-                f"{workspace!r}"
-            )
-        dst_row = con.execute(
-            "SELECT name FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, dst_name),
-        ).fetchone()
-        if dst_row is None:
-            raise ValueError(
-                f"dst memory {dst_name!r} not found in workspace "
-                f"{workspace!r}"
-            )
+        born = {}
+        for end, end_workspace, end_name in (
+            ("src", workspace, src_name), ("dst", dst_home, dst_name),
+        ):
+            row = con.execute(
+                "SELECT COALESCE(created_at, updated_at) AS born FROM memory "
+                "WHERE workspace = ? AND name = ?",
+                (end_workspace, end_name),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"{end} memory {end_name!r} not found in workspace "
+                    f"{end_workspace!r}"
+                )
+            born[end] = row["born"]
 
+        result = {
+            "status": "applied",
+            "workspace": workspace,
+            "src_name": src_name,
+            "dst_name": dst_name,
+            "kind": kind,
+            "dst_workspace": dst_home,
+            "src_born": born["src"],
+            "dst_born": born["dst"],
+        }
         existing = con.execute(
-            "SELECT created_at FROM memory_links "
+            "SELECT created_at, COALESCE(dst_workspace, workspace) AS dst_home "
+            "FROM memory_links "
             "WHERE workspace = ? AND src_name = ? AND dst_name = ? AND kind = ?",
             (workspace, src_name, dst_name, kind),
         ).fetchone()
         if existing is not None:
+            if existing["dst_home"] != dst_home:
+                raise ValueError(
+                    f"memory_link ({workspace}, {src_name}, {dst_name}, {kind}) "
+                    f"already points at {dst_name!r} in workspace "
+                    f"{existing['dst_home']!r}; delete it before linking the "
+                    f"row in {dst_home!r}"
+                )
             if if_exists == "error":
                 raise ValueError(
                     f"memory_link already exists: ({workspace}, {src_name}, "
                     f"{dst_name}, {kind}) -- created_at={existing['created_at']}"
                 )
-            return {
-                "status": "applied",
-                "action": "noop",
-                "workspace": workspace,
-                "src_name": src_name,
-                "dst_name": dst_name,
-                "kind": kind,
-                "created_at": existing["created_at"],
-            }
+            return {**result, "action": "noop", "created_at": existing["created_at"]}
 
         now = _now_iso()
         con.execute(
             "INSERT INTO memory_links (workspace, src_name, dst_name, kind, "
-            "                          created_at) VALUES (?, ?, ?, ?, ?)",
-            (workspace, src_name, dst_name, kind, now),
+            "                          created_at, dst_workspace) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (workspace, src_name, dst_name, kind, now, stored_dst_workspace),
         )
         con.commit()
-        return {
-            "status": "applied",
-            "action": "inserted",
-            "workspace": workspace,
-            "src_name": src_name,
-            "dst_name": dst_name,
-            "kind": kind,
-            "created_at": now,
-        }
+        return {**result, "action": "inserted", "created_at": now}
     finally:
         con.close()
 

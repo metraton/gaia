@@ -77,6 +77,10 @@ these verbs in this order:
 
   link <src> <dst> --kind=<relates_to|supersedes|derived_from|graduated_to>
       [--delete] [--workspace=<ws>]      Create/delete a memory_links edge.
+                                          supersedes: src is the NEW row, dst
+                                          the OLD one it replaces, which then
+                                          leaves every injection:
+                                          link decision_new decision_old.
 
   delete <name> [--hard] [--yes] [--json]
                                           DISCOURAGED BY CONVENTION: prefer
@@ -650,6 +654,88 @@ def _normalize_status_flag(raw: str | None) -> tuple[bool, str | None]:
     return True, raw
 
 
+# Write-time teaching. A writer learns the shape of a row from the CLI at the
+# moment of writing; whether the row deserves to exist is judgment that stays
+# in skills/memory, which the pointer names. Every check here WARNS and the
+# write still lands -- refusals are the writer's.
+#
+# _DESCRIPTION_WARN_CHARS: listings and the session's birth block show the
+# description alone, so it must read as one sentence.
+# _BODY_WARN_CHARS: a body is injected whole or dropped
+# (hooks/modules/context/kernel_builder.py::_executor_user_bodies), so a long
+# one costs every reader that loads it.
+_DESCRIPTION_WARN_CHARS = 120
+_BODY_WARN_CHARS = 800
+
+_WRITE_POINTER = (
+    "> Escribir memoria es juicio además de forma: `Skill('memory')` decide si "
+    "la fila merece existir, de quién es y si reemplaza a otra."
+)
+
+_PERFECT_GAIA_QUESTION = (
+    "¿tendría sentido esta preferencia si Gaia funcionara perfecto? Si no, es "
+    "un bug: regístralo con --type=feedback --initiative=gaia_system, y que "
+    "la preferencia nombre el bug que cubre para retirarse con él."
+)
+
+
+def _warning(code: str, message: str) -> dict:
+    return {"code": code, "message": message}
+
+
+def _emit_write_warnings(warnings: list[dict], as_json: bool) -> None:
+    """Print each warning to stderr and close with the pointer to the skill; JSON carries them in its payload instead."""
+    if as_json:
+        return
+    for w in warnings:
+        print(f"aviso: {w['message']}", file=sys.stderr)
+    print(_WRITE_POINTER)
+
+
+def _add_warnings(
+    *, mem_type: str, description: str | None, body: str, owned: bool,
+    previous_body: str | None,
+) -> list[dict]:
+    """What a ``memory add`` call should hear about the row it is writing.
+
+    ``owned`` is whether the call named a project or initiative;
+    ``previous_body`` is the body already stored under the same name, or None.
+    """
+    from gaia.store.memory_claims import memory_claim_kind
+
+    warnings = []
+    if description and len(description) > _DESCRIPTION_WARN_CHARS:
+        warnings.append(_warning(
+            "description_long",
+            f"la descripción tiene {len(description)} caracteres (umbral "
+            f"{_DESCRIPTION_WARN_CHARS}); es lo único que muestran los listados "
+            f"y el bloque de nacimiento, así que va en una oración.",
+        ))
+    if len(body) > _BODY_WARN_CHARS:
+        warnings.append(_warning(
+            "body_long",
+            f"el cuerpo tiene {len(body)} caracteres (umbral {_BODY_WARN_CHARS}); "
+            f"se inyecta entero o no se inyecta.",
+        ))
+    if mem_type != "user" and not owned:
+        warnings.append(_warning(
+            "no_owner",
+            "solo --workspace no nombra un dueño: un contenedor no es dueño. "
+            "Usa --project=<nombre> o --initiative=<clave> para un proyecto, o "
+            "--initiative=gaia_system para Gaia.",
+        ))
+    if previous_body is not None and previous_body != body:
+        warnings.append(_warning(
+            "rewrite_in_place",
+            "esto reescribe la fila en su sitio. Un cambio es una fila nueva más "
+            "`gaia memory link <nueva> <vieja> --kind=supersedes`; add sobre un "
+            "nombre existente es para corregir un error.",
+        ))
+    if mem_type == "user" and memory_claim_kind(description) == "Preferencia":
+        warnings.append(_warning("preference_or_bug", _PERFECT_GAIA_QUESTION))
+    return warnings
+
+
 def _cmd_add(args) -> int:
     """Handle ``gaia memory add --name=... --type=... --body=...``.
 
@@ -714,8 +800,10 @@ def _cmd_add(args) -> int:
             "no scope provided: pass at least one of --project (preferred) or "
             "--workspace. Refusing to write with project/workspace both empty "
             "(that would leave project_ref NULL by absence of input, not by "
-            "intent). To anchor to a project use --project=<name>; for a "
-            "workspace-scoped note use --workspace=<ws>.",
+            "intent). Every row has one of three owners: the user "
+            "(--type=user, no scope), a project (--project=<name> or "
+            "--initiative=<key>, with --workspace=<ws>), or Gaia itself "
+            "(--initiative=gaia_system --workspace=<ws>).",
             as_json,
             code="missing_scope",
         )
@@ -802,6 +890,19 @@ def _cmd_add(args) -> int:
         initiative = None
 
     try:
+        from gaia.store.writer import get_memory, resolve_memory_workspace
+        stored = get_memory(
+            resolve_memory_workspace(workspace, mem_type, initiative, project_ref), name,
+        )
+    except Exception:  # noqa: BLE001 -- a warning must never block the write
+        stored = None
+    warnings = _add_warnings(
+        mem_type=mem_type, description=description, body=body,
+        owned=project_ref is not None or initiative is not None,
+        previous_body=stored["body"] if stored else None,
+    )
+
+    try:
         res = upsert_memory(
             workspace,
             name,
@@ -883,6 +984,8 @@ def _cmd_add(args) -> int:
             out["host_scoped"] = True
         if user_scoped_notice:
             out["user_scoped"] = True
+        if warnings:
+            out["warnings"] = warnings
         print(json.dumps(out, indent=2))
     else:
         verb = "Updated" if res.get("action") == "updated" else "Created"
@@ -911,6 +1014,7 @@ def _cmd_add(args) -> int:
                 f"  class={reclassify_result['class']}, "
                 f"status={reclassify_result['memory_status']}"
             )
+    _emit_write_warnings(warnings, as_json)
     return 0
 
 
@@ -1570,11 +1674,12 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
         "thread_open": [],
     }
     try:
+        from gaia.store.reader import not_superseded
+
         con = _connect()
         try:
-            # NOT IN subquery: exclude rows that are the destination of any
-            # supersedes edge. A row A with an incoming `supersedes` from B
-            # means "B replaces A" -- A drops out of the injection.
+            # A row A with an incoming `supersedes` from B means "B replaces
+            # A" -- A drops out of the injection.
             # The caller's workspace plus the user sentinel: type=user rows
             # have no workspace, so they are read from every vantage.
             section_workspaces = _section_workspaces(workspace)
@@ -1587,12 +1692,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 # scan-v2 SV3: a soft-deleted (tombstoned) row must not be
                 # injected into the SessionStart memory block.
                 "  AND deleted_at IS NULL "
-                "  AND name NOT IN ("
-                "    SELECT dst_name FROM memory_links "
-                f"    WHERE workspace IN ({ws_ph}) AND kind = 'supersedes'"
-                "  ) "
+                f"  AND {not_superseded()} "
             )
-            base_params: list = section_workspaces + section_workspaces
+            base_params: list = list(section_workspaces)
 
             # v32: cwd anchoring removed. Rows are workspace-scoped only; the
             # launch directory neither filters nor prioritises them. order_prefix
@@ -1920,10 +2022,7 @@ _PENDING_VIVO_SELECT = (
     "  AND deleted_at IS NULL "
     "  AND class = 'thread' "
     "  AND status IN ('carry_forward', 'open') "
-    "  AND name NOT IN ("
-    "    SELECT dst_name FROM memory_links "
-    "    WHERE workspace IN ({ws}) AND kind = 'supersedes'"
-    "  ) "
+    "  AND {not_superseded} "
 )
 
 
@@ -1990,6 +2089,7 @@ def _fetch_pending_vivo(workspace: str, extra_where: str = "",
     contract stays fail-safe.
     """
     try:
+        from gaia.store.reader import not_superseded
         from gaia.store.writer import _connect
     except ImportError:
         return []
@@ -1998,8 +2098,10 @@ def _fetch_pending_vivo(workspace: str, extra_where: str = "",
         try:
             workspaces = _reader_workspaces(workspace)
             placeholders = ", ".join("?" for _ in workspaces)
-            select_sql = _PENDING_VIVO_SELECT.format(ws=placeholders)
-            params = list(workspaces) + list(workspaces)
+            select_sql = _PENDING_VIVO_SELECT.format(
+                ws=placeholders, not_superseded=not_superseded(),
+            )
+            params = list(workspaces)
             if extra_params:
                 params.extend(extra_params)
             cur = con.execute(
@@ -2824,12 +2926,13 @@ def _cmd_edit(args) -> int:
                 f"{reanchor_result['before_project_ref']!r} -> "
                 f"{reanchor_result['after_project_ref']!r}"
             )
+    _emit_write_warnings([], as_json)
     return 0
 
 
 # ---------------------------------------------------------------------------
-# Subcommand handler: append (curated memory body growth -- the primary
-# "add something" verb)
+# Subcommand handler: append (curated memory body growth -- the verb for a
+# log or a live thread; changed knowledge is a new row that supersedes)
 # ---------------------------------------------------------------------------
 #
 # Vocabulary decision (Option C): memory is AGGREGATED and RECLASSIFIED, not
@@ -2912,6 +3015,7 @@ def _cmd_append(args) -> int:
             f"Appended to memory '{name}' body "
             f"(action={result['action']}, workspace={workspace})"
         )
+    _emit_write_warnings([], as_json)
     return 0
 
 
@@ -2973,6 +3077,7 @@ def _cmd_reclassify(args) -> int:
             f"Reclassified {name}: class={res['class']}, "
             f"status={res['memory_status']} in workspace {workspace}"
         )
+    _emit_write_warnings([], as_json)
     return 0
 
 
@@ -2990,13 +3095,18 @@ def _cmd_reclassify(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _cmd_link(args) -> int:
-    """Handle ``gaia memory link <src> <dst> --kind=<k> [--delete]``."""
+    """Handle ``gaia memory link <src> <dst> --kind=<k> [--delete]``.
+
+    Each end is looked up from the caller's workspace and the two sentinels,
+    so a user row in ``_gaia_user`` can supersede its predecessor still under
+    a project workspace.
+    """
     as_json = getattr(args, "json", False)
     src_name = args.src_name
-    workspace = _workspace_holding(
-        _resolve_workspace(getattr(args, "workspace", None)), src_name,
-    )
+    caller_workspace = _resolve_workspace(getattr(args, "workspace", None))
+    workspace = _workspace_holding(caller_workspace, src_name)
     dst_name = args.dst_name
+    dst_workspace = _workspace_holding(caller_workspace, dst_name)
     kind = args.kind
     do_delete = getattr(args, "delete", False)
 
@@ -3019,7 +3129,9 @@ def _cmd_link(args) -> int:
             res = delete_memory_link(workspace, src_name, dst_name, kind)
             verb = "Deleted" if res["action"] == "deleted" else "Skipped"
         else:
-            res = insert_memory_link(workspace, src_name, dst_name, kind)
+            res = insert_memory_link(
+                workspace, src_name, dst_name, kind, dst_workspace=dst_workspace,
+            )
             verb = "Created" if res["action"] == "inserted" else "Skipped"
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -3027,17 +3139,34 @@ def _cmd_link(args) -> int:
         # MemoryWriteForbidden -- structural enforcement layer (T3).
         return _err(str(exc), as_json)
 
+    warnings = []
+    # ISO-8601 stamps order as strings. A corrected old row can legitimately
+    # be the newer one, which is why this warns instead of refusing.
+    if (kind == "supersedes" and not do_delete and res["src_born"] and res["dst_born"]
+            and res["dst_born"] > res["src_born"]):
+        warnings.append(_warning(
+            "supersedes_reversed",
+            f"{dst_name} es más nueva que {src_name}: supersedes va de la fila "
+            f"nueva a la vieja, y {dst_name} acaba de salir de toda inyección. "
+            f"Si la flecha quedó invertida: `gaia memory link {src_name} "
+            f"{dst_name} --kind=supersedes --delete` y "
+            f"`gaia memory link {dst_name} {src_name} --kind=supersedes`.",
+        ))
+
     if as_json:
-        print(json.dumps(res, indent=2, default=str))
+        print(json.dumps({**res, **({"warnings": warnings} if warnings else {})},
+                         indent=2, default=str))
     else:
         # Arrow uses ASCII-friendly form; no unicode dependence.
         action_label = (
             "link" if res["action"] in ("inserted", "deleted") else "link (no-op)"
         )
-        print(
-            f"{verb} {action_label} {src_name} -[{kind}]-> {dst_name} "
-            f"in workspace {workspace}"
-        )
+        ends = (f"in workspace {workspace}" if dst_workspace == workspace
+                else f"from workspace {workspace} to {dst_workspace}")
+        print(f"{verb} {action_label} {src_name} -[{kind}]-> {dst_name} {ends}")
+        if kind == "supersedes" and res["action"] == "inserted":
+            print(f"  {src_name} reemplaza a {dst_name}")
+        _emit_write_warnings(warnings, as_json)
     return 0
 
 
@@ -3590,19 +3719,30 @@ def register(subparsers):
         help="Create or delete a graph edge between two curated memory rows",
         description=(
             "Create (default) or --delete a row in memory_links. Both src and "
-            "dst must exist as curated memory rows. Idempotent: re-running the "
-            "same link is a no-op."
+            "dst must exist as curated memory rows; each is found in --workspace "
+            "or in the user/host scopes, so the two may have different owners. "
+            "Idempotent: re-running the same link is a no-op.\n\n"
+            "supersedes has one direction: src is the NEW row, dst the OLD one "
+            "it replaces, which then leaves every injection. A changed fact is "
+            "a new row plus this link, not a rewrite of the old row."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia memory link atom_node_20 anchor_routing --kind=relates_to\n"
-            "  gaia memory link decision_old decision_new --kind=supersedes\n"
-            "  gaia memory link a b --kind=relates_to --delete\n"
+            "  gaia memory link decision_new decision_old --kind=supersedes\n"
+            "  gaia memory link a b --kind=relates_to --delete\n\n"
+            "Writing memory is judgment as well as form: load Skill('memory').\n"
         ),
     )
-    link_p.add_argument("src_name", help="Source memory slug. Must exist.")
-    link_p.add_argument("dst_name", help="Destination memory slug. Must exist.")
+    link_p.add_argument(
+        "src_name",
+        help="Source memory slug. Must exist. For supersedes: the NEW row, what holds now.",
+    )
+    link_p.add_argument(
+        "dst_name",
+        help="Destination memory slug. Must exist. For supersedes: the OLD row it replaces.",
+    )
     link_p.add_argument(
         "--kind", required=True,
         choices=("relates_to", "supersedes", "derived_from", "graduated_to"),
@@ -3623,18 +3763,41 @@ def register(subparsers):
     link_p.set_defaults(func=_cmd_link)
 
     # -- add ----------------------------------------------------------------
+    from gaia.store.memory_claims import MEMORY_CLAIM_KINDS
+
     add_p = actions.add_parser(
         "add",
         help="Upsert a curated memory row (DB-only)",
-        description="Insert or update by (project, name).",
+        description=(
+            "Insert or update by (project, name).\n\n"
+            "One thing per row. Every row has one of three owners:\n"
+            "  the user    --type=user (true of him in any project; no scope)\n"
+            "  a project   --project=<name> or --initiative=<key>\n"
+            "  Gaia itself --initiative=gaia_system\n"
+            "--workspace alone is a container, not an owner.\n\n"
+            "The description is one sentence whose first word names the kind "
+            "of claim:\n  "
+            + "  ".join(f"{kind}:" for kind in MEMORY_CLAIM_KINDS)
+            + "\n\n"
+            "A changed fact is a new row plus `gaia memory link <new> <old> "
+            "--kind=supersedes`; adding over an existing name rewrites it in "
+            "place and is for correcting an error. Only a log grows by append.\n"
+            "The CLI warns on length, a missing owner, an in-place rewrite and "
+            "a user preference; the row is still written."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
+               "  gaia memory add --name=user_pref_x --type=user "
+               "--description='Preferencia: ...' --body='...'\n"
                "  gaia memory add --name=feedback_x --type=feedback "
-               "--body='...'\n"
-               "  gaia memory add --name=atom_x --type=atom "
-               "--body-file=~/.gaia/scratch/body.md\n"
+               "--initiative=gaia_system --workspace=me --body='...'\n"
+               "  gaia memory add --name=atom_x --type=atom --project=gaia "
+               "--workspace=me --body-file=~/.gaia/scratch/body.md\n"
                "  cat body.md | gaia memory add --name=atom_x --type=atom "
-               "--body-file=-\n",
+               "--project=gaia --workspace=me --body-file=-\n\n"
+               "Writing memory is judgment as well as form: load "
+               "Skill('memory') to decide whether the row deserves to exist, "
+               "whose it is and what it replaces.\n",
     )
     add_p.add_argument("--name", required=True,
                        help="Slug. PK with project.")
@@ -3650,7 +3813,12 @@ def register(subparsers):
     _add_body_group = add_p.add_mutually_exclusive_group(required=True)
     _add_body_group.add_argument(
         "--body", default=None,
-        help="Markdown body as a string.",
+        help=(
+            "Markdown body as a string: the content, why it holds, where it "
+            "came from and when; a measured fact says when and how it was "
+            f"measured. Warns over {_BODY_WARN_CHARS} chars: a body is "
+            "injected whole or dropped."
+        ),
     )
     _add_body_group.add_argument(
         "--body-file", dest="body_file", default=None, metavar="PATH",
@@ -3660,8 +3828,14 @@ def register(subparsers):
             "nested quotes, or markdown code blocks."
         ),
     )
-    add_p.add_argument("--description", default=None,
-                       help="Short summary. Shown in list.")
+    add_p.add_argument(
+        "--description", default=None,
+        help=(
+            "One sentence that starts with its kind of claim (listed above), "
+            "because listings and the birth block show this line and read the "
+            f"body only on demand. Warns over {_DESCRIPTION_WARN_CHARS} chars."
+        ),
+    )
     _add_project_group = add_p.add_mutually_exclusive_group()
     _add_project_group.add_argument(
         "--project", default=None,

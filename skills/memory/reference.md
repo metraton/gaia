@@ -57,7 +57,9 @@ explicit, resolvable scope.
   (scripting across workspaces); mutually exclusive with `--project`.
 - `--workspace=<ws>` alone (no project flag) is the **explicit degraded
   lane**: a legitimate workspace-scoped note with `project_ref` NULL and
-  exit 0. A `project_*` note about the workspace as a whole lives here.
+  exit 0. A `project_*` note about the workspace as a whole lives here. The
+  write still lands but warns `no_owner` when no `--initiative` names a
+  project either: a container is not one of the three owners.
 
 **Errors are structured and machine-parseable** so the orchestrator can run
 the command, read the failure, and *manage* it deterministically instead of
@@ -75,6 +77,36 @@ there is no partial or silent-NULL write:
 
 When `--project` resolves, the note is anchored: `memory.project_ref` = the
 project's durable identity.
+
+## The write form and its warnings
+
+The shape `SKILL.md` asks of a row is taught by the CLI at write time;
+every number and list here is read from the symbol named, so one edit moves
+both.
+
+- **Claim vocabulary** -- `gaia/store/memory_claims.py::MEMORY_CLAIM_KINDS`,
+  rendered into `gaia memory add --help`. The first word of a description
+  names the kind; `gaia/store/memory_claims.py::memory_claim_kind` reads it
+  without case, accents or a trailing colon. The vocabulary is open: another
+  first word is allowed and simply has no kind.
+- **Warnings** -- `bin/cli/memory.py::_add_warnings` and the supersedes check
+  in `bin/cli/memory.py::_cmd_link`. Each prints `aviso: ...` to stderr (with
+  `--json`, a `warnings: [{code, message}]` list) and the row is still
+  written; the refusals above are unchanged.
+
+| `code` | When | Threshold / reason |
+|--------|------|--------------------|
+| `description_long` | description over `bin/cli/memory.py::_DESCRIPTION_WARN_CHARS` | listings and the birth block show only the description |
+| `body_long` | body over `bin/cli/memory.py::_BODY_WARN_CHARS` | a body is injected whole or dropped |
+| `no_owner` | a non-user row with neither a project nor an initiative | a workspace is a container, not an owner |
+| `rewrite_in_place` | `add` over an existing name with another body | a change is a new row plus `link <new> <old> --kind=supersedes` |
+| `preference_or_bug` | a `type=user` row whose description's kind is `Preferencia` | asks whether it would hold if Gaia worked perfectly |
+| `supersedes_reversed` | `link --kind=supersedes` whose dst was born after its src | the arrow goes from the new row to the old |
+
+Every text-mode write (`add`, `append`, `edit`, `reclassify`, `link`) closes
+with `bin/cli/memory.py::_WRITE_POINTER`, the write-side twin of the read
+pointer. Whether a preference is really a harness rule is left to the
+writer's judgment: no check reads the body for it.
 
 Anchoring is **forward-only, by design**. Rows written before this
 mechanism existed stay `project_ref IS NULL` -- the memory-row-to-project
@@ -453,8 +485,8 @@ audit trail.
 # Two anchors that inform each other
 gaia memory link atom_node_20 anchor_routing --kind=relates_to
 
-# Retire an obsolete decision without losing the history
-gaia memory link decision_old decision_new --kind=supersedes
+# Retire an obsolete decision without losing the history: NEW first, OLD second
+gaia memory link decision_new decision_old --kind=supersedes
 
 # Drop a link that turned out wrong
 gaia memory link a b --kind=relates_to --delete
@@ -467,6 +499,23 @@ relationship (`relates_to`), an obsolescence (`supersedes`), a
 derivation (`derived_from`), and a thread-to-anchor promotion path
 (`graduated_to`).
 
+`supersedes` has one direction: src is the row that holds now, dst the one
+it replaces. Every injection drops the dst
+(`gaia/store/reader.py::not_superseded`), and `gaia memory story` labels it
+`superseded` from the src and the src `successor` from the dst
+(`gaia/store/reader.py::_role_for_edge`). On success `link` prints
+`<src> reemplaza a <dst>`, and warns `supersedes_reversed` when the dst is
+the newer row by birth (`created_at`, or `updated_at` before v50) -- a
+warning, since a corrected old row can legitimately be newer.
+
+Each end is found in `--workspace` or in the user and host scopes
+(`bin/cli/memory.py::_workspace_holding`), so the two can have different
+owners: a user row in `_gaia_user` supersedes its predecessor still under a
+project workspace. The link is stored under the src's workspace with the
+dst's in `memory_links.dst_workspace` (v61; NULL when both share one), which
+`gaia/store/writer.py::insert_memory_link` validates like the src, and
+`gaia workspace retire` carries along when it moves the dst row.
+
 ### Deduplication
 
 Trigger this only when a search (or `gaia memory conflicts`) reveals an
@@ -476,7 +525,8 @@ actual overlap -- it is not a step every save runs. Consolidation is
 1. `gaia memory search "<topic>" --scope=memory` to find overlaps.
 2. Read both bodies; identify the broader scope.
 3. UPSERT the merged content into the broader slug.
-4. Link the narrower to the broader with `--kind=supersedes`. The
+4. Link the broader to the narrower it absorbed:
+   `gaia memory link <broader> <narrower> --kind=supersedes`. The
    `supersedes` link retires the obsolete row while keeping its
    reasoning reachable -- that is the additive path. Delete the
    narrower slug only when it was always pure noise with no history
@@ -527,7 +577,7 @@ earns curated attention, and how it exits ("When curated memory loses it").
 These are the worked examples and the history guarantee behind the verbs it
 names.
 
-**Add to a note -- `append` (the primary additive verb, non-mutative):**
+**Grow a log or a live thread -- `append` (non-mutative):**
 
 ```bash
 gaia memory append <slug> --body="One more finding: ..."
@@ -539,7 +589,8 @@ gaia memory append <slug> --body-file=/tmp/more.md
 `append` concatenates onto the current body (separator `\n\n`) and never
 overwrites. It is classified **non-mutative (T0)** — appending only grows
 the record, so it needs no approval. This is what you want for a
-carry-forward thread or running log that accumulates.
+carry-forward thread or running log that accumulates. Knowledge that
+changed is not appended to: it is a new row that supersedes the old one.
 
 **Correct a note -- `edit` (supersede-with-history):**
 

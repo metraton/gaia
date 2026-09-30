@@ -96,12 +96,30 @@ def is_memory_write_attempt(command: str) -> bool:
     if not command or "memory" not in command:
         return False
 
+    # A help-only invocation exits after printing usage and performs no write.
+    # The exemption is judged per operator-separated component, so a help
+    # piped to `head` or with stderr folded in (`2>&1`) is still help while a
+    # write chained after it is still a write. A substitution runs a command
+    # inside the component that the exemption would otherwise speak for
+    # (``gaia memory add --help $(gaia memory add ...)``), so its presence
+    # anywhere withdraws the exemption from the whole line.
+    from ..tools.shell_parser import parse_command
+
+    help_exempt = not any(marker in command for marker in ("$(", "`", "<(", ">("))
+    return any(
+        _component_writes_memory(component, help_exempt=help_exempt)
+        for component in parse_command(command)
+    )
+
+
+def _component_writes_memory(component: str, *, help_exempt: bool) -> bool:
+    """True iff one operator-free component invokes a `gaia memory <write-verb>`."""
     try:
-        tokens = shlex.split(command)
+        tokens = shlex.split(component)
     except ValueError:
         # Unbalanced quotes etc. -- fall back to a naive split so a
         # partially-parseable command is still inspected conservatively.
-        tokens = command.split()
+        tokens = component.split()
 
     n = len(tokens)
     for i, tok in enumerate(tokens):
@@ -118,21 +136,8 @@ def is_memory_write_attempt(command: str) -> bool:
         while k < n and tokens[k].startswith("-"):
             k += 1
         if k < n and tokens[k] in MEMORY_WRITE_VERBS:
-            # A help-only invocation exits after printing usage and performs
-            # no write. Exempt only the immediate flag form, and only on a
-            # SIMPLE line: any substitution or chaining marker means another
-            # command shares the line (``gaia memory add --help $(gaia memory
-            # add ...)`` executes the inner write while the outer --help would
-            # launder the whole line), so the exemption must not speak for it.
             tail = tokens[k + 1:]
-            if (
-                tail
-                and tail[0] in {"--help", "-h", "-?", "--usage"}
-                and not any(
-                    marker in command
-                    for marker in ("$(", "`", "&", ";", "|", "\n")
-                )
-            ):
+            if help_exempt and tail and tail[0] in {"--help", "-h", "-?", "--usage"}:
                 continue
             return True
     return False

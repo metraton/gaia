@@ -218,12 +218,17 @@ def _plan(con: sqlite3.Connection, source: str, target: str, on_conflict: dict[s
     # dropped into the ledger; an edge already present at its destination is a
     # duplicate and is dropped the same way.
     link_rows = con.execute(
-        "SELECT rowid AS rid, src_name, dst_name, kind FROM memory_links WHERE workspace = ?",
+        "SELECT rowid AS rid, src_name, dst_name, kind, dst_workspace FROM memory_links "
+        "WHERE workspace = ?",
         (source,),
     ).fetchall()
     planned_links, split, duplicate = [], 0, 0
     for row in link_rows:
-        ends = {destination_of.get(row["src_name"]), destination_of.get(row["dst_name"])} - {None}
+        dst_moves = row["dst_workspace"] in (None, source)
+        ends = {
+            destination_of.get(row["src_name"]),
+            destination_of.get(row["dst_name"]) if dst_moves else None,
+        } - {None}
         if len(ends) > 1:
             drops.append(("memory_links", row["rid"]))
             split += 1
@@ -235,7 +240,20 @@ def _plan(con: sqlite3.Connection, source: str, target: str, on_conflict: dict[s
             continue
         planned_links.append((row["rid"], dest))
     moves["memory_links"] = planned_links
-    tables["memory_links"] = {"move": len(planned_links), "split": split, "duplicate": duplicate}
+    # A link stored under another owner (a user row superseding one written
+    # here) keeps pointing at its dst row wherever that row moves.
+    repoint = [
+        (row["rid"], destination_of.get(row["dst_name"], target))
+        for row in con.execute(
+            "SELECT rowid AS rid, dst_name FROM memory_links "
+            "WHERE dst_workspace = ? AND workspace != ?",
+            (source, source),
+        )
+    ]
+    tables["memory_links"] = {
+        "move": len(planned_links), "split": split, "duplicate": duplicate,
+        "repoint": len(repoint),
+    }
 
     try:
         aliases_in = [
@@ -266,6 +284,7 @@ def _plan(con: sqlite3.Connection, source: str, target: str, on_conflict: dict[s
         "aliases_retargeted": aliases_in,
         "_moves": moves,
         "_drops": drops,
+        "_repoint": repoint,
     }
 
 
@@ -298,7 +317,10 @@ def _public(plan: dict) -> dict:
 
 
 def _pending(plan: dict) -> bool:
-    return bool(plan["_drops"]) or any(plan["_moves"].values()) or plan["alias"] != plan["target"]
+    return (
+        bool(plan["_drops"]) or bool(plan["_repoint"]) or any(plan["_moves"].values())
+        or plan["alias"] != plan["target"]
+    )
 
 
 def plan_retire(
@@ -439,6 +461,11 @@ def apply_retire(
                 for dest, rowids in by_dest.items():
                     _rekey(con, table, rowids, dest)
                     ledger["moved"].setdefault(table, {})[dest] = rowids
+            for rowid, dest in plan["_repoint"]:
+                con.execute(
+                    "UPDATE memory_links SET dst_workspace = ? WHERE rowid = ?", (dest, rowid)
+                )
+            ledger["repointed"] = plan["_repoint"]
 
             previous = con.execute(
                 "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
@@ -534,6 +561,11 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
                     back = _rekey(con, table, rowids, source, only_from=dest)
                     if back != len(rowids):
                         diverged[table] = diverged.get(table, 0) + len(rowids) - back
+            for rowid, dest in ledger.get("repointed", []):
+                con.execute(
+                    "UPDATE memory_links SET dst_workspace = ? WHERE rowid = ? AND dst_workspace = ?",
+                    (source, rowid, dest),
+                )
             for entry in reversed(ledger["dropped"]):
                 _reinsert(con, entry["table"], entry["row"])
 
