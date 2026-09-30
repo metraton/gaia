@@ -74,8 +74,9 @@ def seeded():
 
 
 @pytest.fixture()
-def stale_claude_files():
+def stale_claude_files(monkeypatch, tmp_path):
     """Contradicting memory files where the old detector looked; they must stay unread."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     folder = Path.home() / ".claude" / "projects" / "-home-jorge-ws-me" / "memory"
     folder.mkdir(parents=True)
     (folder / "stale_always.md").write_text("Always use docker for the build.\n")
