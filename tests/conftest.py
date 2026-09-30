@@ -119,9 +119,9 @@ def bun():
 #     cosmic-ray mutants rather than an observable behavior, and the tests/evals
 #     files test the LLM eval harness, not Gaia. nightly.yml imports this tuple
 #     and names every entry, so the mutation score is still measured. The
-#     integration entries drive the real OpenCode plugin or npm's own validator
-#     end to end: worth running, too slow for every pull request, and each has
-#     a faster pull-request test of the same promise.
+#     integration entries drive the real OpenCode plugin, npm's own validator
+#     or the full scan pipeline end to end: worth running, too slow for every
+#     pull request, and each has a faster pull-request test of the same promise.
 # ============================================================================
 
 NIGHTLY_ONLY = (
@@ -146,6 +146,7 @@ NIGHTLY_ONLY = (
     "tests/integration/test_opencode_consent_retry_e2e.py",
     "tests/integration/test_opencode_early_child_attestation.py",
     "tests/cli/test_pre_publish_dry_run_representative.py",
+    "tools/scan/tests/test_integration.py",
 )
 
 LAYER1_EXCLUDED = (
@@ -186,10 +187,15 @@ def pytest_ignore_collect(collection_path, config):
 
 
 def _deselect_outside_layer1(config, items):
-    """Deselect excluded node ids, reported as deselected like --deselect."""
+    """Deselect excluded node ids and files, reported as deselected like --deselect.
+
+    pytest_ignore_collect above only runs for paths under tests/, the directory
+    of this conftest, so a file entry under tools/scan/tests is dropped here.
+    """
     excluded = tuple(
-        entry for entry in LAYER1_EXCLUDED
-        if "::" in entry and not _named_on_command_line(config, entry)
+        entry if "::" in entry else entry + "::"
+        for entry in LAYER1_EXCLUDED
+        if not _named_on_command_line(config, entry)
     )
     if not excluded:
         return

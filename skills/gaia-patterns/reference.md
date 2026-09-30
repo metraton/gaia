@@ -196,11 +196,11 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 
 ### Layers
 
-| Layer | Command | Cost | Speed | Count |
-|-------|---------|------|-------|-------|
-| L1 | `npm test` | Free | ~0.25s | ~1462 |
-| L2 | `npm run test:layer2` | ~$0.10 | Minutes | ~11 |
-| L3 | `npm run test:layer3` | Free | Minutes | ~13 |
+| Layer | Command | Cost | Speed |
+|-------|---------|------|-------|
+| L1 | `npm test` | Free | Minutes (`pytest --collect-only -q` counts it) |
+| L2 | `npm run test:layer2` | ~$0.10 | Minutes |
+| L3 | `npm run test:layer3` | Free | Minutes |
 
 ### Layer-1 test admission
 
@@ -239,16 +239,19 @@ test with no declaration. Its `ADMISSION_ALLOWLIST` is closed: each entry names
 file, rule and reason, and exists only while the pinned text is a parsed
 contract.
 
-### L1 Categories (46 test files)
+### L1 Categories
 
 | Category | Directory | What it tests |
 |----------|-----------|---------------|
-| Prompt regression | `tests/layer1_prompt_regression/` | Routing table, skill content rules, agent frontmatter, agent prompts, security tier consistency, skills cross-reference, context contracts |
-| Hooks | `tests/hooks/modules/` | Security modules (mutative_verbs, blocked_commands, tiers, approval_grants, approval_scopes, command_semantics), tools (bash_validator, shell_parser, cloud_pipe_validator, task_validator), core (paths, state), context (context_writer) |
-| System | `tests/system/` | Directory structure, permissions, agent definitions, configuration, schema compatibility |
-| Tools | `tests/tools/` | context_provider, episodic, pending_updates, deep_merge, review_engine, surface_router |
-| Integration | `tests/integration/` | Context enrichment, subagent lifecycle, subagent stop, nonce approval relay |
-| Performance | `tests/performance/` | Context injection benchmarks |
+| Routing | `tests/layer1_prompt_regression/` | The routing table seeded from agent frontmatter |
+| Hooks | `tests/hooks/` | Security classification, approvals, denials, tools (bash_validator, task_validator), host adapters, session and subagent lifecycle |
+| Approvals | `tests/approvals/` | The host-neutral approval core, signatures, COMMAND_SET execution |
+| CLI | `tests/cli/` | `gaia` subcommands: install, uninstall, bootstrap and migrations, doctor, dev, release, scan, memory, tasks |
+| Contracts | `tests/contract/` | The agent contract envelope, its validator and the SubagentStop gate |
+| System | `tests/system/` | Agent definitions in the build manifest, test-DB schema parity with production |
+| Tools | `tests/tools/` | context_provider, episodic, surface_router, the simulators |
+| Integration | `tests/integration/` | Cross-component paths: subagent lifecycle, grants, OpenCode plugin |
+| Admission | `tests/test_layer1_admission.py` | The layer-1 admission rule above |
 
 ### L2 (LLM Evaluation)
 
@@ -269,10 +272,10 @@ contract.
 |--------|-----|
 | Hook module (security, tools, core) | `pytest tests/hooks/ -v` |
 | Agent definition (.md) | `pytest tests/layer1_prompt_regression/ tests/system/ -v` |
-| Skill content | `pytest tests/layer1_prompt_regression/ -v` |
-| Config file | `pytest tests/system/ -v` |
+| Skill content | `pytest tests/skills/ -v` (skill prose itself is not pinned by tests) |
 | Context/routing | `pytest tests/tools/ tests/integration/ -v` |
-| CLI tool (bin/) | `pytest tests/layer3_e2e/ -v -m e2e` |
+| CLI tool (bin/) | `pytest tests/cli/ -v` |
+| A new or changed test | `pytest tests/test_layer1_admission.py -v` |
 | Any change (pre-commit) | `npm test` (full L1) |
 | Pre-publish | `npm run generate:plugin-root && npm run pre-publish:validate` |
 
