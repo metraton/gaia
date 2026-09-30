@@ -82,7 +82,7 @@ from ..security.approval_messages import (
     build_t3_degraded_block_message,
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
-from ..security.shell_unwrapper import ShellUnwrapper
+from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
@@ -193,22 +193,12 @@ FORBIDDEN_FOOTER_PATTERNS = [
     r"Co-authored-by:\s+Gemini\b",
 ]
 
-# ---------------------------------------------------------------------------
-# Indirect execution wrappers — commands that execute arbitrary strings.
-# These bypass regex-based command blocking because the real command is
-# hidden inside a string argument.  Classified as T2 (requires approval)
-# so the user sees what will actually run.
-# ---------------------------------------------------------------------------
-# Optional prefix commands that can wrap any shell invocation.
-# nohup, sudo, env, nice, etc. — the regex allows zero or more of these
-# before the real interpreter token so "nohup bash -c ..." is still caught.
+# Indirect execution other than a shell's command string, which
+# shell_command_string recognises: eval, inline interpreter code and a
+# process substitution fed to a shell.
 _WRAPPER_PREFIX = r"(?:(?:nohup|sudo|env|nice|ionice|setsid|strace|ltrace|time)\s+)*"
 
 INDIRECT_EXEC_PATTERNS = [
-    re.compile(r"^" + _WRAPPER_PREFIX + r"bash\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"sh\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"zsh\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"dash\s+-c\s+", re.IGNORECASE),
     re.compile(r"^\s*eval\s+", re.IGNORECASE),
     re.compile(r"^" + _WRAPPER_PREFIX + r"python3?\s+-c\s+", re.IGNORECASE),
     re.compile(r"^" + _WRAPPER_PREFIX + r"node\s+-e\s+", re.IGNORECASE),
@@ -347,99 +337,89 @@ class BashValidator:
 
         Returns BashValidationResult if indirect execution detected, else None.
         """
-        for pattern in INDIRECT_EXEC_PATTERNS:
-            if pattern.search(command):
-                # Also check if the inner payload contains a blocked command.
-                # Extract the string argument after the wrapper.
-                inner = self._extract_inner_command(command)
-                if inner:
-                    blocked = is_blocked_command(inner)
-                    if blocked.is_blocked:
-                        return BashValidationResult(
-                            allowed=False,
-                            tier=SecurityTier.T3_BLOCKED,
-                            reason=(
-                                f"Indirect execution of blocked command detected: "
-                                f"{blocked.category} (via wrapper)"
-                            ),
-                            suggestions=[
-                                blocked.suggestion or "Run the command directly instead of via a shell wrapper.",
-                            ],
-                        )
+        shell_string = shell_command_string(command)
+        if shell_string is None and not any(
+            pattern.search(command) for pattern in INDIRECT_EXEC_PATTERNS
+        ):
+            return None
 
-                # Not blocked but still indirect — route through approval
-                logger.info("Indirect execution detected: %s", command[:80])
-                result = detect_mutative_command(command)
-
-                # For interpreters with inline code analysis (python3 -c),
-                # mutative_verbs.py has dedicated pattern scanning that
-                # distinguishes safe code (json.dumps, sys.version) from
-                # dangerous code (os.system, subprocess.run). Whatever it
-                # classified, trust that analysis and proceed to normal
-                # validation: a mutative verdict gets its T3 gate there.
-                from ..security.mutative_verbs import _INLINE_CODE_CLIS
-                base_cmd = command.strip().split()[0].rsplit("/", 1)[-1].lower()
-                if base_cmd in _INLINE_CODE_CLIS:
-                    logger.info(
-                        "Inline code classified by pattern scanner: %s",
-                        command[:80],
-                    )
-                    return None
-
-                # A mutative shell wrapper reaches mutative_verbs' T3 gate for
-                # the orchestrator. A subagent never signs a wrapped command:
-                # it is refused below so the inner command runs directly and
-                # gets its own gate.
-                if result.is_mutative and not is_subagent:
-                    return None
-
-                # Shell wrappers (bash -c, eval, etc.) hide the real command
-                # in a string — no dedicated scanner exists. Force "ask" so
-                # the user can inspect what will actually run.
-                #
-                # Inspect the inner command to identify the mutative verb so
-                # the user sees a more informative message
-                # (e.g. "inner mutative verb 'mv'"). Falls back to generic
-                # message when inner has no mutative verb.
-                reason_msg = "Indirect execution wrapper detected — requires confirmation"
-                if inner:
-                    inner_result = detect_mutative_command(inner)
-                    if inner_result.is_mutative and inner_result.verb:
-                        reason_msg = (
-                            f"Indirect execution detected: inner mutative verb "
-                            f"'{inner_result.verb}' — requires confirmation"
-                        )
-                if is_subagent:
-                    deny_msg = (
-                        "Shell wrapper refused (bash -c, sh -c, eval). Run the "
-                        "command directly as one command; the Bash tool reports "
-                        "its exit code itself, so do not wrap it in a shell to "
-                        "capture it. For multi-step logic, commit a script file "
-                        "and invoke that, or use python3 <file>."
-                    )
-                    return BashValidationResult(
-                        allowed=False,
-                        tier=SecurityTier.T2_DRY_RUN,
-                        reason=deny_msg,
-                        block_response=build_hook_permission_response(
-                            "deny", deny_msg,
-                        ),
-                    )
-                dialog_msg = (
-                    "Indirect execution detected. The command uses a shell "
-                    "wrapper (bash -c, eval, etc.) that can bypass "
-                    "security checks. Please confirm you want to run this, "
-                    "or use discrete commands or a script file / python3 "
-                    "<file> instead of bash -c/eval."
-                )
-                hook_block = build_hook_permission_response("ask", dialog_msg)
+        inner = shell_string
+        if inner is None:
+            inner = self._extract_inner_command(command)
+        if inner:
+            blocked = is_blocked_command(inner)
+            if blocked.is_blocked:
                 return BashValidationResult(
                     allowed=False,
-                    tier=SecurityTier.T2_DRY_RUN,
-                    reason=reason_msg,
-                    block_response=hook_block,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=(
+                        f"Indirect execution of blocked command detected: "
+                        f"{blocked.category} (via wrapper)"
+                    ),
+                    suggestions=[
+                        blocked.suggestion or "Run the command directly instead of via a shell wrapper.",
+                    ],
                 )
-        return None
+
+        logger.info("Indirect execution detected: %s", command[:80])
+        result = detect_mutative_command(command)
+
+        # Inline interpreter code (python3 -c) has its own scanner in
+        # mutative_verbs, whose verdict is trusted over this generic dialog.
+        from ..security.mutative_verbs import _INLINE_CODE_CLIS
+        base_cmd = command.strip().split()[0].rsplit("/", 1)[-1].lower()
+        if base_cmd in _INLINE_CODE_CLIS:
+            logger.info(
+                "Inline code classified by pattern scanner: %s",
+                command[:80],
+            )
+            return None
+
+        # A mutative shell wrapper reaches mutative_verbs' T3 gate for the
+        # orchestrator. A subagent never signs a wrapped command: it is
+        # refused below so the inner command runs directly and gets its own
+        # gate.
+        if result.is_mutative and not is_subagent:
+            return None
+
+        reason_msg = "Indirect execution wrapper detected — requires confirmation"
+        if inner:
+            inner_result = detect_mutative_command(inner)
+            if inner_result.is_mutative and inner_result.verb:
+                reason_msg = (
+                    f"Indirect execution detected: inner mutative verb "
+                    f"'{inner_result.verb}' — requires confirmation"
+                )
+        if is_subagent:
+            deny_msg = (
+                "Shell wrapper refused (bash -c, sh -c, eval). Run the "
+                "command directly as one command; the Bash tool reports "
+                "its exit code itself, so do not wrap it in a shell to "
+                "capture it. For multi-step logic, commit a script file "
+                "and invoke that, or use python3 <file>."
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T2_DRY_RUN,
+                reason=deny_msg,
+                block_response=build_hook_permission_response(
+                    "deny", deny_msg,
+                ),
+            )
+        dialog_msg = (
+            "Indirect execution detected. The command uses a shell "
+            "wrapper (bash -c, eval, etc.) that can bypass "
+            "security checks. Please confirm you want to run this, "
+            "or use discrete commands or a script file / python3 "
+            "<file> instead of bash -c/eval."
+        )
+        hook_block = build_hook_permission_response("ask", dialog_msg)
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T2_DRY_RUN,
+            reason=reason_msg,
+            block_response=hook_block,
+        )
 
     def _extract_inner_command(self, command: str) -> Optional[str]:
         """Extract the inner command from an indirect execution wrapper.

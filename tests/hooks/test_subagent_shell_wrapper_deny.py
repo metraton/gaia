@@ -120,6 +120,73 @@ def test_subagent_compound_mutative_wrapper_deny_names_the_correct_form(command)
     assert "no wrapper" in reason
 
 
+# Every spelling that hands an sh-family shell a string as its program meets
+# the refusal the canonical `bash -c` gets.
+SHELL_STRING_SPELLINGS = [
+    "bash -c 'echo hello'",
+    "sh -c 'echo hello'",
+    "bash -lc 'echo hello'",
+    "bash -xc 'echo hello'",
+    "bash -e -c 'echo hello'",
+    "bash --login -c 'echo hello'",
+    "bash -o pipefail -c 'echo hello'",
+    "FOO=1 bash -c 'echo hello'",
+    "timeout 10 bash -c 'echo hello'",
+    "env -i FOO=1 bash -c 'echo hello'",
+    "sudo -u root bash -c 'echo hello'",
+    "nice -n 5 sh -c 'echo hello'",
+    "/usr/local/bin/bash -lc 'echo hello'",
+    "ksh -c 'echo hello'",
+    "zsh -c 'echo hello'",
+    "dash -c 'echo hello'",
+    "bash -lc 'git push origin x'",
+]
+
+
+@pytest.mark.parametrize("command", SHELL_STRING_SPELLINGS)
+def test_subagent_every_shell_string_spelling_is_refused(command):
+    result = _validate(command, is_subagent=True)
+
+    assert not result.allowed
+    assert result.approval_id is None
+    assert read_permission_decision(result.block_response) == "deny"
+    assert read_permission_reason(result.block_response).startswith(
+        "Shell wrapper refused"
+    )
+
+
+@pytest.mark.parametrize("command", SHELL_STRING_SPELLINGS)
+def test_orchestrator_every_shell_string_spelling_keeps_its_dialog(command):
+    result = _validate(command, is_subagent=False)
+
+    assert not result.allowed
+    assert read_permission_decision(result.block_response) == "ask"
+
+
+# A shell given a script path, or only asked about itself, runs no string.
+NOT_SHELL_STRINGS = [
+    "bash --version",
+    "bash -n script.sh",
+    "gcc -c main.c",
+]
+
+
+@pytest.mark.parametrize("command", NOT_SHELL_STRINGS)
+def test_subagent_shell_without_a_command_string_is_not_refused(command):
+    result = _validate(command, is_subagent=True)
+
+    assert result.allowed
+
+
+def test_blocked_payload_behind_a_flag_cluster_stays_a_permanent_block():
+    command = "bash -lc 'kubectl delete namespace production'"
+
+    for is_subagent in (True, False):
+        result = _validate(command, is_subagent=is_subagent)
+        assert not result.allowed
+        assert result.block_response is None
+
+
 def test_subagent_direct_command_is_not_affected():
     result = _validate("gh pr checks 42 --repo metraton/gaia", is_subagent=True)
 
