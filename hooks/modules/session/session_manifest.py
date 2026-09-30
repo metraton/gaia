@@ -320,38 +320,16 @@ def _installation_label() -> Optional[str]:
 def _recurring_work_line(workspace: Optional[str]) -> str:
     """One line naming the recurring work that needs the user, or "" when nothing does.
 
-    A lapsed suspension leads: it is the one item that changed what runs.
-    Reading a suspension or a notification evaluates its due time against now
-    and writes nothing; the scheduler plan only compares desired state with
-    this machine. Each due reminder or routine is named with its pointer, so
-    the session can act on it; the detail lives in `gaia schedule status` and
-    `gaia notifications list`.
+    Each unread report and each due reminder or routine is named, the latter with
+    its pointer so the session can act on it; the detail lives in
+    `gaia notifications list`. Reading evaluates due times against now and
+    writes nothing.
     """
     from gaia import notifications_time
-    from gaia.schedulers import compute_plan
-    from gaia.store.reader import list_schedule_suspensions, list_unread_notifications
+    from gaia.store.reader import list_unread_notifications
 
-    suspensions = list_schedule_suspensions(workspace=workspace)
-    lapsed = sum(1 for s in suspensions if s.get("expired"))
     items: list[str] = []
-    if lapsed:
-        items.append(f"{lapsed} suspension(s) LAPSED, their tasks run again")
-    if len(suspensions) - lapsed:
-        items.append(f"{len(suspensions) - lapsed} suspended")
-    plan = compute_plan(workspace=workspace)
-    if plan.available:
-        for count, label in (
-            (len(plan.missing), "not installed here"),
-            (len(plan.drift), "with a drifted schedule"),
-            (len(plan.orphans), "orphan scheduler entr(ies)"),
-            (len(plan.disabled_present), "disabled but still installed"),
-            (len(plan.invalid), "invalid"),
-        ):
-            if count:
-                items.append(f"{count} {label}")
-        if plan.daemon is not None and plan.daemon.running is False:
-            items.append("scheduler daemon down")
-    verbs = ["`gaia schedule status`"] if items else []
+    verbs: list[str] = []
     due = list_unread_notifications(workspace=workspace)
     reports = [row for row in due if row["kind"] == "report"]
     if reports:

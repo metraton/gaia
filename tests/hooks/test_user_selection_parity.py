@@ -11,7 +11,6 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 from tests.conftest import copy_bootstrapped_db
 
@@ -69,9 +68,6 @@ def test_the_kernel_carries_exactly_the_birth_blocks_user_rows(tmp_path, monkeyp
     monkeypatch.setenv("GAIA_DATA_DIR", str(data))
     monkeypatch.setenv("GAIA_DB", str(db))
     monkeypatch.chdir(tmp_path)
-    import gaia.schedulers
-    monkeypatch.setattr(gaia.schedulers, "compute_plan",
-                        lambda **_: SimpleNamespace(available=False))
     _seed(db)
 
     birth = session_manifest.build_session_context()

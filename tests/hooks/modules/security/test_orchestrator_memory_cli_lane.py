@@ -150,9 +150,6 @@ NEW_READ_COMMANDS = [
     "workspace info",
     "evidence show 12",
     "evidence list --brief demo",
-    "schedule list",
-    "schedule show nightly",
-    "schedule status",
 ]
 
 
@@ -310,9 +307,6 @@ NEW_DENIED_COMMANDS = [
     "workspace merge a b",
     "workspace retire a --into b",
     "evidence add --brief demo --ac AC-1",
-    "schedule register nightly",
-    "schedule remove nightly",
-    "schedule sync",
     "release check",
     "release publish",
     "install",

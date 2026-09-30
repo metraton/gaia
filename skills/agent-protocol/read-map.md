@@ -115,8 +115,8 @@ is pulled with exactly one verb.
 | `gaia approvals question <P-id> [<P-id> ...]` | The exact question-tool input for 1 to 4 pending commands, one `[ GAIA-SECURITY ]` line per command (`--details`: each command's Details line); it records which signature it handed out at which position, and the hook accepts only that object asked unchanged. Run it again at any time for the approvals still pending. |
 | `gaia approvals history [<P-id>]` | The N most recent approvals, or one approval's full event chain. |
 | `gaia approvals stats` | Totals by outcome and the pending verb breakdown. |
-| `gaia notifications list` / `gaia notifications show <id>` | The headless-task inbox: what a scheduled or detached run reported back. |
-| `gaia schedule list` / `gaia schedule show <name>` / `gaia schedule status` | Registered recurring tasks, their native translation, and desired-state-vs-scheduler reconciliation. |
+| `gaia notifications show <id>` | One report, reminder or routine in full. |
+| `gaia notifications list` | Reports, reminders and routines: what is due now, and with `--upcoming` what is coming. |
 | `gaia session preview` | The SessionStart injection manifest — what the orchestrator receives at session start, built read-only with no side effects. |
 | `gaia workspace current` / `gaia workspace info` | Which workspace a read will resolve against, and where its storage actually is. |
 

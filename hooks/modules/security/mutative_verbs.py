@@ -464,13 +464,13 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # deletion) stays T3 via the per-group deny-verbs guard in
     # COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS below.
     ("gaia", "task"): CATEGORY_READ_ONLY,
-    # `gaia notifications <verb>` (add/list/show/ack): the headless scheduled-task
-    # inbox in gaia.db — episodic, reversible, purely local bookkeeping (ack only
-    # flips an `unread` flag; add appends a report row). A headless task MUST be
-    # able to `notifications add` its final report without stalling on a T3 gate
-    # (it cannot ask the user anything), so the whole group is T0 like brief/ac/
-    # plan/task. There is no destructive verb here (no delete/purge), so the
-    # global deny-verb guard leaves every notifications verb exempt.
+    # `gaia notifications <verb>` (add/list/show/ack/snooze/cancel): reports,
+    # reminders and routines in gaia.db — episodic, reversible, purely local
+    # bookkeeping (add appends a row; ack, snooze and cancel move its due time
+    # or close it). Nothing here starts a process: a row is only ever read as due
+    # the next time Gaia is used. The whole group is T0 like brief/ac/plan/task;
+    # there is no destructive verb (no delete/purge), so the global deny-verb
+    # guard leaves every notifications verb exempt.
     ("gaia", "notifications"): CATEGORY_READ_ONLY,
     # `gaia contract <verb>` (init/set/add/fill/finalize/view/validate): the
     # by-value agent_contract_handoff draft store under
@@ -487,31 +487,6 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # never destroyed), so the global deny-verb guard leaves every contract
     # verb exempt.
     ("gaia", "contract"): CATEGORY_READ_ONLY,
-    # `gaia schedule <verb>` -- the scheduled-task DESIRED-STATE registry in
-    # gaia.db (see the `scheduled-task` skill and the scheduled_tasks table).
-    # register/add/list/show/status/enable/disable/suspend/resume are reversible
-    # local bookkeeping on the desired state -- they never touch the machine
-    # scheduler, so they are T0 like brief/plan/task/notifications. WITHOUT this
-    # exception `register`, `enable`, `disable`, `suspend` and `resume` would trip
-    # the generic MUTATIVE_VERBS scan (all five are in MUTATIVE_VERBS) and gate on
-    # every desired-state edit.
-    #
-    # `suspend` and `resume` sit at T0 for the same reason `disable` and `enable`
-    # do, and the pairing is the justification. `suspend` only switches something
-    # OFF: it reduces what runs, which is the direction that never needs consent.
-    # `resume` does restore capability -- but only in gaia.db, and nothing runs
-    # because a row says it should: the task reaches this machine's scheduler
-    # exclusively through `sync`, which is T3. So the consent boundary stays where
-    # the design put it, at MATERIALIZATION, and is not duplicated onto every
-    # bookkeeping edit. Gating `resume` while leaving `enable` free would also be
-    # incoherent, since `enable` restores strictly more (it has no deadline).
-    # The TWO verbs that reach outside the DB stay T3 via the per-group deny set
-    # below: `sync` MATERIALIZES desired state into the OS scheduler (writes the
-    # crontab -- a real machine mutation that must be shown verbatim and
-    # consented) and `remove` is irreversible row deletion (like `gaia task
-    # remove`). Writing desired state is cheap; imprinting it on the machine
-    # requires consent -- that asymmetry is the whole design.
-    ("gaia", "schedule"): CATEGORY_READ_ONLY,
     # `gaia memory <verb>` (add/edit/append/reclassify/link/checkpoint/search/
     # show/list/stats/conflicts): curated-memory bookkeeping in gaia.db --
     # reversible, local-only, no external effects, exactly like brief/ac/plan.
@@ -550,7 +525,7 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # -- and stays unforced otherwise; `--force` never overrides anything
     # this module has not itself just verified is safe. Both `create` and
     # `release` are therefore reversible-by-design, exactly like the brief/ac/plan/
-    # task/notifications/contract/schedule/memory groups above, and there is
+    # task/notifications/contract/memory groups above, and there is
     # no destructive verb in this group for the global deny-verb guard to
     # re-gate (`create`/`list`/`show`/`release` all miss
     # COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS).
@@ -575,16 +550,6 @@ COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str], FrozenSet[str]] = {
     # `gaia task remove` is an irreversible row deletion (no un-delete in the
     # tasks store), unlike `gaia ac remove` (AC rows can be re-added).
     ("gaia", "task"): frozenset({"remove"}),
-    # `gaia schedule` is exempted to T0 for desired-state bookkeeping (above),
-    # but two verbs must stay gated within that exception:
-    #   - `sync`   MATERIALIZES desired state into the OS scheduler (writes the
-    #              user's crontab via `crontab -`). That is a real machine
-    #              mutation, so it must be shown verbatim and consented (T3).
-    #   - `remove` is irreversible desired-state row deletion (the reversible
-    #              path is `disable`), like `gaia task remove`.
-    # Both are already generic MUTATIVE_VERBS, so without re-gating them here the
-    # group exception would silently downgrade them to T0.
-    ("gaia", "schedule"): frozenset({"sync", "remove"}),
 }
 
 # Per-group deny verbs that live one level DEEPER than

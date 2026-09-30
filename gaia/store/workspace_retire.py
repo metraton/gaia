@@ -5,7 +5,7 @@ own name) leaves one person's projects, briefs and memory under two names.
 Retiring the source folds it into the target without rewriting history:
 
 - OWNERSHIP rows (projects and the scanner rows under them, briefs, context
-  contracts, integrations, scheduled tasks, notifications, memory and its
+  contracts, integrations, notifications, memory and its
   links) are re-keyed to the target. ``type='user'`` memory goes to the
   workspace-less user scope and host-scoped memory to the host scope, the
   same destinations the writer gives them.
@@ -49,19 +49,21 @@ _OWNED_TABLES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("briefs", ("name",)),
     ("project_context_contracts", ("contract_name",)),
     ("integrations", ("name",)),
-    ("scheduled_tasks", ("name",)),
     ("task_notifications", ()),
 )
 
 # A collision may be resolved only where dropping the losing row cascades to
-# nothing: a dropped project, brief or scheduled task would take its plans,
-# tasks or scanner rows with it.
+# nothing: a dropped project or brief would take its plans, tasks or scanner
+# rows with it.
 RESOLVABLE_TABLES = ("memory", "integrations", "project_context_contracts")
 STRATEGIES = ("keep-target", "keep-source")
 
 # Rows keyed to a workspace that the retire neither moves nor aliases as
-# history; the report counts them so nothing stays behind unannounced.
-_LEFT_BEHIND_TABLES = ("gaia_installations", "machines", "clusters", "schedule_suspensions")
+# history; the report counts them so nothing stays behind unannounced. The
+# scheduler tables are retired and unread (schema.sql), so their rows stay put.
+_LEFT_BEHIND_TABLES = (
+    "gaia_installations", "machines", "clusters", "scheduled_tasks", "schedule_suspensions",
+)
 
 _ALIAS_DEPTH = 8
 _CHUNK = 500

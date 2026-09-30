@@ -31,7 +31,6 @@ _CLI_MODULES = (
     "cli.memory",
     "cli.memory_story",
     "cli.notifications",
-    "cli.schedule",
     "cli.query",
     "cli.defects",
     "cli.contract",

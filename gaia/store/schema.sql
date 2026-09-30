@@ -1320,24 +1320,17 @@ CREATE TABLE IF NOT EXISTS task_notifications (
 CREATE INDEX IF NOT EXISTS idx_task_notifications_unread ON task_notifications(unread, created_at DESC);
 
 -- ---------------------------------------------------------------------------
--- scheduled_tasks: OS-agnostic DESIRED STATE for recurring headless tasks.
+-- RETIRED (v63): scheduled_tasks, scheduled_task_machines, scheduled_task_state
+-- and schedule_suspensions.
 -- ---------------------------------------------------------------------------
--- The desired-state registry that lets a scheduled task stop living only in one
--- machine's crontab and instead live in gaia.db, so any machine sharing the DB
--- can materialize it. The SCHEDULE is stored NEUTRAL as a JSON `schedule_spec`
--- (a tagged union: {"kind":"calendar", minute/hour/day_of_month/month/
--- day_of_week} or {"kind":"interval","every_seconds":N}) -- NOT a raw cron
--- string -- so a per-platform backend (cron today; launchd/schtasks later) can
--- translate it to its native form. `schedule_hint` is a human-readable render
--- (e.g. "07:30 L-V"), derived, never authoritative.
---
--- `prompt_body` is the CANONICAL prompt content (portable across machines on a
--- shared DB); `prompt_path` is the machine-local file a sync materializes it to.
--- `project_dir` is machine-local (a path that may differ per machine). Writing
--- desired state (register/enable/disable) is reversible local bookkeeping (T0,
--- like briefs/plans/task_notifications); only MATERIALIZING it into the machine
--- scheduler (`gaia schedule sync`) is a consented mutation (T3). The hook only
--- DETECTS drift at SessionStart; it never writes the scheduler in silence.
+-- `gaia schedule` and the scheduler that started the host unattended no longer
+-- exist; recurring work is a routine notification (see task_notifications).
+-- Nothing reads or writes these four tables any more. They stay, with their
+-- rows, so the retirement loses nothing and older code keeps working against
+-- them; a later breaking migration drops them. Migration v62 -> v63 turned each
+-- enabled scheduled task into one routine. `schedule_spec` is the neutral JSON
+-- {"kind":"calendar", minute/hour/day_of_month/month/day_of_week} or
+-- {"kind":"interval","every_seconds":N} that v63 read.
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace     TEXT,                      -- workspace name; NULL for global
@@ -1382,35 +1375,9 @@ CREATE TABLE IF NOT EXISTS scheduled_task_state (
 );
 
 -- ---------------------------------------------------------------------------
--- schedule_suspensions: a TIME-BOUNDED pause laid over desired state.
+-- schedule_suspensions: retired with the rest of the scheduler tables above.
 -- ---------------------------------------------------------------------------
--- `scheduled_tasks.enabled = 0` is a PERMANENT decision with no deadline: it
--- stays off until someone turns it back on. A SUSPENSION is the other shape --
--- "off, but not forever" -- and it needs a deadline, so it cannot be expressed
--- by the same boolean without losing the very thing that distinguishes it. Two
--- separate states, two separate columns: `enabled` says disabled, a row here
--- says suspended, and `list`/`status` label them differently on purpose.
---
--- SCOPE lives in `task_id`: NULL is the WORKSPACE-WIDE switch (suspends every
--- task in that workspace at once), a non-NULL id is one task. One table for
--- both scopes so a single expiry evaluator covers them; the two partial UNIQUE
--- indexes below keep at most one live suspension per scope.
---
--- EXPIRY IS EVALUATED AT READ TIME, never by a waking process -- managing
--- scheduled tasks must not itself require a scheduled task. `until` is an
--- ISO8601 UTC instant; a read compares it against now and reports the
--- suspension as live or LAPSED. NULL `until` means indefinite (never lapses).
--- A lapsed row is deliberately NOT deleted on read: the row IS the record that
--- something came back to life, which is what the SessionStart block announces
--- (prominently -- a lapse means tasks are running again). It is cleared by an
--- explicit `gaia schedule resume`, mirroring how task_notifications waits for
--- `gaia notifications ack` instead of self-clearing.
---
--- Like the rest of the registry this is DESIRED STATE, not a scheduler
--- mutation: suspending survives a reboot, is readable without asking the system
--- scheduler, and only takes effect on the machine when the user consents to
--- `gaia schedule sync` (T3). Writing it (`suspend`/`resume`) is reversible local
--- bookkeeping (T0), exactly like `enable`/`disable`.
+-- A NULL `task_id` was the workspace-wide switch, a non-NULL one a single task.
 CREATE TABLE IF NOT EXISTS schedule_suspensions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace    TEXT,                      -- workspace the suspension covers; NULL for global

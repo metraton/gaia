@@ -286,8 +286,7 @@ READ -- changes nothing. The orchestrator runs these itself.
                  curated-memory index (slug + description, never a body).
   workspace      current | info
   evidence       show | list
-  schedule       list | show | status
-  brief          show | list | deps | search | verify | decision list | history
+  brief         show | list | deps | search | verify | decision list | history
   plan           show | list | history | change list
   task           list | show | gate list
   memory         search | show | list | stats | get-relevant | conflicts |
@@ -329,7 +328,7 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
 WRITE a specialist owns -- DELEGATE; do not run it here.
   gaia-operator  context wipe|prune-workspaces|move-contracts|move-memory|
                  move-project (destructive surgery on the substrate) |
-                 workspace merge|retire | schedule register|remove|sync |
+                 workspace merge|retire |
                  usage ingest (load transcripts into token_usage)
   gaia-system    install | update | uninstall | cleanup | dev | release
   consent flow   approvals approve|reject-all|clean|replay|request-set --

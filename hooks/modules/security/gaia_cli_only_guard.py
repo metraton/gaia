@@ -473,7 +473,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # INSERT/UPDATE/DELETE and no commit() in bin/cli/{doctor,status,defects,
     # query}.py, and the read handlers of the four grouped commands
     # (context._cmd_show/_cmd_get, workspace._cmd_current/_cmd_info,
-    # evidence._cmd_show/_cmd_list, schedule._cmd_list/_cmd_show/_cmd_status)
+    # evidence._cmd_show/_cmd_list)
     # reach the substrate only through gaia.store.reader / gaia.store.provider.
     # Grepping alone is not enough here: `paths` has no mutation marker in its
     # own module and still writes, one call down, which is why it sits in the
@@ -518,9 +518,6 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("workspace", "info"),
     ("evidence", "show"),
     ("evidence", "list"),
-    ("schedule", "list"),
-    ("schedule", "show"),
-    ("schedule", "status"),
     # `session preview` exists precisely so the orchestrator can render
     # build_session_context()'s output in-process instead of closing and
     # reopening a session to see a manifest edit take effect (see
@@ -679,12 +676,6 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("workspace", "merge"),
     ("workspace", "retire"),
     ("evidence", "add"),
-    # Schedule's desired state and its materialization into the OS scheduler:
-    # `list`/`show`/`status` read it, these three write it (and `sync` reaches
-    # outside gaia entirely, into crontab).
-    ("schedule", "register"),
-    ("schedule", "remove"),
-    ("schedule", "sync"),
     # `release check` reads as a verification verb and is not one: it runs
     # `npm pack`, installs into a sandbox, runs `claude plugin validate` and
     # `npm test`, and finishes with a convergence write. `release publish`

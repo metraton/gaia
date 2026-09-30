@@ -122,8 +122,8 @@ if __name__ == "__main__":
         if not prompt_text:
             logger.info("Could not extract user prompt")
 
-        # Unread headless-task notifications counter. Cheap (one COUNT) and
-        # zero-token when there are none.
+        # Counter of notifications due now. Cheap (one COUNT) and zero-token
+        # when there are none.
         notif_counter = _build_notifications_counter()
         if notif_counter:
             context_parts.append(notif_counter)

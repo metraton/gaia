@@ -2,7 +2,7 @@
 
 The preview is how the user sees what a new session would receive without
 opening one, so running it must not count as an injection, bump any memory
-telemetry, or change a scheduled-task suspension. Runs the real CLI in a
+telemetry, or touch a notification. Runs the real CLI in a
 subprocess against a temporary HOME, GAIA_DATA_DIR and GAIA_DB.
 """
 
@@ -49,8 +49,8 @@ def _seed(db: Path, workspace_root: Path, project: Path) -> None:
             "VALUES ('me', 'thread_gaia_pr', 'project', 'open PR', 'open PR', 'thread', 'open', 'gaia')"
         )
         con.execute(
-            "INSERT INTO schedule_suspensions (workspace, until, reason) "
-            "VALUES ('me', '2026-01-01T00:00:00Z', 'lapsed on purpose')"
+            "INSERT INTO task_notifications (workspace, task_name, headline, kind, unread) "
+            "VALUES (NULL, 'reminder', 'Review the release notes', 'reminder', 0)"
         )
         con.commit()
     finally:

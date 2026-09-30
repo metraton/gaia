@@ -140,9 +140,6 @@ def birth(tmp_path, monkeypatch, bootstrapped_db_template):
     monkeypatch.setenv("GAIA_DB", str(db))
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
-    import gaia.schedulers
-    monkeypatch.setattr(gaia.schedulers, "compute_plan",
-                        lambda **_: SimpleNamespace(available=False))
     dirs = _seed(db, tmp_path / "ws")
     monkeypatch.chdir(dirs["gaia"])
     return SimpleNamespace(db=db, data=data, dirs=dirs, monkeypatch=monkeypatch)

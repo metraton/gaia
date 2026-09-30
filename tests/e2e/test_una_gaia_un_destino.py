@@ -62,9 +62,6 @@ def one_home(tmp_path, monkeypatch, bootstrapped_db_template):
                 "GAIA_SESSION_ID", "CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "INIT_CWD",
                 "CLAUDE_PROJECT_DIR"):
         monkeypatch.delenv(key, raising=False)
-    import gaia.schedulers
-    monkeypatch.setattr(gaia.schedulers, "compute_plan",
-                        lambda **_: SimpleNamespace(available=False))
     paths.clear_path_cache()
 
     dirs = {}
