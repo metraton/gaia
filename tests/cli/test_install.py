@@ -1365,9 +1365,7 @@ class TestLauncherShellBehavior(unittest.TestCase):
         link.chmod(0o755)
 
     def _run_launcher(self, launcher: Path, *, cwd: Path, args=None):
-        # The shim body is a POSIX `exec ... "$@"`; the three behaviours under
-        # test hold for any sh, so the own toolchain's `sh` runs it, not bash.
-        cmd = [require_tool("sh"), str(launcher)]
+        cmd = [require_tool("bash"), str(launcher)]
         if args:
             cmd.extend(args)
         return subprocess.run(

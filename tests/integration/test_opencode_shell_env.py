@@ -14,8 +14,7 @@ from tests.integration.test_opencode_consent_retry_e2e import (
 )
 
 COMMAND = (
-    "ghx -C /workspace/gaia "
-    "pr create --repo example-org/gaia --head fix/attestation-cli-fixture "
+    "gh pr create --repo example-org/gaia --head fix/attestation-cli-fixture "
     "--title 'fixture regression' --body 'diagnostic only'"
 )
 

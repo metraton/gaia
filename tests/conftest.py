@@ -76,9 +76,9 @@ def bridge_runtime_env():
     return env
 
 
-# The only programs the suite may take for granted (D107): what CI installs and
+# The only programs the suite may take for granted (D111): what CI installs and
 # Gaia itself needs. Anything else a test runs is a fixture it writes in its tmp.
-OWN_TOOLCHAIN = ("python", "git", "sh", "node", "npm", "bun", "gaia")
+OWN_TOOLCHAIN = ("python", "python3", "git", "sh", "bash", "node", "npm", "bun", "gaia")
 
 
 def require_tool(name):
