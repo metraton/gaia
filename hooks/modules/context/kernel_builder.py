@@ -21,16 +21,17 @@ row:
     declaration pattern as ``routing:``) and rendered verbatim when present,
     additive to the base lines. Declaring is NOT permitting: tiers and
     guards still gate every execution.
-  * ``# How the user works`` -- the durable, executor-facing user-preference
-    rows (``memory.type='user' AND memory.audience='executor'``), BODY
-    inline, not slugs: a slug cost a further ``gaia memory show`` call the
-    agent in practice never made. Omitted entirely when the query returns no
-    rows -- never an empty heading.
+  * ``# How the user works`` -- the user's standing rows, the same selection
+    and the same facts/preferences sections the session birth block carries
+    (``gaia.store.reader.user_anchor_rows`` rendered by
+    ``modules.context.user_sections``), BODY inline, not slugs: a slug cost a
+    further ``gaia memory show`` call the agent in practice never made.
+    Omitted entirely when no row is selected -- never an empty heading.
 
 Everything renders from the ROW (goal from ``dispatch_prompt``, scope from
-``kernel_sections`` persisted at birth) plus two scoped reads: ``task_gates``
-for the acceptance block and ``memory`` for the executor-facing user rows. No
-project context is rebuilt here.
+``kernel_sections`` persisted at birth) plus two reads: ``task_gates`` for the
+acceptance block and ``memory`` for the user's rows. No project context is
+rebuilt here.
 
 Gotchas:
   * ``kernel_sections`` arrives as a JSON string on the row; this module
@@ -99,23 +100,6 @@ _CLI_WORKSPACE_LINE = (
     "  gaia context get-contract --section <s> --workspace {workspace}"
     "   # tus secciones legibles: can_read"
 )
-
-# Defensive ceilings for the "How the user works" block. Two different
-# risks, two different guards: an unwatched SET growing (many rows) is
-# bounded by _MEMORY_ROW_LIMIT; a single pathological ROW is bounded by
-# _MEMORY_BODY_HARD_CEILING. The row limit still slices the set (a row over
-# the limit simply never gets read). The body ceiling is deliberately NOT a
-# mid-text cut: a body is injected whole or not at all, never truncated --
-# truncating pays the token cost of the row and still forces a follow-up
-# `gaia memory show` for what got cut, which is strictly worse than either
-# extreme. A body over the ceiling is dropped from the block entirely rather
-# than sliced, because a silent truncation was measured eating INSTRUCTION,
-# not just context, in a row that legitimately needed every character.
-# 3 rows exist today totalling ~2500 chars; the ceiling is sized for a
-# runaway row, not the expected case.
-_MEMORY_ROW_LIMIT = 20
-_MEMORY_BODY_HARD_CEILING = 20_000
-
 
 def _connect(db_path):
     """Open a read connection through the store's own connect helper (same
@@ -302,66 +286,6 @@ def build_cli_block(
     return "\n".join(lines)
 
 
-def _executor_user_bodies(workspace: str, db_path=None) -> list:
-    """Durable executor-facing user-preference rows, freshest first, bounded.
-
-    Selects exactly ``type='user' AND audience='executor'`` for the
-    workspace plus the workspace-less user sentinel (``USER_WORKSPACE``) --
-    not ``class='anchor'`` (which mixed in anchors from unrelated projects
-    sharing the same workspace), minus rows another row supersedes. Returns
-    ``workspace`` and ``name`` plus
-    ``body`` -- the name never renders in the block (that would cost a
-    further ``gaia memory show`` call the agent in practice never made) but
-    is needed so the kernel-axis telemetry in ``build_memory_block`` can
-    bump exactly the rows that make it into the block, never a candidate
-    filtered out below; the workspace tells it which of two same-named rows
-    to bump. A body is injected whole; one over
-    ``_MEMORY_BODY_HARD_CEILING`` is dropped entirely instead of sliced --
-    see the ceiling's own comment for why.
-    """
-    if not workspace:
-        return []
-    try:
-        con = _connect(db_path)
-        try:
-            from gaia.store.reader import not_superseded
-            from gaia.store.writer import USER_WORKSPACE
-            workspaces = [workspace] + [
-                w for w in (USER_WORKSPACE,) if w != workspace
-            ]
-            rows = con.execute(
-                "SELECT workspace, name, body FROM memory "
-                f"WHERE workspace IN ({', '.join('?' for _ in workspaces)}) "
-                "AND type = 'user' AND audience = 'executor' "
-                f"AND deleted_at IS NULL AND {not_superseded()} "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (*workspaces, _MEMORY_ROW_LIMIT),
-            ).fetchall()
-        finally:
-            con.close()
-    except Exception:
-        logger.debug("executor-user memory read failed (non-fatal)", exc_info=True)
-        return []
-
-    kept = []
-    for row in rows:
-        body = (row["body"] or "").strip()
-        if not body:
-            continue
-        if len(body) > _MEMORY_BODY_HARD_CEILING:
-            logger.warning(
-                "executor-user memory body exceeds hard ceiling "
-                "(%d > %d chars); dropped from the kernel rather than "
-                "truncated",
-                len(body), _MEMORY_BODY_HARD_CEILING,
-            )
-            continue
-        kept.append({
-            "workspace": row["workspace"], "name": row["name"], "body": body,
-        })
-    return kept
-
-
 def _record_kernel_telemetry(
     rows: list, *, db_path=None,
 ) -> None:
@@ -370,8 +294,8 @@ def _record_kernel_telemetry(
     get-relevant surfaces use (``gaia.store.writer.record_memory_access``);
     never a second implementation. Bumps the ``"kernel"`` axis
     (``kernel_count``/``last_kernel_at``), NOT ``"injection"``: this block
-    fires on EVERY subagent dispatch over the same fixed rows
-    (``type=user AND audience=executor``), which used to dominate the
+    fires on EVERY subagent dispatch over the same fixed rows (the user's
+    standing rows), which used to dominate the
     injection axis by construction (measured: the kernel's rows led any
     injection ranking, 37/37/26 against 17 or less for everything else).
     Splitting it into its own axis is forward-only -- what it already added
@@ -396,23 +320,24 @@ def _record_kernel_telemetry(
             )
 
 
-def build_memory_block(workspace: str, *, db_path=None) -> str:
-    """Render ``# How the user works``, or "" when no matching rows exist."""
-    rows = _executor_user_bodies(workspace, db_path=db_path)
-    if not rows:
+def build_memory_block(*, db_path=None) -> str:
+    """Render ``# How the user works`` from the user's standing rows, or "" when there are none.
+
+    Whatever workspace the dispatch ran from: user memory belongs to no
+    workspace, and the session birth block reads the same rows.
+    """
+    from gaia.store.reader import user_anchor_rows
+
+    from .user_sections import render_user_sections
+
+    rows = [r for r in user_anchor_rows(db_path) if (r.get("body") or "").strip()]
+    sections = render_user_sections(rows)
+    if not sections:
         return ""
-    lines = [MEMORY_HEADING, ""]
-    for index, row in enumerate(rows):
-        if index:
-            lines.append("")
-        body_lines = row["body"].splitlines() or [""]
-        lines.append(f"- {body_lines[0]}")
-        lines.extend(f"  {line}" if line else "" for line in body_lines[1:])
-    block = "\n".join(lines)
     _record_kernel_telemetry(
         [(row["workspace"], row["name"]) for row in rows], db_path=db_path,
     )
-    return block
+    return f"{MEMORY_HEADING}\n\n{sections}"
 
 
 def build_kernel_context(
@@ -434,6 +359,6 @@ def build_kernel_context(
     blocks = [
         kernel,
         build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace),
-        build_memory_block(workspace, db_path=db_path),
+        build_memory_block(db_path=db_path),
     ]
     return "\n\n".join(b for b in blocks if b)

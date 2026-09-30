@@ -61,12 +61,18 @@ holds what is true.
 
 ## Process
 
-1. **Read the injected memory, then sweep what you are about to touch.** The
-   digest and anchors in context are a worklist under a SessionStart budget, not
-   the corpus. Before writing into an initiative — or whenever the question is
-   what it still owes — read its whole live-pending set with
-   `gaia memory get-relevant --initiative=<key>`, uncapped and with bodies. A
-   reader who only sees the digest can add rows and never retire one.
+1. **Know what a session is born with, then sweep what you are about to
+   touch.** Every session opens with four sections: the projects, each with its
+   live-pending count; the environment it stands in; the user; and the user's
+   preferences. The last two are the user's standing rows, whole, and every
+   dispatched subagent receives the same ones. Project memory — anchors,
+   threads, their bodies — never loads at birth: a count is a signal to ask,
+   not the corpus. It arrives when that project is worked on: before writing
+   into an initiative, or whenever the question is what it still owes, read its
+   whole live-pending set with `gaia memory get-relevant --initiative=<key>`,
+   uncapped and with bodies. A reader who only sees the counts can add rows and
+   never retire one. `gaia session preview` shows the birth block without
+   recording anything.
 2. **Search before writing; do not read silence as absence.** Find the topic's
    existing owner and its lineage — a duplicate divides relevance instead of
    strengthening knowledge. An empty result answers "no row matches this

@@ -661,9 +661,9 @@ def _normalize_status_flag(raw: str | None) -> tuple[bool, str | None]:
 #
 # _DESCRIPTION_WARN_CHARS: listings and the session's birth block show the
 # description alone, so it must read as one sentence.
-# _BODY_WARN_CHARS: a body is injected whole or dropped
-# (hooks/modules/context/kernel_builder.py::_executor_user_bodies), so a long
-# one costs every reader that loads it.
+# _BODY_WARN_CHARS: a user row's body is injected whole, never cut
+# (hooks/modules/context/user_sections.py), so a long one costs every reader
+# that loads it.
 _DESCRIPTION_WARN_CHARS = 120
 _BODY_WARN_CHARS = 800
 
@@ -1396,12 +1396,14 @@ _RELEVANT_PER_CLASS_QUOTA = {
 # pushed user_intent_over_literal_request and user_registro_llano_ademas_del_
 # tecnico -- the rows governing how the user is read and addressed -- out of the
 # orchestrator's block, while the subagent kernel kept receiving them. So this
-# section mirrors the kernel's own selector (kernel_builder._executor_user_bodies):
-# type='user' rather than class='anchor' (which mixed in project anchors from
-# unrelated projects sharing the workspace), whole bodies rather than a capped
-# description, and a row bound high enough that it never adjudicates between two
-# instructions. A body past the ceiling is dropped rather than sliced -- half an
-# instruction reads as a whole one.
+# section selects type='user' AND class='anchor' (never a project's anchors),
+# whole bodies rather than a capped description, and a row bound high enough
+# that it never adjudicates between two instructions. A body past the ceiling is
+# dropped rather than sliced -- half an instruction reads as a whole one.
+# The session birth block and the dispatch kernel no longer call this verb:
+# they read the same kind of rows through gaia.store.reader.user_anchor_rows,
+# which also drops superseded rows and reads every workspace. This section is
+# what a direct `gaia memory get-relevant --sections anchor` returns.
 _RELEVANT_USER_ANCHOR_ROW_LIMIT = 20
 _RELEVANT_USER_ANCHOR_BODY_CEILING = 20_000
 
@@ -1521,10 +1523,10 @@ _SECTION_HEADERS = {
 # resolved/snapshot threads are excluded by design -- the digest is a worklist,
 # not a knowledge dump.
 #
-# No longer auto-injected at SessionStart (its per-project count moved onto
-# the "Projects I can reach" block instead -- see
-# hooks/modules/session/session_manifest.py::build_projects_context_block);
-# this renderer and its header stay reachable through a direct
+# Not injected at SessionStart (each project's pending count is on the
+# Projects section instead -- see
+# hooks/modules/session/session_manifest.py::build_projects_section);
+# this renderer and its header are reached only through a direct
 # `gaia memory get-relevant` call with no flags.
 _DIGEST_HEADER = "## Memory — Live pending across every project"
 # Top-K initiatives shown in the cross-project digest; the rest roll up into a
@@ -1538,8 +1540,7 @@ _DIGEST_DESC_MAX = 60
 # Budget for the digest. The old 800 cap truncated to a SINGLE project once a
 # project carried several pending threads. With one short line per initiative
 # (~90-110 chars) plus header + pointer, ~10 initiatives need ~1500 chars.
-# session_manifest.build_workspace_memory_block passes --max-chars=1500 as the
-# injection authority; this is the fallback when --max-chars is omitted.
+# This is the budget when --max-chars is omitted.
 _DIGEST_DEFAULT_MAX_CHARS = 1500
 # Project mode ("--initiative=X") is deliberately UNBOUNDED -- no top-N cap, no
 # char budget, no per-item description cap -- unlike the digest and section

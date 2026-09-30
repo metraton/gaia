@@ -1,33 +1,28 @@
-"""Session manifest builders for SessionStart injection.
+"""The session birth block: what every session knows the moment it opens.
 
-Phase 4 of the context-injection redesign moves what was previously emitted
-on every UserPromptSubmit to a one-shot SessionStart manifest. The blocks
-that move:
+``build_session_context`` assembles it with no knowledge of the host; a host
+adapter only delivers the string (Claude Code's SessionStart hook today) and
+``gaia session preview`` prints it. Four sections, in this order:
 
-- Where I am (NEW) -- workspace identity, machine, gaia version, cwd, plugin
-  root. Stable for the lifetime of the session.
-- What I can run here (NEW) -- the trusted absolute path to the `gaia` CLI
-  and which known tools resolve on PATH. Split from the block above because
-  it can go stale (a tool install, a rebuilt CLI symlink) independently of
-  the machine/workspace facts, which never change mid-session.
+- Projects -- each project's name, one line about it and its live-pending
+  count, counted by canonical project key across every workspace. A large
+  group is one line with its size. Project memory itself (anchors, threads)
+  never loads here; it arrives when that project is worked on.
+- Environment -- where the session stands: machine, installation (version,
+  channel, root), folder, the `gaia` CLI path, the real data home and its
+  database, the tools on PATH (one line), and one line of pending recurring
+  work when there is any.
+- The user / User preferences -- the user's standing rows, whole (see
+  ``modules.context.user_sections``, shared with the dispatch kernel).
 
-Pending approvals are NOT surfaced here. Cross-session surfacing of pendings
-(the former [ACTIONABLE] block) has been removed entirely: the DB remains the
-canonical pending store, TTL hygiene (approval_cleanup) keeps it free of
-orphans, session-agnostic matching (check_db_semantic_grant) still authorizes
-retried commands, and the user inspects/acts on pendings on demand through
-`gaia approvals`.
+Alarms that condition every write (a database upgrade, a schema mismatch)
+come first, outside the four sections. The whole block is sized under
+``BIRTH_BUDGET`` because the host replaces a longer string with a short
+preview; the user's rows never shrink to fit, the project roster does.
 
-UserPromptSubmit retains only sparse turn-time notices such as the first-run
-welcome and unread-notification counter. Surface classification remains a
-DB-backed diagnostic capability but is no longer injected into every turn.
-
-Design constraints:
-
-- Every builder is fail-safe: returns "" on any error, logs at debug.
-- Builders never raise. SessionStart must succeed even if the manifest is empty.
-- Security mode short-circuits to "" -- security plugin has no orchestrator
-  routing layer to consume the manifest.
+Every builder is fail-safe: it returns "" on any error and never raises, so a
+session always starts. Building the block writes nothing unless the caller
+asks for the user rows' injection to be recorded.
 """
 
 from __future__ import annotations
@@ -36,10 +31,11 @@ import json
 import logging
 import os
 import platform
-import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
+
+from ..context.user_sections import PREFERENCES_HEADER, USER_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -234,10 +230,10 @@ def _resolve_gaia_cli_path() -> Optional[str]:
     return None
 
 
-# Corpus-derived: every name below was measured with at least one mention in
-# skills/*.md or agents/*.md (grep, 2026-09-14). `acli` carries zero corpus
-# mentions and is listed anyway -- it is the case this inventory exists for:
-# installed on this machine, invoked by nothing here that names it.
+# The orchestrator's identity refuses a dispatch that needs a tool this machine
+# lacks, so the roster must name what IS installed. `acli` has no mention in
+# skills/ or agents/ and is listed anyway: it is the case this inventory exists
+# for -- installed here, invoked by nothing that names it.
 _CANDIDATE_TOOLS: tuple = (
     "git", "go", "npm", "terraform", "node", "gcloud", "flux", "kubectl",
     "gh", "terragrunt", "helm", "aws", "pulumi", "python3", "gws", "jq",
@@ -288,192 +284,113 @@ def _machine_label() -> str:
 # Builders
 # ---------------------------------------------------------------------------
 
-def build_where_i_am_block() -> str:
-    """Render "## Where I am": workspace, machine, gaia version, paths.
+PROJECTS_HEADER = "## Projects"
+ENVIRONMENT_HEADER = "## Environment"
+BIRTH_SECTION_HEADERS = (PROJECTS_HEADER, ENVIRONMENT_HEADER, USER_HEADER, PREFERENCES_HEADER)
 
-    Stable facts for the lifetime of the session -- unlike "## What I can run
-    here" (build_capabilities_block), which can go stale independently (a
-    tool install, a CLI rebuild) and is therefore its own block. Returns ""
-    if every subcomponent fails -- the block is purely informational and a
-    half-filled block is worse than nothing. In practice cwd and
-    machine_label always succeed, so this rarely happens.
+# Claude Code replaces a hook's additionalContext string over 10,000 chars
+# with a 2,000-char preview and a file path, without telling the model; the
+# margin keeps the whole block clear of that cap.
+BIRTH_BUDGET = 9_500
+
+
+def _installation_label() -> Optional[str]:
+    """``<version>, <channel> channel, at <root>`` for the Gaia this session runs.
+
+    The version comes from a live in-process re-scan (never the
+    gaia_installations table, which only refreshes on `gaia scan`), falling
+    back to the package.json ancestor walk. A declared CLAUDE_PLUGIN_ROOT
+    means the plugin channel; otherwise the scan's install mode names it.
     """
-    try:
-        workspace = _read_workspace_identity()
-        machine = _machine_label()
-        cwd = str(Path.cwd())
+    installation = _scan_live_gaia_installation() or {}
+    version = installation.get("version") or _read_gaia_version()
+    if not version:
+        return None
+    if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip():
+        channel = "plugin"
+    else:
+        channel = installation.get("install_mode")
+    parts = [_describe_gaia_version(version)]
+    if channel and channel != "unknown":
+        parts.append(f"{channel} channel")
+    parts.append(f"at {_plugin_root()}")
+    return ", ".join(parts)
 
-        # Live, in-process re-scan (never the gaia_installations table, which
-        # only refreshes on `gaia scan` and can report a stale version -- see
-        # _scan_live_gaia_installation). Falls back to the package.json
-        # ancestor walk only when no install marker is found at all.
-        installation = _scan_live_gaia_installation()
-        version = installation.get("version") if installation else None
-        if not version:
-            version = _read_gaia_version()
 
-        plugin_root = str(_plugin_root())
-        # Data dir resolution can fail under headless tests with no .claude/
-        # tree; treat as soft-missing.
-        try:
-            from ..core.paths import find_claude_dir, get_plugin_data_dir
-            workspace_claude_dir = str(find_claude_dir())
-            data_dir = str(get_plugin_data_dir())
-        except Exception:
-            workspace_claude_dir = None
-            data_dir = None
+def _recurring_work_line(workspace: Optional[str]) -> str:
+    """One line naming the recurring work that needs the user, or "" when nothing does.
 
-        lines = ["## Where I am"]
-        if workspace:
-            # Not "Workspace": the bare word reads as "where we are working",
-            # and this value is where GAIA is installed -- the orchestrator is
-            # born in the installation's workspace (me) even when the session's
-            # subject lives in another one. The value stays because memory and
-            # the database are scoped by it; only the label was lying.
-            lines.append(f"- Gaia workspace (memory/db scope): {workspace}")
-        lines.append(f"- Machine: {machine}")
-        if version:
-            lines.append(f"- Gaia: {_describe_gaia_version(version)}")
-        lines.append(f"- cwd: {cwd}")
-        lines.append(f"- Plugin root: {plugin_root}")
-        if workspace_claude_dir:
-            lines.append(f"- Workspace .claude dir: {workspace_claude_dir}")
-        if data_dir and data_dir != workspace_claude_dir:
-            lines.append(f"- Data dir: {data_dir}")
+    A lapsed suspension leads: it is the one item that changed what runs.
+    Reading a suspension evaluates its deadline against now and writes
+    nothing; the scheduler plan only compares desired state with this
+    machine. The detail, and the exact resume command per scope, live in
+    `gaia schedule status` and `gaia notifications list`.
+    """
+    from gaia.schedulers import compute_plan
+    from gaia.store.reader import count_unread_notifications, list_schedule_suspensions
 
-        # Drop the block entirely if it would only be a header -- pure
-        # decoration adds noise to the orchestrator prompt without value.
-        if len(lines) <= 1:
-            return ""
-        return "\n".join(lines)
-    except Exception as exc:
-        logger.debug("build_where_i_am_block failed (non-fatal): %s", exc)
+    suspensions = list_schedule_suspensions(workspace=workspace)
+    lapsed = sum(1 for s in suspensions if s.get("expired"))
+    items: list[str] = []
+    if lapsed:
+        items.append(f"{lapsed} suspension(s) LAPSED, their tasks run again")
+    if len(suspensions) - lapsed:
+        items.append(f"{len(suspensions) - lapsed} suspended")
+    plan = compute_plan(workspace=workspace)
+    if plan.available:
+        for count, label in (
+            (len(plan.missing), "not installed here"),
+            (len(plan.drift), "with a drifted schedule"),
+            (len(plan.orphans), "orphan scheduler entr(ies)"),
+            (len(plan.disabled_present), "disabled but still installed"),
+            (len(plan.invalid), "invalid"),
+        ):
+            if count:
+                items.append(f"{count} {label}")
+        if plan.daemon is not None and plan.daemon.running is False:
+            items.append("scheduler daemon down")
+    verbs = ["`gaia schedule status`"] if items else []
+    unread = count_unread_notifications(workspace=workspace)
+    if unread:
+        items.append(f"{unread} unread task report(s)")
+        verbs.append("`gaia notifications list`")
+    if not items:
         return ""
+    return f"- Recurring work pending: {', '.join(items)} — {', '.join(verbs)}"
 
 
-def build_capabilities_block() -> str:
-    """Render "## What I can run here": the CLI path and tool presence.
-
-    The orchestrator's identity declares it invokes `gaia` by the absolute
-    path this block publishes -- with no path published, it fell back to the
-    bare token `gaia`, which the trust guard categorically rejects
-    (is_trusted_gaia_binary requires an absolute path). Both facts here are
-    live, in-process lookups (no subprocess, no table): the CLI path is
-    resolved and guard-verified by _resolve_gaia_cli_path, and tool presence
-    is a shutil.which pass over a fixed candidate list. Returns "" when
-    neither the CLI path resolves nor any candidate tool is found.
-    """
+def build_environment_section() -> str:
+    """Render the Environment section: where this session stands, or "" on failure."""
     try:
-        lines = ["## What I can run here"]
+        from gaia.paths import data_dir, db_path
+
+        workspace = _read_workspace_identity()
+        folder = str(Path.cwd())
+        lines = [ENVIRONMENT_HEADER, f"- Machine: {_machine_label()}"]
+        installation = _installation_label()
+        if installation:
+            lines.append(f"- Gaia: {installation}")
+        lines.append(f"- Folder: {folder} (workspace {workspace})" if workspace
+                     else f"- Folder: {folder}")
+        # The orchestrator invokes `gaia` by this absolute path: the trust
+        # guard rejects the bare token.
         cli_path = _resolve_gaia_cli_path()
         if cli_path:
             lines.append(f"- gaia CLI: {cli_path}")
+        lines.append(f"- Data home: {data_dir()} (database {db_path()})")
         tools = _scan_available_tools()
         if tools:
             lines.append(f"- Tools on PATH: {', '.join(tools)}")
-        if len(lines) <= 1:
-            return ""
+        try:
+            recurring = _recurring_work_line(workspace)
+        except Exception as exc:
+            logger.debug("recurring work line failed (non-fatal): %s", exc)
+            recurring = ""
+        if recurring:
+            lines.append(recurring)
         return "\n".join(lines)
     except Exception as exc:
-        logger.debug("build_capabilities_block failed (non-fatal): %s", exc)
-        return ""
-
-
-def build_workspace_memory_block(
-    workspace: Optional[str] = None,
-    sections: Optional[list[str]] = None,
-) -> str:
-    """Top relevant curated memory for the workspace, bounded.
-
-    Calls ``gaia memory get-relevant --workspace <X> --max-chars 1500`` and
-    captures stdout. Returns markdown to inject in SessionStart
-    additionalContext, or "" when there are no curated rows for the
-    workspace, when the workspace cannot be inferred, or when the
-    subprocess fails for any reason.
-
-    v32 (cwd-INDEPENDENT). When ``sections`` is omitted the CLI emits the
-    TRANSVERSAL INITIATIVE DIGEST: a cross-project worklist of live-pending
-    threads (``class='thread'``, ``status`` in ``carry_forward``/``open``)
-    grouped by ``memory.initiative``, ordered by recency, top-K initiatives
-    with global + per-initiative overflow. It no longer anchors to the launch
-    directory -- the digest is identical whether the session starts at a
-    workspace root or inside one project. The orchestrator's SessionStart
-    assembler no longer calls this no-``sections`` form: the per-project count
-    it produced now sits directly on ``build_projects_context_block``'s own
-    index, next to the name it was always about, so the digest's live-pending
-    corpus is reached by naming a project (``gaia memory get-relevant
-    --initiative <name>``) rather than pushed on every session start. The
-    no-``sections`` form itself is unchanged and still callable directly.
-
-    Budget: ``--max-chars`` is raised 800 -> 1500. The old 800 cap, combined
-    with the retired cwd anchoring, truncated the block to a SINGLE project as
-    soon as that project carried several pending threads (the monopoly the
-    digest is designed to prevent). With one short line per initiative
-    (~90-110 chars) plus header and pointer, ~10 initiatives need ~1500 chars;
-    the CLI still self-trims the least-fresh initiatives into the overflow line
-    if the budget is exceeded, so the cap stays hard.
-
-    ``sections`` (optional): a subset of ``carry_forward``/``anchor``/
-    ``thread_open``. When set, the CLI uses the class/status section renderer
-    instead of the digest. The orchestrator's SessionStart assembler calls
-    this builder ONCE, with ``sections=["anchor"]``, for the durable "What the
-    user has established" anchors (``class='anchor'``) -- never the
-    session-scoped ``carry_forward``/``thread_open`` state. (Dispatched
-    subagents get their anchors from the kernel's ``build_memory_block``, not
-    from this builder.) When set, ``sections`` is forwarded verbatim as
-    ``--sections`` to the CLI.
-
-    Fail-safe: any error (subprocess timeout, non-zero exit, missing CLI,
-    empty output) returns "". SessionStart must not block on memory.
-    """
-    import subprocess
-
-    try:
-        ws = workspace or _read_workspace_identity()
-        if not ws:
-            # Without a workspace we cannot scope the query; skip the block.
-            return ""
-
-        # Resolve the CLI: prefer the guard-verified absolute path (see
-        # _resolve_gaia_cli_path) so this subprocess call works from any cwd
-        # regardless of PATH; fall back to the bare token only when no
-        # install marker resolves.
-        cli_path = _resolve_gaia_cli_path()
-        cli_args: list[str] = [cli_path] if cli_path else ["gaia"]
-
-        cmd = cli_args + [
-            "memory", "get-relevant",
-            "--workspace", ws,
-            "--max-chars", "1500",
-        ]
-        if sections:
-            # --no-pointer suppresses the CLI's recoverable-pointer footer for
-            # this section-scoped call, so it never sits under a section whose
-            # write/curate verbs (close a thread, graduate, reclassify) don't
-            # apply to it. A direct/agent invocation of `gaia memory
-            # get-relevant --sections ...` outside SessionStart never passes
-            # this flag and keeps the footer.
-            cmd += ["--sections", ",".join(sections), "--no-pointer"]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode != 0:
-            logger.debug(
-                "build_workspace_memory_block: CLI exit=%d stderr=%s",
-                result.returncode, (result.stderr or "")[:200],
-            )
-            return ""
-        block = (result.stdout or "").strip()
-        return block
-    except Exception as exc:
-        logger.debug(
-            "build_workspace_memory_block failed (non-fatal): %s", exc
-        )
+        logger.debug("build_environment_section failed (non-fatal): %s", exc)
         return ""
 
 
@@ -598,17 +515,11 @@ def _workspace_root(paths: list[str]) -> str:
     return root
 
 
-def build_projects_context_block(max_chars: int = 8000) -> str:
-    """Render the project INDEX (names only) for the SessionStart manifest.
+def _collect_projects() -> Optional[dict]:
+    """The projects with active project context, grouped by owning workspace.
 
-    Per ``decision_kernel_inyeccion_agnostica_por_audiencia`` reason 2 (the CLI
-    index announces existence; content is pulled on demand): this block used to
-    carry type, path and description per project -- content, not an index. It
-    is now a compact ``### <workspace> — <root>`` group per workspace holding
-    ONLY a comma-separated list of project names, plus a footer naming the verb
-    that fetches the full ficha (``gaia context project <name>``, added in
-    429eb62/9d3476d/bdd8d34, ASSUMED here). No types, no per-project paths, no
-    descriptions -- those are exactly what the verb answers on request.
+    Returns ``{"live", "unresolved", "group_order", "roots"}``, or None when
+    there is nothing to index or the database cannot be read.
 
     This is NOT an index of every git repo on disk. The source is the set of
     projects that have **active project context** -- a ``project_identity`` row
@@ -631,13 +542,7 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     ``bildwiz-2``) can diverge from the directory the repo actually lives in
     (``bildwiz-iac``) -- the basename is what the user calls the project and
     what ``gaia context project`` resolves against as its second-priority match,
-    so showing it is what makes the index actually useful for lookup. A project
-    with a hand-curated ``description`` (today: ``aos``, ``aos_iac``,
-    ``aos_keycloak`` -- 3, not the 4 once assumed; live state corrects the
-    assumption per ``atom_verificacion_en_vivo_dos_casos_20260801``) keeps a
-    ``- <name>: <description>`` line below the group's comma list: curation this
-    deliberate (3 rows, hand-picked) is signal worth its own line, unlike the
-    generic per-project metadata this redesign otherwise drops.
+    so showing it is what makes the index actually useful for lookup.
 
     A project's group is the workspace that owns its ``projects`` row (the
     scan-verified physical truth), falling back to the contract's own workspace
@@ -662,22 +567,6 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
       contract -- so the full record (path, type, description, exact timestamp)
       stays one ``gaia context project`` away for the rare turn that asks about a
       removed project. It is not worth a line of every session's context.
-
-    Budget: bounded to ``max_chars`` (default 8000, unchanged as a safety
-    ceiling -- the compact form targets well under ~1200 chars in practice). On
-    overflow, live projects are dropped from the tail and a recoverable footer
-    stating the dropped count ALWAYS lands (footer space, plus the verb
-    pointer, is reserved before trimming). Fail-safe: any error returns "".
-
-    Each name carries a live-pending count in parentheses -- ``aos-iac (3)`` --
-    when ``gaia.store.reader.count_pending_by_initiative`` finds at least one
-    live-pending thread (``class='thread'``, ``status`` in
-    ``carry_forward``/``open``), in any workspace, whose canonical project key
-    is that project's normalized displayed name; a project with nothing pending carries no
-    annotation at all. This replaces the retired transversal digest, the
-    SessionStart block that used to list live-pending threads by project on
-    its own: the count is a signal to ask about, not content to read here, so
-    it sits beside the name rather than pushing its own block.
     """
     # Ensure the package root (which holds the `gaia/` package) is importable.
     # At real SessionStart, session_start.py already inserts it; this self-heal
@@ -692,8 +581,8 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     try:
         from gaia.store.writer import _connect
     except Exception as exc:
-        logger.debug("build_projects_context_block import failed: %s", exc)
-        return ""
+        logger.debug("project collection import failed: %s", exc)
+        return None
 
     try:
         con = _connect()
@@ -710,11 +599,11 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
         finally:
             con.close()
     except Exception as exc:
-        logger.debug("build_projects_context_block query failed: %s", exc)
-        return ""
+        logger.debug("project collection query failed: %s", exc)
+        return None
 
     if not identity_rows:
-        return ""
+        return None
 
     by_name: dict = {}
     by_ws: dict = {}
@@ -781,7 +670,7 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
                     prev[field] = value
 
     if not merged:
-        return ""
+        return None
 
     # Split live from vanished, and pin the per-workspace group order. Roots are
     # computed from the LIVE paths only: a vanished repo's path should not widen
@@ -816,398 +705,110 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     for ws in group_order:
         roots[ws] = _workspace_root([e["path"] for e in live if e["ws"] == ws])
 
-    total_available = len(live)
-    header = "## Projects I can reach"
-    # This is the first command a newly-born orchestrator is likely to try --
-    # the bare `gaia` token the guard categorically rejects (it accepts only
-    # an absolute, guard-verified path) must never be what it suggests here.
-    _cli = _resolve_gaia_cli_path() or "gaia"
-    pointer = f"Ficha de un proyecto: {_cli} context project <nombre>"
-
-    def _display_name(e: dict) -> str:
-        """The identifier shown in the index -- resolvable, not necessarily stored.
-
-        Prefers the on-disk basename over the contract's stored ``name`` when
-        the two differ (see the docstring above); falls back to the stored
-        name when there is no resolved path to derive one from.
-        """
-        if e["path"]:
-            base = os.path.basename(e["path"])
-            if base:
-                return base
-        return e["name"]
-
-    # Live-pending count per project, keyed exactly like the memory reader's
-    # own initiative bucketing (gaia.store.writer.normalize_initiative) so a
-    # count shown here always equals `gaia memory get-relevant --initiative
-    # <name>`'s row count for that same project -- the retired transversal
-    # digest is not gone, it moved next to the name it was always about.
-    # Zero-count projects show no annotation at all: a project with nothing
-    # pending needs no signal (fail-safe -- any error here leaves every
-    # project unannotated, never breaks the index).
-    from gaia.store.writer import normalize_initiative
-
-    pending_counts: dict = {}
-    try:
-        from gaia.store import reader as _reader
-
-        by_ws_inits: dict = {}
-        for e in live:
-            key = normalize_initiative(_display_name(e))
-            if key:
-                by_ws_inits.setdefault(e["ws"], set()).add(key)
-        for ws, inits in by_ws_inits.items():
-            counts = _reader.count_pending_by_initiative(sorted(inits))
-            for key, n in counts.items():
-                pending_counts[(ws, key)] = n
-    except Exception as exc:
-        logger.debug("project pending counts failed (non-fatal): %s", exc)
-
-    def _label_with_count(e: dict) -> str:
-        name = _display_name(e)
-        key = normalize_initiative(name)
-        count = pending_counts.get((e["ws"], key), 0) if key else 0
-        return f"{name} ({count})" if count else name
-
-    def _render_body(items: list[dict]) -> str:
-        parts = [header]
-        for ws in group_order:
-            group = [e for e in items if e["ws"] == ws]
-            if not group:
-                continue
-            root = roots.get(ws) or ""
-            names = ", ".join(_label_with_count(e) for e in group)
-            lines = [f"### {ws} — {root}" if root else f"### {ws}", names]
-            for e in group:
-                if not e["desc"]:
-                    continue
-                display = _display_name(e)
-                # Curated projects are the deliberate few (hand-picked
-                # description); the below-list line is where that signal
-                # survives the compaction rather than being dropped with the
-                # rest of the metadata.
-                lines.append(
-                    f"- {display}: {e['desc']}"
-                    if display == e["name"]
-                    else f"- {display}: {e['name']} — {e['desc']}"
-                )
-            parts.append("\n".join(lines))
-        if unresolved:
-            parts.append(
-                f"unresolved ({len(unresolved)}): {', '.join(unresolved)} "
-                f"— no path on disk; 'gaia context get'"
-            )
-        return "\n\n".join(parts)
-
-    block = _render_body(live) + "\n\n" + pointer
-    # Budget: drop live projects from the tail until the block PLUS its footer
-    # fits. The footer must never be lost -- a silent tail-drop with no footer
-    # turns the projects index (a routing surface) into a lie about how many
-    # projects exist. So we reserve the footer's worst-case width (the dropped-
-    # count notice plus the verb pointer, which must ship regardless) up front
-    # and trim the body against the remainder.
-    if len(block) > max_chars:
-        def _drop_footer(n: int) -> str:
-            return f"\n... ({n} more, use 'gaia context get')"
-
-        footer_budget = len(_drop_footer(total_available)) + len(pointer) + 2
-        trim_target = max(0, max_chars - footer_budget)
-
-        kept = list(live)
-        while kept and len(_render_body(kept)) > trim_target:
-            kept.pop()
-        dropped = total_available - len(kept)
-        body = _render_body(kept)
-        if dropped > 0:
-            body = body + _drop_footer(dropped)
-        block = body + "\n\n" + pointer
-
-    return block
+    return {"live": live, "unresolved": unresolved, "group_order": group_order, "roots": roots}
 
 
-def build_task_notifications_block(
-    workspace: Optional[str] = None,
-    limit: int = 10,
-) -> str:
-    """Render a compact list of UNREAD headless-task notifications, one per line.
+# A workspace holding more projects than this is one line in the roster: past
+# a screenful of names nobody scans the list, and the group's size is the
+# signal worth its line.
+_LARGE_GROUP = 12
+_PROJECT_LINE_MAX = 120
 
-    A headless scheduled task (see the scheduled-task skill) leaves a report row
-    via `gaia notifications add` when it finishes; it cannot ask the user
-    anything, so this SessionStart block is how those reports surface. Each line
-    carries task_name + headline + time + the resumable session_id, so the user
-    can `claude --resume <session_id>` to grant any pending T3s. Read via
-    `gaia notifications show <id>` for the full body; clear with
-    `gaia notifications ack`.
 
-    Scoped to the current workspace when one can be inferred, else all
-    workspaces. Emits "" when there are no unread rows (zero-noise, like the
-    per-prompt counter). Fail-safe: any error returns "".
+def _display_name(e: dict) -> str:
+    """The identifier shown in the roster -- the on-disk basename, else the stored name.
+
+    See ``_collect_projects`` for why the basename wins when the two differ.
+    """
+    if e["path"]:
+        base = os.path.basename(e["path"])
+        if base:
+            return base
+    return e["name"]
+
+
+def _one_line(text: str) -> str:
+    """``text`` flattened to one line of at most ``_PROJECT_LINE_MAX`` chars."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= _PROJECT_LINE_MAX else flat[: _PROJECT_LINE_MAX - 1] + "…"
+
+
+def build_projects_section(max_chars: int) -> str:
+    """Render the Projects section within ``max_chars``, or "" when there is nothing to index.
+
+    Each project is its name, its live-pending count when it has one, and one
+    line about it. The count is taken by canonical project key over every
+    workspace (``gaia.store.reader.count_pending_by_initiative``), so it
+    equals what ``gaia memory get-relevant --initiative <name>`` returns.
+    When the roster does not fit it degrades in steps -- names without their
+    lines, then every group as one line, then a single count -- and the
+    pointer to a project's ficha always lands.
     """
     try:
-        _pkg_root = str(Path(__file__).resolve().parents[3])
-        if _pkg_root not in sys.path:
-            sys.path.insert(0, _pkg_root)
-    except Exception:
-        pass
-
-    try:
-        from gaia.store.reader import list_unread_notifications
-    except Exception as exc:
-        logger.debug("task_notifications import failed (non-fatal): %s", exc)
-        return ""
-
-    try:
-        ws = workspace or _read_workspace_identity()
-        rows = list_unread_notifications(workspace=ws, limit=limit)
-        if not rows:
+        collected = _collect_projects()
+        if not collected:
             return ""
+        from gaia.store.reader import count_pending_by_initiative
+        from gaia.store.writer import normalize_initiative
 
-        lines = ["## Unread task notifications"]
-        for r in rows:
-            sid = r.get("session_id") or "-"
-            when = r.get("created_at") or "?"
-            lines.append(
-                f"- [{r['id']}] {r['task_name']} — {r['headline']} "
-                f"({when}) · resume: {sid}"
-            )
-        lines.append(
-            "Read one: `gaia notifications show <id>` · "
-            "resume: `claude --resume <session_id>` · clear: `gaia notifications ack <id>`"
-        )
-        return "\n".join(lines)
-    except Exception as exc:
-        logger.debug("build_task_notifications_block failed (non-fatal): %s", exc)
-        return ""
+        live = collected["live"]
+        group_order = collected["group_order"]
+        roots = collected["roots"]
+        unresolved = collected["unresolved"]
+        keys = {normalize_initiative(_display_name(e)) for e in live} - {None}
+        counts = count_pending_by_initiative(sorted(keys))
+        # The first command a newborn orchestrator tries: never the bare
+        # `gaia` token the trust guard rejects.
+        cli = _resolve_gaia_cli_path() or "gaia"
+        pointer = f"Ficha de un proyecto: {cli} context project <nombre>"
 
+        def label(e: dict) -> str:
+            name = _display_name(e)
+            count = counts.get(normalize_initiative(name), 0)
+            return f"{name} ({count})" if count else name
 
-def _resume_hint(scope: Optional[str], task_name: Optional[str]) -> str:
-    """The exact `gaia schedule resume` invocation that clears THIS suspension.
+        def title(ws: str) -> str:
+            root = roots.get(ws)
+            return f"### {ws} — {root}" if root else f"### {ws}"
 
-    Scope-specific, not offered as one interchangeable "<name>|--all" form: a
-    task-scope suspension clears only by NAME, a global (workspace-wide) one
-    only by `--all`. `resume_scheduled_tasks` (gaia.store.writer) looks the
-    row up by `task_id`, and a global suspension's `task_id` is NULL --
-    `resume <name>` finds no row to delete for it and returns
-    `{"status": "not_suspended"}`, leaving the notice standing. This SessionStart
-    block is the one channel a lapse cannot self-clear from, so the hint it
-    prints must work verbatim -- a wrong one trains the user to ignore it.
-    """
-    if scope == "task" and task_name:
-        return f"gaia schedule resume {task_name}"
-    return "gaia schedule resume --all"
+        def group(ws: str, members: list[dict], detail: str) -> str:
+            if detail == "groups" or len(members) > _LARGE_GROUP:
+                pending = [label(e) for e in members if label(e) != _display_name(e)]
+                line = f"{title(ws)}: {len(members)} projects"
+                return line + (f"; pending: {', '.join(pending)}" if pending else "")
+            if detail == "names":
+                return f"{title(ws)}\n{', '.join(label(e) for e in members)}"
+            return "\n".join([title(ws)] + [
+                f"- {label(e)}: {_one_line(e['desc'])}" if e["desc"] else f"- {label(e)}"
+                for e in members
+            ])
 
-
-def build_schedule_suspension_block(
-    workspace: Optional[str] = None,
-) -> str:
-    """Announce scheduled-task suspensions -- LIVE ones, and LAPSED ones louder.
-
-    Two things must never happen quietly, and this block is where both are made
-    audible at the one moment the user is guaranteed to be looking:
-
-      * A task stays switched off because everyone forgot. So every LIVE
-        suspension is announced with how long it has left.
-      * A task starts running again without anyone noticing. So a LAPSED
-        suspension -- deadline passed, tasks active again -- is announced FIRST
-        and marked, because it is the entry that changed what runs.
-
-    DETECT-ONLY, exactly like build_schedule_reconciliation_block. Reading a
-    suspension is what expires it (a comparison against now, no daemon), and
-    that read reactivates DESIRED state only: this hook does not install, does
-    not reactivate the machine scheduler, and does not sync. A lapse therefore
-    leaves the crontab exactly as the last consented `gaia schedule sync` left
-    it -- if that sync had removed the entry, the drift block will say so and
-    the user decides. A SessionStart hook cannot obtain T3 consent, so it may
-    only report.
-
-    The lapse notice is NOT self-clearing: it stands until an explicit `gaia
-    schedule resume` acknowledges it, the same contract task_notifications has
-    with `gaia notifications ack`. Emits "" when nothing is suspended
-    (zero-noise). Fail-safe: returns "" on any error.
-    """
-    try:
-        _pkg_root = str(Path(__file__).resolve().parents[3])
-        if _pkg_root not in sys.path:
-            sys.path.insert(0, _pkg_root)
-    except Exception:
-        pass
-
-    try:
-        from gaia.store.reader import list_schedule_suspensions
-    except Exception as exc:
-        logger.debug("schedule suspension import failed (non-fatal): %s", exc)
-        return ""
-
-    try:
-        ws = workspace or _read_workspace_identity()
-        rows = list_schedule_suspensions(workspace=ws)
-        if not rows:
-            return ""
-
-        lapsed = [s for s in rows if s.get("expired")]
-        live = [s for s in rows if not s.get("expired")]
-        lines: list[str] = []
-
-        if lapsed:
-            lines.append("## SUSPENSION LAPSED (running again)")
-            for s in lapsed:
-                who = s.get("task_name") or "all tasks"
-                resumed = ", ".join(s.get("resumed_names") or [])
-                what = (f"active again: {resumed}" if resumed else
-                        "nothing came back (still disabled, or held by another suspension)")
-                hint = _resume_hint(s.get("scope"), s.get("task_name"))
-                lines.append(
-                    f"- ! {who} — suspension expired {s.get('lapsed_ago')} ago "
-                    f"(deadline {s.get('until')}) — {what} — acknowledge: "
-                    f"`{hint}` (T0)"
+        def render(detail: str) -> str:
+            parts = [PROJECTS_HEADER]
+            for ws in group_order:
+                members = [e for e in live if e["ws"] == ws]
+                if members:
+                    parts.append(group(ws, members, detail))
+            if unresolved and detail != "groups":
+                parts.append(
+                    f"unresolved ({len(unresolved)}): {', '.join(unresolved)} "
+                    f"— no path on disk; 'gaia context get'"
                 )
-            lines.append(
-                "Nothing was reactivated by session start: the deadline simply "
-                "stopped applying. Verify the machine: `gaia schedule status`"
-            )
+            parts.append(pointer)
+            return "\n\n".join(parts)
 
-        if live:
-            if lapsed:
-                lines.append("")
-            lines.append("## Schedule suspended")
-            for s in live:
-                who = s.get("task_name") or "all tasks"
-                window = ("suspended indefinitely (no deadline)"
-                          if s.get("indefinite")
-                          else f"suspended {s.get('remaining')} more "
-                               f"(until {s.get('until')})")
-                reason = f" — {s['reason']}" if s.get("reason") else ""
-                hint = _resume_hint(s.get("scope"), s.get("task_name"))
-                lines.append(
-                    f"- {who} — {window}{reason} — lift early: `{hint}` (T0)"
-                )
-            lines.append("Inspect: `gaia schedule status`")
-
-        return "\n".join(lines)
+        for detail in ("lines", "names", "groups"):
+            text = render(detail)
+            if len(text) <= max_chars:
+                return text
+        return "\n\n".join([
+            PROJECTS_HEADER,
+            f"{len(live)} projects in {len(group_order)} workspaces; list them with "
+            f"`{cli} context get`",
+            pointer,
+        ])
     except Exception as exc:
-        logger.debug("build_schedule_suspension_block failed (non-fatal): %s", exc)
-        return ""
-
-
-def build_schedule_reconciliation_block(
-    workspace: Optional[str] = None,
-) -> str:
-    """DETECT-ONLY drift between desired scheduled tasks (DB) and this machine.
-
-    The consent boundary made visible: this block is READ-ONLY (T0) and
-    zero-noise. It compares the desired state in gaia.db against the LOCAL
-    scheduler for the current machine and, when they diverge, surfaces a compact
-    "N tasks not installed here -> run `gaia schedule sync`" line. It NEVER writes
-    the scheduler -- installing is `gaia schedule sync` (T3), which the user runs
-    after seeing this. A SessionStart hook cannot obtain T3 consent, so it must
-    only detect and advise, never materialize silently.
-
-    Emits "" when fully reconciled (and the daemon looks healthy), matching the
-    zero-noise contract of the notifications blocks. Fail-safe: returns "" on any
-    error so it can never block session start.
-    """
-    try:
-        _pkg_root = str(Path(__file__).resolve().parents[3])
-        if _pkg_root not in sys.path:
-            sys.path.insert(0, _pkg_root)
-    except Exception:
-        pass
-
-    try:
-        from gaia.schedulers import compute_plan
-    except Exception as exc:
-        logger.debug("schedule reconciliation import failed (non-fatal): %s", exc)
-        return ""
-
-    try:
-        ws = workspace or _read_workspace_identity()
-        plan = compute_plan(workspace=ws)
-        if not plan.available:
-            return ""  # no backend on this platform -> nothing to say
-
-        daemon_down = plan.daemon is not None and plan.daemon.running is False
-        if plan.in_sync and not daemon_down and not plan.invalid:
-            return ""  # zero-noise: everything reconciled
-
-        lines = [f"## Schedule drift on {plan.machine}"]
-        if plan.missing:
-            names = ", ".join(m["name"] for m in plan.missing)
-            lines.append(f"- {len(plan.missing)} not installed here: {names}")
-        if plan.drift:
-            names = ", ".join(d["name"] for d in plan.drift)
-            lines.append(f"- {len(plan.drift)} schedule drifted: {names}")
-        if plan.orphans:
-            lines.append(f"- {len(plan.orphans)} orphan entr(ies): {', '.join(plan.orphans)}")
-        if plan.disabled_present:
-            lines.append(
-                f"- {len(plan.disabled_present)} disabled but still installed: "
-                f"{', '.join(plan.disabled_present)}"
-            )
-        for iv in plan.invalid:
-            lines.append(f"- INVALID {iv['name']}: {iv['error']}")
-        if daemon_down:
-            lines.append(f"- scheduler daemon: {plan.daemon.detail}")
-        lines.append(
-            "Reconcile with `gaia schedule sync` (T3) · inspect: `gaia schedule status`"
-        )
-        return "\n".join(lines)
-    except Exception as exc:
-        logger.debug("build_schedule_reconciliation_block failed (non-fatal): %s", exc)
-        return ""
-
-
-_RECURRING_HEADER_RE = re.compile(r"(?m)^## (.+)$")
-
-
-def _demote_recurring_headers(text: str) -> str:
-    """Turn a sub-builder's own ``## `` header line(s) into a bold sub-label.
-
-    ``build_schedule_suspension_block``, ``build_schedule_reconciliation_block``
-    and ``build_task_notifications_block`` each keep their OWN standalone
-    ``## ...`` header for direct/unit use -- calling one alone (as their own
-    tests do) still returns a normal top-level block. ``build_recurring_work_block``
-    collapses all three (plus a lapsed suspension, which the suspension
-    builder can emit as a second embedded header) under ONE shared header, so
-    each sub-block's own header is demoted here to a bold label instead of
-    surviving as a second (or fourth) top-level ``##`` line.
-    """
-    return _RECURRING_HEADER_RE.sub(r"**\1**", text)
-
-
-def build_recurring_work_block(workspace: Optional[str] = None) -> str:
-    """Render "## Recurring work and what it left me": one shared header over
-    four independently-triggered notices about unattended scheduled work.
-
-    Collapses what used to be four separate top-level blocks -- schedule
-    drift, a lapsed suspension, live suspensions, and unread task
-    notifications -- under a single header. Only the header is shared: each
-    notice keeps its OWN trigger condition exactly as its own builder computes
-    it (see ``build_schedule_reconciliation_block``, ``build_schedule_suspension_block``,
-    ``build_task_notifications_block``), and this emits "" when every one of
-    them is empty -- the umbrella never appears on its own.
-
-    Order is severity, not build order: a LAPSED suspension leads -- it is the
-    one notice here that changed what actually RUNS (something restarted with
-    no one asking just now), so it must never be buried under quieter items.
-    Live suspensions follow (deliberate, already understood -- just a reminder
-    of how long they have left), then schedule drift (Gaia's desired state
-    disagreeing with this machine), then unread task notifications last
-    (purely informational -- whatever needed consent already resolved through
-    `claude --resume`).
-    """
-    try:
-        ws = workspace or _read_workspace_identity()
-        parts = [
-            build_schedule_suspension_block(ws),
-            build_schedule_reconciliation_block(ws),
-            build_task_notifications_block(ws),
-        ]
-        demoted = [_demote_recurring_headers(p) for p in parts if p]
-        if not demoted:
-            return ""
-        return "## Recurring work and what it left me\n\n" + "\n\n".join(demoted)
-    except Exception as exc:
-        logger.debug("build_recurring_work_block failed (non-fatal): %s", exc)
+        logger.debug("build_projects_section failed (non-fatal): %s", exc)
         return ""
 
 
@@ -1253,60 +854,48 @@ def build_schema_direction_block() -> str:
 # Assembler
 # ---------------------------------------------------------------------------
 
-def build_session_context() -> str:
-    """Top-level assembler. Concatenate non-empty blocks with blank lines.
+def _record_user_rows_injected(rows: list[dict]) -> None:
+    """Count one injection on each user row the block carried; best-effort."""
+    try:
+        from gaia.store.writer import record_memory_access
+    except ImportError:
+        return
+    for row in rows:
+        try:
+            record_memory_access(row["workspace"], row["name"], "injection")
+        except Exception:
+            logger.debug("user row injection telemetry failed (non-fatal)", exc_info=True)
 
-    Returns "" when every block is empty. Never raises.
+
+def build_session_context(
+    *, alarms: Sequence[str] = (), record_injection: bool = False,
+) -> str:
+    """Assemble the session birth block; "" when every part is empty. Never raises.
+
+    ``alarms`` are notices the host adapter produced before the block (a
+    database upgrade it just ran); they lead, with the schema-mismatch notice,
+    ahead of the four sections, and still ship alone if assembling the rest
+    fails. The project roster gets whatever
+    ``BIRTH_BUDGET`` leaves after everything else, because the user's rows
+    never shrink. Nothing is written unless ``record_injection`` is set, which
+    the session-start hook does and ``gaia session preview`` does not.
     """
     try:
-        blocks = [
-            # A schema mismatch comes first: while it stands, writes either
-            # fail on missing structure or are refused outright.
-            build_schema_direction_block(),
-            build_where_i_am_block(),
-            # What I can run here: the guard-verified CLI path plus tool
-            # presence. Split from Where I am (different freshness: a tool
-            # install or CLI rebuild can go stale mid-session while machine/
-            # workspace facts never do) but still emitted right after it --
-            # both are the operational-setup pair the orchestrator reads
-            # before anything project-specific.
-            build_capabilities_block(),
-            # Projects I can reach: the index of projects that have active
-            # project context (a project_identity contract), each as a name
-            # (plus a live-pending count when one exists) and on-disk path.
-            # Emitted immediately after so it reads as part of the
-            # project-context setup the orchestrator receives -- it lets a
-            # bare mention in memory (e.g. "AOS", "nfi") resolve to a path the
-            # orchestrator already holds, without spending a subagent. The
-            # per-surface Contract Index that used to follow this block was
-            # retired: it echoed agent_contract_permissions.can_read without
-            # ever gating what a dispatched agent could actually request
-            # (gaia context get-contract never checked it), so it enabled no
-            # orchestrator decision -- confirmed unused across a full working
-            # session (936 measured chars, zero reads).
-            build_projects_context_block(),
-            # Recurring work and what it left me: schedule drift, a lapsed
-            # suspension, live suspensions and unread task notifications,
-            # collapsed under one header (see build_recurring_work_block).
-            # Placed after the static project-context setup so the user sees
-            # what ran or changed unattended before anything project-specific.
-            build_recurring_work_block(),
-            # Workspace Memory is injected last so the orchestrator sees the
-            # operational state (environment, projects, recurring work)
-            # before the curated knowledge it should anchor against. Only the
-            # durable "What the user has established" anchors
-            # (class='anchor') are injected here now -- the transversal
-            # live-pending digest (class='thread') this used to call with no
-            # `sections` was retired: its per-project counts moved onto the
-            # Projects block above, right next to the name they were always
-            # about, so a pending worklist is reached by naming a project
-            # rather than pushed on every session start.
-            build_workspace_memory_block(sections=["anchor"]),
-        ]
-        non_empty = [b for b in blocks if b]
-        if not non_empty:
-            return ""
-        return "\n\n".join(non_empty)
+        from gaia.store.reader import user_anchor_rows
+
+        from ..context.user_sections import render_user_sections
+
+        user_rows = [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
+        prefix = [a for a in (*alarms, build_schema_direction_block()) if a]
+        environment = build_environment_section()
+        user = render_user_sections(user_rows)
+        fixed = [b for b in (*prefix, environment, user) if b]
+        roster_budget = BIRTH_BUDGET - sum(len(b) + 2 for b in fixed)
+        projects = build_projects_section(max(0, roster_budget))
+        text = "\n\n".join(b for b in (*prefix, projects, environment, user) if b)
+        if record_injection:
+            _record_user_rows_injected(user_rows)
+        return text
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)
-        return ""
+        return "\n\n".join(a for a in alarms if a)

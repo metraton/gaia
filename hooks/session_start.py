@@ -317,12 +317,11 @@ if __name__ == "__main__":
             except Exception as _scan_exc:
                 logger.warning("first scan could not start (non-fatal): %s", _scan_exc)
 
-        # Build the SessionStart manifest (Phase 4). Combines the Environment
-        # block, projects index, contract index, and workspace memory into
-        # a one-shot additionalContext payload (pending approvals are no longer
-        # surfaced). Fully fail-safe -- an empty manifest just
-        # means no hookSpecificOutput in the response, which Claude Code
-        # treats as "nothing to inject".
+        # The session birth block is assembled by the host-agnostic core
+        # (session_manifest.build_session_context); this hook only hands it
+        # the notices it produced above and delivers the result. Fully
+        # fail-safe -- an empty block just means no hookSpecificOutput, which
+        # Claude Code treats as "nothing to inject".
         #
         # source == "compact": Claude Code fires SessionStart with this
         # source right after compaction (matcherMetadata.values includes
@@ -338,14 +337,21 @@ if __name__ == "__main__":
         # redundant (already delivered at true session start) and heavier
         # than the lightweight refresh this moment calls for.
         source = event_data.get("source", "")
+        notices = {"## Database upgrade": upgrade_notice, "## Data home": data_home_notice}
+        shown = {title: text for title, text in notices.items() if text}
+        alarms = [f"{title}\n{text}" for title, text in shown.items()]
         additional_context = ""
         try:
             if source == "compact":
                 from modules.context.compact_context_builder import build_compact_context
-                additional_context = build_compact_context()
+                additional_context = "\n\n".join(
+                    b for b in (*alarms, build_compact_context()) if b
+                )
             else:
                 from modules.session.session_manifest import build_session_context
-                additional_context = build_session_context()
+                additional_context = build_session_context(
+                    alarms=alarms, record_injection=True,
+                )
         except Exception as _manifest_exc:
             logger.debug(
                 "build_session_context failed (non-fatal): %s", _manifest_exc
@@ -354,14 +360,8 @@ if __name__ == "__main__":
         response = {"session_type": "startup"}
         if setup_message:
             response["setup_message"] = setup_message
-        notices = {"## Database upgrade": upgrade_notice, "## Data home": data_home_notice}
-        shown = {title: text for title, text in notices.items() if text}
         if shown:
             response["systemMessage"] = "\n\n".join(shown.values())
-            sections = [f"{title}\n{text}" for title, text in shown.items()]
-            if additional_context:
-                sections.append(additional_context)
-            additional_context = "\n\n".join(sections)
         if additional_context:
             response["hookSpecificOutput"] = {
                 "hookEventName": "SessionStart",

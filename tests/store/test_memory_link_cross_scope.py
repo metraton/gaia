@@ -72,14 +72,14 @@ def _link(gaia, dst: str = "user_pref_old") -> subprocess.CompletedProcess:
 
 def test_a_user_row_supersedes_its_predecessor_in_another_workspace(gaia):
     """The cross-owner link is written, and the replaced row leaves the birth block and the kernel."""
-    from modules.context.kernel_builder import _executor_user_bodies
+    from gaia.store.reader import user_anchor_rows
 
     result = _link(gaia)
 
     assert result.returncode == 0, result.stdout + result.stderr
     birth = gaia("memory", "get-relevant", "--workspace", "me", "--sections", "anchor", "--json")
     injected = {item["name"] for item in json.loads(birth.stdout)["items"]}
-    kernel = {row["name"] for row in _executor_user_bodies("me", db_path=gaia.db)}
+    kernel = {row["name"] for row in user_anchor_rows(gaia.db)}
     assert "user_pref_new" in injected and "user_pref_old" not in injected
     assert "user_pref_new" in kernel and "user_pref_old" not in kernel
 
@@ -100,9 +100,8 @@ def test_story_walks_the_cross_owner_lineage_from_either_end(gaia):
 
 def test_retiring_the_old_rows_workspace_keeps_the_lineage(gaia):
     """Folding the old row's workspace into another carries the link's dst with the row, so it stays retired."""
-    from gaia.store.reader import build_memory_story
+    from gaia.store.reader import build_memory_story, user_anchor_rows
     from gaia.store.workspace_retire import apply_retire
-    from modules.context.kernel_builder import _executor_user_bodies
 
     assert _link(gaia).returncode == 0
     con = sqlite3.connect(str(gaia.db))
@@ -115,7 +114,7 @@ def test_retiring_the_old_rows_workspace_keeps_the_lineage(gaia):
     report = apply_retire("me", "ws", db_path=gaia.db)
 
     assert report["tables"]["memory_links"]["repoint"] == 1
-    kernel = {row["name"] for row in _executor_user_bodies("ws", db_path=gaia.db)}
+    kernel = {row["name"] for row in user_anchor_rows(gaia.db)}
     assert kernel == {"user_pref_new"}
     story = build_memory_story("_gaia_user", "user_pref_new", db_path=gaia.db)
     assert all(state["present"] for state in story["final_states"])

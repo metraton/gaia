@@ -2,15 +2,14 @@
 gaia session -- Inspect what a new session would receive at SessionStart.
 
 Subcommands:
-  session preview   Print build_session_context()'s output verbatim.
+  session preview   Print the session birth block verbatim.
 
-build_session_context() (hooks/modules/session/session_manifest.py) is a
-pure read-only function: its only caller in production is the SessionStart
-hook, so before this command existed the only way to see the effect of a
-change to it was to close and reopen a session. `preview` calls the same
-builder in-process, read-only, with no injection side effects (no session
-bookkeeping, no telemetry) -- it exists purely to shorten the edit/verify
-loop on the manifest builders.
+`preview` calls build_session_context() (hooks/modules/session/
+session_manifest.py), the same assembler the SessionStart hook delivers, in
+the current folder and without recording anything: the hook asks it to count
+the user rows' injection, the preview does not, so it writes nothing to the
+database. The notices only a real session start produces (a database upgrade
+it just ran) are absent from it.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ if str(_HOOKS_DIR) not in sys.path:
 
 
 def _cmd_preview(args) -> int:
-    """Handle `gaia session preview`: render the SessionStart manifest now."""
+    """Handle `gaia session preview`: print the birth block for this folder, writing nothing."""
     from modules.session.session_manifest import build_session_context
 
     text = build_session_context()
@@ -56,8 +55,11 @@ def register(subparsers):
         help="Inspect SessionStart injection content -- read-only",
         description=(
             "Inspect what a new session would receive at SessionStart.\n\n"
-            "preview: print build_session_context()'s output verbatim, with\n"
-            "  no injection side effects (no telemetry, no DB writes)."
+            "preview: print the session birth block a session opened in this\n"
+            "  folder would receive -- projects, environment, the user and their\n"
+            "  preferences. Writes nothing: no telemetry, no database change.\n"
+            "  Notices only a real session start produces (a database upgrade\n"
+            "  it just ran) are not shown."
         ),
     )
     # No `func=None` default here: an explicit default would shadow the
@@ -72,5 +74,5 @@ def register(subparsers):
 
     actions = session_parser.add_subparsers(dest="session_action", metavar="<action>")
 
-    preview_p = actions.add_parser("preview", help="Print the SessionStart manifest text")
+    preview_p = actions.add_parser("preview", help="Print the session birth block; writes nothing")
     preview_p.set_defaults(func=_cmd_preview)

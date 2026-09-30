@@ -232,6 +232,41 @@ def count_pending_by_initiative(
 
 
 # ---------------------------------------------------------------------------
+# memory reads -- who the user is
+# ---------------------------------------------------------------------------
+
+# Every workspace, not the caller's: user memory belongs to no workspace
+# (AC-11), and rows written before the _gaia_user sentinel existed still sit
+# under the workspace that wrote them until they are relocated.
+_USER_ANCHORS = (
+    "SELECT m.workspace, m.name, m.description, m.body "
+    "FROM memory m "
+    "WHERE m.type = 'user' AND m.class = 'anchor' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+)
+
+
+def user_anchor_rows(db_path: Path | None = None) -> list[dict]:
+    """The user's standing rows: live ``type='user'`` anchors no row supersedes.
+
+    The one selection behind both the session birth block and the dispatch
+    kernel, so the orchestrator and every subagent know the user by the same
+    rows. Returns ``[]`` on any DB error.
+    """
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(_USER_ANCHORS)]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # scheduled_tasks reads (OS-agnostic desired state)
 # ---------------------------------------------------------------------------
 #

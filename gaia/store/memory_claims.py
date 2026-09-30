@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import unicodedata
 
-MEMORY_CLAIM_KINDS = ("Hecho", "Preferencia", "Decisión", "Aprendizaje", "Pendiente", "Bug")
+PREFERENCE_KIND = "Preferencia"
+
+MEMORY_CLAIM_KINDS = ("Hecho", PREFERENCE_KIND, "Decisión", "Aprendizaje", "Pendiente", "Bug")
 
 
 def _fold(word: str) -> str:

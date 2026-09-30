@@ -6,7 +6,7 @@ Scan promotion -- stage 3 of the scan pipeline (discover -> VALIDATE -> promote)
 is the DECOUPLED third stage: it reads what scan already persisted in the
 ``projects`` table and PROMOTES the scan-owned facts up into the
 ``project_identity`` project-context contract, so the SessionStart projects
-block (``hooks/modules/session/session_manifest.py::build_projects_context_block``,
+block (``hooks/modules/session/session_manifest.py::build_projects_section``,
 which reads ``project_context_contracts WHERE contract_name='project_identity'``)
 reflects what was scanned -- without ever clobbering agent-authored enrichment.
 

@@ -10,7 +10,7 @@ the DB looks like afterwards.
 v50 (usar-la-telemetria-de-memoria-edad-sesgo-y-pesaje, task 4) splits a third
 axis, ``kernel``, off ``injection``: the dispatch kernel's own "How the user
 works" block (rendered by ``build_memory_block``, fired on EVERY subagent
-dispatch over a fixed ``type=user AND audience=executor`` row set) used to
+dispatch over the user's fixed set of anchor rows) used to
 share ``injection``'s columns and dominated that axis by construction. It has
 its own recipe (``test_kernel_memory_block_counts_the_rows_it_renders``) and
 its own dedicated cross-axis proof
@@ -341,6 +341,7 @@ BUMP_CALL_SITES: dict[str, tuple[str, ...]] = {
     ),
     "bin/cli/memory_story.py": ("story-text",),
     "hooks/modules/context/kernel_builder.py": ("kernel-memory-block",),
+    "hooks/modules/session/session_manifest.py": ("birth-block",),
 }
 
 
@@ -505,30 +506,48 @@ def test_surface_moves_exactly_the_counter_its_verdict_declares(surface, seeded)
 
 
 def test_kernel_memory_block_counts_the_rows_it_renders(seeded):
-    """Context assembly's one memory renderer: kernel axis, body-less name
-    and all -- never injection, the axis it shared before this split. Every
-    type=user/audience=executor row in the corpus renders together, so both
-    seeded rows of that shape move -- not only ``u_exec``."""
+    """The dispatch kernel's memory renderer: kernel axis, never injection,
+    the axis it shared before this split. Every user anchor renders together,
+    so both seeded anchors move; ``u_exec`` is a log row, is not rendered,
+    and so is never counted as shown."""
     from hooks.modules.context.kernel_builder import build_memory_block
 
     before = _counters(seeded["db"])
-    block = build_memory_block(WORKSPACE, db_path=seeded["db"])
+    block = build_memory_block(db_path=seeded["db"])
     after = _counters(seeded["db"])
 
-    assert "body of u_exec" in block
+    assert "body of a_anchor" in block
+    assert "body of u_exec" not in block
     assert _moved(before, after) == {
-        "u_exec": (0, 0, 1),
+        "a_anchor": (0, 0, 1),
         "u_kernel_and_digest": (0, 0, 1),
+    }
+
+
+def test_birth_block_counts_the_user_rows_it_carries_only_when_asked(seeded):
+    """The session birth block is an injection surface for the user's anchors:
+    the hook records it, and a preview (the default) moves nothing."""
+    from hooks.modules.session.session_manifest import build_session_context
+
+    before = _counters(seeded["db"])
+    build_session_context()
+    assert _moved(before, _counters(seeded["db"])) == {}
+
+    block = build_session_context(record_injection=True)
+
+    assert "body of a_anchor" in block
+    assert _moved(before, _counters(seeded["db"])) == {
+        "a_anchor": (1, 0, 0),
+        "u_kernel_and_digest": (1, 0, 0),
     }
 
 
 def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
     seeded,
 ):
-    """Gate 791 / AC-2, on ONE row both surfaces can reach: type=user AND
-    audience=executor (the kernel block's own query) with class=anchor so
-    get-relevant's anchor section -- which pins type=user rows to the top --
-    selects it too. A simulated subagent dispatch (the kernel's own memory
+    """Gate 791 / AC-2, on ONE row both surfaces can reach: a type=user
+    class=anchor row, which the kernel block and get-relevant's anchor section
+    -- which pins type=user rows to the top -- both select. A simulated subagent dispatch (the kernel's own memory
     block, the exact function SubagentStart renders) must move kernel_count
     ONLY. A session-context surface (get-relevant --sections anchor) over the
     SAME row must move injection_count ONLY. deliberate_count must move in
@@ -559,17 +578,17 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
     updated_at_before = _row_updated_at()
     history_before = _history_count()
 
-    # 1) Simulate a subagent dispatch: the kernel block. Every
-    # type=user/audience=executor row renders together, so `u_exec` (the
-    # OTHER seeded row of that shape) moves alongside `row_name` -- both on
-    # the kernel axis, neither on injection or deliberate.
+    # 1) Simulate a subagent dispatch: the kernel block. Every user anchor
+    # renders together, so `a_anchor` (the OTHER seeded anchor) moves
+    # alongside `row_name` -- both on the kernel axis, neither on injection
+    # or deliberate.
     before_dispatch = _counters(seeded["db"])
-    block = build_memory_block(WORKSPACE, db_path=seeded["db"])
+    block = build_memory_block(db_path=seeded["db"])
     after_dispatch = _counters(seeded["db"])
     assert f"body of {row_name}" in block
     assert _moved(before_dispatch, after_dispatch) == {
         row_name: (0, 0, 1),
-        "u_exec": (0, 0, 1),
+        "a_anchor": (0, 0, 1),
     }
 
     # 2) A real session-context surface, over the SAME row. The other seeded
@@ -759,6 +778,6 @@ def test_every_bump_call_site_belongs_to_a_classified_surface():
 def test_declared_surfaces_cover_every_seeded_row_once():
     """Every seeded row is reached by some surface, so none is dead weight."""
     reached = {row for surface in SURFACES for row in surface.rows}
-    reached.add("u_exec")  # test_kernel_memory_block_counts_the_rows_it_renders
+    reached.add("u_exec")  # the log row test_kernel_memory_block_counts_the_rows_it_renders shows is never counted
     reached.update(s.name for s in SEEDS if s.name.startswith("w_"))
     assert {s.name for s in SEEDS} == reached

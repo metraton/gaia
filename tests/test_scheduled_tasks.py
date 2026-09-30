@@ -664,35 +664,24 @@ def test_reconcile_separates_suspended_from_disabled(db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _manifest(monkeypatch, db):
+    """The session manifest on this test's database, with no scheduler backend
+    on the machine so only suspensions (never host cron state) can speak."""
     import importlib
+    from gaia.schedulers.cron import CronBackend
     monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
-    mod = importlib.import_module("hooks.modules.session.session_manifest")
-    monkeypatch.setattr(mod, "_read_workspace_identity", lambda: "me")
-    return mod
+    monkeypatch.setattr(CronBackend, "available", lambda self: False)
+    return importlib.import_module("hooks.modules.session.session_manifest")
 
 
-def test_session_block_is_silent_when_nothing_is_suspended(db, monkeypatch):
+def test_recurring_work_line_is_silent_when_nothing_is_pending(db, monkeypatch):
     mod = _manifest(monkeypatch, db)
     _register(db)
-    assert mod.build_schedule_suspension_block() == ""
+    assert mod._recurring_work_line("me") == ""
 
 
-def test_session_block_announces_a_live_suspension_with_time_left(db, monkeypatch):
-    from gaia.store import writer
-    mod = _manifest(monkeypatch, db)
-    _register(db)
-    writer.suspend_scheduled_tasks(name=None, until=_future(hours=8),
-                                   reason="debugging", workspace="me", db_path=db)
-    out = mod.build_schedule_suspension_block()
-    assert "## Schedule suspended" in out
-    assert "all tasks" in out
-    assert "7h 59m more" in out, f"must state the time left. got:\n{out}"
-    assert "debugging" in out
-    assert "LAPSED" not in out
-
-
-def test_session_block_announces_a_lapse_more_prominently(db, monkeypatch):
-    """A lapse means something is running again -- it leads, and it is marked."""
+def test_recurring_work_line_announces_a_lapse_and_points_at_status(db, monkeypatch):
+    """A lapse means something is running again -- the line says so, loudly,
+    and names where the per-task detail and the resume command live."""
     from gaia.store import writer
     mod = _manifest(monkeypatch, db)
     _register(db, name="a")
@@ -701,17 +690,14 @@ def test_session_block_announces_a_lapse_more_prominently(db, monkeypatch):
                                    workspace="me", db_path=db)
     writer.suspend_scheduled_tasks(name="b", until=_future(hours=5),
                                    workspace="me", db_path=db)
-    out = mod.build_schedule_suspension_block()
+    out = mod._recurring_work_line("me")
 
-    lapsed_at = out.index("SUSPENSION LAPSED")
-    live_at = out.index("## Schedule suspended")
-    assert lapsed_at < live_at, f"the lapse must lead. got:\n{out}"
-    assert "- ! a — suspension expired 30m ago" in out
-    assert "active again: a" in out
-    assert "gaia schedule resume" in out
+    assert "\n" not in out, f"recurring work is ONE line. got:\n{out}"
+    assert out.index("LAPSED") < out.index("1 suspended"), out
+    assert "`gaia schedule status`" in out
 
 
-def test_session_block_never_touches_the_scheduler(db, monkeypatch):
+def test_recurring_work_line_never_touches_the_scheduler(db, monkeypatch):
     """The hard constraint: detect and advise, never install/reactivate/sync."""
     from gaia.schedulers.cron import CronBackend
     from gaia.store import writer
@@ -726,70 +712,28 @@ def test_session_block_never_touches_the_scheduler(db, monkeypatch):
     monkeypatch.setattr(CronBackend, "_write_crontab",
                         lambda *a, **k: calls.append("write"))
 
-    out = mod.build_schedule_suspension_block()
+    out = mod._recurring_work_line("me")
     assert "LAPSED" in out
     assert calls == [], f"the hook must not write the scheduler, called: {calls}"
 
 
-# ---------------------------------------------------------------------------
-# The resume hint must match the suspension's SCOPE -- a task-scope
-# suspension clears only by name, a global one only by `--all`. Printing the
-# wrong form is not merely cosmetic: `resume <name>` on a global suspension
-# returns `not_suspended` and leaves the notice standing (measured live).
-# ---------------------------------------------------------------------------
-
-def test_session_block_lapse_hint_matches_task_scope(db, monkeypatch):
-    from gaia.store import writer
-    mod = _manifest(monkeypatch, db)
-    _register(db, name="a")
-    writer.suspend_scheduled_tasks(name="a", until=_past(minutes=5),
-                                   workspace="me", db_path=db)
-    out = mod.build_schedule_suspension_block()
-    assert "acknowledge: `gaia schedule resume a` (T0)" in out
-    assert "gaia schedule resume --all" not in out
-
-
-def test_session_block_lapse_hint_matches_global_scope(db, monkeypatch):
+def test_acknowledging_a_lapse_clears_the_line(db, monkeypatch, capsys):
+    """A lapse does not self-clear: the resume command `status` prints is the
+    only way to silence the line, so it must work and it must silence it."""
     from gaia.store import writer
     mod = _manifest(monkeypatch, db)
     _register(db, name="a")
     writer.suspend_scheduled_tasks(name=None, until=_past(minutes=5),
                                    workspace="me", db_path=db)
-    out = mod.build_schedule_suspension_block()
-    assert "acknowledge: `gaia schedule resume --all` (T0)" in out
-    assert "gaia schedule resume a`" not in out
+    assert "LAPSED" in mod._recurring_work_line("me")
 
-
-def test_session_block_live_suspension_hint_matches_scope(db, monkeypatch):
-    """The not-yet-lapsed footer ("lift early") must be scope-correct too."""
-    from gaia.store import writer
-    mod = _manifest(monkeypatch, db)
-    _register(db, name="a")
-    writer.suspend_scheduled_tasks(name="a", until=_future(hours=1),
-                                   workspace="me", db_path=db)
-    out = mod.build_schedule_suspension_block()
-    assert "lift early: `gaia schedule resume a` (T0)" in out
-    assert "gaia schedule resume --all" not in out
-
-
-def test_session_block_global_lapse_hint_actually_clears_it(db, monkeypatch, capsys):
-    """The printed hint must work verbatim: it is the only channel that
-    acknowledges a lapse, which does not self-clear."""
-    from gaia.store import writer
-    mod = _manifest(monkeypatch, db)
-    _register(db, name="a")
-    writer.suspend_scheduled_tasks(name=None, until=_past(minutes=5),
-                                   workspace="me", db_path=db)
-    assert "gaia schedule resume --all" in mod.build_schedule_suspension_block()
-
-    monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
     cli, parser = _parser()
     args = parser.parse_args(["schedule", "resume", "--all",
                               "--workspace", "me", "--json"])
     assert cli.cmd_schedule(args) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "ok"
 
-    assert mod.build_schedule_suspension_block() == ""
+    assert mod._recurring_work_line("me") == ""
 
 
 # ---------------------------------------------------------------------------
