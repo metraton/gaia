@@ -321,13 +321,15 @@ def _recurring_work_line(workspace: Optional[str]) -> str:
     """One line naming the recurring work that needs the user, or "" when nothing does.
 
     A lapsed suspension leads: it is the one item that changed what runs.
-    Reading a suspension evaluates its deadline against now and writes
-    nothing; the scheduler plan only compares desired state with this
-    machine. The detail, and the exact resume command per scope, live in
-    `gaia schedule status` and `gaia notifications list`.
+    Reading a suspension or a notification evaluates its due time against now
+    and writes nothing; the scheduler plan only compares desired state with
+    this machine. Each due reminder or routine is named with its pointer, so
+    the session can act on it; the detail lives in `gaia schedule status` and
+    `gaia notifications list`.
     """
+    from gaia import notifications_time
     from gaia.schedulers import compute_plan
-    from gaia.store.reader import count_unread_notifications, list_schedule_suspensions
+    from gaia.store.reader import list_schedule_suspensions, list_unread_notifications
 
     suspensions = list_schedule_suspensions(workspace=workspace)
     lapsed = sum(1 for s in suspensions if s.get("expired"))
@@ -350,10 +352,15 @@ def _recurring_work_line(workspace: Optional[str]) -> str:
         if plan.daemon is not None and plan.daemon.running is False:
             items.append("scheduler daemon down")
     verbs = ["`gaia schedule status`"] if items else []
-    unread = count_unread_notifications(workspace=workspace)
-    if unread:
-        items.append(f"{unread} unread task report(s)")
-        verbs.append("`gaia notifications list`")
+    due = list_unread_notifications(workspace=workspace)
+    reports = [row for row in due if row["kind"] == "report"]
+    if reports:
+        items.append(f"{len(reports)} unread task report(s)")
+        verbs.append("`gaia notifications list --unread`")
+    reminders = [row for row in due if row["kind"] != "report"]
+    if reminders:
+        items.extend(f"{notifications_time.summary(row)} is due" for row in reminders)
+        verbs.append("`gaia notifications ack|snooze|cancel <id>`")
     if not items:
         return ""
     return f"- Recurring work pending: {', '.join(items)} — {', '.join(verbs)}"

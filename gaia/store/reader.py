@@ -49,19 +49,45 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
-# task_notifications reads (headless scheduled-task reports)
+# task_notifications reads (reports, reminders, routines)
 # ---------------------------------------------------------------------------
 #
-# Read-side complement to the writer's add/ack API. Used by the `gaia
-# notifications list|show` CLI and by the hooks (SessionStart list + per-prompt
-# unread counter). All read-only (T0). ``workspace=None`` means "all workspaces"
-# for the count/list helpers; the CLI scopes to the active workspace by default.
+# Used by the `gaia notifications list|show` CLI and by the hooks (SessionStart
+# line + per-prompt counter). "Unread" here means open AND due now: due-ness is
+# evaluated against the clock on every read and nothing is written. A scoped
+# read includes the global (NULL-workspace) rows; ``workspace=None`` means all.
+
+_OPEN = (
+    "((kind = 'report' AND unread = 1) OR (kind <> 'report' AND closed_at IS NULL))"
+)
+
+
+def notification_scope(con: sqlite3.Connection, workspace: str | None) -> tuple[str, list]:
+    """SQL ``AND`` clause and params limiting to ``workspace``, its aliases and global rows."""
+    if workspace is None:
+        return "", []
+    scope = workspace_scope(con, workspace)
+    marks = ",".join("?" * len(scope))
+    return f" AND (workspace IN ({marks}) OR workspace IS NULL)", scope
+
+
+def _due_rows(con: sqlite3.Connection, select: str, workspace: str | None,
+              tail: str = "", tail_params: tuple = ()) -> list:
+    from gaia import notifications_time as clock
+
+    scope_sql, scope_params = notification_scope(con, workspace)
+    return con.execute(
+        f"{select} FROM task_notifications WHERE {_OPEN} "
+        f"AND (due_at IS NULL OR due_at <= ?){scope_sql}{tail}",
+        (clock.to_iso(clock.now_utc()), *scope_params, *tail_params),
+    ).fetchall()
+
 
 def count_unread_notifications(
     workspace: str | None = None,
     db_path: Path | None = None,
 ) -> int:
-    """Return the number of unread task-notifications, optionally scoped.
+    """Return the number of notifications open and due now, optionally scoped.
 
     Fail-soft: returns 0 on any query/connection error so the per-prompt hook
     counter never breaks the pipeline.
@@ -71,16 +97,8 @@ def count_unread_notifications(
     except Exception:
         return 0
     try:
-        if workspace is None:
-            row = con.execute(
-                "SELECT COUNT(*) FROM task_notifications WHERE unread = 1"
-            ).fetchone()
-        else:
-            row = con.execute(
-                "SELECT COUNT(*) FROM task_notifications WHERE unread = 1 AND workspace = ?",
-                (workspace,),
-            ).fetchone()
-        return int(row[0]) if row else 0
+        rows = _due_rows(con, "SELECT COUNT(*)", workspace)
+        return int(rows[0][0]) if rows else 0
     except Exception:
         return 0
     finally:
@@ -92,28 +110,44 @@ def list_unread_notifications(
     limit: int = 50,
     db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Return unread task-notifications, newest first, as plain dicts.
+    """Return notifications open and due now, newest first, as plain dicts.
 
-    Each dict carries: id, workspace, task_name, headline, body, session_id,
-    created_at, unread, acked_at. Fail-soft: returns [] on any error.
+    Each dict carries every task_notifications column. Fail-soft: returns []
+    on any error.
     """
     try:
         con = _connect(db_path)
     except Exception:
         return []
     try:
-        if workspace is None:
-            rows = con.execute(
-                "SELECT * FROM task_notifications WHERE unread = 1 "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM task_notifications WHERE unread = 1 AND workspace = ? "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (workspace, limit),
-            ).fetchall()
+        rows = _due_rows(
+            con, "SELECT *", workspace,
+            " ORDER BY COALESCE(due_at, created_at) DESC, id DESC LIMIT ?", (limit,),
+        )
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def list_upcoming_notifications(
+    workspace: str | None = None,
+    limit: int = 50,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return open reminders and routines, soonest due first, whether due yet or not."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        scope_sql, scope_params = notification_scope(con, workspace)
+        rows = con.execute(
+            f"SELECT * FROM task_notifications WHERE kind <> 'report' AND closed_at IS NULL"
+            f"{scope_sql} ORDER BY due_at IS NOT NULL, due_at, id LIMIT ?",
+            (*scope_params, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         return []

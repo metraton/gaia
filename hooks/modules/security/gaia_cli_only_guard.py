@@ -593,6 +593,12 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("task", "gate", "reverify"),
     ("task", "set-status"),
     ("notifications", "ack"),
+    # "Remind me tomorrow at 4" is the user's own bookkeeping, recorded where it
+    # is said; each shape is bounded in _validate_orchestrator_write so a report
+    # (a task's voice) or a bulk change cannot ride behind it.
+    ("notifications", "add"),
+    ("notifications", "snooze"),
+    ("notifications", "cancel"),
     ("memory", "add"),
     ("memory", "append"),
     ("memory", "reclassify"),
@@ -1143,6 +1149,58 @@ def _has_value(args: Tuple[str, ...], flag: str) -> bool:
     return False
 
 
+_REMINDER_ADD_FLAGS = frozenset({
+    "--kind", "--headline", "--body", "--at", "--cron", "--every",
+    "--skill", "--memory", "--project", "--workspace", "--json",
+})
+_REMINDER_SCHEDULE_FLAGS = {"reminder": {"--at"}, "routine": {"--cron", "--every"}}
+
+
+def _single_valued_flags(args: Tuple[str, ...]) -> Optional[Dict[str, str]]:
+    """Return ``{flag: value}`` when every token is a flag given once, else None.
+
+    A flag takes one value (``--f v`` or ``--f=v``); only ``--json`` takes none.
+    A positional or a repeated flag voids the shape.
+    """
+    flags: Dict[str, str] = {}
+    i = 0
+    while i < len(args):
+        name, eq, value = args[i].partition("=")
+        if not name.startswith("--") or name in flags:
+            return None
+        if name == "--json" and not eq:
+            flags[name] = ""
+            i += 1
+            continue
+        if not eq:
+            if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                return None
+            value = args[i + 1]
+            i += 1
+        flags[name] = value
+        i += 1
+    return flags
+
+
+def _is_bounded_reminder_add(args: Tuple[str, ...]) -> bool:
+    flags = _single_valued_flags(args)
+    if flags is None or not set(flags) <= _REMINDER_ADD_FLAGS or "--headline" not in flags:
+        return False
+    schedule = set(flags) & {"--at", "--cron", "--every"}
+    allowed = _REMINDER_SCHEDULE_FLAGS.get(flags.get("--kind", ""), set())
+    return len(schedule) == 1 and schedule <= allowed
+
+
+def _is_bounded_single_id(args: Tuple[str, ...], allowed: FrozenSet[str],
+                          required: FrozenSet[str] = frozenset()) -> bool:
+    if not args or not args[0].isdigit():
+        return False
+    flags = _single_valued_flags(args[1:])
+    if flags is None or not set(flags) <= allowed | {"--json"}:
+        return False
+    return not required or len(set(flags) & required) == 1
+
+
 def _validate_orchestrator_write(
     candidate: Tuple[str, ...], phrase: Tuple[str, ...]
 ) -> Optional[str]:
@@ -1237,6 +1295,13 @@ def _validate_orchestrator_write(
         )
     elif phrase == ("notifications", "ack"):
         valid = (len(args) == 1 and (args[0].isdigit() or args[0] == "--all"))
+    elif phrase == ("notifications", "add"):
+        valid = _is_bounded_reminder_add(args)
+    elif phrase == ("notifications", "snooze"):
+        until = frozenset({"--for", "--until"})
+        valid = _is_bounded_single_id(args, until, required=until)
+    elif phrase == ("notifications", "cancel"):
+        valid = _is_bounded_single_id(args, frozenset())
     else:
         # Memory's curator verbs, the two `scan` spellings and `paths` retain
         # their own mature CLI validation -- there is no coordination-shaped

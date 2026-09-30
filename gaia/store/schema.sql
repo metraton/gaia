@@ -1279,29 +1279,42 @@ CREATE INDEX IF NOT EXISTS idx_harness_events_workspace_ts ON harness_events(wor
 CREATE INDEX IF NOT EXISTS idx_harness_events_type ON harness_events(type);
 
 -- ---------------------------------------------------------------------------
--- task_notifications: reports a headless scheduled task leaves for the user.
+-- task_notifications: what Gaia has to tell the user -- a report, a reminder or a routine.
 -- ---------------------------------------------------------------------------
--- A headless scheduled task (see the scheduled-task skill) runs unattended and
--- cannot ask the user anything mid-run. When it finishes it writes ONE row here
--- with a generic, PII-free summary of what it did plus any approval_ids it had
--- to accumulate. The row carries the resumable Claude session_id so the user
--- can `claude --resume <session_id>` on demand to grant the pending T3s.
+-- A report is what a task or agent left behind; it is open while `unread` = 1.
+-- A reminder (once) or a routine (recurring) is open while `closed_at` IS NULL
+-- and always keeps `unread` = 0, so code older than v62, which knows this table
+-- only as an unread inbox, never counts, lists as unread or acknowledges one.
 --
--- Distinct from harness_events (append-only audit mirror, no mutable state):
--- these rows carry a MUTABLE `unread` flag that `gaia notifications ack` clears,
--- because the whole point is a lightweight unread inbox surfaced at SessionStart
--- and as a per-prompt counter. Not curated memory, so -- like harness_events --
--- it is written without an agent_permissions gate.
+-- A row is DUE when it is open and `due_at` is NULL or not after now. That is
+-- evaluated at read time, never by a waking process: reading writes nothing,
+-- and `gaia notifications ack|snooze|cancel` are the only transitions. `ack`
+-- closes a reminder for good and moves a routine's `due_at` to its first
+-- occurrence after now, so missed occurrences collapse into one.
+--
+-- A NULL `workspace` is global: every workspace's scoped read includes it.
+-- `due_at` is a UTC instant; `recurrence` is a routine's JSON calendar|interval
+-- spec; `pointer_workspace` locates a memory or project pointer. The body is
+-- generic, never PII. Not curated memory, so -- like harness_events -- it is
+-- written without an agent_permissions gate.
 CREATE TABLE IF NOT EXISTS task_notifications (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    workspace  TEXT,                      -- workspace name; NULL for global
-    task_name  TEXT NOT NULL,             -- name of the scheduled task that reported
-    headline   TEXT NOT NULL,             -- short one-line summary (the title)
-    body       TEXT,                      -- full detail message (generic, no PII)
-    session_id TEXT,                      -- resumable Claude session id (claude --resume)
+    workspace  TEXT,
+    task_name  TEXT NOT NULL,
+    headline   TEXT NOT NULL,
+    body       TEXT,
+    session_id TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    unread     INTEGER NOT NULL DEFAULT 1, -- 1 = not yet acknowledged (BOOLEAN)
-    acked_at   TEXT                       -- ISO8601 when marked seen; NULL while unread
+    unread     INTEGER NOT NULL DEFAULT 1,
+    acked_at   TEXT,
+    kind       TEXT NOT NULL DEFAULT 'report'
+               CHECK (kind IN ('report', 'reminder', 'routine')),
+    due_at     TEXT,
+    recurrence TEXT,
+    pointer_kind TEXT CHECK (pointer_kind IN ('skill', 'memory', 'project')),
+    pointer_ref  TEXT,
+    pointer_workspace TEXT,
+    closed_at  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_notifications_unread ON task_notifications(unread, created_at DESC);

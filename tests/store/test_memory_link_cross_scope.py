@@ -136,9 +136,8 @@ def test_a_link_to_a_row_that_does_not_exist_is_still_refused(gaia):
 def test_the_schema_change_keeps_older_installations_writing(tmp_path):
     """The migration is declared backward and the shipped chain does not raise the minimum writer version."""
     import migration_guard
-    from cli.doctor import EXPECTED_SCHEMA_VERSION
 
-    current = EXPECTED_SCHEMA_VERSION
+    current = 61
     migration = _REPO / "scripts" / "migrations" / f"v{current - 1}_to_v{current}.sql"
     assert "dst_workspace" in migration.read_text(encoding="utf-8")
     assert not migration_guard.is_breaking(migration.read_text(encoding="utf-8"))

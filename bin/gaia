@@ -307,7 +307,9 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
                  steer the plan without judging or authoring it: the planner
                  proposes and applies a change, a verifier records verdicts.
   task           set-status (no --override) | gate reverify
-  notifications  ack
+  notifications  ack | add | snooze | cancel
+                 add is a reminder or routine only (--at, --cron or --every);
+                 snooze and cancel take ONE id.
   approvals      reject | revoke
                  withdraw ONE approval by id -- both only take back consent
                  Gaia issued. Granting and sweeping stay outside this lane.

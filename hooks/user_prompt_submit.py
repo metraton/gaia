@@ -45,17 +45,15 @@ def _extract_user_prompt(raw_input: str) -> str:
 
 
 def _build_notifications_counter() -> str:
-    """Return a one-line unread-notifications counter, or "" when there are none.
+    """Return a one-line counter of notifications due now, or "" when there are none.
 
-    Deterministic and cheap (one COUNT query), mirroring the Surface Routing
-    Recommendation's zero-cost-when-empty contract: if there are no unread
-    headless-task notifications this injects NOTHING (zero tokens). When there
-    are, it injects a single line so the orchestrator can mention it; the full
-    list lands at SessionStart and detail is on-demand via `gaia notifications`.
+    Deterministic and cheap (one COUNT query, no write), mirroring the Surface
+    Routing Recommendation's zero-cost-when-empty contract: with nothing due
+    this injects NOTHING (zero tokens). A reminder whose hour passes during a
+    session shows here on the next prompt.
 
-    Scoped to the current workspace (matching how `gaia notifications add`
-    stores the ``workspace`` column), falling back to all workspaces when the
-    workspace cannot be resolved. Never raises -- advisory only.
+    Scoped to the current workspace plus the global rows, falling back to all
+    workspaces when the workspace cannot be resolved. Never raises -- advisory only.
     """
     try:
         pkg_root = str(Path(__file__).resolve().parent.parent)
@@ -70,11 +68,8 @@ def _build_notifications_counter() -> str:
         n = count_unread_notifications(ws)
         if not n:
             return ""
-        noun = "task notification" if n == 1 else "task notifications"
-        return (
-            f"\U0001F514 {n} {noun} sin ver "
-            f"(`gaia notifications list --unread` para verlas)"
-        )
+        noun = "notification" if n == 1 else "notifications"
+        return f"\U0001F514 {n} {noun} due (`gaia notifications list --unread` to see them)"
     except Exception as e:
         logger.warning("notifications counter failed (advisory, skipping): %s", e)
         return ""

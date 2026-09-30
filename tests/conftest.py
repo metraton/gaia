@@ -154,6 +154,7 @@ LAYER1_EXCLUDED = (
     "tests/layer3_e2e",
     "tests/integration/test_opencode_protected_edit_bootstrap.py"
     "::test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge",
+    "tests/test_notifications_old_install.py",
     *NIGHTLY_ONLY,
 )
 
