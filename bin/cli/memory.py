@@ -587,25 +587,44 @@ def _resolve_workspace(explicit: str | None) -> str:
     return cli_workspace(explicit)
 
 
+class AmbiguousSlugError(Exception):
+    """A slug held by project rows in several workspaces other than the caller's."""
+
+    def __init__(self, name: str, workspaces: list[str]):
+        super().__init__(
+            f"memory '{name}' is a project row in workspaces "
+            f"{', '.join(workspaces)}; name one with --workspace"
+        )
+        self.workspaces = workspaces
+
+
 def _workspace_holding(workspace: str, name: str, *,
                        include_deleted: bool = False) -> str:
     """Workspace that stores the row ``name`` for a by-name verb.
 
-    A type=user row lives in ``_gaia_user`` and a host-scoped one in
-    ``_gaia_host``, whichever workspace the caller resolved, so the caller's
-    workspace is tried first and the two sentinels only on a miss. Only live
-    rows count unless ``include_deleted`` (a hard delete reaches a
-    tombstone). Returns ``workspace`` when no row is found anywhere (the verb
-    then reports its own not-found) or when the store cannot be read.
+    Tried in order: the caller's workspace, the ``_gaia_user`` and
+    ``_gaia_host`` sentinels, then any workspace holding ``name`` as a row of
+    a project, since a project's memory follows the project rather than the
+    workspace that wrote it. A row with no project is never reached from
+    another workspace. Only live rows count unless ``include_deleted`` (a hard
+    delete reaches a tombstone). Returns ``workspace`` when no row is found
+    (the verb reports its own not-found) or when the store cannot be read.
+
+    Raises AmbiguousSlugError when project rows in more than one other
+    workspace share ``name``: picking one would guess which project was meant.
     """
     try:
+        from gaia.store.reader import project_row_workspaces
         from gaia.store.writer import get_memory, HOST_WORKSPACE, USER_WORKSPACE
         for candidate in dict.fromkeys((workspace, USER_WORKSPACE, HOST_WORKSPACE)):
             if get_memory(candidate, name, include_deleted=include_deleted) is not None:
                 return candidate
+        holders = project_row_workspaces(name, include_deleted=include_deleted)
     except Exception:
-        pass
-    return workspace
+        return workspace
+    if len(holders) > 1:
+        raise AmbiguousSlugError(name, holders)
+    return holders[0] if holders else workspace
 
 
 # ---------------------------------------------------------------------------
@@ -2558,15 +2577,15 @@ def _cmd_curated_show(args) -> int:
     it went looking for this row.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    workspace = _workspace_holding(
+        _resolve_workspace(getattr(args, "workspace", None)), name,
+    )
     want_links = getattr(args, "links", False)
     want_history = getattr(args, "history", False)
 
     try:
-        from gaia.store.writer import (
-            get_memory, record_memory_access, HOST_WORKSPACE, USER_WORKSPACE,
-        )
+        from gaia.store.writer import get_memory, record_memory_access
         from gaia.store.reader import (
             get_memory_class_status, memory_links_for, memory_history_for,
         )
@@ -2574,23 +2593,6 @@ def _cmd_curated_show(args) -> int:
         return _err(f"gaia.store not importable: {exc}", as_json)
 
     row = get_memory(workspace, name)
-    # A user row (type=user) has no workspace either: same one-probe fallback
-    # to its sentinel as the host-scoped row below.
-    if row is None and workspace != USER_WORKSPACE:
-        row = get_memory(USER_WORKSPACE, name)
-        if row is not None:
-            workspace = USER_WORKSPACE
-    # (workspace, name) is the PK -- a slug is not resolved by name alone. A
-    # host-scoped row now lives under HOST_WORKSPACE regardless of the caller's
-    # own vantage, so a miss under the resolved workspace falls back to the
-    # sentinel ONCE before reporting not-found. This is the minimal change:
-    # no initiative lookup, no ambiguity resolution -- one extra PK probe,
-    # tried only on a miss, so an unrelated slug that happens to collide
-    # between two workspaces still resolves to the caller's own row first.
-    if row is None and workspace != HOST_WORKSPACE:
-        row = get_memory(HOST_WORKSPACE, name)
-        if row is not None:
-            workspace = HOST_WORKSPACE
     if row is None:
         return _err(
             f"memory '{name}' not found in workspace '{workspace}'",
@@ -3318,7 +3320,13 @@ def cmd_memory(args) -> int:
         else:
             print("Usage: gaia memory <search|stats|show|conflicts>", file=sys.stderr)
         return 0
-    return func(args) or 0
+    try:
+        return func(args) or 0
+    except AmbiguousSlugError as exc:
+        return _err_structured(
+            str(exc), getattr(args, "json", False),
+            code="ambiguous_slug", workspaces=exc.workspaces,
+        )
 
 
 def register(subparsers):

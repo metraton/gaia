@@ -276,6 +276,40 @@ def _rows_of_projects(select: str, keys: list[str], db_path: Path | None) -> lis
         con.close()
 
 
+def project_row_workspaces(
+    name: str,
+    *,
+    include_deleted: bool = False,
+    db_path: Path | None = None,
+) -> list[str]:
+    """Sorted workspaces holding a row ``name`` that belongs to a project.
+
+    Membership is ``canonical_project_key`` of the row's ``project_ref`` and
+    ``initiative``, as in :func:`pending_threads_by_project`; a row with no
+    project is its workspace's alone and is never returned. Tombstoned rows
+    count only with ``include_deleted``. ``[]`` on any DB error.
+    """
+    try:
+        from gaia.store.writer import canonical_project_key
+        con = _connect(db_path)
+    except Exception:
+        return []
+    live = "" if include_deleted else " AND deleted_at IS NULL"
+    try:
+        rows = con.execute(
+            f"SELECT workspace, project_ref, initiative FROM memory WHERE name = ?{live}",
+            (name,),
+        ).fetchall()
+        return sorted({
+            r["workspace"] for r in rows
+            if canonical_project_key(r["project_ref"], r["initiative"])
+        })
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 def count_pending_by_initiative(
     initiatives: list[str],
     db_path: Path | None = None,
