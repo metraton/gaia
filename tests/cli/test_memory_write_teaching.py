@@ -128,15 +128,20 @@ def test_a_user_preference_is_asked_whether_it_would_hold_if_gaia_worked_perfect
     """The perfect-Gaia question follows a user preference and not a user fact."""
     preference = _add(
         gaia, "--name", "user_pref_x", "--type", "user",
-        "--description", "Preferencia: respuestas breves.", "--body", "Prefiere respuestas breves.",
+        "--description", "Preference: short answers.", "--body", "Prefers short answers.",
     )
     fact = _add(
         gaia, "--name", "user_fact_x", "--type", "user",
-        "--description", "Hecho: vive en Chile.", "--body", "Vive en Chile.",
+        "--description", "Fact: lives in Chile.", "--body", "Lives in Chile.",
+    )
+    spanish_era = _add(
+        gaia, "--name", "user_pref_legacy", "--type", "user",
+        "--description", "Preferencia: respuestas breves.", "--body", "Prefiere respuestas breves.",
     )
 
     assert "preference_or_bug" in preference
     assert "preference_or_bug" not in fact
+    assert "preference_or_bug" in spanish_era
 
 
 def test_a_preference_that_mentions_a_hook_gets_no_extra_warning(gaia):

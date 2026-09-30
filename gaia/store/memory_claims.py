@@ -12,9 +12,19 @@ from __future__ import annotations
 
 import unicodedata
 
-PREFERENCE_KIND = "Preferencia"
+PREFERENCE_KIND = "Preference"
 
-MEMORY_CLAIM_KINDS = ("Hecho", PREFERENCE_KIND, "Decisión", "Aprendizaje", "Pendiente", "Bug")
+MEMORY_CLAIM_KINDS = ("Fact", PREFERENCE_KIND, "Decision", "Lesson", "Pending", "Bug")
+
+# Descriptions are stored data: rows written while the vocabulary was Spanish
+# keep their kind, so the old first words stay readable. New rows use English.
+_SPANISH_KINDS = {
+    "Hecho": "Fact",
+    "Preferencia": PREFERENCE_KIND,
+    "Decisión": "Decision",
+    "Aprendizaje": "Lesson",
+    "Pendiente": "Pending",
+}
 
 
 def _fold(word: str) -> str:
@@ -22,15 +32,18 @@ def _fold(word: str) -> str:
     return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
 
 
-_KIND_BY_FOLDED = {_fold(kind): kind for kind in MEMORY_CLAIM_KINDS}
+_KIND_BY_FOLDED = {
+    **{_fold(word): kind for word, kind in _SPANISH_KINDS.items()},
+    **{_fold(kind): kind for kind in MEMORY_CLAIM_KINDS},
+}
 
 
 def memory_claim_kind(description: str | None) -> str | None:
     """The :data:`MEMORY_CLAIM_KINDS` entry a description starts with, or None.
 
     Only the first word counts, read without case or accents and without a
-    trailing colon, so ``"Decision: ..."`` and ``"Preferencia temporal: ..."``
-    are recognised.
+    trailing colon, so ``"decision: ..."`` and ``"Preferencia temporal: ..."``
+    are recognised, the latter as :data:`PREFERENCE_KIND`.
     """
     words = (description or "").split(maxsplit=1)
     if not words:

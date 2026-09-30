@@ -1930,22 +1930,10 @@ def ack_all_task_notifications(
 
 VALID_MEMORY_TYPES = ("project", "user", "feedback", "atom", "decision", "negative")
 
-# v45: which agent role a curated memory row's content is FOR. Orthogonal to
-# type/class/status/project_ref/initiative -- see the schema.sql comment on
-# memory.audience for the full rationale. 'any' is the default and the value
-# every pre-v45 row keeps; kernel injection (a separate, later change) selects
-# 'executor' rows for a subagent's kernel without leaking 'orchestrator' ones.
 VALID_MEMORY_AUDIENCES = ("orchestrator", "executor", "any")
 
-# Host-scope (2026-08-27 consensus): Gaia's own scope has no per-workspace
-# identity, so it is expressed as a VALUE of the existing workspace axis
-# rather than a new dimension -- a sentinel workspace row, not a new column.
-# HOST_WORKSPACE holds every curated-memory row for an initiative in
-# HOST_SCOPED_INITIATIVES, regardless of which --workspace/env/cwd produced
-# the write. Data migration for rows written before this change (legacy
-# gaia_system rows still sitting under 'me'/'century-inc'/other workspaces)
-# is a separate, deliberately deferred operation -- this constant only governs
-# writes and reads going forward.
+# Gaia's own scope has no per-workspace identity, so it is a sentinel value of
+# the workspace axis rather than a new column.
 HOST_WORKSPACE = "_gaia_host"
 HOST_SCOPED_INITIATIVES = frozenset({"gaia_system"})
 
@@ -9181,7 +9169,7 @@ def finalize_agent_contract_handoff(
     if not contract_id:
         raise ValueError(
             "finalize_agent_contract_handoff requires a non-empty contract_id "
-            "-- it is the idempotency key the UNIQUE constraint UPSERTs on."
+            "-- it is the idempotency key of the row's UNIQUE constraint."
         )
 
     # A placeholder session id is NO session id. The UPSERT below merges

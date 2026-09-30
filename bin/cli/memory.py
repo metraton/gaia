@@ -639,12 +639,6 @@ def _flag_workspace_holding(args, name: str, *, include_deleted: bool = False) -
 # ---------------------------------------------------------------------------
 # Subcommand handler: add (DB-only writer)
 # ---------------------------------------------------------------------------
-#
-# T5 note: ``add`` accepts optional ``--class`` and ``--status`` flags, which
-# ``upsert_memory`` applies in the same transaction as the row. The CLI is
-# the only surface that translates ``--status=null`` into the empty-string
-# clear-sentinel that the writer expects.
-# ---------------------------------------------------------------------------
 
 
 def _normalize_status_flag(raw: str | None) -> tuple[bool, str | None]:
@@ -662,28 +656,19 @@ def _normalize_status_flag(raw: str | None) -> tuple[bool, str | None]:
     return True, raw
 
 
-# Write-time teaching. A writer learns the shape of a row from the CLI at the
-# moment of writing; whether the row deserves to exist is judgment that stays
-# in skills/memory, which the pointer names. Every check here WARNS and the
-# write still lands -- refusals are the writer's.
-#
-# _DESCRIPTION_WARN_CHARS: listings and the session's birth block show the
-# description alone, so it must read as one sentence.
-# _BODY_WARN_CHARS: a user row's body is injected whole, never cut
-# (hooks/modules/context/user_sections.py), so a long one costs every reader
-# that loads it.
 _DESCRIPTION_WARN_CHARS = 120
 _BODY_WARN_CHARS = 800
 
 _WRITE_POINTER = (
-    "> Escribir memoria es juicio además de forma: `Skill('memory')` decide si "
-    "la fila merece existir, de quién es y si reemplaza a otra."
+    "> Writing memory is judgment as well as form: `Skill('memory')` decides "
+    "whether the row deserves to exist, whose it is and whether it replaces "
+    "another."
 )
 
 _PERFECT_GAIA_QUESTION = (
-    "¿tendría sentido esta preferencia si Gaia funcionara perfecto? Si no, es "
-    "un bug: regístralo con --type=feedback --initiative=gaia_system, y que "
-    "la preferencia nombre el bug que cubre para retirarse con él."
+    "would this preference make sense if Gaia worked perfectly? If not, it is "
+    "a bug: record it with --type=feedback --initiative=gaia_system, and have "
+    "the preference name the bug it covers so it retires with it."
 )
 
 
@@ -696,7 +681,7 @@ def _emit_write_warnings(warnings: list[dict], as_json: bool) -> None:
     if as_json:
         return
     for w in warnings:
-        print(f"aviso: {w['message']}", file=sys.stderr)
+        print(f"warning: {w['message']}", file=sys.stderr)
     print(_WRITE_POINTER)
 
 
@@ -709,37 +694,37 @@ def _add_warnings(
     ``owned`` is whether the call named a project or initiative;
     ``previous_body`` is the body already stored under the same name, or None.
     """
-    from gaia.store.memory_claims import memory_claim_kind
+    from gaia.store.memory_claims import PREFERENCE_KIND, memory_claim_kind
 
     warnings = []
     if description and len(description) > _DESCRIPTION_WARN_CHARS:
         warnings.append(_warning(
             "description_long",
-            f"la descripción tiene {len(description)} caracteres (umbral "
-            f"{_DESCRIPTION_WARN_CHARS}); es lo único que muestran los listados "
-            f"y el bloque de nacimiento, así que va en una oración.",
+            f"the description has {len(description)} characters (threshold "
+            f"{_DESCRIPTION_WARN_CHARS}); it is all that listings and the birth "
+            f"block show, so it is one sentence.",
         ))
     if len(body) > _BODY_WARN_CHARS:
         warnings.append(_warning(
             "body_long",
-            f"el cuerpo tiene {len(body)} caracteres (umbral {_BODY_WARN_CHARS}); "
-            f"se inyecta entero o no se inyecta.",
+            f"the body has {len(body)} characters (threshold {_BODY_WARN_CHARS}); "
+            f"it is injected whole or not at all.",
         ))
     if mem_type != "user" and not owned:
         warnings.append(_warning(
             "no_owner",
-            "solo --workspace no nombra un dueño: un contenedor no es dueño. "
-            "Usa --project=<nombre> o --initiative=<clave> para un proyecto, o "
-            "--initiative=gaia_system para Gaia.",
+            "--workspace alone names no owner: a container is not an owner. "
+            "Use --project=<name> or --initiative=<key> for a project, or "
+            "--initiative=gaia_system for Gaia.",
         ))
     if previous_body is not None and previous_body != body:
         warnings.append(_warning(
             "rewrite_in_place",
-            "esto reescribe la fila en su sitio. Un cambio es una fila nueva más "
-            "`gaia memory link <nueva> <vieja> --kind=supersedes`; add sobre un "
-            "nombre existente es para corregir un error.",
+            "this rewrites the row in place. A change is a new row plus "
+            "`gaia memory link <new> <old> --kind=supersedes`; add over an "
+            "existing name is for correcting an error.",
         ))
-    if mem_type == "user" and memory_claim_kind(description) == "Preferencia":
+    if mem_type == "user" and memory_claim_kind(description) == PREFERENCE_KIND:
         warnings.append(_warning("preference_or_bug", _PERFECT_GAIA_QUESTION))
     return warnings
 
@@ -833,18 +818,6 @@ def _cmd_add(args) -> int:
             as_json,
         )
 
-    # N3: forward-only project_ref anchor.
-    #   * --project resolves a project NAME within `workspace` to its stable
-    #     projects.project_identity. Must resolve or it is a structured error
-    #     -- never a silent NULL, never a guess.
-    #   * --project-ref passes an already-known identity string directly.
-    #   * --workspace only (no project flag) is the explicit degraded lane:
-    #     a legitimate workspace-scoped note with project_ref = NULL, exit 0.
-    #
-    # When both --project and --workspace are given and the project does not
-    # belong to that workspace, that is a MISMATCH -- reported with its own
-    # structured code so the caller can tell it apart from a project that does
-    # not exist at all.
     project_ref = None
     if project_flag is not None:
         try:
@@ -881,14 +854,6 @@ def _cmd_add(args) -> int:
         project_ref = project_ref_flag
     # else: --workspace-only degraded lane -> project_ref stays None (exit 0).
 
-    # v32: resolve the canonical initiative grouping key.
-    #   * --initiative=<X> (explicit logical initiative) wins, normalized. It
-    #     needs no git project -- this is the surface for initiatives that are
-    #     NOT git repos (branchkinect, buildwiz, axisio, ...), which --project
-    #     deliberately refuses (it never guesses an unknown project name).
-    #   * else, when --project / --project-ref anchored a git project_ref, the
-    #     key is the repo basename of that anchor (gaia, balance).
-    #   * else None (workspace-only note): no initiative, never guessed.
     initiative_flag = getattr(args, "initiative", None)
     if initiative_flag is not None:
         initiative = normalize_initiative(initiative_flag)
@@ -938,17 +903,12 @@ def _cmd_add(args) -> int:
     except ValueError as exc:
         return _err(str(exc), as_json)
     except PermissionError as exc:
-        # Raised by writer._assert_dispatch_can_write_memory when the CLI is
-        # invoked from a non-curator subagent dispatch. Propagate verbatim
-        # so callers (and AC evidence) see the structural reason.
         return _err(str(exc), as_json)
     except Exception as exc:  # noqa: BLE001
         return _err(f"failed to upsert memory: {exc}", as_json)
 
-    # Host-scope forces the row into HOST_WORKSPACE regardless of the
-    # requested --workspace/env/cwd; `res["workspace"]` is the writer's
-    # authoritative answer, so the output follows it rather than re-deriving
-    # the same rule here.
+    # The writer can override the requested workspace (host and user scopes),
+    # so the output reports the workspace it stored rather than re-deriving it.
     host_scoped_notice = (
         initiative in HOST_SCOPED_INITIATIVES and mem_type != "user"
     )
@@ -1000,13 +960,13 @@ def _cmd_add(args) -> int:
         print(f"  body: {snippet}")
         if host_scoped_notice:
             print(
-                f"  initiative host-scoped: escrita en {HOST_WORKSPACE}, "
-                f"--workspace ignorado"
+                f"  initiative host-scoped: written to {HOST_WORKSPACE}, "
+                f"--workspace ignored"
             )
         if user_scoped_notice:
             print(
-                f"  type user sin workspace: escrita en {USER_WORKSPACE}, "
-                f"--workspace ignorado"
+                f"  type user has no workspace: written to {USER_WORKSPACE}, "
+                f"--workspace ignored"
             )
         if "class" in res:
             print(
@@ -1239,8 +1199,8 @@ def _cmd_checkpoint(args) -> int:
             print(f"  project_ref: {project_ref}")
         if host_scoped_notice:
             print(
-                f"  initiative host-scoped: escrita en {HOST_WORKSPACE}, "
-                f"--workspace ignorado"
+                f"  initiative host-scoped: written to {HOST_WORKSPACE}, "
+                f"--workspace ignored"
             )
         for t in threads:
             print(f"  thread: {t.get('name')} ({t.get('action')})")
@@ -1399,10 +1359,6 @@ _RELEVANT_PER_CLASS_QUOTA = {
 # whole bodies rather than a capped description, and a row bound high enough
 # that it never adjudicates between two instructions. A body past the ceiling is
 # dropped rather than sliced -- half an instruction reads as a whole one.
-# The session birth block and the dispatch kernel no longer call this verb:
-# they read the same kind of rows through gaia.store.reader.user_anchor_rows,
-# which also drops superseded rows and reads every workspace. This section is
-# what a direct `gaia memory get-relevant --sections anchor` returns.
 _RELEVANT_USER_ANCHOR_ROW_LIMIT = 20
 _RELEVANT_USER_ANCHOR_BODY_CEILING = 20_000
 
@@ -2988,10 +2944,10 @@ def _cmd_link(args) -> int:
             and res["dst_born"] > res["src_born"]):
         warnings.append(_warning(
             "supersedes_reversed",
-            f"{dst_name} es más nueva que {src_name}: supersedes va de la fila "
-            f"nueva a la vieja, y {dst_name} acaba de salir de toda inyección. "
-            f"Si la flecha quedó invertida: `gaia memory link {src_name} "
-            f"{dst_name} --kind=supersedes --delete` y "
+            f"{dst_name} is newer than {src_name}: supersedes points from the "
+            f"new row to the old one, and {dst_name} has just left every "
+            f"injection. If the arrow is reversed: `gaia memory link {src_name} "
+            f"{dst_name} --kind=supersedes --delete` and "
             f"`gaia memory link {dst_name} {src_name} --kind=supersedes`.",
         ))
 
@@ -3555,7 +3511,7 @@ def register(subparsers):
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory add --name=user_pref_x --type=user "
-               "--description='Preferencia: ...' --body='...'\n"
+               "--description='Preference: ...' --body='...'\n"
                "  gaia memory add --name=feedback_x --type=feedback "
                "--initiative=gaia_system --workspace=me --body='...'\n"
                "  gaia memory add --name=atom_x --type=atom --project=gaia "
@@ -3658,12 +3614,12 @@ def register(subparsers):
         "--audience", default=None,
         choices=("orchestrator", "executor", "any"),
         help=(
-            "v45: which agent role this row is FOR -- 'orchestrator' "
+            "Which agent role this row is FOR -- 'orchestrator' "
             "(routing/model-choice/report-style instructions), 'executor' "
             "(preferences for any dispatched specialist), or 'any' (the "
-            "schema default; unclassified/applies regardless). Omit to "
-            "leave the row at 'any' on insert, or unchanged on a correction "
-            "upsert (never silently reset)."
+            "schema default; unclassified/applies regardless). Omitted, a new "
+            "row gets 'any' and --replace keeps the stored value (never "
+            "silently reset)."
         ),
     )
     add_p.add_argument("--workspace", default=None, metavar="W",
