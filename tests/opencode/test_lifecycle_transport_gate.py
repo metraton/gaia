@@ -1,24 +1,9 @@
-"""Gate 1008 (task 536, T8) + gate 1014 (task 539, T11): the lifecycle
-transport set routed through ``bridge.handle`` -- the real boundary the
-plugin spawns -- with cero "Unsupported OpenCode bridge event" responses for
-the conjunto, and the dead ``_EVENT_TYPES`` mappings (``session.created``,
-``message.updated``) gone rather than merely aparent coverage.
+"""The lifecycle events the plugin forwards reach a real route through ``bridge.handle``, the boundary the plugin spawns.
 
-T11 changed WHAT "Stop"/"PostToolUseFailure"/"SessionEnd" (session.idle/
-error/deleted) actually do: they used to be a quality no-op (Stop) or a bare
-acknowledgment (PostToolUseFailure/SessionEnd) -- T8's own placeholder. They
-now all route to ``adapter.adapt_subagent_stop``, the real session-lifecycle
-close (plan 65, T11, approval_ids P-41c3d6a64ab0480896ac5ca079076574 and
-P-531c6c5f8100e19efcc474787975a538, applied on user approval) -- see
-``tests/opencode/test_opencode_subagent_stop_close.py`` for the close
-behavior's 5 named gate-1014 cases. Only ``PostCompact`` is still
-bare-acknowledged.
-
-None of ``ses-x``/``ses-child`` here are ever bound to a dispatch row, so
-every route exercised in this module resolves ``{"status": "no_row"}`` and
-performs a READ with no write -- but the isolation is still explicit (never
-the developer's real ``~/.gaia``), since a route that touches the store at
-all should never do so against live data by accident.
+session.idle, session.error and session.deleted close the bound dispatch row
+(``tests/opencode/test_opencode_subagent_stop_close.py`` covers the close);
+only session.compacted is still a bare acknowledgment. No session here is
+bound to a row, so every route resolves ``no_row`` without writing.
 """
 
 from __future__ import annotations
@@ -54,13 +39,7 @@ def _isolated_gaia_data_dir(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _contain_bridge_host_mutation(monkeypatch):
-    """bridge.handle() (opencode/bridge.py:90) sets GAIA_HOST via a raw
-    os.environ write with no revert of its own -- harmless in production,
-    where the plugin spawns a fresh one-shot bridge process per event, but a
-    leak here since these tests call handle() in-process, in the same
-    long-lived pytest worker other test files share. monkeypatch.setenv
-    registers this test's pre-run value so its teardown restores it
-    regardless of the raw write inside handle()."""
+    """Restore GAIA_HOST after each test: bridge.handle() writes it into os.environ with no revert, and these tests share the pytest worker."""
     monkeypatch.setenv("GAIA_HOST", "opencode")
 
 
@@ -79,21 +58,21 @@ def test_bridge_routes_the_full_lifecycle_conjunto_with_no_unsupported_denial():
         )
 
 
-def test_dead_event_type_mappings_are_gone_and_the_conjunto_is_wired():
+def test_missing_session_start_transport_is_a_pending_gap_and_the_conjunto_is_wired():
     from adapters.opencode import _EVENT_TYPES
+    from adapters.opencode_parity import PENDING_GAPS
+    from adapters.types import HookEventType
 
-    for dead in ("session.created", "message.updated"):
-        assert dead not in _EVENT_TYPES, f"{dead} maps with no real transport path"
+    if HookEventType.SESSION_START not in _EVENT_TYPES.values():
+        assert "session birth block" in PENDING_GAPS, (
+            "no OpenCode event reaches SessionStart and the parity alarm does not track it"
+        )
 
     for required in _LIFECYCLE_EVENTS:
         assert required in _EVENT_TYPES, f"{required} is missing from _EVENT_TYPES"
 
 
 def test_idle_error_deleted_all_reach_the_real_close_not_an_acknowledgment():
-    """T11: unlike PostCompact (still a bare {"action": "allow"}), idle/
-    error/deleted each carry adapt_subagent_stop's own output shape
-    (``contract_valid``/``closed``), never the acknowledgment's bare
-    ``{"action": "allow"}`` with nothing else."""
     for event_name in ("session.idle", "session.error", "session.deleted"):
         response = _handle(event_name, _LIFECYCLE_EVENTS[event_name])
         assert response == {"contract_valid": True, "closed": {"status": "no_row"}}, (
