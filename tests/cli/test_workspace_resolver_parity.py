@@ -29,7 +29,6 @@ _CLI_MODULES = (
     "cli.evidence",
     "cli.milestone",
     "cli.memory",
-    "cli.memory_story",
     "cli.notifications",
     "cli.query",
     "cli.defects",
