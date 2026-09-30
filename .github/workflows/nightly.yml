@@ -69,6 +69,18 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      # tests/cli/test_pre_publish_dry_run_representative.py runs
+      # bin/pre-publish-validate.js, whose Step 5 compares the source tree with
+      # the package installed in its own node_modules -- a copy `npm ci` never
+      # makes. Without it the test fails naming the missing prerequisite.
+      # --ignore-scripts keeps prepack from rewriting tracked files.
+      - name: Install the package's own packed copy under node_modules
+        run: |
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          mkdir -p node_modules/@jaguilar87/gaia
+          tar -xzf "$RUNNER_TEMP"/jaguilar87-gaia-*.tgz \
+            -C node_modules/@jaguilar87/gaia --strip-components=1
+
       - name: Install test dependencies
         run: pip install pytest==8.3.5 pyyaml pytest-xdist
 

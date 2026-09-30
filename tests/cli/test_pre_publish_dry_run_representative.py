@@ -50,11 +50,12 @@ _CI_ENV_VARS = ("CI", "GITHUB_ACTIONS")
 
 # Step 5 ("Validating key files") compares the source tree against the
 # self-installed copy under node_modules and throws when it is absent, which
-# aborts the script BEFORE Step 6 ever runs. A bare checkout has no such copy,
-# so on that precondition the version comparisons under test are never
-# evaluated -- there is nothing to assert, and asserting anyway would either
-# fail on a cause unrelated to this bug or pass vacuously. Detecting the abort
-# explicitly lets those runs skip instead of lying in either direction.
+# aborts the script BEFORE Step 6 ever runs. Without that copy the version
+# comparisons under test are never evaluated, so asserting on the output would
+# either fail on an unrelated cause or pass vacuously. The test therefore fails
+# with the missing prerequisite named (D111) rather than skipping: a skip is
+# how this file once "ran" in nightly while proving nothing. nightly.yml's
+# nightly-only job installs the copy; locally, see the failure message.
 _SELF_INSTALL_ABORT_MARKERS = (
     "Installed file missing",
     "Some critical files are missing",
@@ -101,10 +102,14 @@ class TestPrePublishDryRunRepresentative(unittest.TestCase):
     def _require_self_install(self, combined: str) -> None:
         for marker in _SELF_INSTALL_ABORT_MARKERS:
             if marker in combined:
-                self.skipTest(
-                    "Step 5 aborted: no self-installed copy under node_modules, "
-                    "so the dry-run never reaches the version comparisons under "
-                    f"test.\nOutput:\n{combined}"
+                self.fail(
+                    "MISSING PREREQUISITE: no self-installed copy of the "
+                    "package under node_modules/@jaguilar87/gaia, so Step 5 "
+                    "aborts and the dry-run never reaches the version "
+                    "comparisons under test. Install it (npm ci, then "
+                    "extract `npm pack --ignore-scripts` output into "
+                    "node_modules/@jaguilar87/gaia with tar --strip-components=1"
+                    f", as nightly.yml does).\nOutput:\n{combined}"
                 )
 
     def test_dry_run_does_not_false_fail_on_version_comparisons(self):
