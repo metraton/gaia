@@ -6,7 +6,8 @@ each one this drives the real CLI -- `gaia migrate plan`, then `apply` -- and
 holds the properties of the upgrade path: a backup exists before anything
 changed, the ledger lands on the expected version, a chain that reaches data
 asks exactly one consent for the whole chain, a structure-only chain asks
-none, and the result carries every object a fresh install has.
+none, the user's memory, briefs and tasks survive it, and the result carries
+every object a fresh install has.
 
 Every case works in its own tmp directory; the user's ~/.gaia is never read.
 """
@@ -60,6 +61,35 @@ def _scalar(db: Path, sql: str):
         con.close()
 
 
+def _seed_task(db: Path) -> None:
+    """Hang a plan and a task off the fixture brief; the fixtures carry no task."""
+    con = sqlite3.connect(db)
+    try:
+        brief_id = con.execute("SELECT id FROM briefs WHERE name = 'fixture-brief'").fetchone()[0]
+        plan_id = con.execute(
+            "INSERT INTO plans (brief_id, status) VALUES (?, 'active')", (brief_id,)
+        ).lastrowid
+        con.execute(
+            "INSERT INTO tasks (plan_id, order_num, goal) VALUES (?, 1, 'fixture task')",
+            (plan_id,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _user_rows(db: Path) -> dict[str, list[str]]:
+    con = sqlite3.connect(db)
+    try:
+        return {
+            "memory": sorted(r[0] for r in con.execute("SELECT name FROM memory")),
+            "briefs": sorted(r[0] for r in con.execute("SELECT name FROM briefs")),
+            "tasks": sorted(r[0] for r in con.execute("SELECT goal FROM tasks")),
+        }
+    finally:
+        con.close()
+
+
 def _chain_reaches_data(db: Path, start: int, expected: int) -> bool:
     con = sqlite3.connect(db)
     census = migration_guard.take_census(con)
@@ -106,8 +136,9 @@ def test_published_base_upgrades_through_gaia_migrate(base, tmp_path, fresh_obje
     expected = _expected_version()
     db = tmp_path / "gaia.db"
     load_base(base, db)
-    memory_rows = _scalar(db, "SELECT COUNT(*) FROM memory")
-    assert memory_rows >= 2, "the fixture must carry representative rows"
+    _seed_task(db)
+    user_rows = _user_rows(db)
+    assert len(user_rows["memory"]) >= 2, "the fixture must carry representative rows"
     label = migration_guard.chain_label(base, expected)
 
     plan = _gaia(tmp_path, db, "plan")
@@ -134,7 +165,7 @@ def test_published_base_upgrades_through_gaia_migrate(base, tmp_path, fresh_obje
     assert _scalar(backups[0], "SELECT MAX(version) FROM schema_version") == base
 
     assert _scalar(db, "SELECT MAX(version) FROM schema_version") == expected
-    assert _scalar(db, "SELECT COUNT(*) FROM memory") == memory_rows
+    assert _user_rows(db) == user_rows, f"user rows lost upgrading v{base}"
 
     upgraded = _objects(db)
     missing = sorted(key for key in fresh_objects if key not in upgraded)
