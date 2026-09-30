@@ -45,7 +45,8 @@ def test_upsert_archives_previous_body(db: Path) -> None:
     from gaia.store.writer import upsert_memory, _connect
 
     upsert_memory("me", "project_x", type="project", body="version one", db_path=db)
-    upsert_memory("me", "project_x", type="project", body="version two", db_path=db)
+    upsert_memory("me", "project_x", type="project", body="version two",
+                  replace=True, db_path=db)
 
     con = _connect(db)
     try:
@@ -117,16 +118,16 @@ def test_tombstone_not_surfaced_in_query_or_search(db: Path) -> None:
     assert all(r["name"] != "project_findme" for r in fts)
 
 
-def test_upsert_resurrects_tombstone(db: Path) -> None:
+def test_upsert_with_replace_resurrects_tombstone(db: Path) -> None:
     from gaia.store.writer import upsert_memory, delete_memory, get_memory
 
     upsert_memory("me", "project_x", type="project", body="b1", db_path=db)
     delete_memory("me", "project_x", db_path=db)
     assert get_memory("me", "project_x", db_path=db) is None
 
-    upsert_memory("me", "project_x", type="project", body="b2", db_path=db)
+    upsert_memory("me", "project_x", type="project", body="b2", replace=True, db_path=db)
     row = get_memory("me", "project_x", db_path=db)
-    assert row is not None, "re-adding a tombstoned slug must clear the tombstone"
+    assert row is not None, "replace over a tombstoned slug must clear the tombstone"
     assert row["body"] == "b2"
     assert row["deleted_at"] is None
 

@@ -99,7 +99,7 @@ def test_upsert_memory_update_without_project_ref_preserves_existing(db: Path) -
         "me", "sticky", type="project", body="v1",
         project_ref="github.com/x/gaia", db_path=db,
     )
-    upsert_memory("me", "sticky", type="project", body="v2", db_path=db)
+    upsert_memory("me", "sticky", type="project", body="v2", replace=True, db_path=db)
 
     con = _connect(db)
     try:
@@ -124,7 +124,7 @@ def test_upsert_memory_update_with_new_project_ref_overwrites(db: Path) -> None:
     )
     upsert_memory(
         "me", "reanchor", type="project", body="v2",
-        project_ref="github.com/x/new", db_path=db,
+        project_ref="github.com/x/new", replace=True, db_path=db,
     )
 
     con = _connect(db)
@@ -501,7 +501,7 @@ def test_upsert_memory_update_without_initiative_preserves_existing(db: Path) ->
         "me", "sticky_init", type="project", body="v1",
         initiative="branchkinect", db_path=db,
     )
-    upsert_memory("me", "sticky_init", type="project", body="v2", db_path=db)
+    upsert_memory("me", "sticky_init", type="project", body="v2", replace=True, db_path=db)
 
     assert _get_initiative(db, "me", "sticky_init") == "branchkinect"
 

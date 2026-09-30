@@ -83,8 +83,8 @@ actual overlap -- it is not a step every save runs. Consolidation is
 
 1. `gaia memory search "<topic>" --scope=memory` to find overlaps.
 2. Read both bodies; identify the broader scope.
-3. UPSERT the merged content into the broader slug.
-4. Link the broader to the narrower it absorbed:
+3. Write the merged content as a new row with a broader slug.
+4. Link it to each row it absorbed:
    `gaia memory link <broader> <narrower> --kind=supersedes`. The
    `supersedes` link retires the obsolete row while keeping its
    reasoning reachable -- that is the additive path. Delete the
@@ -200,14 +200,16 @@ gaia memory checkpoint --file /tmp/session_checkpoint.json \
 `pendientes[]` entry becomes a `class=thread status=carry_forward` row
 (inheriting the record's `type`), and each thread is linked
 `derived_from` the record. It is **all-or-nothing** -- an invalid or
-malformed payload writes *zero* rows -- and **idempotent** (the
-fecha-stamped `project_session_<date>_<topic>` slug makes re-runs UPSERT
-rather than duplicate). Payload shape:
+malformed payload, or any name that already exists (live or deleted),
+writes *zero* rows (`name_exists` / `user_name_collision`), so a re-run is
+refused rather than rewriting. Changed knowledge goes as a new row whose
+optional `supersedes` names the live row it replaces; the `supersedes`
+link is written in the same transaction. Payload shape:
 
 ```json
 {
-  "resumen":   {"name", "type", "description", "body"},
-  "pendientes": [{"name", "description", "body"}, ...]
+  "resumen":   {"name", "type", "description", "body", "supersedes"?},
+  "pendientes": [{"name", "description", "body", "supersedes"?}, ...]
 }
 ```
 

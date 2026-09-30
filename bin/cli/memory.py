@@ -17,8 +17,9 @@ on curated memory rows:
 
 Mutating subcommands operate on the curated ``memory`` table in
 ``~/.gaia/gaia.db`` (project / user / feedback / atom / decision / negative
-notes). Memory is AGGREGATED and RECLASSIFIED, not overwritten -- reach for
-these verbs in this order:
+notes). Memory is append-only: a changed agreement is a new row plus
+``link --kind=supersedes``, never an overwrite -- reach for these verbs in
+this order:
 
   append <name> --body="..." | --body-file=<path>
                                           PRIMARY additive verb: grows an
@@ -30,9 +31,14 @@ these verbs in this order:
   add --name=<slug> --type=<project|user|feedback|atom|decision|negative>
       --body="..." [--description=...] [--class=...] [--status=...]
       [--audience=<orchestrator|executor|any>]
-      [--workspace=<ws>] [--project=<name> | --project-ref=<identity>] [--json]
-                                          Creates/UPSERTs a NEW row (distinct
-                                          from append, which grows one).
+      [--workspace=<ws>] [--project=<name> | --project-ref=<identity>]
+      [--replace] [--json]
+                                          Creates a NEW row (distinct from
+                                          append, which grows one). An
+                                          existing name is refused
+                                          (name_exists); --replace rewrites it
+                                          in place to correct an error (T3), and
+                                          a type=user name is never rewritten.
                                           DB-only writer; no filesystem side
                                           effects (no .md under
                                           ~/.claude/projects/.../memory/).
@@ -50,9 +56,9 @@ these verbs in this order:
                                           exit 0 (explicit degraded lane).
                                           --audience (v45) sets memory.audience
                                           at insertion time; omitted, a new row
-                                          defaults to 'any' and a correction
-                                          upsert leaves an existing value
-                                          untouched (never silently reset).
+                                          defaults to 'any' and a --replace
+                                          that omits it leaves an existing
+                                          value untouched.
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->
@@ -805,7 +811,7 @@ def _cmd_add(args) -> int:
             project_workspaces, VALID_MEMORY_TYPES,
             normalize_initiative, initiative_from_project_ref,
             HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
-            MemoryUserScopeError, USER_WORKSPACE,
+            MemoryUserScopeError, MemoryNameExistsError, USER_WORKSPACE,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -880,19 +886,20 @@ def _cmd_add(args) -> int:
     else:
         initiative = None
 
+    from gaia.store.writer import get_memory, resolve_memory_workspace
     try:
-        from gaia.store.writer import get_memory, resolve_memory_workspace
-        stored = get_memory(
-            resolve_memory_workspace(workspace, mem_type, initiative, project_ref), name,
+        target_workspace = resolve_memory_workspace(
+            workspace, mem_type, initiative, project_ref,
         )
-    except Exception:  # noqa: BLE001 -- a warning must never block the write
-        stored = None
-    if stored is not None and mem_type != "user" and not getattr(args, "replace", False):
+    except (MemoryHostScopeError, MemoryUserScopeError) as exc:
+        return _err_structured(str(exc), as_json, code=exc.code)
+    try:
+        stored = get_memory(target_workspace, name)
+    except Exception as exc:  # noqa: BLE001 -- any failure refuses the write
         return _err_structured(
-            f"memory '{name}' already exists. A changed agreement is a new row "
-            f"plus `gaia memory link <new> {name} --kind=supersedes`; to correct "
-            f"an error in this row, repeat the add with --replace.",
-            as_json, code="name_exists",
+            f"could not read memory '{name}' before writing it ({exc}); "
+            f"nothing was written",
+            as_json, code="name_check_failed",
         )
     warnings = _add_warnings(
         mem_type=mem_type, description=description, body=body,
@@ -911,8 +918,9 @@ def _cmd_add(args) -> int:
             initiative=initiative,
             audience=audience_flag,
             class_=class_flag,
+            replace=getattr(args, "replace", False),
         )
-    except (MemoryHostScopeError, MemoryUserScopeError) as exc:
+    except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -1189,7 +1197,7 @@ def _cmd_checkpoint(args) -> int:
         from gaia.store.writer import (
             close_session_memory, MemorySessionPayloadError,
             HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
-            normalize_initiative,
+            MemoryNameExistsError, MemoryUserScopeError, normalize_initiative,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -1199,7 +1207,7 @@ def _cmd_checkpoint(args) -> int:
             workspace, payload, project_ref=project_ref,
             initiative=initiative_flag,
         )
-    except MemoryHostScopeError as exc:
+    except (MemoryHostScopeError, MemoryNameExistsError, MemoryUserScopeError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
     except MemorySessionPayloadError as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -3689,15 +3697,17 @@ def register(subparsers):
             "Write one session-close reflection in a single transaction: the "
             "record anchor, one carry-forward thread per pending, and a "
             "derived_from edge from each thread back to the record. All-or-"
-            "nothing -- a malformed or invalid payload writes zero rows. "
-            "Replaces the N+1 add/link sequence session-reflection Step 6 used "
-            "to prescribe."
+            "nothing -- a malformed or invalid payload, or any name that "
+            "already exists, writes zero rows. Changed knowledge goes as a new "
+            "row whose \"supersedes\" names the row it replaces."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Payload (JSON):\n"
                "  {\n"
-               "    \"resumen\":   {\"name\",\"type\",\"description\",\"body\"},\n"
-               "    \"pendientes\": [{\"name\",\"description\",\"body\"}, ...]\n"
+               "    \"resumen\":   {\"name\",\"type\",\"description\",\"body\","
+               "\"supersedes\"?},\n"
+               "    \"pendientes\": [{\"name\",\"description\",\"body\","
+               "\"supersedes\"?}, ...]\n"
                "  }\n"
                "Examples:\n"
                "  gaia memory checkpoint --file payload.json --project=gaia\n"

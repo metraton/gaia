@@ -12,7 +12,7 @@ provide:
   2. empty pendings -> anchor only, no threads, no links
   3. ATOMICITY: an invalid 2nd pending rolls the WHOLE checkpoint back to zero
      rows (the test that justifies a single-transaction writer)
-  4. re-run is idempotent (UPSERT rows, re-use edges)
+  4. re-run is refused (name_exists), leaving the first run's rows intact
   5. prose pending + empty list -> non-blocking warning, exit 0, still writes
   6. missing scope -> structured missing_scope reject at the CLI, zero rows
   7. dispatch gate: GAIA_DISPATCH_AGENT=developer is refused
@@ -170,21 +170,19 @@ def test_invalid_second_pending_rolls_back_everything(tmp_db):
 
 
 # ---------------------------------------------------------------------------
-# 4. re-run idempotent
+# 4. re-run is refused: a checkpoint never rewrites its own rows
 # ---------------------------------------------------------------------------
 
-def test_rerun_is_idempotent(tmp_db):
-    from gaia.store.writer import close_session_memory
+def test_rerun_is_refused_and_writes_nothing(tmp_db):
+    from gaia.store.writer import close_session_memory, MemoryNameExistsError
     payload = _payload([_pending("project_pending_a")])
     first = close_session_memory("me", payload)
     assert first["anchor"]["action"] == "inserted"
     assert first["links"][0]["action"] == "inserted"
 
-    second = close_session_memory("me", payload)
-    assert second["anchor"]["action"] == "updated"
-    assert second["links"][0]["action"] == "noop"
+    with pytest.raises(MemoryNameExistsError):
+        close_session_memory("me", payload)
 
-    # Row counts are unchanged by the re-run.
     assert len(_memory_rows(tmp_db)) == 2  # anchor + one thread
     assert len(_link_rows(tmp_db)) == 1
 

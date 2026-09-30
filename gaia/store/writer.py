@@ -2006,6 +2006,44 @@ class MemoryUserScopeError(ValueError):
         self.code = code
 
 
+class MemoryNameExistsError(ValueError):
+    """Raised when a write names an existing curated row without replace intent."""
+
+    code = "name_exists"
+
+
+def _refuse_existing_name(con, workspace: str, name: str, *, replace: bool) -> bool:
+    """Raise unless ``name`` may be written in ``workspace``; True when a row already holds it.
+
+    Curated memory is append-only: a changed agreement is a new row that
+    supersedes the old one. A user-scope name, live or deleted, is never
+    overwritten nor restored; any other existing name is rewritten only with
+    ``replace``, the explicit intent to correct an error.
+    """
+    existing = con.execute(
+        "SELECT deleted_at FROM memory WHERE workspace = ? AND name = ?",
+        (workspace, name),
+    ).fetchone()
+    if existing is None:
+        return False
+    if workspace == USER_WORKSPACE:
+        raise MemoryUserScopeError(
+            f"user memory {name!r} already exists in the user scope "
+            f"({USER_WORKSPACE}); it is never overwritten nor restored. Write "
+            f"the change as a new row and run `gaia memory link <new> {name} "
+            f"--kind=supersedes`, or pick another name.",
+            code="user_name_collision",
+        )
+    if not replace:
+        raise MemoryNameExistsError(
+            f"memory {name!r} already exists in workspace {workspace!r}. A "
+            f"changed agreement is a new row plus `gaia memory link <new> "
+            f"{name} --kind=supersedes`; to correct an error in this row, "
+            f"repeat the add with --replace."
+        )
+    return True
+
+
 def resolve_memory_workspace(
     workspace: str,
     mem_type: str,
@@ -2394,23 +2432,19 @@ def upsert_memory(
     initiative: str | None = None,
     audience: str | None = None,
     class_: str | None = None,
+    replace: bool = False,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
-    """Upsert a curated-memory row in the ``memory`` table.
+    """Write a curated-memory row; an existing name needs ``replace``.
 
-    Archive-on-upsert (scan-v2 SV3): when this overwrites an existing row, the
-    ``memory_au``... no -- the ``trg_memory_history`` AFTER UPDATE trigger fires
-    on the ON CONFLICT DO UPDATE below and archives the tracked before/after
-    fields (name, body, workspace, type, description, class, status,
-    project_ref, initiative, and deleted_at) into ``memory_history`` before the
-    new value lands. No explicit archival code is needed here because ordinary
-    updates share the SQL-layer trigger; hard deletion and workspace cascade
-    remain outside that recovery guarantee.
-
-    Resurrection: re-adding a slug that was soft-deleted clears ``deleted_at``
-    (the row returns to the live set). The clearing is captured by the same
-    history trigger.
+    Without ``replace`` an existing name, live or deleted, raises
+    :class:`MemoryNameExistsError`; a ``type='user'`` name raises
+    ``user_name_collision`` either way (see :func:`_refuse_existing_name`).
+    ``replace`` rewrites the row in place, restoring a deleted one, and the
+    ``trg_memory_history`` AFTER UPDATE trigger archives the tracked
+    before/after fields into ``memory_history``; hard deletion and workspace
+    cascade remain outside that recovery guarantee.
 
     ``project_ref`` -- forward-only remote-stable project anchor (N3, scan-v2
     SV3 follow-up). The v25/v26 columns/migration exist, but the automatic
@@ -2450,9 +2484,7 @@ def upsert_memory(
     ``None`` resolves to the schema's own default ('any') rather than NULL.
     Must be one of :data:`VALID_MEMORY_AUDIENCES` when set.
 
-    A ``type='user'`` row lands in :data:`USER_WORKSPACE`, and a name already
-    live there raises :class:`MemoryUserScopeError` (``user_name_collision``)
-    instead of replacing the stored row.
+    A ``type='user'`` row lands in :data:`USER_WORKSPACE`.
 
     ``class_`` -- the class a brand-new row is born with. ``None`` means
     ``anchor`` for a ``type='user'`` row, because what the user tells Gaia
@@ -2499,21 +2531,8 @@ def upsert_memory(
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
 
-            existing = con.execute(
-                "SELECT name, deleted_at FROM memory "
-                "WHERE workspace = ? AND name = ?",
-                (workspace, name),
-            ).fetchone()
-            if (workspace == USER_WORKSPACE and existing is not None
-                    and existing["deleted_at"] is None):
-                raise MemoryUserScopeError(
-                    f"user memory {name!r} already exists in the user scope "
-                    f"({USER_WORKSPACE}); it was not overwritten. Write the "
-                    f"change as a new row and run `gaia memory link <new> "
-                    f"{name} --kind=supersedes`, or pick another name.",
-                    code="user_name_collision",
-                )
-            action = "updated" if existing is not None else "inserted"
+            exists = _refuse_existing_name(con, workspace, name, replace=replace)
+            action = "updated" if exists else "inserted"
 
             now = _now_iso()
             con.execute(
@@ -3279,7 +3298,7 @@ def _require_payload_keys(obj: Mapping, keys: tuple, where: str) -> None:
             )
 
 
-def _upsert_checkpoint_row(
+def _insert_checkpoint_row(
     con,
     workspace: str,
     *,
@@ -3294,12 +3313,14 @@ def _upsert_checkpoint_row(
     origin_session_id: str | None,
     now: str,
 ) -> dict:
-    """Upsert one memory row on the CALLER's connection (no BEGIN/COMMIT here).
+    """Insert one new memory row on the CALLER's connection (no BEGIN/COMMIT here).
 
     Semantic validation runs first, INSIDE the caller's open transaction, so a
     bad row aborts the whole checkpoint via the caller's rollback. Combines the
     body/type/slug rules of ``upsert_memory`` with the class/status write of
-    ``reclassify_memory`` in a single INSERT ... ON CONFLICT DO UPDATE.
+    ``reclassify_memory`` in one INSERT. A checkpoint never rewrites nor
+    restores a row: an existing name, live or deleted, is refused by
+    :func:`_refuse_existing_name`.
 
     ``initiative`` -- same coalesce-or-omit discipline as ``upsert_memory``:
     an explicit value (already normalized by the caller) wins; ``None``
@@ -3323,39 +3344,20 @@ def _upsert_checkpoint_row(
         initiative = initiative_from_project_ref(project_ref)
     workspace = resolve_memory_workspace(workspace, mem_type, initiative, project_ref)
 
-    existing = con.execute(
-        "SELECT name FROM memory WHERE workspace = ? AND name = ?",
-        (workspace, name),
-    ).fetchone()
-    action = "updated" if existing is not None else "inserted"
+    _refuse_existing_name(con, workspace, name, replace=False)
     con.execute(
         """
         INSERT INTO memory (workspace, name, type, description, body,
                             project_ref, initiative, origin_session_id,
                             updated_at, class, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(workspace, name) DO UPDATE SET
-            type              = excluded.type,
-            description       = excluded.description,
-            body              = excluded.body,
-            project_ref       = COALESCE(excluded.project_ref, project_ref),
-            initiative        = COALESCE(excluded.initiative, initiative),
-            origin_session_id = excluded.origin_session_id,
-            updated_at        = excluded.updated_at,
-            class             = excluded.class,
-            status            = excluded.status,
-            deleted_at        = NULL
         """,
-        # `created_at` (v50, forward-only): bound for the INSERT branch only,
-        # absent from DO UPDATE SET, same discipline as upsert_memory above --
-        # a brand-new checkpoint row is born with `now`; an existing row's
-        # `created_at` is never touched by this UPDATE branch.
         (workspace, name, mem_type, description, body,
          project_ref, initiative, origin_session_id, now, class_, status, now),
     )
     return {
         "name": name,
-        "action": action,
+        "action": "inserted",
         "class": class_,
         "memory_status": status,
         # The workspace actually written -- may differ from the caller's
@@ -3369,11 +3371,10 @@ def _insert_checkpoint_link(
 ) -> str:
     """Insert one memory_links edge on the CALLER's connection. Idempotent.
 
-    Both endpoints are guaranteed to exist -- the caller inserts the anchor and
-    every thread before any link -- so this skips the endpoint-existence probes
-    ``insert_memory_link`` does and only guards against a duplicate edge (making
-    the whole checkpoint safely re-runnable). Returns ``"inserted"`` or
-    ``"noop"``.
+    The caller guarantees both endpoints exist -- it inserts the anchor and
+    every thread before any link, and checks a ``supersedes`` target -- so this
+    skips the endpoint-existence probes ``insert_memory_link`` does and only
+    guards against a duplicate edge. Returns ``"inserted"`` or ``"noop"``.
     """
     existing = con.execute(
         "SELECT 1 FROM memory_links "
@@ -3418,27 +3419,31 @@ def close_session_memory(
     ``payload`` shape::
 
         {
-          "resumen":   {"name", "type", "description", "body"},
-          "pendientes": [{"name", "description", "body"}, ...]   # may be empty
+          "resumen":   {"name", "type", "description", "body", "supersedes"?},
+          "pendientes": [{"name", "description", "body", "supersedes"?}, ...]
         }
 
     Semantics, all in ONE transaction (rollback to zero rows on any failure):
-      1. ``resumen`` -> upsert as a ``class=anchor`` record row.
-      2. each ``pendientes[i]`` -> upsert as a ``class=thread
+      1. ``resumen`` -> a new ``class=anchor`` record row.
+      2. each ``pendientes[i]`` -> a new ``class=thread
          status=carry_forward`` row (type inherited from ``resumen`` -- the
          payload carries no per-pending type, matching the session-reflection
          convention where record and threads share ``--type``).
       3. a ``derived_from`` edge from each thread back to the anchor.
+      4. for a row carrying ``supersedes``, a ``supersedes`` edge from it to
+         that live row of the same workspace.
+
+    Every name must be new: an existing one, live or deleted, rolls the whole
+    checkpoint back (:func:`_refuse_existing_name`), so a re-run of the same
+    payload is refused. Changed knowledge travels as a new row whose
+    ``supersedes`` names the row it replaces.
 
     ``initiative`` -- one logical initiative for the WHOLE checkpoint (the
     payload carries no per-row initiative, matching the shared ``--type``
     convention above). Normalized here, then host-scope (:func:`apply_host_scope`)
     is applied ONCE up front so ``_ensure_workspace_row`` provisions the
-    workspace the rows will actually land under; ``_upsert_checkpoint_row``
+    workspace the rows will actually land under; ``_insert_checkpoint_row``
     re-applies the same rule per row as the real INSERT-site enforcement.
-
-    Idempotent: re-running the same payload UPSERTs the same rows and re-uses
-    the same edges (the fecha-stamped slug convention avoids collisions).
 
     Returns::
 
@@ -3450,8 +3455,11 @@ def close_session_memory(
             raised before any connection is opened.
         MemoryHostScopeError: a host-scoped initiative was combined with
             ``project_ref`` (``code="host_scope_no_project"``).
+        MemoryNameExistsError / MemoryUserScopeError: a name already exists
+            (``name_exists`` / ``user_name_collision``) -- rolled back.
         ValueError: a row failed semantic validation (invalid type, slug<->type
-            mismatch, empty body) -- the whole checkpoint is rolled back.
+            mismatch, empty body, ``supersedes`` naming no live row) -- the
+            whole checkpoint is rolled back.
         MemoryWriteForbidden: GAIA_DISPATCH_AGENT names a non-curator.
     """
     _assert_dispatch_can_write_memory()
@@ -3475,6 +3483,15 @@ def close_session_memory(
                 f"payload.pendientes[{i}] must be an object with name+body"
             )
         _require_payload_keys(p, ("name", "body"), f"payload.pendientes[{i}]")
+    located = [("payload.resumen", resumen)] + [
+        (f"payload.pendientes[{i}]", p) for i, p in enumerate(pendientes)
+    ]
+    for where, row in located:
+        old = row.get("supersedes")
+        if old is not None and (not isinstance(old, str) or not old.strip()):
+            raise MemorySessionPayloadError(
+                f"{where}.supersedes must be the slug of the row it replaces"
+            )
 
     record_type = resumen["type"]
     record_name = resumen["name"]
@@ -3495,7 +3512,7 @@ def close_session_memory(
             _ensure_workspace_row(con, effective_workspace)
 
             # (1) record anchor
-            anchor = _upsert_checkpoint_row(
+            anchor = _insert_checkpoint_row(
                 con, effective_workspace,
                 name=record_name, mem_type=record_type,
                 description=resumen.get("description"), body=resumen["body"],
@@ -3509,7 +3526,7 @@ def close_session_memory(
             threads: list[dict] = []
             links: list[dict] = []
             for p in pendientes:
-                threads.append(_upsert_checkpoint_row(
+                threads.append(_insert_checkpoint_row(
                     con, effective_workspace,
                     name=p["name"], mem_type=record_type,
                     description=p.get("description"), body=p["body"],
@@ -3525,6 +3542,29 @@ def close_session_memory(
                     "dst_name": record_name,
                     "kind": "derived_from",
                     "action": link_action,
+                })
+
+            # (4) supersedes edges, once every new row exists
+            for row in (resumen, *pendientes):
+                old = row.get("supersedes")
+                if old is None:
+                    continue
+                if con.execute(
+                    "SELECT 1 FROM memory WHERE workspace = ? AND name = ? "
+                    "AND deleted_at IS NULL",
+                    (effective_workspace, old),
+                ).fetchone() is None:
+                    raise ValueError(
+                        f"{row['name']!r} supersedes {old!r}, which is no live "
+                        f"row of workspace {effective_workspace!r}"
+                    )
+                links.append({
+                    "src_name": row["name"],
+                    "dst_name": old,
+                    "kind": "supersedes",
+                    "action": _insert_checkpoint_link(
+                        con, effective_workspace, row["name"], old, "supersedes", now,
+                    ),
                 })
 
             con.commit()

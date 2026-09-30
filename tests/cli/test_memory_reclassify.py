@@ -1,6 +1,6 @@
 """
 Tests for ``gaia memory reclassify`` and the T5 --class/--status flags on
-``gaia memory add`` / ``gaia memory edit``.
+``gaia memory add``.
 
 Brief: memory-model-refactor-class-status-links-structural-enforcement (T5).
 
@@ -19,8 +19,6 @@ Coverage:
   * CLI: reclassify error when --status=open on existing anchor row
   * CLI: reclassify --status=null clears the column on a thread row
   * CLI: add --class --status creates the row with those values
-  * CLI: edit --class --status updates the row
-  * CLI: edit can operate as pure reclassify (no --field)
 """
 
 from __future__ import annotations

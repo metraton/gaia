@@ -988,8 +988,8 @@ def _is_help_token(token: str) -> bool:
     """True iff *token* is, or unambiguously abbreviates, `-h`/`--help`.
 
     Mirrors `_forbidden_flag_hit`'s already-verified-against-argparse
-    abbreviation handling (`allow_abbrev` defaults True and gaia's parsers
-    never disable it) rather than inventing a second one: `--hel`/`--he`
+    abbreviation handling (`allow_abbrev` defaults True, and a parser that
+    turns it off only makes the match stricter) rather than inventing a second one: `--hel`/`--he`
     parse to the help action exactly as `--fi`/`--f` parse to `--fix` there.
     The `=value` split via `_option_name` also means a token like
     `--description=--help` (a VALUE that merely looks like the flag, verified
@@ -1063,8 +1063,9 @@ def _forbidden_flag_hit(token: str, forbidden: FrozenSet[str]) -> Optional[str]:
     """The flag in *forbidden* that *token* would reach, or None.
 
     Matching is by PREFIX of the forbidden flag, not equality, because
-    argparse abbreviates long options (``allow_abbrev`` defaults to True and
-    nothing in gaia's parsers turns it off). Measured, not assumed: for
+    argparse abbreviates long options (``allow_abbrev`` defaults to True, and
+    only a parser that turns it off, like ``gaia memory add``, refuses the
+    short spellings itself). Measured, not assumed: for
     ``gaia doctor`` both ``--fi`` and ``--f`` parse to ``fix=True``, so an
     equality check on ``"--fix"`` would fail OPEN on the two shortest
     spellings of the very flag it exists to stop.
