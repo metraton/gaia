@@ -1079,6 +1079,11 @@ def _configure_host(
             return opencode_res.get("action") in ("created", "updated", "noop")
         return opencode_res.get("action") != "error"
 
+    identity_res = _install_helpers.verify_orchestrator_artifact()
+    if identity_res["action"] == "error":
+        print(f"gaia install: {identity_res['details']}", file=sys.stderr)
+        return False
+
     # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
     # The first four helpers early-return when .claude/ is missing, so it
     # must exist before any Claude-specific configuration runs.

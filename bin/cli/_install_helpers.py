@@ -587,6 +587,16 @@ def _agent_frontmatter(source: Path) -> dict[str, Any]:
     return values
 
 
+def verify_orchestrator_artifact() -> dict[str, Any]:
+    """Refuse a package whose agents cannot start the host as the orchestrator."""
+    from gaia.agent_identity import missing_orchestrator_identity
+
+    missing = missing_orchestrator_identity(_PACKAGE_ROOT, plugin=False)
+    if missing:
+        return _result("error", _PACKAGE_ROOT, f"refusing to wire this package: {missing}")
+    return _result("noop", _PACKAGE_ROOT, "package carries the orchestrator agent")
+
+
 # ---------------------------------------------------------------------------
 # 2. settings.local.json -- permissions + env + agent
 # ---------------------------------------------------------------------------

@@ -63,6 +63,8 @@ def extract_plugin(tarball: Path, destination: Path) -> dict[str, Any]:
     The new tree is assembled beside *destination* and swapped in by rename, so
     the registered path never points at a half-extracted build.
     """
+    from gaia.agent_identity import missing_orchestrator_identity
+
     if destination.is_symlink():
         return {"action": "error", "path": str(destination),
                 "details": "refusing a redirected plugin directory"}
@@ -79,6 +81,9 @@ def extract_plugin(tarball: Path, destination: Path) -> dict[str, Any]:
         manifest = json.loads((package / ".claude-plugin" / "plugin.json").read_text())
         if not isinstance(manifest, dict) or manifest.get("name") != "gaia":
             raise ValueError("packed plugin.json is not the gaia plugin")
+        missing = missing_orchestrator_identity(package, plugin=True)
+        if missing:
+            raise ValueError(f"packed plugin cannot start the host as the orchestrator: {missing}")
         (package / ".claude-plugin" / "marketplace.json").write_text(
             json.dumps(_marketplace(package), indent=2) + "\n")
         retired = parent / f".retired-{uuid.uuid4().hex}"
