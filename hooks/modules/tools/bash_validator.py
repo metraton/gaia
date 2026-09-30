@@ -370,23 +370,28 @@ class BashValidator:
                 # Not blocked but still indirect — route through approval
                 logger.info("Indirect execution detected: %s", command[:80])
                 result = detect_mutative_command(command)
-                if result.is_mutative:
-                    return None  # Already mutative, will be caught by mutative_verbs
 
                 # For interpreters with inline code analysis (python3 -c),
                 # mutative_verbs.py has dedicated pattern scanning that
                 # distinguishes safe code (json.dumps, sys.version) from
-                # dangerous code (os.system, subprocess.run). If it classified
-                # the inline code as safe, trust that analysis and allow it
-                # through without forcing an "ask" dialog.
+                # dangerous code (os.system, subprocess.run). Whatever it
+                # classified, trust that analysis and proceed to normal
+                # validation: a mutative verdict gets its T3 gate there.
                 from ..security.mutative_verbs import _INLINE_CODE_CLIS
                 base_cmd = command.strip().split()[0].rsplit("/", 1)[-1].lower()
                 if base_cmd in _INLINE_CODE_CLIS:
                     logger.info(
-                        "Inline code classified as safe by pattern scanner: %s",
+                        "Inline code classified by pattern scanner: %s",
                         command[:80],
                     )
-                    return None  # Safe inline code, proceed to normal validation
+                    return None
+
+                # A mutative shell wrapper reaches mutative_verbs' T3 gate for
+                # the orchestrator. A subagent never signs a wrapped command:
+                # it is refused below so the inner command runs directly and
+                # gets its own gate.
+                if result.is_mutative and not is_subagent:
+                    return None
 
                 # Shell wrappers (bash -c, eval, etc.) hide the real command
                 # in a string — no dedicated scanner exists. Force "ask" so

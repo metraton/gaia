@@ -68,6 +68,37 @@ def test_orchestrator_wrapper_keeps_its_dialog(command):
     assert read_permission_decision(result.block_response) == "ask"
 
 
+# A mutative inner command changes nothing for the subagent: the wrapper is
+# refused so the inner command runs directly and gets its own T3 gate, instead
+# of the user being asked to sign a wrapped command.
+MUTATIVE_WRAPPERS = [
+    "bash -c 'git push origin x'",
+    "sh -c 'git push origin x'",
+    "eval 'git push origin x'",
+]
+
+
+@pytest.mark.parametrize("command", MUTATIVE_WRAPPERS)
+def test_subagent_mutative_wrapper_is_denied_with_the_correct_form(command):
+    result = _validate(command, is_subagent=True)
+
+    assert not result.allowed
+    assert result.approval_id is None
+    assert read_permission_decision(result.block_response) == "deny"
+
+    reason = read_permission_reason(result.block_response).lower()
+    assert "directly" in reason
+    assert "script" in reason
+
+
+@pytest.mark.parametrize("command", MUTATIVE_WRAPPERS)
+def test_orchestrator_mutative_wrapper_keeps_its_dialog(command):
+    result = _validate(command, is_subagent=False)
+
+    assert not result.allowed
+    assert read_permission_decision(result.block_response) == "ask"
+
+
 def test_subagent_direct_command_is_not_affected():
     result = _validate("gh pr checks 42 --repo metraton/gaia", is_subagent=True)
 
