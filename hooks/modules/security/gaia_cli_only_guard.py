@@ -624,7 +624,7 @@ ALLOWED_BARE_READ_FLAGS: FrozenSet[str] = frozenset({"--version"})
 # them enumerated, with the reason attached, is the tripwire that makes that
 # future edit a deliberate decision instead of an accidental widening.
 # Task/gate design, approval mutation, destructive brief/plan operations,
-# memory correction/deletion, and contract authorship belong to specialist or
+# memory deletion, and contract authorship belong to specialist or
 # consent-governed paths. Coordinator-owned brief and lifecycle writes are
 # separately allowlisted and shape-checked below.
 #
@@ -655,7 +655,6 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("approvals", "replay"),
     ("approvals", "reject-all"),
     ("approvals", "clean"),
-    ("memory", "edit"),
     ("memory", "delete"),
     ("contract", "set"),
     ("contract", "add"),

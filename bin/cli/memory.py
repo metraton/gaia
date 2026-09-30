@@ -60,20 +60,10 @@ these verbs in this order:
                                           closed) without touching the body.
                                           Non-mutative (T0).
 
-  edit --name=<slug> --field=<description|body>
-       --content="..." | --body-file=<path> [--append]
-       [--audience=<orchestrator|executor|any>] [--json]
-                                          CORRECTION verb: overwrite/supersede
-                                          a field when existing content is
-                                          WRONG. Non-destructive under the
-                                          hood (memory_history keeps the prior
-                                          value) but changes what reads see,
-                                          so it stays T3 (needs approval).
-                                          Prefer append to add text.
-                                          --audience (v45) PATCHes
-                                          memory.audience on an EXISTING row;
-                                          combinable with --field/--class/
-                                          --status/--project in the same call.
+  edit                                    Retired: memory is append-only. A
+                                          changed agreement is a new row plus
+                                          link --kind=supersedes; an error is
+                                          corrected with add --replace (T3).
 
   link <src> <dst> --kind=<relates_to|supersedes|derived_from|graduated_to>
       [--delete] [--workspace=<ws>]      Create/delete a memory_links edge.
@@ -631,8 +621,8 @@ def _workspace_holding(workspace: str, name: str, *,
 # Subcommand handler: add (DB-only writer)
 # ---------------------------------------------------------------------------
 #
-# T5 note: ``add`` and ``edit`` accept optional ``--class`` and ``--status``
-# flags. After the primary upsert / edit completes, if either flag was
+# T5 note: ``add`` accepts optional ``--class`` and ``--status``
+# flags. After the primary upsert completes, if either flag was
 # supplied, the same ``reclassify_memory`` writer is invoked so the row's
 # semantic role and lifecycle state land in a single CLI call. The CLI is
 # the only surface that translates ``--status=null`` into the empty-string
@@ -897,6 +887,13 @@ def _cmd_add(args) -> int:
         )
     except Exception:  # noqa: BLE001 -- a warning must never block the write
         stored = None
+    if stored is not None and mem_type != "user" and not getattr(args, "replace", False):
+        return _err_structured(
+            f"memory '{name}' already exists. A changed agreement is a new row "
+            f"plus `gaia memory link <new> {name} --kind=supersedes`; to correct "
+            f"an error in this row, repeat the add with --replace.",
+            as_json, code="name_exists",
+        )
     warnings = _add_warnings(
         mem_type=mem_type, description=description, body=body,
         owned=project_ref is not None or initiative is not None,
@@ -936,6 +933,19 @@ def _cmd_add(args) -> int:
     )
     user_scoped_notice = mem_type == "user"
     workspace = res.get("workspace", workspace)
+
+    # upsert_memory never overwrites a set project_ref or audience, so a
+    # correction of either is applied by its dedicated writer.
+    if stored is not None:
+        try:
+            if project_ref is not None and project_ref != stored.get("project_ref"):
+                from gaia.store.writer import reanchor_memory_project_ref
+                reanchor_memory_project_ref(workspace, name, project_ref)
+            if audience_flag is not None:
+                from gaia.store.writer import set_memory_audience
+                set_memory_audience(workspace, name, audience_flag)
+        except (ValueError, PermissionError) as exc:
+            return _err(str(exc), as_json)
 
     # T5: apply class/status if either flag was supplied. The reclassify
     # writer handles enum validation, the status-only-on-thread rule, and
@@ -1254,7 +1264,7 @@ def _cmd_checkpoint(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommand handlers: curated memory list / show / delete / edit
+# Subcommand handlers: curated memory list / show / delete
 # ---------------------------------------------------------------------------
 
 def _print_telemetry_caveats() -> None:
@@ -2759,197 +2769,19 @@ def _cmd_delete(args) -> int:
     return 0
 
 
-def _cmd_edit(args) -> int:
-    """CORRECT a single column of a curated memory row (supersede-with-history).
+_EDIT_RETIRED = (
+    "`gaia memory edit` is retired: memory is append-only. Write the changed "
+    "agreement as a new row and run `gaia memory link <new> <old> "
+    "--kind=supersedes`; to correct an error in a row, repeat its "
+    "`gaia memory add --name=<slug> ...` with --replace (T3, the prior value "
+    "stays in memory_history)."
+)
 
-    ``edit`` is the CORRECTION verb: it overwrites a field to fix or reframe
-    content that is already wrong. It is non-destructive under the hood -- the
-    prior value is captured in ``memory_history`` by ``trg_memory_history`` --
-    but the read surface then shows only the corrected value, which is why it
-    is classified T3 (it changes what future reads see). To ADD text WITHOUT
-    replacing the existing body, use ``gaia memory append`` instead: that is
-    the primary additive verb and is non-mutative (T0). The ``--append`` flag
-    here is retained for backward compatibility and delegates to the same
-    writer path as ``append``.
 
-    T5: also accepts ``--class`` and ``--status`` flags. When --field/--content
-    are omitted but a class/status flag is supplied, the call functions as a
-    pure reclassify -- useful for "I want to graduate this thread" style edits
-    without re-typing the body.
-
-    Also accepts ``--project`` / ``--project-ref`` to RE-ANCHOR an existing
-    row's ``memory.project_ref`` without rewriting the body. This closes the
-    gap where ``gaia memory add --project`` could only anchor at WRITE time:
-    a row written with a NULL or wrong ``project_ref`` (e.g. because the cwd
-    was a multi-project workspace root) can now be corrected in place. The
-    resolution contract matches ``add`` -- ``--project`` resolves a name to a
-    stable identity, ``--project-ref`` passes one directly, and an unknown
-    project is a structured error, never a silent NULL.
-    """
-    as_json = getattr(args, "json", False)
-    name = getattr(args, "name", None)
-    workspace = _workspace_holding(
-        _resolve_workspace(getattr(args, "workspace", None)), name,
-    )
-    field = getattr(args, "field", None)
-    content = getattr(args, "content", None)
-    body_file = getattr(args, "body_file", None)
-    append = getattr(args, "append", False)
-    class_flag = getattr(args, "class_", None)
-    status_flag = getattr(args, "status", None)
-    project_flag = getattr(args, "project", None)
-    project_ref_flag = getattr(args, "project_ref", None)
-    audience_flag = getattr(args, "audience", None)
-
-    if not name:
-        return _err("--name is required", as_json)
-
-    if body_file is not None:
-        try:
-            content = _read_body_file(body_file)
-        except FileNotFoundError:
-            return _err(f"--body-file: file not found: {body_file}", as_json)
-        except OSError as exc:
-            return _err(f"--body-file: cannot read '{body_file}': {exc}", as_json)
-
-    # Defensive gate: body edits with rich markdown require a prior description
-    # to exist (or to be set via --field=description in the same call). Since
-    # edit patches one field at a time, we only block when field=body + the
-    # resolved content is rich. Callers that set --field=description first are
-    # unaffected.
-    if field == "body" and content and _is_rich_body(content):
-        # Look up the existing row to check whether a description is already set.
-        try:
-            from gaia.store.writer import get_memory as _gm_check
-            existing = _gm_check(workspace, name)
-            if existing and not (existing.get("description") or "").strip():
-                return _err(
-                    "body contains markdown structure (code blocks/headers/multi-paragraph).\n"
-                    "--description is required for rich bodies -- it's what gets injected at SessionStart.\n"
-                    "Bodies without description fall back to body[:60] which destroys code-block semantics.",
-                    as_json,
-                )
-        except Exception:
-            pass  # import failure -> skip gate rather than block the edit
-
-    # On edit, --field/--content remain optional only when at least one
-    # class/status flag is provided. The classic "patch a column" path still
-    # requires both.
-    status_touches, status_for_writer = _normalize_status_flag(status_flag)
-    has_field_patch = field is not None and content not in (None, "")
-    has_reclassify = class_flag is not None or status_touches
-    has_reanchor = project_flag is not None or project_ref_flag is not None
-    has_audience = audience_flag is not None
-
-    if not has_field_patch and not has_reclassify and not has_reanchor and not has_audience:
-        return _err(
-            "--field/--content, --class/--status, --project/--project-ref, "
-            "or --audience is required", as_json,
-        )
-
-    try:
-        from gaia.store.writer import update_memory_field, reclassify_memory
-    except ImportError as exc:
-        return _err(f"gaia.store.writer not importable: {exc}", as_json)
-
-    # Re-anchor project_ref of an existing row. Resolve the project scope with
-    # the SAME contract `gaia memory add` uses (`_resolve_scope_contract`),
-    # scoped to the already-resolved workspace: --project resolves a name to
-    # its stable identity, --project-ref passes an identity directly, and an
-    # unresolvable project is a structured error (never a silent NULL).
-    reanchor_result = None
-    if has_reanchor:
-        project_ref, scope_err = _resolve_scope_contract(
-            workspace=workspace,
-            workspace_flag=None,
-            project_flag=project_flag,
-            project_ref_flag=project_ref_flag,
-            as_json=as_json,
-        )
-        if scope_err is not None:
-            return scope_err
-        try:
-            from gaia.store.writer import reanchor_memory_project_ref
-            reanchor_result = reanchor_memory_project_ref(
-                workspace, name, project_ref,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    field_result = None
-    if has_field_patch:
-        try:
-            field_result = update_memory_field(
-                workspace, name, field, content, append=append,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    reclassify_result = None
-    if has_reclassify:
-        try:
-            reclassify_result = reclassify_memory(
-                workspace,
-                name,
-                class_=class_flag,
-                status=status_for_writer,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    audience_result = None
-    if has_audience:
-        try:
-            from gaia.store.writer import set_memory_audience
-            audience_result = set_memory_audience(
-                workspace, name, audience_flag,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    if as_json:
-        payload = {
-            "name": name,
-            "workspace": workspace,
-            "field_update": field_result,
-            "reclassify": reclassify_result,
-            "reanchor": reanchor_result,
-            "audience": audience_result,
-        }
-        print(json.dumps(payload, indent=2, default=str))
-    else:
-        if field_result is not None:
-            print(
-                f"Updated memory '{name}' field={field} "
-                f"action={field_result['action']}"
-            )
-        if reclassify_result is not None:
-            print(
-                f"Reclassified '{name}': class={reclassify_result['class']}, "
-                f"status={reclassify_result['memory_status']}"
-            )
-        if audience_result is not None:
-            print(
-                f"Audience '{name}': "
-                f"{audience_result['before_audience']!r} -> "
-                f"{audience_result['after_audience']!r}"
-            )
-        if reanchor_result is not None:
-            print(
-                f"Re-anchored '{name}': project_ref "
-                f"{reanchor_result['before_project_ref']!r} -> "
-                f"{reanchor_result['after_project_ref']!r}"
-            )
-    _emit_write_warnings([], as_json)
-    return 0
+def _cmd_edit_retired(args) -> int:
+    """Refuse the retired ``edit`` verb, naming what replaces it."""
+    as_json = getattr(args, "json", False) or "--json" in args.retired_args
+    return _err_structured(_EDIT_RETIRED, as_json, code="verb_retired")
 
 
 # ---------------------------------------------------------------------------
@@ -2972,7 +2804,7 @@ def _cmd_edit(args) -> int:
 #   record only ADDS capability/recoverability; per the security-tiers
 #   direction principle, that never needs consent. No change to the classifier
 #   was required -- the property falls out of the verb taxonomy. Contrast with
-#   ``edit`` / ``delete``, which ARE in MUTATIVE_VERBS and stay T3.
+#   ``delete`` and ``add --replace``, which stay T3.
 # ---------------------------------------------------------------------------
 
 def _cmd_append(args) -> int:
@@ -2981,9 +2813,8 @@ def _cmd_append(args) -> int:
     Additive and non-destructive: the new text is concatenated to the current
     body (separator ``\\n\\n``); the prior body survives in ``memory_history``
     via the ``trg_memory_history`` trigger. This is the primary verb for
-    "sum something" to a carry-forward note or running thread. It routes
-    through the SAME writer path as ``edit --append`` (update_memory_field with
-    ``append=True``), so history preservation is identical.
+    "sum something" to a carry-forward note or running thread, written by
+    ``update_memory_field`` with ``append=True``.
 
     Classified NON-mutative (T0): ``append`` is not in MUTATIVE_VERBS, so it
     needs no T3 approval -- appending only grows the record.
@@ -3559,104 +3390,14 @@ def register(subparsers):
     )
     delete_p.set_defaults(func=_cmd_delete)
 
-    # -- edit ---------------------------------------------------------------
-    edit_p = actions.add_parser(
-        "edit",
-        help="CORRECT a curated memory field (overwrite/supersede, with history)",
-        description=(
-            "Correction verb: overwrite a single column to fix or reframe what "
-            "is already there. The prior value is preserved in memory_history "
-            "(supersede-with-history, not a destructive mutation), but the read "
-            "surface shows only the new value. To ADD text without replacing "
-            "it, prefer `gaia memory append` -- that is the primary additive "
-            "verb. Use `edit` when the existing content is WRONG and must be "
-            "corrected. (T3: correction changes what reads see, so it needs "
-            "approval; append does not.)"
-        ),
-        formatter_class=_argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n"
-               "  gaia memory edit --name=foo --field=body "
-               "--append --content='...'\n"
-               "  gaia memory edit --name=foo --field=body "
-               "--body-file=~/.gaia/scratch/new_body.md\n"
-               "  cat new_body.md | gaia memory edit --name=foo --field=body "
-               "--body-file=-\n",
-    )
-    edit_p.add_argument("--name", required=True, help="Curated memory slug.")
-    # --field / --content are no longer required: T5 lets edit operate as a
-    # pure reclassify when only --class/--status are supplied. The handler
-    # surfaces a clear error if neither pair is provided.
-    edit_p.add_argument(
-        "--field", default=None,
-        choices=("description", "body"),
-        help="Column to patch (optional; required only when --content or --body-file given).",
-    )
-    _edit_content_group = edit_p.add_mutually_exclusive_group()
-    _edit_content_group.add_argument(
-        "--content", default=None,
-        help="New value for --field.",
-    )
-    _edit_content_group.add_argument(
-        "--body-file", dest="body_file", default=None, metavar="PATH",
-        help=(
-            "Read new value for --field from PATH. Use '-' to read from stdin "
-            "until EOF. Useful for bodies with angle brackets, shell variables, "
-            "nested quotes, or markdown code blocks."
-        ),
-    )
-    edit_p.add_argument("--append", action="store_true", default=False,
-                        help="Append (separator '\\n\\n'). bool. Default: false.")
-    edit_p.add_argument(
-        "--class", dest="class_", default=None,
-        choices=("anchor", "thread", "log"),
-        help="T5: set memory.class. Writer-side enum.",
-    )
-    edit_p.add_argument(
-        "--status", dest="status", default=None,
-        help=(
-            "T5: set memory.status (open|carry_forward|graduated|closed); "
-            "use 'null' to clear. Only valid for class=thread."
-        ),
-    )
-    edit_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity.")
-    _edit_anchor_group = edit_p.add_mutually_exclusive_group()
-    _edit_anchor_group.add_argument(
-        "--project", default=None, metavar="NAME",
-        help=(
-            "RE-ANCHOR: change memory.project_ref of an EXISTING row. Resolves "
-            "a project NAME within --workspace to its stable project_identity "
-            "(same resolution as `gaia memory add --project`). Use this to fix "
-            "a row that was written with project_ref NULL or anchored to the "
-            "wrong project. Mutually exclusive with --project-ref."
-        ),
-    )
-    _edit_anchor_group.add_argument(
-        "--project-ref", dest="project_ref", default=None, metavar="IDENTITY",
-        help=(
-            "RE-ANCHOR: set memory.project_ref of an EXISTING row directly to a "
-            "known project_identity string (no name resolution). Mutually "
-            "exclusive with --project."
-        ),
-    )
-    edit_p.add_argument(
-        "--audience", default=None,
-        choices=("orchestrator", "executor", "any"),
-        help=(
-            "v45: PATCH memory.audience of an EXISTING row -- which agent "
-            "role this row is FOR (orchestrator|executor|any). Can be "
-            "combined with --field/--class/--status/--project in the same "
-            "call."
-        ),
-    )
-    edit_p.add_argument("--json", action="store_true", default=False,
-                        help="Emit JSON. bool.")
-    edit_p.set_defaults(func=_cmd_edit)
+    # Retired, and kept only so a call names its replacement; unlisted in help.
+    # No prefix character can match, so every old flag lands in retired_args
+    # instead of failing the parse as unrecognized.
+    edit_p = actions.add_parser("edit", prefix_chars="\x00", add_help=False)
+    edit_p.add_argument("retired_args", nargs="*")
+    edit_p.set_defaults(func=_cmd_edit_retired)
 
     # -- append -------------------------------------------------------------
-    # Primary "add text to an existing note" verb. Additive, history-preserving,
-    # and NON-mutative (T0): 'append' is not in MUTATIVE_VERBS, so it needs no
-    # T3 approval. Routes through the same writer path as `edit --append`.
     append_p = actions.add_parser(
         "append",
         help="Append text to an existing curated memory body (additive, T0)",
@@ -3665,8 +3406,9 @@ def register(subparsers):
             "new text (separator '\\n\\n'). Additive and non-destructive -- the "
             "prior body is preserved in memory_history. This is the primary "
             "verb for 'add something' to a carry-forward note or running "
-            "thread. Non-mutative (needs no approval). To CORRECT or replace "
-            "existing text, use `gaia memory edit` instead."
+            "thread. Non-mutative (needs no approval). A changed agreement is "
+            "a new row that supersedes this one; to correct an error, use "
+            "`gaia memory add --replace`."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -3795,9 +3537,10 @@ def register(subparsers):
 
     add_p = actions.add_parser(
         "add",
-        help="Upsert a curated memory row (DB-only)",
+        help="Write a new curated memory row (DB-only)",
         description=(
-            "Insert or update by (project, name).\n\n"
+            "Insert by (workspace, name); an existing name is refused unless "
+            "--replace.\n\n"
             "One thing per row. Every row has one of three owners:\n"
             "  the user    --type=user (true of him in any project; no scope)\n"
             "  a project   --project=<name> or --initiative=<key>\n"
@@ -3808,8 +3551,10 @@ def register(subparsers):
             + "  ".join(f"{kind}:" for kind in MEMORY_CLAIM_KINDS)
             + "\n\n"
             "A changed fact is a new row plus `gaia memory link <new> <old> "
-            "--kind=supersedes`; adding over an existing name rewrites it in "
-            "place and is for correcting an error. Only a log grows by append.\n"
+            "--kind=supersedes`; --replace rewrites an existing name in place, "
+            "only to correct an error, and needs a signature (T3). The prior "
+            "value stays in memory_history. Only a log or a thread grows by "
+            "append.\n"
             "The CLI warns on length, a missing owner, an in-place rewrite and "
             "a user preference; the row is still written."
         ),
@@ -3829,6 +3574,11 @@ def register(subparsers):
     )
     add_p.add_argument("--name", required=True,
                        help="Slug. PK with project.")
+    add_p.add_argument(
+        "--replace", action="store_true", default=False,
+        help="Rewrite an existing row of this name in place to correct an "
+             "error (T3). bool. Default: false.",
+    )
     add_p.add_argument(
         "--type", required=True,
         choices=("project", "user", "feedback", "atom", "decision", "negative"),

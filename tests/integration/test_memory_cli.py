@@ -140,8 +140,8 @@ def test_add_zero_filesystem_side_effects(tmp_db, tmp_path, monkeypatch, capsys)
 # Upsert path
 # ---------------------------------------------------------------------------
 
-def test_add_duplicate_name_upserts(tmp_db, tmp_path, monkeypatch, capsys):
-    """A second add with the same (workspace, name) updates the row, not errors."""
+def test_add_duplicate_name_with_replace_upserts(tmp_db, tmp_path, monkeypatch, capsys):
+    """A second add --replace with the same (workspace, name) updates the row."""
     from cli.memory import _cmd_add
 
     monkeypatch.chdir(tmp_path)
@@ -151,7 +151,7 @@ def test_add_duplicate_name_upserts(tmp_db, tmp_path, monkeypatch, capsys):
     rc1 = _cmd_add(argparse.Namespace(body="initial body", **base))
     assert rc1 == 0, capsys.readouterr()
 
-    rc2 = _cmd_add(argparse.Namespace(body="updated body", **base))
+    rc2 = _cmd_add(argparse.Namespace(body="updated body", replace=True, **base))
     assert rc2 == 0, capsys.readouterr()
 
     row = _read_memory_row(tmp_db, "me", "dup-mem")
@@ -186,7 +186,7 @@ def test_add_json_action_is_inserted_then_updated(tmp_db, tmp_path,
     payload1 = json.loads(out1)
     assert payload1["action"] == "inserted"
 
-    rc2 = _cmd_add(argparse.Namespace(body="b2", **base))
+    rc2 = _cmd_add(argparse.Namespace(body="b2", replace=True, **base))
     assert rc2 == 0
     out2 = capsys.readouterr().out
     payload2 = json.loads(out2)
@@ -350,7 +350,7 @@ def test_add_update_without_project_flag_preserves_existing_anchor(
     assert _read_memory_row(tmp_db, "me", "sticky-mem")["project_ref"] == "github.com/me/x"
 
     # Second call: same slug, no --project this time.
-    rc2 = _cmd_add(_add_args(name="sticky-mem", body="v2"))
+    rc2 = _cmd_add(_add_args(name="sticky-mem", body="v2", replace=True))
     assert rc2 == 0, capsys.readouterr()
     row = _read_memory_row(tmp_db, "me", "sticky-mem")
     assert row["body"] == "v2", "the update itself must still land"
@@ -901,101 +901,6 @@ def test_delete_curated_not_found(tmp_db, tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "not found" in captured.err.lower()
-
-
-def test_edit_curated_overwrite_body(tmp_db, tmp_path, monkeypatch, capsys):
-    from cli.memory import _cmd_edit
-
-    monkeypatch.chdir(tmp_path)
-    _seed_curated(tmp_db, "patchme", "project", "old body")
-
-    args = argparse.Namespace(
-        name="patchme", workspace="me",
-        field="body", content="new body", append=False, json=False,
-    )
-    rc = _cmd_edit(args)
-    assert rc == 0, capsys.readouterr()
-    row = _read_memory_row(tmp_db, "me", "patchme")
-    assert row["body"] == "new body"
-
-
-def test_edit_curated_append_description(tmp_db, tmp_path, monkeypatch, capsys):
-    from cli.memory import _cmd_edit
-
-    monkeypatch.chdir(tmp_path)
-    _seed_curated(tmp_db, "appendme", "project", "body",
-                  description="first")
-
-    args = argparse.Namespace(
-        name="appendme", workspace="me",
-        field="description", content="second", append=True, json=False,
-    )
-    rc = _cmd_edit(args)
-    assert rc == 0, capsys.readouterr()
-    row = _read_memory_row(tmp_db, "me", "appendme")
-    assert row["description"] == "first\n\nsecond"
-
-
-def test_edit_curated_invalid_field(tmp_db, tmp_path, monkeypatch, capsys):
-    from cli.memory import _cmd_edit
-
-    monkeypatch.chdir(tmp_path)
-    _seed_curated(tmp_db, "guarded", "project", "body")
-
-    args = argparse.Namespace(
-        name="guarded", workspace="me",
-        field="type", content="user", append=False, json=False,
-    )
-    rc = _cmd_edit(args)
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "invalid memory field" in captured.err.lower()
-
-
-def test_edit_curated_not_found(tmp_db, tmp_path, monkeypatch, capsys):
-    from cli.memory import _cmd_edit
-
-    monkeypatch.chdir(tmp_path)
-    args = argparse.Namespace(
-        name="ghost", workspace="me",
-        field="body", content="x", append=False, json=False,
-    )
-    rc = _cmd_edit(args)
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "not found" in captured.err.lower()
-
-
-def test_edit_curated_empty_content(tmp_db, tmp_path, monkeypatch, capsys):
-    from cli.memory import _cmd_edit
-
-    monkeypatch.chdir(tmp_path)
-    _seed_curated(tmp_db, "intact", "project", "body")
-
-    args = argparse.Namespace(
-        name="intact", workspace="me",
-        field="body", content="", append=False, json=False,
-    )
-    rc = _cmd_edit(args)
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "content" in captured.err.lower()
-
-
-def test_edit_curated_zero_fs_side_effects(tmp_db, tmp_path,
-                                           monkeypatch, capsys):
-    from cli.memory import _cmd_edit
-
-    monkeypatch.chdir(tmp_path)
-    _seed_curated(tmp_db, "fs-check", "project", "body")
-    args = argparse.Namespace(
-        name="fs-check", workspace="me",
-        field="body", content="updated", append=False, json=True,
-    )
-    rc = _cmd_edit(args)
-    assert rc == 0, capsys.readouterr()
-    assert not (tmp_path / ".claude").exists()
-    assert list(tmp_path.rglob("fs-check")) == []
 
 
 # ---------------------------------------------------------------------------

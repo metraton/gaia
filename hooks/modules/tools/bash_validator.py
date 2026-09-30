@@ -799,8 +799,8 @@ class BashValidator:
 
         # ================================================================
         # SUBAGENT MEMORY-WRITE GUARD
-        # Reject direct curated-memory mutations (`gaia memory add|edit|
-        # append|reclassify|delete|link`) attempted from a subagent dispatch
+        # Reject direct curated-memory mutations (`gaia memory add|append|
+        # reclassify|delete|link|checkpoint`) attempted from a subagent dispatch
         # context, EXCEPT for the sanctioned writers (gaia-operator). The
         # orchestrator (is_subagent False) is never blocked here. Categorical
         # deny, NOT approvable: the correct subagent path is to PROPOSE via a

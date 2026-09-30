@@ -1,7 +1,7 @@
 # Memory — Curation mechanics
 
 The exact forms behind the curation verbs: lifecycle moves, links,
-deduplication, pruning, splitting, the `append` / `edit` / `checkpoint` worked
+deduplication, pruning, splitting, the `append` / `add --replace` / `checkpoint` worked
 examples, history coverage, and graph behavior. Load this when executing or
 auditing a curate operation. The verb-selection judgment and the exception
 boundary are in `SKILL.md`; the write path, scope errors and warnings are in
@@ -143,7 +143,7 @@ When a body exceeds ~100 lines, split into focused subtopics:
 4. Replace the original body with a brief index, or
    `--kind=supersedes` it from a new umbrella note.
 
-### Verb detail: `append` and `edit` worked examples
+### Verb detail: `append`, supersede and `add --replace` worked examples
 
 `SKILL.md` carries the curation judgment — which role an item serves, when it
 earns curated attention, and how it exits ("When curated memory loses it").
@@ -165,19 +165,27 @@ the record, so it needs no approval. This is what you want for a
 carry-forward thread or running log that accumulates. Knowledge that
 changed is not appended to: it is a new row that supersedes the old one.
 
-**Correct a note -- `edit` (supersede-with-history):**
+**A changed agreement -- a new row that supersedes:**
 
 ```bash
-# Fix a body that is WRONG (overwrites the live column):
-gaia memory edit --name=<slug> --field=body --body-file=/tmp/corrected.md
-gaia memory edit --name=<slug> --field=<description|body> --content="..."
+gaia memory add --name=<new_slug> --type=<type> --project=<p> --body-file=/tmp/new.md
+gaia memory link <new_slug> <old_slug> --kind=supersedes
 ```
 
-`edit` is the **correction** verb: use it when the existing content is
-wrong and must be replaced. It is classified **T3 (needs approval)**
-because it changes what future reads see. It is non-destructive under the
-hood — the `--append` flag still exists and delegates to the same path as
-`append` — but for adding text, reach for `append` first. Use
+Memory is append-only: nobody edits a row to record that an agreement
+changed. `gaia memory edit` is retired and exits naming this path.
+
+**Correct an error -- `add --replace` (T3):**
+
+```bash
+gaia memory add --name=<slug> --type=<type> --project=<p> --body-file=/tmp/corrected.md --replace
+```
+
+The one in-place rewrite left, for a row that is wrong rather than
+outdated: without `--replace` an `add` over an existing name is refused
+with `name_exists`. It needs a signature for every caller because it
+changes what future reads see; the prior value stays in `memory_history`.
+It also corrects `--project`/`--project-ref` and `--audience`. Use
 `reclassify` to change `class`/`status`; use `link` to wire the graph.
 
 **Persist a meaningful milestone -- `checkpoint` (atomic, non-mutative):**
@@ -216,8 +224,8 @@ thread. An ordinary session close does not require a checkpoint.
 **Ordinary updates are audited.** Any UPDATE to `name`, `body`, `description`,
 `type`, `class`, `status`, `workspace`, `project_ref`, `initiative`, or
 `deleted_at` fires `trg_memory_history`, which archives the tracked before/after
-values. This covers `append`, `edit`, lifecycle/scope transitions, and `add`'s
-UPSERT. It is a recovery aid, not an immortality guarantee: explicit hard
+values. This covers `append`, `add --replace`, and lifecycle/scope
+transitions. It is a recovery aid, not an immortality guarantee: explicit hard
 deletion and workspace cascade can remove the row and its history.
 
 ## Knowledge graph (future)

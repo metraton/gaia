@@ -11,7 +11,7 @@ when its subject is the question:
 - `reference-defect-promotion.md` -- the `gaia_system` initiative shape for a
   defect that must outlive the 90-day anomaly floor.
 - `reference-curation.md` -- the curate flow (lifecycle, links, dedup, pruning,
-  splitting), the `append` / `edit` / `checkpoint` worked forms, history
+  splitting), the `append` / `add --replace` / `checkpoint` worked forms, history
   coverage, and graph behavior.
 
 ## Project-scoped memory: reference `project_ref`, not the workspace
@@ -83,6 +83,8 @@ there is no partial or silent-NULL write:
 | `project_unresolved` | `--project=<name>` does not exist in the workspace | Ask the user which project, or list `projects` and retry. |
 | `project_workspace_mismatch` | `--project` exists, but under a different workspace (see `found_in`) | Re-run with a workspace from `found_in`, or correct the project name. |
 | `project_no_identity` | Project exists but has no `project_identity` yet | `gaia scan` first, then retry. |
+| `name_exists` | A row of that name already exists and `--replace` was not given | A changed agreement: new row plus `link <new> <old> --kind=supersedes`. An error in the row: repeat with `--replace` (T3). |
+| `verb_retired` | `gaia memory edit` was called | Same two paths as `name_exists`. |
 
 When `--project` resolves, the note is anchored: `memory.project_ref` = the
 project's durable identity.
@@ -113,11 +115,11 @@ both.
 | `description_long` | description over `bin/cli/memory.py::_DESCRIPTION_WARN_CHARS` | listings and the birth block show only the description |
 | `body_long` | body over `bin/cli/memory.py::_BODY_WARN_CHARS` | a body is injected whole or dropped |
 | `no_owner` | a non-user row with neither a project nor an initiative | a workspace is a container, not an owner |
-| `rewrite_in_place` | `add` over an existing name with another body | a change is a new row plus `link <new> <old> --kind=supersedes` |
+| `rewrite_in_place` | `add --replace` with another body | a change is a new row plus `link <new> <old> --kind=supersedes` |
 | `preference_or_bug` | a `type=user` row whose description's kind is `Preferencia` | asks whether it would hold if Gaia worked perfectly |
 | `supersedes_reversed` | `link --kind=supersedes` whose dst was born after its src | the arrow goes from the new row to the old |
 
-Every text-mode write (`add`, `append`, `edit`, `reclassify`, `link`) closes
+Every text-mode write (`add`, `append`, `reclassify`, `link`) closes
 with `bin/cli/memory.py::_WRITE_POINTER`, the write-side twin of the read
 pointer. Whether a preference is really a harness rule is left to the
 writer's judgment: no check reads the body for it.

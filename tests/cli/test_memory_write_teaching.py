@@ -111,8 +111,8 @@ def test_adding_over_an_existing_name_with_another_body_warns_of_an_in_place_rew
     base = ("--name", "atom_fact", "--type", "atom", "--initiative", "demo",
             "--workspace", "demo", "--description", "Hecho: x.")
     first = _add(gaia, *base, "--body", "version one")
-    same = _add(gaia, *base, "--body", "version one")
-    result = gaia("memory", "add", *base, "--body", "version two", "--json")
+    same = _add(gaia, *base, "--replace", "--body", "version one")
+    result = gaia("memory", "add", *base, "--replace", "--body", "version two", "--json")
     changed = _warning_codes(result)
 
     assert "rewrite_in_place" not in first | same

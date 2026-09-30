@@ -11,10 +11,12 @@ one place that vocabulary is written down; everywhere else points here.
 ## Two rules that decide whether any of it resolves
 
 **A read by slug starts from a WORKSPACE, and the workspace comes from the current directory.** A
-memory slug verb (`show`, `story`, `append`, `edit`, `reclassify`, `delete`, `link`) looks in your
+memory slug verb (`show`, `story`, `append`, `reclassify`, `delete`, `link`) looks in your
 workspace, then in the user and host scopes, then in whichever workspace holds the slug as a row of
 a project (`bin/cli/memory.py::_workspace_holding`): a project's memory follows the project, so a
-slug `get-relevant --initiative` printed opens from any directory. A row with no project never
+slug `get-relevant --initiative` printed opens from any directory. An explicit `--workspace X` is
+only where the search starts: when X lacks the slug, the same fallback still finds the project row
+stored in another workspace. A row with no project never
 crosses: from another workspace it is `not found in workspace '<ws>'`, and `--workspace <name>`
 reaches it. A slug held by project rows in two other workspaces is refused with code
 `ambiguous_slug` naming both, answered with `--workspace`. `gaia workspace current` prints which one

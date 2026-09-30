@@ -2508,9 +2508,9 @@ def upsert_memory(
                     and existing["deleted_at"] is None):
                 raise MemoryUserScopeError(
                     f"user memory {name!r} already exists in the user scope "
-                    f"({USER_WORKSPACE}); it was not overwritten. Change it "
-                    f"with `gaia memory edit --name {name}` or `gaia memory "
-                    f"append {name}`, or pick another name.",
+                    f"({USER_WORKSPACE}); it was not overwritten. Write the "
+                    f"change as a new row and run `gaia memory link <new> "
+                    f"{name} --kind=supersedes`, or pick another name.",
                     code="user_name_collision",
                 )
             action = "updated" if existing is not None else "inserted"
@@ -2704,8 +2704,8 @@ def reanchor_memory_project_ref(
     accidentally null it out), which means there is no way to CHANGE an already
     set anchor through the normal write path. This function is the explicit
     re-anchor: it OVERWRITES ``memory.project_ref`` to ``project_ref``
-    unconditionally -- the value the ``gaia memory edit --project`` /
-    ``--project-ref`` CLI path resolves and passes in.
+    unconditionally -- the value ``gaia memory add --replace --project`` /
+    ``--project-ref`` resolves and passes in.
 
     Passing ``project_ref=None`` explicitly CLEARS the anchor (back to the
     forward-only-unattributed state); the CLI never does this (it always
@@ -2768,7 +2768,7 @@ def set_memory_audience(
     :func:`update_memory_field`: ``audience`` is an enum-constrained
     classification, not free text, so it does not belong in
     ``_MEMORY_PATCHABLE_FIELDS`` (which applies text append/overwrite
-    semantics that make no sense for an enum). ``gaia memory edit
+    semantics that make no sense for an enum). ``gaia memory add --replace
     --audience=<value>`` calls this unconditionally -- unlike
     :func:`upsert_memory`'s coalesce-preserving ``audience`` parameter, this
     function always sets the value the caller passed.

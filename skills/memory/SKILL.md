@@ -124,8 +124,9 @@ holds what is true.
    when and how it was measured, or it is an opinion. Knowledge changes by a new
    row that supersedes the old one, the arrow pointing from the new row to the
    old, which then leaves every injection; rewriting the old row in place
-   erases the change itself, so `add` over an existing name is for correcting
-   an error. Only a log or a live thread grows by `append`. Graduation keeps its
+   erases the change itself, so memory is append-only: there is no `edit`, an
+   `add` over an existing name is refused, and `add --replace` (signed) is only
+   for correcting an error. Only a log or a live thread grows by `append`. Graduation keeps its
    lineage the same way. A row about the user stands from the moment it is
    written -- every session and every dispatched agent carries it -- so the
    first question of *Other home first* is what earns it that reach. The CLI
@@ -142,7 +143,7 @@ holds what is true.
    | `add`/`append`/`reclassify`/`link` on rows not about the user or a user decision | autonomous, brief report |
    | `type=user` rows (about the user) | autonomous, flagged above the report for veto (convention — no mechanical backstop). They have no workspace: `add` from any workspace writes to the user scope, and a name already there is reported, never overwritten — a changed preference is a new row that supersedes it, which a link reaches from any workspace |
    | contradicting or superseding a user `decision_*` row | ask first |
-   | `edit`/`delete` | T3 approval flow; delegate to a specialist and never autoexecute |
+   | `add --replace`/`delete` | T3 approval flow; delegate to a specialist and never autoexecute |
    | `checkpoint` | autonomous after the milestone test; it is one atomic operation and remains all-or-nothing |
    | closing an objectively verifiable brief/plan | autonomous, report; run `gaia brief verify` by hand before `set-status` — `close` (which runs verification for free, `bin/cli/brief.py::_cmd_close`) is not on the orchestrator's `gaia` CLI lane, only `set-status` is |
    | promoting a TASK | never direct — dispatch `gaia-verifier` |

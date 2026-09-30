@@ -2261,15 +2261,14 @@ class TestGaiaPlanningBookkeepingException:
         """`memory` joined the excepted groups: a non-destructive verb is
         local bookkeeping like brief/ac/plan.
 
-        This previously asserted the opposite, via `gaia memory write` -- a
-        verb the memory CLI does not actually have (its writers are add / edit
-        / append / reclassify / link / checkpoint). See
-        TestGaiaMemoryTierGroup for the false positives that motivated the
-        exception, and for the counterfactual that proves it is reachable.
+        It used `gaia memory edit`, a verb since retired: memory is
+        append-only and its one in-place rewrite, `add --replace`, is signed
+        (tests/cli/test_memory_append_only.py). See TestGaiaMemoryTierGroup
+        for the false positive that motivated the exception.
         """
-        result = detect_mutative_command("gaia memory edit 42 --body x")
+        result = detect_mutative_command("gaia memory append 42 --body x")
         assert result.is_mutative is False, (
-            f"gaia memory edit is local bookkeeping. "
+            f"gaia memory append is local bookkeeping. "
             f"Got: category={result.category}, reason={result.reason}"
         )
 
@@ -4540,7 +4539,8 @@ class TestGaiaMemoryTierGroup:
     are anchored to those exact shapes rather than to a plausible-sounding one:
 
       * `gaia memory edit <id>` -- `edit` is a generic MUTATIVE_VERB, so every
-        correction of a note demanded T3;
+        correction of a note demanded T3 (the verb is since retired, and the
+        one correction left, `add --replace`, is signed by an anchor);
       * `gaia memory add --body apply` -- a payload that is itself a mutative
         word gated the write on the CONTENT of the note.
 
@@ -4572,14 +4572,6 @@ class TestGaiaMemoryTierGroup:
             f"'{body_word}' as the note body must not gate the note. "
             f"reason={result.reason}"
         )
-
-    def test_memory_edit_not_mutative(self):
-        """`edit` is a generic MUTATIVE_VERB -- before the exception this gated
-        on the verb alone, regardless of payload."""
-        result = detect_mutative_command(
-            "gaia memory edit 42 --body 'apply the change'"
-        )
-        assert result.is_mutative is False
 
     def test_memory_append_not_mutative(self):
         result = detect_mutative_command("gaia memory append 42 --text 'more'")
@@ -4616,7 +4608,6 @@ class TestGaiaMemoryTierGroup:
 
     @pytest.mark.parametrize("command", [
         "gaia memory add --name n --body apply",
-        "gaia memory edit 42 --body 'apply the change'",
     ])
     def test_the_group_entry_is_what_produces_the_verdict(self, command, monkeypatch):
         """Counterfactual: remove the (gaia, memory) entry and these exact

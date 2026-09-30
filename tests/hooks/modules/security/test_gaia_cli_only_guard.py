@@ -150,7 +150,6 @@ def test_help_flag_value_does_not_falsely_trigger_the_carve_out():
         f"{_GAIA} approvals replay P-xyz",
         f"{_GAIA} approvals reject-all",
         f"{_GAIA} approvals clean",
-        f"{_GAIA} memory edit --name=foo --field=body --content=x",
         f"{_GAIA} memory delete foo",
         f"{_GAIA} contract set foo bar",
         f"{_GAIA} contract finalize --draft-id=x",

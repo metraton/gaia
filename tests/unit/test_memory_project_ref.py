@@ -151,7 +151,7 @@ def test_get_memory_exposes_project_ref(db: Path) -> None:
 
 # ---------------------------------------------------------------------------
 # reanchor_memory_project_ref() -- the RE-ANCHOR correction path
-# (gaia memory edit --project / --project-ref)
+# (gaia memory add --replace --project / --project-ref)
 # ---------------------------------------------------------------------------
 
 def _get_project_ref(db_path: Path, workspace: str, name: str):

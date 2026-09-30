@@ -9,12 +9,10 @@ untouched, and no row is auto-tagged.
 Coverage:
   * CLI: ``add --audience=executor`` sets it at insertion time
   * CLI: ``add`` without --audience defaults a NEW row to 'any'
-  * CLI: a correction ``add`` upsert without --audience PRESERVES the
+  * CLI: a correction ``add --replace`` without --audience PRESERVES the
     existing row's audience (never silently resets it to 'any')
   * CLI: ``add --audience=bogus`` is rejected by argparse (choices)
-  * CLI: ``edit --audience=orchestrator`` PATCHes an existing row
-  * CLI: ``edit --audience`` on an unknown row -> structured error (exit 1)
-  * CLI: ``edit --audience=bogus`` is rejected by argparse (choices)
+  * CLI: ``add --replace --audience=orchestrator`` PATCHes an existing row
   * CLI: ``list --audience=executor`` filters to matching rows only
   * CLI: ``show`` includes ``audience`` in both text and --json output
   * Writer: ``upsert_memory``/``set_memory_audience``/``list_memory`` reject
@@ -55,8 +53,7 @@ def seeded(tmp_path, monkeypatch):
 
     ``GAIA_DISPATCH_AGENT`` is cleared so the curator gate
     (``_assert_dispatch_can_write_memory``) treats this as a direct human/CLI
-    caller, not a subagent dispatch -- the same discipline
-    test_memory_edit_reanchor.py already applies.
+    caller, not a subagent dispatch.
     """
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
@@ -134,7 +131,7 @@ def test_add_correction_upsert_preserves_existing_audience(seeded, capsys):
     args1 = parser.parse_args([
         "memory", "add", "--name=atom_seed", "--type=atom",
         "--body=seed row, audience untouched", "--workspace=me",
-        "--audience=executor",
+        "--audience=executor", "--replace",
     ])
     rc1 = args1.func(args1)
     assert rc1 == 0
@@ -143,7 +140,7 @@ def test_add_correction_upsert_preserves_existing_audience(seeded, capsys):
     # Correct the body only -- no --audience flag this time.
     args2 = parser.parse_args([
         "memory", "add", "--name=atom_seed", "--type=atom",
-        "--body=corrected body text", "--workspace=me",
+        "--body=corrected body text", "--workspace=me", "--replace",
     ])
     rc2 = args2.func(args2)
     captured = capsys.readouterr()
@@ -164,67 +161,21 @@ def test_add_rejects_invalid_audience_choice(seeded):
 
 
 # ---------------------------------------------------------------------------
-# edit --audience
+# add --replace --audience (the correction that replaced edit --audience)
 # ---------------------------------------------------------------------------
 
-def test_edit_audience_patches_existing_row(seeded, capsys):
+def test_add_replace_audience_patches_existing_row(seeded, capsys):
     parser, _ = _build_parser()
     assert _audience(seeded, "atom_seed") == "any"
     args = parser.parse_args([
-        "memory", "edit", "--name=atom_seed",
-        "--audience=orchestrator", "--workspace=me", "--json",
+        "memory", "add", "--name=atom_seed", "--type=atom",
+        "--body=seed row, audience untouched", "--workspace=me",
+        "--audience=orchestrator", "--replace",
     ])
     rc = args.func(args)
     captured = capsys.readouterr()
     assert rc == 0, f"stderr={captured.err}, stdout={captured.out}"
     assert _audience(seeded, "atom_seed") == "orchestrator"
-    payload = json.loads(captured.out)
-    assert payload["audience"]["before_audience"] == "any"
-    assert payload["audience"]["after_audience"] == "orchestrator"
-
-
-def test_edit_audience_text_output(seeded, capsys):
-    parser, _ = _build_parser()
-    args = parser.parse_args([
-        "memory", "edit", "--name=atom_seed",
-        "--audience=executor", "--workspace=me",
-    ])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 0, f"stderr={captured.err}"
-    assert "'any' -> 'executor'" in captured.out
-
-
-def test_edit_audience_unknown_row_is_structured_error(seeded, capsys):
-    parser, _ = _build_parser()
-    args = parser.parse_args([
-        "memory", "edit", "--name=does_not_exist",
-        "--audience=executor", "--workspace=me",
-    ])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "not found" in (captured.err + captured.out).lower()
-
-
-def test_edit_rejects_invalid_audience_choice(seeded):
-    parser, _ = _build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args([
-            "memory", "edit", "--name=atom_seed",
-            "--audience=nonsense", "--workspace=me",
-        ])
-
-
-def test_edit_requires_at_least_one_action_still_holds(seeded, capsys):
-    """Pre-existing contract unaffected: edit with none of
-    field/class/status/project/audience is still a usage error."""
-    parser, _ = _build_parser()
-    args = parser.parse_args(["memory", "edit", "--name=atom_seed", "--workspace=me"])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "required" in (captured.err + captured.out).lower()
 
 
 # ---------------------------------------------------------------------------
