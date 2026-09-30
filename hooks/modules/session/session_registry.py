@@ -26,13 +26,6 @@ Storage format:
                 "pinned_build": {              # optional; added by session_start
                     "hooks_path": "<realpath of the running .claude/hooks>",
                     "hooks_hash": "<8-hex content digest of that hooks tree>"
-                },
-                "identity": {                  # optional; added by session_start
-                    "agent_type": "<agent the host started, '' for none>",
-                    "build": "<hooks_hash of the running build>",
-                    "channel": "<plugin|npm>",
-                    "workspace": "<cwd of the session>",
-                    "attested_at": "<ISO-8601 string>"
                 }
             }
         }
@@ -41,7 +34,8 @@ Storage format:
     Legacy entries with ``pid`` / ``pid_create_time`` fields are tolerated on
     read: they have no ``last_heartbeat``, so the freshness check treats them
     as dead immediately. That is the correct outcome — a registry written by
-    the old code is by definition stale.
+    the old code is by definition stale. An ``identity`` field left by an
+    earlier build is ignored.
 
     ``pinned_build`` is likewise OPTIONAL on read: entries written before this
     field existed simply lack it. Consumers (``gaia doctor``'s "Hooks active &
@@ -66,10 +60,9 @@ Concurrency:
     set.
 
 Public API:
-    register_session(session_id, started_at=None, is_headless=False) -> None
+    register_session(session_id, started_at=None, is_headless=False, pinned_build=None) -> None
     unregister_session(session_id) -> None
     is_session_alive(session_id) -> bool
-    session_identity(session_id) -> dict | None
     touch_session(session_id) -> None
     get_live_sessions(include_headless=True) -> set[str]
     cleanup_stale_entries(grace_seconds=86400) -> int
