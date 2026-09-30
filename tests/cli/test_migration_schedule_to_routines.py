@@ -94,6 +94,7 @@ def _upgrade(tmp_path: Path, enabled_spec: dict):
     """Seed the published base, upgrade it, and return what a test compares against."""
     db = tmp_path / "gaia.db"
     load_base(PUBLISHED_BASE, db)
+    assert _rows(db, "SELECT MAX(version) AS v FROM schema_version")[0]["v"] == 57, "the v57 published base"
     workspace = _seed(db, enabled_spec)
     retired_before = {table: _rows(db, f"SELECT * FROM {table} ORDER BY 1, 2")
                       for table in RETIRED_TABLES}
@@ -112,7 +113,7 @@ def _expected_version() -> int:
     return int(re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", text, re.M).group(1))
 
 
-def test_an_enabled_schedule_becomes_one_due_routine_and_nothing_else_changes(tmp_path):
+def test_on_the_v57_base_an_enabled_schedule_becomes_one_due_routine_and_nothing_else_changes(tmp_path):
     db, workspace, retired_before = _upgrade(tmp_path, FRIDAYS)
 
     routines = _rows(db, "SELECT * FROM task_notifications WHERE kind = 'routine'")

@@ -21,7 +21,7 @@ BOTH surfaces, reproducing CI" -- plus the shared drift-free convergence gate:
      extracted root in a real Claude Code via `claude plugin validate` /
      `claude --plugin-dir` -- the plugin-mode test that replaces needing a
      separate repo. `--functional` forwards to the script's own opt-in live
-     `claude --plugin-dir -p ...` probe. SKIPs (not fails) when the `claude`
+     live functional probe. SKIPs (not fails) when the `claude`
      binary is not on PATH: with no `claude`, the plugin loader this gate
      exists to exercise cannot run at all.
   4. tests -- PASS on a green "CI verdict" for HEAD's tree, found by
@@ -1254,7 +1254,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Also run the opt-in live `claude --plugin-dir -p ...` functional probe "
+            "Also run the opt-in live functional probe of the plugin "
             "in gate 3 (needs Claude auth/tokens; never implicit)"
         ),
     )

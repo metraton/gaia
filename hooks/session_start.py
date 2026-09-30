@@ -37,8 +37,8 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
       2. SDK CLI invocation: the parent process is `claude` invoked with
          a print/output flag (`-p`, `--print`, `--output-format json`).
          The SDK CLI does NOT set CLAUDE_HEADLESS, so without this fallback
-         every `claude -p ...` call would register as interactive and
-         pollute liveness tracking.
+         every print-mode call of the host CLI would register as interactive
+         and pollute liveness tracking.
       3. Stdout is not a TTY. This is the weakest signal -- pipes happen
          in interactive sessions too -- so it is only used as a tertiary
          tiebreaker, never as a primary trigger.

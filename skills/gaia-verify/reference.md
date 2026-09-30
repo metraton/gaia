@@ -43,7 +43,7 @@ npm run gaia:plugin-dryrun                  # pack -> temp extract -> asserts + 
 
 Optional live functional probe (needs Claude auth/tokens, opt-in):
 ```bash
-npm run gaia:plugin-dryrun -- --functional  # `claude --plugin-dir <temp> -p '...'` from a temp cwd
+npm run gaia:plugin-dryrun -- --functional  # live functional probe from a temp cwd
 ```
 If hooks do not fire, inspect the root `hooks/hooks.json` (the canonical hook source; `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block -- regenerate both with `npm run generate:plugin-root`). After publish, the marketplace path can also be exercised inside CC: `/plugin marketplace add metraton/gaia#<ref>` (entry `source: "."`, so the ref added is the code installed) + `/plugin install gaia@gaia-marketplace` + `/reload-plugins`.
 

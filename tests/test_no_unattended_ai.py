@@ -28,11 +28,20 @@ _GAIA = _REPO_ROOT / "bin" / "gaia"
 _SHIPPED_TREES = ("gaia", "bin", "hooks", "skills", "agents")
 _SCANNED_SUFFIXES = {".py", ".sh", ".md", ".json", ".sql", ".template", ".yml", ".yaml", ".js", ".mjs"}
 
-# What the retired mechanism did, in the shape it did it: a host CLI started in
-# print mode with a prompt, permission prompts skipped, a crontab installed.
-# A reading `crontab -l` and a prose mention of `claude -p` are not launches.
+# bin/plugin-dryrun.sh --functional runs `claude --plugin-dir ... -p` as an
+# opt-in release probe that a person present starts, which meets the intent of
+# AC-18. It is the one exemption; any other match fails the test.
+_HEADLESS_PROBE_EXEMPTION = "bin/plugin-dryrun.sh"
+
+# What the retired mechanism did: a host CLI started in print mode, permission
+# prompts skipped, a crontab installed. A reading `crontab -l` is not a write.
+# The print flag (-p or --print) counts in any position after the binary, with
+# other flags in between, and whether the binary is bare, a path, or a list item.
 _UNATTENDED_SHAPES = {
-    "host-headless-launch": re.compile(r"""\bclaude\s+(?:-p|--print)\s+["'$]"""),
+    "host-headless-launch": re.compile(
+        r"""(?:^|[\s"'`=(/])claude(?:\.exe)?(?![\w.-])[^\n;&|]*?[\s"'](?:-p|--print)(?=[\s"'=]|$)""",
+        re.MULTILINE,
+    ),
     "permissions-skipped": re.compile(r"--dangerously-skip-permissions"),
     "crontab-shell-write": re.compile(r"\bcrontab\s+-(?:\s|$|e\b|r\b)", re.MULTILINE),
     "crontab-subprocess-write": re.compile(r"""["']crontab["']\s*,\s*["'](?!-l["'])"""),
@@ -81,12 +90,37 @@ def test_no_shipped_file_launches_a_host_headless_or_writes_a_crontab():
                 continue
             if {"__pycache__", "node_modules"} & set(path.parts):
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
+            relative = path.relative_to(_REPO_ROOT).as_posix()
+            text = path.read_text(encoding="utf-8", errors="replace").replace("\\\n", " ")
             offenders.extend(
-                f"{path.relative_to(_REPO_ROOT)}: {label}"
-                for label, shape in _UNATTENDED_SHAPES.items() if shape.search(text)
+                f"{relative}: {label}"
+                for label, shape in _UNATTENDED_SHAPES.items()
+                if shape.search(text)
+                and not (label == "host-headless-launch" and relative == _HEADLESS_PROBE_EXEMPTION)
             )
     assert not offenders, offenders
+
+
+def test_the_headless_launch_shape_catches_every_position_of_the_print_flag():
+    launches = (
+        'claude -p "summarize"',
+        "claude --print 'summarize'",
+        "/usr/local/bin/claude --model opus -p task",
+        "claude --plugin-dir . --add-dir x --print 'hi'",
+        'claude --plugin-dir "${ROOT}" \\\n  -p "hi"'.replace("\\\n", " "),
+        'subprocess.run(["claude", "--output-format", "json", "-p", prompt])',
+        "$(command -v claude) -p x",
+        "run `claude -p 'triage'` every morning",
+    )
+    not_launches = (
+        "claude plugin validate .",
+        "claude --plugin-dir . --resume abc",
+        "cat .claude/settings.json -p",
+        "claude-code --print",
+    )
+    shape = _UNATTENDED_SHAPES["host-headless-launch"]
+    assert [text for text in launches if not shape.search(text)] == []
+    assert [text for text in not_launches if shape.search(text)] == []
 
 
 def _seed_schedules_and_a_due_reminder(db: Path, workspace_root: Path, project: Path) -> None:
