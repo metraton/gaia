@@ -5,7 +5,8 @@ principles say why; this file says how it is spelled today.
 
 ## Goal tokens (principle 1)
 
-A hook extracts three literal tokens from the dispatch prompt
+A hook extracts four literal tokens from the dispatch prompt --
+`project=`, `task_id=`, `plan_id=` and `parent_handoff_id=`
 (`hooks/modules/agents/dispatch_binding.py::extract_dispatch_binding`); prose
 around them is not parsed.
 
@@ -13,6 +14,7 @@ around them is not parsed.
 |---|---|
 | `project=<name>` | The born row's `dispatch_project`, resolved from the token first and the cwd only as fallback. It is what renders `project:` and the project's declared `workflow:` line in `# Your Contract`. On every goal. |
 | `task_id=<tasks.id>` | Binds the turn to a plan task: its gates render as `acceptance:` and the turn cannot self-`COMPLETE`. The id is `tasks.id`, not the plan position; `gaia task show <brief> <order>` prints both. |
+| `plan_id=<N>` | Stamps the born row's `plan_id`. Like `task_id=` and `parent_handoff_id=`, it marks the dispatch as task execution rather than a free investigation or memory turn; it does not bind a task's gates, which `task_id=` alone does. |
 | `parent_handoff_id=<N>` | Required on a verifier dispatch: `N` is the producer's contract row id. A dispatch without it runs with no binding to what it verifies. |
 
 ## Acceptance forms (principle 2)

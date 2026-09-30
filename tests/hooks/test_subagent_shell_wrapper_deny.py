@@ -99,6 +99,27 @@ def test_orchestrator_mutative_wrapper_keeps_its_dialog(command):
     assert read_permission_decision(result.block_response) == "ask"
 
 
+# A wrapper behind a chain reaches the compound-T3 deny before the wrapper
+# refusal, so that message has to name the correct form on its own.
+COMPOUND_MUTATIVE_WRAPPERS = [
+    "cd /tmp && bash -c 'git push origin x'",
+    "cd /tmp && sh -c 'git push origin x'",
+    "cd /tmp && eval 'git push origin x'",
+]
+
+
+@pytest.mark.parametrize("command", COMPOUND_MUTATIVE_WRAPPERS)
+def test_subagent_compound_mutative_wrapper_deny_names_the_correct_form(command):
+    result = _validate(command, is_subagent=True)
+
+    assert not result.allowed
+    assert read_permission_decision(result.block_response) == "deny"
+
+    reason = read_permission_reason(result.block_response).lower()
+    assert "each command directly" in reason
+    assert "no wrapper" in reason
+
+
 def test_subagent_direct_command_is_not_affected():
     result = _validate("gh pr checks 42 --repo metraton/gaia", is_subagent=True)
 

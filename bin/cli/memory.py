@@ -1491,7 +1491,7 @@ def _print_memory_pointer(as_json: bool) -> None:
 # if all three are empty the whole block is empty.
 _SECTION_HEADERS = {
     "carry_forward": "## Memory — For this session",
-    "anchor":        "## What the user has established",
+    "anchor":        "## The user",
     "thread_open":   "## Memory — Open threads",
 }
 
@@ -1578,7 +1578,7 @@ def _cmd_get_relevant(args) -> int:
       * ``--sections=...`` -> SECTION renderer: the class/status sections
         (carry_forward / anchor / thread_open). This is the subagent-dispatch
         path (``--sections=anchor`` gives a dispatched subagent the durable
-        "What the user has established" anchors). cwd anchoring is gone here too.
+        "The user" anchors). cwd anchoring is gone here too.
       * (no flag) -> TRANSVERSAL DIGEST: a cross-project worklist grouped by
         the canonical ``memory.initiative`` key. This is the orchestrator's
         SessionStart view -- "what is open, everywhere", independent of the
@@ -1968,7 +1968,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     # pointer is never the line that gets dropped; its length was reserved from
     # max_chars above, so block + pointer still respects the caller's budget.
     # Suppressed for the SessionStart assembler's anchor-only call, which
-    # passes --no-pointer -- "What the user has established" is not where
+    # passes --no-pointer -- "The user" is not where
     # write/curate verbs (close a thread, graduate, reclassify) belong.
     if not no_pointer:
         block = block + "\n\n" + _MEMORY_POINTER
@@ -4030,7 +4030,7 @@ def register(subparsers):
         help="Comma-separated subset of curated sections to render "
              "(carry_forward,anchor,thread_open). When set, uses the class/"
              "status section renderer -- the subagent-dispatch path passes "
-             "--sections=anchor to inject only 'What the user has established'. "
+             "--sections=anchor to inject only 'The user'. "
              "With --initiative/--project it selects that project's rows "
              "instead: anchor for its live anchors with their bodies, "
              "carry_forward/thread_open for its pending threads (the default). "

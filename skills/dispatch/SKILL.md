@@ -21,10 +21,11 @@ two-writer wave, end to end, is in `examples.md`.
 
 ## The eight principles
 
-1. **A goal completes the kernel; it never repeats it.** The kernel already
-   carries the turn's identity, the contract rules, the project and its declared
-   workflow, the read menu, a bound task's gates and the user's standing rows.
-   The goal carries what the kernel cannot: the references already opened, the
+1. **A goal completes the kernel; it never repeats it.** The kernel is data
+   only: it carries the turn's identity, the project and its declared workflow,
+   the read menu, a bound task's gates and the user's standing rows. The contract
+   rules reach the specialist through the `agent-protocol` skill, not the kernel.
+   The goal carries what neither can: the references already opened, the
    premise as a claim the specialist may refute, and the acceptance. What the
    goal repeats costs attention twice and drifts from the kernel the first time
    either one changes; what it omits that the kernel does not supply does not

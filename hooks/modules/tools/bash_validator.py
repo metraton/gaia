@@ -1593,7 +1593,8 @@ class BashValidator:
         Compound T3 execution is REFUSED here, never grouped. If ANY component
         classifies T3 the whole chain is denied (subagent) or asked (primary):
         "Compound T3 execution is disabled. Create a plan-first request-set and
-        issue each command as a separate Bash call." There is no COMMAND_SET
+        run each command directly as a separate Bash call, with no wrapper
+        (bash -c, sh -c, eval)." There is no COMMAND_SET
         intake on this path -- consent grouping is requested plan-first via
         ``gaia approvals request-set``, and execution stays one command per Bash
         call, so a chain is never the surface on which a set is discovered.
@@ -1645,7 +1646,8 @@ class BashValidator:
                 return signed
             reason = (
                 "Compound T3 execution is disabled. Create a plan-first "
-                "request-set and issue each command as a separate Bash call."
+                "request-set and run each command directly as a separate Bash "
+                "call, with no wrapper (bash -c, sh -c, eval)."
             )
             decision = "deny" if is_subagent else "ask"
             return BashValidationResult(

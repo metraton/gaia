@@ -1,8 +1,10 @@
 """The user's standing rows as the two sections a session and a dispatch both carry.
 
-The session birth block and the dispatch kernel render the same selection
-(``gaia.store.reader.user_anchor_rows``) through this one renderer, so the
-orchestrator and every subagent know the user by identical text. Facts and
+The session birth block renders the selection
+(``gaia.store.reader.user_anchor_rows``) through this one renderer; the
+dispatch kernel renders the same selection minus the rows whose ``audience`` is
+the orchestrator alone, so a subagent knows the user by the orchestrator's text
+less those rows. Facts and
 preferences are told apart by the claim word the row's description opens
 with (``gaia.store.memory_claims``); a row that opens with no preference word is
 a fact about the user.
