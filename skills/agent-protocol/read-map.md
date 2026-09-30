@@ -10,16 +10,19 @@ one place that vocabulary is written down; everywhere else points here.
 
 ## Two rules that decide whether any of it resolves
 
-**A read by slug is scoped to a WORKSPACE, and the workspace comes from the current directory.** The
-same verb answers differently from two directories: run from a directory whose workspace does not
-hold it, `gaia memory show <slug>` returns `not found in workspace '<ws>'`; with `--workspace <name>`
-it returns the row. `gaia workspace current` prints which one you are in. Two reads follow their
-object instead: `gaia memory get-relevant --initiative`/`--project` returns the project's rows from
-every workspace, and a brief named to the coordination verbs (brief, plan, task, ac, evidence,
-milestone) without `--workspace` is looked up in the other workspaces when yours lacks it -- a name
-two of them hold is an error naming both, answered with `--workspace`. When a coordinate does not
-resolve, check the workspace before concluding the row is gone -- almost every verb below takes
-`--workspace`.
+**A read by slug starts from a WORKSPACE, and the workspace comes from the current directory.** A
+memory slug verb (`show`, `story`, `append`, `edit`, `reclassify`, `delete`, `link`) looks in your
+workspace, then in the user and host scopes, then in whichever workspace holds the slug as a row of
+a project (`bin/cli/memory.py::_workspace_holding`): a project's memory follows the project, so a
+slug `get-relevant --initiative` printed opens from any directory. A row with no project never
+crosses: from another workspace it is `not found in workspace '<ws>'`, and `--workspace <name>`
+reaches it. A slug held by project rows in two other workspaces is refused with code
+`ambiguous_slug` naming both, answered with `--workspace`. `gaia workspace current` prints which one
+you are in. A brief named to the coordination verbs (brief, plan, task, ac, evidence, milestone)
+without `--workspace` is likewise looked up in the other workspaces when yours lacks it -- a name
+two of them hold is an error naming both. `gaia memory search` stays scoped to your workspace and
+the two sentinels. When a coordinate does not resolve, check the workspace before concluding the
+row is gone -- almost every verb below takes `--workspace`.
 
 **Absent and empty are different answers, and the verbs keep them apart.** A path that exists prints
 its value even when that value is `[]`; a path that does not exist is an error with a non-zero exit.

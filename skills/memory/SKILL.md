@@ -107,10 +107,14 @@ holds what is true.
    sweep is what finds it. An empty
    `gaia memory get-relevant --initiative` is the complete answer for that
    project: it reads every workspace by the canonical project key
-   (`gaia.store.reader::pending_threads_by_project`). A search or a slug read
-   stays scoped to the caller's workspace plus `_gaia_host` and `_gaia_user`
-   (`bin/cli/memory.py::_reader_workspaces`), so an empty one is a scoping
-   hypothesis — confirm with the right `--workspace` before trusting it.
+   (`gaia.store.reader::pending_threads_by_project`). A slug verb also reaches
+   a project's row stored under another workspace
+   (`bin/cli/memory.py::_workspace_holding`, refusing with `ambiguous_slug`
+   when two other workspaces hold it), but a search stays scoped to the
+   caller's workspace plus `_gaia_host` and `_gaia_user`
+   (`bin/cli/memory.py::_reader_workspaces`), so an empty search or a missing
+   row without a project is a scoping hypothesis — confirm with the right
+   `--workspace` before trusting it.
 3. **Choose the home.** Run *Other home first*, and continue only for genuinely
    curated value.
 4. **Write one thing per row, in the shape a reader decides on.** The

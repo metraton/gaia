@@ -66,8 +66,9 @@ it replaces. Every injection drops the dst
 the newer row by birth (`created_at`, or `updated_at` before v50) -- a
 warning, since a corrected old row can legitimately be newer.
 
-Each end is found in `--workspace` or in the user and host scopes
-(`bin/cli/memory.py::_workspace_holding`), so the two can have different
+Each end is found in `--workspace`, in the user and host scopes, or in the
+workspace holding it as a project row (`bin/cli/memory.py::_workspace_holding`,
+`ambiguous_slug` when two other workspaces do), so the two can have different
 owners: a user row in `_gaia_user` supersedes its predecessor still under a
 project workspace. The link is stored under the src's workspace with the
 dst's in `memory_links.dst_workspace` (v61; NULL when both share one), which
