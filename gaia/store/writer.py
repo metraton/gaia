@@ -266,17 +266,14 @@ def _seal_materialized_schema(con: sqlite3.Connection) -> None:
 # Schema-direction gate
 # ---------------------------------------------------------------------------
 #
-# A database sealed by a NEWER Gaia may carry structure this code does not
-# know. Its newest seal records min_code_version, the oldest code that may still
-# write to it: this code keeps writing while its expected version reaches that
-# minimum (warning once per process), and otherwise every write through
-# _connect is refused with a message naming the fix while reads keep working.
-# A newer database with no recorded minimum is refused. Moving the database
-# down is never the fix; migrations only run forward.
-#
-# The live state is read once per process per database path. A process that
-# migrates its own database only ever moves it forward, which cannot turn a
-# writable database into one this code must refuse.
+# A database sealed by a newer Gaia records min_code_version, the oldest code
+# that may still write to it:
+# - code at or above that version writes, warning once per process;
+# - older code, or any code when no minimum is recorded, has every write through
+#   _connect refused while reads keep working;
+# - moving the database down is never the fix: migrations only run forward;
+# - the state is read once per process per path, which is safe because a
+#   process only ever migrates its own database forward.
 
 class SchemaAheadError(sqlite3.DatabaseError):
     """A write refused because the database is newer than this code allows."""
@@ -1726,11 +1723,7 @@ def write_harness_event(
 # Public API: task_notifications (reports, reminders, routines)
 # ---------------------------------------------------------------------------
 #
-# Episodic, NOT curated memory, so no agent_permissions gate. Reads, including
-# which rows are due, live in gaia.store.reader and never write; add, ack,
-# snooze and cancel below are the only transitions. The `gaia notifications`
-# CLI is classified T0 (local bookkeeping, reversible) via
-# COMMAND_SUBCOMMAND_TIER_EXCEPTIONS in mutative_verbs.py.
+# Episodic, not curated memory, so no agent_permissions gate.
 
 def add_task_notification(
     *,
@@ -1974,12 +1967,8 @@ def apply_host_scope(
     return HOST_WORKSPACE
 
 
-# User-scope (brief una-gaia-cualquier-instalacion, AC-11): who the user is
-# does not depend on the project a session opened in, so every type=user row
-# lives under this workspace-less sentinel, the same shape as HOST_WORKSPACE.
-# Readers union it in (memory get-relevant, the executor kernel); rows written
-# before this rule still sit under their old workspace until the governed
-# relocation moves them here.
+# Who the user is does not depend on the project a session opened in, so every
+# type=user row lives under this workspace-less sentinel.
 USER_WORKSPACE = "_gaia_user"
 
 
@@ -2163,7 +2152,7 @@ def resolve_project_ref(
 ) -> str:
     """Resolve a ``projects.name`` within ``workspace`` to its stable
     ``project_identity`` anchor -- the value ``upsert_memory(project_ref=...)``
-    expects (N3 forward-only anchoring).
+    expects (forward-only anchoring).
 
     Looks up the exact ``(workspace, project_name)`` row -- the same lookup
     documented as the manual convention in ``skills/memory/SKILL.md`` before
@@ -2344,7 +2333,7 @@ def resolve_project_ref_by_cwd(
 
 
 # ---------------------------------------------------------------------------
-# initiative -- the canonical project/initiative grouping key (v32).
+# initiative -- the canonical project/initiative grouping key.
 #
 # `initiative` (memory.initiative) is the clean, vantage-independent key that
 # unifies BOTH git projects and logical (non-repo) initiatives. It is DISTINCT
@@ -2400,7 +2389,7 @@ def canonical_project_key(
 ) -> str | None:
     """Resolve a memory row's project columns to its one canonical project key.
 
-    Rows name a project by ``initiative`` (v32) or by a ``project_ref`` that may
+    Rows name a project by ``initiative`` or by a ``project_ref`` that may
     be a git-common-dir path, a bare name or a remote identity; all resolve
     to the same key (``/x/gaia/.git``, ``gaia``, ``github.com/metraton/gaia``
     -> ``"gaia"``). An explicit initiative outranks the anchor, matching the
@@ -2443,8 +2432,7 @@ def upsert_memory(
     status included, is one transaction: a failing step leaves the row as it
     was.
 
-    ``project_ref`` -- forward-only remote-stable project anchor (N3, scan-v2
-    SV3 follow-up). The v25/v26 columns/migration exist, but the automatic
+    ``project_ref`` -- forward-only remote-stable project anchor. The v25/v26 columns/migration exist, but the automatic
     backfill in ``scripts/migrations/v25_to_v26.sql`` (guarded on "workspace
     hosts exactly one active project") is a one-time, already-applied
     historical statement that populated 0 rows in practice -- the
@@ -2466,14 +2454,14 @@ def upsert_memory(
     (matches the existing ``topic_key`` COALESCE convention -- no precedent in
     this module for an explicit-NULL clear on a coalesced column).
 
-    ``initiative`` -- canonical project/initiative grouping key (v32). Same
+    ``initiative`` -- canonical project/initiative grouping key. Same
     coalesce-or-omit discipline as ``project_ref``. When ``initiative`` is not
     passed but ``project_ref`` is, it is auto-derived via
     :func:`initiative_from_project_ref` so every project-anchored write gets a
     key for free; pass an explicit ``initiative`` (already-normalized or raw --
     it is normalized here) to set a logical-initiative key with no git anchor.
 
-    ``audience`` -- v45, orthogonal to type/class/status. Same coalesce-or-
+    ``audience`` -- orthogonal to type/class/status. Same coalesce-or-
     omit discipline as ``project_ref``/``initiative``: ``None`` (the default)
     never touches an existing row's audience on update, so a plain correction
     upsert cannot silently reset a row that was explicitly tagged
@@ -2779,7 +2767,7 @@ def set_memory_audience(
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """PATCH the ``audience`` column of an existing curated memory row (v45).
+    """PATCH the ``audience`` column of an existing curated memory row.
 
     This is the dedicated correction path for ``audience`` -- mirroring
     :func:`reanchor_memory_project_ref` rather than
@@ -3723,7 +3711,7 @@ def list_memory(
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
-    (v45) filters to rows tagged with exactly that value -- it must be one of
+    filters to rows tagged with exactly that value -- it must be one of
     :data:`VALID_MEMORY_AUDIENCES` when set; ``None`` (the default) applies no
     audience filter. ``class_``/``status`` (memory.class/memory.status, same
     trailing-underscore convention as ``reclassify_memory``) filter the same

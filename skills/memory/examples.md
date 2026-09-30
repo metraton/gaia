@@ -32,9 +32,9 @@ not edited: a new row states what holds now, and the link retires the old one.
 
 ```bash
 gaia memory add --name=user_pref_weekly_summary --type=user \
-  --description="Preferencia: resumen semanal, no diario." --body="..."
+  --description="Preference: weekly summary, not daily." --body="..."
 gaia memory link user_pref_weekly_summary user_pref_daily_summary --kind=supersedes
-# -> user_pref_weekly_summary reemplaza a user_pref_daily_summary
+# -> user_pref_weekly_summary supersedes user_pref_daily_summary
 gaia memory reclassify user_pref_daily_summary --class=log
 ```
 

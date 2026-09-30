@@ -46,7 +46,7 @@ this order:
                                           (--project preferred, or --workspace);
                                           refuses to write with both empty.
                                           --project anchors memory.project_ref
-                                          (N3, forward-only) by resolving a
+                                          (forward-only) by resolving a
                                           project name within --workspace to
                                           its stable project_identity; never
                                           guesses. Unresolvable/mismatched
@@ -54,7 +54,7 @@ this order:
                                           {"error","code"}) and writes no row.
                                           --workspace only => project_ref NULL,
                                           exit 0 (explicit degraded lane).
-                                          --audience (v45) sets memory.audience
+                                          --audience sets memory.audience
                                           at insertion time; omitted, a new row
                                           defaults to 'any' and a --replace
                                           that omits it leaves an existing
@@ -1467,25 +1467,10 @@ _SECTION_HEADERS = {
     "thread_open":   "## Memory — Open threads",
 }
 
-# v32 transversal digest (initiative-grouped). The SessionStart injection no
-# longer anchors to cwd: instead it emits a cross-project digest of LIVE
-# PENDING work grouped by the canonical `memory.initiative` key, so the user
-# sees "what is open, everywhere" the moment a session starts -- independent of
-# which directory the session was launched from.
-#
-# "Pending vivo" is DELIBERATELY narrow: class='thread' AND status IN
-# ('carry_forward','open'). Anchors (durable "about you" facts), logs, and
-# resolved/snapshot threads are excluded by design -- the digest is a worklist,
-# not a knowledge dump.
-#
-# Not injected at SessionStart (each project's pending count is on the
-# Projects section instead -- see
-# hooks/modules/session/session_manifest.py::build_projects_section);
-# this renderer and its header are reached only through a direct
-# `gaia memory get-relevant` call with no flags.
+# Live pending is deliberately narrow: class='thread' AND status IN
+# ('carry_forward','open'). The digest is a worklist, not a knowledge dump.
 _DIGEST_HEADER = "## Memory — Live pending across every project"
-# Top-K initiatives shown in the cross-project digest; the rest roll up into a
-# single "+N proyectos más" overflow line.
+# Initiatives past the top K roll up into one "+N more projects" line.
 _DIGEST_TOP_K = 10
 # Per-item description cap inside the digest. Much tighter than the section
 # renderer's 150: one short line per initiative keeps ~10 initiatives visible
@@ -1538,8 +1523,7 @@ def _bump_injection_telemetry(workspace: str, names) -> None:
 def _cmd_get_relevant(args) -> int:
     """Emit a compact Workspace Memory block for SessionStart injection.
 
-    v32 dispatch (cwd-INDEPENDENT). The cwd no longer filters or prioritises
-    anything -- "active project" anchoring was removed. Which renderer runs is
+    The cwd does not filter or prioritise anything; which renderer runs is
     decided purely by the flags:
 
       * ``--types=...``  -> legacy per-type flow (unchanged, back-compat).
@@ -2074,14 +2058,14 @@ def _fetch_pending_vivo(workspace: str, extra_where: str = "",
 
 
 def _render_digest(args, workspace: str, as_json: bool) -> int:
-    """Transversal cross-project digest of live-pending work (v32 default).
+    """Transversal cross-project digest of live-pending work (the default).
 
     Groups every live-pending thread by its ``initiative`` key, shows the
     freshest pending item per initiative (top-1, title + short desc), orders
     initiatives by the recency of their freshest pending, and shows the top-K
     initiatives. Initiatives beyond K roll up into a single global overflow
     line; an initiative with more than one pending shows a per-initiative
-    "+N más en <initiative>" hint. cwd is irrelevant -- the digest is the same
+    "+N more in <initiative>" hint. cwd is irrelevant -- the digest is the same
     from any launch directory.
     """
     max_chars = int(getattr(args, "max_chars", None) or _DIGEST_DEFAULT_MAX_CHARS)
@@ -2130,12 +2114,12 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
             extra = len(brows) - 1
             if extra > 0:
                 lines.append(
-                    f"  +{extra} más en {key} — pedime que profundice"
+                    f"  +{extra} more in {key} — ask me to expand"
                 )
         if overflow_projects > 0:
             lines.append("")
             lines.append(
-                f"+{overflow_projects} proyectos más — pedime el detalle de alguno"
+                f"+{overflow_projects} more projects — ask me about any of them"
             )
         return "\n".join(lines), items, overflow_projects
 
@@ -2149,12 +2133,9 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
         shown = shown[:-1]
         block, items_flat, overflow_projects = _build(shown)
 
-    # P1 injection telemetry: items_flat is rebuilt on every trim iteration
-    # above, so by the time the loop exits it already names exactly the rows
-    # that made it into the final block -- one bullet per shown initiative's
-    # freshest ("top") pending row. The other rows in a multi-pending
-    # initiative are never individually rendered (only counted in the
-    # "+N más" hint) and are correctly never bumped here.
+    # items_flat names only the rows rendered in the final block; the rest of a
+    # multi-pending initiative is only counted in its "+N more" hint, so it is
+    # not bumped.
     _bump_injection_telemetry(workspace, [i["name"] for i in items_flat])
 
     block = block + "\n\n" + _MEMORY_POINTER
@@ -3253,7 +3234,7 @@ def register(subparsers):
     list_p.add_argument(
         "--audience", default=None,
         choices=("orchestrator", "executor", "any"),
-        help="v45: filter by memory.audience (which agent role the row is FOR).",
+        help="Filter by memory.audience (which agent role the row is FOR).",
     )
     list_p.add_argument(
         "--class", dest="cls", default=None,
@@ -3568,7 +3549,7 @@ def register(subparsers):
     _add_project_group.add_argument(
         "--project", default=None,
         help=(
-            "N3: anchor this memory to a project by NAME (resolved within "
+            "Anchor this memory to a project by NAME (resolved within "
             "--workspace to its stable projects.project_identity, persisted "
             "as memory.project_ref). Forward-only: errors clearly if the "
             "project does not exist or has no project_identity yet -- never "
@@ -3578,7 +3559,7 @@ def register(subparsers):
     _add_project_group.add_argument(
         "--project-ref", dest="project_ref", default=None,
         help=(
-            "N3: anchor this memory directly to a known stable "
+            "Anchor this memory directly to a known stable "
             "project_identity string, bypassing name resolution. Use "
             "--project instead unless you already hold the identity value."
         ),
@@ -3586,7 +3567,7 @@ def register(subparsers):
     add_p.add_argument(
         "--initiative", default=None, metavar="KEY",
         help=(
-            "v32: canonical project/initiative grouping key (memory.initiative). "
+            "Canonical project/initiative grouping key (memory.initiative). "
             "Use for a LOGICAL initiative that is NOT a git repo (branchkinect, "
             "buildwiz, axisio, ...) -- normalized to lowercase_snake. When "
             "--project / --project-ref anchors a git project, initiative is "
@@ -3606,7 +3587,7 @@ def register(subparsers):
     add_p.add_argument(
         "--status", dest="status", default=None,
         help=(
-            "T5: set memory.status (open|carry_forward|graduated|closed); "
+            "Set memory.status (open|carry_forward|graduated|closed); "
             "use 'null' to clear. Only valid for class=thread."
         ),
     )
@@ -3674,7 +3655,7 @@ def register(subparsers):
     checkpoint_p.add_argument(
         "--initiative", default=None, metavar="KEY",
         help=(
-            "v32: canonical project/initiative grouping key (memory.initiative), "
+            "Canonical project/initiative grouping key (memory.initiative), "
             "applied to the record AND every pending in this checkpoint -- the "
             "payload carries no per-row initiative, matching the shared --type "
             "convention. Same semantics as 'gaia memory add --initiative'."
@@ -3750,7 +3731,7 @@ def register(subparsers):
     rel_project = rel_p.add_mutually_exclusive_group()
     rel_project.add_argument(
         "--initiative", default=None, metavar="KEY",
-        help="Project mode (v32): return EVERY live-pending row of the ONE "
+        help="Project mode: return EVERY live-pending row of the ONE "
              "named initiative (normalised like the write side) from every "
              "workspace, uncapped -- not just the top ones, and --max-chars "
              "is ignored here; with --sections=anchor, its live anchors with "

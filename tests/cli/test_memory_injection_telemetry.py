@@ -120,7 +120,7 @@ class TestDigestModeInjection:
     def test_only_the_rendered_top_row_bumps_injection(self, tmp_db, capsys):
         """One initiative, three pending rows: only the freshest ("top") one
         gets its own bullet -- the other two are only counted in the
-        "+N más" hint, never individually rendered. This is the required
+        "+N more" hint, never individually rendered. This is the required
         selected-more-than-emitted demonstration (AC criterion 1)."""
         _insert(tmp_db, "gaia_a", initiative="gaia",
                 updated_at="2026-08-12T15:00:00Z")
@@ -139,7 +139,7 @@ class TestDigestModeInjection:
 
         assert rc == 0
         assert [i["name"] for i in payload["items"]] == ["gaia_a"]
-        assert "+2 más en gaia" in payload["block"]
+        assert "+2 more in gaia" in payload["block"]
 
         # SELECTED (3 rows fetched, pending_count=3) but only 1 EMITTED.
         assert payload["items"][0]["pending_count"] == 3
