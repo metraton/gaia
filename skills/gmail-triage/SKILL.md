@@ -5,7 +5,7 @@ description: Use when the user wants to clean up, organize, or triage their Gmai
 
 # Gmail Triage
 
-Interactive GTD-inspired state machine for Gmail. Gaia analyzes threads, proposes transitions. User decides. Gaia executes. This is the PROCESS layer; it depends on `gmail-policy` for every rule -- label definitions, security tiers, the interpretation of a review trigger (Intent Classification), and the Autonomous Action Boundary that decides what may run without approval. That dependency holds in every mode, headless included: a security rule cannot live only in the process that obeys it.
+Interactive GTD-inspired state machine for Gmail. Gaia analyzes threads, proposes transitions. User decides. Gaia executes. This is the PROCESS layer; it depends on `gmail-policy` for every rule -- label definitions, security tiers, the interpretation of a review trigger (Intent Classification), and the Autonomous Action Boundary that decides what may run without approval. That dependency holds in every mode: a security rule cannot live only in the process that obeys it. Triage always runs with the user present; to make it recur, see "Making It a Routine".
 
 ## State Labels
 
@@ -101,33 +101,38 @@ Group by sender/topic. Show count + sample subject. Flag unusual items ("movimie
 
 The process that runs when the user gives a general review trigger — "chequea mi mail", "tengo un mail importante", "¿algo nuevo?". The *meaning* of that trigger — "review with initiative granted", not a bare listing — is defined in `gmail-policy` (Intent Classification Table); this section is only the PROCESS that meaning invokes. Mode 0 above is the interactive step-list; this section is the contract behind it: one shared triage logic, the mode chosen by the caller.
 
-**Architecture — generic skill, the caller sets the mode.** The skill describes WHAT triage is; there is a single shared logic and no `if headless` fork inside it. The MODE is injected by whoever calls the skill:
-- **Scheduled / headless** — the scheduled task sends a prompt of the form "eres una sesión headless, ejecuta el triage y actualiza los filtros Gaia, repórtame". See the `scheduled-task` skill for the headless mounting (crontab + `claude -p` wrapper + notifications report).
-- **Interactive** — the user typing "chequea mi mail" gets quick info plus proposals, live.
+**One process, always with the user present.** The user typing "chequea mi mail" — or accepting the offer of a due routine (see "Making It a Routine") — gets quick info plus proposals, live. There is no mode that runs triage without them.
 
 **Order of "chequea mi mail" (simple — no watermark, no tracking of the last run):**
 1. **Review the Gaia filters** (`_gaia/action`, `_gaia/waiting`, `_gaia/someday`) and report their state.
 2. **Read the inbox and corroborate against those filters.**
 
-**Interactive mode (user present):**
+**What the user gets:**
 - Give quick info of what there is: what sits in `action`, who has been waiting for a reply for days, new noise (with an offer to sweep it).
 - **Analysis with context** — this is the point, what makes it useful rather than a bare listing. Connect information: "hay una promo de X, sé que tienes Santander, te sirve." Detect recurring **subscriptions** and offer a decision (mantener / desuscribir / spam).
 - Move to filters whatever the user approves.
 
-**Autonomy.** Every mode — interactive and headless — obeys the **Autonomous Action Boundary** in `gmail-policy`: mechanical, reversible filter moves run without approval; destructive or criterion moves (trash, spam, unsubscribe, delete, marking done, sending) are always proposed. Headless lists those proposals in its report instead of executing them. The rule is defined once in the policy layer; this process only obeys it.
+**Autonomy.** Every mode obeys the **Autonomous Action Boundary** in `gmail-policy`: mechanical, reversible filter moves run without approval; destructive or criterion moves (trash, spam, unsubscribe, delete, marking done, sending) are always proposed to the user. The rule is defined once in the policy layer; this process only obeys it.
 
-**Multi-account (brief note).** The focus is Gmail. The same filter ORDER is reusable for another Gmail account (e.g. a work address) the day it is connected. If another account has no `_gaia/*` filters, detect it and be able to create them — `gws gmail users labels create` is **T3** (see `gmail-policy`), so it is proposed, never run unattended.
+**Multi-account (brief note).** The focus is Gmail. The same filter ORDER is reusable for another Gmail account (e.g. a work address) the day it is connected. If another account has no `_gaia/*` filters, detect it and be able to create them — `gws gmail users labels create` is **T3** (see `gmail-policy`), so it is proposed to the user, never run on its own.
 
-## Headless Mode
+## Making It a Routine
 
-Triage is interactive by design, but it runs unattended when a scheduled task or headless report invokes it (see the `scheduled-task` skill and the Check My Mail contract above). A headless run has no user to answer a prompt, so it obeys the **Autonomous Action Boundary** (`gmail-policy`) exactly — that rule, defined in the policy layer, not this section, is the source of what may and may not run unattended. In process terms:
+Triage is a conversation, so a routine does not run it: a routine is a recurring notification that brings the user back to it. Nothing executes on its own; the routine comes due the next time Gaia is used after its time. One command creates it, pointing at this skill:
 
-- **Performs unattended** — all T0 reads (counting, listing, thread inspection) plus the boundary's *permitted* moves: classifying a new email into its Gaia filter (`addLabelIds`), staging unprocessed mail into `_gaia/pending`, and the reversible `waiting → action` / `action → waiting` state swaps.
-- **Never performs unattended** — the boundary's *prohibited* operations: moving to `_gaia/trash`, spam, unsubscribe, delete, clearing a label to mark a thread done, sending, or creating drafts for send.
-- **Output is a report** — a headless run produces a summary ("1240 en Promotions, 12 en action stale >3 días, 3 suscripciones recurrentes") plus the prohibited candidates it did NOT execute, handing those decisions to the next interactive session.
-- **No implicit consent** — the triage-context grant for proactive drafts (see `gmail-policy`) is an interactive-session grant only; it does not carry into a headless run.
+```
+gaia notifications add --kind routine --every 1d --headline 'Triage mail' --skill gmail-triage
+```
 
-The rule of thumb: headless triage may read everything and make the mechanical, reversible filter moves (classify new mail, `waiting ↔ action`); it may never trash, spam, unsubscribe, mark done, or send.
+Use `--cron '<five fields>'` (local time) instead of `--every` for a fixed clock time, and `--workspace` to scope it to one workspace; without it the routine is global.
+
+When the routine comes due:
+1. The orchestrator offers to do the triage now.
+2. If the user accepts, it runs interactively with them, as "Check My Mail" describes.
+3. When the user says it is done, `gaia notifications ack <id>` moves the routine to its next occurrence.
+4. If the user says not now, `gaia notifications snooze <id> --for 2h` (or `--until <local time>`) hides it until later.
+
+`gaia notifications cancel <id>` ends the routine for good.
 
 ## Anti-Patterns
 
