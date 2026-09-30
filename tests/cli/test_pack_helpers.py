@@ -24,7 +24,9 @@ from cli import _pack_helpers  # noqa: E402
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-from tests.conftest import require_tool  # noqa: E402
+import pytest  # noqa: E402
+
+from tests.conftest import copy_package_tree, require_tool  # noqa: E402
 
 require_tool("npm")
 
@@ -124,19 +126,13 @@ class TestPackTarballMocked(unittest.TestCase):
 
 
 class TestPackTarballReal(unittest.TestCase):
-    """Integration: run the REAL `npm pack` against the actual source tree.
-
-    Writes the tarball only into a `tempfile.TemporaryDirectory()` --
-    never into the repo root, never into ~/.gaia. This is the same pack
-    primitive `gaia dev --mode pack` and (Phase 2) `gaia release check`
-    will invoke, so proving it works for real here is the load-bearing
-    check for AC-1's "reflects a real shippable version" requirement.
-    """
+    """The real `npm pack` of a copy of the source tree writes one tarball into dest_dir."""
 
     def test_real_npm_pack_produces_tarball(self):
         with tempfile.TemporaryDirectory(prefix="gaia-pack-real-") as tmp:
-            dest = Path(tmp)
-            res = _pack_helpers.pack_tarball(_REPO_ROOT, dest_dir=dest, timeout=120)
+            source = copy_package_tree(Path(tmp) / "source")
+            dest = Path(tmp) / "dest"
+            res = _pack_helpers.pack_tarball(source, dest_dir=dest, timeout=120)
 
             self.assertEqual(res["action"], "created", res.get("details"))
             self.assertEqual(res["name"], "@jaguilar87/gaia")
@@ -144,8 +140,12 @@ class TestPackTarballReal(unittest.TestCase):
             self.assertTrue(tarball.is_file())
             self.assertTrue(tarball.name.startswith("jaguilar87-gaia-"))
             self.assertGreater(tarball.stat().st_size, 1000)
-            # The tarball must NOT have been written into the source tree.
-            self.assertNotEqual(tarball.parent, _REPO_ROOT)
+            self.assertEqual(tarball.parent, dest.resolve())
+
+
+def test_the_suite_refuses_a_real_npm_pack_inside_the_repository():
+    with pytest.raises(AssertionError, match="runs prepack in the repository"):
+        subprocess.run(["npm", "pack", "--dry-run"], cwd=_REPO_ROOT, capture_output=True, timeout=60)
 
 
 if __name__ == "__main__":

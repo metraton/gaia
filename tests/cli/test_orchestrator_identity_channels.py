@@ -6,7 +6,6 @@ package channels get it from the workspace settings `gaia install` writes.
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,24 +22,9 @@ from tests.conftest import require_tool  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def tarball(tmp_path_factory):
-    """The package packed from a copy of the working tree.
-
-    prepack deletes __pycache__ and regenerates manifests in the tree it packs,
-    so packing the repository itself breaks any parallel test that reads it.
-    """
-    git = require_tool("git")
+def tarball(tmp_path_factory, package_copy):
     require_tool("npm")
-    listed = subprocess.run(
-        [git, "-C", str(_REPO_ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-        capture_output=True, text=True, check=True, timeout=60)
-    source = tmp_path_factory.mktemp("source")
-    for name in filter(None, listed.stdout.split("\0")):
-        original = _REPO_ROOT / name
-        if os.path.lexists(original):
-            (source / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(original, source / name, follow_symlinks=False)
-    result = _pack_helpers.pack_tarball(source, dest_dir=tmp_path_factory.mktemp("pack"), timeout=120)
+    result = _pack_helpers.pack_tarball(package_copy, dest_dir=tmp_path_factory.mktemp("pack"), timeout=120)
     assert result["action"] == "created", result.get("details")
     return Path(result["tarball"])
 

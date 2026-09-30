@@ -69,7 +69,7 @@ def isolated_dev_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     })
 
 
-from tests.conftest import require_tool
+from tests.conftest import copy_package_tree, require_tool
 
 
 @pytest.mark.usefixtures("isolated_dev_policy")
@@ -887,7 +887,8 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
                 no_global_link=True,
             )
 
-            with patch.dict(os.environ, env_patch):
+            source = copy_package_tree(tmp_path / "source")
+            with patch.dict(os.environ, env_patch), patch("cli.dev._PACKAGE_ROOT", source):
                 with redirect_stdout(io.StringIO()) as out:
                     rc = cmd_dev(args)
 
@@ -1280,8 +1281,9 @@ def _channel_args(workspace, **overrides):
     return argparse.Namespace(**values)
 
 
-def test_channel_plugin_builds_the_directory_claude_code_loads(tmp_path, monkeypatch, fake_claude):
+def test_channel_plugin_builds_the_directory_claude_code_loads(tmp_path, monkeypatch, fake_claude, package_copy):
     require_tool("npm")
+    monkeypatch.setattr(dev_mod, "_PACKAGE_ROOT", package_copy)
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))

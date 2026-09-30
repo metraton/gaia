@@ -12,6 +12,7 @@ Provides:
 import os
 import shutil
 import site
+import subprocess
 import tempfile
 from collections.abc import MutableMapping
 import pytest
@@ -100,6 +101,53 @@ def require_tool(name):
 def bun():
     """The bun on PATH that drives the real OpenCode plugin."""
     return require_tool("bun")
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def copy_package_tree(destination):
+    """Copy the working tree's tracked and unignored files into *destination* and return it.
+
+    npm pack runs prepack in the tree it packs -- `npm run clean` deletes every
+    __pycache__ and generate:plugin-root rewrites the manifests -- so a real pack
+    of the repository breaks the xdist workers reading it at the same time.
+    """
+    destination = Path(destination)
+    listed = subprocess.run(
+        [require_tool("git"), "-C", str(PACKAGE_ROOT), "ls-files", "-z", "--cached", "--others",
+         "--exclude-standard"],
+        capture_output=True, text=True, check=True, timeout=60)
+    for name in filter(None, listed.stdout.split("\0")):
+        original = PACKAGE_ROOT / name
+        if os.path.lexists(original):
+            (destination / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(original, destination / name, follow_symlinks=False)
+    return destination
+
+
+@pytest.fixture(scope="session")
+def package_copy(tmp_path_factory):
+    """One copy of the working tree per worker, for tests that run a real npm pack."""
+    return copy_package_tree(tmp_path_factory.mktemp("package-copy"))
+
+
+class _RepositoryPackGuard(subprocess.Popen):
+    """A Popen that refuses an `npm pack` whose prepack would run inside the repository."""
+
+    def __init__(self, args, *pargs, **kwargs):
+        argv = [str(a) for a in args] if isinstance(args, (list, tuple)) else str(args).split()
+        cwd = Path(kwargs.get("cwd") or os.getcwd()).resolve()
+        if (len(argv) > 1 and Path(argv[0]).stem == "npm" and argv[1] == "pack"
+                and "--ignore-scripts" not in argv and cwd.is_relative_to(PACKAGE_ROOT)):
+            raise AssertionError(f"npm pack with cwd={cwd} runs prepack in the repository; "
+                                 "pack copy_package_tree()'s copy instead")
+        super().__init__(args, *pargs, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _no_npm_pack_in_the_repository(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _RepositoryPackGuard)
 
 
 # ============================================================================
