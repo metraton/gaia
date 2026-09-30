@@ -426,19 +426,13 @@ def _cmd_stats(args) -> int:
             "Run: gaia doctor"
         )
 
-    # Conflict count (curated memory conflicts -- unrelated to episodes)
-    project_root = _find_project_root()
+    # Candidate contradictions in curated memory, the same set `conflicts` lists.
     conflicts_count = 0
     if detect_conflicts is not None:
         try:
-            mem_dir = project_root / ".claude" / "projects" / "-home-jorge-ws-me" / "memory"
-            if not mem_dir.is_dir():
-                # Try the user memory default
-                mem_dir = Path.home() / ".claude" / "projects" / "-home-jorge-ws-me" / "memory"
-            raw_conflicts = detect_conflicts(memory_dir=mem_dir)
-            conflicts_count = len(raw_conflicts)
-        except Exception:
-            conflicts_count = 0
+            conflicts_count = len(detect_conflicts())
+        except Exception as exc:  # noqa: BLE001 -- stats still reports the rest
+            warnings.append(f"conflict candidates not counted: {exc}")
 
     output = {
         "total_episodes": total_episodes,
@@ -550,48 +544,36 @@ def _cmd_episode_show(args) -> int:
 
 
 def _cmd_conflicts(args) -> int:
-    """Handle `gaia memory conflicts [--threshold F]`."""
+    """Handle `gaia memory conflicts [--threshold F]`: candidate pairs, never verdicts."""
     as_json = getattr(args, "json", False)
-    threshold = getattr(args, "threshold", 0.3)
 
     detect_conflicts = _import_conflict_detector()
-
     if detect_conflicts is None:
         return _err("conflict_detector module not available", as_json)
 
-    project_root = _find_project_root()
-
     try:
-        # Use the default memory dir (same as detect_conflicts default)
-        raw = detect_conflicts(threshold=threshold)
-    except Exception as exc:
-        return _err(f"Conflict detection failed: {exc}", as_json)
-
-    # Normalize: similarity -> score, flatten conflicts list into reason string
-    conflicts_out = []
-    for item in raw:
-        inner = item.get("conflicts", [])
-        reason = "; ".join(c.get("reason", "") for c in inner) if inner else "high similarity"
-        conflicts_out.append({
-            "file_a": item.get("file_a", ""),
-            "file_b": item.get("file_b", ""),
-            "score": item.get("similarity", 0.0),  # similarity -> score
-            "reason": reason,
-        })
-
-    output = {"conflicts": conflicts_out}
+        threshold = getattr(args, "threshold", None)
+        candidates = (detect_conflicts() if threshold is None
+                      else detect_conflicts(threshold=threshold))
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"conflict scan failed: {exc}", as_json)
 
     if as_json:
-        print(json.dumps(output, indent=2))
-    else:
-        if not conflicts_out:
-            print("No conflicts detected.")
-        else:
-            print(f"\n  {len(conflicts_out)} conflict(s) found:\n")
-            for c in conflicts_out:
-                print(f"  [{c['score']:.4f}] {Path(c['file_a']).name} <-> {Path(c['file_b']).name}")
-                print(f"    Reason: {c['reason']}\n")
-
+        print(json.dumps({"candidates": candidates}, indent=2))
+        return 0
+    if not candidates:
+        print("No candidate contradictions.")
+        return 0
+    print(
+        f"\n  {len(candidates)} candidate pair(s). Each shares wording; read both "
+        "bodies and decide whether they disagree and which one stands.\n"
+    )
+    for c in candidates:
+        print(f"  [{c['score']:.2f}] {c['owner']}")
+        for row in (c["a"], c["b"]):
+            print(f"    {row['name']} ({row['workspace']}, {row['class']}, "
+                  f"{row['updated_at']}): {row['description'] or ''}")
+        print()
     return 0
 
 
@@ -912,6 +894,7 @@ def _cmd_add(args) -> int:
             project_ref=project_ref,
             initiative=initiative,
             audience=audience_flag,
+            class_=class_flag,
         )
     except (MemoryHostScopeError, MemoryUserScopeError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -3870,7 +3853,11 @@ def register(subparsers):
     add_p.add_argument(
         "--class", dest="class_", default=None,
         choices=("anchor", "thread", "log"),
-        help="T5: set memory.class at insertion time. Writer-side enum.",
+        help=(
+            "Set memory.class at insertion time. Default: anchor for "
+            "--type=user (it reaches every session and dispatch), log for "
+            "every other type."
+        ),
     )
     add_p.add_argument(
         "--status", dest="status", default=None,
@@ -4043,14 +4030,24 @@ def register(subparsers):
     # -- conflicts ----------------------------------------------------------
     conflicts_p = actions.add_parser(
         "conflicts",
-        help="Contradiction scan across memory files",
-        description="Pairwise jaccard similarity scan.",
+        help="Candidate contradictions in curated memory",
+        description=(
+            "List pairs of live curated rows of one owner -- the user's rows, "
+            "or the rows of one project -- whose wording overlaps enough to be "
+            "about the same subject. Rows a supersedes link retired are left "
+            "out. A pair is a candidate, not a verdict: read both bodies, and "
+            "if they disagree, write the row that stands and link it "
+            "--kind=supersedes to the one it replaces."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  gaia memory conflicts --threshold=0.5\n",
+        epilog="Examples:\n  gaia memory conflicts\n  gaia memory conflicts --threshold=0.2 --json\n",
     )
     conflicts_p.add_argument(
-        "--threshold", type=float, default=0.3, metavar="F",
-        help="Jaccard threshold. float. Default: 0.3.",
+        "--threshold", type=float, default=None, metavar="F",
+        help=(
+            "Minimum Jaccard overlap of word stems (name, description, body) "
+            "for a pair to be listed. float. Default: 0.3."
+        ),
     )
     conflicts_p.add_argument(
         "--json", action="store_true", default=False,

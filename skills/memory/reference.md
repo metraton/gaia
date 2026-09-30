@@ -98,6 +98,11 @@ both.
   names the kind; `gaia/store/memory_claims.py::memory_claim_kind` reads it
   without case, accents or a trailing colon. The vocabulary is open: another
   first word is allowed and simply has no kind.
+- **Birth class** -- `gaia/store/writer.py::upsert_memory`: a new `type=user`
+  row with no `--class` is born `anchor`, so it reaches the birth block and
+  every dispatch kernel through `gaia/store/reader.py::user_anchor_rows`;
+  every other type is born `log`. An explicit `--class` wins, and a later
+  `add` over the same row never changes its class.
 - **Warnings** -- `bin/cli/memory.py::_add_warnings` and the supersedes check
   in `bin/cli/memory.py::_cmd_link`. Each prints `aviso: ...` to stderr (with
   `--json`, a `warnings: [{code, message}]` list) and the row is still

@@ -384,14 +384,13 @@ def test_cli_add_status_on_anchor_class_errors(tmp_db, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "thread" in (captured.err + captured.out).lower()
-    # The primary upsert landed but reclassify failed: row exists with
-    # class='log' (v11 DEFAULT) and status=NULL since reclassify never ran.
-    # (We do NOT roll back the upsert -- documented behaviour in the
-    # _cmd_add docstring.)
+    # The upsert landed with the explicit class, then reclassify rejected the
+    # status, so the row stays without one. (We do NOT roll back the upsert
+    # -- documented behaviour in the _cmd_add docstring.)
     row = _row(tmp_db, "atom_bad_status")
     assert row is not None
-    assert row[1] == "log"  # v11 DEFAULT 'log' applied on upsert
-    assert row[2] is None   # status never set
+    assert row[1] == "anchor"
+    assert row[2] is None
 
 
 # ---------------------------------------------------------------------------

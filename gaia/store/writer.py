@@ -2393,6 +2393,7 @@ def upsert_memory(
     project_ref: str | None = None,
     initiative: str | None = None,
     audience: str | None = None,
+    class_: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -2452,6 +2453,12 @@ def upsert_memory(
     A ``type='user'`` row lands in :data:`USER_WORKSPACE`, and a name already
     live there raises :class:`MemoryUserScopeError` (``user_name_collision``)
     instead of replacing the stored row.
+
+    ``class_`` -- the class a brand-new row is born with. ``None`` means
+    ``anchor`` for a ``type='user'`` row, because what the user tells Gaia
+    about himself is standing until a newer row supersedes it, and the
+    schema's ``log`` for every other type. An update never changes the class;
+    that is :func:`reclassify_memory`'s job.
     """
     _assert_dispatch_can_write_memory()
 
@@ -2469,6 +2476,13 @@ def upsert_memory(
         raise ValueError(
             f"invalid memory audience {audience!r}; must be one of "
             f"{list(VALID_MEMORY_AUDIENCES)}"
+        )
+    if class_ is None:
+        class_ = "anchor" if type == "user" else "log"
+    if class_ not in VALID_MEMORY_CLASSES:
+        raise ValueError(
+            f"invalid class {class_!r}; must be one of "
+            f"{list(VALID_MEMORY_CLASSES)}"
         )
     if not body or not body.strip():
         raise ValueError("memory body cannot be empty")
@@ -2506,8 +2520,8 @@ def upsert_memory(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
-                                    updated_at, audience, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?)
+                                    updated_at, audience, created_at, class)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2536,7 +2550,7 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, audience),
+                 now, class_, audience),
             )
             con.commit()
             return {

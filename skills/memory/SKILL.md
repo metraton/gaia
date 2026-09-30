@@ -50,6 +50,26 @@ system; raw execution detail in events, episodes, or the transcript.
 
 Do not copy a fact into memory merely because it matters. A second source of
 truth becomes stale; a durable reference to the canonical object is enough.
+That reference is soft: the row names the brief, plan or task in its text, and
+nothing links the two. No reader walks such a link, so it would cost a write
+and add nothing; the name in the text is what a later search finds.
+
+What remains for memory is placed by three questions, asked in order, because
+the answer decides who will ever read it:
+
+- **Would it still hold in a project the user has never touched?** Then it is
+  the user's, with no project, and it reaches every session and every agent.
+- **Is it a short, fixed value an agent working one project must obey without
+  reading anything else** -- how that project integrates, where it releases?
+  Then it is a declared fact of that project, not memory: a rule an agent has
+  to go looking for is a rule it will not follow.
+- **Is it history, reasons or something still owed about one project?** Then
+  it is that project's memory, read when that project is worked on.
+
+A rule the user sets for one project splits along those lines: the habit
+("follow the workflow each repository declares") is his, the value ("this one
+integrates straight to main") belongs to the project. Filed as a user row, the
+value follows him into every other project and contradicts the next one.
 
 Then ask of any rule for how Gaia should behave: **would it still make sense if
 Gaia worked perfectly?** If not, it is not knowledge about anyone -- it is a
@@ -96,7 +116,10 @@ holds what is true.
    old, which then leaves every injection; rewriting the old row in place
    erases the change itself, so `add` over an existing name is for correcting
    an error. Only a log or a live thread grows by `append`. Graduation keeps its
-   lineage the same way. The CLI checks length, owner and the arrow and prints
+   lineage the same way. A row about the user stands from the moment it is
+   written -- every session and every dispatched agent carries it -- so the
+   first question of *Other home first* is what earns it that reach. The CLI
+   checks length, owner and the arrow and prints
    the vocabulary as the row is written; it cannot judge whether the row
    deserved to exist.
 5. **Curate against the exception boundary, then report.** Curation is
@@ -149,6 +172,24 @@ none is deletion:
 These verbs are non-mutative, so cost is never the reason a row stays live.
 Whoever observes the resolution owns the exit: a session that resolves a thread
 and does not close it has moved that thread's cost onto every session after it.
+
+## Curating inconsistencies
+
+Curation looks for two kinds of inconsistency, and the CLI resolves neither.
+
+- **Rows that contradict each other.** Two live rows of one owner that answer
+  the same question differently leave every reader to guess, and whichever it
+  happens to read first wins. `gaia memory conflicts` lists pairs that share
+  wording as candidates; only reading both says whether they disagree. What
+  holds is written as the newest row and supersedes the other -- the same arrow
+  as any change, from the new row to the old.
+- **A preference that collides with a system rule.** A preference governs a
+  default: anything Gaia would otherwise choose on the user's behalf. It never
+  governs an invariant -- consent, security, the contract every agent closes --
+  because those are what make everything else trustworthy, and a preference
+  able to lift one would turn every preference into a bypass. Such a preference
+  is not saved as written: the collision is named to the user, and what is kept
+  is the part that governs a default.
 
 ## Who writes
 

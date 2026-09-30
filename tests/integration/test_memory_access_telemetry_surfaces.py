@@ -105,8 +105,10 @@ SEEDS: tuple[Seed, ...] = (
     # type=user: the anchor section carries the user's instructions, so a
     # type=project anchor sharing the workspace no longer reaches it.
     Seed("a_anchor", "user", class_="anchor"),
-    Seed("u_exec", "user", audience="executor"),
-    # class=anchor (not the default "log") so get-relevant's anchor section
+    # A user row is born anchor; this one is explicitly a log row, the one no
+    # kernel or birth block renders.
+    Seed("u_exec", "user", class_="log", audience="executor"),
+    # class=anchor so get-relevant's anchor section
     # -- which pins type=user rows to the top -- can select it too: the row
     # both the kernel block AND a session-context digest can reach, used by
     # test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row.
@@ -177,7 +179,7 @@ SURFACES: tuple[Surface, ...] = (
     _read("stats", ["memory", "stats", "--json"],
           None, action="stats", contains=("{",)),
     _read("conflicts", ["memory", "conflicts", "--json", "--threshold", "0.9"],
-          None, action="conflicts", contains=("conflicts",)),
+          None, action="conflicts", contains=("candidates",)),
     _read("episode-show", ["memory", "episode-show", EPISODE_ID, "--json"],
           None, action="episode-show", contains=(EPISODE_ID,)),
 

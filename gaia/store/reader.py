@@ -299,6 +299,30 @@ def user_anchor_rows(db_path: Path | None = None) -> list[dict]:
         con.close()
 
 
+_LIVE_OWNED_ROWS = (
+    "SELECT m.workspace, m.name, m.type, m.class, m.description, m.body, "
+    "       m.initiative, m.updated_at "
+    "FROM memory m "
+    "WHERE m.deleted_at IS NULL AND (m.type = 'user' OR m.initiative IS NOT NULL) "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY m.workspace, m.name"
+)
+
+
+def live_owned_memory_rows(db_path: Path | None = None) -> list[dict]:
+    """Every live row no row supersedes that has an owner: the user, or a project key.
+
+    Every workspace and every class, so a contradiction between a standing
+    row and a forgotten log row is still visible. Raises on a DB error: the
+    caller reports it instead of showing an empty corpus as a clean one.
+    """
+    con = _connect(db_path)
+    try:
+        return [dict(r) for r in con.execute(_LIVE_OWNED_ROWS)]
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Duration / date parsing for --since / --until
 # ---------------------------------------------------------------------------

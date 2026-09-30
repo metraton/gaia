@@ -97,12 +97,26 @@ set at once, then resolve each as above.
 
 ### Conflict resolution
 
-`gaia memory conflicts` flags pairs whose bodies overlap above a
-Jaccard threshold. For each pair:
+`gaia memory conflicts` (`tools/memory/conflict_detector.py::detect_conflicts`)
+lists candidate pairs from the curated memory in `gaia.db`: live rows no
+`supersedes` link retired, paired only inside one owner -- the user's rows
+across every workspace, or the rows of one initiative key
+(`gaia/store/reader.py::live_owned_memory_rows`) -- whose word stems of
+name, description and body overlap at or above `--threshold`
+(`DEFAULT_THRESHOLD`, Jaccard; stems are the first `_STEM_LENGTH`
+characters, so English and Spanish inflections meet). Every class is
+included, so a forgotten `log` row that still contradicts a standing anchor
+shows up. `gaia memory stats` counts the same set. The score says the pair
+shares wording, never that it disagrees. For each pair, read both bodies:
 
 - If they are duplicates, merge and supersede (see Deduplication).
-- If they contradict, the newer one usually wins -- but ask the user
-  before overwriting a `decision_*` row.
+- If they contradict, write or pick the row that stands and link it
+  `--kind=supersedes` to the one it replaces; the newer one usually wins,
+  but ask the user before contradicting a `decision_*` row.
+- If they only share vocabulary, leave both.
+
+The detector does not look for a preference that clashes with a system
+rule: that is the curator's reading, taught in `SKILL.md`.
 
 ### Pruning stale entries
 
