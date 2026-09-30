@@ -37,6 +37,7 @@
   },
   "files": [
     ".claude-plugin/",
+    "settings.json",
     "bin/",
     "agents/",
     "tools/",
