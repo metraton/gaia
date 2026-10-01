@@ -349,33 +349,51 @@ def _cmd_show(args) -> int:
     """Read-only: show a single task of the ONE plan attached to a brief.
 
     Addressed by ``order_num`` -- consistent with every other single-task
-    verb in this file (`remove`, `gate add/list/remove/set-status`). Prints
+    verb in this file (`remove`, `gate add/list/remove/set-status`) -- or by
+    ``tasks.id`` through ``--id``. Also renders the task's gates and whether
+    ``derive_gate_verdict`` lets it close. Prints
     ORDER_NUM (the plan-position ordinal a human reads/types) and TASK_ID
     (``tasks.id``, the row id the dispatch contract's ``task_id=<N>`` token
     requires) as two separate, explicitly labeled lines -- the two numbers
     are never the same value, and conflating them is the exact failure mode
     this verb exists to close.
     """
-    from gaia.store.writer import get_task_by_order
+    from gaia.state.task_closure import derive_gate_verdict
+    from gaia.store.writer import get_task_by_id, get_task_by_order, list_task_gates
 
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    task_id = getattr(args, "task_id", None)
     brief_name = args.brief
     order_num = args.order_num
-    as_json = getattr(args, "json", False)
+    if (task_id is None) == (brief_name is None or order_num is None):
+        return _err("give either BRIEF ORDER_NUM or --id TASK_ID", as_json=as_json)
 
     try:
-        task = get_task_by_order(workspace, brief_name, order_num, db_path=None)
+        if task_id is not None:
+            task = get_task_by_id(task_id, db_path=None)
+            if task is None:
+                return _err(f"no task with tasks.id={task_id}", as_json=as_json)
+            workspace, brief_name = task["workspace"], task["brief"]
+        else:
+            workspace = _resolve_workspace(getattr(args, "workspace", None))
+            task = get_task_by_order(workspace, brief_name, order_num, db_path=None)
+            if task is None:
+                return _err(
+                    f"no task at order_num={order_num} in the plan for '{brief_name}'",
+                    as_json=as_json,
+                )
+            task["brief"] = brief_name
+        gates = list_task_gates(workspace, brief_name, task["order_num"], db_path=None)
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
 
-    if task is None:
-        return _err(
-            f"no task at order_num={order_num} in the plan for '{brief_name}'",
-            as_json=as_json,
-        )
+    verdict = derive_gate_verdict(gates)
+    blockers = _gate_blockers(gates) or verdict.reasons
 
     if as_json:
-        print(json.dumps(task, indent=2, default=str))
+        print(json.dumps({**task, "gates": gates, "closable": verdict.approving,
+                          "blockers": [] if verdict.approving else blockers},
+                         indent=2, default=str))
         return 0
 
     print(f"BRIEF:      {brief_name}")
@@ -386,7 +404,41 @@ def _cmd_show(args) -> int:
     print(f"STATUS:     {task['status']}")
     print(f"GOAL:       {task.get('goal') or ''}")
     print(f"EVIDENCE:   {task.get('evidence_path') or '(none)'}")
+    gate_lines = [
+        f"#{g['id']} {g['verification_type']} {g['status']}{_gate_state_suffix(g)}"
+        for g in gates
+    ] or ["(none)"]
+    print(f"GATES:      {gate_lines[0]}")
+    for line in gate_lines[1:]:
+        print(f"            {line}")
+    if verdict.approving:
+        print("CLOSES:     yes -- every gate passes and none is stale")
+    else:
+        print(f"CLOSES:     no -- {', '.join(blockers)}")
+    print(f"TURNS:      gaia contract list --plan-task {task['id']}")
     return 0
+
+
+def _gate_state_suffix(gate: dict) -> str:
+    """The stale mark and fail cause of one gate, empty when neither is set."""
+    suffix = ""
+    if gate.get("stale_at"):
+        suffix += (f" stale since {gate['stale_at']} "
+                   f"({gate.get('stale_reason') or 'its subject changed'})")
+    if gate.get("fail_cause"):
+        suffix += f" fail_cause={gate['fail_cause']}"
+    return suffix
+
+
+def _gate_blockers(gates: list[dict]) -> list[str]:
+    """Name each gate that keeps the task open: stale first, else its non-pass status."""
+    blockers = []
+    for g in gates:
+        if g.get("stale_at"):
+            blockers.append(f"gate {g['id']} stale")
+        elif g.get("status") != "pass":
+            blockers.append(f"gate {g['id']} {g.get('status')}")
+    return blockers
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +499,8 @@ def _cmd_gate_list(args) -> int:
         else:
             for g in gates:
                 print(f"  gate id={g['id']} type={g['verification_type']} "
-                      f"status={g['status']} evidence_type={g['evidence_type']}")
+                      f"status={g['status']} evidence_type={g['evidence_type']}"
+                      f"{_gate_state_suffix(g)}")
     return 0
 
 
@@ -758,21 +811,28 @@ def register(subparsers) -> None:
         help="Show one task of the plan attached to a brief (read-only)",
         description=(
             "Show a single task, addressed by order_num (consistent with "
-            "`remove`/`gate`). Prints ORDER_NUM (the plan-position ordinal) "
-            "and TASK_ID (tasks.id -- the row id the dispatch contract's "
-            "task_id=<N> token requires) as two separate, explicitly "
-            "labeled values -- never conflate the two."
+            "`remove`/`gate`) or by --id. Prints ORDER_NUM (the plan-position "
+            "ordinal) and TASK_ID (tasks.id -- the row id the dispatch "
+            "contract's task_id=<N> token requires) as two separate, "
+            "explicitly labeled values -- never conflate the two. Lists the "
+            "task's gates with their status and stale mark, and whether the "
+            "task can close and which gates block it."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia task show my-brief 1\n"
+            "  gaia task show --id 824\n"
             "  gaia task show my-brief 1 --json\n"
         ),
     )
-    show_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
-    show_p.add_argument("order_num", type=int, metavar="ORDER_NUM",
-                        help="Task order_num to show.")
+    show_p.add_argument("brief", nargs="?", default=None, metavar="BRIEF",
+                        help="Parent brief slug.")
+    show_p.add_argument("order_num", nargs="?", type=int, default=None,
+                        metavar="ORDER_NUM", help="Task order_num to show.")
+    show_p.add_argument("--id", dest="task_id", type=int, default=None,
+                        metavar="TASK_ID",
+                        help="Address the task by tasks.id instead of BRIEF ORDER_NUM.")
     show_p.add_argument("--workspace", default=None, metavar="W")
     show_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON.")

@@ -5589,6 +5589,63 @@ def get_task_by_order(
         con.close()
 
 
+def get_task_by_id(task_id: int, *, db_path: Path | None = None) -> dict | None:
+    """Return the task whose ``tasks.id`` is ``task_id``, or None.
+
+    The row carries the :func:`get_task_by_order` columns plus ``brief`` and
+    ``workspace``, the coordinates every order-addressed verb needs.
+    """
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT t.id, t.plan_id, t.order_num, t.goal, t.status, "
+            "       t.evidence_path, b.name AS brief, b.workspace "
+            "FROM tasks t JOIN plans p ON p.id = t.plan_id "
+            "JOIN briefs b ON b.id = p.brief_id WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        con.close()
+
+
+def list_brief_plan_task_ids(
+    brief_name: str,
+    *,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> list[int]:
+    """Return the ``tasks.id`` of every task in the plan of ``brief_name``.
+
+    Without ``workspace`` the name is looked up in every workspace. Raises
+    ValueError when no such brief exists, or when the name is ambiguous across
+    workspaces.
+    """
+    con = _connect(db_path)
+    try:
+        sql = (
+            "SELECT b.workspace, t.id FROM briefs b "
+            "LEFT JOIN plans p ON p.brief_id = b.id "
+            "LEFT JOIN tasks t ON t.plan_id = p.id WHERE b.name = ?"
+        )
+        params: list[Any] = [brief_name]
+        if workspace is not None:
+            sql += " AND b.workspace = ?"
+            params.append(workspace)
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+    if not rows:
+        raise ValueError(f"brief '{brief_name}' not found")
+    workspaces = sorted({r["workspace"] for r in rows})
+    if len(workspaces) > 1:
+        raise ValueError(
+            f"brief '{brief_name}' exists in workspaces {workspaces}; "
+            "name one with --workspace"
+        )
+    return [r["id"] for r in rows if r["id"] is not None]
+
+
 # ---------------------------------------------------------------------------
 # task_gates: planner-authored typed verification gate slot (v34, harness R1-A)
 #
@@ -12030,6 +12087,9 @@ def list_agent_contract_handoffs(
     harness_agent_id: str | None = None,
     cut_reason: str | None = None,
     any_cut: bool = False,
+    plan_task_ids: "Sequence[int] | None" = None,
+    since: str | None = None,
+    until: str | None = None,
     limit: int = 100,
     db_path: "Path | None" = None,
 ) -> list[dict]:
@@ -12056,6 +12116,12 @@ def list_agent_contract_handoffs(
             would silently return a handful of rows and read as "almost nothing
             was cut". Served by idx_agent_contract_handoffs_cut, the partial
             index over exactly this population.
+        plan_task_ids: Filter to turns of these ``tasks.id`` values: rows bound
+            to one of them, plus every unbound continuation whose
+            ``continues_handoff_id`` chain reaches such a row -- the same
+            nearest-ancestor binding ``_inherited_plan_task_id`` resolves.
+        since / until: Inclusive ``created_at`` bounds, as ISO-8601 UTC
+            strings. Applied in SQL, so ``limit`` counts only matching rows.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
@@ -12097,6 +12163,28 @@ def list_agent_contract_handoffs(
             params.append(cut_reason)
         elif any_cut:
             clauses.append("cut_reason IS NOT NULL")
+        if plan_task_ids is not None:
+            if not plan_task_ids:
+                return []
+            marks = ",".join("?" * len(plan_task_ids))
+            clauses.append(
+                "id IN (WITH RECURSIVE chain(id, depth) AS ("
+                "  SELECT id, 0 FROM agent_contract_handoffs"
+                f"  WHERE plan_task_id IN ({marks})"
+                "  UNION"
+                "  SELECT c.id, chain.depth + 1 FROM agent_contract_handoffs c"
+                "  JOIN chain ON c.continues_handoff_id = chain.id"
+                "  WHERE c.plan_task_id IS NULL AND chain.depth < ?"
+                ") SELECT id FROM chain)"
+            )
+            params.extend(plan_task_ids)
+            params.append(_MAX_CONTINUATION_LINKS)
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("created_at <= ?")
+            params.append(until)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)

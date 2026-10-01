@@ -80,8 +80,15 @@ push. A failed step freezes the rest of an approved set (`execution`).
 - A failing verdict carries its cause -- `product`, `environment`,
   `broken_test` or `requirement_changed` (`agents/gaia-verifier.md`) -- and the
   orchestrator routes by it.
-- CI: run `gh pr checks <n> --repo <owner/repo>` directly. The task is done
-  when it is green. Measured: task 725 closed green while the PR's CI was red.
+- CI: a push or PR turn waits on CI inside its own turn, with the forge's own
+  tool (for GitHub, `pr checks <n> --watch`), and returns the final check table
+  verbatim in `verbatim_outputs`, the commit SHA it covers, and the time it was
+  observed. One dispatch covers push and green; the orchestrator never queries
+  the forge itself. The task is done when that table is green for the PR head
+  (`agent-response`). Measured: task 725 closed green while the PR's CI was red.
+- Any other external state -- a deploy, a reconcile, a pipeline run -- follows
+  the same rule: the owning specialist observes it in its turn and brings the
+  literal output with what it covers and when it was seen.
 
 ## Sizing and steering (principles 7 and 8)
 

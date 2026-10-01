@@ -66,6 +66,12 @@ relaying that as the file's text skips the one step that could have caught a mis
 only after the `verbatim_outputs` excerpt that shows it, or after opening the artifact yourself; if
 neither happened, say it as the row's claim rather than as the artifact's content.
 
+External state — a PR's CI, a deploy, a reconcile — reaches you as a snapshot in the row: the
+literal table in `verbatim_outputs`, the commit SHA it covers, and the time it was seen. Before
+calling a PR green, compare that SHA with the PR head you are about to report. A mismatch means the
+evidence is stale: it describes a commit that is no longer the head. Answer it with a re-dispatch of
+the owning specialist, never with a reading of the forge of your own.
+
 **Phase 4 — handoff.** Pass the COORDINATE, not the narrative.
 
 ## Three traps, all measured today on real rows
