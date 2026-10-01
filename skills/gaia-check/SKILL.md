@@ -98,9 +98,10 @@ Reject 7b. Expected: each answer decides only its own signature -- 7a State
 **Check 8 -- Typed answer.** File `<p>nota-8.txt`. Task: rename it to
 `<p>nota-8-ok.txt`. User: types an answer ("sí, aprobado") instead of
 choosing an option. Expected: nothing activates; State `pending`, no Outcome
-line, file unchanged. After 30 minutes with no activity from the requester
-(likely in OpenCode, whose sessions do not heartbeat) it reads State
-`orphaned`: the same result, still undecided.
+line, file unchanged. Once the requesting session has sent no heartbeat and
+the request has seen no activity for 30 minutes, it reads State `orphaned`:
+the same result, still undecided. Both hosts heartbeat their main sessions
+(`_is_orphaned` in `gaia/approvals/reading.py`).
 
 **Check 9 -- How it looks.** File `<p>nota-9.txt`. Task: rename it to
 `<p>nota-9-ok.txt`. User: confirms the question, headed `Firma 1/1`, is one

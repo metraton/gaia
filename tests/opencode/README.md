@@ -30,9 +30,11 @@ resume with execution.
 | `presentation_driver.ts` | One blocked call and, with `ask`, the orchestrator's question call that presents it: the questions written, the bridge traces, the aborts; observes the `bin/gaia` spawn boundary (cwd). |
 | `sdk_body_contract.ts` | The host stubs' type checks for `session.create` / `session.promptAsync` bodies, mirroring `@opencode-ai/sdk` 1.18.18; still used by `protected_edit_driver.ts`. |
 | `isolated_bridge.py` | Asserts the private workspace before running `bridge.py` in-process. |
-| `*.test.ts` + `test_*.py` collectors | Pure bun unit tests (`shell_env_delivery`, `binary_question_match`, `consent_retry_evaluate`, `second_root_attestation`) collected into pytest by a one-test wrapper each. |
-| `test_*.py` | Contract and gate tests that read `plugin.ts` or drive the bridge directly. |
-| `live/` | Opt-in smoke against a RUNNING `opencode serve`; see below. |
+| `lifecycle_transport_driver.ts`, `subagent_stop_gate_driver.ts`, `t12_compaction_reinject_driver.ts` | The host lifecycle Gaia mirrors from Claude Code: which events the plugin forwards to the bridge, a child's turn closed through the SubagentStop gate on `session.idle` / `session.error`, the dispatch kernel re-injected into `output.context` at compaction. |
+| `*_probe_wrapper.ts` | Probes that run the real issuer under the private-state guard (`test_probe_wrapper_isolation.py`). |
+| `*.test.ts` + `test_*.py` collectors | Pure bun unit tests (`shell_env_delivery`, `binary_question_match`, `consent_retry_evaluate`, `second_root_attestation`, `session_birth`, `main_session_prompt`) collected into pytest by a wrapper each. |
+| `test_*.py` | Contract and gate tests that read `plugin.ts` or drive the bridge directly: the main session's birth block and start maintenance on its first message, its per-message heartbeat and notifications line, the skills a specialist is born naming, the contract summary and events digest a Task dispatch carries. |
+| `live/` | Opt-in smoke against a RUNNING `opencode serve`; stale, see below. |
 
 ## Known, not yet covered
 
@@ -46,7 +48,15 @@ the grant's exact command. The plugin gate now refuses that drift before policy
 observation is not reachable through the driver; the neutral lane itself has no
 test asserting exact bytes and has not been investigated. Not fixed here.
 
-## `live/` -- the smoke that needs a real host
+## `live/` -- the smoke that needs a real host (stale)
+
+Both files predate D37 and do not run against the current plugin.
+`live/control_plane_smoke.test.ts` imports `matchesBinaryQuestion`, which
+`opencode/plugin.ts` no longer exports, so `bun test` fails it at import; no
+pytest wrapper collects it. The smoke itself still matches the retired binary
+question (`Approve once [<id>]` / `Reject [<id>]` with a `DECISION:` line),
+not D37's one-line signature question with Approve / Reject / Details. Until
+both are rewritten, the live consent check is the `gaia-check` skill.
 
 `live/control_plane_smoke.ts` observes the literal `question.asked` /
 `question.replied` / `session.idle` lifecycle a real host emits while Gaia

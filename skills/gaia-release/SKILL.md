@@ -47,7 +47,7 @@ When the user says one of these, run the *whole* sequence. Do not stop after the
 The fast iteration loop, and it needs neither a merge nor a publish. The PR's code lives in its worktree; the workspace that tries it is `/home/jorge/ws/me`; `/home/jorge/ws` stays on the last published version and is never a `gaia dev` target. One command replaces the manual `npm pack` -> `npm`/`pnpm add <tarball>` -> `gaia install` sequence, for the channel you name:
 
 ```
-python3 <pr-worktree>/bin/gaia dev --channel <npm|plugin|opencode|all> --workspace /home/jorge/ws/me
+python3 <pr-worktree>/bin/gaia dev --channel <npm|plugin|opencode> --workspace /home/jorge/ws/me
 # or, from the installed CLI:
 gaia dev --from-worktree <pr-worktree> --channel <channel> --workspace /home/jorge/ws/me
 ```

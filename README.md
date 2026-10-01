@@ -68,23 +68,26 @@ One turn, from your prompt to the answer:
 1. You write a prompt in Claude Code or OpenCode.
 2. The orchestrator matches it against the surface_routing table (seeded from
    each agent's routing: frontmatter) and dispatches one specialist.
-3. hooks/pre_tool_use.py validates the dispatch and births the contract row;
-   hooks/subagent_start.py hands the specialist that contract, its CLI lane,
-   and what Gaia already knows about it.
+3. The dispatch is validated and its contract row born; the specialist is
+   handed that contract, its CLI lane, and what Gaia already knows about it.
+   On Claude Code that is hooks/pre_tool_use.py and hooks/subagent_start.py;
+   on OpenCode, opencode/bridge.py prepends the same kernel to the Task
+   prompt, with the specialist's skills listed by name.
 4. The specialist works. Every command passes the tier classifier:
    T0-T2 run; T3 stops with an approval_id you answer in the host's dialog;
    a blocked command is refused with nothing to approve.
 5. The specialist fills its row as it goes (gaia contract set/add/fill) and
-   closes it (gaia contract finalize); hooks/subagent_stop.py validates the
-   row and records the episode in ~/.gaia/gaia.db.
+   closes it (gaia contract finalize); the SubagentStop gate validates the
+   row and records the episode in ~/.gaia/gaia.db -- hooks/subagent_stop.py
+   on Claude Code, the child session's session.idle on OpenCode.
 6. The orchestrator reads the row, not the message, and answers you.
 ```
 
-Gaia interacts with three things outside itself: the host, which loads the hooks -- from [`hooks/hooks.json`](./hooks/hooks.json) on the Claude Code plugin, from `.claude/settings.local.json` on the npm package, through [`opencode/plugin.ts`](./opencode/plugin.ts) on OpenCode; the `~/.gaia/` directory, where the database, evidence and logs live (`gaia paths` prints the resolved locations); and your repositories, which a specialist touches through its own git worktree (`gaia worktree`) and only mutates past the gate.
+Gaia interacts with three things outside itself: the host, which loads the hooks -- from [`hooks/hooks.json`](./hooks/hooks.json) on the Claude Code plugin, from `.claude/settings.local.json` on the npm package, through [`opencode/plugin.ts`](./opencode/plugin.ts) on OpenCode, which forwards the same lifecycle (session start on the first user message, each message, tool calls, a child's start and stop, compaction, session end) to [`opencode/bridge.py`](./opencode/bridge.py) -- only Claude Code's TaskCompleted hook, a logging passthrough, has no OpenCode counterpart; the `~/.gaia/` directory, where the database, evidence and logs live (`gaia paths` prints the resolved locations); and your repositories, which a specialist touches through its own git worktree (`gaia worktree`) and only mutates past the gate.
 
 ## Requirements
 
-- One host: Claude Code >= 2.1.0 (the floor declared in [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)) or OpenCode.
+- One host: Claude Code >= 2.1.0 (the floor declared in [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)) or OpenCode. No OpenCode floor is declared or checked; the plugin was measured on OpenCode 1.18.32, which runs subagents in the background only with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` in its environment ([INSTALL.md](./INSTALL.md), Surface 3).
 - Python >= 3.12 on `PATH` (the `engines` in [`package.json`](./package.json)); the CLI and the hooks are Python. On the plugin the hooks start through [`hooks/launch.sh`](./hooks/launch.sh), which needs `sh` and takes the first of `python3`, `python` or `py -3` that is really Python 3, so the python.org Windows install, which has no `python3`, works too.
 - Node.js >= 18 and npm or pnpm, only for the package channels below.
 - git, for the per-turn worktrees.

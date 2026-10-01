@@ -50,11 +50,14 @@ reaches PreToolUse. This route is entirely host-side too.
 Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation. Approval presentation is the same in both hosts: the orchestrator passes `gaia approvals question` output to its question tool, and an approval resumes the same specialist by task id. In neither host is the question opened in the requesting specialist's session.
 
 The preload route above describes Claude Code, not a host-independent guarantee.
-OpenCode's agent prompt reference does not preload a `skills:` list; the agent uses
-the host's available skill-loading tool at the workflow's invocation point. Neither
-preload nor an explicit load alone proves the artifact was checked against the skill.
+OpenCode preloads no `skills:` list. Instead, a dispatched specialist's kernel on
+that host carries a `# Your skills` block naming each skill its definition declares,
+with its description but not its body, and the specialist loads each one with the
+`skill` tool (`build_skills_block` in `hooks/modules/context/kernel_builder.py`).
+Route 2 is the same on both hosts. Neither preload nor an explicit load alone proves
+the artifact was checked against the skill.
 
-## Qué hay aquí
+## What's here
 
 ```
 skills/
