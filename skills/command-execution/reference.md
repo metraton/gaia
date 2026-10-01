@@ -68,7 +68,7 @@ invoke it.
 
 The exit code is reported by the Bash tool itself: a non-zero code comes back as
 `Exit code N`, zero as a normal result. Never wrap a command in a shell
-(`bash -c`, `sh -c`, `eval`) or append `echo $?` to capture it.
+(any sh-family shell's `-c`, or `eval`) or append `echo $?` to capture it.
 
 ### Absolute Paths (Rule 4)
 

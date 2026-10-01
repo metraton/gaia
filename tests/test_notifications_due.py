@@ -49,7 +49,9 @@ def _prompt_counter_module():
 
 def _prompt_notice() -> str:
     hook = _prompt_counter_module()
-    return hook.prompt_context("test-session", hook._current_workspace())
+    from modules.session.session_lifecycle import notifications_counter
+
+    return notifications_counter(hook._current_workspace())
 
 
 @pytest.fixture
