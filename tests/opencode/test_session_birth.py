@@ -61,11 +61,15 @@ def _injection_count(db: Path) -> int:
         con.close()
 
 
-def test_session_birth_bridge_returns_the_claude_code_block_and_marks_user_rows(seeded_db):
+@pytest.mark.parametrize("session_id", ["ses-created", "ses-resumed-after-restart"])
+def test_session_birth_bridge_returns_the_claude_code_block_and_marks_user_rows(
+    seeded_db, session_id,
+):
+    """A resumed session reaches the bridge exactly as a new one: no prior event is required."""
     import bridge
     from modules.session.session_manifest import build_session_context
 
-    response = bridge.handle({"event": "chat.message", "sessionID": "ses-main"})
+    response = bridge.handle({"event": "chat.message", "sessionID": session_id})
 
     assert response["action"] == "allow"
     assert USER_BODY in response["additional_context"]

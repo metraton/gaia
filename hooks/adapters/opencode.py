@@ -339,10 +339,10 @@ class OpenCodeAdapter(HookAdapter):
         )
 
     def adapt_session_start(self, raw: dict) -> BootstrapResult:
-        """Build the birth block for a main session the plugin saw open.
+        """Build the birth block for a main session's first real message.
 
-        The plugin forwards ``chat.message`` only for the first real message
-        of a session created without a parent, so every call here is a start.
+        The plugin forwards ``chat.message`` once per session it or the host
+        records as parentless, so every call here is a start or a resume.
         """
         from modules.session.session_lifecycle import start_context
 

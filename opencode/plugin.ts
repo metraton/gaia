@@ -1195,10 +1195,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // The host's last answer about a later session's parent, read back by the
   // refusal trace so an unadmitted session says why.
   const hostParentBySession = new Map<string, HostParentRecord>()
-  // Main sessions announced by session.created whose birth block is still owed.
-  // chat.message also fires on child sessions and on injected messages, so
-  // only membership here makes a message the session's start.
-  const birthOwed = new Set<string>()
+  // Whether session.created announced a session as main; a session absent here
+  // opened before this plugin loaded, and the host's record decides it.
+  const createdAsMain = new Map<string, boolean>()
+  // Sessions whose birth block was delivered or is never owed, so each main
+  // session asks once however many messages chat.message reports for it.
+  const birthSettled = new Set<string>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
   // One issuance per session even when two edges reach it at once. Without it a
@@ -1946,7 +1948,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     event: async ({ event }) => {
       if (event.type === "session.created") {
         const info = event.properties?.info
-        if (typeof info?.id === "string" && !info.parentID) birthOwed.add(info.id)
+        if (typeof info?.id === "string") createdAsMain.set(info.id, !info.parentID)
         return
       }
       if (event.type === "question.asked") {
@@ -2075,10 +2077,19 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     // transcript the user reads.
     "chat.message": async (message: any, output: any) => {
       const sessionID = message?.sessionID
-      if (typeof sessionID !== "string" || !birthOwed.has(sessionID) || !message.agent) return
+      if (typeof sessionID !== "string" || birthSettled.has(sessionID) || !message.agent) return
       const parts = Array.isArray(output?.parts) ? output.parts : undefined
       if (!parts?.some((part: any) => part?.type === "text" && !part.synthetic)) return
-      birthOwed.delete(sessionID)
+      let main = createdAsMain.get(sessionID)
+      if (main === undefined) {
+        const parent = await hostParentRecord(sessionID)
+        if (parent === "unavailable") return
+        main = parent === "none"
+        createdAsMain.set(sessionID, main)
+      }
+      if (birthSettled.has(sessionID)) return
+      birthSettled.add(sessionID)
+      if (!main) return
       let context: string | undefined
       try {
         const response = await send({ event: "chat.message", sessionID })
