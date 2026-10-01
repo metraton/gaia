@@ -2275,7 +2275,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         const answers = questionAnswers(output)
         if (answers) result.answers = answers
       }
-      await send({
+      const response = await send({
         event: "tool.execute.after",
         sessionID: call.sessionID,
         callID: call.callID,
@@ -2286,6 +2286,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         args: call.args,
         result,
       })
+      if (response.action === "allow" && response.additional_context && typeof output.output === "string") {
+        output.output = `${output.output.trimEnd()}\n${response.additional_context}\n`
+      }
       const retryKey = `${call.sessionID}:${call.callID}`
       const retried = retryByCall.get(retryKey)
       if (retried) {

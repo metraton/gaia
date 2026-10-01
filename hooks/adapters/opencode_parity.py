@@ -115,11 +115,13 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability(
         name="contract summary after dispatch",
         claude_code=_registrations("PostToolUse", "Task"),
+        opencode_event="tool.execute.after",
     ),
     Capability(
         name="session events digest",
         claude_code=_registrations("PreToolUse", "Task", "Agent")
         | _registrations("SubagentStart", "*"),
+        opencode_event="tool.execute.before",
     ),
     Capability(
         name="SubagentStop gate and relay",
@@ -132,8 +134,6 @@ CAPABILITIES: Tuple[Capability, ...] = (
 )
 
 PENDING_GAPS: Dict[str, str] = {
-    "contract summary after dispatch": "task 717 (T8)",
-    "session events digest": "task 717 (T8)",
     "SubagentStop gate and relay": "task 815 (T9)",
     "skills at birth": "task 816 (T10)",
 }

@@ -60,6 +60,18 @@ CLOSING_RULES_KERNEL = (
     "mandatory LAST step -- call it only once every other field is set."
 )
 
+
+class _DispatchPolicy(ToolPolicy):
+    """The shared policy, keeping the session-events digest a Task dispatch hands to its host."""
+
+    session_events = ""
+
+    def _deliver_subagent_context(
+        self, session_id: str, agent_type: str, context: str, task_description: str,
+    ) -> None:
+        self.session_events = context
+
+
 _EVENT_TYPES = {
     "tool.execute.before": HookEventType.PRE_TOOL_USE,
     "tool.execute.after": HookEventType.POST_TOOL_USE,
@@ -503,7 +515,7 @@ class OpenCodeAdapter(HookAdapter):
                     return checked
             return HookResponse(output={"action": "allow"})
         if original_tool == "task":
-            return self._adapt_task_with_kernel(policy, policy_event)
+            return self._adapt_task_with_kernel(_DispatchPolicy(), policy_event)
         translated = self._format_policy_verdict(policy.pre_tool_verdict(
             policy_event, dispatch_identity_in_env=env_identity is not None,
         ))
@@ -767,41 +779,18 @@ class OpenCodeAdapter(HookAdapter):
         return None
 
     def _adapt_task_with_kernel(
-        self, policy: ToolPolicy, policy_event: HookEvent,
+        self, policy: _DispatchPolicy, policy_event: HookEvent,
     ) -> HookResponse:
-        """Run the Task dispatch through the shared policy path, then --
-        on allow -- replace the host prompt with the just-born row's rendered
-        kernel, in place (plan 65, task 9).
+        """Run the Task dispatch through the shared policy and, on allow, replace its prompt with the session-events digest and the born row's kernel.
 
-        Claude Code receives its kernel through a SEPARATE start event
-        (SubagentStart) that fires before the subagent's first turn.
-        OpenCode has no equivalent: its only start-adjacent signal
-        (``message.part.updated``) merely reports the callID<->child-
-        session binding, sometimes after the child has already acted. The
-        one point this host reliably controls before the child's first
-        action is THIS call -- the Task dispatch itself -- so the kernel
-        is embedded directly into the dispatched prompt via ``updated_input``.
-        The kernel's ``goal`` already contains the born row's original Task
-        prompt, so appending that prompt here would duplicate the assignment.
-        The plugin's field-by-field ``applyUpdatedInput`` (T6) changes only
-        ``prompt``; every other Task argument (``description``,
-        ``subagent_type``, ``task_id``, ...) passes through untouched.
-
-        The delegated call already births the row with
-        ``dispatch_tool_use_id=callID`` (``build_policy_payload`` forwards
-        ``event.call_id`` as ``tool_use_id``, and
-        ``_maybe_birth_dispatched_row`` stamps it); this method claims
-        that SAME row by the SAME callID -- layer 0 of
-        ``claim_dispatch_row``'s correlation ladder -- and renders its
-        ``# Your Contract`` block with ``build_dispatch_kernel``. No
-        second birth: claiming is a state transition on the row the
-        delegated call already inserted, never a new insert.
-
-        Degrades to the plain delegated response -- no kernel, prompt
-        unmodified -- whenever the dispatch was denied/asked, or the
-        claim/render step finds nothing (birth skipped, row already
-        claimed, or a rendering error): a subagent dispatch must never be
-        blocked by kernel injection.
+        OpenCode has no start event that reliably precedes the child's first
+        action (``message.part.updated`` can arrive after it), so what Claude
+        Code's SubagentStart delivers rides this call's prompt instead, the
+        digest ahead of the kernel as there. The kernel's goal already holds
+        the original prompt, so it is not appended again. The row is claimed by
+        the callID the shared policy birthed it under, never born a second
+        time. Any denial or claim/render miss returns the plain verdict: kernel
+        injection must never block a dispatch.
         """
         translated = self._format_policy_verdict(policy.pre_tool_verdict(policy_event))
         output = translated.output
@@ -830,9 +819,9 @@ class OpenCodeAdapter(HookAdapter):
         if not kernel:
             return translated
 
-        kernel_with_rules = f"{kernel}\n\n{CLOSING_RULES_KERNEL}"
+        sections = (policy.session_events, kernel, CLOSING_RULES_KERNEL)
         updated_input = dict(output.get("updated_input") or {})
-        updated_input["prompt"] = kernel_with_rules
+        updated_input["prompt"] = "\n\n".join(section for section in sections if section)
         output["updated_input"] = updated_input
         return translated
 
@@ -1206,8 +1195,11 @@ class OpenCodeAdapter(HookAdapter):
         while discarding the audit record of what ran. What this path does
         withhold is a structured decision, from both containers it could ride
         in. The call's outcome is read by this adapter's own
-        ``parse_post_tool_use``.
+        ``parse_post_tool_use``. A Task result's contract summary line returns
+        as ``additional_context``, which the plugin appends to the tool output.
         """
+        from modules.agents.task_result_observer import TASK_TOOL_NAMES
+
         payload = self.build_policy_payload(event)
         payload["tool_input"] = self._without_unverified_decision(
             event, payload.get("tool_input", {})
@@ -1215,6 +1207,8 @@ class OpenCodeAdapter(HookAdapter):
         payload["tool_response"] = self._without_unverified_decision(
             event, event.payload.get("tool_response", {})
         )
+        if payload.get("tool_name") in TASK_TOOL_NAMES:
+            payload["tool_response"] = self._with_dispatch_run_id(payload["tool_response"])
         policy_event = HookEvent(
             event_type=event.event_type,
             session_id=event.session_id,
@@ -1234,7 +1228,25 @@ class OpenCodeAdapter(HookAdapter):
         verdict = ToolPolicy().post_tool_verdict(
             policy_event, self.parse_post_tool_use(payload),
         )
-        return self._format_policy_verdict(verdict)
+        response = self._format_policy_verdict(verdict)
+        if verdict.context and response.output.get("action") == "allow":
+            response.output["additional_context"] = verdict.context
+        return response
+
+    @staticmethod
+    def _with_dispatch_run_id(tool_response: Any) -> Any:
+        """Name a Task result's child session as the ``agentId`` the shared observer resolves the dispatch row by.
+
+        OpenCode reports the child only as ``metadata.sessionId``, the same id
+        the row is bound to as its harness agent id.
+        """
+        if not isinstance(tool_response, dict) or tool_response.get("agentId"):
+            return tool_response
+        metadata = tool_response.get("metadata")
+        child_session = metadata.get("sessionId") if isinstance(metadata, dict) else None
+        if not isinstance(child_session, str) or not child_session:
+            return tool_response
+        return {**tool_response, "agentId": child_session}
 
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
         """Close the dispatched child's row on session.idle or session.error; for the main session, beat its heartbeat.
