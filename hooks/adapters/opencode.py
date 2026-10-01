@@ -64,6 +64,7 @@ CLOSING_RULES_KERNEL = (
 _EVENT_TYPES = {
     "tool.execute.before": HookEventType.PRE_TOOL_USE,
     "tool.execute.after": HookEventType.POST_TOOL_USE,
+    "chat.message": HookEventType.SESSION_START,
     "message.part.updated": HookEventType.SUBAGENT_START,
     "session.idle": HookEventType.STOP,
     "session.error": HookEventType.POST_TOOL_USE_FAILURE,
@@ -338,19 +339,21 @@ class OpenCodeAdapter(HookAdapter):
         )
 
     def adapt_session_start(self, raw: dict) -> BootstrapResult:
+        """Build the birth block for a main session the plugin saw open.
+
+        The plugin forwards ``chat.message`` only for the first real message
+        of a session created without a parent, so every call here is a start.
+        """
+        from modules.session.session_lifecycle import start_context
+
         return BootstrapResult(
-            should_scan=True,
-            should_refresh=True,
             session_type="startup",
+            additional_context=start_context("startup", []),
         )
 
     def format_bootstrap_response(self, result: BootstrapResult) -> HookResponse:
         return HookResponse(
-            output={
-                "should_scan": result.should_scan,
-                "should_refresh": result.should_refresh,
-                "session_type": result.session_type,
-            }
+            output={"action": "allow", "additional_context": result.additional_context or ""}
         )
 
     def adapt_stop(self, raw: dict) -> QualityResult:

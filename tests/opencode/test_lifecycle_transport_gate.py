@@ -58,15 +58,13 @@ def test_bridge_routes_the_full_lifecycle_conjunto_with_no_unsupported_denial():
         )
 
 
-def test_missing_session_start_transport_is_a_pending_gap_and_the_conjunto_is_wired():
+def test_session_start_rides_chat_message_and_the_conjunto_is_wired():
     from adapters.opencode import _EVENT_TYPES
     from adapters.opencode_parity import PENDING_GAPS
     from adapters.types import HookEventType
 
-    if HookEventType.SESSION_START not in _EVENT_TYPES.values():
-        assert "session birth block" in PENDING_GAPS, (
-            "no OpenCode event reaches SessionStart and the parity alarm does not track it"
-        )
+    assert _EVENT_TYPES["chat.message"] is HookEventType.SESSION_START
+    assert "session birth block" not in PENDING_GAPS
 
     for required in _LIFECYCLE_EVENTS:
         assert required in _EVENT_TYPES, f"{required} is missing from _EVENT_TYPES"

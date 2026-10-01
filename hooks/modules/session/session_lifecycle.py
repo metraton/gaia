@@ -55,7 +55,7 @@ def start_session(start: SessionStart) -> StartOutcome:
     return StartOutcome(
         setup_message=setup_message,
         notices=shown,
-        context=_start_context(start.source, alarms),
+        context=start_context(start.source, alarms),
     )
 
 
@@ -175,7 +175,7 @@ def _reconcile_install(plugin_channel: bool) -> str:
     return upgrade_notice
 
 
-def _start_context(source: str, alarms: list) -> str:
+def start_context(source: str, alarms: list) -> str:
     """Return the birth block, or after compaction the lighter refresh; "" when building fails.
 
     Compaction takes the refresh because the birth block's scan, memory and

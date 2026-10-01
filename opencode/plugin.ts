@@ -14,6 +14,7 @@ type BridgeResponse = {
   attestation?: string
   shell_env?: { session_id: string; call_id: string; agent_type: string }
   sections_provided?: string[]
+  additional_context?: string
 }
 
 type PendingApproval = {
@@ -1194,6 +1195,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // The host's last answer about a later session's parent, read back by the
   // refusal trace so an unadmitted session says why.
   const hostParentBySession = new Map<string, HostParentRecord>()
+  // Main sessions announced by session.created whose birth block is still owed.
+  // chat.message also fires on child sessions and on injected messages, so
+  // only membership here makes a message the session's start.
+  const birthOwed = new Set<string>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
   // One issuance per session even when two edges reach it at once. Without it a
@@ -1939,6 +1944,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       retryBySession.clear()
     },
     event: async ({ event }) => {
+      if (event.type === "session.created") {
+        const info = event.properties?.info
+        if (typeof info?.id === "string" && !info.parentID) birthOwed.add(info.id)
+        return
+      }
       if (event.type === "question.asked") {
         const sessionID = event.properties?.sessionID
         const requestID = event.properties?.id
@@ -2059,6 +2069,33 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         }
         return
       }
+    },
+    // Stable hook (session/prompt.ts at 1.18.32), handed the user's message
+    // parts before they are stored. Synthetic keeps the block out of the
+    // transcript the user reads.
+    "chat.message": async (message: any, output: any) => {
+      const sessionID = message?.sessionID
+      if (typeof sessionID !== "string" || !birthOwed.has(sessionID) || !message.agent) return
+      const parts = Array.isArray(output?.parts) ? output.parts : undefined
+      if (!parts?.some((part: any) => part?.type === "text" && !part.synthetic)) return
+      birthOwed.delete(sessionID)
+      let context: string | undefined
+      try {
+        const response = await send({ event: "chat.message", sessionID })
+        context = response.action === "allow" ? response.additional_context : undefined
+      } catch (error) {
+        console.error(`[gaia-opencode:birth] session ${sessionID} started without its birth block: ${error}`)
+        return
+      }
+      if (!context) return
+      parts.push({
+        id: `prt_${Date.now().toString(16)}${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`,
+        sessionID,
+        messageID: output.message?.id,
+        type: "text",
+        text: context,
+        synthetic: true,
+      })
     },
     // No "permission.ask" hook: the installed OpenCode (1.18.32) never
     // triggers one -- its bundle calls no plugin hook named permission, so a

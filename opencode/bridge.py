@@ -279,6 +279,8 @@ def _handle(raw: dict[str, object], *, shell_env_transport: bool) -> dict[str, o
         # arrives first -- resolve_close (dispatch_lifecycle) is idempotent,
         # so a later signal for the same session is a harmless no-op.
         response = adapter.adapt_subagent_stop(event)
+    elif kind == "SessionStart":
+        response = adapter.format_bootstrap_response(adapter.adapt_session_start(event.payload))
     elif kind == "SubagentStart":
         response = adapter.format_context_response(adapter.adapt_subagent_start(event.payload))
     elif kind == "PreCompact":

@@ -93,6 +93,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability(
         name="session birth block",
         claude_code=_registrations("SessionStart", "startup", "resume", "clear", "fork"),
+        opencode_event="chat.message",
     ),
     Capability(
         name="startup maintenance",
@@ -128,7 +129,6 @@ CAPABILITIES: Tuple[Capability, ...] = (
 )
 
 PENDING_GAPS: Dict[str, str] = {
-    "session birth block": "task 716 (T5)",
     "startup maintenance": "task 720 (T6)",
     "per-message heartbeat and notifications": "task 718 (T7)",
     "primary compaction refresh": "task 718 (T7)",

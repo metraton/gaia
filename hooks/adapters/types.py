@@ -474,6 +474,7 @@ class BootstrapResult:
     should_scan: bool = False
     should_refresh: bool = False
     session_type: str = "startup"
+    additional_context: Optional[str] = None
 
 
 @dataclass(frozen=True)
