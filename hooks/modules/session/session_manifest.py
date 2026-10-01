@@ -1,8 +1,9 @@
 """The session birth block: what every session knows the moment it opens.
 
 ``build_session_context`` assembles it with no knowledge of the host; a host
-adapter only delivers the string (Claude Code's SessionStart hook today) and
-``gaia session preview`` prints it. Four sections, in this order:
+adapter only delivers the string (Claude Code through its SessionStart hook,
+OpenCode attached to the main session's first message) and ``gaia session
+preview`` prints it. Four sections, in this order:
 
 - Projects -- each project's name, one line about it and its live-pending
   count, counted by canonical project key across every workspace. A large
