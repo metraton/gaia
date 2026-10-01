@@ -99,14 +99,14 @@ def _plugin_after(bridge_after: dict) -> dict:
         type: "message.updated",
         properties: {{ info: {{ role: "assistant", sessionID: "root", agent: "gaia-orchestrator" }} }},
       }} }})
-      const output = {{ output: "child finished\\n", metadata: {{}} }}
-      await hooks["tool.execute.after"](
-        {{ sessionID: "root", callID: "task-call", tool: "task", args: {{ prompt: "p" }} }},
-        output,
-      )
+      const args = {{ subagent_type: "gaia-system", prompt: "p" }}
+      await hooks["tool.execute.before"]({{ sessionID: "root", callID: "task-call", tool: "task" }}, {{ args }})
+      const output = {{ output: "child finished\\n", metadata: {{ sessionId: "ses-child" }} }}
+      await hooks["tool.execute.after"]({{ sessionID: "root", callID: "task-call", tool: "task", args }}, output)
       console.log(JSON.stringify(output))
     '''
-    result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
+    result = subprocess.run(["bun", "-e", script], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
 
@@ -116,6 +116,7 @@ def test_contract_summary_from_the_bridge_is_appended_to_the_task_output():
     output = _plugin_after({"action": "allow", "additional_context": line})
 
     assert output["output"] == f"child finished\n{line}\n"
+    assert output["output"].count(line) == 1
 
 
 def test_contract_summary_absent_leaves_the_task_output_untouched():
