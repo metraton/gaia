@@ -54,6 +54,11 @@ MANIFEST_NAME = "gaia-manifest.json"
 MANIFEST_VERSION = 1
 
 OPENCODE_CHANNEL = "opencode"
+# OpenCode 1.18.32 runs subagents in the background only under this variable
+# or the OPENCODE_EXPERIMENTAL umbrella (effect/runtime-flags.ts); it has no
+# config key, and Gaia writes nothing outside the workspace, so the user's
+# shell sets it.
+OPENCODE_BACKGROUND_SUBAGENTS_EXPORT = "export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"
 CLAUDE_CODE_CHANNELS = ("npm", "plugin")
 _PACKAGE_COPY_CHANNELS = ("npm", OPENCODE_CHANNEL)
 

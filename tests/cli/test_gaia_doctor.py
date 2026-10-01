@@ -1070,11 +1070,12 @@ class TestCmdDoctorJson:
         # 1 opencode-host-liveness (order 61 -- reads the identity.attest
         #   ledger for the CURRENT host run; pass only with a recorded
         #   attestation, explicit absence -- never a false ok -- without one) +
+        # 1 opencode-background-subagents (order 62 -- info naming the shell line) +
         # 1 workspace-roots (order 49 -- active workspaces without the recorded
         #   root that `gaia worktree create` requires) +
         # 3 channel checks (install-channel 36, hook-registrations 72,
         #   hook-commands 74 -- hooks counted across plugin and every settings file).
-        assert len(data["checks"]) == 36
+        assert len(data["checks"]) == 37
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

@@ -77,6 +77,14 @@ npx gaia install --channel opencode
 
 `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can be added beside either Claude Code channel. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update`, which re-wires every channel `gaia install` recorded in `.claude/gaia-manifest.json` and fails naming `gaia install --channel` when none is recorded.
 
+OpenCode 1.18.32 runs subagents in the background only when its environment carries `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (or the `OPENCODE_EXPERIMENTAL=true` umbrella); there is no `opencode.json` key for it. Gaia writes nothing outside the workspace, so add this line to your shell profile (`~/.bashrc`, `~/.zshrc`) and open a new shell before starting OpenCode:
+
+```bash
+export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+```
+
+Without it subagents run in the foreground and resuming a subagent by `task_id` still works. `gaia install --channel opencode` prints the same line, and `gaia doctor` names it, without failing, while the variable is missing.
+
 ### Project Scanner (on-demand, separate from install)
 
 The first `gaia install` (and the plugin's first session) registers the workspace under its folder name and scans the repositories beneath it. To re-index later, run the scanner; it classifies each git repository under a directory into the workspace and writes the rows to `~/.gaia/gaia.db`:

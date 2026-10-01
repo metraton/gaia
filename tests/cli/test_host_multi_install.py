@@ -238,7 +238,8 @@ class TestSingleChannel(unittest.TestCase):
         self.assertEqual([c for c in calls if c in _CLAUDE_HELPERS], [])
         self.assertIn("configure_opencode_plugin", calls)
         self.assertIn("1. Restart OpenCode to load the Gaia plugin.", out)
-        self.assertIn("2. Run `gaia doctor` to verify the installation.", out)
+        self.assertIn("export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true", out)
+        self.assertIn("3. Run `gaia doctor` to verify the installation.", out)
 
     def test_a_lone_failing_channel_is_a_non_zero_exit(self):
         with tempfile.TemporaryDirectory() as tmp:

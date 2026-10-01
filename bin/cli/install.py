@@ -1193,6 +1193,9 @@ def _print_next_steps(
     for host in hosts:
         if host == "opencode":
             restart_steps.append("Restart OpenCode to load the Gaia plugin.")
+            open_steps.append(
+                "To let OpenCode run subagents in the background, add this line to "
+                f"your shell profile: {_manifest.OPENCODE_BACKGROUND_SUBAGENTS_EXPORT}")
         elif postinstall:
             restart_steps.append("Restart Claude Code to pick up new hooks/agents.")
         else:

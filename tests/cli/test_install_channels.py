@@ -243,3 +243,48 @@ def test_doctor_dev_hint_is_one_runnable_line_per_recorded_channel(tmp_path):
     hint = doctor_mod._package_dev_command(workspace)
     assert hint == (f"`gaia dev --workspace {workspace} --channel npm` and "
                     f"`gaia dev --workspace {workspace} --channel opencode`")
+
+
+_BACKGROUND_EXPORT = "export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"
+
+
+def _opencode_workspace(tmp_path, monkeypatch):
+    workspace = _empty_workspace(tmp_path)
+    (workspace / ".claude").mkdir()
+    _manifest.record(workspace, {}, channel="npm", version="0", package_channels=["opencode"])
+    monkeypatch.delenv("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", raising=False)
+    monkeypatch.delenv("OPENCODE_EXPERIMENTAL", raising=False)
+    return workspace
+
+
+def test_opencode_background_line_is_in_the_opencode_next_steps_only(capsys):
+    install_mod._print_next_steps(quiet=False, postinstall=False, hosts=["opencode"])
+    assert _BACKGROUND_EXPORT in capsys.readouterr().out
+
+    install_mod._print_next_steps(quiet=False, postinstall=False, hosts=["claude_code"])
+    assert "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS" not in capsys.readouterr().out
+
+
+def test_doctor_opencode_background_without_the_variable_names_the_line_without_failing(
+        tmp_path, monkeypatch):
+    result = doctor_mod.check_opencode_background_subagents(_opencode_workspace(tmp_path, monkeypatch))
+    assert result["severity"] == "info"
+    assert result["ok"] is True
+    assert _BACKGROUND_EXPORT in result["detail"]
+
+
+@pytest.mark.parametrize("variable", ["OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "OPENCODE_EXPERIMENTAL"])
+def test_doctor_opencode_background_passes_when_opencode_would_enable_it(tmp_path, monkeypatch, variable):
+    workspace = _opencode_workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv(variable, "true")
+    assert doctor_mod.check_opencode_background_subagents(workspace)["severity"] == "pass"
+
+
+def test_doctor_opencode_background_stays_silent_without_the_opencode_channel(tmp_path, monkeypatch):
+    workspace = _empty_workspace(tmp_path)
+    (workspace / ".claude").mkdir()
+    _manifest.record(workspace, {}, channel="npm", version="0", package_channels=["npm"])
+    monkeypatch.delenv("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", raising=False)
+    result = doctor_mod.check_opencode_background_subagents(workspace)
+    assert result["severity"] == "info"
+    assert "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS" not in result["detail"]

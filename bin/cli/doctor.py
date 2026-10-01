@@ -27,7 +27,9 @@ Checks (in order):
   61. opencode-host-liveness - reads identity.attest ledger for the CURRENT
                         host run; pass only with a recorded attestation,
                         explicit absence (never a false ok) without one
-  65. agent-routing      - surface_routing table (DB) primary agents resolve to files
+  62. opencode-background-subagents - opencode channel recorded but the shell
+                        lacks the variable OpenCode needs for background subagents (info)
+  65. agent-routing     - surface_routing table (DB) primary agents resolve to files
   70. settings           - permissions, deny rules
   72. hook-registrations - each shipped (event, matcher) registered exactly once across
                         plugin hooks.json, settings.local.json, settings.json, user settings
@@ -2494,6 +2496,30 @@ def check_opencode_host_liveness() -> dict:
     return _result(
         name, "pass",
         f"host run {host_run} has {len(records)} attestation(s) recorded at {path}",
+    )
+
+
+@register_check("OpenCode background subagents", order=62)
+def check_opencode_background_subagents(project_root: Path) -> dict:
+    """Name the shell line OpenCode needs for background subagents when the opencode channel is recorded.
+
+    Reported as info, never a warning: subagents still run in the foreground
+    without it, and only the user's shell can set it.
+    """
+    name = "OpenCode background subagents"
+    from cli import _manifest  # noqa: PLC0415
+
+    recorded = (_manifest.load(project_root) or {}).get("package_channels", [])
+    if _manifest.OPENCODE_CHANNEL not in recorded:
+        return _result(name, "info", "opencode channel not recorded in this workspace")
+
+    flags = ("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "OPENCODE_EXPERIMENTAL")
+    if any(os.environ.get(flag, "").lower() == "true" for flag in flags):
+        return _result(name, "pass", "background subagents enabled in this environment")
+    return _result(
+        name, "info",
+        "OpenCode runs subagents in the foreground only; to enable background subagents add "
+        f"this line to your shell profile: {_manifest.OPENCODE_BACKGROUND_SUBAGENTS_EXPORT}",
     )
 
 
