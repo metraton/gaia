@@ -182,6 +182,10 @@ minted, `approval_id`, copied verbatim from the request's output.
   never write authority.
 - `update_contracts`: `{contract, payload}` entries, deep-merged only into the
   input write allowlist; lists replace whole and no delete sentinel exists.
+  SubagentStop applies them whatever `agent_state` the turn closes in, into
+  the workspace of the turn's dispatch row; an entry it cannot apply comes
+  back on the close as `update_contracts_refused` and in its user message
+  (`hooks/adapters/subagent_stop_core.py::run_subagent_stop`).
 - `rollback_executed`, `context_consumption`: advisory fields.
 
 ## The evidence clause of `update_contracts`

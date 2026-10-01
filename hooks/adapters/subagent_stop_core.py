@@ -1156,12 +1156,18 @@ def run_subagent_stop(
         )
 
         context_update_result = None
+        _update_contracts_refused: list = []
         if isinstance(parsed_contract, dict):
             _update_contracts_task_info = {
                 "agent": agent_type,
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
-                "workspace": task_info.get("workspace"),
+                # The hook's cwd can resolve to a workspace other than the
+                # dispatch's, so the born row's column decides.
+                "workspace": (
+                    (_bound_dispatch_row or {}).get("workspace")
+                    or task_info.get("workspace")
+                ),
             }
             _update_contracts_result = process_update_contracts(
                 parsed_contract, _update_contracts_task_info
@@ -1171,11 +1177,11 @@ def run_subagent_stop(
                     "updated": True,
                     "contract": ", ".join(_update_contracts_result.get("contracts", [])),
                 }
-            if _update_contracts_result.get("rejected"):
+            _update_contracts_refused = list(_update_contracts_result.get("errors", []))
+            if _update_contracts_refused:
                 logger.warning(
-                    "update_contracts rejected for %s: %s",
-                    agent_type,
-                    _update_contracts_result.get("errors", []),
+                    "update_contracts not applied for %s: %s",
+                    agent_type, _update_contracts_refused,
                 )
 
         try:
@@ -1637,6 +1643,16 @@ def run_subagent_stop(
                 user_message = (
                     f"Resumen de {agent_type} para el usuario: {_user_summary}"
                 )
+
+        if _update_contracts_refused:
+            result["update_contracts_refused"] = _update_contracts_refused
+            _refusal_notice = (
+                f"update_contracts from {agent_type} was NOT applied: "
+                + "; ".join(_update_contracts_refused)
+            )
+            user_message = (
+                f"{user_message}\n{_refusal_notice}" if user_message else _refusal_notice
+            )
 
         # The repair message replaces the rejected one in everything the
         # orchestrator receives, so the rejected turn's work is preserved and
