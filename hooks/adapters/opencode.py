@@ -796,8 +796,10 @@ class OpenCodeAdapter(HookAdapter):
     ) -> HookResponse:
         """Run the Task dispatch through the shared policy and, on allow, rewrite its prompt.
 
-        The new prompt is the session-events digest, the born row's kernel and
-        the closing rules. OpenCode has no start event that reliably precedes the child's first
+        The new prompt is the session-events digest, the born row's kernel,
+        the skills the dispatched agent's definition preloads (OpenCode
+        preloads none; a body arrives only through its ``skill`` tool) and the
+        closing rules. OpenCode has no start event that reliably precedes the child's first
         action (``message.part.updated`` can arrive after it), so what Claude
         Code's SubagentStart delivers rides this call's prompt instead, the
         digest ahead of the kernel as there. The kernel's goal already holds
@@ -813,7 +815,7 @@ class OpenCodeAdapter(HookAdapter):
 
         try:
             from gaia.store.writer import claim_dispatch_row
-            from modules.context.kernel_builder import build_dispatch_kernel
+            from modules.context.kernel_builder import build_dispatch_kernel, build_skills_block
         except Exception:
             return translated
 
@@ -833,7 +835,13 @@ class OpenCodeAdapter(HookAdapter):
         if not kernel:
             return translated
 
-        sections = (policy.session_events, kernel, CLOSING_RULES_KERNEL)
+        try:
+            tool_input = policy_event.payload.get("tool_input") or {}
+            skills = build_skills_block(str(tool_input.get("subagent_type") or ""))
+        except Exception:
+            skills = ""
+
+        sections = (policy.session_events, kernel, skills, CLOSING_RULES_KERNEL)
         updated_input = dict(output.get("updated_input") or {})
         updated_input["prompt"] = "\n\n".join(section for section in sections if section)
         output["updated_input"] = updated_input

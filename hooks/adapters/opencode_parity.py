@@ -131,9 +131,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability(
         name="skills at birth",
         claude_code=_registrations("SubagentStart", "*"),
+        opencode_event="tool.execute.before",
     ),
 )
 
-PENDING_GAPS: Dict[str, str] = {
-    "skills at birth": "task 816 (T10)",
-}
+PENDING_GAPS: Dict[str, str] = {}

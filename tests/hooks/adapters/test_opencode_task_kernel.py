@@ -89,10 +89,11 @@ def _inject(monkeypatch, prompt: str, *, task_id: str | None = None):
 
 
 def _expected_injected_size(prompt: str) -> int:
-    from modules.context.kernel_builder import build_dispatch_kernel
+    from modules.context.kernel_builder import build_dispatch_kernel, build_skills_block
 
     kernel = build_dispatch_kernel(_claimed_row(prompt))
-    return len(kernel) + 2 + len(CLOSING_RULES_KERNEL)
+    skills = build_skills_block("gaia-system")
+    return len(kernel) + 2 + len(skills) + 2 + len(CLOSING_RULES_KERNEL)
 
 
 def _obsolete_appended_size(prompt: str) -> int:

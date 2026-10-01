@@ -30,6 +30,11 @@ row:
     further ``gaia memory show`` call the agent in practice never made.
     Omitted entirely when no row is selected -- never an empty heading.
 
+``# Your skills`` is a fourth block, rendered only for a host that preloads
+no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
+with its description, so the turn knows at birth which bodies to load. Claude
+Code preloads those bodies itself, so ``build_kernel_context`` never carries it.
+
 Everything renders from the ROW (goal from ``dispatch_prompt``, scope from
 ``kernel_sections`` persisted at birth) plus three reads: ``task_gates`` for
 the acceptance block, the dispatch project's ``project_identity`` entry for its
@@ -58,6 +63,18 @@ logger = logging.getLogger(__name__)
 KERNEL_HEADING = "# Your Contract"
 CLI_HEADING = "# Your CLI"
 MEMORY_HEADING = "# How the user works"
+SKILLS_HEADING = "# Your skills"
+
+# Claude Code caps hook-injected context at 10,000 chars, the budget a kernel is
+# held to on either host; the skills block takes the share USER_ROWS_BUDGET
+# takes. Inlined bodies cannot fit it: security-tiers alone is over 50,000.
+SKILLS_BLOCK_BUDGET = 4_000
+_SKILLS_PREAMBLE = (
+    "Preloaded by your definition. Their bodies are not in this prompt: "
+    "load each one with the `skill` tool before relying on it."
+)
+
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 # Wrap width for the goal text -- readability only, never truncation.
 _GOAL_WRAP_WIDTH = 96
@@ -275,6 +292,30 @@ def build_dispatch_kernel(
     return "\n".join(parts)
 
 
+def _frontmatter(path: Path) -> dict:
+    """The Markdown file's frontmatter mapping, or {} when the file or its parse is missing."""
+    if not path.is_file():
+        return {}
+    try:
+        from ..core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from tools.scan.seed_contract_permissions import _parse_frontmatter
+
+        frontmatter = _parse_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.debug("frontmatter parse failed (non-fatal)", exc_info=True)
+        return {}
+    return frontmatter if isinstance(frontmatter, dict) else {}
+
+
+def _agent_frontmatter(agent_name: str, agents_dir: "Path | None") -> dict:
+    """The named agent's frontmatter, or {} for a name that is not a bare file stem."""
+    if not agent_name or Path(agent_name).name != agent_name:
+        return {}
+    return _frontmatter((agents_dir or _PACKAGE_ROOT / "agents") / f"{agent_name}.md")
+
+
 def _agent_cli_extras(agent_name: str, agents_dir: "Path | None") -> list:
     """Per-role CLI lines declared in the agent's frontmatter (``cli:`` key).
 
@@ -282,27 +323,39 @@ def _agent_cli_extras(agent_name: str, agents_dir: "Path | None") -> list:
     is the source of truth. Entries are plain strings rendered verbatim
     (indented). Missing file / key / parser -> no extras.
     """
-    if not agent_name:
-        return []
-    if agents_dir is None:
-        agents_dir = Path(__file__).resolve().parent.parent.parent.parent / "agents"
-    agent_file = agents_dir / f"{agent_name}.md"
-    if not agent_file.is_file():
-        return []
-    try:
-        from ..core.paths import ensure_package_root_importable
-
-        ensure_package_root_importable()
-        from tools.scan.seed_contract_permissions import _parse_frontmatter
-
-        frontmatter = _parse_frontmatter(agent_file.read_text(encoding="utf-8"))
-    except Exception:
-        logger.debug("agent frontmatter parse failed (non-fatal)", exc_info=True)
-        return []
-    extras = frontmatter.get("cli") if isinstance(frontmatter, dict) else None
+    extras = _agent_frontmatter(agent_name, agents_dir).get("cli")
     if not isinstance(extras, list):
         return []
     return [f"  {str(e).strip()}" for e in extras if str(e).strip()]
+
+
+def build_skills_block(
+    agent_name: str, *, agents_dir: "Path | None" = None,
+    skills_dir: "Path | None" = None,
+) -> str:
+    """Render ``# Your skills`` from the agent's ``skills:`` frontmatter, or "" when it names none.
+
+    Each skill is listed with its description; when that would exceed
+    ``SKILLS_BLOCK_BUDGET`` the names alone are listed, so none drops out.
+    """
+    declared = _agent_frontmatter(agent_name, agents_dir).get("skills")
+    if not isinstance(declared, list):
+        return ""
+    names = [str(name).strip() for name in declared if str(name).strip()]
+    if not names:
+        return ""
+    skills_dir = skills_dir or _PACKAGE_ROOT / "skills"
+    head = [SKILLS_HEADING, "", _SKILLS_PREAMBLE, ""]
+    described = []
+    for name in names:
+        description = " ".join(
+            str(_frontmatter(skills_dir / name / "SKILL.md").get("description") or "").split()
+        )
+        described.append(f"- {name}: {description}" if description else f"- {name}")
+    block = "\n".join(head + described)
+    if len(block) <= SKILLS_BLOCK_BUDGET:
+        return block
+    return "\n".join(head + [f"- {name}" for name in names])
 
 
 def build_cli_block(
