@@ -77,6 +77,29 @@ def test_contract_summary_is_the_shared_policy_line_beside_the_task_result(tmp_p
     assert response.output == {"action": "allow", "additional_context": expected}
 
 
+def test_contract_summary_of_a_background_launch_records_no_cut(tmp_path, monkeypatch):
+    import modules.agents.task_result_observer as observer
+
+    _bound_dispatch(tmp_path / "gaia.db", "call-t8-background")
+    cuts = []
+    real_observe = observer.observe_task_result
+
+    def recording_observe(hook_data):
+        cut = real_observe(hook_data)
+        cuts.append(cut)
+        return cut
+
+    monkeypatch.setattr(observer, "observe_task_result", recording_observe)
+
+    response = OpenCodeAdapter().adapt_post_tool_use(_task_after(
+        "call-t8-background",
+        metadata={"sessionId": CHILD_SESSION, "background": True, "jobId": "job-t8"},
+    ))
+
+    assert cuts == [None]
+    assert "launched, not finalized yet" in response.output["additional_context"]
+
+
 def test_contract_summary_is_absent_when_the_task_result_names_no_child():
     response = OpenCodeAdapter().adapt_post_tool_use(_task_after("call-t8-orphan", metadata={}))
 

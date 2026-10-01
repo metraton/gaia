@@ -781,9 +781,10 @@ class OpenCodeAdapter(HookAdapter):
     def _adapt_task_with_kernel(
         self, policy: _DispatchPolicy, policy_event: HookEvent,
     ) -> HookResponse:
-        """Run the Task dispatch through the shared policy and, on allow, replace its prompt with the session-events digest and the born row's kernel.
+        """Run the Task dispatch through the shared policy and, on allow, rewrite its prompt.
 
-        OpenCode has no start event that reliably precedes the child's first
+        The new prompt is the session-events digest, the born row's kernel and
+        the closing rules. OpenCode has no start event that reliably precedes the child's first
         action (``message.part.updated`` can arrive after it), so what Claude
         Code's SubagentStart delivers rides this call's prompt instead, the
         digest ahead of the kernel as there. The kernel's goal already holds
@@ -1208,7 +1209,7 @@ class OpenCodeAdapter(HookAdapter):
             event, event.payload.get("tool_response", {})
         )
         if payload.get("tool_name") in TASK_TOOL_NAMES:
-            payload["tool_response"] = self._with_dispatch_run_id(payload["tool_response"])
+            payload["tool_response"] = self._as_shared_task_result(payload["tool_response"])
         policy_event = HookEvent(
             event_type=event.event_type,
             session_id=event.session_id,
@@ -1234,19 +1235,26 @@ class OpenCodeAdapter(HookAdapter):
         return response
 
     @staticmethod
-    def _with_dispatch_run_id(tool_response: Any) -> Any:
-        """Name a Task result's child session as the ``agentId`` the shared observer resolves the dispatch row by.
+    def _as_shared_task_result(tool_response: Any) -> Any:
+        """Translate an OpenCode Task result into the fields the shared Task observer reads.
 
-        OpenCode reports the child only as ``metadata.sessionId``, the same id
-        the row is bound to as its harness agent id.
+        OpenCode names the child only as ``metadata.sessionId``, the id its row
+        is bound to, and marks a background launch with ``metadata.background``
+        and no status; without Claude Code's ``async_launched`` the observer
+        would read that launch as a completed turn and record a false cut.
         """
-        if not isinstance(tool_response, dict) or tool_response.get("agentId"):
+        if not isinstance(tool_response, dict):
             return tool_response
         metadata = tool_response.get("metadata")
-        child_session = metadata.get("sessionId") if isinstance(metadata, dict) else None
-        if not isinstance(child_session, str) or not child_session:
+        if not isinstance(metadata, dict):
             return tool_response
-        return {**tool_response, "agentId": child_session}
+        translated = dict(tool_response)
+        child_session = metadata.get("sessionId")
+        if not translated.get("agentId") and isinstance(child_session, str) and child_session:
+            translated["agentId"] = child_session
+        if metadata.get("background") is True and not translated.get("status"):
+            translated["status"] = "async_launched"
+        return translated
 
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
         """Close the dispatched child's row on session.idle or session.error; for the main session, beat its heartbeat.
