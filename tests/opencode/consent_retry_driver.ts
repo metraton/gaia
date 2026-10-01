@@ -202,8 +202,16 @@ const { GaiaOpenCodePlugin } = await import(scenario.pluginModulePath === undefi
   : pathToFileURL(scenario.pluginModulePath).href)
 let plugin: any
 
-// create/promptAsync/prompt only record: under D39 the plugin opens no session,
-// sends no prompt and posts no message, so any entry here is a regression.
+// create/promptAsync/prompt only record: under D39 the consent path opens no
+// session, sends no prompt and posts no message, so any entry in
+// controlPrompts is a regression. The SubagentStop gate's repair of a child that
+// ended unfinalized, which these scenarios' children do, is recorded apart.
+const repairPrompts: Record<string, any>[] = []
+function isContractRepair(request: any): boolean {
+  const parts = request?.body?.parts
+  return Array.isArray(parts) && parts.length === 1 && parts[0]?.synthetic === true
+    && typeof parts[0]?.text === "string" && parts[0].text.startsWith("[CONTRACT REJECTED]")
+}
 const client = {
   session: {
     async messages({ sessionID }: { sessionID: string }) {
@@ -214,7 +222,8 @@ const client = {
       return { data: { id: `control-${controlPrompts.length}` } }
     },
     async promptAsync(request: any) {
-      controlPrompts.push(request)
+      if (isContractRepair(request)) repairPrompts.push(request)
+      else controlPrompts.push(request)
       return { data: undefined, response: { ok: true, status: 204 } }
     },
     async prompt(request: any) {

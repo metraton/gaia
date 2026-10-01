@@ -15,6 +15,10 @@ type BridgeResponse = {
   shell_env?: { session_id: string; call_id: string; agent_type: string }
   sections_provided?: string[]
   additional_context?: string
+  contract_valid?: boolean
+  repair_prompt?: string
+  orchestrator_notice?: string
+  user_message?: string
 }
 
 type PendingApproval = {
@@ -1220,6 +1224,32 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // The backend ledger is read-modify-write: serialize all issuers in this plugin instance.
   let issuanceTail: Promise<void> = Promise.resolve()
   const decisions = new PermissionDecisionRouter()
+  // A child's session.idle is published before its parent's task call returns,
+  // so tool.execute.after awaits the close still in flight and appends what it
+  // left for the parent: the task result is the one channel the orchestrator
+  // reads under both the TUI and `opencode run` (a toast reports success with
+  // no TUI attached).
+  const childCloses = new Map<string, Promise<void>>()
+  const parentNotices = new Map<string, string[]>()
+
+  /** Act on the SubagentStop gate's verdict for a child's ended turn.
+   *
+   * A bus event cannot hold the turn, so a rejection becomes the child's next
+   * turn. The part is synthetic, which is also what keeps chat.message from
+   * answering it; the gate's rejection circuit bounds how often this repeats.
+   */
+  async function settleChildTurn(sessionID: string, response: BridgeResponse): Promise<void> {
+    const notices = [response.orchestrator_notice, response.user_message]
+      .filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
+    if (notices.length > 0) parentNotices.set(sessionID, notices)
+    if (response.contract_valid !== false || !response.repair_prompt) return
+    const sent = await input.client?.session?.promptAsync?.({
+      path: { id: sessionID },
+      body: { parts: [{ type: "text", text: response.repair_prompt, synthetic: true }] },
+    })
+    const refused = sent === undefined ? "client has no session.promptAsync" : hostRejection(sent)
+    if (refused) console.error(`[gaia-opencode:subagent-stop] repair prompt not delivered to ${sessionID}: ${refused}`)
+  }
 
   /** The dispatch handle Gaia reads as agent_id, or undefined for the primary.
    *
@@ -2085,11 +2115,20 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
         const sessionID = event.properties?.sessionID
         if (typeof sessionID === "string") {
+          const agent = agentBySession.get(sessionID)
           if (event.type === "session.idle") {
-            const control = activeControl(sessionID)
-            if (control) await clearControl(control, "session_ended", event.type)
-            shellIdentities.clearSession(sessionID)
-            await send({ event: event.type, sessionID })
+            const closing = (async () => {
+              const control = activeControl(sessionID)
+              if (control) await clearControl(control, "session_ended", event.type)
+              shellIdentities.clearSession(sessionID)
+              await settleChildTurn(sessionID, await send({ event: event.type, sessionID, agent }))
+            })()
+            childCloses.set(sessionID, closing)
+            try {
+              await closing
+            } finally {
+              if (childCloses.get(sessionID) === closing) childCloses.delete(sessionID)
+            }
             return
           }
           const controls = [...(controlsBySession.get(sessionID) ?? [])]
@@ -2098,7 +2137,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             if (!forwardsPastOpenControls(event.type)) return
           }
           shellIdentities.clearSession(sessionID)
-          await send({ event: event.type, sessionID })
+          await settleChildTurn(sessionID, await send({ event: event.type, sessionID, agent }))
         }
         return
       }
@@ -2288,6 +2327,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       })
       if (response.action === "allow" && response.additional_context && typeof output.output === "string") {
         output.output = `${output.output.trimEnd()}\n${response.additional_context}\n`
+      }
+      const childSessionID = call.tool === "task" ? output.metadata?.sessionId : undefined
+      if (typeof childSessionID === "string") {
+        await childCloses.get(childSessionID)
+        const notices = parentNotices.get(childSessionID)
+        parentNotices.delete(childSessionID)
+        if (notices && typeof output.output === "string") {
+          output.output = `${output.output.trimEnd()}\n${notices.join("\n")}\n`
+        }
       }
       const retryKey = `${call.sessionID}:${call.callID}`
       const retried = retryByCall.get(retryKey)

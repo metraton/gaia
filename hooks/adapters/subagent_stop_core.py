@@ -832,6 +832,41 @@ def salvage_truncated_draft(
         return None
 
 
+def gaia_agent_roster() -> Set[str]:
+    """Names of the Gaia-managed agents, unioned over every lane that resolves.
+
+    An empty set means the roster did not resolve, never that Gaia has no
+    agents, so the caller grants the native-agent bypass only on a non-empty
+    result.
+    """
+    from modules.security.protected_paths import declared_hook_tree_roots
+
+    # Two lanes because the first is a function of the deployment layout:
+    # the directory beside the running module is not the agents directory
+    # once the hooks are materialised away from their checkout. The registry
+    # lane is the identity declared outside any deployment.
+    candidates = [Path(__file__).resolve().parent.parent.parent / "agents"]
+    candidates.extend(
+        Path(root).parent / "agents" for root in declared_hook_tree_roots()
+    )
+
+    names: Set[str] = set()
+    for agents_dir in candidates:
+        try:
+            if not agents_dir.is_dir():
+                continue
+            names.update(
+                f.stem
+                for f in agents_dir.iterdir()
+                if f.suffix == ".md" and f.is_file()
+            )
+        except OSError:
+            # A lane that cannot be read declines to CONTRIBUTE names; it
+            # never removes what another lane already found.
+            continue
+    return names
+
+
 @dataclass(frozen=True)
 class SubagentStopHost:
     """What the close needs from the host that delivered the stop event.
@@ -839,7 +874,8 @@ class SubagentStopHost:
     Attributes:
         agent_roster: names of Gaia's own agents; empty when none resolved.
         classify_stop_reason: the host's raw stop reason -> STOP_REASON_*.
-        resume_map_dir: where the host records a per-session resume mapping.
+        resume_map_dir: where the host records a per-session resume mapping;
+            None for a host that resumes a child natively and records none.
         resolve_dispatch_row, reconstruct_contract, salvage_truncated_draft:
             the host-neutral lookups above; a host overrides them only to
             substitute its own entry points.
@@ -847,7 +883,7 @@ class SubagentStopHost:
 
     agent_roster: Callable[[], Set[str]]
     classify_stop_reason: Callable[[Optional[str]], str]
-    resume_map_dir: Path
+    resume_map_dir: Optional[Path]
     resolve_dispatch_row: Callable[..., Optional[dict]] = resolve_dispatch_row
     reconstruct_contract: Callable[..., Optional[dict]] = (
         reconstruct_contract_from_finalized_draft
@@ -1448,7 +1484,7 @@ def run_subagent_stop(
             _agent_id = resolve_agent_id(task_info)
             # A per-session resume mapping marks the orchestrator continuing
             # this agent across messages, which must not trip the retry cap.
-            _is_resume = (
+            _is_resume = host.resume_map_dir is not None and (
                 host.resume_map_dir / f"{session_id}.json"
             ).is_file()
             if _agent_state and _agent_id:

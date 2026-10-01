@@ -42,6 +42,8 @@ from .types import (
 if TYPE_CHECKING:
     from modules.security.host_attestation import Attestation
 
+    from .subagent_stop_core import SubagentStopOutcome
+
 
 # The two contract-closing rules agent-protocol/SKILL.md's principles 2 and 10
 # already state, appended to every OpenCode dispatch kernel because this host
@@ -117,6 +119,17 @@ _CHILD_BINDING_BACKSTOP_EMITTER = "opencode-adapter:child-session-binding-backst
 _IDENTITY_REFUSAL_EVENT = "opencode.identity.refused"
 
 logger = logging.getLogger(__name__)
+
+
+def _classify_stop_event(stop_event: str | None) -> str:
+    """Map the lifecycle event that ended a child's turn onto a STOP_REASON_* class.
+
+    session.error is the host ending the turn, which the core treats as a
+    truncation to salvage rather than a contract to send back for repair.
+    """
+    from .subagent_stop_core import STOP_REASON_TRUNCATION, STOP_REASON_UNKNOWN
+
+    return STOP_REASON_TRUNCATION if stop_event == "session.error" else STOP_REASON_UNKNOWN
 
 
 def _apply_patch_paths(patch_text: object) -> list[str]:
@@ -1257,22 +1270,105 @@ class OpenCodeAdapter(HookAdapter):
         return translated
 
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
-        """Close the dispatched child's row on session.idle or session.error; for the main session, beat its heartbeat.
+        """Gate a dispatched child's turn on session.idle or session.error, then close its row; for the main session, beat its heartbeat.
 
-        OpenCode does not await these events, so this is a best-effort write,
-        never a permission verdict. The session id is the harness_agent_id
-        ``bind_harness_child_session`` stamped at ``message.part.updated``, so
-        a child with no tool call is still found. A session bound to no row is
-        the main one ending a turn: that heartbeat is what keeps its worktrees
-        and pending approvals live, and what lets a killed OpenCode process,
-        which emits no close event, go stale.
+        OpenCode does not await these events, so a rejection cannot hold the
+        turn open. It returns ``repair_prompt`` for the plugin to send the
+        child as its next turn and leaves the row unclosed for the child's own
+        finalize. ``user_message`` and ``orchestrator_notice`` are appended by
+        the plugin to the parent's Task result, which the orchestrator reads
+        under both the TUI and ``opencode run``.
+
+        The session id is the harness_agent_id ``bind_harness_child_session``
+        stamped at ``message.part.updated``, so a child with no tool call is
+        still found. A session bound to no row is the main one ending a turn:
+        that heartbeat is what keeps its worktrees and pending approvals live,
+        and what lets a killed OpenCode process, which emits no close event, go
+        stale.
         """
-        outcome = self._close_bound_row(event)
-        if outcome.get("status") == "no_row":
+        row = self._bound_child_row(event.session_id)
+        outcome = self._gate_child_turn(event, row) if row is not None else None
+        if outcome is not None and outcome.rejected:
+            return HookResponse(output={
+                "contract_valid": False,
+                "repair_prompt": outcome.result.get("contract_rejection_reason", ""),
+                "orchestrator_notice": self._repair_notice(event, outcome.result),
+                "closed": {"status": "repair_requested", "contract_id": row.get("contract_id")},
+            })
+        closed = self._close_bound_row(event)
+        if closed.get("status") == "no_row":
             from modules.session.session_lifecycle import refresh_heartbeat
 
             refresh_heartbeat(event.session_id)
-        return HookResponse(output={"contract_valid": True, "closed": outcome})
+        output: Dict[str, Any] = {"contract_valid": True, "closed": closed}
+        if outcome is not None:
+            output.update({
+                key: outcome.result[key]
+                for key in ("contract_circuit_open", "contract_rejection_count", "episode_id")
+                if key in outcome.result
+            })
+            if outcome.user_message:
+                output["user_message"] = outcome.user_message
+        return HookResponse(output=output)
+
+    @staticmethod
+    def _gate_child_turn(event: HookEvent, row: dict) -> "SubagentStopOutcome":
+        """Run the host-neutral SubagentStop close for the child session bound to ``row``.
+
+        OpenCode's stop event names only the child session and the agent the
+        plugin bound it to, so the dispatching session comes from the row the
+        dispatch birthed and the child's output is left to the core's row
+        reconstruction.
+        """
+        from . import subagent_stop_core
+
+        parent_session_id = row.get("session_id") or ""
+        agent_type = str(event.payload.get("agent") or "")
+        stop_event = str(event.payload.get("event") or "")
+        hook_data = {
+            "hook_event_name": "SubagentStop",
+            "session_id": parent_session_id,
+            "agent_type": agent_type,
+            "agent_id": event.session_id,
+            "stop_reason": stop_event,
+        }
+        host = subagent_stop_core.SubagentStopHost(
+            agent_roster=subagent_stop_core.gaia_agent_roster,
+            classify_stop_reason=_classify_stop_event,
+            resume_map_dir=None,
+        )
+        completion = AgentCompletion(
+            agent_type=agent_type,
+            agent_id=event.session_id,
+            transcript_path="",
+            last_message="",
+            session_id=parent_session_id,
+        )
+        return subagent_stop_core.run_subagent_stop(
+            host, hook_data, completion, event_session_id=parent_session_id or None,
+        )
+
+    @staticmethod
+    def _repair_notice(event: HookEvent, result: dict) -> str:
+        from modules.agents.rejection_circuit import max_rejections
+
+        agent = event.payload.get("agent") or "The specialist"
+        return (
+            f"{agent} ended its turn without a finalized contract, so Gaia returned "
+            f"the turn to it for repair (rejection {result.get('contract_attempts', 1)} "
+            f"of {max_rejections()}). This task result is not a valid close: continue "
+            f"task_id {event.session_id} to collect the repaired one."
+        )
+
+    @staticmethod
+    def _bound_child_row(session_id: str) -> dict | None:
+        from gaia.store.writer import find_dispatch_row_by_harness_agent_id
+
+        try:
+            return find_dispatch_row_by_harness_agent_id(str(session_id)) if session_id else None
+        except Exception:
+            logger.warning("Child row lookup failed for session %s", session_id, exc_info=True)
+            return None
 
     def adapt_session_end(self, event: HookEvent) -> HookResponse:
         """On session.deleted, close the dispatched child's row, or unregister the main session.

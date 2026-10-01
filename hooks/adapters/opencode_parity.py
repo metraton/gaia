@@ -126,6 +126,7 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability(
         name="SubagentStop gate and relay",
         claude_code=_registrations("SubagentStop", "*"),
+        opencode_event="session.idle",
     ),
     Capability(
         name="skills at birth",
@@ -134,6 +135,5 @@ CAPABILITIES: Tuple[Capability, ...] = (
 )
 
 PENDING_GAPS: Dict[str, str] = {
-    "SubagentStop gate and relay": "task 815 (T9)",
     "skills at birth": "task 816 (T10)",
 }

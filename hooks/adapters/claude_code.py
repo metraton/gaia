@@ -681,38 +681,8 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
     # ------------------------------------------------------------------ #
 
     def _get_gaia_agent_names(self) -> set:
-        """Names of the Gaia-managed agents, unioned over every lane that resolves.
-
-        An empty set means the roster did not resolve, never that Gaia has no
-        agents, so the caller grants the native-agent bypass only on a non-empty
-        result.
-        """
-        from modules.security.protected_paths import declared_hook_tree_roots
-
-        # Two lanes because the first is a function of the deployment layout:
-        # the directory beside the running module is not the agents directory
-        # once the hooks are materialised away from their checkout. The registry
-        # lane is the identity declared outside any deployment.
-        candidates = [Path(__file__).resolve().parent.parent.parent / "agents"]
-        candidates.extend(
-            Path(root).parent / "agents" for root in declared_hook_tree_roots()
-        )
-
-        names: set = set()
-        for agents_dir in candidates:
-            try:
-                if not agents_dir.is_dir():
-                    continue
-                names.update(
-                    f.stem
-                    for f in agents_dir.iterdir()
-                    if f.suffix == ".md" and f.is_file()
-                )
-            except OSError:
-                # A lane that cannot be read declines to CONTRIBUTE names; it
-                # never removes what another lane already found.
-                continue
-        return names
+        """``subagent_stop_core.gaia_agent_roster``."""
+        return subagent_stop_core.gaia_agent_roster()
 
     # ------------------------------------------------------------------ #
     # format_ask_response: for interactive permission requests
