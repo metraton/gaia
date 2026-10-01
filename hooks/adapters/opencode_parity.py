@@ -105,10 +105,12 @@ CAPABILITIES: Tuple[Capability, ...] = (
     Capability(
         name="per-message heartbeat and notifications",
         claude_code=_registrations("UserPromptSubmit"),
+        opencode_event="chat.prompt",
     ),
     Capability(
         name="primary compaction refresh",
         claude_code=_registrations("SessionStart", "compact") | _registrations("PostCompact"),
+        opencode_event="session.compacting",
     ),
     Capability(
         name="contract summary after dispatch",
@@ -130,8 +132,6 @@ CAPABILITIES: Tuple[Capability, ...] = (
 )
 
 PENDING_GAPS: Dict[str, str] = {
-    "per-message heartbeat and notifications": "task 718 (T7)",
-    "primary compaction refresh": "task 718 (T7)",
     "contract summary after dispatch": "task 717 (T8)",
     "session events digest": "task 717 (T8)",
     "SubagentStop gate and relay": "task 815 (T9)",

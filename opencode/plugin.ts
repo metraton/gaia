@@ -1208,8 +1208,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // Whether session.created announced a session as main; a session absent here
   // opened before this plugin loaded, and the host's record decides it.
   const createdAsMain = new Map<string, boolean>()
-  // Sessions whose birth block was delivered or is never owed, so each main
-  // session asks once however many messages chat.message reports for it.
+  // Main sessions whose birth block was asked for, so each asks once however
+  // many messages chat.message reports for it.
   const birthSettled = new Set<string>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
@@ -1255,6 +1255,27 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       return typeof record.parentID === "string" && record.parentID ? "present" : "none"
     } catch {
       return "unavailable"
+    }
+  }
+
+  /** Whether session.created announced the session parentless, else whether the host's record does; undefined while the host cannot say. */
+  async function hostRecordsMain(sessionID: string): Promise<boolean | undefined> {
+    const announced = createdAsMain.get(sessionID)
+    if (announced !== undefined) return announced
+    const parent = await hostParentRecord(sessionID)
+    if (parent === "unavailable") return undefined
+    createdAsMain.set(sessionID, parent === "none")
+    return parent === "none"
+  }
+
+  /** The context Gaia returns for one main-session message event, or "" when it returns none or fails. */
+  async function mainMessageContext(event: "chat.message" | "chat.prompt", sessionID: string): Promise<string> {
+    try {
+      const response = await send({ event, sessionID })
+      return response.action === "allow" && response.additional_context ? response.additional_context : ""
+    } catch (error) {
+      console.error(`[gaia-opencode:${event}] session ${sessionID} message went without its context: ${error}`)
+      return ""
     }
   }
 
@@ -2083,31 +2104,21 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
     },
     // Stable hook (session/prompt.ts at 1.18.32), handed the user's message
-    // parts before they are stored. Synthetic keeps the block out of the
+    // parts before they are stored. Synthetic keeps Gaia's blocks out of the
     // transcript the user reads.
     "chat.message": async (message: any, output: any) => {
       const sessionID = message?.sessionID
-      if (typeof sessionID !== "string" || birthSettled.has(sessionID) || !message.agent) return
+      if (typeof sessionID !== "string" || !message.agent) return
       const parts = Array.isArray(output?.parts) ? output.parts : undefined
       if (!parts?.some((part: any) => part?.type === "text" && !part.synthetic)) return
-      let main = createdAsMain.get(sessionID)
-      if (main === undefined) {
-        const parent = await hostParentRecord(sessionID)
-        if (parent === "unavailable") return
-        main = parent === "none"
-        createdAsMain.set(sessionID, main)
+      if (await hostRecordsMain(sessionID) !== true) return
+      const contexts: string[] = []
+      if (!birthSettled.has(sessionID)) {
+        birthSettled.add(sessionID)
+        contexts.push(await mainMessageContext("chat.message", sessionID))
       }
-      if (birthSettled.has(sessionID)) return
-      birthSettled.add(sessionID)
-      if (!main) return
-      let context: string | undefined
-      try {
-        const response = await send({ event: "chat.message", sessionID })
-        context = response.action === "allow" ? response.additional_context : undefined
-      } catch (error) {
-        console.error(`[gaia-opencode:birth] session ${sessionID} started without its birth block: ${error}`)
-        return
-      }
+      contexts.push(await mainMessageContext("chat.prompt", sessionID))
+      const context = contexts.filter(Boolean).join("\n\n")
       if (!context) return
       parts.push({
         id: `prt_${Date.now().toString(16)}${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`,
@@ -2316,18 +2327,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       const tmpdir = dispatchTmpDir(call.sessionID)
       if (tmpdir) output.env.TMPDIR = tmpdir
     },
-    // The installed OpenCode host fires this hook mid-compaction, before the
-    // summary completes, with a mutable {context, prompt} output -- unlike
-    // "session.compacted" (forwarded above, LIFECYCLE_EVENT_TYPES), which
-    // fires only after and cannot inject anything. This is the one point
-    // that can put a dispatched child's contract kernel back into context
-    // before OpenCode's own compaction discards the messages it lived in.
+    // Experimental hook, the only compaction point that can inject: the host
+    // fires it before the summary completes, with a mutable {context, prompt}
+    // output whose context survives into the summary (measured on 1.18.32,
+    // evidence 896), while "session.compacted" fires after and cannot inject.
     "experimental.session.compacting": async (compacting: any, output: any) => {
       const sessionID = compacting?.sessionID
       if (typeof sessionID !== "string") return
       const response = await send({
         event: "session.compacting",
         sessionID,
+        main: await hostRecordsMain(sessionID) === true,
         agentID: dispatchHandle(sessionID),
         agent: agentBySession.get(sessionID),
         roleContext: roleContext(sessionID),

@@ -64,6 +64,7 @@ _EVENT_TYPES = {
     "tool.execute.before": HookEventType.PRE_TOOL_USE,
     "tool.execute.after": HookEventType.POST_TOOL_USE,
     "chat.message": HookEventType.SESSION_START,
+    "chat.prompt": HookEventType.USER_PROMPT_SUBMIT,
     "message.part.updated": HookEventType.SUBAGENT_START,
     "session.idle": HookEventType.SUBAGENT_STOP,
     "session.error": HookEventType.SUBAGENT_STOP,
@@ -360,6 +361,25 @@ class OpenCodeAdapter(HookAdapter):
             session_type="startup",
             additional_context=start_context("startup", []),
         )
+
+    def adapt_user_prompt_submit(self, event: HookEvent) -> HookResponse:
+        """Run Claude Code's per-prompt core for one main-session message: heartbeat, then the due-notifications line.
+
+        The plugin forwards ``chat.prompt`` only for a main session's own
+        messages, and the bridge runs from that session's workspace directory,
+        the workspace Claude Code's UserPromptSubmit counts notifications for.
+        """
+        from gaia.project import current
+        from modules.session.session_lifecycle import prompt_context
+
+        try:
+            workspace = current() or None
+        except Exception:
+            workspace = None
+        return HookResponse(output={
+            "action": "allow",
+            "additional_context": prompt_context(event.session_id, workspace),
+        })
 
     def format_bootstrap_response(self, result: BootstrapResult) -> HookResponse:
         return HookResponse(
@@ -1256,45 +1276,49 @@ class OpenCodeAdapter(HookAdapter):
         ) or {"status": "error"}
 
     def adapt_pre_compact(self, event: HookEvent) -> HookResponse:
-        """Reinject the claimed dispatch row's kernel before OpenCode's real
-        compaction (experimental.session.compacting) discards prior context
-        (plan 65, task 12; AC-7).
+        """Return what OpenCode's compaction must carry forward: a bound child's kernel, or a main session's compaction context.
 
-        OpenCode's compaction summarizes/discards the session's prior messages
-        before the child's next turn -- the same row-bound kernel T9 prepends
-        at dispatch would otherwise fall out of the child's live context with
-        no re-delivery. This session's own id (event.session_id) is the same
-        value bind_harness_child_session stamped as harness_agent_id on the
-        child's row (T10), so find_dispatch_row_by_harness_agent_id resolves
-        the exact row this compaction event belongs to with no correlation
+        Answers the experimental ``experimental.session.compacting`` hook,
+        whose context survives the summary that discards the session's prior
+        messages. A dispatched child gets back the kernel its row was born
+        with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
+        what Claude Code's SessionStart(compact) delivers, from the same
+        ``start_context``.
+
+        Degrades to a plain allow whenever there is nothing to inject or
+        building it fails: a compaction must never be blocked by injection,
+        the rule _adapt_task_with_kernel applies to a Task dispatch.
+        """
+        kernel = self._bound_child_kernel(event.session_id)
+        if kernel:
+            return HookResponse(
+                output={"action": "allow", "updated_input": {"context": [kernel]}}
+            )
+        if event.payload.get("main") is True:
+            from modules.session.session_lifecycle import start_context
+
+            context = start_context("compact", [])
+            if context:
+                return HookResponse(
+                    output={"action": "allow", "updated_input": {"context": [context]}}
+                )
+        return HookResponse(output={"action": "allow"})
+
+    @staticmethod
+    def _bound_child_kernel(session_id: str) -> str | None:
+        """The kernel of the claimed dispatch row bound to this child session, or None.
+
+        The session id is the harness_agent_id bind_harness_child_session
+        stamped on the child's row (T10), so the lookup needs no correlation
         ladder.
-
-        Degrades to a plain allow -- no context injected -- whenever nothing
-        is bound to this session, claimed_at is absent, or the kernel render
-        fails: a compaction must never be blocked by kernel injection, the
-        same rule _adapt_task_with_kernel applies to a Task dispatch.
         """
         from gaia.store.writer import find_dispatch_row_by_harness_agent_id
         from modules.context.kernel_builder import build_dispatch_kernel
 
-        session_id = event.session_id
         try:
-            row = (
-                find_dispatch_row_by_harness_agent_id(str(session_id))
-                if session_id else None
-            )
+            row = find_dispatch_row_by_harness_agent_id(str(session_id)) if session_id else None
+            if row is None or not row.get("claimed_at"):
+                return None
+            return build_dispatch_kernel(row) or None
         except Exception:
-            row = None
-        if row is None or not row.get("claimed_at"):
-            return HookResponse(output={"action": "allow"})
-
-        try:
-            kernel = build_dispatch_kernel(row)
-        except Exception:
-            kernel = None
-        if not kernel:
-            return HookResponse(output={"action": "allow"})
-
-        return HookResponse(
-            output={"action": "allow", "updated_input": {"context": [kernel]}}
-        )
+            return None
