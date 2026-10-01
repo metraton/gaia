@@ -8,7 +8,7 @@ Skills are not shared via inheritance or imports — they are text loaded into t
 
 The assignment matrix below separates declared skills from explicit invocation. Availability is not application: the coding workflows invoke [code-standards](code-standards/SKILL.md) before generation and at done; [code-review](code-review/SKILL.md) is the separate technique for an explicitly requested review, not an automatic extra pass on every change.
 
-## Cuándo se activa
+## When it activates
 
 Skills reach an agent through two distinct routes, and understanding both matters when troubleshooting why a skill is or is not present in a session.
 
@@ -119,7 +119,7 @@ skills/
 │   └── scripts/           # screenshot.cjs -- zero-install Playwright capture
 ```
 
-## Convenciones
+## Conventions
 
 **Skill assignment matrix:**
 
@@ -194,7 +194,7 @@ relevant (see the skill list above), not a machine-read property.
 
 **Line budget and validation:** Follow [skill-creation](skill-creation/SKILL.md) for the loading-mode budget and teaching evaluation. The [prompt regression tests](../tests/layer1_prompt_regression/) check structure and references; those checks do not prove that a reader applies the technique.
 
-## Ver también
+## See also
 
 - [`agents/README.md`](../agents/README.md) — agent frontmatter and skills: field
 - [`hooks/modules/agents/skill_injection_verifier.py`](../hooks/modules/agents/skill_injection_verifier.py) — checks at SubagentStop that expected skills reached the transcript; it verifies, it does not inject

@@ -106,16 +106,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Host decoupling (#88): la lógica del core (clasificación T0–T3, grants, validación, audit) queda desacoplada de Claude Code tras la capa adapter. Lo específico del host vive en seams: `host_session`, `host_transcript`, `registry`/`get_adapter`, `request_consent`/`ConsentRequest`, `HostCapability`/degradación, `HostDistribution`. Soportar un host nuevo de la familia hook-interception = escribir un adapter + declarar capacidades, sin tocar el core.
+- Host decoupling (#88): the core logic (T0–T3 classification, grants, validation, audit) is decoupled from Claude Code behind the adapter layer. What is host-specific lives in seams: `host_session`, `host_transcript`, `registry`/`get_adapter`, `request_consent`/`ConsentRequest`, `HostCapability`/degradation, `HostDistribution`. Supporting a new host of the hook-interception family means writing an adapter and declaring its capabilities, without touching the core.
 
 ### Added
 
-- Estado terminal `descoped` para acceptance criteria (descope deliberado, hard-terminal) más invariantes de `verify_brief` (`closed_brief_nonterminal_ac`, `closed_brief_open_plan`) para coherencia brief/plan/AC al cerrar.
+- Terminal state `descoped` for acceptance criteria (deliberate descope, hard-terminal), plus `verify_brief` invariants (`closed_brief_nonterminal_ac`, `closed_brief_open_plan`) that keep brief, plan and AC coherent at close.
 
 ### Fixed
 
-- Endurecimiento del security-core a 100% killable (mutation testing) en `blocked_commands`, `mutative_verbs`, `tiers` y `approval_grants`. Arreglado el mecanismo de skip-file de equivalentes para casar por identidad estable (`operator|posición|occurrence`) en vez de `job_ids` regenerados — elimina la exclusión-cero silenciosa ("falso 100%") tras cada `cosmic-ray init`.
-- Corregido el help de `brief close` (verify advisory, sin cascade de estado).
+- Security core hardened to 100% killable (mutation testing) in `blocked_commands`, `mutative_verbs`, `tiers` and `approval_grants`. The equivalent-mutant skip file now matches by stable identity (`operator|position|occurrence`) instead of regenerated `job_ids`, which removes the silent zero exclusion ("false 100%") after every `cosmic-ray init`.
+- Corrected the `brief close` help (verify is advisory, no state cascade).
 
 ## [5.0.10] - 2026-06-29
 

@@ -12,7 +12,7 @@ All other agents set `permissionMode: acceptEdits` so file edits inside their do
 
 Adding a new agent is three steps: write the `.md` file here (including a `routing:` frontmatter block if the agent owns a surface), add it to `build/gaia.manifest.json` under `agents`, and run `gaia update` so `tools/scan/seed_surface_routing.py` seeds the agent's surface into the DB-backed `surface_routing` table. The agent becomes available on the next Claude Code restart. Surface routing is no longer a `config/surface-routing.json` file — each agent's `routing:` block is the source of truth.
 
-## Cuándo se activa
+## When it activates
 
 The flow below describes Claude Code. A `skills:` declaration is not a preload
 guarantee in OpenCode; workflows explicitly invoke the available skill-loading tool.
@@ -69,7 +69,7 @@ agents/
 └── gaia-verifier.md       # Clean-context verifier: consumes task_gates, promotes NEEDS_VERIFICATION to COMPLETE
 ```
 
-## Convenciones
+## Conventions
 
 **Frontmatter fields:**
 
@@ -91,7 +91,7 @@ agents/
 
 **Tool restriction:** Give each agent only the tools it needs. The orchestrator has `Read` for triangulation and guarded `Bash` for the coordination lane described above; it has no Write/Edit/Glob/Grep. Read-only agents should not have Write or Edit.
 
-## Ver también
+## See also
 
 - [`tools/scan/seed_surface_routing.py`](../tools/scan/seed_surface_routing.py) — seeds each agent's `routing:` block into the DB-backed `surface_routing` table (intent-to-agent mapping)
 - [`build/gaia.manifest.json`](../build/gaia.manifest.json) — agent registration
