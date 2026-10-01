@@ -51,8 +51,7 @@ test asserting exact bytes and has not been investigated. Not fixed here.
 ## `live/` -- the smoke that needs a real host (stale)
 
 Both files predate D37 and do not run against the current plugin.
-`live/control_plane_smoke.test.ts` imports `matchesBinaryQuestion`, which
-`opencode/plugin.ts` no longer exports, so `bun test` fails it at import; no
+`live/control_plane_smoke.test.ts` unit-tests only the smoke's own helpers; no
 pytest wrapper collects it. The smoke itself still matches the retired binary
 question (`Approve once [<id>]` / `Reject [<id>]` with a `DECISION:` line),
 not D37's one-line signature question with Approve / Reject / Details. Until
