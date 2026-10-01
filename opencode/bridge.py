@@ -251,9 +251,9 @@ def _handle(raw: dict[str, object], *, shell_env_transport: bool) -> dict[str, o
         return _record_decision_applied(raw)
     if raw.get("event") == _CONSENT_RETRY_REFUSED_EVENT:
         return _record_consent_retry_refused(raw)
-    from adapters.opencode import OpenCodeAdapter
+    from adapters.registry import get_adapter
 
-    adapter = OpenCodeAdapter()
+    adapter = get_adapter("opencode")
     event = adapter.parse_event(json.dumps(raw))
     kind = event.event_type.value
 
