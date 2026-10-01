@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import shlex
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet
@@ -88,7 +89,7 @@ _EVENT_TYPES = {
 }
 
 _PATCH_PATH_MARKER = re.compile(
-    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$"
+    r"^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$"
 )
 
 # Only the OpenCode runtime may issue an identity claim; a claim carrying any
@@ -133,24 +134,41 @@ def _classify_stop_event(stop_event: str | None) -> str:
 
 
 def _apply_patch_paths(patch_text: object) -> list[str]:
-    """Return every declared patch path, rejecting ambiguous patch envelopes."""
+    """Return every path a patch adds or updates, rejecting ambiguous envelopes.
+
+    A deletion or a move is refused with the ``rm``/``mv`` command that carries
+    it, because each path here is judged as an Edit, which sees neither effect.
+    """
     if not isinstance(patch_text, str) or not patch_text.strip():
         raise ValueError("apply_patch requires non-empty patchText")
     paths: list[str] = []
-    saw_file_operation = False
     for line in patch_text.splitlines():
         if line.startswith("*** ") and line not in {"*** Begin Patch", "*** End Patch"}:
             match = _PATCH_PATH_MARKER.fullmatch(line)
             if match is None:
                 raise ValueError(f"unsupported apply_patch marker: {line}")
-            saw_file_operation = True
-            path = match.group(1).strip()
+            marker, path = match.group(1), match.group(2).strip()
             if not path or path in {"/", ".", ".."} or "\x00" in path:
                 raise ValueError("apply_patch contains an unsafe or empty path")
+            if marker == "Delete File":
+                raise ValueError(_bash_route_refusal(f"rm -- {shlex.quote(path)}"))
+            if marker == "Move to":
+                if not paths:
+                    raise ValueError("apply_patch Move to must follow Update File")
+                source, destination = shlex.quote(paths[-1]), shlex.quote(path)
+                raise ValueError(_bash_route_refusal(f"mv -- {source} {destination}"))
             paths.append(path)
-    if not saw_file_operation or not paths:
+    if not paths:
         raise ValueError("apply_patch contains no recognized file operation")
     return paths
+
+
+def _bash_route_refusal(command: str) -> str:
+    """Name the Bash command that must carry a deletion or move a patch attempted."""
+    return (
+        f"apply_patch cannot delete or move a file. Run `{command}` through bash: "
+        "it gets the verdict, and the approval when one is needed, of any rm or mv."
+    )
 
 
 def _fail_closed(output: Dict[str, Any], exit_code: int) -> HookResponse:

@@ -162,16 +162,26 @@ def test_registry_selects_opencode_only_when_explicitly_requested(monkeypatch):
     assert isinstance(get_adapter(), OpenCodeAdapter)
 
 
-def test_apply_patch_extracts_all_file_and_move_paths():
+def test_apply_patch_extracts_every_added_and_updated_path():
     assert _apply_patch_paths("""*** Begin Patch
 *** Add File: src/a.py
 *** Update File: src/b.py
-*** Move to: src/c.py
-*** Delete File: src/d.py
-*** End Patch""") == ["src/a.py", "src/b.py", "src/c.py", "src/d.py"]
+*** End Patch""") == ["src/a.py", "src/b.py"]
 
 
-@pytest.mark.parametrize("patch", ["", "*** Begin Patch\n*** End Patch", "*** Begin Patch\n*** Rename File: a\n*** End Patch"])
+@pytest.mark.parametrize(("patch", "command"), [
+    ("*** Begin Patch\n*** Delete File: src/d.py\n*** End Patch", "rm -- src/d.py"),
+    ("*** Begin Patch\n*** Update File: src/b.py\n*** Move to: src/c.py\n*** End Patch", "mv -- src/b.py src/c.py"),
+])
+def test_apply_patch_refuses_delete_and_move_naming_the_bash_command(patch, command):
+    with pytest.raises(ValueError, match=f"`{command}`"):
+        _apply_patch_paths(patch)
+
+
+@pytest.mark.parametrize("patch", [
+    "", "*** Begin Patch\n*** End Patch", "*** Begin Patch\n*** Rename File: a\n*** End Patch",
+    "*** Begin Patch\n*** Move to: src/c.py\n*** End Patch",
+])
 def test_apply_patch_rejects_malformed_or_unsupported_markers(patch):
     with pytest.raises(ValueError):
         _apply_patch_paths(patch)
