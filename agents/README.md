@@ -54,7 +54,7 @@ Agent executes, closing its agent_contract_handoffs row with
 [subagent_stop.py] fires -> validates contract, records metrics, updates episodic memory
 ```
 
-## Qué hay aquí
+## What's here
 
 ```
 agents/
