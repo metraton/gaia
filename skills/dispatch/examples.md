@@ -50,8 +50,10 @@ test, and asks for a new push -- never a forced one.
 fresh `gaia-verifier` dispatches follow, each goal carrying the producer's
 contract row as `parent_handoff_id=<N>` and nothing of the producer's
 reasoning, because a verifier must not know what the producer believed. The
-wave is done when both verifiers pass and `gh pr checks` for the pull request,
-run directly, is green.
+wave is done when both verifiers pass and the pull request's CI is green. The
+pushing turn waited on CI itself and returned the check table, the commit SHA
+it covers and when it was observed; the orchestrator calls it green only after
+that SHA matches the PR head it reports.
 
 **Steering (principle 8).** Midway, A's turn starts editing
 `skills/agent-protocol/reference.md`, which is B's file. The orchestrator sends

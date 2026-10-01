@@ -196,16 +196,18 @@ def test_cmd_show_lists_gates_and_says_why_it_cannot_close(
     assert "goal edited" in gate_lines[0]
     assert any(f"#{pending_id}" in line and "pending" in line
                for line in out.splitlines())
-    closes = next(line for line in out.splitlines() if line.startswith("CLOSES:"))
-    assert "no" in closes
-    assert f"gate {stale_id} stale" in closes
-    assert f"gate {pending_id} pending" in closes
+    verdict = next(line for line in out.splitlines() if line.startswith("VERDICT:"))
+    assert "gates not passing" in verdict
+    assert f"gate {stale_id} stale" in verdict
+    assert f"gate {pending_id} pending" in verdict
     assert f"gaia contract list --plan-task {ids_by_order[1]}" in out
 
 
-def test_cmd_show_closes_when_every_gate_passes_fresh(
+def test_cmd_show_passing_gates_never_promise_the_close(
     tmp_db, tmp_path, monkeypatch, capsys,
 ):
+    """set-status done also weighs the closer's standing, which a read cannot
+    know, so an all-pass verdict must not read as "the task closes"."""
     from cli.task import _cmd_show
 
     monkeypatch.chdir(tmp_path)
@@ -213,9 +215,11 @@ def test_cmd_show_closes_when_every_gate_passes_fresh(
     _seed_gates(tmp_db, ids_by_order[1], [("pass", None), ("pass", None)])
 
     assert _cmd_show(_show_args(1)) == 0
-    closes = next(line for line in capsys.readouterr().out.splitlines()
-                  if line.startswith("CLOSES:"))
-    assert closes.split()[1] == "yes"
+    out = capsys.readouterr().out
+    verdict = next(line for line in out.splitlines() if line.startswith("VERDICT:"))
+    assert "gates all pass" in verdict
+    assert "set-status done still checks who closes" in verdict
+    assert "CLOSES" not in out
 
 
 @pytest.mark.parametrize("rows", [
@@ -223,7 +227,7 @@ def test_cmd_show_closes_when_every_gate_passes_fresh(
     [("pass", None), ("pass", None)],
     [],
 ])
-def test_cmd_show_json_closable_matches_the_gate_verdict(
+def test_cmd_show_json_gates_pass_matches_the_gate_verdict(
     tmp_db, tmp_path, monkeypatch, capsys, rows,
 ):
     from cli.task import _cmd_show
@@ -238,7 +242,8 @@ def test_cmd_show_json_closable_matches_the_gate_verdict(
     out = json.loads(capsys.readouterr().out)
     gates = list_task_gates("me", "show-brief", 1, db_path=tmp_db)
     assert [g["id"] for g in out["gates"]] == [g["id"] for g in gates]
-    assert out["closable"] is derive_gate_verdict(gates).approving
+    assert out["gates_pass"] is derive_gate_verdict(gates).approving
+    assert "closable" not in out
 
 
 def test_cmd_show_by_task_id_prints_brief_and_order(

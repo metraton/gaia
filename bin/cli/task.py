@@ -350,8 +350,10 @@ def _cmd_show(args) -> int:
 
     Addressed by ``order_num`` -- consistent with every other single-task
     verb in this file (`remove`, `gate add/list/remove/set-status`) -- or by
-    ``tasks.id`` through ``--id``. Also renders the task's gates and whether
-    ``derive_gate_verdict`` lets it close. Prints
+    ``tasks.id`` through ``--id``. Also renders the task's gates and their
+    ``derive_gate_verdict``. That is the gate half of what ``set-status done``
+    checks: the other half, the closer's standing, depends on who asks, which a
+    read must not. Prints
     ORDER_NUM (the plan-position ordinal a human reads/types) and TASK_ID
     (``tasks.id``, the row id the dispatch contract's ``task_id=<N>`` token
     requires) as two separate, explicitly labeled lines -- the two numbers
@@ -391,7 +393,7 @@ def _cmd_show(args) -> int:
     blockers = _gate_blockers(gates) or verdict.reasons
 
     if as_json:
-        print(json.dumps({**task, "gates": gates, "closable": verdict.approving,
+        print(json.dumps({**task, "gates": gates, "gates_pass": verdict.approving,
                           "blockers": [] if verdict.approving else blockers},
                          indent=2, default=str))
         return 0
@@ -412,9 +414,10 @@ def _cmd_show(args) -> int:
     for line in gate_lines[1:]:
         print(f"            {line}")
     if verdict.approving:
-        print("CLOSES:     yes -- every gate passes and none is stale")
+        print("VERDICT:    gates all pass, none stale -- set-status done "
+              "still checks who closes")
     else:
-        print(f"CLOSES:     no -- {', '.join(blockers)}")
+        print(f"VERDICT:    gates not passing -- {', '.join(blockers)}")
     print(f"TURNS:      gaia contract list --plan-task {task['id']}")
     return 0
 
