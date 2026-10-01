@@ -1983,8 +1983,7 @@ def _reader_workspaces(workspace: str) -> list[str]:
     :data:`gaia.store.writer.HOST_WORKSPACE` at write time by
     ``apply_host_scope``) and a user row (forced into
     :data:`gaia.store.writer.USER_WORKSPACE`) are reachable from any vantage.
-    Deduped when the caller's workspace already IS a sentinel. Mirrored by
-    ``gaia.store.reader.count_pending_by_initiative``.
+    Deduped when the caller's workspace already IS a sentinel.
     """
     try:
         from gaia.store.writer import HOST_WORKSPACE, USER_WORKSPACE

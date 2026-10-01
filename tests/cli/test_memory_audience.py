@@ -122,9 +122,9 @@ def test_add_without_audience_defaults_new_row_to_any(seeded):
     assert _audience(seeded, "atom_default_any") == "any"
 
 
-def test_add_correction_upsert_preserves_existing_audience(seeded, capsys):
-    """A plain correction upsert that does not mention --audience must not
-    reset a previously-tagged row back to 'any'."""
+def test_add_replace_preserves_existing_audience(seeded, capsys):
+    """A --replace that does not mention --audience must not reset a
+    previously-tagged row back to 'any'."""
     parser, memory_mod = _build_parser()
 
     # Tag it executor first.
@@ -146,7 +146,7 @@ def test_add_correction_upsert_preserves_existing_audience(seeded, capsys):
     captured = capsys.readouterr()
     assert rc2 == 0, f"stderr={captured.err}"
     assert _audience(seeded, "atom_seed") == "executor", (
-        "a correction upsert that omits --audience must preserve the "
+        "a --replace that omits --audience must preserve the "
         "existing value, not silently reset it to 'any'"
     )
 

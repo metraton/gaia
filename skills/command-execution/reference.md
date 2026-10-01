@@ -59,7 +59,7 @@ python3 /abs/path/to/script.py
 ./deploy.sh
 ```
 
-`bash -c`, `sh -c`, and `eval` hide the real command inside a string argument,
+A shell's `-c` (`bash -c`, `sh -c`, or any other sh-family shell) and `eval` hide the real command inside a string argument,
 so the security classifier cannot see it. A subagent that launches one is
 refused with the correct form in the message; the orchestrator gets a
 confirmation dialog even when the inner command would otherwise pass cleanly.

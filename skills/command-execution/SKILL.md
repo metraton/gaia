@@ -16,7 +16,8 @@ One command, one result, one exit code. This skill owns invocation discipline;
    with `gaia paths`, `which`, or its known path, and root a `find`, `grep` or
    glob at the smallest directory that can hold the answer.
 3. Run one atomic command. Never chain with `&&`, `||`, `;`, pipes, redirects,
-   background execution, substitutions, `bash -c`, `sh -c`, or `eval`.
+   background execution, substitutions, a shell's `-c` (`bash -c`, `sh -c`,
+   `zsh -c` or any other sh-family shell), or `eval`.
 4. Classify the exact string with `security-tiers`. T0/T1 reads and validation
    proceed. Bounded local T2 follows its policy. T3 routes to
    `subagent-request-approval`; do not duplicate a sealed payload here.
@@ -91,7 +92,7 @@ continues to enforce one atomic invocation per call.
 ## After the call
 
 The Bash tool reports the exit code itself. Never wrap a command in a shell
-(`bash -c`, `sh -c`, `eval`, `echo $?`) to capture it; a subagent that does is
+(any sh-family shell's `-c`, `eval`, `echo $?`) to capture it; a subagent that does is
 refused and told to run the command directly.
 
 Record the exact command and one result. On success, verify the desired state
