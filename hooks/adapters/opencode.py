@@ -14,6 +14,7 @@ import json
 import logging
 import re
 from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet
 
 from modules.orchestrator.delegate_mode import ORCHESTRATOR_AGENT_TYPES
@@ -32,11 +33,9 @@ from .types import (
     HookResponse,
     HostCapability,
     HostDistribution,
-    QualityResult,
     ToolResult,
     ValidationRequest,
     ValidationResult,
-    VerificationResult,
     RoleCapabilityContext,
 )
 
@@ -66,8 +65,8 @@ _EVENT_TYPES = {
     "tool.execute.after": HookEventType.POST_TOOL_USE,
     "chat.message": HookEventType.SESSION_START,
     "message.part.updated": HookEventType.SUBAGENT_START,
-    "session.idle": HookEventType.STOP,
-    "session.error": HookEventType.POST_TOOL_USE_FAILURE,
+    "session.idle": HookEventType.SUBAGENT_STOP,
+    "session.error": HookEventType.SUBAGENT_STOP,
     "session.deleted": HookEventType.SESSION_END,
     "session.compacted": HookEventType.POST_COMPACT,
     "session.compacting": HookEventType.PRE_COMPACT,
@@ -339,13 +338,24 @@ class OpenCodeAdapter(HookAdapter):
         )
 
     def adapt_session_start(self, raw: dict) -> BootstrapResult:
-        """Build the birth block for a main session's first real message.
+        """Run Claude Code's start maintenance for a main session, then build its birth block.
 
         The plugin forwards ``chat.message`` once per session it or the host
-        records as parentless, so every call here is a start or a resume.
+        records as parentless, so every call here is a start or a resume. The
+        bridge runs from the session's workspace directory, which is the
+        directory Claude Code's start sweeps too.
         """
-        from modules.session.session_lifecycle import start_context
+        from modules.session import session_lifecycle
+        from modules.session.session_lifecycle import SessionStart, start_context
 
+        session_lifecycle.run_start_maintenance(SessionStart(
+            session_id=str(raw.get("session_id") or ""),
+            source="startup",
+            is_headless=False,
+            pinned_build=None,
+            workspace_dir=Path.cwd(),
+            plugin_channel=False,
+        ))
         return BootstrapResult(
             session_type="startup",
             additional_context=start_context("startup", []),
@@ -355,12 +365,6 @@ class OpenCodeAdapter(HookAdapter):
         return HookResponse(
             output={"action": "allow", "additional_context": result.additional_context or ""}
         )
-
-    def adapt_stop(self, raw: dict) -> QualityResult:
-        return QualityResult()
-
-    def adapt_task_completed(self, raw: dict) -> VerificationResult:
-        return VerificationResult()
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Bind the callID<->child-session pair this event reports, then
@@ -401,23 +405,6 @@ class OpenCodeAdapter(HookAdapter):
         return ContextResult(
             context_injected=bool(raw.get("additional_context")),
             additional_context=raw.get("additional_context"),
-        )
-
-    def format_quality_response(self, result: QualityResult) -> HookResponse:
-        return HookResponse(
-            output={
-                "quality_sufficient": result.quality_sufficient,
-                "missing_elements": result.missing_elements,
-            }
-        )
-
-    def format_verification_response(self, result: VerificationResult) -> HookResponse:
-        return HookResponse(
-            output={
-                "criteria_met": result.criteria_met,
-                "failed_items": result.failed_items,
-                "block_completion": result.block_completion,
-            }
         )
 
     def _adapt_pre_tool_use_with_shell_env(self, event: HookEvent) -> HookResponse:
@@ -1230,29 +1217,43 @@ class OpenCodeAdapter(HookAdapter):
         return self._format_policy_verdict(verdict)
 
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
-        """Close the row bound to this session on a real lifecycle signal
-        (session.idle/error/deleted -- ``Stop``/``PostToolUseFailure``/
-        ``SessionEnd`` after mapping, plan 65, T11).
+        """Close the dispatched child's row on session.idle or session.error; for the main session, beat its heartbeat.
 
-        Replaces the exit-2 stub: OpenCode never awaits this hook's return
-        for these events (they carry no host decision to gate -- see
-        ``LIFECYCLE_EVENT_TYPES`` in ``opencode/plugin.ts``), so this is a
-        best-effort database write, never a permission verdict. ``resolve_close``
-        (``dispatch_lifecycle``) does the actual work: it is keyed on
-        ``event.session_id`` because that IS the harness_agent_id a dispatched
-        child was bound under (``bind_harness_child_session`` stamps the
-        CHILD's own OpenCode session id at ``message.part.updated`` time,
-        before any tool call ever runs) -- so a child with ZERO tool calls is
-        still found and closed here. The PRIMARY/root session's own
-        session.idle resolves no bound row (never stamped by
-        ``bind_harness_child_session``) and is a harmless no-op.
+        OpenCode does not await these events, so this is a best-effort write,
+        never a permission verdict. The session id is the harness_agent_id
+        ``bind_harness_child_session`` stamped at ``message.part.updated``, so
+        a child with no tool call is still found. A session bound to no row is
+        the main one ending a turn: that heartbeat is what keeps its worktrees
+        and pending approvals live, and what lets a killed OpenCode process,
+        which emits no close event, go stale.
         """
-        from modules.agents.dispatch_lifecycle import resolve_close
+        outcome = self._close_bound_row(event)
+        if outcome.get("status") == "no_row":
+            from modules.session.session_lifecycle import refresh_heartbeat
 
-        outcome = resolve_close(
-            harness_agent_id=event.session_id, session_id=event.session_id,
-        )
+            refresh_heartbeat(event.session_id)
         return HookResponse(output={"contract_valid": True, "closed": outcome})
+
+    def adapt_session_end(self, event: HookEvent) -> HookResponse:
+        """On session.deleted, close the dispatched child's row, or unregister the main session.
+
+        Rows a main session dispatched are bound to their children's session
+        ids, so unregistering it leaves them for their own close events.
+        """
+        outcome = self._close_bound_row(event)
+        if outcome.get("status") == "no_row":
+            from modules.session.session_lifecycle import end_session
+
+            end_session(event.session_id)
+        return HookResponse(output={"contract_valid": True, "closed": outcome})
+
+    @staticmethod
+    def _close_bound_row(event: HookEvent) -> dict:
+        from modules.agents import dispatch_lifecycle
+
+        return dispatch_lifecycle.resolve_close(
+            harness_agent_id=event.session_id, session_id=event.session_id,
+        ) or {"status": "error"}
 
     def adapt_pre_compact(self, event: HookEvent) -> HookResponse:
         """Reinject the claimed dispatch row's kernel before OpenCode's real

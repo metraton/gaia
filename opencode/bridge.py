@@ -90,12 +90,6 @@ def _attest(raw: dict[str, object]) -> dict[str, object]:
 # same schema-valid empty acknowledgment without adapter dispatch. Routed
 # here rather than denied, so a genuinely open lifecycle point is not
 # misreported as this bridge's "Unsupported" placeholder.
-#
-# PostToolUseFailure (session.error) and SessionEnd (session.deleted) used
-# to be acknowledged here too, alongside PostCompact -- until plan 65 T11
-# gave them a real close to perform (see the "Stop"/"PostToolUseFailure"/
-# "SessionEnd" branch below): a dispatched child's row must be promoted or
-# cut on ANY of idle/error/deleted, not only idle.
 _ACKNOWLEDGED_EVENT_KINDS = {"PostCompact"}
 
 
@@ -273,12 +267,10 @@ def _handle(raw: dict[str, object], *, shell_env_transport: bool) -> dict[str, o
             response = adapter.adapt_pre_tool_use(event)
     elif kind == "PostToolUse":
         response = adapter.adapt_post_tool_use(event)
-    elif kind in ("Stop", "PostToolUseFailure", "SessionEnd"):
-        # session.idle/error/deleted (plan 65, T11): the ONE real close for a
-        # dispatched child's row, regardless of which of the three signals
-        # arrives first -- resolve_close (dispatch_lifecycle) is idempotent,
-        # so a later signal for the same session is a harmless no-op.
+    elif kind == "SubagentStop":
         response = adapter.adapt_subagent_stop(event)
+    elif kind == "SessionEnd":
+        response = adapter.adapt_session_end(event)
     elif kind == "SessionStart":
         response = adapter.format_bootstrap_response(adapter.adapt_session_start(event.payload))
     elif kind == "SubagentStart":

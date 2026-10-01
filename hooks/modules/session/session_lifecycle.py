@@ -35,7 +35,7 @@ class StartOutcome:
 
 def start_session(start: SessionStart) -> StartOutcome:
     """Run the start maintenance, then build the birth block or, for ``compact``, the refresh."""
-    _run_maintenance(start)
+    run_start_maintenance(start)
 
     from modules.core.plugin_setup import mark_data_home, run_first_time_setup
 
@@ -59,11 +59,13 @@ def start_session(start: SessionStart) -> StartOutcome:
     )
 
 
-def _run_maintenance(start: SessionStart) -> None:
+def run_start_maintenance(start: SessionStart) -> None:
     """Registry, approval, backup, draft and worktree upkeep; each step fails alone.
 
-    The worktree sweep runs after registration so this session's fresh
-    heartbeat already protects the worktrees it owns.
+    Safe to repeat for the same session: registration replaces its entry and
+    every other step acts only on what is stale. The worktree sweep runs after
+    registration so this session's fresh heartbeat already protects the
+    worktrees it owns.
     """
     from modules.session.session_registry import SessionRegistryError, register_session
 
@@ -194,12 +196,17 @@ def start_context(source: str, alarms: list) -> str:
 
 def prompt_context(session_id: str, workspace: Optional[str]) -> str:
     """Refresh the session heartbeat, then return the context a user prompt carries."""
+    refresh_heartbeat(session_id)
+    return notifications_counter(workspace)
+
+
+def refresh_heartbeat(session_id: str) -> None:
+    """Mark a registered session as still alive; an unregistered one stays absent."""
     try:
         from modules.session.session_registry import touch_session
         touch_session(session_id)
     except Exception as exc:
         logger.debug("touch_session failed (non-fatal): %s", exc)
-    return notifications_counter(workspace)
 
 
 def notifications_counter(workspace: Optional[str]) -> str:
