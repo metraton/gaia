@@ -567,14 +567,17 @@ def _gaia_registrations(project_root: Path, channels: dict, shipped: dict) -> "l
 
 def _hook_fix(project_root: Path, channels: dict) -> str:
     """The command that leaves exactly one channel registering Gaia's hooks."""
+    from cli import _manifest  # noqa: PLC0415
+
     ws = shlex.quote(str(project_root))
+    uninstall_npm = _manifest.uninstall_command(project_root, "npm")
     if channels["plugin"] and channels["npm"]:
         return (
             f"Keep one channel: `claude plugin disable gaia` keeps npm; "
-            f"`gaia uninstall --workspace {ws}` then `npm uninstall @jaguilar87/gaia` keeps the plugin"
+            f"`{uninstall_npm}` then `npm uninstall @jaguilar87/gaia` keeps the plugin"
         )
     if channels["plugin"]:
-        return f"`gaia uninstall --workspace {ws}` (the plugin registers the hooks itself)"
+        return f"`{uninstall_npm}` (the plugin registers the hooks itself)"
     if channels["npm"]:
         return f"`gaia install --channel npm --workspace {ws}`"
     return (
@@ -810,9 +813,19 @@ def check_workspace_initialized(project_root: Path) -> dict:
 
 @register_check("Install channel", order=36)
 def check_install_channel(project_root: Path) -> dict:
-    """Name the channels active for this workspace: plugin, npm local, or both."""
+    """Name the channels active for this workspace: plugin, npm local, opencode, or a pair.
+
+    The package copy under node_modules is npm's unless the manifest records
+    package channels without npm: then it is the copy OpenCode runs, which
+    registers no Claude Code hooks and so sits beside the plugin.
+    """
     name = "Install channel"
     channels = _active_channels(project_root)
+    from cli import _manifest  # noqa: PLC0415
+
+    recorded = (_manifest.load(project_root) or {}).get("package_channels", [])
+    if recorded and "npm" not in recorded:
+        channels["npm"] = None
     active = []
     if channels["plugin"]:
         where = (
@@ -823,6 +836,8 @@ def check_install_channel(project_root: Path) -> dict:
     if channels["npm"]:
         pkg = _read_json(channels["npm"] / "package.json") or {}
         active.append(f"npm local {pkg.get('version', '?')} ({channels['npm']})")
+    if "opencode" in recorded:
+        active.append(f"opencode ({project_root / 'opencode.json'})")
     if not active:
         # A global npm package or a checkout wires a workspace through its
         # settings alone, with no plugin and no local copy to detect.
@@ -835,10 +850,10 @@ def check_install_channel(project_root: Path) -> dict:
         if installed:
             detail += f" ({', '.join(installed)} installed but not enabled)"
         return _result(name, "warning", detail, _hook_fix(project_root, channels))
-    if len(active) > 1:
+    if channels["plugin"] and channels["npm"]:
         return _result(name, "info",
                        f"{' and '.join(active)} -- both active; Hook registrations shows whether hooks run twice")
-    return _result(name, "pass", active[0])
+    return _result(name, "pass", " and ".join(active))
 
 
 @register_check("Plugin registered", order=40)

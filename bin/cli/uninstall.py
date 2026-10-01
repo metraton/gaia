@@ -40,13 +40,16 @@ Modes:
   --snapshot-dir DIR  Directory for the snapshot (default: the shared
                       gaia.paths.snapshot_dir())
   --workspace PATH    Restrict cleanup to PATH instead of auto-detected root
+  --channel NAME      Revert only npm, plugin or opencode; the other recorded
+                      channels keep their entries and the package they run from
   --dry-run           Print what would happen without modifying anything
   --quiet             Suppress non-error output
   --json              Machine-readable output
 
-Exit code is always 0 on the cleanup path so that `npm uninstall` continues
-even if cleanup misses a file. Argparse errors and unexpected exceptions
-still surface a non-zero exit.
+Exit code is 0 on the cleanup path so that `npm uninstall` continues even if
+cleanup misses a file. A --channel the workspace does not record exits 1
+before anything is written; argparse errors and unexpected exceptions still
+surface a non-zero exit.
 """
 
 from __future__ import annotations
@@ -160,6 +163,15 @@ def register(subparsers):
         help="Workspace path to clean (default: auto-detect via .claude/)",
     )
     p.add_argument(
+        "--channel",
+        choices=("npm", "plugin", "opencode"),
+        default=None,
+        help=(
+            "Take back only what this channel wrote and keep the other channels "
+            "recorded in the workspace (default: every channel)"
+        ),
+    )
+    p.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
@@ -208,7 +220,7 @@ def register(subparsers):
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
-    """Execute the uninstall subcommand. Always returns 0 from the cleanup path.
+    """Execute the uninstall subcommand: 0 from the cleanup path, 1 for a --channel the workspace does not record.
 
     The DB at ``db_path`` is NEVER deleted by this function -- no flag,
     combination of flags, or branch below removes it. The default gzip
@@ -240,8 +252,12 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
     try:
         result["manifest"] = _manifest.uninstall(
-            workspace, dry_run=dry_run, package_manager_owns_package=preuninstall
+            workspace, dry_run=dry_run, package_manager_owns_package=preuninstall,
+            channel=getattr(args, "channel", None),
         )
+    except _manifest.ChannelNotRecorded as exc:
+        print(f"gaia uninstall: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:  # noqa: BLE001
         result["cleanup_error"] = str(exc)
 
@@ -279,8 +295,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     elif not quiet:
         _print_human(result, preuninstall=preuninstall, dry_run=dry_run)
 
-    # Always exit 0 on the cleanup path so npm uninstall continues even on
-    # partial failures. Argparse errors still produce non-zero via parse_args.
+    # The cleanup path exits 0 so npm uninstall continues even on partial failures.
     return 0
 
 
@@ -302,6 +317,8 @@ def _print_human(result: dict, *, preuninstall: bool, dry_run: bool) -> None:
         print("  Nothing to revert: no Gaia install recorded in this workspace.")
     elif source == "adopted":
         print("  No manifest: reverting the footprint of an install that predates it.")
+    if manifest.get("remaining"):
+        print(f"  Channel {manifest['channel']} only; {', '.join(manifest['remaining'])} stays recorded.")
     verb = "Would restore" if dry_run else "Restored"
     for rel in manifest.get("reverted", []):
         print(f"  {verb}: {rel}")

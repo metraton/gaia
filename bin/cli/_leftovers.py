@@ -43,12 +43,14 @@ def _kept(path: Path, reason: str) -> dict:
     return {"path": str(path), "reason": reason}
 
 
-def plan(workspace: Path, *, package_manager_owns_package: bool) -> tuple[list[dict], list[dict]]:
+def plan(workspace: Path, *, package_manager_owns_package: bool,
+         runtime: bool = True) -> tuple[list[dict], list[dict]]:
     """``(artifacts, kept)``: what uninstall removes or edits, and what it leaves with the reason.
 
     *package_manager_owns_package* is the `npm uninstall` run: npm is about to
     remove its own package entry, dependency and lockfile lines, so they are
-    not touched here.
+    not touched here. Without *runtime* the `gaia dev` caches and hook state
+    are left out, for a channel uninstall whose sibling channel still uses them.
     """
     artifacts: list[dict] = []
     kept: list[dict] = []
@@ -56,6 +58,8 @@ def plan(workspace: Path, *, package_manager_owns_package: bool) -> tuple[list[d
         for found in (_package_entry(workspace), _dependency_line(workspace), _lockfiles(workspace)):
             artifacts += found[0]
             kept += found[1]
+    if not runtime:
+        return artifacts, kept
     artifacts += _dev_caches(workspace)
     hook_scratch, logs = _hook_runtime(workspace)
     return artifacts + hook_scratch, kept + logs

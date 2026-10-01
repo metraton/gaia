@@ -14,7 +14,7 @@ Gaia ships as a **single, unified plugin** named `gaia` — one artifact carryin
 
 Gaia reaches a workspace through **three channels**, the same three [README.md](./README.md) lists: the npm/pnpm package wired into Claude Code with `gaia install` (Surface 1), the Claude Code plugin from `gaia-marketplace` (Surface 2), and OpenCode on the same package (Surface 3). Pick the one that matches the host you run.
 
-`gaia install` and `gaia dev` take the channel explicitly with `--channel`; there is no default and no `all`, and run without one they fail listing the channels. The package channel (`npm`) and the plugin exclude each other in one workspace, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package). OpenCode joins either.
+`gaia install` and `gaia dev` take the channel explicitly with `--channel`; there is no default and no `all`, and run without one they fail listing the channels. The package channel (`npm`) and the plugin exclude each other in one workspace, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package, with `--channel npm` when OpenCode is recorded beside it). OpenCode joins either, and `gaia uninstall --channel opencode` removes it on its own.
 
 ### Surface 1: npm / pnpm
 
@@ -164,7 +164,7 @@ gaia install --channel {npm,opencode} [--path] [--workspace W]
 gaia update                      # re-wires the recorded channels after a package upgrade
 gaia scan --workspace NAME [--dry-run] [root]
                                  # re-index the git repositories under root
-gaia uninstall [--workspace W] [--dry-run] [--no-backup]
+gaia uninstall [--channel npm|plugin|opencode] [--workspace W] [--dry-run] [--no-backup]
                                  # revert what install wrote (see Uninstallation)
 gaia doctor [--workspace PATH] [--fix]
 ```
@@ -388,8 +388,11 @@ Run `gaia uninstall` **before** removing the package, while the CLI still exists
 ```bash
 npx gaia uninstall --dry-run          # shows what reverts, changes nothing
 npx gaia uninstall                    # OpenCode-only folder: add --workspace <folder>
+npx gaia uninstall --channel opencode # beside the plugin: takes back OpenCode only
 npm uninstall @jaguilar87/gaia        # or: pnpm remove @jaguilar87/gaia
 ```
+
+Without `--channel`, `gaia uninstall` takes back every channel the manifest records. `--channel npm|plugin|opencode` takes back one and leaves the others recorded: OpenCode owns `opencode.json` and `.opencode/`, npm or the plugin the rest of the manifest, and the package copy under `node_modules` stays while a remaining channel runs from it. A channel the manifest does not record fails, naming the recorded ones, and changes nothing.
 
 `gaia uninstall` reverts `.claude/gaia-manifest.json`: every file, link and settings key `gaia install` wrote returns to its prior state (`opencode.json` and the `--path` launcher included), files Gaia did not create are never removed, and a gzip snapshot of the database goes to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. Do not delete `.claude/` by hand: it also holds your own settings and anything else you or other tools put there.
 
@@ -407,6 +410,8 @@ claude plugin marketplace remove gaia-marketplace   # optional
 ```
 
 The plugin's sessions record what they write into the workspace in `.claude/gaia-manifest.json` -- the permissions and `attribution` merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts them, restores the user entries the merge replaced, and keeps what you added since. A plugin workspace from before that record is recognized by Gaia's permissions and attribution.
+
+With OpenCode installed in the same workspace, `gaia uninstall` without a channel removes OpenCode too. Use `gaia uninstall --channel plugin` to take back only the Claude Code side and keep OpenCode, or `--channel opencode` to remove OpenCode and keep the plugin. npm and the plugin share `.claude/`, so uninstalling either takes back every Claude Code entry in the manifest; a plugin still enabled re-records its own writes on its next session.
 
 ---
 

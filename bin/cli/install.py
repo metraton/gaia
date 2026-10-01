@@ -188,7 +188,7 @@ def channel_conflict(workspace: Path, channel: str) -> str | None:
     if channel == "plugin" and workspace_registers_gaia_hooks(workspace):
         return (f"the npm channel is present in {workspace}: Gaia's hooks are registered in "
                 ".claude/settings.local.json, and the plugin would run them a second time.\n"
-                f"Remove it first: gaia uninstall --workspace {workspace}\n{beside}")
+                f"Remove it first: {_manifest.uninstall_command(workspace, 'npm')}\n{beside}")
     return None
 
 
@@ -1484,7 +1484,9 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
     manifest = _manifest.record(
         workspace,
         baseline,
-        channel=_install_helpers.resolve_hook_channel(workspace, npm_copy=True) or "npm",
+        channel=_install_helpers.resolve_hook_channel(
+            workspace, npm_copy="npm" in {*recorded_channels(workspace), *wired}
+        ) or _manifest.OPENCODE_CHANNEL,
         version=_install_helpers._read_plugin_version(_PACKAGE_ROOT) or "unknown",
         extra=outside,
         env=env_prior,

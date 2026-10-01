@@ -22,6 +22,12 @@ reinstall, or a later session, exact:
     everything else counts as the user's;
   * neither -> the baseline is the current state.
 
+Channels share the manifest: ``channel`` is the Claude Code channel that owns
+hook registration (plugin or npm, else opencode), ``package_channels`` the ones
+`gaia install` wired. Which channel wrote an entry follows from its path
+(``entry_channel``), so `gaia uninstall --channel` takes back one channel's
+entries and leaves the others' recorded.
+
 An entry records a path (workspace-relative, or absolute for the opt-in writes
 outside the workspace) with the state Gaia found and the state it left. Files
 keep their prior bytes, so an untouched file is restored byte for byte; a JSON
@@ -37,6 +43,7 @@ import copy
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -46,10 +53,20 @@ from typing import Any, Iterable
 MANIFEST_NAME = "gaia-manifest.json"
 MANIFEST_VERSION = 1
 
+OPENCODE_CHANNEL = "opencode"
+CLAUDE_CODE_CHANNELS = ("npm", "plugin")
+_PACKAGE_COPY_CHANNELS = ("npm", OPENCODE_CHANNEL)
+
 # Workspace-root entries a Gaia channel may write (OpenCode config; CLAUDE.md
 # and AGENTS.md so an adopted legacy footprint is visible, never claimed).
-_ROOT_CANDIDATES = ("opencode.json", ".opencode", "AGENTS.md", "CLAUDE.md")
+_OPENCODE_ROOTS = ("opencode.json", ".opencode")
+_ROOT_CANDIDATES = (*_OPENCODE_ROOTS, "AGENTS.md", "CLAUDE.md")
 _OPENCODE_SKILLS = Path(".opencode") / "skills"
+
+
+class ChannelNotRecorded(ValueError):
+    """`gaia uninstall --channel` named a channel the workspace's manifest does not record."""
+
 
 # Names Gaia links (or copies, where symlinks are unavailable) into .claude/,
 # current and retired; an entry under one of these names found as a link in an
@@ -391,6 +408,62 @@ def is_unmanifested_install(workspace: Path) -> bool:
     """True when Gaia is wired into *workspace* but no manifest records it."""
     if load(workspace) is not None:
         return False
+    return _claude_footprint(workspace) or bool(_strip_opencode(workspace, capture(workspace)))
+
+
+def _gaia_opencode_root(item: object) -> str | None:
+    """The Gaia package root an opencode.json ``plugin`` item loads, or None for a foreign plugin."""
+    if not isinstance(item, str):
+        return None
+    path = Path(item.replace("\\", "/"))
+    if path.parts[-2:] != ("opencode", "plugin.ts"):
+        return None
+    package = _json_or_none(_read_bytes(path.parents[1] / "package.json"))
+    named = isinstance(package, dict) and package.get("name") == "@jaguilar87/gaia"
+    return str(path.parents[1]) if named or path.as_posix().endswith("/@jaguilar87/gaia/opencode/plugin.ts") else None
+
+
+def _strip_opencode(workspace: Path, current: dict[str, dict]) -> dict[str, dict]:
+    """The OpenCode entries of *current* that carry Gaia's footprint, each as it was before Gaia.
+
+    An OpenCode-only folder has no ``.claude/`` to hold a manifest, so its
+    install is adopted by what ``configure_opencode_plugin`` writes: Gaia's
+    plugin item, the agents whose prompt is a file of that package,
+    ``default_agent``, and the skill links into the package; the user's own
+    plugins, agents and keys stay.
+    """
+    from cli import _install_helpers as helpers  # noqa: PLC0415
+
+    config = _json_or_none(current.get("opencode.json", {}).get("bytes", b""))
+    plugins = config.get("plugin") if isinstance(config, dict) else None
+    roots = {root for root in map(_gaia_opencode_root, plugins or []) if root}
+    if not roots:
+        return {}
+    doc = {**config, "plugin": [item for item in plugins if not _gaia_opencode_root(item)]}
+    agents = doc.get("agent")
+    if isinstance(agents, dict):
+        doc["agent"] = {
+            name: agent for name, agent in agents.items()
+            if not (isinstance(agent, dict) and any(
+                str(agent.get("prompt", "")).startswith(f"{{file:{root}/") for root in roots))
+        }
+    if doc.get("default_agent") == "gaia-orchestrator":
+        del doc["default_agent"]
+    doc = {key: value for key, value in doc.items() if value not in ([], {})}
+    stripped = {"opencode.json": {"type": "file", "bytes": _dump_json(doc)} if doc else {"type": "absent"}}
+    skills = _OPENCODE_SKILLS.as_posix()
+    for key in current:
+        if key.startswith(f"{skills}/") and any(
+            helpers._is_gaia_opencode_skill(_abs(workspace, key), Path(root) / "skills") for root in roots
+        ):
+            stripped[key] = {"type": "absent"}
+    if len(stripped) > 1:
+        stripped[skills] = stripped[".opencode"] = {"type": "absent"}
+    return stripped
+
+
+def _claude_footprint(workspace: Path) -> bool:
+    """True when ``.claude/`` holds Gaia's links, markers, registry entry or settings."""
     claude_dir = workspace / ".claude"
     if any((claude_dir / name).is_symlink() for name in _GAIA_LINK_NAMES):
         return True
@@ -470,6 +543,7 @@ def adopted_baseline(workspace: Path, current: dict[str, dict]) -> dict[str, dic
             baseline[local_key] = (
                 {"type": "absent"} if not stripped else {"type": "file", "bytes": _dump_json(stripped)}
             )
+    baseline.update(_strip_opencode(workspace, current))
     return baseline
 
 
@@ -569,13 +643,84 @@ def record(
         "entries": diff(baseline, after),
         "env": env_entries,
     }
-    path = manifest_path(workspace)
-    if path.parent.is_dir():
-        path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    _write(workspace, manifest)
     return manifest
 
 
-def uninstall(workspace: Path, *, dry_run: bool = False, package_manager_owns_package: bool = False) -> dict:
+def _write(workspace: Path, manifest: dict) -> None:
+    path = manifest_path(workspace)
+    if path.parent.is_dir():
+        path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def recorded_channels(manifest: dict | None) -> list[str]:
+    """Every channel *manifest* records: the package channels and the Claude Code channel."""
+    if not manifest:
+        return []
+    claude = [manifest.get("channel")] if manifest.get("channel") in CLAUDE_CODE_CHANNELS else []
+    return sorted({*manifest.get("package_channels", ()), *claude})
+
+
+def uninstall_command(workspace: Path, channel: str) -> str:
+    """The `gaia uninstall` that takes back *channel*, scoped with --channel while another channel is recorded."""
+    recorded = recorded_channels(load(workspace))
+    scope = f" --channel {channel}" if channel in recorded and len(recorded) > 1 else ""
+    return f"gaia uninstall{scope} --workspace {shlex.quote(str(workspace))}"
+
+
+def entry_channel(manifest: dict, key: str) -> str | None:
+    """The channel that wrote entry *key*; None for what every channel shares.
+
+    Shared are the manifest's own directory and the launcher outside the
+    workspace, which stay until the last channel goes.
+    """
+    if key == ".claude" or Path(key).is_absolute():
+        return None
+    return OPENCODE_CHANNEL if Path(key).parts[0] in _OPENCODE_ROOTS else manifest.get("channel")
+
+
+def _uninstall_channel(workspace: Path, manifest: dict, channel: str, remaining: list[str], *,
+                       dry_run: bool, package_manager_owns_package: bool) -> dict:
+    """Take back *channel*'s entries and rewrite the manifest with what the *remaining* channels wrote.
+
+    npm and the plugin both write ``.claude/`` and their entries cannot be told
+    apart, so either one takes back every Claude Code entry; a plugin still
+    enabled re-records its own on the next session.
+    Hook scratch state and `gaia dev` caches serve whichever channel remains,
+    so they stay; the package copy goes only when no remaining channel runs
+    from it.
+    """
+    from cli import _leftovers  # noqa: PLC0415 -- _leftovers imports this module
+
+    bucket = set(CLAUDE_CODE_CHANNELS) if channel in CLAUDE_CODE_CHANNELS else {channel}
+    taken = [e for e in manifest["entries"] if entry_channel(manifest, e["path"]) in bucket]
+    current = capture(workspace, external_paths(manifest))
+    target = revert_states(current, taken)
+    kept = unreverted(workspace, current, target, taken)
+    artifacts: list[dict] = []
+    if not set(remaining) & set(_PACKAGE_COPY_CHANNELS):
+        artifacts, leftover_kept = _leftovers.plan(
+            workspace, package_manager_owns_package=package_manager_owns_package, runtime=False
+        )
+        kept += leftover_kept
+    if not dry_run:
+        artifacts, failed = _leftovers.apply(artifacts)
+        kept += failed
+    gone = [Path(a["path"]) for a in artifacts if a["action"] == "remove"]
+    reverted = sorted(apply_states(workspace, current, target, dry_run=dry_run, gone=gone))
+    if not dry_run:
+        _write(workspace, {
+            **manifest,
+            "channel": OPENCODE_CHANNEL if channel == manifest.get("channel") else manifest.get("channel"),
+            "package_channels": [c for c in manifest.get("package_channels", []) if c != channel],
+            "entries": [e for e in manifest["entries"] if e not in taken],
+        })
+    return {"source": "manifest", "channel": channel, "remaining": remaining, "reverted": reverted,
+            "env": [], "artifacts": artifacts, "kept": kept}
+
+
+def uninstall(workspace: Path, *, dry_run: bool = False, package_manager_owns_package: bool = False,
+              channel: str | None = None) -> dict:
     """Revert *workspace* to its pre-Gaia state as its manifest (or adoption) records it.
 
     Returns ``{"source", "reverted", "env", "artifacts", "kept"}``: whether the
@@ -584,11 +729,28 @@ def uninstall(workspace: Path, *, dry_run: bool = False, package_manager_owns_pa
     outside the manifest removed or edited (``_leftovers``), and what stays
     with the reason. A dry run returns what the real run returns.
     *package_manager_owns_package* leaves the package entry, dependency and
-    lockfiles to the `npm uninstall` that is running.
+    lockfiles to the `npm uninstall` that is running. A *channel* takes back
+    only that channel's entries while another channel stays recorded (the
+    result then also names ``channel`` and ``remaining``), and raises
+    ``ChannelNotRecorded`` when the manifest does not record it.
     """
     from cli import _leftovers  # noqa: PLC0415 -- _leftovers imports this module
 
     manifest = load(workspace)
+    if channel is not None:
+        recorded = recorded_channels(manifest)
+        if (manifest is None and channel == OPENCODE_CHANNEL and not _claude_footprint(workspace)
+                and _strip_opencode(workspace, capture(workspace))):
+            recorded = [OPENCODE_CHANNEL]
+        if channel not in recorded:
+            raise ChannelNotRecorded(
+                f"the {channel} channel is not recorded in {manifest_path(workspace)}; "
+                f"recorded: {', '.join(recorded) or 'none'}"
+            )
+        remaining = [c for c in recorded if c != channel]
+        if remaining:
+            return _uninstall_channel(workspace, manifest, channel, remaining, dry_run=dry_run,
+                                      package_manager_owns_package=package_manager_owns_package)
     if manifest is None and not is_unmanifested_install(workspace):
         return {"source": "none", "reverted": [], "env": [], "artifacts": [], "kept": []}
     current = capture(workspace, external_paths(manifest))
