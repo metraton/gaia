@@ -47,6 +47,11 @@ def _prompt_counter_module():
     return module
 
 
+def _prompt_notice() -> str:
+    hook = _prompt_counter_module()
+    return hook.prompt_context("test-session", hook._current_workspace())
+
+
 @pytest.fixture
 def gaia_env(tmp_path, monkeypatch):
     previous_tz = os.environ.get("TZ")
@@ -129,7 +134,7 @@ def test_a_dated_reminder_is_due_once_from_its_local_hour_and_never_after_ack(ga
     reminder = add_json(
         "--kind", "reminder", "--at", "2026-10-01T16:00", "--headline", "review-x-7f3"
     )["id"]
-    counter = _prompt_counter_module()._build_notifications_counter
+    counter = _prompt_notice
 
     gaia_env.at(2026, 10, 1, 15, 59)
     assert reminder not in due_ids("ws")
@@ -215,7 +220,7 @@ def test_a_reminder_created_without_workspace_is_seen_from_every_workspace(gaia_
 
     monkeypatch.chdir(gaia_env.tmp / "ws")
     assert reader.count_unread_notifications(workspace="ws") == 1
-    assert _prompt_counter_module()._build_notifications_counter()
+    assert _prompt_notice()
 
     rc, out, err = gaia_notifications("list", "--unread", "--workspace", "aaxis", "--json")
     assert rc == 0, out + err
@@ -237,7 +242,7 @@ def test_reading_what_is_due_leaves_the_database_bytes_untouched(gaia_env):
 
     before = snapshot()
     assert birth_block_line("ws")
-    assert _prompt_counter_module()._build_notifications_counter()
+    assert _prompt_notice()
     rc, out, err = gaia_notifications("list", "--json")
     assert rc == 0, out + err
     rc, out, err = gaia_notifications("list", "--upcoming", "--json")

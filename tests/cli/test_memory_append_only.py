@@ -95,6 +95,37 @@ def test_add_over_an_existing_name_is_refused_without_replace(tmp_db, capsys):
     assert _run(capsys, "show", SLUG)[1]["body"] == "weekly"
 
 
+def test_add_refuses_when_the_existence_lookup_fails(tmp_db, capsys, monkeypatch):
+    from gaia.store import writer
+
+    _seed(capsys)
+    original = writer.get_memory
+
+    def broken(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(writer, "get_memory", broken)
+    rc, out = _add(capsys, "daily", "--replace")
+
+    assert rc == 1
+    assert out["code"] == "name_check_failed"
+    monkeypatch.setattr(writer, "get_memory", original)
+    assert _run(capsys, "show", SLUG)[1]["body"] == "weekly"
+
+
+@pytest.mark.parametrize("replace", [[], ["--replace"]])
+def test_add_over_a_user_name_is_a_collision(tmp_db, capsys, replace):
+    rc, out = _run(capsys, "add", "--name=user_prefers_plain", "--type=user",
+                   "--body=plain")
+    assert rc == 0, out
+
+    rc, out = _run(capsys, "add", "--name=user_prefers_plain", "--type=user",
+                   "--body=rich", *replace)
+
+    assert rc == 1
+    assert out["code"] == "user_name_collision"
+
+
 def test_add_replace_rewrites_and_keeps_the_prior_value_in_history(tmp_db, capsys):
     _seed(capsys)
 

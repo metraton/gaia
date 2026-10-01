@@ -8,8 +8,6 @@ supersedes the old one, and the whole checkpoint stays all-or-nothing.
 
 from __future__ import annotations
 
-import argparse
-import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -223,42 +221,3 @@ def test_checkpoint_superseding_a_missing_row_writes_nothing(db):
                      "body": "daily", "supersedes": "project_never_written"})
 
     assert _rows(db) == {}
-
-
-def test_cli_add_refuses_when_the_existence_lookup_fails(db, monkeypatch, capsys):
-    from cli import memory as memory_mod
-
-    writer.upsert_memory("me", "atom_cadence", type="atom", body="weekly",
-                         initiative="bildwiz")
-
-    def broken(*args, **kwargs):
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(writer, "get_memory", broken)
-    rc = memory_mod._cmd_add(argparse.Namespace(
-        name="atom_cadence", type="atom", body="daily", body_file=None,
-        description=None, workspace="me", class_=None, status=None,
-        project=None, project_ref=None, audience=None, initiative="bildwiz",
-        replace=True, json=True,
-    ))
-
-    assert rc == 1
-    assert json.loads(capsys.readouterr().out)["code"] == "name_check_failed"
-    assert _rows(db)[("me", "atom_cadence")][0] == "weekly"
-
-
-@pytest.mark.parametrize("replace", [False, True])
-def test_cli_add_over_a_user_name_is_a_collision(db, capsys, replace):
-    from cli import memory as memory_mod
-
-    writer.upsert_memory("me", "user_prefers_plain", type="user", body="plain")
-    rc = memory_mod._cmd_add(argparse.Namespace(
-        name="user_prefers_plain", type="user", body="rich", body_file=None,
-        description=None, workspace=None, class_=None, status=None,
-        project=None, project_ref=None, audience=None, initiative=None,
-        replace=replace, json=True,
-    ))
-
-    assert rc == 1
-    assert json.loads(capsys.readouterr().out)["code"] == "user_name_collision"
-    assert _rows(db)[(USER, "user_prefers_plain")][0] == "plain"

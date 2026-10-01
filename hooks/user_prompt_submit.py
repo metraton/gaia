@@ -15,7 +15,7 @@ if _pkg_root not in sys.path:
 
 from modules.core.logging_setup import configure_hook_logging
 from modules.core.stdin import has_stdin_data
-from modules.session.session_lifecycle import notifications_counter, prompt_context
+from modules.session.session_lifecycle import prompt_context
 
 # Configure logging -- file handler only when GAIA_DEBUG is set; no
 # hooks-*.log is written by default (see modules.core.logging_setup).
@@ -51,11 +51,6 @@ def _current_workspace() -> Optional[str]:
         return _project_current() or None
     except Exception:
         return None
-
-
-def _build_notifications_counter() -> str:
-    """Return the due-notifications line for the current workspace, or ""."""
-    return notifications_counter(_current_workspace())
 
 
 if __name__ == "__main__":

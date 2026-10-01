@@ -1,12 +1,10 @@
 """Token usage from Claude Code transcripts: ingestion into ``token_usage`` and
 per-plan / per-session reports over it.
 
-A transcript line of type ``assistant`` carries ``message.id`` and
-``message.usage``. One API message spans several lines (one per content block,
-each repeating the usage, the last one carrying the final ``output_tokens``),
-so rows are keyed by ``(session_id, message_id)`` and each counter keeps its
-maximum. That makes ingestion idempotent: re-reading a transcript, or a
-resumed subagent's transcript that grew, never adds a message twice.
+Each ``assistant`` line's ``message.usage`` folds into the ``token_usage`` row
+of its ``(session_id, message_id)`` keeping each counter's maximum, since the
+last content-block line of a message carries its final ``output_tokens``. Why
+the table is keyed that way is stated once, on ``token_usage`` in schema.sql.
 
 Layout read under a projects directory (``~/.claude/projects`` by default)::
 

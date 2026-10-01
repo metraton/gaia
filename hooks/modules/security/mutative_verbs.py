@@ -464,13 +464,8 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # deletion) stays T3 via the per-group deny-verbs guard in
     # COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS below.
     ("gaia", "task"): CATEGORY_READ_ONLY,
-    # `gaia notifications <verb>` (add/list/show/ack/snooze/cancel): reports,
-    # reminders and routines in gaia.db — episodic, reversible, purely local
-    # bookkeeping (add appends a row; ack, snooze and cancel move its due time
-    # or close it). Nothing here starts a process: a row is only ever read as due
-    # the next time Gaia is used. The whole group is T0 like brief/ac/plan/task;
-    # there is no destructive verb (no delete/purge), so the global deny-verb
-    # guard leaves every notifications verb exempt.
+    # `gaia notifications`: reversible local rows that start no process, and the
+    # group has no delete/purge verb, so the deny-verb guard exempts all of it.
     ("gaia", "notifications"): CATEGORY_READ_ONLY,
     # `gaia contract <verb>` (init/set/add/fill/finalize/view/validate): the
     # by-value agent_contract_handoff draft store under
