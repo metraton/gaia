@@ -382,6 +382,7 @@ jobs:
           GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
         run: >-
           python bin/gaia install
+          --channel npm
           --workspace "${{ github.workspace }}/_ws"
           --db-path "${{ github.workspace }}/_gaia/gaia.db"
           --no-path
@@ -426,7 +427,7 @@ jobs:
         env:
           GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
         run: |
-          python bin/gaia install --path --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
+          python bin/gaia install --channel npm --path --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
           if ($LASTEXITCODE -ne 0) { Write-Error "gaia install --path failed with exit $LASTEXITCODE"; exit 1 }
           $base = Join-Path $HOME ".local/bin"
           $cmd  = Join-Path $base "gaia.cmd"
