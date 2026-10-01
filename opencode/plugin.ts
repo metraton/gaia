@@ -372,6 +372,16 @@ const LIFECYCLE_EVENT_TYPES = new Set([
 ])
 
 /**
+ * Whether a lifecycle event still reaches Gaia after the session's open
+ * approval controls are released. Deletion always does: it is the only event
+ * that unregisters a main session, which an open control must not hold
+ * registered until its heartbeat goes stale.
+ */
+export function forwardsPastOpenControls(type: string): boolean {
+  return type === "session.deleted"
+}
+
+/**
  * The bridge event that records a host permission request matching no Gaia
  * verdict. Must stay equal to bridge.py's UNCORRELATED_PERMISSION_EVENT: the
  * two halves of this adapter exchange the name by value, and a rename on one
@@ -2064,7 +2074,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           const controls = [...(controlsBySession.get(sessionID) ?? [])]
           if (controls.length > 0) {
             for (const control of controls) await clearControl(control, "session_ended", event.type)
-            return
+            if (!forwardsPastOpenControls(event.type)) return
           }
           shellIdentities.clearSession(sessionID)
           await send({ event: event.type, sessionID })

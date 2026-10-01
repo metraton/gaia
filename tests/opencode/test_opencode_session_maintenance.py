@@ -7,6 +7,7 @@ private HOME (the session registry) and database. The birth block itself is
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -209,3 +210,19 @@ def test_session_maintenance_deleting_the_main_unregisters_it_and_deleting_a_chi
     assert _send("session.deleted", "ses-main") == {"contract_valid": True, "closed": {"status": "no_row"}}
     assert "ses-main" not in _registry()
     assert _agent_state(db, sibling_row) == "DISPATCHED"
+
+
+def test_session_maintenance_deleting_a_main_session_with_an_open_approval_control_still_unregisters_it(db):
+    plugin = _ROOT / "opencode" / "plugin.ts"
+    probe = (
+        f"import {{ forwardsPastOpenControls }} from {str(plugin)!r};"
+        "console.log(JSON.stringify(['session.deleted', 'session.error', 'session.idle']"
+        ".map(forwardsPastOpenControls)))"
+    )
+    result = subprocess.run(["bun", "-e", probe], cwd=_ROOT, capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "[true,false,false]"
+
+    _send("chat.message", "ses-main")
+    _send("session.deleted", "ses-main")
+    assert "ses-main" not in _registry()
