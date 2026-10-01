@@ -345,6 +345,14 @@ def _recurring_work_line(workspace: Optional[str]) -> str:
     return f"- Recurring work pending: {', '.join(items)} — {', '.join(verbs)}"
 
 
+def _local_zone_line() -> str:
+    """The zone only: a time in the birth block goes stale within one long turn."""
+    from gaia import notifications_time
+
+    zone = notifications_time.zone_name() or "unnamed (the offset is in `gaia now`)"
+    return f"- Local zone: {zone}; read the current time with `gaia now`"
+
+
 def build_environment_section() -> str:
     """Render the Environment section: where this session stands, or "" on failure."""
     try:
@@ -358,6 +366,7 @@ def build_environment_section() -> str:
             lines.append(f"- Gaia: {installation}")
         lines.append(f"- Folder: {folder} (workspace {workspace})" if workspace
                      else f"- Folder: {folder}")
+        lines.append(_local_zone_line())
         # The orchestrator invokes `gaia` by this absolute path: the trust
         # guard rejects the bare token.
         cli_path = _resolve_gaia_cli_path()

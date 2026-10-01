@@ -34,7 +34,8 @@ _CLI_DIR = _SCRIPT_DIR / "cli"
 # Subcommands that must NOT trigger the lazy DB bootstrap:
 #   - install:   bootstraps the DB itself (Step 1); double-bootstrap is wasteful.
 #   - uninstall: tearing Gaia down -- recreating the DB would be perverse.
-_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall", "migrate"})
+#   - now:       reads the clock only, and must work where no Gaia DB exists.
+_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall", "migrate", "now"})
 
 
 def _resolve_db_path():
@@ -251,6 +252,8 @@ lanes -- what runs where, and who owns the rest:
 READ -- changes nothing. The orchestrator runs these itself.
   --version
                  the installed gaia version, as the only argument.
+  now
+                 local time, UTC offset and zone; read it before computing an absolute --at.
   contract       view | list | validate
                  `contract list --state DISPATCHED` names the turns that were
                  dispatched and never came back with a contract -- the way to

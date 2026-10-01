@@ -21,9 +21,16 @@ All three are `gaia notifications` rows; the kind decides how one ends.
 
 One sentence becomes exactly one `gaia notifications add`. The orchestrator runs it itself, with no dispatch.
 
-1. Turn the phrase into an absolute local date and time -- "mañana a las 4" is tomorrow's date at 16:00, "el viernes" the next Friday. A time with no zone is local. If the phrase gives no time, ask; do not invent one. A time already past is refused.
-2. Run the one command. A reminder takes `--at`, a routine takes one of `--cron '<five fields>'` (local time) or `--every <90m|6h|1d|1w>`.
-3. Return what the CLI prints (`Added reminder #7, due Thu 2026-10-01 16:00 CLT (local time)`) so the user confirms the date. If it is wrong, `gaia notifications cancel <id>` and add it again.
+1. Read the time with `gaia now`. Nothing else in the session tells you the current local time, and a guessed clock or zone puts the reminder hours off.
+2. From that output, turn the phrase into an absolute local date and time -- "mañana a las 4" is tomorrow's date at 16:00, "el viernes" the next Friday, "en media hora" the time `gaia now` printed plus 30 minutes. A time with no zone is local. If the phrase gives no time, ask; do not invent one. A time already past is refused, and so is an `--at` without a date.
+3. Run the one command. A reminder takes `--at YYYY-MM-DDTHH:MM`, a routine takes one of `--cron '<five fields>'` (local time) or `--every <90m|6h|1d|1w>`.
+4. Return what the CLI prints (`Added reminder #7, due Thu 2026-10-01 16:00 -03 (local time)` and its `now:` line) so the user confirms the date. If it is wrong, `gaia notifications cancel <id>` and add it again.
+
+"In half an hour", when `gaia now` printed `now: Thu 2026-10-01 11:20 -03:00 (America/Santiago)`:
+
+```
+gaia notifications add --kind reminder --at 2026-10-01T11:50 --headline 'Call back the vendor'
+```
 
 ```
 gaia notifications add --kind reminder --at 2026-10-01T16:00 --headline 'Review the release notes'

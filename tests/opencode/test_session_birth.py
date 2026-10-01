@@ -77,6 +77,19 @@ def test_session_birth_bridge_returns_the_claude_code_block_and_marks_user_rows(
     assert _injection_count(seeded_db) == 1
 
 
+def test_session_birth_carries_the_local_zone_and_gaia_now(seeded_db, monkeypatch):
+    import bridge
+
+    monkeypatch.setenv("TZ", "America/Santiago")
+
+    response = bridge.handle({"event": "chat.message", "sessionID": "ses-zone"})
+
+    zone_lines = [line for line in response["additional_context"].splitlines()
+                  if "America/Santiago" in line]
+    assert len(zone_lines) == 1, response["additional_context"]
+    assert "gaia now" in zone_lines[0]
+
+
 def test_session_birth_plugin_delivers_once_to_the_main_session_and_never_to_a_child():
     result = subprocess.run(
         ["bun", "test", str(_ROOT / "tests/opencode/session_birth.test.ts")],

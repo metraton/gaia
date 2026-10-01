@@ -8,10 +8,13 @@ operating system's own local-time rule.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 _ISO_UTC = "%Y-%m-%dT%H:%M:%SZ"
+_IANA_NAME = re.compile(r"^[A-Za-z_]+(?:/[A-Za-z0-9_+\-]+)*$")
 _DURATION = re.compile(r"^(\d+)([mhdw])$")
 _DURATION_UNITS = {"m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
 _CRON_FIELDS = (
@@ -45,6 +48,55 @@ def format_local(instant: datetime) -> str:
     return instant.astimezone().strftime("%a %Y-%m-%d %H:%M %Z")
 
 
+def _iana_name(text: str) -> str | None:
+    _, marker, tail = text.partition("zoneinfo/")
+    name = tail if marker else text
+    return name if _IANA_NAME.match(name) else None
+
+
+def zone_name() -> str | None:
+    """The IANA name of the machine's local zone, or None when none can be read.
+
+    The stdlib gives only an abbreviation (``-03``), so the name comes from what
+    decides local time: ``TZ`` when set, else ``/etc/timezone``, else the target
+    of ``/etc/localtime``.
+    """
+    tz = os.environ.get("TZ")
+    if tz is not None:
+        return _iana_name(tz.lstrip(":"))
+    try:
+        name = _iana_name(Path("/etc/timezone").read_text(encoding="utf-8").strip())
+    except OSError:
+        name = None
+    if name:
+        return name
+    target = os.path.realpath("/etc/localtime")
+    return _iana_name(target) if "zoneinfo/" in target else None
+
+
+def clock_reading(instant: datetime) -> dict:
+    """The instant as this machine reads it: local time, UTC offset, zone and UTC.
+
+    ``zone`` falls back to the offset when no zone name resolves.
+    """
+    local = instant.astimezone()
+    digits = local.strftime("%z")
+    offset = f"{digits[:3]}:{digits[3:]}"
+    return {
+        "local": local.isoformat(timespec="seconds"),
+        "offset": offset,
+        "zone": zone_name() or offset,
+        "utc": to_iso(instant),
+    }
+
+
+def clock_line(instant: datetime) -> str:
+    """The one line naming the current local time and zone, e.g. ``now: Thu 2026-10-01 11:20 -03:00 (America/Santiago)``."""
+    reading = clock_reading(instant)
+    line = f"now: {instant.astimezone():%a %Y-%m-%d %H:%M} {reading['offset']}"
+    return line if reading["zone"] == reading["offset"] else f"{line} ({reading['zone']})"
+
+
 def pointer_label(row: dict) -> str:
     """What a notification points at, as the user would name it, or "" when nothing."""
     kind, ref, workspace = row.get("pointer_kind"), row.get("pointer_ref"), row.get("pointer_workspace")
@@ -71,10 +123,15 @@ def parse_at(value: str, now: datetime) -> datetime:
     try:
         parsed = datetime.fromisoformat(value.strip())
     except ValueError:
-        raise ValueError(f"cannot read --at {value!r}; use YYYY-MM-DDTHH:MM") from None
+        raise ValueError(
+            f"--at {value!r} needs a date and time, YYYY-MM-DDTHH:MM; {clock_line(now)} "
+            "-- read the time with `gaia now` and give the absolute --at"
+        ) from None
     instant = parsed.astimezone(timezone.utc)
     if instant <= now:
-        raise ValueError(f"--at {value!r} ({format_local(instant)}) is not in the future")
+        raise ValueError(
+            f"--at {value!r} ({format_local(instant)}) is not in the future; {clock_line(now)}"
+        )
     return instant
 
 

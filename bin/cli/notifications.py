@@ -127,6 +127,13 @@ def _due_payload(due_at: str | None) -> dict:
     return {"due_at": due_at, "due_local": clock.format_local(clock.from_iso(due_at))}
 
 
+def _json_row(row: dict, now) -> dict:
+    """A notification row as JSON readers get it: due_local and now_local beside due_at."""
+    from gaia import notifications_time as clock
+
+    return {**row, **_due_payload(row.get("due_at")), "now_local": clock.format_local(now)}
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -138,8 +145,9 @@ def _cmd_add(args) -> int:
     as_json = getattr(args, "json", False)
     if args.kind == "report" and not args.task:
         return _err("a report needs --task NAME", as_json=as_json)
+    now = clock.now_utc()
     try:
-        due_at, recurrence = _schedule(args, clock.now_utc())
+        due_at, recurrence = _schedule(args, now)
         pointer = _pointer(args)
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
@@ -165,15 +173,18 @@ def _cmd_add(args) -> int:
     due = _due_payload(due_at)
     if as_json:
         print(json.dumps({"status": "ok", "id": new_id, "kind": args.kind,
-                          "workspace": workspace, **due}))
+                          "workspace": workspace, **due,
+                          "now_local": clock.format_local(now)}))
     elif due:
         print(f"Added {args.kind} #{new_id}, due {due['due_local']} (local time)")
+        print(clock.clock_line(now))
     else:
         print(f"Added task notification #{new_id} for task '{args.task}'")
     return 0
 
 
 def _cmd_list(args) -> int:
+    from gaia import notifications_time as clock
     from gaia.store.reader import (
         list_unread_notifications, list_upcoming_notifications, notification_scope,
     )
@@ -207,18 +218,18 @@ def _cmd_list(args) -> int:
         finally:
             con.close()
 
+    now = clock.now_utc()
     if as_json:
-        print(json.dumps(rows, indent=2, default=str))
+        print(json.dumps([_json_row(row, now) for row in rows], indent=2, default=str))
         return 0
 
     if not rows:
         print("No notifications.")
-        return 0
-
     for row in rows:
         closed = row.get("closed_at") or (row.get("kind", "report") == "report"
                                           and not row.get("unread"))
         print(_fmt_row_line(row) + (" (seen)" if closed else ""))
+    print(clock.clock_line(now))
     return 0
 
 
@@ -231,11 +242,13 @@ def _cmd_show(args) -> int:
     if row is None:
         return _err(f"no notification with id {args.id}", as_json=as_json)
 
+    now = clock.now_utc()
     if as_json:
-        print(json.dumps(row, indent=2, default=str))
+        print(json.dumps(_json_row(row, now), indent=2, default=str))
         return 0
 
     print(f"# Notification #{row['id']} ({row.get('kind', 'report')})")
+    print(clock.clock_line(now))
     print(f"task_name:  {row['task_name']}")
     print(f"headline:   {row['headline']}")
     print(f"created_at: {row.get('created_at', '?')}")
@@ -305,9 +318,10 @@ def _cmd_snooze(args) -> int:
         return _err(f"no open notification with id {args.id}", as_json=as_json)
     due = _due_payload(res["due_at"])
     if as_json:
-        print(json.dumps({**res, **due}))
+        print(json.dumps({**res, **due, "now_local": clock.format_local(now)}))
     else:
         print(f"Notification #{args.id} snoozed until {due['due_local']}.")
+        print(clock.clock_line(now))
     return 0
 
 
@@ -349,6 +363,7 @@ def register(subparsers) -> None:
         help="Add a report, a reminder or a routine",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
+            "Run `gaia now` first and compute the absolute local --at from its output.\n"
             "A time without a zone is local time. A reminder or routine is global\n"
             "(seen from every workspace) unless --workspace is given.\n\n"
             "Examples:\n"

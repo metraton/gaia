@@ -42,6 +42,7 @@ def test_bounded_reminder_writes_pass_the_guard_at_t0(run_guard, argline):
     "notifications add --task probe --headline X",
     "notifications add --kind reminder --at 2026-10-01T16:00 --headline X --session-id s",
     "notifications add --kind reminder --headline X",
+    "notifications add --kind reminder --headline x --in 30m",
     "notifications snooze 12",
     "notifications snooze --all --for 2h",
     "notifications cancel 12 13",

@@ -484,6 +484,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # _READ_PHRASE_FORBIDDEN_FLAGS below. Prefix matching cannot express that
     # on its own -- see Design decision 4.
     ("doctor",),
+    ("now",),
     ("status",),
     ("defects",),
     ("query",),
@@ -609,6 +610,23 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
 })
 
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
+
+# What the orchestrator runs instead of a denied binary, keyed by basename. A
+# forge line routes to a specialist's evidence and never names a forge verb
+# (D115); the clock line never names a relative reminder form (D118).
+_CLOCK_INSTEAD = "read the time with `gaia now` and compute an absolute --at from it."
+_FORGE_INSTEAD = (
+    "PR/CI state is a specialist's evidence: dispatch the owning specialist "
+    "and read its row with `gaia contract view`."
+)
+_INSTEAD_OF_BINARY: Dict[str, str] = {
+    "date": _CLOCK_INSTEAD,
+    "timedatectl": _CLOCK_INSTEAD,
+    "gh": _FORGE_INSTEAD,
+    "glab": _FORGE_INSTEAD,
+    "bb": _FORGE_INSTEAD,
+}
+_INSTEAD_OF_ANY_BINARY = "the orchestrator's verbs are in the lanes of `gaia --help`."
 
 # Top-level flags admitted only as the SOLE argument. `--version` is a read the
 # phrase tables cannot express: _check_stage strips leading flags, leaving no
@@ -921,6 +939,7 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
 
     binary = args[0]
     if not is_trusted_gaia_binary(binary):
+        instead = _INSTEAD_OF_BINARY.get(os.path.basename(binary), _INSTEAD_OF_ANY_BINARY)
         return False, (
             f"GAIA CLI ONLY: '{binary}' is not the trusted gaia CLI "
             f"(expected an absolute path whose realpath is the declared "
@@ -928,7 +947,7 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
             f"package). A bare command name, a relative path, an env-var "
             f"prefix, or a binary no such package declares all fail this "
             f"identity check by design -- see gaia_cli_only_guard.py for "
-            f"why. Denied outright, not approvable."
+            f"why. Denied outright, not approvable. Instead: {instead}"
         )
 
     rest = args[1:]

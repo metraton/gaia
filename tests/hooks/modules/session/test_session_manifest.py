@@ -123,6 +123,17 @@ class TestBuildEnvironmentSection:
 
         assert "- Recurring work pending: 1 suspended" in build_environment_section().splitlines()
 
+    def test_names_the_local_zone_and_gaia_now_but_never_a_time(self, monkeypatch):
+        monkeypatch.setenv("TZ", "America/Santiago")
+
+        result = build_environment_section()
+
+        zone_lines = [line for line in result.splitlines() if "America/Santiago" in line]
+        assert len(zone_lines) == 1, result
+        assert "gaia now" in zone_lines[0]
+        assert not re.search(r"\d{1,2}:\d{2}", zone_lines[0]), zone_lines[0]
+        assert len(session_manifest.build_session_context()) <= session_manifest.BIRTH_BUDGET
+
     def test_a_failing_recurring_line_does_not_drop_the_section(self, monkeypatch):
         def _boom(_ws):
             raise RuntimeError("simulated scheduler failure")
