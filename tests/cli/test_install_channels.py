@@ -273,11 +273,34 @@ def test_doctor_opencode_background_without_the_variable_names_the_line_without_
     assert _BACKGROUND_EXPORT in result["detail"]
 
 
-@pytest.mark.parametrize("variable", ["OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "OPENCODE_EXPERIMENTAL"])
-def test_doctor_opencode_background_passes_when_opencode_would_enable_it(tmp_path, monkeypatch, variable):
+@pytest.mark.parametrize(("variable", "value"), [
+    ("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "true"),
+    ("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "1"),
+    ("OPENCODE_EXPERIMENTAL", "true"),
+])
+def test_doctor_opencode_background_passes_when_opencode_would_enable_it(
+        tmp_path, monkeypatch, variable, value):
     workspace = _opencode_workspace(tmp_path, monkeypatch)
-    monkeypatch.setenv(variable, "true")
+    monkeypatch.setenv(variable, value)
     assert doctor_mod.check_opencode_background_subagents(workspace)["severity"] == "pass"
+
+
+def test_doctor_opencode_background_specific_false_overrides_the_umbrella(tmp_path, monkeypatch):
+    workspace = _opencode_workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "false")
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL", "true")
+    result = doctor_mod.check_opencode_background_subagents(workspace)
+    assert result["severity"] == "info"
+    assert _BACKGROUND_EXPORT in result["detail"]
+
+
+def test_doctor_opencode_background_names_a_value_opencode_rejects(tmp_path, monkeypatch):
+    workspace = _opencode_workspace(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "TRUE")
+    result = doctor_mod.check_opencode_background_subagents(workspace)
+    assert result["severity"] == "info"
+    assert "OpenCode rejects OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS='TRUE'" in result["detail"]
+    assert _BACKGROUND_EXPORT in result["detail"]
 
 
 def test_doctor_opencode_background_stays_silent_without_the_opencode_channel(tmp_path, monkeypatch):

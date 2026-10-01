@@ -2499,6 +2499,14 @@ def check_opencode_host_liveness() -> dict:
     )
 
 
+# OpenCode parses its flags with effect's Config.boolean, which accepts exactly
+# these spellings; the specific flag, when set, overrides the umbrella.
+_OPENCODE_BOOLEAN = {
+    "true": True, "yes": True, "on": True, "1": True, "y": True,
+    "false": False, "no": False, "off": False, "0": False, "n": False,
+}
+
+
 @register_check("OpenCode background subagents", order=62)
 def check_opencode_background_subagents(project_root: Path) -> dict:
     """Name the shell line OpenCode needs for background subagents when the opencode channel is recorded.
@@ -2513,9 +2521,18 @@ def check_opencode_background_subagents(project_root: Path) -> dict:
     if _manifest.OPENCODE_CHANNEL not in recorded:
         return _result(name, "info", "opencode channel not recorded in this workspace")
 
-    flags = ("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS", "OPENCODE_EXPERIMENTAL")
-    if any(os.environ.get(flag, "").lower() == "true" for flag in flags):
-        return _result(name, "pass", "background subagents enabled in this environment")
+    specific = "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS"
+    flag = specific if specific in os.environ else "OPENCODE_EXPERIMENTAL"
+    raw = os.environ.get(flag)
+    enabled = _OPENCODE_BOOLEAN.get(raw)
+    if raw is not None and enabled is None:
+        return _result(
+            name, "info",
+            f"OpenCode rejects {flag}={raw!r}: it reads only {'|'.join(_OPENCODE_BOOLEAN)}, "
+            f"case-sensitive; use: {_manifest.OPENCODE_BACKGROUND_SUBAGENTS_EXPORT}",
+        )
+    if enabled:
+        return _result(name, "pass", f"background subagents enabled by {flag}={raw}")
     return _result(
         name, "info",
         "OpenCode runs subagents in the foreground only; to enable background subagents add "
