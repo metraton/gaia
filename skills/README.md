@@ -19,7 +19,7 @@ Skills reach an agent through two distinct routes, and understanding both matter
      -> the HOST (Claude Code) reads that frontmatter when it dispatches the subagent
 2. The host preloads each SKILL.md into the subagent's context
      -> the agent holds the process before its first tool call
-3. At SubagentStop, hooks/adapters/claude_code.py::adapt_subagent_stop calls
+3. At SubagentStop, hooks/adapters/subagent_stop_core.py::run_subagent_stop calls
    verify_skill_injection with the frontmatter list
      -> the transcript is searched for that skill's SKILL_FINGERPRINTS, and a
         declared skill that never appeared is reported as an advisory anomaly

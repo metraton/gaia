@@ -15,8 +15,8 @@ the principles in `SKILL.md` are what a turn needs to run.
 | `COMPLETE` with a non-empty `pending_steps`, or `next_action` other than `"done"` | `COMPLETE_SHAPE` |
 | `COMPLETE` whose `evidence_report.verification.result` is not `"pass"` | `VERIFICATION_RESULT` |
 | `APPROVAL_REQUEST` without a non-empty `approval_request.exact_content` | `APPROVAL_REQUEST_SHAPE` |
-| `COMPLETE` on a turn whose dispatch binding carries a `plan_task_id`, at both seams | `_blind_verification_required` (`hooks/adapters/claude_code.py`) and `cmd_finalize` (`bin/cli/contract.py`) |
-| A close whose persisted contract is unfinalized, however complete the final message | `_resolve_subagent_stop_gate_full` (`hooks/adapters/claude_code.py`) |
+| `COMPLETE` on a turn whose dispatch binding carries a `plan_task_id`, at both seams | `_blind_verification_required` (`hooks/adapters/subagent_stop_core.py`) and `cmd_finalize` (`bin/cli/contract.py`) |
+| A close whose persisted contract is unfinalized, however complete the final message | `_resolve_subagent_stop_gate_full` (`hooks/adapters/subagent_stop_core.py`) |
 | `finalize` on a draft still declaring `IN_PROGRESS` | `cmd_finalize` (`bin/cli/contract.py`) |
 
 Unqualified names above are `FormErrorCode` members returned by `validate_form`
@@ -362,7 +362,7 @@ do not plan to stay in the turn for the answer. The orchestrator presents it
 and, once the user decides, resumes you to run it (`execution`).
 
 **The gate at the wall.** `_resolve_subagent_stop_gate_full` in
-`hooks/adapters/claude_code.py` resolves this turn's own dispatch row and
+`hooks/adapters/subagent_stop_core.py` resolves this turn's own dispatch row and
 decides in three cases, all of them about the row -- nothing in the agent's
 final-message text is read:
 
@@ -449,7 +449,7 @@ requires fresh read-only investigation and a new request-set for every retry or
 remainder command still needed.
 
 **Blind verification has two seams.** The SubagentStop gate
-(`_blind_verification_required` in `hooks/adapters/claude_code.py`) and the CLI
+(`_blind_verification_required` in `hooks/adapters/subagent_stop_core.py`) and the CLI
 finalize path (`cmd_finalize` in `bin/cli/contract.py`, resolving the binding
 via `dispatched_binding_plan_task_id_by_contract`) apply the same decision, so
 neither is a bypass of the other. The decision is a pure function of

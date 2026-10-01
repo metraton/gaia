@@ -1,9 +1,11 @@
 """The SubagentStop close runs in a host-neutral core any adapter can drive.
 
-The host below is not ClaudeCodeAdapter: if the gate, the rejection circuit and
-its cut, the episode write, the workflow audit, the approval cleanup or the
-user_facing_summary relay still lived in the Claude Code adapter, driving the
-core from a foreign host would not reach them.
+The host below is not ClaudeCodeAdapter and supplies only what a host owns:
+its agent roster, its stop-reason reading and its resume-map directory. If the
+gate, the dispatch-row lookup, the rejection circuit and its cut, the episode
+write, the workflow audit, the approval cleanup or the user_facing_summary
+relay still lived in the Claude Code adapter, driving the core from this host
+would not reach them.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 for _p in (str(_REPO_ROOT / "hooks"), str(_REPO_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -25,11 +27,10 @@ from adapters.types import AgentCompletion  # noqa: E402
 from gaia.store.writer import (  # noqa: E402
     finalize_agent_contract_handoff,
     insert_dispatched_handoff,
-    list_agent_contract_handoffs,
     mirror_partial_contract_handoff,
+    stamp_harness_agent_id,
 )
-from modules.agents import rejection_circuit  # noqa: E402
-from modules.agents import contract_validator  # noqa: E402
+from modules.agents import contract_validator, rejection_circuit  # noqa: E402
 from modules.audit import workflow_auditor  # noqa: E402
 from modules.memory import episode_writer  # noqa: E402
 from modules.security import approval_cleanup  # noqa: E402
@@ -38,6 +39,7 @@ from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 WORKSPACE = "me"
 AGENT_TYPE = "gaia-system"
 AGENT_ID = valid_agent_id("stop-core")
+HARNESS_AGENT_ID = valid_agent_id("stop-core-harness")
 SESSION_ID = "sess-stop-core"
 SUMMARY = "Movi el cierre del subagente a un nucleo neutral."
 
@@ -87,7 +89,7 @@ def db_path(tmp_path) -> Path:
 
 @pytest.fixture()
 def calls(monkeypatch):
-    """Record every call the core makes into the six responsibilities, passing
+    """Record every call the core makes into its responsibilities, passing
     each call through to the real implementation."""
     seen: dict = {}
 
@@ -110,16 +112,9 @@ def calls(monkeypatch):
     return seen
 
 
-def _foreign_host(db_path: Path, tmp_path: Path) -> subagent_stop_core.SubagentStopHost:
-    def resolve_dispatch_row(**_kwargs):
-        rows = list_agent_contract_handoffs(agent_id=AGENT_ID, limit=1, db_path=db_path)
-        return rows[0] if rows else None
-
+def _foreign_host(tmp_path: Path) -> subagent_stop_core.SubagentStopHost:
     return subagent_stop_core.SubagentStopHost(
         agent_roster=lambda: {AGENT_TYPE},
-        resolve_dispatch_row=resolve_dispatch_row,
-        reconstruct_contract=lambda **_kwargs: None,
-        salvage_truncated_draft=lambda **_kwargs: None,
         classify_stop_reason=lambda _raw: "violation",
         resume_map_dir=tmp_path / "resume_map",
     )
@@ -130,14 +125,14 @@ def _run_core(host) -> subagent_stop_core.SubagentStopOutcome:
         "hook_event_name": "SubagentStop",
         "session_id": SESSION_ID,
         "agent_type": AGENT_TYPE,
-        "agent_id": AGENT_ID,
+        "agent_id": HARNESS_AGENT_ID,
         "agent_transcript_path": "",
         "last_assistant_message": "",
         "cwd": "/tmp",
     }
     completion = AgentCompletion(
         agent_type=AGENT_TYPE,
-        agent_id=AGENT_ID,
+        agent_id=HARNESS_AGENT_ID,
         transcript_path="",
         last_message="",
         session_id=SESSION_ID,
@@ -156,23 +151,23 @@ def _birth(db_path: Path) -> str:
         session_id=SESSION_ID,
         db_path=db_path,
     )
+    stamp_harness_agent_id(contract_id, HARNESS_AGENT_ID, db_path=db_path)
     return contract_id
 
 
 def test_accepted_close_runs_every_responsibility_from_the_core(db_path, tmp_path, calls):
     contract_id = _birth(db_path)
-    envelope = _envelope()
     finalize_agent_contract_handoff(
         contract_id=contract_id,
         agent_id=AGENT_ID,
         workspace=WORKSPACE,
         agent_state="COMPLETE",
-        raw_handoff_json=json.dumps(envelope),
+        raw_handoff_json=json.dumps(_envelope()),
         session_id=SESSION_ID,
         db_path=db_path,
     )
 
-    outcome = _run_core(_foreign_host(db_path, tmp_path))
+    outcome = _run_core(_foreign_host(tmp_path))
 
     assert outcome.rejected is False
     assert outcome.result["contract_gate_source"] == "row"
@@ -192,12 +187,13 @@ def test_accepted_close_runs_every_responsibility_from_the_core(db_path, tmp_pat
 def test_rejections_count_toward_the_cut_and_the_cut_closes_degraded(db_path, tmp_path, calls):
     contract_id = _birth(db_path)
     mirror_partial_contract_handoff(contract_id, json.dumps(_envelope()), db_path=db_path)
-    host = _foreign_host(db_path, tmp_path)
+    host = _foreign_host(tmp_path)
 
     outcomes = [_run_core(host) for _ in range(rejection_circuit.DEFAULT_MAX_REJECTIONS)]
 
     assert [o.rejected for o in outcomes[:-1]] == [True] * (len(outcomes) - 1)
     assert outcomes[0].result["contract_rejected"] is True
+    assert outcomes[0].result["contract_gate_source"] == "row_unfinalized"
     assert outcomes[0].user_message is None
     cut = outcomes[-1]
     assert cut.rejected is False

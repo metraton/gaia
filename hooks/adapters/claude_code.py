@@ -913,112 +913,14 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         parsed_contract,
         db_path: Optional[Path] = None,
     ) -> Optional[dict]:
-        """Locate the born-at-dispatch row for the turn that is ENDING.
-
-        The binding stamped at birth (``plan_task_id`` above all) lives on that
-        row, and the blind-verification gate -- and, since the row-first
-        migration, the SubagentStop contract gate itself
-        (``resolve_subagent_stop_gate``) -- reads it to decide the turn's own
-        outcome. Four lanes, most exact first, because the row is reachable by
-        a different coordinate depending on what the turn did with the
-        identity minted for it:
-
-          1. HARNESS-STAMPED -- ``harness_agent_id`` (v40,
-             ``gaia.store.writer.stamp_harness_agent_id``, written at the
-             SubagentStart claim) joined against ``task_info['agent_id']``,
-             which at SubagentStop time is the identical value. This is FIRST
-             because it is the only coordinate the runtime itself stamps for
-             THIS exact dispatch: it does not depend on the turn emitting a
-             fence, on it running ``gaia contract init``, or on the row still
-             being 'DISPATCHED', and it cannot reach a sibling's row the way a
-             shared agent NAME or a mentioned-but-not-owned draft id can. It is
-             also the shape a turn that stops emitting the fence always has, so
-             ordering it first is what makes fence-less resolution deterministic
-             rather than a fallthrough. The lane DECLINES an ambiguous match
-             (2+ rows under one harness id) instead of taking the most recent --
-             same refusal, and for the same reason, as the writer's
-             ``find_dispatched_row_by_agent_name``.
-          2. ADOPTED -- the turn ran ``gaia contract init`` under the injected
-             identity (or the fence names it), so its own ``agent_id`` IS the
-             row's. Looked up state-agnostically: an adopted turn's
-             ``finalize`` CONVERGES the born row, so by now it is no longer
-             'DISPATCHED' and a DISPATCHED-only query would report the turn as
-             unbound and silently drop the gate.
-          3. LEGACY -- rows born before the identity was minted carry the agent
-             NAME in ``agent_id``. Still queried so an in-flight turn dispatched
-             under the old shape keeps its binding.
-          4. UNADOPTED -- the turn minted its own unrelated handle, so it shares
-             no identifier with its row; the dispatched NAME recorded in the birth
-             envelope is the last coordinate left. That lane refuses to guess
-             between concurrent same-name dispatches (see the writer's
-             ``find_dispatched_row_by_agent_name``), so it resolves nothing rather
-             than binding a turn to a sibling's row.
-
-        WHY THE HARNESS LANE MOVED FROM LAST TO FIRST. It was added as a fourth
-        lane on the belief that lanes 1-3 would simply miss when no fence was
-        emitted. They do not always miss -- they can HIT THE WRONG ROW, which is
-        worse. ``resolve_minted_agent_id`` used to fall back to the harness
-        ``agent_id`` itself, and the backstop capture stamps that same value
-        into the ``agent_id`` COLUMN of the contention row it writes
-        (``handoff_persister.persist_handoff``); the adopted lane then queried
-        ``agent_id = <harness id>`` and ``dispatch_row_for_identity`` returned
-        the most recent match -- the contention row -- instead of the turn's own
-        cleanly-closed row. MEASURED live: the gate rejected a turn whose real
-        work was correctly recorded. That fallback is gone from the resolver, and
-        ordering the exact per-dispatch coordinate first means a later
-        reintroduction of any inexact one cannot outrank it again.
-
-        Returns the row dict, or None when no lane resolves -- which every caller
-        must read as "unbound", never as an error. A full miss is LOGGED: it was
-        previously indistinguishable from an unbound turn, so the resolution
-        defects above lived without a trace.
-        """
-        from gaia.store.writer import (
-            dispatch_row_for_identity,
-            find_dispatched_row_by_agent_name,
-            find_orphaned_dispatched_handoff,
+        """``subagent_stop_core.resolve_dispatch_row``."""
+        return subagent_stop_core.resolve_dispatch_row(
+            session_id=session_id,
+            agent_type=agent_type,
+            task_info=task_info,
+            parsed_contract=parsed_contract,
+            db_path=db_path,
         )
-        from modules.agents.handoff_persister import (
-            dispatch_row_by_harness_id,
-            resolve_minted_agent_id,
-        )
-
-        harness_agent_id = task_info.get("agent_id")
-        harness_row = dispatch_row_by_harness_id(
-            task_info, session_id=session_id, db_path=db_path,
-        )
-        if harness_row is not None:
-            return harness_row
-
-        minted = resolve_minted_agent_id(
-            parsed_contract, task_info, session_id=session_id,
-        )
-        if minted and str(minted) != str(agent_type):
-            row = dispatch_row_for_identity(
-                session_id, str(minted), db_path=db_path,
-            )
-            if row is not None:
-                return row
-
-        legacy = find_orphaned_dispatched_handoff(
-            session_id, [agent_type], db_path=db_path,
-        )
-        if legacy is not None:
-            return legacy
-
-        unadopted = find_dispatched_row_by_agent_name(
-            session_id, agent_type, db_path=db_path,
-        )
-        if unadopted is not None:
-            return unadopted
-
-        logger.warning(
-            "Dispatch-row resolution: NO lane resolved a row for agent=%s "
-            "session=%s harness_agent_id=%s minted=%s. The turn will be treated "
-            "as unbound -- no plan-task binding and no row for the gate to read.",
-            agent_type, session_id, harness_agent_id, minted,
-        )
-        return None
 
     @staticmethod
     def _adapt_ask_user_question(tool_input: dict, *, hook_data: dict) -> HookResponse:
@@ -1288,13 +1190,16 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         block`` as a retry, and either would resume the turn being closed --
         measured against the live harness on the circuit's cut.
         """
+        # The lookups go through this adapter's own methods so that replacing
+        # one on the adapter (callers and tests address them there) reaches
+        # the close.
         host = subagent_stop_core.SubagentStopHost(
             agent_roster=self._get_gaia_agent_names,
+            classify_stop_reason=classify_stop_reason,
+            resume_map_dir=self.RESUME_MAP_CACHE_DIR,
             resolve_dispatch_row=self._resolve_dispatch_row,
             reconstruct_contract=self._reconstruct_contract_from_finalized_draft,
             salvage_truncated_draft=self._salvage_truncated_draft,
-            classify_stop_reason=classify_stop_reason,
-            resume_map_dir=self.RESUME_MAP_CACHE_DIR,
         )
         completion = self.parse_agent_completion(event.payload)
         outcome = subagent_stop_core.run_subagent_stop(
@@ -1320,155 +1225,12 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         parsed_contract,
         session_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """M4 missing-fence footgun (Option A): rebuild the envelope from the
-        FINALIZED ROW when the agent forgot to echo the fence.
-
-        The SubagentStop gate parses the fenced ``agent_contract_handoff`` out
-        of the agent's response TEXT -- not its finalized DB row. So a turn that
-        did all its work via the ``gaia contract`` CLI and ran ``gaia contract
-        finalize`` (writing a valid terminal row) but never echoed the fence in
-        its last message is hard-rejected by the full-verdict gate, and has to
-        be resumed by hand. This addresses that hole: when the fence is missing
-        but the agent's OWN contract was already finalized, reconstruct the
-        envelope FROM the row's ``raw_handoff_json`` so the gate parses a valid
-        contract instead of rejecting completed, persisted work.
-
-        THE ROW IS THE ONLY SOURCE READ, and that is the whole point rather
-        than an implementation detail. The on-disk draft holds the same
-        envelope but has the shorter life: a draft becomes collectable by
-        ``contract_drafts_gc`` precisely BECAUSE its turn is already durable in
-        the row, so a reader still reaching for the file after finalize can
-        find it reclaimed and report a completed turn as having recorded
-        nothing. Reading the row instead makes this lane read the same artifact
-        the close gate already reads.
-
-        Locating the turn is the fragile half, and it has two lanes for two
-        different turn shapes. An agent that minted its own draft is found
-        through ``resolve_minted_agent_id`` + ``resolve_draft_id``, so its own
-        contract wins over the dispatch it was born under. A turn born with its
-        draft already open never runs ``gaia contract init``, leaves no mint
-        report, and -- with no fence either -- is reachable only through the
-        ``harness_agent_id`` bridge on the row itself
-        (``dispatch_row_by_harness_id``), which is also the lane that still
-        answers once the draft file is gone. ``session_id`` is threaded in for
-        that bridge; without it the join is unscoped.
-
-        Fires ONLY when ``parsed_contract`` lacks a usable ``agent_status`` (no
-        fence). "Finalized" is discriminated by the EXISTENCE of the terminal
-        row for the contract_id -- without it the turn is merely in-progress
-        (truncation-salvage / T9-backstop territory, which correctly produce
-        ``degraded=true`` rows), NOT a finished turn missing only its fence.
-
-        OPTIMIZATION, never a gate: every failure is swallowed and returns None,
-        leaving the gate to reject as before. Returns the reconstructed envelope
-        dict (tagged like ``parse_contract`` output) or None.
-
-        EVERY MISS LOGS. This used to return None silently at four separate
-        points, and that silence is why the resolver defect it depends on lived
-        undetected: a turn whose ``update_contracts`` proposal was dropped
-        (measured, handoff row 11304) looked exactly like a turn that had no
-        proposal to begin with. The log lines below are the only difference
-        between a diagnosable miss and an invisible one.
-        """
-        # A usable fence is already present -> nothing to reconstruct.
-        if isinstance(parsed_contract, dict) and isinstance(
-            parsed_contract.get("agent_status"), dict
-        ):
-            return None
-        try:
-            from gaia.contract.drafts import resolve_draft_id
-            from gaia.store import writer as _writer
-            from modules.agents.handoff_persister import (
-                dispatch_row_by_harness_id,
-                resolve_minted_agent_id,
-            )
-        except Exception as exc:
-            logger.debug("M4 reconstruction: core import failed (non-fatal): %s", exc)
-            return None
-
-        try:
-            db_path_str = task_info.get("db_path")
-            db_path = Path(db_path_str) if db_path_str else None
-            # Locating the turn must not depend on the draft FILE, because the
-            # file is the copy with the shorter life: once the turn finalized,
-            # `contract_drafts_gc` may reclaim it at any moment, while the row
-            # is what the close gate itself reads. So the minted handle is
-            # resolved against the drafts directory FIRST -- a live file is the
-            # cheapest answer and the only one that also covers a turn whose
-            # row is not written yet -- and against the ROWS when that comes
-            # back empty, which is what the collector's aftermath looks like.
-            # The harness bridge is last and serves the shape the handle cannot
-            # reach at all: a turn born with its draft already open, which
-            # mints nothing and, with no fence, is identified only by its row.
-            minted_agent_id = resolve_minted_agent_id(
-                parsed_contract, task_info, session_id=session_id,
-            )
-            contract_id = None
-            if minted_agent_id:
-                contract_id = resolve_draft_id(
-                    explicit=None, agent_id=str(minted_agent_id)
-                )
-                if not contract_id:
-                    handle_row = _writer.find_finalized_handoff_by_agent_id(
-                        str(minted_agent_id), db_path=db_path
-                    )
-                    contract_id = (handle_row or {}).get("contract_id")
-            if not contract_id:
-                dispatch_row = dispatch_row_by_harness_id(task_info, session_id)
-                contract_id = (dispatch_row or {}).get("contract_id")
-            if not contract_id:
-                logger.warning(
-                    "M4 reconstruction: fence missing AND no contract id "
-                    "resolvable (agent=%s session=%s) -- neither a draft nor a "
-                    "dispatch row locates this turn, so a finalized turn's "
-                    "envelope (including any update_contracts it carried) is "
-                    "NOT recovered.",
-                    task_info.get("agent"), session_id,
-                )
-                return None
-            # "Finalized" == the agent's own `gaia contract finalize` already
-            # wrote the TERMINAL row for this contract_id. If no terminal row
-            # exists, the turn is not finalized -- do NOT reconstruct (that is
-            # the salvage / backstop path's job, which marks the row degraded).
-            # v37 born-at-dispatch: a NASCENT 'DISPATCHED' row born at dispatch is
-            # NOT finalized, so use the terminal-row check (not "any row exists")
-            # -- a born-but-orphaned row must not be mistaken for a completed one.
-            if not _writer.agent_contract_handoff_finalized(contract_id, db_path=db_path):
-                logger.info(
-                    "M4 reconstruction: contract %s exists but its row is not "
-                    "finalized -- salvage/backstop territory, not a completed "
-                    "turn missing only its fence.",
-                    contract_id,
-                )
-                return None
-            envelope = _writer.agent_contract_handoff_envelope(
-                contract_id, db_path=db_path
-            )
-            if not isinstance(envelope, dict) or not isinstance(
-                envelope.get("agent_status"), dict
-            ):
-                logger.warning(
-                    "M4 reconstruction: row for contract %s is finalized but its "
-                    "raw_handoff_json is unusable (%s) -- cannot rebuild the fence.",
-                    contract_id, type(envelope).__name__,
-                )
-                return None
-            recon = dict(envelope)
-            # Tag it exactly like parse_contract output so every downstream
-            # consumer (agent_state resolution, the gate, update_contracts)
-            # treats it uniformly, plus a provenance marker for the audit trail.
-            recon["_contract_tag"] = "agent_contract_handoff"
-            recon["reconstructed_from_finalized_draft"] = contract_id
-            logger.info(
-                "M4 reconstruction: fence missing but finalized contract %s found; "
-                "envelope reconstructed from its row so the gate parses the "
-                "completed contract.",
-                contract_id,
-            )
-            return recon
-        except Exception as exc:
-            logger.warning("M4 reconstruction: rebuild failed (non-fatal): %s", exc)
-            return None
+        """``subagent_stop_core.reconstruct_contract_from_finalized_draft``."""
+        return subagent_stop_core.reconstruct_contract_from_finalized_draft(
+            task_info=task_info,
+            parsed_contract=parsed_contract,
+            session_id=session_id,
+        )
 
     def _salvage_truncated_draft(
         self,
@@ -1478,157 +1240,13 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         session_id: str,
         plan_task_id: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Fast-path rescue of a TRUNCATED turn's partial contract draft.
-
-        Called ONLY when the adapter classified the stop_reason as
-        ``STOP_REASON_TRUNCATION`` (max_tokens): the turn was cut off by the
-        token budget mid-work, not by the agent's choice, so its on-disk draft
-        is a salvage candidate. This early auto-finalizes that draft to a
-        ``degraded=true`` row via the idempotent core writer, keyed on the SAME
-        ``contract_id`` (the draft_id resolved from the agent's minted
-        agent_id) that the T9 hook backstop keys on -- so salvage and backstop
-        converge to ONE row through ``ON CONFLICT(contract_id) DO NOTHING``.
-
-        Consistency with T9 semantics: the row is marked ``degraded=true`` (it
-        is NOT an agent-verified COMPLETE) with a ``salvaged="truncation"``
-        marker recording WHY it degraded; only flags are added, never
-        fabricated evidence. agent_state mirrors T9: the draft's own
-        agent_state when it is a valid terminal value, else the honest
-        ``IN_PROGRESS``.
-
-        OPTIMIZATION, never a gate: every failure is swallowed and returns
-        None; this never raises and never alters contract_rejected/exit_code.
-        The T9 backstop (``persist_handoff`` later in the same lifecycle)
-        remains the correctness floor. Returns
-        ``{"contract_id", "resume_hint", "created"}`` when a draft was
-        salvaged, else None.
-        """
-        try:
-            from gaia.contract.drafts import load_draft, resolve_draft_id
-            from gaia.contract.view import render_resume_hint
-            from gaia.state import (
-                CUT_REASON_SALVAGED_TRUNCATION,
-                VALID_PLAN_STATUSES,
-            )
-            from gaia.store import writer as _writer
-        except Exception as exc:
-            logger.debug("T11 salvage: core import failed (non-fatal): %s", exc)
-            return None
-
-        # Resolve the minted agent_id drafts are addressed by via the SHARED
-        # resolver, so salvage, the T9 backstop, and the M4 reconstruction path
-        # all resolve the SAME draft (hence the SAME contract_id).
-        from modules.agents.handoff_persister import resolve_minted_agent_id
-        minted_agent_id = resolve_minted_agent_id(
-            parsed_contract, task_info, session_id=session_id,
+        """``subagent_stop_core.salvage_truncated_draft``."""
+        return subagent_stop_core.salvage_truncated_draft(
+            parsed_contract=parsed_contract,
+            task_info=task_info,
+            session_id=session_id,
+            plan_task_id=plan_task_id,
         )
-        if not minted_agent_id:
-            return None
-
-        try:
-            draft_id = resolve_draft_id(explicit=None, agent_id=str(minted_agent_id))
-            if not draft_id:
-                # No partial draft to salvage -- the T9 backstop still captures
-                # a minimal degraded row for a no-draft truncated turn.
-                return None
-            envelope = load_draft(draft_id)
-            if not isinstance(envelope, dict):
-                return None
-
-            db_path_str = task_info.get("db_path")
-            db_path = Path(db_path_str) if db_path_str else None
-            workspace = (
-                task_info.get("workspace")
-                or os.environ.get("GAIA_WORKSPACE")
-                or "global"
-            )
-            agent_id_col = minted_agent_id or task_info.get("agent") or "unknown"
-
-            # Cleaned on the way in, exactly as the T9 backstop cleans its own
-            # rescued envelope and the CLI cleans an agent's write: a salvaged
-            # draft is the least validated input in the system -- a partial
-            # write the token budget interrupted -- and it used to be persisted
-            # verbatim. Cleaning cannot cost the salvage; the helper falls back
-            # to the envelope as it arrived rather than raise.
-            from modules.agents.handoff_persister import clean_rescue_envelope
-
-            cleaning_log: list = []
-            salvaged = dict(clean_rescue_envelope(envelope, log=cleaning_log))
-            if cleaning_log:
-                logger.debug(
-                    "T11 salvage: cleaned draft %s: %s",
-                    draft_id, "; ".join(str(line) for line in cleaning_log),
-                )
-            # Read from the RAW draft, not the cleaned copy -- the same split
-            # the T9 backstop makes, and for the same reason: canonicalizing the
-            # state here would change what a rescued turn is recorded as, which
-            # is a policy decision separate from cleaning the envelope. So an
-            # uncanonical spelling still falls to IN_PROGRESS below rather than
-            # being repaired into a terminal verdict.
-            agent_status = envelope.get("agent_status")
-            agent_state = (
-                agent_status.get("agent_state")
-                if isinstance(agent_status, dict)
-                else None
-            )
-            agent_state = (
-                agent_state if agent_state in VALID_PLAN_STATUSES else "IN_PROGRESS"
-            )
-            if agent_state == "COMPLETE":
-                # A COMPLETE in a SALVAGED draft is a claim, not a verdict. This
-                # lane runs only for a turn the token budget cut off mid-work: it
-                # never reached its own `gaia contract finalize`, so nothing
-                # verified that COMPLETE, and recording it would falsely satisfy
-                # the briefs "plan closed => a COMPLETE handoff row exists"
-                # invariant (gaia/briefs/store.py, invariant 5) for a turn that
-                # did not complete. The T9 backstop already downgrades exactly
-                # this claim when it converges an unfinalized row; this lane had
-                # no downgrade of its own, so the SAME truncated turn was
-                # recorded COMPLETE or IN_PROGRESS depending only on which rescue
-                # reached it first. The claim itself is not erased -- it stays in
-                # the salvaged envelope under agent_status.agent_state, beside
-                # the `salvaged` marker that says why the row disagrees with it.
-                agent_state = "IN_PROGRESS"
-            salvaged["degraded"] = True
-            salvaged["auto_captured"] = True
-            salvaged["salvaged"] = "truncation"
-
-            outcome = _writer.finalize_agent_contract_handoff(
-                contract_id=draft_id,
-                agent_id=str(agent_id_col),
-                workspace=workspace,
-                agent_state=agent_state,
-                raw_handoff_json=json.dumps(salvaged),
-                session_id=session_id,
-                plan_task_id=plan_task_id,
-                brief_id=None,
-                # The structural twin of the ``salvaged`` envelope flag above: a
-                # rescued draft is a turn the token budget ended, never a
-                # closure the agent chose, so the row must not read as cleanly
-                # finalized just because a writer reached it.
-                cut_reason=CUT_REASON_SALVAGED_TRUNCATION,
-                db_path=db_path,
-            )
-
-            # Reuse view.py's single renderer (T14) for the resume hint -- do
-            # NOT re-inline hint text here.
-            try:
-                resume_hint = render_resume_hint(draft_id, envelope)
-            except Exception:
-                resume_hint = None
-
-            logger.info(
-                "T11 salvage: truncated draft %s finalized degraded (created=%s)",
-                draft_id, outcome.get("created"),
-            )
-            return {
-                "contract_id": draft_id,
-                "resume_hint": resume_hint,
-                "created": bool(outcome.get("created")),
-            }
-        except Exception as exc:
-            logger.warning("T11 salvage: rescue failed (non-fatal): %s", exc)
-            return None
 
     # ------------------------------------------------------------------ #
     # P2: adapt_stop
