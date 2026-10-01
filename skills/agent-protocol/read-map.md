@@ -108,6 +108,7 @@ is pulled with exactly one verb.
 | `gaia defects` | `--origin`, `--type`, `--severity`, `--agent`, `--since`, `--count` | Failures one row at a time, never aggregated -- subagent anomalies plus hook-log failures above `info`. |
 | `gaia metrics` | `--range`, `--since`/`--until`, `--agent` | The aggregate dashboard behind those rows: tier usage, commands, per-agent totals, anomalies. |
 | `gaia usage show --plan <id>` / `--session <id>` | `--since`/`--until`, `--json` | Tokens per session and agent, one row per API message from the transcripts; for a plan, split into bound, unbound and main (main is an upper bound). |
+| `gaia now` | `--json` | The machine's local time, UTC offset and zone name; `--json` adds the UTC instant. Opens no database. The clock to read before fixing a reminder's absolute time. |
 | `gaia status` | `--json` | What Gaia has wired into this workspace: last agent, pending context updates, contract success rate. |
 | `gaia doctor` | `--workspace <path>`, `--json` | Health checks, read-only. `--fix` MUTATES and is a different verb in every sense that matters. |
 
