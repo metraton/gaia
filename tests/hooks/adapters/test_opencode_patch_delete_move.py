@@ -10,6 +10,7 @@ anywhere else. Every path is a stand-in under a temporary HOME.
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -126,7 +127,7 @@ def test_patch_move_of_a_repo_file_is_refused_and_its_mv_asks_the_signature(home
     assert _signature_request(bash), bash
 
 
-def test_patch_move_inside_scratch_is_refused_too(home):
+def test_patch_move_inside_scratch_is_refused_and_its_mv_still_asks_the_signature(home):
     scratch = home.parent / "gaia_data" / "scratch"
     command = f"mv -- {scratch / 'probe.txt'} {scratch / 'moved.txt'}"
 
@@ -140,6 +141,9 @@ def test_patch_move_inside_scratch_is_refused_too(home):
         "call-move-scratch",
     )
     assert _refused_toward(patched, command), patched
+
+    bash = _opencode("bash", {"command": command}, "call-mv-scratch")
+    assert _signature_request(bash), bash
 
 
 def test_patch_add_and_update_keep_the_edit_verdict(home):
@@ -160,3 +164,123 @@ def test_path_with_spaces_is_quoted_in_the_named_command(home):
 
     patched = _opencode("apply_patch", _patch(f"*** Delete File: {target}"), "call-del-spaces")
     assert _refused_toward(patched, f"rm -- '{target}'"), patched
+
+
+def _refused(verdict: dict) -> bool:
+    return verdict["decision"] == "deny" and not verdict["approval_id"]
+
+
+@pytest.mark.parametrize("marker", [
+    "*** Delete File:{path}",
+    "*** Delete File:\t{path}",
+    "*** Delete File: \t{path}",
+    "*** Delete File:  {path}",
+    "*** delete file: {path}",
+    "*** DELETE FILE: {path}",
+    "*** Delete file: {path}",
+])
+def test_delete_marker_variants_a_looser_parser_would_honour_are_refused(home, marker):
+    target = str(home / "project" / "kept.txt")
+
+    patched = _opencode("apply_patch", _patch(marker.format(path=target)), "call-del-variant")
+    assert _refused(patched), patched
+
+
+@pytest.mark.parametrize("marker", [
+    "*** Move to:{path}",
+    "*** Move to:\t{path}",
+    "*** Move To: {path}",
+    "*** MOVE TO: {path}",
+])
+def test_move_marker_variants_a_looser_parser_would_honour_are_refused(home, marker):
+    source = str(home / "project" / "kept.txt")
+    destination = str(home / "project" / "renamed.txt")
+
+    patched = _opencode(
+        "apply_patch",
+        _patch(f"*** Update File: {source}", marker.format(path=destination), "@@", "-kept", "+kept"),
+        "call-move-variant",
+    )
+    assert _refused(patched), patched
+
+
+def test_delete_hidden_after_an_update_body_is_refused(home):
+    kept = str(home / "project" / "kept.txt")
+    victim = str(home / "project" / "victim.txt")
+
+    patched = _opencode(
+        "apply_patch",
+        _patch(f"*** Update File: {kept}", "@@", "-kept", "+edited", f"*** Delete File: {victim}"),
+        "call-del-hidden",
+    )
+    assert _refused_toward(patched, f"rm -- {victim}"), patched
+
+
+def test_one_delete_among_several_operations_refuses_the_whole_patch(home):
+    project = home / "project"
+
+    patched = _opencode(
+        "apply_patch",
+        _patch(
+            f"*** Add File: {project / 'a.txt'}", "+a",
+            f"*** Update File: {project / 'kept.txt'}", "@@", "-kept", "+edited",
+            f"*** Delete File: {project / 'b.txt'}",
+            f"*** Delete File: {project / 'c.txt'}",
+        ),
+        "call-del-several",
+    )
+    assert _refused_toward(patched, f"rm -- {project / 'b.txt'}"), patched
+
+
+def test_several_adds_and_updates_keep_the_edit_verdict(home):
+    project = home / "project"
+
+    patched = _opencode(
+        "apply_patch",
+        _patch(
+            f"*** Add File: {project / 'a.txt'}", "+a",
+            f"*** Add File: {project / 'b.txt'}", "+b",
+            f"*** Update File: {project / 'kept.txt'}", "@@", "-kept", "+edited",
+        ),
+        "call-add-several",
+    )
+    assert patched["decision"] == "allow", patched
+
+
+@pytest.mark.parametrize("name", ["it's.txt", 'say "hi".txt', "$(touch pwned).txt", "`id`.txt"])
+def test_shell_active_names_are_quoted_in_the_named_command_and_its_rm_is_signed(home, name):
+    target = str(home / "project" / name)
+    command = f"rm -- {shlex.quote(target)}"
+
+    patched = _opencode("apply_patch", _patch(f"*** Delete File: {target}"), "call-del-quoted")
+    assert _refused_toward(patched, command), patched
+    assert shlex.split(command) == ["rm", "--", target]
+
+    bash = _opencode("bash", {"command": command}, "call-rm-quoted")
+    assert _signature_request(bash), bash
+
+
+def test_quoted_move_names_one_source_and_one_destination(home):
+    source = str(home / "project" / "a b.txt")
+    destination = str(home / "project" / "$(x) 'c'.txt")
+    command = f"mv -- {shlex.quote(source)} {shlex.quote(destination)}"
+
+    patched = _opencode(
+        "apply_patch",
+        _patch(f"*** Update File: {source}", f"*** Move to: {destination}", "@@", "-a", "+a"),
+        "call-move-quoted",
+    )
+    assert _refused_toward(patched, command), patched
+    assert shlex.split(command) == ["mv", "--", source, destination]
+
+
+@pytest.mark.parametrize("path", ["src/d.py", "../outside.txt", "project/../../etc/x"])
+def test_relative_and_traversing_delete_paths_are_refused_naming_the_path_as_given(home, path):
+    patched = _opencode("apply_patch", _patch(f"*** Delete File: {path}"), "call-del-relative")
+    assert _refused_toward(patched, f"rm -- {path}"), patched
+
+
+@pytest.mark.parametrize("path", ["..", ".", "/"])
+def test_bare_traversal_and_root_targets_are_refused_as_unsafe(home, path):
+    patched = _opencode("apply_patch", _patch(f"*** Delete File: {path}"), "call-del-unsafe")
+    assert _refused(patched) and "unsafe or empty path" in patched["reason"], patched
