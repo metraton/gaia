@@ -123,7 +123,7 @@ def test_primary_compaction_leaves_the_child_kernel_reinjection_as_is(isolated):
         find_dispatch_row_by_harness_agent_id,
         insert_dispatched_handoff,
     )
-    from modules.context.kernel_builder import build_dispatch_kernel
+    from modules.context.kernel_builder import build_kernel_context
 
     agent_id = valid_agent_id("at7child")
     insert_dispatched_handoff(
@@ -134,7 +134,7 @@ def test_primary_compaction_leaves_the_child_kernel_reinjection_as_is(isolated):
     bind_harness_child_session(
         dispatch_tool_use_id="call-t7", harness_agent_id=CHILD_SESSION, db_path=isolated,
     )
-    kernel = build_dispatch_kernel(find_dispatch_row_by_harness_agent_id(CHILD_SESSION, db_path=isolated))
+    kernel = build_kernel_context(find_dispatch_row_by_harness_agent_id(CHILD_SESSION, db_path=isolated))
 
     response = bridge.handle({"event": "session.compacting", "sessionID": CHILD_SESSION, "main": False})
 

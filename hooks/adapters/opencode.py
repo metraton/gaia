@@ -796,7 +796,8 @@ class OpenCodeAdapter(HookAdapter):
     ) -> HookResponse:
         """Run the Task dispatch through the shared policy and, on allow, rewrite its prompt.
 
-        The new prompt is the session-events digest, the born row's kernel,
+        The new prompt is the session-events digest, the born row's kernel as
+        Claude Code's SubagentStart renders it (contract, CLI, the user's rows),
         the skills the dispatched agent's definition preloads (OpenCode
         preloads none; a body arrives only through its ``skill`` tool) and the
         closing rules. OpenCode has no start event that reliably precedes the child's first
@@ -815,7 +816,6 @@ class OpenCodeAdapter(HookAdapter):
 
         try:
             from gaia.store.writer import claim_dispatch_row
-            from modules.context.kernel_builder import build_dispatch_kernel, build_skills_block
         except Exception:
             return translated
 
@@ -829,19 +829,14 @@ class OpenCodeAdapter(HookAdapter):
             return translated
 
         try:
-            kernel = build_dispatch_kernel(row)
+            tool_input = policy_event.payload.get("tool_input") or {}
+            kernel = self._child_kernel(row, str(tool_input.get("subagent_type") or ""))
         except Exception:
             kernel = None
         if not kernel:
             return translated
 
-        try:
-            tool_input = policy_event.payload.get("tool_input") or {}
-            skills = build_skills_block(str(tool_input.get("subagent_type") or ""))
-        except Exception:
-            skills = ""
-
-        sections = (policy.session_events, kernel, skills, CLOSING_RULES_KERNEL)
+        sections = (policy.session_events, kernel, CLOSING_RULES_KERNEL)
         updated_input = dict(output.get("updated_input") or {})
         updated_input["prompt"] = "\n\n".join(section for section in sections if section)
         output["updated_input"] = updated_input
@@ -1413,7 +1408,7 @@ class OpenCodeAdapter(HookAdapter):
         building it fails: a compaction must never be blocked by injection,
         the rule _adapt_task_with_kernel applies to a Task dispatch.
         """
-        kernel = self._bound_child_kernel(event.session_id)
+        kernel = self._bound_child_kernel(event.session_id, str(event.payload.get("agent") or ""))
         if kernel:
             return HookResponse(
                 output={"action": "allow", "updated_input": {"context": [kernel]}}
@@ -1429,7 +1424,20 @@ class OpenCodeAdapter(HookAdapter):
         return HookResponse(output={"action": "allow"})
 
     @staticmethod
-    def _bound_child_kernel(session_id: str) -> str | None:
+    def _child_kernel(row: dict, agent_name: str) -> str | None:
+        """Claude Code's SubagentStart kernel for *row* plus the skills block, or None without a contract.
+
+        The skills block stands in for the preload OpenCode does not perform.
+        """
+        from modules.context.kernel_builder import build_kernel_context, build_skills_block
+
+        kernel = build_kernel_context(row, agent_name=agent_name)
+        if not kernel:
+            return None
+        return "\n\n".join(block for block in (kernel, build_skills_block(agent_name)) if block)
+
+    @classmethod
+    def _bound_child_kernel(cls, session_id: str, agent_name: str) -> str | None:
         """The kernel of the claimed dispatch row bound to this child session, or None.
 
         The session id is the harness_agent_id bind_harness_child_session
@@ -1437,12 +1445,11 @@ class OpenCodeAdapter(HookAdapter):
         ladder.
         """
         from gaia.store.writer import find_dispatch_row_by_harness_agent_id
-        from modules.context.kernel_builder import build_dispatch_kernel
 
         try:
             row = find_dispatch_row_by_harness_agent_id(str(session_id)) if session_id else None
             if row is None or not row.get("claimed_at"):
                 return None
-            return build_dispatch_kernel(row) or None
+            return cls._child_kernel(row, agent_name)
         except Exception:
             return None

@@ -89,9 +89,9 @@ def _inject(monkeypatch, prompt: str, *, task_id: str | None = None):
 
 
 def _expected_injected_size(prompt: str) -> int:
-    from modules.context.kernel_builder import build_dispatch_kernel, build_skills_block
+    from modules.context.kernel_builder import build_kernel_context, build_skills_block
 
-    kernel = build_dispatch_kernel(_claimed_row(prompt))
+    kernel = build_kernel_context(_claimed_row(prompt), agent_name="gaia-system")
     skills = build_skills_block("gaia-system")
     return len(kernel) + 2 + len(skills) + 2 + len(CLOSING_RULES_KERNEL)
 
@@ -163,7 +163,7 @@ def test_task_dispatch_appends_closing_rules_once_after_kernel(monkeypatch):
     )
     monkeypatch.setattr(
         "modules.context.kernel_builder.build_dispatch_kernel",
-        lambda row: "# Your Contract\n\ncontract_id: a1.tok\nagent_id:    a1",
+        lambda row, **_kw: "# Your Contract\n\ncontract_id: a1.tok\nagent_id:    a1",
     )
 
     response = OpenCodeAdapter().adapt_pre_tool_use(

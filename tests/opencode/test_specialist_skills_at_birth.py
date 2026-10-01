@@ -135,6 +135,42 @@ def test_specialist_skills_claude_code_kernel_is_unchanged(monkeypatch):
     assert kernel_builder.SKILLS_HEADING not in kernel
 
 
+def _headers(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.startswith("# ")]
+
+
+def test_specialist_skills_task_prompt_carries_the_claude_code_kernel(monkeypatch):
+    monkeypatch.setattr(
+        kernel_builder, "build_memory_block",
+        lambda **_kw: f"{kernel_builder.MEMORY_HEADING}\n\n- a standing rule",
+    )
+    prompt = _dispatched_prompt(monkeypatch, "gaia-system")
+
+    assert kernel_builder.build_kernel_context(_row("do the thing"), agent_name="gaia-system") in prompt
+    assert _headers(prompt) == [
+        kernel_builder.KERNEL_HEADING,
+        kernel_builder.CLI_HEADING,
+        kernel_builder.MEMORY_HEADING,
+        kernel_builder.SKILLS_HEADING,
+        "# Closing this turn",
+    ]
+
+
+def test_specialist_skills_survive_child_compaction(monkeypatch):
+    monkeypatch.setattr(
+        "gaia.store.writer.find_dispatch_row_by_harness_agent_id",
+        lambda session_id, **_kw: {**_row("do the thing"), "claimed_at": "2026-10-01T00:00:00Z"},
+    )
+    event = OpenCodeAdapter().parse_event(json.dumps({
+        "event": "session.compacting", "sessionID": "ses-child", "agent": "gaia-system",
+    }))
+
+    context = "\n\n".join(OpenCodeAdapter().adapt_pre_compact(event).output["updated_input"]["context"])
+
+    assert kernel_builder.build_skills_block("gaia-system") in context
+    assert _headers(context)[:2] == [kernel_builder.KERNEL_HEADING, kernel_builder.CLI_HEADING]
+
+
 def test_specialist_skills_parity_alarm_no_longer_holds_the_gap():
     capability = next(c for c in CAPABILITIES if c.name == "skills at birth")
 
