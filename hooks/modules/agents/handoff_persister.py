@@ -352,8 +352,8 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None
 
     SHARED helper: the SINGLE resolver reused by the T9 backstop
     (``persist_handoff`` below), the truncation salvage
-    (``ClaudeCodeAdapter._salvage_truncated_draft``), and the M4 missing-fence
-    reconstruction (``ClaudeCodeAdapter._reconstruct_contract_from_finalized_draft``),
+    (``subagent_stop_core.salvage_truncated_draft``), and the M4 missing-fence
+    reconstruction (``subagent_stop_core.reconstruct_contract_from_finalized_draft``),
     so all three resolve the SAME draft (hence the SAME ``contract_id``) rather
     than each inlining the logic.
     """

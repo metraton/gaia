@@ -140,6 +140,8 @@ The consequences to hold before promoting:
   `gaia memory reclassify <slug> --status=closed` (no longer relevant) or
   `--status=graduated` (fixed, or promoted to an anchor). It leaves the
   digest and stays in the corpus.
-- **Re-promoting the same defect UPSERTs** -- `add` is keyed by
-  `(name, workspace)`, so reusing the slug overwrites in place rather than
-  splitting one defect across two rows. Search before promoting.
+- **Re-promoting an existing slug is refused** -- `add` over a name that
+  already exists in the workspace fails with `name_exists`. A defect whose
+  understanding changed is a new row linked with
+  `gaia memory link <new> <old> --kind=supersedes`; `--replace` is only for
+  correcting an error. Search before promoting.

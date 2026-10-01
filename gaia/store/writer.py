@@ -2027,22 +2027,34 @@ def _refuse_existing_name(con, workspace: str, name: str, *, replace: bool) -> b
     return True
 
 
+def memory_home(workspace: str, mem_type: str, initiative: str | None) -> str:
+    """Workspace a memory row of this type and initiative lives in; refuses nothing.
+
+    ``type='user'`` resolves to :data:`USER_WORKSPACE` whatever was asked for;
+    it outranks host-scope because it names the person, not a Gaia component.
+    A host-scoped initiative resolves to :data:`HOST_WORKSPACE`.
+    """
+    if mem_type == "user":
+        return USER_WORKSPACE
+    if initiative in HOST_SCOPED_INITIATIVES:
+        return HOST_WORKSPACE
+    return workspace
+
+
 def resolve_memory_workspace(
     workspace: str,
     mem_type: str,
     initiative: str | None,
     project_ref: str | None,
 ) -> str:
-    """Workspace a curated-memory write really lands in.
+    """Workspace a curated-memory write lands in: :func:`memory_home`, once
+    :func:`apply_host_scope` has refused a project anchor on a host-scoped row.
 
-    ``type='user'`` always resolves to :data:`USER_WORKSPACE`, whatever
-    ``--workspace``/env/cwd asked for; it outranks host-scope because it names
-    the person, not a Gaia component, and keeps any project anchor it carries.
-    Every other type follows :func:`apply_host_scope`.
+    A user row keeps any project anchor it carries.
     """
-    if mem_type == "user":
-        return USER_WORKSPACE
-    return apply_host_scope(workspace, initiative, project_ref)
+    if mem_type != "user":
+        apply_host_scope(workspace, initiative, project_ref)
+    return memory_home(workspace, mem_type, initiative)
 
 
 # ---------------------------------------------------------------------------

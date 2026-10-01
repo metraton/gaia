@@ -141,16 +141,6 @@ def _exists(con, table: str, workspace: str, columns: tuple[str, ...], row) -> i
     return hit[0] if hit else None
 
 
-def _memory_destination(row, target: str) -> str:
-    from gaia.store.writer import HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, USER_WORKSPACE
-
-    if row["type"] == "user":
-        return USER_WORKSPACE
-    if row["initiative"] in HOST_SCOPED_INITIATIVES:
-        return HOST_WORKSPACE
-    return target
-
-
 def _count(con, table: str, workspace: str) -> int:
     try:
         return con.execute(
@@ -162,7 +152,7 @@ def _count(con, table: str, workspace: str) -> int:
 
 def _plan(con: sqlite3.Connection, source: str, target: str, on_conflict: dict[str, str]) -> dict:
     """Compute, read-only, every row the retire would move, drop or refuse on."""
-    from gaia.store.writer import HOST_WORKSPACE, USER_WORKSPACE
+    from gaia.store.writer import HOST_WORKSPACE, USER_WORKSPACE, memory_home
 
     tables: dict[str, dict[str, int]] = {}
     moves: dict[str, list[tuple[int, str]]] = {}
@@ -202,7 +192,7 @@ def _plan(con: sqlite3.Connection, source: str, target: str, on_conflict: dict[s
     destination_of: dict[str, str] = {}
     planned_memory = []
     for row in memory_rows:
-        dest = _memory_destination(row, target)
+        dest = memory_home(target, row["type"], row["initiative"])
         hit = _exists(con, "memory", dest, ("name",), row)
         if hit is None or collide("memory", f"{dest}/{row['name']}", row["rid"], hit):
             planned_memory.append((row["rid"], dest))

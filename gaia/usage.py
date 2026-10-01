@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
 MAIN_AGENT_TYPE = "main"
-DEFAULT_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 _COUNTERS = ("input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens")
 _USAGE_KEYS = {
     "input_tokens": "input_tokens",

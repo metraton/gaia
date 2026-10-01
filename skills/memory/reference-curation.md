@@ -171,7 +171,7 @@ changed is not appended to: it is a new row that supersedes the old one.
 **A changed agreement -- a new row that supersedes:**
 
 ```bash
-gaia memory add --name=<new_slug> --type=<type> --project=<p> --body-file=/tmp/new.md
+gaia memory add --name=<new_slug> --type=<type> --project=<p> --body-file="$HOME/.gaia/scratch/<contract_id>.md"
 gaia memory link <new_slug> <old_slug> --kind=supersedes
 ```
 
@@ -181,7 +181,7 @@ changed. `gaia memory edit` is retired and exits naming this path.
 **Correct an error -- `add --replace` (T3):**
 
 ```bash
-gaia memory add --name=<slug> --type=<type> --project=<p> --body-file=/tmp/corrected.md --replace
+gaia memory add --name=<slug> --type=<type> --project=<p> --body-file="$HOME/.gaia/scratch/<contract_id>.md" --replace
 ```
 
 The one in-place rewrite left, for a row that is wrong rather than

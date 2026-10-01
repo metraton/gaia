@@ -28,9 +28,6 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 from cli import _install_helpers  # type: ignore  # noqa: E402
 from cli import install  # type: ignore  # noqa: E402
-from cli import migrate  # type: ignore  # noqa: E402
-
-_BOOTSTRAP_SCRIPT = migrate.ENGINE
 
 
 # ---------------------------------------------------------------------------
@@ -89,34 +86,6 @@ def _detect_versions(cwd: Path, pkg_root: Path) -> dict:
             pass
 
     return {"current": current, "previous": previous}
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap helper (best-effort, never fatal in update mode)
-# ---------------------------------------------------------------------------
-
-def _run_bootstrap_idempotent(verbose: bool) -> dict:
-    """Run bootstrap_database.py; return result dict with action + details.
-
-    Failures are reported but never abort the update flow -- the user can
-    still benefit from settings/symlink fixes even if the DB is unreachable.
-    """
-    if not _BOOTSTRAP_SCRIPT.is_file():
-        return {"action": "skipped", "details": "bootstrap script missing"}
-    try:
-        result = migrate.run("apply", capture=not verbose)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"action": "error", "details": f"bootstrap failed: {exc}"}
-
-    if result.returncode == 0:
-        return {"action": "noop", "details": "DB schema up to date"}
-
-    # A swallowed failure is a dead end: the migration consent gate refuses on
-    # this path and its whole message -- what stopped, and the command that
-    # continues deliberately -- lives in stderr.
-    if not verbose and result.stderr:
-        sys.stderr.write(result.stderr)
-    return {"action": "error", "details": f"bootstrap exited {result.returncode}"}
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +329,6 @@ def _preview(args) -> int:
     root = Path(args.workspace).expanduser().resolve()
     pkg_root = _find_package_root()
     claude_dir = root / ".claude"
-    dry_run = True
     verbose = getattr(args, "verbose", False)
     as_json = getattr(args, "json", False)
 
@@ -373,31 +341,28 @@ def _preview(args) -> int:
             print(f"\nUpdating Gaia from {previous} to {current}...\n")
         else:
             print(f"\nUpdating Gaia (current: {current})...\n")
-        if dry_run:
-            print("  (dry-run mode -- no files will be modified)\n")
+        print("  (dry-run mode -- no files will be modified)\n")
 
     bootstrap_result = {"action": "skipped", "details": "skipped (dry-run)"}
 
-    # Steps 2-7 -- workspace helpers (each idempotent + dry-run aware).
     # Order matches `gaia install` so install/update share the same sequence.
-    settings_helper = _install_helpers.configure_settings_json(root, dry_run=dry_run)
-    perms_helper = _install_helpers.merge_local_permissions(root, dry_run=dry_run)
-    hooks_helper = _install_helpers.merge_local_hooks(root, plugin_root=pkg_root, dry_run=dry_run)
-    worktree_helper = _install_helpers.merge_worktree_settings(root, dry_run=dry_run)
-    sym_helper = _install_helpers.manage_symlinks(root, plugin_root=pkg_root, dry_run=dry_run)
+    settings_helper = _install_helpers.configure_settings_json(root, dry_run=True)
+    perms_helper = _install_helpers.merge_local_permissions(root, dry_run=True)
+    hooks_helper = _install_helpers.merge_local_hooks(root, plugin_root=pkg_root, dry_run=True)
+    worktree_helper = _install_helpers.merge_worktree_settings(root, dry_run=True)
+    sym_helper = _install_helpers.manage_symlinks(root, plugin_root=pkg_root, dry_run=True)
     reg_helper = _install_helpers.register_plugin(
-        root, plugin_root=pkg_root, source="cli-update", dry_run=dry_run,
+        root, plugin_root=pkg_root, source="cli-update", dry_run=True,
     )
 
-    # Compat: derive legacy shape from helper results (do NOT re-invoke).
-    settings_result = _legacy_settings_shape(settings_helper, dry_run)
-    symlinks_result = _legacy_symlinks_shape(sym_helper, dry_run)
+    settings_result = _legacy_settings_shape(settings_helper, True)
+    symlinks_result = _legacy_symlinks_shape(sym_helper, True)
     verify_result = _run_verification(claude_dir)
 
     result = {
         "root": str(root),
         "versions": versions,
-        "dry_run": dry_run,
+        "dry_run": True,
         "bootstrap": bootstrap_result,
         "settings_json": settings_result,
         "permissions": perms_helper,
