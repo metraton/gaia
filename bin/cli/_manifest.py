@@ -702,11 +702,15 @@ def _uninstall_channel(workspace: Path, manifest: dict, channel: str, remaining:
     current = capture(workspace, external_paths(manifest))
     target = revert_states(current, taken)
     kept = unreverted(workspace, current, target, taken)
-    artifacts: list[dict] = []
+    from gaia.install_provenance import PLUGIN_CHANNEL  # noqa: PLC0415
+
+    artifacts, dev_kept = _leftovers.dev_plugin_channel(workspace) if channel == PLUGIN_CHANNEL else ([], [])
+    kept += dev_kept
     if not set(remaining) & set(_PACKAGE_COPY_CHANNELS):
-        artifacts, leftover_kept = _leftovers.plan(
+        found, leftover_kept = _leftovers.plan(
             workspace, package_manager_owns_package=package_manager_owns_package, runtime=False
         )
+        artifacts += found
         kept += leftover_kept
     if not dry_run:
         artifacts, failed = _leftovers.apply(artifacts)
@@ -757,7 +761,8 @@ def uninstall(workspace: Path, *, dry_run: bool = False, package_manager_owns_pa
             return _uninstall_channel(workspace, manifest, channel, remaining, dry_run=dry_run,
                                       package_manager_owns_package=package_manager_owns_package)
     if manifest is None and not is_unmanifested_install(workspace):
-        return {"source": "none", "reverted": [], "env": [], "artifacts": [], "kept": []}
+        artifacts, kept = _take_back_dev_plugin(workspace, dry_run=dry_run)
+        return {"source": "none", "reverted": [], "env": [], "artifacts": artifacts, "kept": kept}
     current = capture(workspace, external_paths(manifest))
     if manifest is not None:
         target, source, env = revert_states(current, manifest["entries"]), "manifest", manifest.get("env", {})
@@ -775,8 +780,27 @@ def uninstall(workspace: Path, *, dry_run: bool = False, package_manager_owns_pa
             pass
     gone = [Path(a["path"]) for a in artifacts if a["action"] == "remove"] + [manifest_path(workspace)]
     reverted = sorted(apply_states(workspace, current, target, dry_run=dry_run, gone=gone))
+    # After apply_states: it rewrites .claude/settings.local.json from the state captured above.
+    dev_plugin, failed = _take_back_dev_plugin(workspace, dry_run=dry_run)
+    kept += failed
     restored = sorted(env) if dry_run else [_restore_env(n, p) for n, p in sorted(env.items())]
-    return {"source": source, "reverted": reverted, "env": restored, "artifacts": artifacts, "kept": kept}
+    return {"source": source, "reverted": reverted, "env": restored,
+            "artifacts": artifacts + dev_plugin, "kept": kept}
+
+
+def _take_back_dev_plugin(workspace: Path, *, dry_run: bool) -> tuple[list[dict], list[dict]]:
+    """What `gaia dev --channel plugin` set up here, taken back (or only listed on a dry run), and what stays.
+
+    It writes no manifest entry, so a workspace it alone touched has no
+    recorded install and still has this to take back.
+    """
+    from cli import _leftovers  # noqa: PLC0415 -- _leftovers imports this module
+
+    found, kept = _leftovers.dev_plugin_channel(workspace)
+    if dry_run:
+        return found, kept
+    done, failed = _leftovers.apply(found)
+    return done, kept + failed
 
 
 def _restore_env(name: str, prior: str | None) -> str:

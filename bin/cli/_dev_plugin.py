@@ -121,6 +121,27 @@ def _same_path(value: object, path: Path) -> bool:
     return isinstance(value, str) and bool(value) and Path(value).resolve() == path.resolve()
 
 
+def _registered(workspace: Path) -> tuple[list, list]:
+    """The gaia-dev marketplaces Claude Code lists, and its gaia@gaia-dev installs local to *workspace*."""
+    known = [m for m in _listed(workspace, "plugin", "marketplace", "list")
+             if isinstance(m, dict) and m.get("name") == MARKETPLACE_NAME]
+    installed = [p for p in _listed(workspace, "plugin", "list")
+                 if isinstance(p, dict) and p.get("id") == PLUGIN_ID
+                 and p.get("scope") == "local" and _same_path(p.get("projectPath"), workspace)]
+    return known, installed
+
+
+def _run_steps(workspace: Path, steps: list[tuple[str, ...]]) -> list[str]:
+    done = []
+    for step in steps:
+        result = _claude(workspace, *step)
+        if result.returncode != 0:
+            raise RuntimeError(f"claude {' '.join(step)} exited {result.returncode}: "
+                               f"{(result.stderr or result.stdout).strip()[-300:]}")
+        done.append(" ".join(step[:3]))
+    return done
+
+
 def register_plugin(workspace: Path, directory: Path) -> dict[str, Any]:
     """Register gaia-dev and install gaia@gaia-dev at local scope, skipping what is already there."""
     manual = (f"claude plugin marketplace add {directory} --scope local, then "
@@ -128,25 +149,15 @@ def register_plugin(workspace: Path, directory: Path) -> dict[str, Any]:
     if shutil.which("claude") is None:
         return {"action": "error", "path": str(directory),
                 "details": f"claude CLI not found on PATH; register by hand: {manual}"}
-    done = []
     try:
-        known = [m for m in _listed(workspace, "plugin", "marketplace", "list")
-                 if isinstance(m, dict) and m.get("name") == MARKETPLACE_NAME]
+        known, installed = _registered(workspace)
         if known and not _same_path(known[0].get("installLocation"), directory):
             raise ValueError(f"marketplace {MARKETPLACE_NAME} already points at "
                              f"{known[0].get('installLocation')}; remove it first")
         steps = [] if known else [("plugin", "marketplace", "add", str(directory), "--scope", "local")]
-        installed = [p for p in _listed(workspace, "plugin", "list")
-                     if isinstance(p, dict) and p.get("id") == PLUGIN_ID
-                     and p.get("scope") == "local" and _same_path(p.get("projectPath"), workspace)]
         if not installed:
             steps.append(("plugin", "install", PLUGIN_ID, "--scope", "local"))
-        for step in steps:
-            result = _claude(workspace, *step)
-            if result.returncode != 0:
-                raise RuntimeError(f"claude {' '.join(step)} exited {result.returncode}: "
-                                   f"{(result.stderr or result.stdout).strip()[-300:]}")
-            done.append(" ".join(step[:3]))
+        done = _run_steps(workspace, steps)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return {"action": "error", "path": str(directory), "details": f"{exc}; by hand: {manual}"}
     return {"action": "updated" if done else "noop", "path": str(directory),
@@ -166,6 +177,11 @@ def select_dev_plugin(workspace: Path) -> dict[str, Any]:
         wanted = {PLUGIN_ID: True, PUBLISHED_PLUGIN_ID: False}
         if all(plugins.get(key) is value for key, value in wanted.items()):
             return {"action": "noop", "path": str(path), "details": f"{PLUGIN_ID} already selected"}
+        record = selection_record(workspace)
+        if not record.exists():
+            record.parent.mkdir(parents=True, exist_ok=True)
+            record.write_text(json.dumps({"present": PUBLISHED_PLUGIN_ID in plugins,
+                                          "value": plugins.get(PUBLISHED_PLUGIN_ID)}) + "\n")
         plugins.update(wanted)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(settings, indent=2) + "\n")
@@ -173,6 +189,68 @@ def select_dev_plugin(workspace: Path) -> dict[str, Any]:
         return {"action": "error", "path": str(path), "details": f"{exc}; plugins left as they are"}
     return {"action": "updated", "path": str(path),
             "details": f"{PLUGIN_ID} enabled, {PUBLISHED_PLUGIN_ID} disabled in this workspace"}
+
+
+def selection_record(workspace: Path) -> Path:
+    """Where the first selection keeps gaia@gaia-marketplace's local entry as it was before gaia dev."""
+    directory = plugin_dir(workspace)
+    return directory.with_name(f"{directory.name}.selection.json")
+
+
+def unregister_plugin(workspace: Path) -> None:
+    """Uninstall gaia@gaia-dev from the workspace's local scope and remove the gaia-dev marketplace."""
+    if shutil.which("claude") is None:
+        raise RuntimeError(f"claude CLI not found on PATH; by hand from {workspace}: "
+                           f"claude plugin uninstall {PLUGIN_ID} --scope local, then "
+                           f"claude plugin marketplace remove {MARKETPLACE_NAME} --scope local")
+    known, installed = _registered(workspace)
+    steps = [("plugin", "uninstall", PLUGIN_ID, "--scope", "local")] if installed else []
+    if known:
+        steps.append(("plugin", "marketplace", "remove", MARKETPLACE_NAME, "--scope", "local"))
+    _run_steps(workspace, steps)
+
+
+def deselect_dev_plugin(workspace: Path) -> None:
+    """Undo :func:`select_dev_plugin` in the workspace's local settings.
+
+    gaia@gaia-dev is dropped. gaia@gaia-marketplace gets back the entry the
+    selection record holds, and only while it still has the ``false`` gaia dev
+    wrote; otherwise it is left as :func:`published_left_reason` says.
+    """
+    path = workspace / ".claude" / "settings.local.json"
+    if path.is_symlink():
+        raise ValueError("refusing redirected local settings")
+    prior = _prior_published_entry(workspace)
+    settings = json.loads(path.read_text())
+    plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
+    if not isinstance(plugins, dict):
+        return
+    plugins.pop(PLUGIN_ID, None)
+    if published_left_reason(workspace, plugins) is None:
+        if prior.get("present"):
+            plugins[PUBLISHED_PLUGIN_ID] = prior.get("value")
+        else:
+            del plugins[PUBLISHED_PLUGIN_ID]
+    if not plugins:
+        del settings["enabledPlugins"]
+    path.write_text(json.dumps(settings, indent=2) + "\n")
+
+
+def _prior_published_entry(workspace: Path) -> dict | None:
+    record = selection_record(workspace)
+    prior = json.loads(record.read_text()) if record.exists() else None
+    return prior if isinstance(prior, dict) else None
+
+
+def published_left_reason(workspace: Path, plugins: dict) -> str | None:
+    """Why :func:`deselect_dev_plugin` leaves gaia@gaia-marketplace in *plugins* as it is; None when it restores it."""
+    enable = f"to enable it: claude plugin enable {PUBLISHED_PLUGIN_ID} --scope local"
+    if plugins.get(PUBLISHED_PLUGIN_ID) is not False:
+        return f"{PUBLISHED_PLUGIN_ID} left as it is: changed after `gaia dev` disabled it; {enable}"
+    if _prior_published_entry(workspace) is None:
+        return (f"{PUBLISHED_PLUGIN_ID} stays disabled: no record of its entry before `gaia dev` "
+                f"disabled it; {enable}")
+    return None
 
 
 def reload_notice(workspace: Path, directory: Path) -> str:

@@ -313,7 +313,7 @@ def _print_human(result: dict, *, preuninstall: bool, dry_run: bool) -> None:
     db = result.get("db") or {}
 
     source = manifest.get("source", "none")
-    if source == "none":
+    if source == "none" and not (manifest.get("artifacts") or manifest.get("kept")):
         print("  Nothing to revert: no Gaia install recorded in this workspace.")
     elif source == "adopted":
         print("  No manifest: reverting the footprint of an install that predates it.")

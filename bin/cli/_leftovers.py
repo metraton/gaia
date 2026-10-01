@@ -18,8 +18,10 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
+from cli import _dev_plugin  # type: ignore
 from cli._manifest import _is_junction  # type: ignore
 
 GAIA_PACKAGE = "@jaguilar87/gaia"
@@ -66,21 +68,32 @@ def plan(workspace: Path, *, package_manager_owns_package: bool,
 
 
 def apply(artifacts: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Perform *artifacts*; returns ``(done, failed)``, each failure as a kept item with its error."""
+    """Perform *artifacts*; returns ``(done, failed)``, each failure as a kept item with its error.
+
+    An ``after_unregister`` item is kept when the unregister before it failed:
+    the gaia-dev marketplace would point at a deleted folder.
+    """
     done: list[dict] = []
     failed: list[dict] = []
+    unregister_failed = False
     for item in artifacts:
         path = Path(item["path"])
+        if item.get("after_unregister") and unregister_failed:
+            failed.append(_kept(path, f"kept: the {_dev_plugin.MARKETPLACE_NAME} marketplace still points at it"))
+            continue
         try:
             if item["action"] == "edit":
                 _EDITORS[path.name](path)
+            elif item["action"] == "unregister":
+                _dev_plugin.unregister_plugin(Path(item["workspace"]))
             elif item.get("empty_dir") or _is_junction(path):
                 path.rmdir()
             elif path.is_symlink() or path.is_file():
                 path.unlink()
             else:
                 shutil.rmtree(path)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            unregister_failed = unregister_failed or item["action"] == "unregister"
             failed.append(_kept(path, f"could not be removed: {exc}"))
         else:
             done.append(item)
@@ -207,7 +220,38 @@ _EDITORS = {
     "package.json": lambda p: _rewrite_json(p, _drop_gaia_dependency),
     "package-lock.json": lambda p: _rewrite_json(p, _strip_lock),
     "npm-shrinkwrap.json": lambda p: _rewrite_json(p, _strip_lock),
+    "settings.local.json": lambda p: _dev_plugin.deselect_dev_plugin(p.parent.parent),
 }
+
+
+def dev_plugin_channel(workspace: Path) -> tuple[list[dict], list[dict]]:
+    """What `gaia dev --channel plugin` set up for this workspace, in the order it is taken back, and what stays.
+
+    Only its build or its selection record shows that `gaia dev` ran: a
+    gaia@gaia-dev entry without either is the user's own and stays.
+    """
+    directory = _dev_plugin.plugin_dir(workspace)
+    record = _dev_plugin.selection_record(workspace)
+    if not (os.path.lexists(directory) or os.path.lexists(record)):
+        return [], []
+    settings = workspace / ".claude" / "settings.local.json"
+    doc = _load_json(settings)
+    plugins = doc.get("enabledPlugins") if isinstance(doc, dict) else None
+    found = [{"path": str(directory), "action": "unregister", "workspace": str(workspace),
+              "reason": f"{_dev_plugin.PLUGIN_ID} and the {_dev_plugin.MARKETPLACE_NAME} "
+                        "marketplace registered at local scope"}]
+    kept: list[dict] = []
+    if isinstance(plugins, dict) and _dev_plugin.PLUGIN_ID in plugins:
+        left = _dev_plugin.published_left_reason(workspace, plugins)
+        published = (f"{_dev_plugin.PUBLISHED_PLUGIN_ID} back to its entry before `gaia dev`"
+                     if left is None else f"{_dev_plugin.PUBLISHED_PLUGIN_ID} left as it is")
+        found.append(_edit(settings, f"{_dev_plugin.PLUGIN_ID} deselected; {published}"))
+        kept += [_kept(settings, left)] if left else []
+    found += [_remove(path, reason, **extra) for path, reason, extra in (
+        (record, "the entry `gaia dev` replaced when it selected its build", {}),
+        (directory, "the build `gaia dev` extracted for the plugin channel", {"after_unregister": True}),
+    ) if os.path.lexists(path)]
+    return found, kept
 
 
 def _dev_caches(workspace: Path) -> list[dict]:
