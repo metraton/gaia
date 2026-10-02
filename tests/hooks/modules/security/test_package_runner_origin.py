@@ -182,6 +182,34 @@ CASES = [
     ("uv run --python 3.12 pytest", SIGNED),
     ("uv run --group dev --frozen pytest", UNSIGNED),
     ("uv run -w ./vendor/a,./vendor/b pytest", UNSIGNED),
+    # 7. Other spellings of the same runners go through the same rule; an
+    #    initializer (`create-<x>`) always comes from the registry.
+    ("npm exe cowsay hello", SIGNED),
+    ("npm exe eslint .", UNSIGNED),
+    ("npm init react-app my-app", SIGNED),
+    ("npm innit react-app my-app", SIGNED),
+    ("npm create vite", SIGNED),
+    ("yarn create vite", SIGNED),
+    ("pnpm create vite", SIGNED),
+    ("bun create vite", SIGNED),
+    ("uv tool run ruff check .", SIGNED),
+    ("pnpx eslint .", SIGNED),
+    ("bunx --bun cowsay", SIGNED),
+    ("bunx --bun eslint .", UNSIGNED),
+    #    Package-manager configuration in the environment can redirect any of it.
+    ("npm_config_package=cowsay npx eslint .", SIGNED),
+    ("NPM_CONFIG_PREFIX=/nonexistent/p npx eslint .", SIGNED),
+    ("env npm_config_prefix=/nonexistent/p npx eslint .", SIGNED),
+    ("UV_INDEX_URL=https://example.invalid uv run pytest", SIGNED),
+    ("PNPM_HOME=/x pnpm exec eslint .", SIGNED),
+    ("BUN_CONFIG_REGISTRY=https://example.invalid bunx eslint .", SIGNED),
+    ("YARN_ENABLE_SCRIPTS=1 yarn run deploy", SIGNED),
+    ("PIP_INDEX_URL=https://example.invalid pip download x", SIGNED),
+    ("FOO=1 npx eslint .", UNSIGNED),
+    #    `~name` is a user's home or a package name, not a path.
+    ("npx ~evil", SIGNED),
+    ("uv run --with ~evil pytest", SIGNED),
+    ("uv run --with ~/vendor/lib pytest", UNSIGNED),
 ]
 
 
@@ -206,6 +234,16 @@ def test_npm_run_reads_the_package_json_npm_reads(project, command):
     harmless.mkdir()
     (harmless / "package.json").write_text(json.dumps({"scripts": {"live": "vite"}}))
     assert detect_mutative_command(command, cwd=str(project)).is_mutative is True
+
+
+@pytest.mark.parametrize("body,signed", [
+    ('# /// script\n# dependencies = ["requests"]\n# ///\nprint(1)\n', SIGNED),
+    ('# /// script\n# requires-python = ">=3.11"\n# ///\nprint(1)\n', UNSIGNED),
+    ("print(1)\n", UNSIGNED),
+], ids=["inline-dependencies", "inline-metadata-only", "plain"])
+def test_uv_run_script_with_inline_dependencies_is_signed(project, body, signed):
+    (project / "tool.py").write_text(body)
+    assert detect_mutative_command("uv run tool.py", cwd=str(project)).is_mutative is signed
 
 
 def test_runner_outside_any_project_is_signed(tmp_path):

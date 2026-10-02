@@ -1264,7 +1264,8 @@ _PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[FrozenSet[str]]"] = {
     "pipx": frozenset({"run"}),
     "npx": None,
     "bunx": None,
-    "npm": frozenset({"x", "exec"}),
+    "pnpx": None,
+    "npm": frozenset({"x", "exec", "exe"}),
     "bun": frozenset({"x", "exec"}),
     "pnpm": frozenset({"dlx", "exec"}),
     "yarn": frozenset({"dlx"}),
@@ -1281,10 +1282,12 @@ _RUNNER_CODE_ORIGIN: Dict[Tuple[str, "Optional[str]"], str] = {
     ("bunx", None): "installed",
     ("npm", "x"): "installed",
     ("npm", "exec"): "installed",
+    ("npm", "exe"): "installed",
     ("bun", "x"): "installed",
     ("bun", "exec"): "installed",
     ("pnpm", "exec"): "installed",
     ("pnpm", "dlx"): "registry",
+    ("pnpx", None): "registry",
     ("yarn", "dlx"): "registry",
     ("pipx", "run"): "registry",
     ("uvx", None): "registry",
@@ -1338,6 +1341,7 @@ _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "bunx": frozenset({"--package", "-p"}),
     "bun": frozenset({"--package", "-p", "--cwd"}),
     "pnpm": frozenset({"--package", "--dir", "-C", "--filter", "-F"}),
+    "pnpx": frozenset({"--package"}),
     "yarn": frozenset({"--package", "-p", "--cwd"}),
 }
 
@@ -4206,6 +4210,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # through unchanged (mirrors the ``cd`` peel above).
     env_remainder, env_peeled = _peel_leading_command_wrappers(command)
     if env_peeled and env_remainder and env_remainder != command.strip():
+        config_result = _check_package_config_environment(command, env_remainder)
+        if config_result is not None:
+            return config_result
         return detect_mutative_command(
             env_remainder, from_source_code=from_source_code, cwd=cwd,
             _depth=_depth,
@@ -5489,7 +5496,7 @@ def _runner_package_is_local(origin: str, spec: str, project_dir: str) -> bool:
     fetch."""
     import os
 
-    if spec.startswith(("./", "../", "/", "~", "file:")):
+    if spec.startswith(("./", "../", "/", "~/", "file:")):
         return True
     if origin != "installed" or not _is_bare_node_package(spec):
         return False
@@ -5579,6 +5586,33 @@ def _uv_run_fetch_reason(tokens: "Tuple[str, ...]", payload_index: int) -> "Opti
     return None
 
 
+_PEP723_SCRIPT_BLOCK_RE = _re.compile(r"^# /// script[ \t]*$(.*?)^# ///[ \t]*$", _re.M | _re.S)
+
+
+def _script_declares_inline_dependencies(path: str, cwd: "Optional[str]") -> bool:
+    """True when the script at *path* carries a PEP 723 ``# /// script`` block
+    with ``dependencies``, which ``uv run`` fetches; False when it has none or
+    cannot be read."""
+    content = _read_script_content(path, cwd)
+    block = _PEP723_SCRIPT_BLOCK_RE.search(content) if content is not None else None
+    return block is not None and _re.search(
+        r"^#\s*dependencies\s*=", block.group(1), _re.M,
+    ) is not None
+
+
+def _uv_tool_run_as_uvx(tokens: "Tuple[str, ...]") -> "Optional[str]":
+    """``uv tool run ...`` rewritten as the ``uvx ...`` it is an alias of, or
+    ``None``.  ``tool run`` is matched wherever it appears: the rewrite can only
+    sign, since ``uvx`` signs every package that is not a path."""
+    import shlex
+
+    for i in range(1, len(tokens) - 1):
+        if tokens[i] == "tool" and tokens[i + 1] == "run":
+            uvx_tokens = ("uvx", *tokens[1:i], *tokens[i + 2:])
+            return " ".join(shlex.quote(t) for t in uvx_tokens)
+    return None
+
+
 def _check_prefix_runner(
     base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -5627,6 +5661,10 @@ def _check_prefix_runner(
 
     Returns ``None`` when the command is not a resolvable runner invocation.
     """
+    uvx_command = _uv_tool_run_as_uvx(semantics.tokens) if base_cmd == "uv" else None
+    if uvx_command is not None:
+        return detect_mutative_command(uvx_command, cwd=cwd, _depth=_depth + 1)
+
     resolved = _resolve_prefix_runner_payload(base_cmd, semantics)
     if resolved is None:
         return None
@@ -5663,6 +5701,10 @@ def _check_prefix_runner(
             )
         elif origin == "project":
             fetch_reason = _uv_run_fetch_reason(semantics.tokens, payload_index)
+            if fetch_reason is None and lowered.endswith(".py") and (
+                _script_declares_inline_dependencies(payload, cwd)
+            ):
+                fetch_reason = f"{payload} declares inline dependencies (PEP 723)"
         elif unknown_option:
             fetch_reason = "an option outside its known tables hides which package it fetches"
         else:
@@ -6066,6 +6108,42 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
             break
 
     return s[i:].strip(), i > 0
+
+
+_PACKAGE_CONFIG_ENV_RE = _re.compile(
+    r"(?<!\S)(?:npm_config_|NPM_CONFIG_|UV_|PIP_|PNPM_|YARN_|BUN_)[A-Za-z0-9_]*="
+)
+_PACKAGE_TOOL_COMMANDS: FrozenSet[str] = frozenset({
+    "npm", "npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "uv", "uvx", "pip",
+    "pip3", "pipx",
+})
+
+
+def _check_package_config_environment(
+    command: str, remainder: str,
+) -> "Optional[MutativeResult]":
+    """Sign a package tool run under a package-manager configuration variable.
+
+    Such a variable can name the package to run, the folder it is looked up
+    in or the registry it comes from, none of which the command line shows, so
+    the rest of the command cannot prove the code is the project's.  *remainder*
+    is *command* with its leading wrappers and assignments peeled.
+    """
+    import os
+
+    stripped = command.strip()
+    prefix = stripped[: len(stripped) - len(remainder)]
+    base = os.path.basename(remainder.split(None, 1)[0])
+    if base not in _PACKAGE_TOOL_COMMANDS or not _PACKAGE_CONFIG_ENV_RE.search(prefix):
+        return None
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="package-config-environment",
+        cli_family=CLI_FAMILY_LOOKUP.get(base, "package"),
+        confidence="medium",
+        reason=f"'{base}' runs under a package-manager configuration variable",
+    )
 
 
 def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
@@ -7188,6 +7266,15 @@ _PACKAGE_MANAGER_DIR_FLAGS: Dict[str, FrozenSet[str]] = {
     "yarn": frozenset({"--cwd"}),
 }
 
+# Commands that fetch a ``create-<x>`` package from the registry and run it;
+# ``npm init`` does so only when given an initializer.
+_INITIALIZER_SUBCOMMANDS: Dict[str, FrozenSet[str]] = {
+    "npm": frozenset({"init", "innit", "create"}),
+    "bun": frozenset({"create", "c"}),
+    "pnpm": frozenset({"create"}),
+    "yarn": frozenset({"create"}),
+}
+
 # Other spellings of ``install``: npm's typo aliases, ``add``, and ``it``/
 # ``install-test`` (an install followed by the test script); bare ``yarn``
 # (``None``) is ``yarn install``.
@@ -7429,6 +7516,16 @@ def _check_package_manager(
             flags.add(name)
     sub_index, sub = positionals[0] if positionals else (None, None)
     args = [token for _, token in positionals[1:]]
+
+    if sub in _INITIALIZER_SUBCOMMANDS[base_cmd] and (args or sub not in ("init", "innit")):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="registry-fetch",
+            cli_family=family,
+            confidence="medium",
+            reason=f"'{base_cmd} {sub}' fetches and runs an initializer package",
+        )
 
     override = _extract_dir_override(tokens, _PACKAGE_MANAGER_DIR_FLAGS[base_cmd])
     if override:
