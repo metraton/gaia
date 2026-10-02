@@ -394,10 +394,13 @@ def _mark_missing(result_map: dict, missing: list) -> int:
 def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tuple[dict, dict]:
     """Merge scan-owned facts into a map-shape payload. Returns (payload, stats).
 
-    Three branches, in order: create an entry for a newly-seen project, refresh
-    the scan-owned keys of one already there, and mark the entries whose repo
-    vanished. Marking runs LAST so a project that both reappeared and is stale
-    in ``missing`` resolves to present.
+    Four steps, in order: create an entry for a newly-seen project, refresh
+    the scan-owned keys of one already there, reclaim the project entries
+    parked under the workspace key (:func:`_reclaim_parked_entries`), and mark
+    the entries whose repo vanished. Reclaiming runs after the projects resolve
+    so a parked entry finds the slug this run created for it; marking runs LAST
+    so a project that both reappeared and is stale in ``missing`` resolves to
+    present.
 
     ``claimed`` accumulates every slug resolved (matched or newly created) by a
     project already processed in THIS run, and is threaded into every
@@ -702,6 +705,7 @@ def promote_workspace(
         "shape": None,
         "added_entries": 0,
         "refreshed_entries": 0,
+        "reclaimed_entries": 0,
         "marked_missing_entries": 0,
         "collisions": [],
         "rejected": [],
@@ -736,6 +740,7 @@ def promote_workspace(
 
     report["added_entries"] = stats["added_entries"]
     report["refreshed_entries"] = stats["refreshed_entries"]
+    report["reclaimed_entries"] = stats["reclaimed_entries"]
     report["marked_missing_entries"] = stats["marked_missing_entries"]
     report["collisions"] = stats.get("collisions", [])
     report["preview"] = new_payload

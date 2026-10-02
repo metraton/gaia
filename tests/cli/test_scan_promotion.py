@@ -533,6 +533,7 @@ def test_rescan_reclaims_a_project_entry_parked_under_the_workspace_key(tmp_db):
     payload = _read_contract(tmp_db, ws)
 
     assert rep["outcome"] == "applied"
+    assert (rep["added_entries"], rep["refreshed_entries"], rep["reclaimed_entries"]) == (0, 0, 1)
     assert list(payload) == ["gaia"]
     assert payload["gaia"]["workflow"] == "pull request into feat/x"
     assert payload["gaia"]["local_path"] == "/abs/gaia"
@@ -966,6 +967,29 @@ def test_cli_scan_prints_promotion_collision_warning(tmp_path, monkeypatch, caps
     out = capsys.readouterr().out
     assert "WARNING -- promotion collisions" in out
     assert "matched_slug=clone_one -> assigned_slug=clone_two" in out
+
+
+def test_cli_scan_reports_a_reclaimed_entry(tmp_path, monkeypatch, capsys):
+    import subprocess
+    import cli.scan as scan_mod
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    from gaia.paths import db_path
+
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+    ws_root = tmp_path / "ws-parked"
+    repo = ws_root / "gaia"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    _write_contract(db_path(), "ws-parked", {
+        WORKSPACE_META_KEY: {"gaia": {"workflow": "pull request into feat/x"}},
+        "gaia": {"name": "gaia", "local_path": str(repo)},
+    })
+
+    rc = scan_mod.cmd_scan(_MockArgs(workspace="ws-parked", root=str(ws_root)))
+
+    assert rc == 0
+    assert "reclaimed=1" in capsys.readouterr().out
+    assert _read_contract(db_path(), "ws-parked")["gaia"]["workflow"] == "pull request into feat/x"
 
 
 def test_cli_scan_dry_run_previews_promotion_without_db(tmp_path, monkeypatch, capsys):

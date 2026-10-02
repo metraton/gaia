@@ -175,6 +175,7 @@ def _render_human(report, *, dry_run: bool) -> None:
                 f"contract=project_identity shape={promo.get('shape')} "
                 f"added={promo.get('added_entries', 0)} "
                 f"refreshed={promo.get('refreshed_entries', 0)} "
+                f"reclaimed={promo.get('reclaimed_entries', 0)} "
                 f"marked_missing={promo.get('marked_missing_entries', 0)}"
             )
             for rej in promo.get("rejected", []):
