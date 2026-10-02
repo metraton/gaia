@@ -52,10 +52,18 @@ def _request_set(data_dir, steps: list[tuple[str, str]]) -> subprocess.Completed
              "--rollback", "Borrar la rama remota y cerrar el PR.",
              "--verification", "gh pr view", "--shared-state", "Sí: la rama remota y el PR.",
              "--session-id", SESSION, "--agent-id", AGENT_TYPE, "--json"]
+    return subprocess.run(
+        argv, cwd=steps[0][1], env=_cli_env(data_dir), capture_output=True, text=True, timeout=180,
+    )
+
+
+def _cli_env(data_dir) -> dict:
+    """The environment of a Claude Code ``gaia`` call against the scratch data directory."""
     env = {key: value for key, value in os.environ.items()
-           if key not in ("GAIA_DB", "GAIA_DISPATCH_AGENT") and not key.startswith("CLAUDE")}
+           if key not in ("GAIA_DB", "GAIA_DISPATCH_AGENT", "GAIA_HOST_SESSION_ID")
+           and not key.startswith("CLAUDE")}
     env["GAIA_DATA_DIR"] = str(data_dir)
-    return subprocess.run(argv, cwd=steps[0][1], env=env, capture_output=True, text=True, timeout=180)
+    return env
 
 
 def _approve(approval_id: str) -> None:
@@ -105,6 +113,31 @@ def test_signed_set_runs_whole_with_a_local_commit_and_a_sealed_folder(host, tmp
     assert [event for event, _ in outcomes] == ["EXECUTED"] * 3
     assert [payload["command"] for _, payload in outcomes] == [PUSH, OPEN_PR, MERGE_PR]
     assert _pending_count(host["db"]) == 0, "no second signature was asked"
+
+
+def test_the_questions_the_user_answers_show_every_unsigned_step_in_order(host):
+    repo = host["repo"]
+    log, status = "git log --oneline -1", "git status --short"
+    steps = [COMMIT, PUSH, log, OPEN_PR, status]
+    approval_id = _requested(host, [(command, repo) for command in steps])
+
+    asked = subprocess.run(
+        [sys.executable, str(_REPO_ROOT / "bin" / "gaia"), "approvals", "question", approval_id],
+        cwd=repo, env=_cli_env(host["db"].parent), capture_output=True, text=True, timeout=180,
+    )
+    assert asked.returncode == 0, asked.stdout + asked.stderr
+    from bin.cli.approvals import _opencode_presentation
+    from gaia.approvals import store
+
+    opencode = _opencode_presentation(store.get_by_id(approval_id), SESSION, "call-unsigned")
+
+    for questions in (json.loads(asked.stdout)["questions"], opencode["signature"]["questions"]):
+        assert len(questions) == 2, "only the signed steps are asked"
+        shown = " ".join(question["question"] for question in questions)
+        positions = [shown.find(f"[ {command} ]") for command in steps]
+        assert -1 not in positions and positions == sorted(positions), shown
+        for unsigned in (COMMIT, log, status):
+            assert f"[ UNSIGNED STEP ] [ {unsigned} ]" in shown, shown
 
 
 def test_signed_set_request_shows_unsigned_steps_in_position_without_reserving_them(host):

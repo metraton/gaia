@@ -10,8 +10,9 @@ row can be minted: a request the runtime could only refuse after the user
 signed is refused here instead.
 
 A signature covers what a signed step executes, not only its bytes: each file
-the step runs or reads is sealed by content (:func:`sealed_files`) and must be
-unchanged when the item is matched (:func:`files_unchanged`).
+the step runs or reads is sealed by content or by stat identity
+(:func:`sealed_files`) and must be unchanged when the item is matched
+(:func:`files_unchanged`).
 """
 
 from __future__ import annotations
@@ -121,9 +122,9 @@ def _opens_repl(stage: str) -> bool:
     return True
 
 
-#: The largest file a signature seals. Hashing streams, so the bound is not
-#: memory: it keeps the hook's match of a signed item fast, and a file past it
-#: is refused at request time rather than signed without its content.
+#: The largest file sealed by its content. Hashing streams, so the bound is not
+#: memory: it keeps the hook's match of a signed item fast, and a larger file
+#: is sealed by its stat identity instead.
 SEALED_FILE_MAX_BYTES = 64 * 1024 * 1024
 _SCRIPT_RUNNER = re.compile(
     r"^(?:(?:ba|z|da|k)?sh|python(?:\d+(?:\.\d+)*)?|node|ruby|perl|php)$"
@@ -170,22 +171,8 @@ def _file_operands(stage: str) -> list[tuple[str, bool]]:
     return operands
 
 
-def _content_digest(path: str) -> str | None:
-    """The sha256 of the regular file at ``path``; None when nothing is there.
-
-    Raises CommandSetValidationError for what a signature cannot seal: a
-    directory or other non-regular file, or one past SEALED_FILE_MAX_BYTES.
-    """
-    if not os.path.lexists(path):
-        return None
-    if not os.path.isfile(path):
-        raise CommandSetValidationError(
-            f"reads {path}, which is not a regular file; name the files it holds"
-        )
-    if os.path.getsize(path) > SEALED_FILE_MAX_BYTES:
-        raise CommandSetValidationError(
-            f"reads {path}, larger than the {SEALED_FILE_MAX_BYTES} bytes a signature seals"
-        )
+def _content_digest(path: str) -> str:
+    """The sha256 of the file at ``path``."""
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(1 << 20), b""):
@@ -193,47 +180,65 @@ def _content_digest(path: str) -> str | None:
     return digest.hexdigest()
 
 
-def sealed_files(command: str, cwd: str) -> list[dict]:
-    """Seal the content of every file ``command`` runs or reads, resolved from ``cwd``.
+def _is_compiled(path: str) -> bool:
+    """True for an ELF binary."""
+    with open(path, "rb") as handle:
+        return handle.read(4) == b"\x7fELF"
 
-    Each seal is ``{"path", "sha256"}``, ``sha256`` None for an optional file
-    that does not exist yet. An ELF binary is not sealed: it is an installed
-    tool, not something the requester wrote. Raises
-    CommandSetValidationError for a required file that does not exist yet and
-    for any file :func:`_content_digest` cannot seal.
+
+def _file_seal(path: str) -> dict:
+    """How the file at ``path`` is sealed now: by content, by stat identity, or as absent.
+
+    ``{"path", "sha256"}`` holds the content digest, None when nothing is
+    there. An ELF binary and a file past SEALED_FILE_MAX_BYTES are sealed as
+    ``{"path", "stat"}``: device, inode, size, mtime_ns and ctime_ns. An ELF
+    is an installed program rather than something the requester wrote, so
+    what must hold is that it is the same file; ctime cannot be set from user
+    space, so a replacement or an in-place rewrite always changes the identity.
+    Raises CommandSetValidationError for a directory or other non-regular file.
     """
-    seals: dict[str, str | None] = {}
+    if not os.path.lexists(path):
+        return {"path": path, "sha256": None}
+    if not os.path.isfile(path):
+        raise CommandSetValidationError(
+            f"reads {path}, which is not a regular file; name the files it holds"
+        )
+    info = os.stat(path)
+    if info.st_size > SEALED_FILE_MAX_BYTES or _is_compiled(path):
+        identity = [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+        return {"path": path, "stat": identity}
+    return {"path": path, "sha256": _content_digest(path)}
+
+
+def sealed_files(command: str, cwd: str) -> list[dict]:
+    """Seal every file ``command`` runs or reads, resolved from ``cwd`` (:func:`_file_seal`).
+
+    Raises CommandSetValidationError for a required file that does not exist
+    yet and for any file :func:`_file_seal` cannot seal.
+    """
+    seals: dict[str, dict] = {}
     for stage in pipe_stages(command):
         for operand, required in _file_operands(stage):
             path = os.path.normpath(os.path.join(cwd, os.path.expanduser(operand)))
             if path in seals:
                 continue
-            try:
-                digest = _content_digest(path)
-            except OSError as exc:
-                raise CommandSetValidationError(f"cannot read {operand}: {exc.strerror}") from exc
-            if digest is None and required:
+            if required and not os.path.lexists(path):
                 raise CommandSetValidationError(
                     f"runs or reads {operand}, which does not exist yet; write it before "
                     "requesting -- the signature seals its content"
                 )
-            if digest is not None and _is_compiled(path):
-                continue
-            seals[path] = digest
-    return [{"path": path, "sha256": digest} for path, digest in seals.items()]
-
-
-def _is_compiled(path: str) -> bool:
-    """True for an ELF binary, the one kind of program file left unsealed."""
-    with open(path, "rb") as handle:
-        return handle.read(4) == b"\x7fELF"
+            try:
+                seals[path] = _file_seal(path)
+            except OSError as exc:
+                raise CommandSetValidationError(f"cannot read {operand}: {exc.strerror}") from exc
+    return list(seals.values())
 
 
 def files_unchanged(item: dict) -> bool:
-    """True when every file sealed in ``item`` is still exactly as it was signed."""
+    """True when every file sealed in ``item`` still seals exactly as it did when signed."""
     for seal in item.get("files") or ():
         try:
-            if _content_digest(seal["path"]) != seal["sha256"]:
+            if _file_seal(seal["path"]) != seal:
                 return False
         except (CommandSetValidationError, OSError):
             return False

@@ -145,16 +145,56 @@ def test_a_file_the_signature_cannot_seal_is_refused_before_minting(
     assert _approval_count(substrate) == 0
 
 
-def test_a_file_over_the_seal_limit_is_refused_before_minting(substrate, tmp_path):
+def _sparse_file(path, size, head=b""):
+    with open(path, "wb") as handle:
+        handle.write(head)
+        handle.truncate(size)
+
+
+def _over_limit():
     from gaia.approvals.command_set import SEALED_FILE_MAX_BYTES
 
-    with open(tmp_path / "huge.sh", "wb") as handle:
-        handle.truncate(SEALED_FILE_MAX_BYTES + 1)
+    return SEALED_FILE_MAX_BYTES + 1
 
-    result = _request_set(tmp_path, ["bash huge.sh"])
 
-    assert result.returncode != 0
-    assert _approval_count(substrate) == 0
+STAT_SEALED_CASES = {
+    "ELF past the seal limit run by path": (
+        "./tool delete namespace scratch", "tool", _over_limit, b"\x7fELF",
+    ),
+    "small ELF run by path": ("./tool delete namespace scratch", "tool", lambda: 4096, b"\x7fELF"),
+    "manifest past the seal limit": ("kubectl apply -f huge.yaml", "huge.yaml", _over_limit, b""),
+}
+
+
+def _replace(path, size, head):
+    _sparse_file(f"{path}.new", size, head)
+    os.replace(f"{path}.new", path)
+
+
+def _rewrite_in_place(path, size, head):
+    with open(path, "r+b") as handle:
+        handle.seek(size // 2)
+        handle.write(b"x")
+
+
+@pytest.mark.parametrize("change", [None, _replace, _rewrite_in_place],
+                         ids=["unchanged", "replaced", "rewritten in place"])
+@pytest.mark.parametrize("case", sorted(STAT_SEALED_CASES))
+def test_an_elf_or_oversized_file_is_signed_and_pinned_by_its_stat_identity(
+    substrate, tmp_path, case, change,
+):
+    command, name, size_of, head = STAT_SEALED_CASES[case]
+    size = size_of()
+    _sparse_file(tmp_path / name, size, head)
+    (tmp_path / name).chmod(0o755)
+    approval_id = _signed(tmp_path, substrate, command)
+
+    if change is not None:
+        change(tmp_path / name, size, head)
+
+    matched = change is None
+    assert _claude_code_verdict(command) is matched
+    assert (_grant_row(substrate, approval_id)["reservation_tool_use_id"] is not None) is matched
 
 
 @pytest.mark.parametrize("flag", ["--verification", "--shared-state"])

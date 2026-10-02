@@ -43,11 +43,14 @@ of each file a command runs or reads -- an interpreter's script (`bash
 deploy.sh`), a program given as a path, a `--<name>-file` value, a
 `-f`/`--file`/`--filename`/`--values` value -- is sealed when you request. So
 write the file first: a script or `--<name>-file` that does not exist yet is
-refused, as is a directory or a file over 64 MiB. A `-f` value that is not a
+refused, as is a directory. A `-f` value that is not a
 file yet (it may be a word, as in `git push -f origin`) is sealed as absent.
+An ELF binary or a file over 64 MiB is sealed by its identity (device, inode,
+size, modification and change times) instead of its content, so replacing or
+rewriting it breaks the match all the same.
 If any sealed file changes before the command runs -- or an absent one appears
 -- the command no longer matches the signature and is blocked; request it
-again. An ELF binary is not sealed.
+again.
 
 Optional, per command:
 `--cwd` (the existing directory it must run in, once for all or once per

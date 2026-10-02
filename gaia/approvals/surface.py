@@ -64,9 +64,10 @@ class SurfaceLimitError(SealError):
 class Surface:
     """One signature as both hosts show it: one question per sealed command (D33).
 
-    ``questions[i]`` asks signed command ``i``; ``details_questions[i]`` is its
-    Details re-ask. ``text`` shows every step in its position, one per line, an
-    unsigned step included and marked; ``details`` is the Details texts.
+    ``questions[i]`` asks signed command ``i`` and shows the unsigned steps
+    around it in their order; ``details_questions[i]`` is its Details re-ask.
+    ``text`` shows every step in its position, one per line, an unsigned step
+    included and marked; ``details`` is the Details texts.
     """
 
     approval_id: str
@@ -201,10 +202,31 @@ def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Opti
     return None
 
 
-def _command_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's signature question, or an unsigned step's line: who asks and the exact command (D37)."""
-    label = "COMMAND" if is_signed(item) else "UNSIGNED STEP"
-    return f"{_PREFIX} [ AGENT-REQUEST ] [ {_agent(payload)} ] [ {label} ] [ {_target(item)} ]"
+def _steps_text(payload: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
+    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37)."""
+    fields = (
+        f"[ {'COMMAND' if is_signed(step) else 'UNSIGNED STEP'} ] [ {_target(step)} ]"
+        for step in steps
+    )
+    return " ".join([f"{_PREFIX} [ AGENT-REQUEST ] [ {_agent(payload)} ]", *fields])
+
+
+def _question_texts(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One question text per signed item, carrying the unsigned steps of the set in their order.
+
+    The unsigned steps before a signed item open its question and those after
+    the last signed item close the last question, so the questions the user
+    answers show every step while asking only the signed ones.
+    """
+    groups: list[list[Mapping[str, Any]]] = []
+    pending: list[Mapping[str, Any]] = []
+    for item in items:
+        pending.append(item)
+        if is_signed(item):
+            groups.append(pending)
+            pending = []
+    groups[-1].extend(pending)
+    return [_steps_text(payload, group) for group in groups]
 
 
 def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
@@ -282,11 +304,11 @@ def render_at(
             f"approval {approval_id} seals {len(asked)} commands; a signature is "
             f"asked with at most {BATCH_MAX}"
         )
-    texts = [_command_text(payload, item) for item in asked]
+    texts = _question_texts(payload, items)
     details = [_details_text(payload, item) for item in asked]
     return Surface(
         approval_id=approval_id,
-        text="\n".join(_command_text(payload, item) for item in items),
+        text="\n".join(_steps_text(payload, [item]) for item in items),
         details="\n".join(details),
         questions=tuple(
             _question(text, batch_header(start + offset, total, signature=signature))

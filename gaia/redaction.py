@@ -135,6 +135,20 @@ def redact_secret_store_output(text: str) -> str:
     return "".join(lines)
 
 
+def redact_secret_value_output(text: str) -> str:
+    """Return the output of a read that prints decrypted secret values with every value withheld.
+
+    Such a read has no metadata position to keep in clear: a JSON container
+    keeps its keys with every leaf withheld, and any other output is withheld whole.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return text
+    parsed = _parse_json_container(text)
+    if parsed is not None:
+        return json.dumps(_redact_all_leaves(parsed), ensure_ascii=False, indent=2) + "\n"
+    return f"{REDACTED}\n"
+
+
 def has_clear_secret(text: str) -> bool:
     """Say whether text carries a recognizable secret value written in clear.
 

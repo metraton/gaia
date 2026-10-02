@@ -35,7 +35,38 @@ STORE_SENTINEL = "sentinel-store-" + "8b2d07"
 USER_SENTINEL = "sentinel-user-" + "31aa5c"
 REPO_SENTINEL = "sentinel-repo-" + "c0ffee"
 BEARER_SENTINEL = "sentinel-bearer-" + "9d4e2b"
-SENTINELS = (KUBE_SENTINEL, STORE_SENTINEL, USER_SENTINEL, REPO_SENTINEL, BEARER_SENTINEL)
+CLOUD_SENTINEL = "sentinel-cloud-" + "5e7a13"
+SENTINELS = (
+    KUBE_SENTINEL, STORE_SENTINEL, USER_SENTINEL, REPO_SENTINEL, BEARER_SENTINEL, CLOUD_SENTINEL,
+)
+
+FAKE_GCLOUD = f"""#!/usr/bin/env bash
+case "$*" in
+  *--secret=json*) printf '{{"user": "app", "password": "{CLOUD_SENTINEL}"}}\\n' ;;
+  *) printf '{CLOUD_SENTINEL}' ;;
+esac
+exit "${{FAKE_EXIT:-0}}"
+"""
+
+FAKE_AWS = f"""#!/usr/bin/env bash
+case "$*" in
+  *secretsmanager*)
+    printf '{{"Name": "app", "SecretString": "{{\\\\"password\\\\": \\\\"{CLOUD_SENTINEL}\\\\"}}"}}\\n' ;;
+  *get-parameters*)
+    printf '{{"Parameters": [{{"Name": "/app/db", "Type": "SecureString", "Value": "{CLOUD_SENTINEL}"}}]}}\\n' ;;
+  *)
+    printf '{{"Parameter": {{"Name": "/app/db", "Type": "SecureString", "Value": "{CLOUD_SENTINEL}"}}}}\\n' ;;
+esac
+exit "${{FAKE_EXIT:-0}}"
+"""
+
+FAKE_SOPS = f"""#!/usr/bin/env bash
+case "$*" in
+  *.json*) printf '{{"db": {{"password": "{CLOUD_SENTINEL}"}}}}\\n' ;;
+  *) printf 'db:\\n  password: {CLOUD_SENTINEL}\\n' ;;
+esac
+exit "${{FAKE_EXIT:-0}}"
+"""
 
 FAKE_KUBECTL = f"""#!/usr/bin/env bash
 case "$*" in
@@ -69,7 +100,10 @@ exit "${{FAKE_EXIT:-0}}"
 def world(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    for name, body in (("kubectl", FAKE_KUBECTL), ("vault", FAKE_STORE), ("bao", FAKE_STORE)):
+    for name, body in (
+        ("kubectl", FAKE_KUBECTL), ("vault", FAKE_STORE), ("bao", FAKE_STORE),
+        ("gcloud", FAKE_GCLOUD), ("aws", FAKE_AWS), ("sops", FAKE_SOPS),
+    ):
         binary = fake_bin / name
         binary.write_text(body, encoding="utf-8")
         binary.chmod(0o755)
@@ -168,6 +202,15 @@ REDACTED_READS = [
     "bao kv get -format=json secret/app",
     "vault kv get -field=password secret/app",
     "grep -rn TOKEN {repo}",
+    "gcloud secrets versions access latest --secret=db-password --project prod",
+    "gcloud --project prod secrets versions access 3 --secret=json-config",
+    "gcloud beta secrets versions access latest --secret db-password",
+    "aws secretsmanager get-secret-value --secret-id app",
+    "aws --profile prod ssm get-parameter --name /app/db --with-decryption",
+    "aws ssm get-parameters --names /app/db --with-decryption --output json",
+    "sops -d app.enc.yaml",
+    "sops --decrypt app.enc.json",
+    "sops decrypt app.enc.yaml",
 ]
 
 
