@@ -2,9 +2,8 @@
 
 A resumed turn is born into a new row that continues the one it resumes and
 inherits its harness_agent_id, so one harness id names every link of the chain.
-The view must land on the live link and say which links it chose from; links
-born in the same second tie on created_at, which is where a timestamp-only pick
-returned the chain's first, empty link.
+The view must land on the live link and list the links it chose from, also
+when links born in the same second tie on created_at.
 """
 from __future__ import annotations
 
@@ -48,7 +47,13 @@ def _envelope(state: str, key_outputs: list[str]) -> str:
 
 @pytest.fixture()
 def chain_ids(tmp_path) -> list[int]:
-    """Three links of one resume chain, oldest first, all born in one second."""
+    return _seed_chain(tmp_path, (1, 2, 3))
+
+
+def _seed_chain(tmp_path, link_ids: tuple[int, ...]) -> list[int]:
+    """Write three links of one resume chain, all born in one second, and
+    return their ids in chain order; ``link_ids[i]`` is the id of link ``i``.
+    """
     db_path = tmp_path / "gaia-data" / "gaia.db"
     db_path.parent.mkdir(parents=True)
     con = sqlite3.connect(str(db_path))
@@ -66,11 +71,12 @@ def chain_ids(tmp_path) -> list[int]:
         )
         for position, (state, key_outputs) in enumerate(links):
             cur = con.execute(
-                "INSERT INTO agent_contract_handoffs (contract_id, agent_id, "
+                "INSERT INTO agent_contract_handoffs (id, contract_id, agent_id, "
                 "session_id, workspace, kind, agent_state, raw_handoff_json, "
                 "created_at, harness_agent_id, continues_handoff_id) "
-                "VALUES (?, ?, ?, 'me', 'investigation', ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, 'me', 'investigation', ?, ?, ?, ?, ?)",
                 (
+                    link_ids[position],
                     f"{AGENT_ID}.link{position}",
                     AGENT_ID,
                     SESSION,
@@ -110,6 +116,17 @@ def test_view_by_harness_id_resolves_the_latest_link_and_names_the_chain(chain_i
     assert shown["contract_id"] == f"{AGENT_ID}.link2"
     assert shown["envelope"]["agent_status"]["agent_state"] == "COMPLETE"
     assert shown["links"] == chain_ids
+
+
+def test_view_by_harness_id_follows_the_chain_when_ids_disagree_with_it(tmp_path):
+    chain = _seed_chain(tmp_path, (10, 30, 20))
+
+    result = _view()
+
+    assert result.returncode == 0, result.stderr
+    shown = json.loads(result.stdout)
+    assert shown["handoff_id"] == chain[-1] == 20
+    assert shown["envelope"]["agent_status"]["agent_state"] == "COMPLETE"
 
 
 @pytest.mark.parametrize("wrong_kind_of_id", [AGENT_ID, SESSION])

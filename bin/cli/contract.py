@@ -1336,10 +1336,9 @@ def _view_by_harness_id(args, harness_id: str) -> int:
 
     A resume chain shares one harness id across every link, so the id matches
     several rows; the view shows the live link and lists every matched row in
-    ``links``, oldest first. The live link is chosen by the chain's own edges
-    and then by birth order (created_at, id): created_at has one-second
-    resolution, and links born in the same second used to tie and resolve to
-    the chain's first link.
+    ``links`` in birth order. The live link is chosen by the chain's own
+    edges, then by birth order (created_at, id): created_at has one-second
+    resolution, so links born in the same second tie on it.
     """
     from gaia.store.writer import (
         collapse_continuation_chains,
