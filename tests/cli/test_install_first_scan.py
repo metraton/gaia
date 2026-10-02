@@ -8,7 +8,6 @@ of its own.
 """
 
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -71,7 +70,31 @@ def test_bootstrap_registers_no_workspace_even_when_one_is_named(tmp_path):
     assert _rows(db, "SELECT name FROM workspaces") == []
 
 
-@pytest.mark.skipif(shutil.which("sqlite3") is None, reason="the shell bootstrap needs sqlite3")
+_SQLITE3_SHIM = '''
+import sqlite3, sys
+sql = sys.argv[2] if len(sys.argv) > 2 else sys.stdin.read()
+con = sqlite3.connect(sys.argv[1])
+try:
+    rows = con.execute(sql).fetchall()
+except sqlite3.ProgrammingError:
+    con.executescript(sql)
+    rows = []
+con.commit()
+for row in rows:
+    print("|".join("" if v is None else str(v) for v in row))
+'''
+
+
+def _sqlite3_on_path(tmp_path: Path) -> str:
+    """A `sqlite3 DB [SQL]` stand-in on PATH; the CLI is not part of the own toolchain."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "sqlite3"
+    shim.write_text(f"#!{sys.executable}\n{_SQLITE3_SHIM}", encoding="utf-8")
+    shim.chmod(0o755)
+    return f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
+
+
 def test_shell_bootstrap_registers_no_workspace_even_when_one_is_named(tmp_path):
     db = tmp_path / "gaia.db"
     _bootstrap(tmp_path, db)
@@ -83,7 +106,7 @@ def test_shell_bootstrap_registers_no_workspace_even_when_one_is_named(tmp_path)
 
     proc = subprocess.run(
         ["bash", str(_REPO / "scripts" / "bootstrap_database.sh")],
-        env={**_env(tmp_path, db), "WORKSPACE": str(workspace)},
+        env={**_env(tmp_path, db), "WORKSPACE": str(workspace), "PATH": _sqlite3_on_path(tmp_path)},
         capture_output=True, text=True, timeout=300,
     )
 

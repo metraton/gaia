@@ -141,7 +141,7 @@ def test_workspace_without_recorded_root_fails_closed(tmp_path):
     repo = _repo(tmp_path / "ws" / "proj")
     _register("ws", None, repo)
 
-    with pytest.raises(WorktreePathError, match="no recorded root"):
+    with pytest.raises(WorktreePathError, match="is not inside a declared workspace"):
         workspace_worktrees_root(repo)
 
 
