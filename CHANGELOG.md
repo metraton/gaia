@@ -1755,7 +1755,7 @@ enriched_prompt = result["enriched_prompt"]
 
 ## Maintainers
 
-- **Primary:** Jorge Aguilar (jorge.aguilar87@gmail.com)
+- **Primary:** Jorge Aguilar (GitHub [@metraton](https://github.com/metraton))
 - **Contributors:** Claude Code Agent Swarm
 
 ---

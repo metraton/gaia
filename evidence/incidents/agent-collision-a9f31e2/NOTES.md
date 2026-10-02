@@ -1,12 +1,12 @@
 # Incident: agent identity collision on draft handle `a9f31e2` (7-hex, pre-16-floor)
 
 **Date preserved:** 2026-07-26
-**Preserved by:** gaia-system, at the request of jaguilar@aaxis.io, before GC quiescence-window deletion.
+**Preserved by:** gaia-system, at the maintainer's request, before GC quiescence-window deletion.
 
 ## What this file is
 
 `a9f31e2.a8dae04f0cee.json` in this directory is an **exact copy** of
-`/home/jorge/.gaia/contract_drafts/a9f31e2.a8dae04f0cee.json` (original left
+`~/.gaia/contract_drafts/a9f31e2.a8dae04f0cee.json` (original left
 untouched at that path). It is the one contract draft, out of the 377 files
 that were in that directory at time of preservation, whose envelope
 contradicts its own database row.
@@ -72,7 +72,7 @@ this file is the OTHER agent's write, not the owner's.
 ## Provenance of this copy
 
 Copied byte-for-byte from
-`/home/jorge/.gaia/contract_drafts/a9f31e2.a8dae04f0cee.json` on 2026-07-26 by
+`~/.gaia/contract_drafts/a9f31e2.a8dae04f0cee.json` on 2026-07-26 by
 gaia-system, via a direct read of the original followed by a write of the
 identical content here -- no shell `cp`, no move. The original was left in
 place at the `contract_drafts` path; this is a copy, not a relocation.

@@ -5,15 +5,15 @@ description: Use when the user wants to verify a Gaia installation -- "probemos 
 
 # Gaia Verify
 
-Confirm that a Gaia installation actually works. Given a workspace and a delivery surface, run the checks that match that surface and report PASS/FAIL. This skill owns the definition of "a healthy install" -- the wire-up checklist and the per-surface checks. It is the check that `gaia-release` calls at the close of every layer; here it stands alone so the user can invoke it directly against whatever they just installed.
+Confirm that a Gaia installation actually works. Given an install folder and a delivery surface, run the checks that match that surface and report PASS/FAIL. This skill owns the definition of "a healthy install" -- the wire-up checklist and the per-surface checks. It is the check that `gaia-release` calls at the close of every layer; here it stands alone so the user can invoke it directly against whatever they just installed.
 
-Gaia ships as one tree reaching a workspace through two surfaces -- npm/pnpm (the npm package `@jaguilar87/gaia`: symlinks + `settings.local.json`) and the Claude Code plugin (`source: "."` -- `.claude-plugin/marketplace.json` advertises the repository root as the plugin, so `/plugin marketplace add metraton/gaia#<ref>` + `/plugin install` load the code of that ref into CC's plugin cache and load hooks from the repo root's `hooks/hooks.json`; the root `.claude-plugin/plugin.json` is metadata-only, and there is no `dist/` bundle). A change can pass on one surface and break on the other, so the mode you pick must match the surface you are validating.
+Gaia ships as one tree reaching an install folder through two surfaces -- npm/pnpm (the npm package `@jaguilar87/gaia`: symlinks + `settings.local.json`) and the Claude Code plugin (`source: "."` -- `.claude-plugin/marketplace.json` advertises the repository root as the plugin, so `/plugin marketplace add metraton/gaia#<ref>` + `/plugin install` load the code of that ref into CC's plugin cache and load hooks from the repo root's `hooks/hooks.json`; the root `.claude-plugin/plugin.json` is metadata-only, and there is no `dist/` bundle). A change can pass on one surface and break on the other, so the mode you pick must match the surface you are validating.
 
 ## Decision tree
 
 ```
 "probemos" / "verify" / "test installation"
-├─ Already installed in a workspace (npm/pnpm), just edited source? -> live
+├─ Already installed in an install folder (npm/pnpm), edited source? -> live
 ├─ Proving the npm tarball before a release?                        -> npm-sandbox
 ├─ Proving the npm tarball as a plugin before a release?           -> plugin
 └─ Confirming a version already published to npm?                   -> registry
@@ -23,13 +23,13 @@ If the user does not name a mode, ask: "Which mode -- live, npm-sandbox, plugin,
 
 ## Mode: live
 
-Validates a workspace that is already wired (npm/pnpm surface). No build, no temp dir, no cleanup.
+Validates an install folder that is already wired (npm/pnpm surface). No build, no temp dir, no cleanup.
 
-Run against the workspace: `gaia doctor` then `gaia status`, then the **wire-up checklist** below. This is the mode `gaia-release` Layer 1 and Layer 3 call after installing into the target (via `gaia dev --channel <channel> --workspace <TARGET>`, the one-command install).
+Run against the install folder: `gaia doctor` then `gaia status`, then the **wire-up checklist** below. This is the mode `gaia-release` Layer 1 and Layer 3 call after installing into the target (via `gaia dev --channel <channel> --workspace <TARGET>`, the one-command install).
 
 ## Mode: npm-sandbox
 
-Validates the npm surface of exactly what a registry publish would ship -- pack, install into a clean sandbox, run the harness, clean up. No accumulated workspace state.
+Validates the npm surface of exactly what a registry publish would ship -- pack, install into a clean sandbox, run the harness, clean up. No accumulated install-folder state.
 
 Primary path: `gaia release check` runs this gate (as gate 2, `gaia:verify-install:local`) inside the full Layer 2 sequence. To run just this surface in isolation, `npm run gaia:verify-install:local` (packs, installs into `/tmp/gaia-sandbox-<ts>-<pid>/`, runs the harness, cleans up) is what `gaia release check` wraps -- manual step-by-step in `reference.md`. This is the mode `gaia-release` Layer 2 gate 2 calls.
 
@@ -37,7 +37,7 @@ Primary path: `gaia release check` runs this gate (as gate 2, `gaia:verify-insta
 
 Validates the Claude Code plugin surface -- the exact npm tarball, extracted, with its root mounted as a plugin. This is the only mode that exercises the root `plugin.json` (metadata-only) / `hooks/hooks.json`, the packaged agents/skills, and `bin/gaia` on PATH; the npm surface never touches any of it.
 
-Primary path: `gaia release check` runs this gate (as gate 3, `gaia:plugin-dryrun`) inside the full Layer 2 sequence, and SKIPs it gracefully when the `claude` binary is absent. To run just this surface, `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`, what `gaia release check` wraps) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root `plugin.json` present with NO inline `hooks` block, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; the temps are trap-cleaned. Add `gaia release check --functional` (or `npm run gaia:plugin-dryrun -- --functional`) for an optional live functional probe that starts the host on the extracted plugin (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 gate 3 calls. Do NOT publish or install to the real registry to run this.
+Primary path: `gaia release check` runs this gate (as gate 3, `gaia:plugin-dryrun`) inside the full Layer 2 sequence, and SKIPs it gracefully when the `claude` binary is absent. To run just this surface, `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`, what `gaia release check` wraps) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root `plugin.json` present with NO inline `hooks` block, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real install folder and spawns no session; the temps are trap-cleaned. Add `gaia release check --functional` (or `npm run gaia:plugin-dryrun -- --functional`) for an optional live functional probe that starts the host on the extracted plugin (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 gate 3 calls. Do NOT publish or install to the real registry to run this.
 
 ## Mode: registry
 
@@ -47,16 +47,16 @@ Core flow: `npm run gaia:verify-install:rc` (the `@rc` tag) or `npm run gaia:ver
 
 ## Wire-up checklist (live / after any install)
 
-After wiring a workspace, these checks catch what `gaia doctor` cannot reach when the wire-up is so broken that doctor cannot resolve the workspace at all. If any check fails, jump to `gaia-release/reference.md` -> "Diagnostic guide".
+After wiring an install folder, these checks catch what `gaia doctor` cannot reach when the wire-up is so broken that doctor cannot resolve the install folder at all. If any check fails, jump to `gaia-release/reference.md` -> "Diagnostic guide".
 
-Checks 1-3 are the npm channel's. A plugin-only workspace has none of them: its `.claude/` holds only the `hooks` link and `settings.local.json`, and doctor judges `Symlinks`, `Identity`, `Agent routing`, `Workspace initialized` and `Plugin registered` against the plugin install itself (`CLAUDE_PLUGIN_ROOT`, else the install recorded in `~/.claude/plugins/installed_plugins.json`) -- `_plugin_tree` in `bin/cli/doctor.py`.
+Checks 1-3 are the npm channel's. A plugin-only install folder has none of them: its `.claude/` holds only the `hooks` link and `settings.local.json`, and doctor judges `Symlinks`, `Identity`, `Agent routing`, `Workspace initialized` and `Plugin registered` against the plugin install itself (`CLAUDE_PLUGIN_ROOT`, else the install recorded in `~/.claude/plugins/installed_plugins.json`) -- `_plugin_tree` in `bin/cli/doctor.py`.
 
-1. `ls -la <workspace>/.claude/` -- **6 directory symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
-2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). A fresh install always writes `gaia`; fail the check if the name is anything other than `gaia`.
-3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the repo root's `hooks/hooks.json`, not from `settings.local.json` or the metadata-only `plugin.json`).
+1. `ls -la <install-folder>/.claude/` -- **6 directory symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
+2. `cat <install-folder>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). A fresh install always writes `gaia`; fail the check if the name is anything other than `gaia`.
+3. `cat <install-folder>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the repo root's `hooks/hooks.json`, not from `settings.local.json` or the metadata-only `plugin.json`).
 4. `ls ~/.gaia/gaia.db` -- DB file exists. It is bootstrapped **lazily on first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`) or by `gaia install` -- there is no postinstall.
 5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist. `gaia install` writes this marker on any bootstrap or wire-up failure; treat its presence as a hard failure regardless of what `gaia doctor` reports.
-6. `cd <workspace> && gaia doctor` -- `Status: HEALTHY`, checks pass, 0 errors. With no flags, doctor outside a workspace's `node_modules` checks the workspace root recorded in gaia.db that contains the cwd (or `CLAUDE_PROJECT_DIR`), so a subfolder works too; a folder no recorded root contains exits 2 with the `--workspace` hint.
+6. `cd <install-folder> && gaia doctor` -- `Status: HEALTHY`, checks pass, 0 errors. With no flags, doctor outside an install folder's `node_modules` checks the root recorded in gaia.db that contains the cwd (or `CLAUDE_PROJECT_DIR`), so a subfolder works too; a folder no recorded root contains exits 2 with the `--workspace` hint.
 
 ## Drift-free surfaces (what doctor validates == what dev/release reconcile)
 
@@ -69,15 +69,15 @@ absent):
 
 1. **PATH `gaia`** -- a bare `gaia` resolves to the expected build (`gaia doctor`
    check 58, `Global CLI alignment`). A stale `npm install -g` copy earlier on
-   PATH shadowing the workspace shim is the classic drift.
+   PATH shadowing the install folder's shim is the classic drift.
 2. **hooks** (checklist 3 / doctor `Hook registrations` and `Hook commands`).
    Doctor names the active channel (`Install channel`: plugin, npm local, or
    both), counts each shipped (event, matcher) across the plugin's hooks.json,
    `settings.local.json`, `settings.json` and `~/.claude/settings.json` -- 0 or
    more than 1 is an error -- and checks every registered command resolves to
    an existing interpreter and file, which catches what `npm uninstall` leaves.
-   The plugin with no hooks in the workspace settings is the healthy state.
-3. **workspace `node_modules/@jaguilar87/gaia`**, or the `gaia-dev` plugin
+   The plugin with no hooks in the install folder's settings is the healthy state.
+3. **install folder `node_modules/@jaguilar87/gaia`**, or the `gaia-dev` plugin
    directory that `gaia dev --channel plugin` serves (doctor `Install
    provenance`: one record per channel, with the source SHA it was built from
    and how many commits the source has moved since).

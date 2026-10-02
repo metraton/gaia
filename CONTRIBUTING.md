@@ -145,4 +145,4 @@ For detailed guidance, see `skills/skill-creation/SKILL.md`.
 
 ## Questions?
 
-Open an issue on [GitHub](https://github.com/metraton/gaia/issues) or contact the maintainer at jorge.aguilar87@gmail.com.
+Bugs and feature requests: [GitHub Issues](https://github.com/metraton/gaia/issues). Questions or contact: a GitHub direct message to [@metraton](https://github.com/metraton) or LinkedIn, linked from that GitHub profile.

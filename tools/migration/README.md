@@ -17,7 +17,7 @@ desde el filesystem hacia `~/.gaia/gaia.db`.
 | # | Dominio | Origen | Tabla destino |
 |---|---------|--------|---------------|
 | 01 | Episodes | `.claude/project-context/episodic-memory/episodes.jsonl` | `episodes` (+`episodes_fts`) |
-| 02 | Memory | `~/.claude/projects/-home-jorge-ws-me/memory/*.md` | `memory` (+`memory_fts`) |
+| 02 | Memory | `~/.claude/projects/<project-slug>/memory/*.md` | `memory` (+`memory_fts`) |
 | 03 | Context contracts | `.claude/project-context/project-context.json` | `context_contracts` |
 | 04 | Harness events | ~~`.claude/events/events.jsonl`~~ (ELIMINADO) | `harness_events` |
 
@@ -77,7 +77,7 @@ Una vez que `validate.sh` reporte `ALL PASS` y los datos se hayan absorbido en
 los flujos normales de Gaia, todo el directorio `tools/migration/` se borra:
 
 ```
-rm -rf /home/jorge/ws/me/gaia/tools/migration
+rm -rf <gaia-source-checkout>/tools/migration
 rm -f  /tmp/migrate_0{1,2,3,4}_*.sql
 ```
 

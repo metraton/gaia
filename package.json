@@ -23,7 +23,7 @@
     "gitops",
     "gaia"
   ],
-  "author": "Jorge Aguilar <jorge.aguilar87@gmail.com>",
+  "author": "Jorge Aguilar",
   "license": "MIT",
   "private": false,
   "repository": {
@@ -32,8 +32,7 @@
   },
   "homepage": "https://github.com/metraton/gaia#readme",
   "bugs": {
-    "url": "https://github.com/metraton/gaia/issues",
-    "email": "jorge.aguilar87@gmail.com"
+    "url": "https://github.com/metraton/gaia/issues"
   },
   "files": [
     ".claude-plugin/",

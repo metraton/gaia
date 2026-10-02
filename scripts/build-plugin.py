@@ -282,7 +282,6 @@ def generate_plugin_json(manifest: dict) -> dict:
         "description": manifest.get("description", ""),
         "author": {
             "name": "jaguilar87",
-            "email": "jorge.aguilar87@gmail.com",
         },
         "homepage": homepage,
         "repository": "https://github.com/metraton/gaia",
