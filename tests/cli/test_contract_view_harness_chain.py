@@ -88,13 +88,17 @@ def chain_ids(tmp_path) -> list[int]:
     return ids
 
 
-def _view(*extra: str) -> subprocess.CompletedProcess:
+def _view_id(harness_id: str, *extra: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(_REPO_ROOT)
     return subprocess.run(
-        [sys.executable, str(CONTRACT_CLI), "view", "--harness-id", HARNESS_ID, *extra],
+        [sys.executable, str(CONTRACT_CLI), "view", "--harness-id", harness_id, *extra],
         capture_output=True, text=True, env=env,
     )
+
+
+def _view(*extra: str) -> subprocess.CompletedProcess:
+    return _view_id(HARNESS_ID, *extra)
 
 
 def test_view_by_harness_id_resolves_the_latest_link_and_names_the_chain(chain_ids):
@@ -106,6 +110,28 @@ def test_view_by_harness_id_resolves_the_latest_link_and_names_the_chain(chain_i
     assert shown["contract_id"] == f"{AGENT_ID}.link2"
     assert shown["envelope"]["agent_status"]["agent_state"] == "COMPLETE"
     assert shown["links"] == chain_ids
+
+
+@pytest.mark.parametrize("wrong_kind_of_id", [AGENT_ID, SESSION])
+def test_view_by_another_kind_of_id_names_the_expected_id_and_the_rows_harness_id(
+    chain_ids, wrong_kind_of_id,
+):
+    result = _view_id(wrong_kind_of_id)
+
+    assert result.returncode == 1
+    message = result.stderr + result.stdout
+    assert "Task result's agentId in Claude Code" in message
+    assert "child session id in OpenCode" in message
+    assert HARNESS_ID in message
+
+
+def test_view_by_an_unknown_id_names_the_expected_id_and_no_row(chain_ids):
+    result = _view_id("a0000000000000000")
+
+    assert result.returncode == 1
+    message = result.stderr + result.stdout
+    assert "Task result's agentId in Claude Code" in message
+    assert HARNESS_ID not in message
 
 
 def test_view_field_by_harness_id_reads_the_latest_link(chain_ids):

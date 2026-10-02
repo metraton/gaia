@@ -1290,6 +1290,37 @@ def _freshest_envelope(contract_id: Optional[str], row: dict) -> "tuple[Optional
     return envelope, "db_row"
 
 
+_HINT_ROWS_PER_COLUMN = 5
+
+
+def _other_identifier_hint(value: str) -> str:
+    """Name the harness id of rows that ``value`` matches as an agent_id or a
+    session_id instead, or return "" when it matches neither.
+
+    Both are easy to mistake for the harness id: an agent_id has the same
+    shape in Claude Code, and in OpenCode the session_id column holds the
+    PARENT's session while the harness id is the child's own.
+    """
+    from gaia.store.writer import list_agent_contract_handoffs
+
+    hints = []
+    for column in ("agent_id", "session_id"):
+        rows = list_agent_contract_handoffs(
+            **{column: value}, limit=_HINT_ROWS_PER_COLUMN,
+        )
+        if not rows:
+            continue
+        stamped = list(dict.fromkeys(
+            row["harness_agent_id"] for row in rows if row.get("harness_agent_id")
+        ))
+        row_ids = ", ".join(str(row.get("id")) for row in rows)
+        named = ", ".join(stamped) if stamped else "none, the rows were never stamped"
+        hints.append(
+            f" {value!r} is the {column} of row(s) {row_ids}; their harness id: {named}."
+        )
+    return "".join(hints)
+
+
 def _view_by_harness_id(args, harness_id: str) -> int:
     """Resolve and print a turn's contract by the HARNESS's per-run agent id.
 
@@ -1322,11 +1353,13 @@ def _view_by_harness_id(args, harness_id: str) -> int:
     )
     if not links:
         _print_error(
-            f"no contract row carries harness_agent_id={harness_id!r}. Rows "
-            f"are stamped at SubagentStart (v40); a turn dispatched before "
-            f"that version, or one whose start never reached the stamping "
-            f"seam, is only reachable by session/date via 'gaia contract "
-            f"list'.",
+            f"no contract row carries harness_agent_id={harness_id!r}. "
+            f"--harness-id expects the host's per-run id: the Task result's "
+            f"agentId in Claude Code, the child session id in OpenCode."
+            f"{_other_identifier_hint(harness_id)} Rows are stamped at "
+            f"SubagentStart (v40); a turn dispatched before that version, or "
+            f"one whose start never reached the stamping seam, is only "
+            f"reachable by session/date via 'gaia contract list'.",
             as_json=as_json,
         )
         return 1
