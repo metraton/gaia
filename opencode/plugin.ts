@@ -1570,6 +1570,29 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return { ok: false, cause }
   }
 
+  /** Whether Gaia still holds an executable grant for this approval.
+   *
+   * A grant past its window stays PENDING in the store until a sweep marks it
+   * EXPIRED, so the expiry is read as well as the status. An unreadable answer
+   * counts as live: keeping the binding refuses a decision, releasing it could
+   * stack a second executable retry on the session.
+   */
+  async function grantIsLive(approvalID: string): Promise<boolean> {
+    const shown = await gaia(["approvals", "show", approvalID, "--json"])
+    if (!shown.ok) return true
+    let grant: { status?: unknown; expires_at?: unknown } | null | undefined
+    try {
+      grant = JSON.parse(shown.stdout)?.grant
+    } catch {
+      return true
+    }
+    if (!grant) return false
+    if (grant.status !== "PENDING") return false
+    const expiresAt = typeof grant.expires_at === "string" ? Date.parse(grant.expires_at) : Number.NaN
+    if (Number.isNaN(expiresAt)) return true
+    return expiresAt > Date.now()
+  }
+
   /** Release a control and leave the reason where a reader can find it.
    *
    * Every exit is logged AND traced through the bridge: a control that closes
@@ -1677,8 +1700,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<boolean> {
     const existing = retryBySession.get(control.approval.sessionID)
     if (reply === "once" && existing && existing.correlationID !== control.retry.correlationID) {
-      await clearControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
-      return false
+      if (await grantIsLive(existing.approvalID)) {
+        await clearControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
+        return false
+      }
+      if (retryBySession.get(control.approval.sessionID) === existing) {
+        retryBySession.delete(control.approval.sessionID)
+      }
     }
     const admission = decisions.admit(control.request.correlationID, lane)
     if (!admission.accepted) {

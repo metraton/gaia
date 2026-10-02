@@ -22,6 +22,7 @@
  * Usage: bun consent_retry_driver.ts '<scenario json>'
  */
 
+import { Database } from "bun:sqlite"
 import { isAbsolute } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -370,6 +371,16 @@ async function runStep(step: any): Promise<void> {
       record.stdout = (await new Response(child.stdout).text()).trim()
       record.exitCode = await child.exited
       record.allowed = record.exitCode === 0
+    } else if (step.kind === "end-grant") {
+      // The grant leaves its live state the way time or a sweep would leave it,
+      // with no host event: an expired window keeps the PENDING status.
+      const db = new Database(String(process.env.GAIA_DB))
+      const ended = step.how === "expire"
+        ? db.query("UPDATE approval_grants SET expires_at = '2000-01-01T00:00:00Z' WHERE approval_id = ?")
+        : db.query("UPDATE approval_grants SET status = 'REVOKED' WHERE approval_id = ?")
+      record.changes = ended.run(step.approvalID).changes
+      db.close()
+      record.allowed = record.changes === 1
     } else if (step.kind === "compact") {
       const output = { context: [] as string[] }
       await plugin["experimental.session.compacting"]({ sessionID: step.sessionID }, output)
