@@ -95,7 +95,7 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 
 ## How it is used
 
-Gaia reaches a workspace through one of three channels. The workspace is the folder you install in: its repositories are what the first scan indexes.
+Gaia reaches your host through one of three channels. The folder you install in is where the host loads Gaia; it is not a workspace until you declare one (see [Workspaces and projects](#workspaces-and-projects)).
 
 | Channel | Host | What you install | Where `gaia` runs from |
 |---|---|---|---|
@@ -112,7 +112,7 @@ Gaia reaches a workspace through one of three channels. The workspace is the fol
 /plugin install gaia@gaia-marketplace      # terminal: claude plugin install gaia@gaia-marketplace
 ```
 
-That is the whole install, and it does not put `gaia` on your terminal's `PATH`. The first session merges Gaia's permission set into `.claude/settings.local.json`, asks for `/reload-plugins` (or a restart), and starts the first scan of the folder in the background. Auto-update is off for third-party marketplaces; take a new release with `claude plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace` and a restart.
+That is the whole install, and it does not put `gaia` on your terminal's `PATH`. The first session merges Gaia's permission set into `.claude/settings.local.json`, and asks for `/reload-plugins` (or a restart); when the folder lies outside every declared workspace, the session says so and names the command that declares one. Auto-update is off for third-party marketplaces; take a new release with `claude plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace` and a restart.
 
 **Package and OpenCode.** From the folder that becomes the workspace:
 
@@ -123,7 +123,52 @@ npx gaia install --channel npm    # or: pnpm exec gaia install --channel npm
 npx gaia doctor                   # one line per check, PASS or FAIL
 ```
 
-`gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. The first install registers the workspace under its folder name and scans the repositories beneath it. `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can sit beside either Claude Code channel; `--path` also writes the `gaia` launcher to `~/.local/bin`. To take a new release: `npm install @jaguilar87/gaia@latest`, then `npx gaia update`, which re-wires the channels recorded in `.claude/gaia-manifest.json`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
+`gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. It declares no workspace and scans nothing: it reports the declared workspace that holds the folder, or the command to declare one. `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can sit beside either Claude Code channel; `--path` also writes the `gaia` launcher to `~/.local/bin`. To take a new release: `npm install @jaguilar87/gaia@latest`, then `npx gaia update`, which re-wires the channels recorded in `.claude/gaia-manifest.json`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
+
+### Workspaces and projects
+
+Gaia is installed once. That one install, and its one database at `~/.gaia/gaia.db`, serves every workspace you declare.
+
+A workspace exists only when you declare it: a name and the folder it covers. Installing Gaia, opening a session or scanning never creates one. Declare it, then let Gaia find its projects:
+
+```
+gaia workspace declare <name> <path>     # e.g. gaia workspace declare me ~/ws/me
+gaia scan --workspace <name> <path>      # finds the projects inside it
+```
+
+A name or a folder already declared is never given to another. Outside every declared workspace Gaia does not guess one; the session start, `gaia install`, `gaia workspace current` and `gaia worktree create` say:
+
+```
+/home/you/somewhere is not inside a declared workspace.
+Declare one with: gaia workspace declare <name> <path>
+```
+
+Inside a workspace, four rules decide what Gaia sees:
+
+```
+~/ws/                      workspace "ws"
+├── tools/                 project of "ws", no group
+├── clients/acme/api/      project of "ws", group "clients/acme"
+├── notes/                 not a project: no git
+└── me/                    workspace "me", declared inside "ws"
+    └── gaia/              project of "me", not of "ws"
+```
+
+- **A project is a git repository**: any folder holding `.git`. A folder without git is not a project.
+- **A group is the folder path between the workspace and the repository**, at any depth: `clients/acme` above. A repository sitting directly in the workspace has no group. The scan enters folders whose names start with a dot too, except tool folders such as `.git`, `.claude` and `node_modules`.
+- **A repository belongs to the nearest declared workspace that contains it.** Workspaces can sit inside each other; the inner one owns its repositories, and a scan of the outer one leaves them alone.
+- **A project is known by its `origin` remote before its folder.** Moving the folder keeps the project: the next scan finds it in its new place. A repository with no remote is known by its folder, so moving it makes a new project.
+
+A second clone of the same remote is not a second project. The scan reports it as a copy of the project already recorded, and both folders share that one project and its memory.
+
+To move a project into another declared workspace:
+
+```
+gaia project move <project> --into <workspace> --dry-run   # lists what moves and what stays
+gaia project move <project> --into <workspace>
+```
+
+The project goes in one step, with its briefs (those created for it with `gaia brief new --project`) and its profile: what Gaia knows about it, its declared workflow included. Its memory belongs to the project and is read from any workspace, so it moves with it without being copied. Briefs written for the workspace as a whole stay where they are. A workspace that is not declared is refused as the target, and a name found in two workspaces asks for `--from <workspace>`.
 
 **Database migrations.** A new release may move `~/.gaia/gaia.db` to a newer schema. `gaia install` and `gaia update` do it on their own, and so does the plugin at SessionStart when the database is behind. On its own means without asking: a backup goes to `backups/` beside the database, and the whole chain runs in one transaction. What decides whether it can go on alone is what the chain reaches:
 
@@ -157,7 +202,7 @@ claude          # or: opencode
 > what is Gaia, and what can you do for me?
 ```
 
-The orchestrator answers with the picture above and the table of what it can offer. `gaia scan` re-indexes the workspace's repositories when they change, and `gaia status` shows what is wired.
+The orchestrator answers with the picture above and the table of what it can offer. `gaia scan --workspace <name>` re-indexes a declared workspace's repositories when they change, and `gaia status` shows what is wired.
 
 ## Structure
 

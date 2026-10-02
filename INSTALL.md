@@ -85,16 +85,17 @@ export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
 
 Without it subagents run in the foreground and resuming a subagent by `task_id` still works. `gaia install --channel opencode` prints the same line, and `gaia doctor` names it, without failing, while the variable is missing.
 
-### Project Scanner (on-demand, separate from install)
+### Declare a workspace, then scan it
 
-The first `gaia install` (and the plugin's first session) registers the workspace under its folder name and scans the repositories beneath it. To re-index later, run the scanner; it classifies each git repository under a directory into the workspace and writes the rows to `~/.gaia/gaia.db`:
+Installing wires the host; it declares no workspace and scans nothing, and neither does the plugin's first session. A workspace exists only when you declare it, and its projects are found by the scanner:
 
 ```bash
-npx gaia scan --workspace <name>             # walks the current directory
-npx gaia scan --workspace <name> --dry-run   # reports the classification, writes nothing
+npx gaia workspace declare <name> <path>            # e.g. npx gaia workspace declare me ~/ws/me
+npx gaia scan --workspace <name> <path>             # <path> defaults to the current directory
+npx gaia scan --workspace <name> <path> --dry-run   # reports the classification, writes nothing
 ```
 
-`gaia scan` only indexes: it never installs Gaia or creates links. `gaia install` scans only on the first install of a workspace; later runs leave re-indexing to `gaia scan`.
+Outside every declared workspace, `gaia install` and the session start print `<folder> is not inside a declared workspace.` followed by `Declare one with: gaia workspace declare <name> <path>`. `gaia scan` only indexes: it never installs Gaia, creates links or declares a workspace, and applying it to an undeclared name is refused. What counts as a project, a group and the owning workspace, and what happens when a repository moves or is cloned twice, is in [README.md, Workspaces and projects](./README.md#workspaces-and-projects).
 
 ---
 
@@ -107,7 +108,7 @@ User runs: npm install @jaguilar87/gaia   (or: pnpm add @jaguilar87/gaia)
         ↓
 (no postinstall — nothing runs automatically)
         ↓
-User runs: npx gaia install --channel npm    (or the SessionStart hook wires the workspace)
+User runs: npx gaia install --channel npm    (or the SessionStart hook wires the folder)
         ↓
 [Bootstrap] first `gaia` use runs scripts/bootstrap_database.py (lazy)
    - Seeds ~/.gaia/gaia.db with current schema
@@ -134,7 +135,8 @@ Validates installation:
   ✅ Valid configuration
         ↓
 Ready! Run: npx gaia doctor
-Later, to re-index the repositories: npx gaia scan --workspace <name>
+Then declare a workspace: npx gaia workspace declare <name> <path>
+and index its repositories: npx gaia scan --workspace <name> <path>
 ```
 
 ### Real Installation Example
@@ -151,13 +153,15 @@ Example: Install + scan in a project with GitOps and Terraform
       (agents, tools, hooks, config, skills, opencode)
    ✅ settings.local.json merged
    ✅ plugin-registry.json written (name: gaia)
-   ✅ first install: workspace registered under the folder name,
-      the git repositories beneath it scanned into ~/.gaia/gaia.db
+   ✅ workspace: the declared workspace holding the folder,
+      or "Declare one with: gaia workspace declare <name> <path>"
    ↓
 3. Result -- next steps:
    1. Run: pnpm exec gaia doctor
-   2. Run: claude
-   3. Ask: "Show me GKE clusters"
+   2. Run: pnpm exec gaia workspace declare work ~/work
+      and: pnpm exec gaia scan --workspace work ~/work
+   3. Run: claude
+   4. Ask: "Show me GKE clusters"
 ```
 
 ---
@@ -170,8 +174,11 @@ The options each command accepts are the ones its `--help` prints; the ones this
 gaia install --channel {npm,opencode} [--path] [--workspace W]
                                  # bootstrap DB + wire the workspace (no postinstall)
 gaia update                      # re-wires the recorded channels after a package upgrade
+gaia workspace declare NAME PATH # declare a workspace rooted at PATH
 gaia scan --workspace NAME [--dry-run] [root]
-                                 # re-index the git repositories under root
+                                 # index the git repositories under root
+gaia project move PROJECT --into WORKSPACE [--from WORKSPACE] [--dry-run]
+                                 # move a project into another declared workspace
 gaia uninstall [--channel npm|plugin|opencode] [--workspace W] [--dry-run] [--no-backup]
                                  # revert what install wrote (see Uninstallation)
 gaia doctor [--workspace PATH] [--fix]
@@ -447,7 +454,7 @@ Gaia is designed with these principles:
 ### Frequently Asked Questions
 
 **Q: Can I use Gaia in multiple projects?**  
-A: Yes. Each project is a separate workspace in `~/.gaia/gaia.db`. The first `npx gaia install --channel npm` inside each project directory registers it and scans its repositories; `npx gaia scan --workspace <name>` re-indexes one later. The DB is shared but context is per-workspace.
+A: Yes. Every git repository is a project, and one install serves them all. Gather them under workspaces you declare (`npx gaia workspace declare <name> <path>`) and index each with `npx gaia scan --workspace <name> <path>`; a repository belongs to the nearest declared workspace that contains it. One database, `~/.gaia/gaia.db`, holds every workspace. See [README.md, Workspaces and projects](./README.md#workspaces-and-projects).
 
 **Q: Do symlinks work on Windows?**  
 A: Yes, but you need to enable developer mode or run as administrator.
