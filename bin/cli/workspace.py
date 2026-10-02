@@ -150,6 +150,12 @@ def _render_retire(report: dict) -> None:
               + ", ".join(f"{t}={n}" for t, n in history.items()))
     for table, n in (report.get("left_behind") or {}).items():
         print(f"  left under the source: {table}={n}")
+    if report.get("release_root"):
+        verb = "released" if mode == "applied" else "to release"
+        print(f"  source root {verb}: {report['release_root']}")
+    if report.get("restore_root"):
+        verb = "restored" if mode == "undone" else "to restore"
+        print(f"  source root {verb}: {report['restore_root']}")
     for key in ("backup", "ledger"):
         if report.get(key):
             print(f"  {key}: {report[key]}")

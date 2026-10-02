@@ -17,7 +17,10 @@ Every apply backs the database up with the sqlite backup API and writes an
 undo ledger beside the backup before committing; :func:`undo_retire` reads it
 back. A collision on a unique key that ``on_conflict`` did not resolve refuses
 the apply before anything is written. The source ``workspaces`` row is never
-deleted: its history rows reference it and would cascade with it.
+deleted: its history rows reference it and would cascade with it. Its
+``root_path`` is released instead, because a scan hands every repo under a
+recorded root to that root's workspace; a source that still claims a root is
+pending, so re-running an applied retire releases a root it left behind.
 """
 
 from __future__ import annotations
@@ -256,10 +259,14 @@ def _plan(con: sqlite3.Connection, source: str, target: str, on_conflict: dict[s
     except sqlite3.OperationalError:
         aliases_in = []
     current_alias = alias_target(con, source)
+    source_root = con.execute(
+        "SELECT root_path FROM workspaces WHERE name = ?", (source,)
+    ).fetchone()[0]
 
     return {
         "source": source,
         "target": target,
+        "release_root": source_root or None,
         "tables": tables,
         "collisions": collisions,
         "resolved": resolved,
@@ -311,7 +318,7 @@ def _public(plan: dict) -> dict:
 def _pending(plan: dict) -> bool:
     return (
         bool(plan["_drops"]) or bool(plan["_repoint"]) or any(plan["_moves"].values())
-        or plan["alias"] != plan["target"]
+        or plan["alias"] != plan["target"] or plan["release_root"] is not None
     )
 
 
@@ -434,6 +441,7 @@ def apply_retire(
             "moved": {},
             "alias_previous": None,
             "aliases_retargeted": plan["aliases_retargeted"],
+            "root_path_previous": plan["release_root"],
         }
 
         con.execute("BEGIN IMMEDIATE")
@@ -458,6 +466,7 @@ def apply_retire(
                     "UPDATE memory_links SET dst_workspace = ? WHERE rowid = ?", (dest, rowid)
                 )
             ledger["repointed"] = plan["_repoint"]
+            con.execute("UPDATE workspaces SET root_path = NULL WHERE name = ?", (source,))
 
             previous = con.execute(
                 "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
@@ -542,6 +551,7 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
             "target": target,
             "restore": {t: sum(len(r) for r in d.values()) for t, d in ledger["moved"].items()},
             "reinsert": len(ledger["dropped"]),
+            "restore_root": ledger.get("root_path_previous"),
         }
         if dry_run:
             report["mode"] = "dry-run"
@@ -564,6 +574,11 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
                 )
             for entry in reversed(ledger["dropped"]):
                 _reinsert(con, entry["table"], entry["row"])
+            if report["restore_root"] and not con.execute(
+                "UPDATE workspaces SET root_path = ? WHERE name = ? AND root_path IS NULL",
+                (report["restore_root"], source),
+            ).rowcount:
+                diverged["workspaces.root_path"] = 1
 
             con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (source,))
             previous = ledger.get("alias_previous")

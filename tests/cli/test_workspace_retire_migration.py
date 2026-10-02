@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -276,3 +277,70 @@ def test_second_run_does_nothing(db, capsys):
     assert again["mode"] == "noop"
     assert _checksums(db) == before
     assert sorted((db.parent / "backups").iterdir()) == backups
+
+
+def _root_of(db: Path, workspace: str) -> str | None:
+    return _rows(db, "SELECT root_path FROM workspaces WHERE name = ?", (workspace,))[0][0]
+
+
+def test_retire_releases_the_source_root_so_a_scan_of_the_target_adopts_its_repos(
+    db, tmp_path, capsys
+):
+    from tools.scan.classify import scan
+
+    old_root = _root_of(db, "me")
+    subprocess.run(["git", "init", "-q", str(Path(old_root) / "gaia")], check=True)
+
+    rc, plan = _gaia("workspace", "retire", "me", "--into", "ws", "--dry-run", "--json", capsys=capsys)
+    assert rc == 0, plan
+    assert plan["release_root"] == old_root
+    assert _root_of(db, "me") == old_root
+
+    rc, result = _gaia("workspace", "retire", "me", "--into", "ws", "--yes", "--json", capsys=capsys)
+    assert rc == 0, result
+    assert result["release_root"] == old_root
+    assert _rows(db, "SELECT name, root_path FROM workspaces WHERE name = 'me'") == [("me", None)]
+
+    report = scan(tmp_path / "ws", "ws", db_path=db, apply=False)
+    assert report.foreign_repos == []
+    assert [p["repo"] for p in report.projects] == ["gaia"]
+
+
+def test_undo_gives_the_source_its_root_back(db, capsys):
+    old_root = _root_of(db, "me")
+    rc, result = _gaia("workspace", "retire", "me", "--into", "ws", "--yes", "--json", capsys=capsys)
+    assert rc == 0, result
+    assert _root_of(db, "me") is None
+
+    rc, undone = _gaia("workspace", "retire", "--undo", result["ledger"], "--yes", "--json", capsys=capsys)
+    assert rc == 0, undone
+    assert undone["restore_root"] == old_root
+    assert _root_of(db, "me") == old_root
+
+
+def test_rerun_on_a_retire_that_kept_its_root_only_releases_the_root(db, capsys):
+    old_root = _root_of(db, "me")
+    rc, first = _gaia("workspace", "retire", "me", "--into", "ws", "--yes", "--json", capsys=capsys)
+    assert rc == 0, first
+    # The state a retire applied before roots were released left behind.
+    con = sqlite3.connect(str(db))
+    con.execute("UPDATE workspaces SET root_path = ? WHERE name = 'me'", (old_root,))
+    con.commit()
+    con.close()
+    before = _checksums(db)
+    alias_before = _rows(db, "SELECT alias, target, created_at, ledger FROM workspace_aliases")
+
+    rc, again = _gaia("workspace", "retire", "me", "--into", "ws", "--yes", "--json", capsys=capsys)
+    assert rc == 0, again
+    assert again["mode"] == "applied"
+    assert again["release_root"] == old_root
+    assert all(not any(counts.values()) for counts in again["tables"].values()), again["tables"]
+    after = _checksums(db)
+    assert {t for t in before if before[t] != after.get(t)} == {"workspaces", "workspace_aliases"}
+    assert _root_of(db, "me") is None
+    assert _rows(db, "SELECT alias, target FROM workspace_aliases") == [("me", "ws")]
+
+    rc, undone = _gaia("workspace", "retire", "--undo", again["ledger"], "--yes", "--json", capsys=capsys)
+    assert rc == 0, undone
+    assert _root_of(db, "me") == old_root
+    assert _rows(db, "SELECT alias, target, created_at, ledger FROM workspace_aliases") == alias_before
