@@ -372,11 +372,12 @@ async function runStep(step: any): Promise<void> {
       record.exitCode = await child.exited
       record.allowed = record.exitCode === 0
     } else if (step.kind === "end-grant") {
-      // The grant leaves its live state the way time, a sweep or a lost row
+      // The grant changes the way time, a spent call, a sweep or a lost row
       // would, with no host event: an expired window keeps the PENDING status.
       const statements: Record<string, string> = {
         expire: "UPDATE approval_grants SET expires_at = '2000-01-01T00:00:00Z' WHERE approval_id = ?",
         revoke: "UPDATE approval_grants SET status = 'REVOKED' WHERE approval_id = ?",
+        consume: "UPDATE approval_grants SET status = 'CONSUMED' WHERE approval_id = ?",
         delete: "DELETE FROM approval_grants WHERE approval_id = ?",
       }
       const db = new Database(String(process.env.GAIA_DB))

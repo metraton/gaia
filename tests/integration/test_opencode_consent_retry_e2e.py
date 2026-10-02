@@ -582,6 +582,21 @@ def test_a_bound_grant_gaia_cannot_show_still_refuses_a_second_approval(db_env):
     assert _control_closures(db_path) == [("decided", first_id), ("retry_conflict", second_id)]
 
 
+def test_a_bound_grant_consumed_inside_its_window_still_refuses_a_second_approval(db_env):
+    """A grant spent by a call that never ran is restored to PENDING while its window is open."""
+    env, db_path = db_env
+    first_id, second_id = _request_one_set_per_command(env)
+
+    driven = _approve_first_then_second(env, first_id, second_id, between=[
+        {"kind": "end-grant", "label": "grant-consumed", "approvalID": first_id, "how": "consume"},
+    ])
+
+    assert _step(driven, "grant-consumed")["allowed"] is True, driven
+    assert _approval_status(db_path, second_id) == "pending"
+    assert _grant(db_path, second_id) is None
+    assert _control_closures(db_path) == [("decided", first_id), ("retry_conflict", second_id)]
+
+
 def test_an_activated_approval_is_told_to_the_orchestrator_and_traced(db_env):
     """The user's yes has an actor: the orchestrator's own question result says whom to resume.
 

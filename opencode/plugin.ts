@@ -445,8 +445,12 @@ const ORCHESTRATOR_ASK = /^(P-[0-9a-f]{32})( details)?$/
 /** The host's limit on questions in one call, and so on commands asked at once (D33). */
 const SIGNATURE_BATCH_MAX = 4
 
-/** approval_grants statuses gaia/store/writer.py never moves back to PENDING; an unlisted status keeps a binding. */
-const TERMINAL_GRANT_STATUSES = new Set(["CONSUMED", "REVOKED", "FAILED", "EXPIRED"])
+/** approval_grants statuses gaia/store/writer.py never returns to PENDING.
+ *
+ * CONSUMED is left out: a call that never ran gets its grant back as PENDING
+ * while the window is open, so only a past window makes CONSUMED final.
+ */
+const TERMINAL_GRANT_STATUSES = new Set(["REVOKED", "FAILED", "EXPIRED"])
 
 export type OrchestratorAsk = { approvalID: string; mode: SignatureMode }
 
@@ -1577,8 +1581,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    *
    * Only a grant row naming the approval counts as evidence: `show` prints a
    * null or absent grant when its read fails, so absence keeps the binding.
-   * A grant past its window stays PENDING until a sweep marks it EXPIRED,
-   * which is why the expiry is read as well as the status.
+   * A PENDING or CONSUMED grant ends only once its window closes: PENDING
+   * stays until a sweep marks it EXPIRED, and CONSUMED can still be restored.
    */
   async function grantHasEnded(approvalID: string): Promise<boolean> {
     const shown = await gaia(["approvals", "show", approvalID, "--json"])
@@ -1592,7 +1596,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const grant = parsed?.grant
     if (parsed?.approval?.id !== approvalID || !grant || grant.approval_id !== approvalID) return false
     if (TERMINAL_GRANT_STATUSES.has(String(grant.status))) return true
-    if (grant.status !== "PENDING" || typeof grant.expires_at !== "string") return false
+    if (grant.status !== "PENDING" && grant.status !== "CONSUMED") return false
+    if (typeof grant.expires_at !== "string") return false
     return Date.parse(grant.expires_at) <= Date.now()
   }
 
