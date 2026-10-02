@@ -4,7 +4,7 @@ Exact commands for each mode. Copy and run. `<repo>` below is the Gaia source ch
 
 ## Mode: live
 
-Already wired workspace (npm/pnpm surface). No temp dir, no cleanup.
+Already wired install folder (npm/pnpm surface). No temp dir, no cleanup.
 
 ```bash
 cd <TARGET>
@@ -33,7 +33,7 @@ rm -rf /tmp/gaia-sandbox-*
 
 ## Mode: plugin
 
-Validates the exact npm tarball as a plugin -- pack, extract, and validate the extracted root headless. Touches no real workspace, spawns no session. Do NOT publish or install to the real registry.
+Validates the exact npm tarball as a plugin -- pack, extract, and validate the extracted root headless. Touches no real install folder, spawns no session. Do NOT publish or install to the real registry.
 
 ```bash
 cd <repo>

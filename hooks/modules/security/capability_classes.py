@@ -10,7 +10,7 @@ regardless of the specific verb syntax of each tool.
 Without this layer the bash validator has to carry a separate rule for every
 binary -- and the verb scanner cannot help, because tools like ``sqlite3``
 accept *the entire mutation language* as a single argument.  The verb scan
-saw ``sqlite3 /home/jorge/.gaia/gaia.db < /tmp/migration_all.sql`` as a
+saw ``sqlite3 ~/.gaia/gaia.db < /tmp/migration_all.sql`` as a
 non-mutative command and let 856 INSERTs through.
 
 The model

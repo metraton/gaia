@@ -13,7 +13,7 @@ Reglas:
 
 CLI args (parametrización cross-workspace):
   --project   workspace name (default: 'me')
-  --src       path al episodes.jsonl (default: ws/me)
+  --src       path to episodes.jsonl (required)
   --out       path al SQL de salida (default: /tmp/migrate_01_episodes.sql)
   --fragment  emite solo INSERTs (sin BEGIN/COMMIT) — para concatenar en master SQL
 """
@@ -27,7 +27,6 @@ from pathlib import Path
 # --- Defaults (compat invocaciones previas con 'me') ------------------------
 
 DEFAULT_PROJECT = "me"
-DEFAULT_SRC = Path("/home/jorge/ws/me/.claude/project-context/episodic-memory/episodes.jsonl")
 DEFAULT_OUT = Path("/tmp/migrate_01_episodes.sql")
 BATCH_SIZE = 80  # filas por sentencia VALUES (...)
 
@@ -120,7 +119,7 @@ def row_values_sql(row: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate INSERT SQL for episodes table.")
     parser.add_argument("--project", default=DEFAULT_PROJECT, help="workspace project name")
-    parser.add_argument("--src", default=str(DEFAULT_SRC), help="path to episodes.jsonl")
+    parser.add_argument("--src", required=True, help="path to episodes.jsonl")
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="path to output .sql")
     parser.add_argument("--fragment", action="store_true",
                         help="emit only INSERT statements (no BEGIN/COMMIT) for master concatenation")

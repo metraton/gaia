@@ -583,8 +583,8 @@ function traceableBridgeRequest(event: Record<string, unknown>): Record<string, 
 /** The directory Gaia's own processes run from, so their writes are attributed
  * to the session's workspace: `resolve_workspace` derives the workspace from
  * the cwd, and `opencode serve` may run from a directory that is not the
- * project (measured: events from a /home/jorge serve landed in workspace
- * 'jorge' instead of 'me'). Undefined when the host handed no absolute
+ * project (measured: events from a serve started in the home directory
+ * landed in a workspace named after it instead of the project's). Undefined when the host handed no absolute
  * directory, which leaves the spawn inheriting this process's cwd. */
 function gaiaDirectory(input: any): string | undefined {
   const directory = input?.directory

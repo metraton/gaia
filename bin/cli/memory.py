@@ -1395,7 +1395,7 @@ def _project_tag(project_ref) -> str:
     """Derive a short project tag from a project_ref for per-bullet display.
 
     project_ref is stored as a filesystem path to the project's git dir
-    (e.g. ``/home/jorge/ws/me/gaia/.git``) or an opaque identity
+    (e.g. ``/home/user/code/gaia/.git``) or an opaque identity
     (e.g. ``id/p1``). Reduce it to the trailing component: ``gaia``, ``p1``.
     Returns "" when there is nothing to tag.
     """

@@ -2421,7 +2421,7 @@ def initiative_from_project_ref(project_ref: str | None) -> str | None:
 
     ``project_ref`` is the project identity stored on a project-anchored memory
     row: a normalized remote (``github.com/metraton/gaia``), or for a repo
-    without one its git-common-dir (``/home/jorge/ws/me/gaia/.git``). The key is
+    without one its git-common-dir (``/home/user/code/gaia/.git``). The key is
     the last path segment, with a trailing ``.git`` removed, normalized -- both
     examples give ``"gaia"``. Returns ``None`` for an empty ref.
     """

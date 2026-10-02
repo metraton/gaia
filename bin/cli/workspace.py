@@ -341,7 +341,7 @@ def register(subparsers):
             "exist: a folder resolves to the declared root nearest above it. A name "
             "or a root already declared is never rebound."
         ),
-        epilog="Example:\n  gaia workspace declare me ~/ws/me\n",
+        epilog="Example:\n  gaia workspace declare personal ~/code/personal\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     declare_p.add_argument("name", help="Workspace name")

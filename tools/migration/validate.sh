@@ -7,9 +7,9 @@ set -euo pipefail
 
 DB_PATH="${HOME}/.gaia/gaia.db"
 PROJECT="me"
-EPISODES_SRC="/home/jorge/ws/me/.claude/project-context/episodic-memory/episodes.jsonl"
-EVENTS_SRC="/home/jorge/ws/me/.claude/events/events.jsonl"
-NOTES_DIR="/home/jorge/.claude/projects/-home-jorge-ws-me/memory"
+EPISODES_SRC="${EPISODES_SRC:?set EPISODES_SRC to the episodes.jsonl migrate_01 read}"
+EVENTS_SRC="${EVENTS_SRC:?set EVENTS_SRC to the events.jsonl the harness_events rows came from}"
+NOTES_DIR="${NOTES_DIR:?set NOTES_DIR to the memory directory migrate_02 read}"
 
 # Conteos esperados (dinámicos donde aplica).
 # Líneas no-vacías en JSONL = registros candidatos (los .py descartan blank/bad,

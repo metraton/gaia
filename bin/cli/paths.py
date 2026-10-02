@@ -25,11 +25,8 @@ Patterns inspired by engram (MIT). No runtime dependency on engram.
 import sys
 from pathlib import Path
 
-# Ensure the gaia package (repo-rooted) is importable regardless of cwd.
-# bin/gaia inserts _PACKAGE_ROOT (= /home/jorge/ws/me/gaia/) into sys.path.
-# When invoked via the CLI dispatcher, the gaia/ package is directly under
-# that root, so no extra path manipulation is needed here.
-
+# bin/gaia already puts the package root on sys.path; this covers importing
+# the module without the dispatcher.
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
