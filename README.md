@@ -114,7 +114,7 @@ Gaia reaches your host through one of three channels. The folder you install in 
 
 That is the whole install, and it does not put `gaia` on your terminal's `PATH`. The first session merges Gaia's permission set into `.claude/settings.local.json`, and asks for `/reload-plugins` (or a restart); when the folder lies outside every declared workspace, the session says so and names the command that declares one. Auto-update is off for third-party marketplaces; take a new release with `claude plugin marketplace update gaia-marketplace`, then `claude plugin update gaia@gaia-marketplace` and a restart.
 
-**Package and OpenCode.** From the folder that becomes the workspace:
+**Package and OpenCode.** From the folder you install in:
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
@@ -124,6 +124,15 @@ npx gaia doctor                   # one line per check, PASS or FAIL
 ```
 
 `gaia install` migrates or creates `~/.gaia/gaia.db`, links six directories (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus `CHANGELOG.md` into `.claude/`, merges the permission set and the hook registrations into `.claude/settings.local.json` without removing what you had there, and records every file and key it wrote in `.claude/gaia-manifest.json`. It declares no workspace and scans nothing: it reports the declared workspace that holds the folder, or the command to declare one. `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can sit beside either Claude Code channel; `--path` also writes the `gaia` launcher to `~/.local/bin`. To take a new release: `npm install @jaguilar87/gaia@latest`, then `npx gaia update`, which re-wires the channels recorded in `.claude/gaia-manifest.json`. The step-by-step walk-through is in [INSTALL.md](./INSTALL.md).
+
+**Then declare a workspace.** Installing is one step; declaring a workspace is another, and Gaia does not do it for you:
+
+```bash
+npx gaia workspace declare <name> <path>    # package and OpenCode
+npx gaia scan --workspace <name> <path>
+```
+
+On the plugin, `gaia` is on the Bash tool's `PATH` inside a Claude Code session in the install folder, so the same two commands run there without `npx`.
 
 ### Workspaces and projects
 
@@ -168,7 +177,7 @@ gaia project move <project> --into <workspace> --dry-run   # lists what moves an
 gaia project move <project> --into <workspace>
 ```
 
-The project goes in one step, with its briefs (those created for it with `gaia brief new --project`; an existing brief can be tagged with its project, `gaia brief set-project <slug> <project>`) and its profile: what Gaia knows about it, its declared workflow included. Its memory belongs to the project and is read from any workspace, so it moves with it without being copied. Briefs written for the workspace as a whole stay where they are. A workspace that is not declared is refused as the target, and a name found in two workspaces asks for `--from <workspace>`.
+The project goes in one step, with its briefs (those created for it with `gaia brief new --project`; an existing brief can be tagged with its project, `gaia brief set-project <brief> <project> [--dry-run]`) and its profile: what Gaia knows about it, its declared workflow included. Its memory belongs to the project and is read from any workspace, so it moves with it without being copied. Briefs written for the workspace as a whole stay where they are. A workspace that is not declared is refused as the target, and a name found in two workspaces asks for `--from <workspace>`.
 
 **Database migrations.** A new release may move `~/.gaia/gaia.db` to a newer schema. `gaia install` and `gaia update` do it on their own, and so does the plugin at SessionStart when the database is behind. On its own means without asking: a backup goes to `backups/` beside the database, and the whole chain runs in one transaction. What decides whether it can go on alone is what the chain reaches:
 
@@ -191,11 +200,11 @@ Package    npx gaia uninstall            # --dry-run first shows what reverts
 OpenCode   npx gaia uninstall --channel opencode --workspace <folder>, then the npm step above
 ```
 
-`gaia uninstall` with no channel takes back every channel recorded in the workspace. Where two run side by side -- the plugin and OpenCode -- `gaia uninstall --channel npm|plugin|opencode` takes back only that one: OpenCode owns `opencode.json` and `.opencode/`, the Claude Code channel the rest of the manifest, the package copy stays while a remaining channel runs from it, and the other channel stays recorded. A channel the workspace does not record fails, naming the recorded ones. Run `gaia uninstall` from the workspace folder before removing the package or the plugin, while `gaia` still exists. It reverts `.claude/gaia-manifest.json` -- every file, link and settings key back to its prior state, `opencode.json` and the `--path` launcher included -- and writes a gzip snapshot of the database to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. It also removes what the package manager and `gaia dev` left -- the Gaia package under `node_modules` and its `.bin` shim, Gaia's line in `package.json` and `package-lock.json` (your other dependencies stay), the tarballs `gaia dev` cached -- and lists as left in place, with the reason, what it cannot fix itself (a `pnpm-lock.yaml` or `yarn.lock`, `.claude/logs`); `--dry-run` lists exactly what the real run does. The plugin's sessions record what they write into the workspace in the same manifest -- the permissions and attribution merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts the plugin's writes too, including the user entries the merge replaced, and keeps what you added since; a plugin workspace from before that record is recognized by Gaia's permissions and attribution.
+`gaia uninstall` with no channel takes back every channel recorded in the install folder. Where two run side by side -- the plugin and OpenCode -- `gaia uninstall --channel npm|plugin|opencode` takes back only that one: OpenCode owns `opencode.json` and `.opencode/`, the Claude Code channel the rest of the manifest, the package copy stays while a remaining channel runs from it, and the other channel stays recorded. A channel the install folder does not record fails, naming the recorded ones. Run `gaia uninstall` from the install folder before removing the package or the plugin, while `gaia` still exists. It reverts `.claude/gaia-manifest.json` -- every file, link and settings key back to its prior state, `opencode.json` and the `--path` launcher included -- and writes a gzip snapshot of the database to `~/.gaia/snapshots/` unless `--no-backup`. An OpenCode-only folder has no `.claude/` to detect, hence `--workspace`. It also removes what the package manager and `gaia dev` left -- the Gaia package under `node_modules` and its `.bin` shim, Gaia's line in `package.json` and `package-lock.json` (your other dependencies stay), the tarballs `gaia dev` cached -- and lists as left in place, with the reason, what it cannot fix itself (a `pnpm-lock.yaml` or `yarn.lock`, `.claude/logs`); `--dry-run` lists exactly what the real run does. The plugin's sessions record what they write into the workspace in the same manifest -- the permissions and attribution merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts the plugin's writes too, including the user entries the merge replaced, and keeps what you added since; a plugin workspace from before that record is recognized by Gaia's permissions and attribution.
 
-On the plugin, `gaia` is not on your terminal's `PATH` and is gone once the plugin is removed, so run the plugin's own copy first. `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this workspace (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` in a terminal in the workspace folder -- it needs only Python on `PATH`. Inside a Claude Code session in the workspace the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you. Then remove the plugin.
+On the plugin, `gaia` is not on your terminal's `PATH` and is gone once the plugin is removed, so run the plugin's own copy first. `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this folder (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` in a terminal in the install folder -- it needs only Python on `PATH`. Inside a Claude Code session in the install folder the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you. Then remove the plugin.
 
-**First turn.** Start the host in the workspace and ask:
+**First turn.** Start the host in the install folder and ask:
 
 ```
 claude          # or: opencode

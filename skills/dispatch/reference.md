@@ -40,7 +40,7 @@ The specialist runs both verbs itself, inside its turn.
   remote's default branch, fetched first; for work that accumulates on a
   feature branch, fetch that branch and pass `--base origin/<branch>`.
 - Location: `<workspace>/.project-worktrees/<project>/<id>`, the workspace
-  being the one that registered the repository.
+  being the declared workspace that holds the project.
 - Release: `gaia worktree release <path>`. A clean tree is unlocked and
   removed; a dirty one has its diff deposited as evidence (`--brief --ac
   --workspace`, or `--contract-id` for a turn with no brief) and stays in place.

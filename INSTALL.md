@@ -18,7 +18,7 @@ Gaia reaches a workspace through **three channels**, the same three [README.md](
 
 ### Surface 1: npm / pnpm
 
-Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). From the folder that becomes the workspace, install the package, then wire the workspace with `gaia install --channel npm`. A local install puts the CLI in `node_modules/.bin/`, not on your `PATH`, so it is invoked through the package manager:
+Requires `python3` >= 3.12 on `PATH` (the CLI and every hook run on it). From the folder you install in, install the package, then wire that folder with `gaia install --channel npm`. Installing is one step; declaring a workspace is another, run afterwards (see [Declare a workspace, then scan it](#declare-a-workspace-then-scan-it)). A local install puts the CLI in `node_modules/.bin/`, not on your `PATH`, so it is invoked through the package manager:
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
@@ -31,7 +31,7 @@ With `--path`, a bare `gaia` works from any terminal afterwards; the examples be
 **There is no `postinstall` hook.** The install is deliberately non-invasive (npm and pnpm both handle it identically — pnpm ignores lifecycle scripts by default, so relying on `postinstall` would have been fragile). Two things bootstrap on demand instead:
 
 - The database `~/.gaia/gaia.db` is created **lazily on the first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`). You do not have to run anything special — the first `gaia` command you run seeds it.
-- The workspace `.claude/` structure (symlinks + `settings.local.json` + registry) is written by running `gaia install` explicitly, or by the SessionStart hook.
+- The install folder's `.claude/` structure (symlinks + `settings.local.json` + registry) is written by running `gaia install` explicitly, or by the SessionStart hook.
 
 After install, `npx gaia doctor` verifies the result. If a bootstrap or wire-up step fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
 
@@ -47,7 +47,7 @@ Claude Code consumes the plugin from GitHub: the marketplace is the `metraton/ga
 /plugin install gaia@gaia-marketplace
 ```
 
-The marketplace route loads the agents, skills and hooks, and it does write into the workspace: the plugin's first session merges Gaia's permission set (`permissions` allow, deny and ask) and the hidden `attribution` setting into `.claude/settings.local.json` (`setup_project_permissions` in `hooks/modules/core/plugin_setup.py`), links `.claude/hooks`, then asks for `/reload-plugins` or a restart. Its sessions record those writes in `.claude/gaia-manifest.json`, the same manifest `gaia install` keeps, so `gaia uninstall` reverts them (see Uninstallation). What the plugin does **not** do is put the `gaia` CLI on your terminal's `PATH` (the orchestrator runs the plugin's own `bin/gaia`) or create the other `.claude/` links and `opencode.json`: those come from Surfaces 1 and 3. The hooks run as `sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/<entrypoint>.py"`; the launcher uses the first of `python3`, `python` or `py -3` that is Python 3, so a Python >= 3.12 under any of those names must be on `PATH` on this route too.
+The marketplace route loads the agents, skills and hooks, and it does write into the install folder (it declares no workspace): the plugin's first session merges Gaia's permission set (`permissions` allow, deny and ask) and the hidden `attribution` setting into `.claude/settings.local.json` (`setup_project_permissions` in `hooks/modules/core/plugin_setup.py`), links `.claude/hooks`, then asks for `/reload-plugins` or a restart. Its sessions record those writes in `.claude/gaia-manifest.json`, the same manifest `gaia install` keeps, so `gaia uninstall` reverts them (see Uninstallation). What the plugin does **not** do is put the `gaia` CLI on your terminal's `PATH` (the orchestrator runs the plugin's own `bin/gaia`) or create the other `.claude/` links and `opencode.json`: those come from Surfaces 1 and 3. The hooks run as `sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/<entrypoint>.py"`; the launcher uses the first of `python3`, `python` or `py -3` that is Python 3, so a Python >= 3.12 under any of those names must be on `PATH` on this route too.
 
 Auto-update is off by default for third-party marketplaces, so a new release does not reach you on its own. Refresh the marketplace, then update the plugin:
 
@@ -68,7 +68,7 @@ On the plugin surface, Claude Code reads hooks from the package root's inline `.
 
 ### Surface 3: OpenCode
 
-OpenCode runs on the same package as Surface 1. From the folder that becomes the workspace:
+OpenCode runs on the same package as Surface 1. From the folder you install in (declaring a workspace is a separate step afterwards):
 
 ```bash
 npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
@@ -77,7 +77,7 @@ npx gaia install --channel opencode
 
 `--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can be added beside either Claude Code channel. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update`, which re-wires every channel `gaia install` recorded in `.claude/gaia-manifest.json` and fails naming `gaia install --channel` when none is recorded.
 
-OpenCode 1.18.32 runs subagents in the background only when its environment carries `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (or the `OPENCODE_EXPERIMENTAL=true` umbrella); there is no `opencode.json` key for it. Gaia writes nothing outside the workspace, so add this line to your shell profile (`~/.bashrc`, `~/.zshrc`) and open a new shell before starting OpenCode:
+OpenCode 1.18.32 runs subagents in the background only when its environment carries `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (or the `OPENCODE_EXPERIMENTAL=true` umbrella); there is no `opencode.json` key for it. Gaia does not edit your shell profile, so add this line to your shell profile (`~/.bashrc`, `~/.zshrc`) and open a new shell before starting OpenCode:
 
 ```bash
 export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
@@ -172,7 +172,7 @@ The options each command accepts are the ones its `--help` prints; the ones this
 
 ```
 gaia install --channel {npm,opencode} [--path] [--workspace W]
-                                 # bootstrap DB + wire the workspace (no postinstall)
+                                 # bootstrap DB + wire the install folder (no postinstall)
 gaia update                      # re-wires the recorded channels after a package upgrade
 gaia workspace declare NAME PATH # declare a workspace rooted at PATH
 gaia scan --workspace NAME [--dry-run] [root]
@@ -300,7 +300,7 @@ Orchestrator identity lives in `agents/gaia-orchestrator.md` and is activated vi
 # 1. Update package
 npm install @jaguilar87/gaia@latest   # or: pnpm add @jaguilar87/gaia@latest
 
-# 2. Re-sync the workspace (no postinstall does this for you):
+# 2. Re-sync the install folder (no postinstall does this for you):
 npx gaia update                       # or: pnpm exec gaia update
 #    - Refreshes DB schema, config, and symlinks after the version bump
 #    - Re-wires every channel recorded in .claude/gaia-manifest.json;
@@ -415,7 +415,7 @@ It also removes what the package manager and `gaia dev` left, which the manifest
 
 ### Claude Code plugin (Surface 2)
 
-Run `gaia uninstall` in the workspace **before** `claude plugin uninstall`, while the plugin's `gaia` still exists. The plugin does not put `gaia` on your terminal's `PATH`, so run its own copy: `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this workspace (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` from a terminal in the workspace folder -- it needs only Python on `PATH`. Inside a Claude Code session in the workspace the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you; with the package installed too, `npx gaia uninstall` does the same.
+Run `gaia uninstall` in the install folder **before** `claude plugin uninstall`, while the plugin's `gaia` still exists. The plugin does not put `gaia` on your terminal's `PATH`, so run its own copy: `claude plugin list --json` prints an `installPath` for each `gaia@gaia-marketplace` install; take the one installed for this workspace (a local-scope install names it in `projectPath`) and run `<installPath>/bin/gaia uninstall` from a terminal in the workspace folder -- it needs only Python on `PATH`. Inside a Claude Code session in the workspace the same `bin/gaia` is on the Bash tool's `PATH`, so Gaia can run `gaia uninstall` there for you; with the package installed too, `npx gaia uninstall` does the same.
 
 ```bash
 <installPath>/bin/gaia uninstall --dry-run          # shows what reverts, changes nothing
