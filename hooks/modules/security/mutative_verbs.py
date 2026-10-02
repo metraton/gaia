@@ -1251,18 +1251,38 @@ _PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
 # is invoked through the existing lane rather than duplicated here.
 #
 # Each entry maps the runner to the subcommand token that must follow it
-# (``uv run``, ``poetry run``, ``pipx run``) or ``None`` when the runner takes
-# the wrapped command directly (``npx <pkg> <args>``).  ``value_flags`` are the
-# runner's OWN options that consume the following token as their value; without
-# them the value would be mistaken for the wrapped command.  This table is
-# inherently OPEN: a runner nobody listed still bypasses the lane (see the
-# fallback rationale in ``_check_prefix_runner``).
+# (``uv run``, ``pipx run``, ``bun x``, ``pnpm dlx``) or ``None`` when the
+# runner takes the wrapped command directly (``npx <pkg> <args>``).
+# ``value_flags`` are the runner's OWN options that consume the following token
+# as their value; without them the value would be mistaken for the wrapped
+# command.  This table is inherently OPEN: a runner nobody listed still bypasses
+# the lane (see the fallback rationale in ``_check_prefix_runner``).
 _PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[str]"] = {
     "uv": "run",
     "uvx": None,
     "poetry": "run",
     "pipx": "run",
     "npx": None,
+    "bunx": None,
+    "bun": "x",
+    "pnpm": "dlx",
+    "yarn": "dlx",
+}
+
+# Runners that fetch the package they run from a registry unless the project
+# already provides it, keyed to the ecosystem whose manifest declares it.  ``uv
+# run`` and ``poetry run`` are absent: they run inside the project environment.
+_REGISTRY_RUNNER_ECOSYSTEMS: Dict[str, str] = {
+    "npx": "node", "bunx": "node", "bun": "node", "pnpm": "node", "yarn": "node",
+    "pipx": "python", "uvx": "python",
+}
+
+# Per ecosystem: the options naming the package to fetch in place of the wrapped
+# command (``npx -p cowsay say``), and the options adding packages beside it.
+# ``-p`` is a package only for node runners; ``uvx -p`` selects a Python.
+_RUNNER_PACKAGE_FLAGS: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
+    "node": (frozenset({"--package", "-p"}), frozenset()),
+    "python": (frozenset({"--spec", "--from"}), frozenset({"--with"})),
 }
 
 _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
@@ -1277,6 +1297,10 @@ _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "poetry": frozenset({"--directory", "-C", "--project", "-P"}),
     "pipx": frozenset({"--spec", "--python", "--pip-args", "--index-url"}),
     "npx": frozenset({"--package", "-p", "--node-options", "--userconfig"}),
+    "bunx": frozenset({"--package", "-p"}),
+    "bun": frozenset({"--package", "-p", "--cwd"}),
+    "pnpm": frozenset({"--package", "--dir", "-C", "--filter", "-F"}),
+    "yarn": frozenset({"--package", "-p", "--cwd"}),
 }
 
 # ``npx`` runs an arbitrary SHELL command when given ``--call``/``-c``, so the
@@ -1438,7 +1462,7 @@ def _is_ps_encoded_flag(flag: str) -> bool:
 # when base_cmd is an interpreter, so it never sees these.  This lane inverts the
 # default to conservative DEFAULT-DENY *scoped to recognized Windows tokens*: an
 # unknown verb / cmdlet / subcommand in a Windows context -> T3, mirroring the
-# `_check_script_file` (unreadable -> T3) and `_check_npm_script_runner`
+# `_check_script_file` (unreadable -> T3) and `_check_package_manager`
 # (unresolvable -> T3) fallbacks.  It is deliberately NOT applied to arbitrary
 # bash tokens: an unrecognized base_cmd returns None so POSIX classification is
 # untouched.
@@ -4382,18 +4406,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if script_result is not None:
         return script_result
 
-    # --- Step 1e: npm script-runner resolution (AC-3) ---
-    # `npm run <script>` classifies by the SCRIPT NAME under the verb scanner,
-    # but the name is arbitrary: `npm run db-migrate` / `npm ci` bypass consent
-    # as SAFE while `npm run start` false-positives.  Resolve `npm run <script>`
-    # to its real package.json body and classify THAT (mirroring the script-file
-    # lane); `npm ci` is unconditionally mutative; unresolvable -> conservative
-    # T3.  Returns None for other npm forms so ordinary detection continues.
-    npm_result = _check_npm_script_runner(
+    # --- Step 1e: package managers (npm, bun, pnpm, yarn) ---
+    # A script name is arbitrary, so `<manager> run <script>` classifies by the
+    # script's package.json body (unresolvable -> conservative T3); adding a
+    # dependency is T3; a lockfile-frozen install is classified by the project's
+    # install lifecycle scripts.  Returns None for other forms.
+    package_result = _check_package_manager(
         base_cmd, family, semantics, cwd=cwd, _depth=_depth,
     )
-    if npm_result is not None:
-        return npm_result
+    if package_result is not None:
+        return package_result
 
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
@@ -5272,8 +5294,8 @@ def _check_python_module_runner(
 
 def _resolve_prefix_runner_payload(
     base_cmd: str, semantics: "CommandSemantics",
-) -> "Optional[Tuple[str, Tuple[str, ...]]]":
-    """Return ``(wrapped_command_token, remaining_args)`` for a prefix runner.
+) -> "Optional[Tuple[str, Tuple[str, ...], Tuple[str, ...]]]":
+    """Return ``(wrapped_command_token, remaining_args, packages)`` for a runner.
 
     Walks the runner's own options -- skipping boolean flags, consuming the
     value of a ``value_flags`` option, and accepting the self-contained
@@ -5282,6 +5304,9 @@ def _resolve_prefix_runner_payload(
     (``uv run``) the subcommand must appear before that positional, otherwise
     this is a DIFFERENT operation of the same CLI (``uv pip install``, ``poetry
     add``) that ordinary verb detection already owns.
+
+    ``packages`` are the package specs the runner has to find or fetch: the
+    values of its package options, or else the wrapped command itself.
 
     Returns ``None`` whenever the command is not a runner invocation with a
     resolvable payload, so the caller leaves classification unchanged.
@@ -5292,6 +5317,16 @@ def _resolve_prefix_runner_payload(
     required_subcommand = _PREFIX_RUNNER_SUBCOMMANDS[base_cmd]
     value_flags = _PREFIX_RUNNER_VALUE_FLAGS.get(base_cmd, frozenset())
     raw_tokens = semantics.tokens
+    ecosystem = _REGISTRY_RUNNER_ECOSYSTEMS.get(base_cmd)
+    source_flags, extra_flags = _RUNNER_PACKAGE_FLAGS.get(ecosystem, (frozenset(), frozenset()))
+    sources: List[str] = []
+    extras: List[str] = []
+
+    def option_value(index: int) -> "Optional[str]":
+        _, sep, inline = raw_tokens[index].partition("=")
+        if sep:
+            return inline
+        return raw_tokens[index + 1] if index + 1 < len(raw_tokens) else None
 
     subcommand_seen = required_subcommand is None
     i = 1
@@ -5301,12 +5336,17 @@ def _resolve_prefix_runner_payload(
             i += 1
             continue
         if token.startswith("-"):
+            flag = token.split("=", 1)[0]
+            if subcommand_seen and flag in source_flags | extra_flags:
+                value = option_value(i)
+                if value is not None:
+                    (sources if flag in source_flags else extras).append(value)
             if base_cmd == "npx" and token in _NPX_SHELL_CALL_FLAGS:
                 # ``npx --call "<shell command>"``: the value is a command
                 # string, not a package -- hand it back as the payload with no
                 # remaining args so the caller re-classifies it as a command.
                 if i + 1 < len(raw_tokens):
-                    return (raw_tokens[i + 1], ())
+                    return (raw_tokens[i + 1], (), tuple(sources + extras))
                 return None
             if token in value_flags:
                 i += 2
@@ -5319,16 +5359,88 @@ def _resolve_prefix_runner_payload(
             subcommand_seen = True
             i += 1
             continue
-        return (token, tuple(raw_tokens[i + 1:]))
+        packages = tuple((sources or [token]) + extras)
+        return (token, tuple(raw_tokens[i + 1:]), packages)
 
     return None
+
+
+def _is_bare_package_name(ecosystem: str, spec: str) -> bool:
+    """False when *spec* pins a version, range, extra or URL -- what then runs
+    is not provably the local copy."""
+    if ecosystem == "node":
+        pattern = r"(@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*"
+    else:
+        pattern = r"[a-z0-9][\w.-]*"
+    return _re.fullmatch(pattern, spec, _re.IGNORECASE) is not None
+
+
+def _declared_python_dependencies(project_dir: str) -> FrozenSet[str]:
+    """Normalized names of every dependency ``pyproject.toml`` declares."""
+    import os
+
+    try:
+        import tomllib
+        with open(os.path.join(project_dir, "pyproject.toml"), "rb") as fh:
+            data = tomllib.load(fh)
+    except (ImportError, OSError, ValueError):
+        return frozenset()
+
+    def table(parent: object, key: str) -> dict:
+        value = parent.get(key) if isinstance(parent, dict) else None
+        return value if isinstance(value, dict) else {}
+
+    def strings(value: object) -> List[str]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+
+    project = table(data, "project")
+    poetry = table(table(data, "tool"), "poetry")
+    requirements = strings(project.get("dependencies"))
+    requirements += strings(table(table(data, "tool"), "uv").get("dev-dependencies"))
+    for group in (table(project, "optional-dependencies"), table(data, "dependency-groups")):
+        for entries in group.values():
+            requirements += strings(entries)
+    requirements += list(table(poetry, "dependencies")) + list(table(poetry, "dev-dependencies"))
+    for group in table(poetry, "group").values():
+        requirements += list(table(group, "dependencies"))
+
+    names = set()
+    for requirement in requirements:
+        match = _re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
+        if match:
+            names.add(_re.sub(r"[-_.]+", "-", match.group(0)).lower())
+    return frozenset(names)
+
+
+def _runner_package_is_local(ecosystem: str, spec: str, project_dir: str) -> bool:
+    """True when *spec* is a path, or a bare name the project installs or declares."""
+    import os
+
+    if ":" in spec:
+        return False
+    if spec.startswith((".", "/", "~")) or ("/" in spec and not spec.startswith("@")):
+        return True
+    if not _is_bare_package_name(ecosystem, spec):
+        return False
+    if ecosystem == "python":
+        return _re.sub(r"[-_.]+", "-", spec).lower() in _declared_python_dependencies(project_dir)
+    modules = os.path.join(project_dir, "node_modules")
+    if os.path.isfile(os.path.join(modules, ".bin", spec)) or os.path.isdir(os.path.join(modules, spec)):
+        return True
+    manifest = _read_package_json(project_dir) or {}
+    return any(
+        isinstance(manifest.get(field), dict) and spec in manifest[field]
+        for field in (
+            "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+        )
+    )
 
 
 def _check_prefix_runner(
     base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> "Optional[MutativeResult]":
-    """Re-dispatch ``uv run`` / ``poetry run`` / ``pipx run`` / ``npx`` payloads.
+    """Classify a prefix runner by its payload and by where its package comes from.
 
     A prefix runner's base token is not an interpreter, so the script-file lane
     never opens the wrapped script and the invocation classifies by the runner's
@@ -5342,6 +5454,12 @@ def _check_prefix_runner(
     When the payload is a script PATH its canonical interpreter is prepended
     (``_SCRIPT_EXT_INTERPRETERS``); otherwise the payload is itself a command
     and is re-classified as written.
+
+    A registry runner (``_REGISTRY_RUNNER_ECOSYSTEMS``) whose payload is not
+    itself mutative is still mutative when any package it needs is neither
+    installed in nor declared by the project at *cwd*: that code would come
+    from a registry unreviewed.  A spec that pins a version cannot be shown to
+    be the local copy, so it counts as fetched.
 
     Fallback choice, stated explicitly because the reachable behavior and the
     documented one disagree: an UNRECOGNIZED runner still falls to T0, and this
@@ -5357,8 +5475,8 @@ def _check_prefix_runner(
     positive that breaks legitimate work on every surface and trains blind
     approval, and it contradicts the module's stated model -- safe by
     elimination, never by an allow-list.  So T0 remains the fallback for an
-    unrecognized runner, and the honest scope of this lane is: the four named
-    shapes are inspected; a fifth runner, a project-local wrapper script, or an
+    unrecognized runner, and the honest scope of this lane is: the named
+    shapes are inspected; an unlisted runner, a project-local wrapper script, or an
     interpreter reached by a path whose basename is not a known interpreter name
     still passes as T0.
 
@@ -5376,8 +5494,9 @@ def _check_prefix_runner(
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("runner payload")
 
-    payload, rest = resolved
+    payload, rest, packages = resolved
 
+    import os
     import shlex
 
     interpreter = None
@@ -5391,6 +5510,25 @@ def _check_prefix_runner(
     rewritten = " ".join(shlex.quote(t) for t in tokens)
 
     inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
+    ecosystem = _REGISTRY_RUNNER_ECOSYSTEMS.get(base_cmd)
+    if not inner.is_mutative and ecosystem is not None:
+        project_dir = cwd if cwd is not None else os.getcwd()
+        fetched = [
+            spec for spec in packages
+            if not _runner_package_is_local(ecosystem, spec, project_dir)
+        ]
+        if fetched:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="registry-fetch",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"Runner '{base_cmd}' would fetch {', '.join(fetched)} from "
+                    f"a registry: not installed in or declared by {project_dir}"
+                ),
+            )
     return MutativeResult(
         is_mutative=inner.is_mutative,
         category=inner.category,
@@ -6138,7 +6276,7 @@ def _check_windows_native_command(
 
     An unknown verb / cmdlet / subcommand in a recognized Windows context ->
     T3 (default-deny), mirroring ``_check_script_file`` (unreadable -> T3) and
-    ``_check_npm_script_runner`` (unresolvable -> T3).
+    ``_check_package_manager`` (unresolvable -> T3).
     """
     tokens = list(semantics.tokens)
     non_flags = semantics.non_flag_tokens
@@ -6791,16 +6929,17 @@ def _classify_script_content_by_regex(
 
 
 # ---------------------------------------------------------------------------
-# npm run <script> body resolution (Brief gaia-system-security-lifecycle, AC-3)
+# Package-manager commands: npm, bun, pnpm, yarn (Step 1e)
 # ---------------------------------------------------------------------------
-# The verb scanner matches the npm SCRIPT NAME against the taxonomy, but the
-# name is arbitrary: ``npm run db-migrate`` / ``npm ci`` slip through as SAFE
-# (a consent bypass) while ``npm run start`` / ``copy-assets`` false-positive.
-# The fix mirrors the script-file lane: resolve ``npm run <script>`` to its real
-# command body from ``package.json`` (``scripts.<script>``) and classify THAT
-# body with the existing engine.  When the body cannot be resolved -- no
-# package.json, unparseable JSON, or the script entry is absent -- fall back to
-# the same conservative T3 default the unreadable-script-file case uses.
+# The verb scanner matches the SCRIPT NAME against the taxonomy, but the name is
+# arbitrary: ``npm run db-migrate`` slips through as SAFE while ``npm run
+# deploy`` whose body is ``vite build`` false-positives.  The signature follows
+# where the code comes from instead: a project script is resolved to its body in
+# ``package.json`` (``scripts.<script>``) and that body is classified with the
+# existing engine -- unresolvable falls back to the conservative T3 default of
+# the unreadable-script-file case; adding a dependency brings registry code and
+# is T3; a frozen install brings only what the lockfile already pins, so it is
+# classified by the project's own install lifecycle scripts.
 
 # Splits a script body into the individual commands the shell would run so a
 # mutation in ANY clause is seen, not just the first.  Long operators (``&&``,
@@ -6822,21 +6961,9 @@ def _resolve_npm_script_body(
     ``cd /repo && npm run build`` reads ``/repo/package.json``.
     """
     import os
-    import json
 
-    base = cwd if cwd is not None else os.getcwd()
-    path = os.path.join(base, "package.json")
-    try:
-        if not os.path.isfile(path):
-            return None
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-    if not isinstance(data, dict):
-        return None
-    scripts = data.get("scripts")
+    data = _read_package_json(cwd if cwd is not None else os.getcwd())
+    scripts = data.get("scripts") if data is not None else None
     if not isinstance(scripts, dict):
         return None
     body = scripts.get(script_name)
@@ -6845,119 +6972,151 @@ def _resolve_npm_script_body(
     return body
 
 
-def _extract_npm_prefix_override(tokens: "Tuple[str, ...]") -> "Optional[str]":
-    """Return the directory value of npm's global ``--prefix``/``-C`` option.
+def _read_package_json(project_dir: str) -> "Optional[dict]":
+    """Return the ``package.json`` object in *project_dir*, or ``None`` when it
+    is missing, unreadable, or not a JSON object."""
+    import os
+    import json
 
-    npm's ``--prefix <dir>`` (or its short alias ``-C <dir>``) tells npm to
-    resolve ``package.json`` from *dir* instead of the invoking cwd -- this is
-    exactly how a wrapped dev loop runs a workspace's scripts from an
-    arbitrary launch directory (``npm run build --prefix /path/to/repo``).
-    Without this, ``--prefix`` is invisible to the classifier: package.json
-    resolution silently falls back to ``os.getcwd()`` (the hook's own cwd,
-    typically the monorepo root), so the script body is read from the WRONG
-    package.json (or none at all) and the invocation falls to the
-    conservative ``npm-run-unresolved`` T3 regardless of the real script.
+    try:
+        with open(os.path.join(project_dir, "package.json"), "r",
+                  encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _extract_dir_override(
+    tokens: "Tuple[str, ...]", flags: FrozenSet[str],
+) -> "Optional[str]":
+    """Return the directory value of a package manager's own cwd option.
+
+    npm's ``--prefix <dir>`` (or ``-C <dir>``), pnpm's ``--dir``/``-C`` and
+    bun's and yarn's ``--cwd`` make the manager read ``package.json`` from
+    *dir* instead of the invoking cwd -- exactly how a wrapped dev loop runs a
+    workspace's scripts from an arbitrary launch directory (``npm run build
+    --prefix /path/to/repo``).  Without this, the option is invisible to the
+    classifier: package.json resolution silently falls back to ``os.getcwd()``
+    (the hook's own cwd, typically the monorepo root), so the script body is
+    read from the WRONG package.json (or none at all).
 
     Recognizes both the space form (``--prefix /dir``) and the inline
     ``--prefix=/dir`` form, and either flag position -- before or after the
-    subcommand -- since npm accepts both. Scanning the raw ``tokens`` (not
-    ``non_flag_tokens``) preserves the directory's original case, which
-    matters on case-sensitive filesystems. Returns ``None`` when neither flag
-    is present or the flag has no value.
+    subcommand. Scanning the raw ``tokens`` (not ``non_flag_tokens``)
+    preserves the directory's original case, which matters on case-sensitive
+    filesystems. Returns ``None`` when no flag is present or it has no value.
     """
     n = len(tokens)
     for i, tok in enumerate(tokens):
-        if tok.startswith("--prefix="):
-            value = tok.split("=", 1)[1]
+        flag, sep, value = tok.partition("=")
+        if sep and flag in flags:
             return value or None
-        if tok in ("--prefix", "-C") and i + 1 < n:
+        if tok in flags and i + 1 < n:
             return tokens[i + 1]
     return None
 
 
-def _check_npm_script_runner(
-    base_cmd: str, family: str, semantics: "CommandSemantics",
-    cwd: "Optional[str]" = None, _depth: int = 0,
-) -> "Optional[MutativeResult]":
-    """Classify ``npm run <script>`` / ``npm ci`` by real effect, not by name.
+_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({"npm", "bun", "pnpm", "yarn"})
 
-    * ``npm ci`` performs a clean install that rewrites ``node_modules`` -- it
-      is unconditionally mutative (T3), regardless of the verb taxonomy.
-    * ``npm run <script>`` is resolved to its ``package.json`` body and that
-      body is classified by the shell/regex engine (``_classify_script_content_
-      by_regex``), the same standard the script-file lane meets.  An
-      unresolvable script (missing/unparseable package.json or absent entry)
-      falls back to conservative T3.
-    * A ``--prefix <dir>`` / ``-C <dir>`` global option OVERRIDES *cwd* for
-      this resolution (see ``_extract_npm_prefix_override``), so
-      ``npm run build --prefix /repo`` resolves ``/repo/package.json``
-      instead of falling back to the process cwd.  This mirrors how ``cd
-      /repo && npm run build`` is already honored -- ``--prefix`` is simply
-      npm's OWN cwd-fixing flag, so it is folded the same way.
+# Options that consume the next token, so it is not read as the subcommand or
+# the script name, and the subset naming the directory that holds package.json.
+_PACKAGE_MANAGER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npm": frozenset({"--prefix", "-C", "--workspace", "-w"}),
+    "bun": frozenset({"--cwd", "--filter", "-F"}),
+    "pnpm": frozenset({"--dir", "-C", "--filter", "-F"}),
+    "yarn": frozenset({"--cwd"}),
+}
+_PACKAGE_MANAGER_DIR_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npm": frozenset({"--prefix", "-C"}),
+    "bun": frozenset({"--cwd"}),
+    "pnpm": frozenset({"--dir", "-C"}),
+    "yarn": frozenset({"--cwd"}),
+}
 
-    Returns ``None`` for any other npm invocation so ordinary detection
-    continues unchanged (``npm run`` with no script lists scripts -- read-only;
-    ``npm install`` and friends keep their existing classification).
-    """
-    if base_cmd != "npm":
-        return None
+# Other spellings of ``install``, npm's typo aliases and ``add`` included; bare
+# ``yarn`` (``None``) is ``yarn install``.
+_INSTALL_ALIASES: Dict[str, FrozenSet[Optional[str]]] = {
+    "npm": frozenset({
+        "i", "in", "ins", "inst", "insta", "instal",
+        "isnt", "isnta", "isntal", "isntall", "add",
+    }),
+    "bun": frozenset({"i", "add", "a"}),
+    "pnpm": frozenset({"i", "add"}),
+    "yarn": frozenset({None, "add"}),
+}
 
-    non_flag = semantics.non_flag_tokens
-    if not non_flag:
-        return None
-    sub = non_flag[0]
+# Subcommands that install exactly what the lockfile pins, and the flags of
+# which one must be present for them to refuse to rewrite it.
+_FROZEN_INSTALL_FORMS: Dict[str, Tuple[FrozenSet[Optional[str]], FrozenSet[str]]] = {
+    "npm": (frozenset({"ci", "clean-install", "ic", "install-clean", "isntall-clean"}), frozenset()),
+    "bun": (frozenset({"install", "i"}), frozenset({"--frozen-lockfile"})),
+    "pnpm": (frozenset({"install", "i"}), frozenset({"--frozen-lockfile"})),
+    "yarn": (frozenset({None, "install"}), frozenset({"--immutable", "--frozen-lockfile"})),
+}
 
-    prefix_override = _extract_npm_prefix_override(semantics.tokens)
-    if prefix_override:
-        cwd = _resolve_dir_against_cwd(cwd, prefix_override)
+_INSTALL_LIFECYCLE_SCRIPTS: Tuple[str, ...] = (
+    "preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare",
+)
 
-    # `npm ci` -- clean install, always mutates node_modules.
-    if sub == "ci":
-        return MutativeResult(
-            is_mutative=True,
-            category=CATEGORY_MUTATIVE,
-            verb="ci",
-            cli_family=family,
-            confidence="high",
-            reason=(
-                "`npm ci` performs a clean install that rewrites node_modules "
-                "-- state-mutating, requires consent"
-            ),
-        )
+# Built-in commands of the managers whose ``<manager> <name>`` runs the script
+# of that name.  A builtin wins over a script that shares its name, so the
+# shorthand applies only outside this set; ``test``/``start``/``stop``/
+# ``restart`` run scripts and are deliberately absent.
+_SCRIPT_SHORTHAND_BUILTINS: Dict[str, FrozenSet[str]] = {
+    "pnpm": frozenset({
+        "access", "add", "adduser", "approve-builds", "audit", "bin", "bugs",
+        "c", "cache", "cat-file", "cat-index", "ci", "completion", "config",
+        "create", "dedupe", "deploy", "deprecate", "dist-tag", "dlx", "docs",
+        "doctor", "edit", "env", "exec", "fetch", "find-hash", "get", "help",
+        "i", "ignored-builds", "import", "info", "init", "install",
+        "install-test", "it", "licenses", "link", "list", "ll", "ln", "login",
+        "logout", "ls", "m", "multi", "outdated", "owner", "pack", "patch",
+        "patch-commit", "patch-remove", "ping", "pkg", "prefix", "profile",
+        "prune", "publish", "rb", "rebuild", "recursive", "remove", "repo",
+        "rm", "root", "run", "run-script", "s", "se", "search", "self-update",
+        "server", "set", "set-script", "setup", "star", "stars", "store",
+        "team", "token", "un", "uninstall", "unlink", "unpublish", "unstar",
+        "up", "update", "upgrade", "version", "view", "whoami", "why",
+    }),
+    "yarn": frozenset({
+        "add", "audit", "autoclean", "bin", "cache", "check", "config",
+        "constraints", "create", "dedupe", "dlx", "exec", "explain",
+        "generate-lock-entry", "global", "help", "import", "info", "init",
+        "install", "licenses", "link", "list", "login", "logout", "node",
+        "npm", "outdated", "owner", "pack", "patch", "patch-commit", "plugin",
+        "policies", "publish", "rebuild", "remove", "run", "search", "set",
+        "stage", "tag", "team", "unlink", "unplug", "up", "upgrade",
+        "upgrade-interactive", "version", "versions", "why", "workspace",
+        "workspaces",
+    }),
+}
 
-    if sub not in ("run", "run-script"):
-        return None  # not a script-runner form -- ordinary detection handles it
 
-    # `npm run` with no script name lists available scripts -- read-only.
-    if len(non_flag) < 2:
-        return None
+def _package_manager_positionals(
+    manager: str, tokens: "Tuple[str, ...]",
+) -> "List[Tuple[int, str]]":
+    """``(index, token)`` of each positional before ``--``, skipping options
+    and the values of ``_PACKAGE_MANAGER_VALUE_FLAGS``."""
+    value_flags = _PACKAGE_MANAGER_VALUE_FLAGS[manager]
+    positionals: "List[Tuple[int, str]]" = []
+    i = 1
+    while i < len(tokens) and tokens[i] != "--":
+        if tokens[i].startswith("-"):
+            i += 2 if tokens[i] in value_flags else 1
+            continue
+        positionals.append((i, tokens[i]))
+        i += 1
+    return positionals
 
-    script_name = non_flag[1]
 
-    # Budget exhausted: stop descending AND retain -- see the constant. Already
-    # past the shape checks above, so only a real `npm run <script>` reaches it.
-    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
-        return _budget_exhausted_result("npm script body")
-
-    body = _resolve_npm_script_body(script_name, cwd=cwd)
-    if body is None:
-        # Conservative default: the script body cannot be resolved, so we
-        # cannot prove it is safe -- mirror the unreadable-script-file case.
-        return MutativeResult(
-            is_mutative=True,
-            category=CATEGORY_MUTATIVE,
-            verb="npm-run-unresolved",
-            cli_family=family,
-            confidence="medium",
-            reason=(
-                f"`npm run {script_name}` could not be resolved to a "
-                f"package.json script body -- cannot verify the payload, "
-                f"requiring approval (conservative default)"
-            ),
-        )
-
-    # Classify the resolved body: split into per-clause commands (a mutation may
-    # live in any clause of `tsc && rm -rf dist`) and feed the existing engine.
+def _classify_package_script_body(
+    manager: str, script_name: str, body: str, family: str,
+    cwd: "Optional[str]", _depth: int,
+) -> MutativeResult:
+    """Classify a ``package.json`` script body with the shell/regex engine."""
+    # Split into per-clause commands (a mutation may live in any clause of
+    # `tsc && rm -rf dist`) and feed the existing engine.
     segments = "\n".join(
         seg for seg in _SHELL_SEGMENT_SPLIT_RE.split(body) if seg.strip()
     )
@@ -6973,9 +7132,148 @@ def _check_npm_script_runner(
         cli_family=family,
         confidence=inner.confidence,
         reason=(
-            f"`npm run {script_name}` resolved to body {body!r}: {inner.reason}"
+            f"`{manager}` script {script_name!r} resolved to body {body!r}: "
+            f"{inner.reason}"
         ),
     )
+
+
+def _classify_package_script(
+    manager: str, script_name: str, family: str,
+    cwd: "Optional[str]", _depth: int,
+) -> MutativeResult:
+    """Classify ``<manager> run <script>`` by its body; unresolvable is T3."""
+    # Budget exhausted: stop descending AND retain -- see the constant.
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result(f"{manager} script body")
+
+    body = _resolve_npm_script_body(script_name, cwd=cwd)
+    if body is None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=f"{manager}-run-unresolved",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"`{manager} run {script_name}` could not be resolved to a "
+                f"package.json script body -- cannot verify the payload, "
+                f"requiring approval (conservative default)"
+            ),
+        )
+    return _classify_package_script_body(
+        manager, script_name, body, family, cwd, _depth,
+    )
+
+
+def _classify_frozen_install(
+    manager: str, family: str, cwd: "Optional[str]", _depth: int,
+) -> MutativeResult:
+    """Classify a lockfile-frozen install by the project's install lifecycle
+    scripts; with no readable package.json it is T3."""
+    import os
+
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result(f"{manager} lifecycle script body")
+
+    manifest = _read_package_json(cwd if cwd is not None else os.getcwd())
+    if manifest is None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="frozen-install-unresolved",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"`{manager}` frozen install found no readable package.json -- "
+                f"cannot verify the lifecycle scripts it runs (conservative default)"
+            ),
+        )
+    scripts = manifest.get("scripts")
+    scripts = scripts if isinstance(scripts, dict) else {}
+    for name in _INSTALL_LIFECYCLE_SCRIPTS:
+        body = scripts.get(name)
+        if not isinstance(body, str) or not body.strip():
+            continue
+        result = _classify_package_script_body(manager, name, body, family, cwd, _depth)
+        if result.is_mutative:
+            return result
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_UNKNOWN,
+        verb="frozen-install",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"`{manager}` frozen install fetches only what the lockfile pins, and "
+            f"no install lifecycle script of the project mutates"
+        ),
+    )
+
+
+def _check_package_manager(
+    base_cmd: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Classify npm/bun/pnpm/yarn by where the code they run comes from.
+
+    * ``run <script>``, and pnpm's and yarn's ``<script>`` shorthand outside
+      their builtins, classify by the script's ``package.json`` body.
+    * A frozen install (``_FROZEN_INSTALL_FORMS``) classifies by the project's
+      install lifecycle scripts.
+    * Any other spelling of ``install`` (``_INSTALL_ALIASES``) is re-classified
+      as ``<manager> install ...`` so it answers exactly like that form.
+    * The manager's own directory option (``--prefix``, ``--dir``, ``--cwd``)
+      overrides *cwd* for package.json resolution, as a leading ``cd`` does.
+
+    Returns ``None`` for any other form so ordinary detection continues.
+    """
+    if base_cmd not in _PACKAGE_MANAGERS:
+        return None
+
+    tokens = semantics.tokens
+    positionals = _package_manager_positionals(base_cmd, tokens)
+    flags = {t.split("=", 1)[0] for t in tokens[1:] if t.startswith("-")}
+    sub_index, sub = positionals[0] if positionals else (None, None)
+    args = [token for _, token in positionals[1:]]
+
+    override = _extract_dir_override(tokens, _PACKAGE_MANAGER_DIR_FLAGS[base_cmd])
+    if override:
+        cwd = _resolve_dir_against_cwd(cwd, override)
+
+    frozen_subs, frozen_flags = _FROZEN_INSTALL_FORMS[base_cmd]
+    if (
+        sub in frozen_subs and not args and not flags & {"-g", "--global"}
+        and (not frozen_flags or flags & frozen_flags)
+    ):
+        return _classify_frozen_install(base_cmd, family, cwd, _depth)
+
+    if sub in _INSTALL_ALIASES[base_cmd]:
+        import shlex
+        from dataclasses import replace
+
+        canonical = list(tokens)
+        if sub_index is None:
+            canonical.insert(1, "install")
+        else:
+            canonical[sub_index] = "install"
+        rewritten = " ".join(shlex.quote(t) for t in canonical)
+        inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
+        return replace(inner, reason=f"'{sub or base_cmd}' is '{rewritten}': {inner.reason}")
+
+    if sub in ("run", "run-script"):
+        # `<manager> run` with no script name lists the scripts -- read-only.
+        if not args:
+            return None
+        return _classify_package_script(base_cmd, args[0], family, cwd, _depth)
+
+    builtins = _SCRIPT_SHORTHAND_BUILTINS.get(base_cmd)
+    if (
+        builtins is not None and sub is not None and sub not in builtins
+        and _resolve_npm_script_body(sub, cwd=cwd) is not None
+    ):
+        return _classify_package_script(base_cmd, sub, family, cwd, _depth)
+    return None
 
 
 def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:
