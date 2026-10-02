@@ -1,29 +1,25 @@
 """
-gaia scan -- Deterministically classify repos into (workspace, project) rows.
+gaia scan -- index the git repos of one declared workspace into project rows.
 
-Scan and install are separate flows. This command NEVER installs: it does not
-create ``package.json``, run ``npm``, build ``.claude/``, or install git hooks.
-Installation is owned by ``gaia install`` (bin/cli/install.py).
+This command never installs anything; installation is ``gaia install``.
 
-Classification is DETERMINISTIC and driven by one REQUIRED parameter,
-``--workspace <name>``. There is no inference: for each git repo found by
-walking down from ``root``, the workspace is the ancestor path segment that
-matches ``<name>``, and the project is the segment immediately before the repo
-(or the repo name itself when the workspace is the repo's direct parent). See
-``tools/scan/classify.py`` for the full ruleset (R1-R6).
+  gaia scan --workspace <name> [root] [--dry-run] [--json]
 
-Arg surface (locked):
-  gaia scan --workspace <name> [root]
-      --workspace <name>   REQUIRED. Workspace name matched against each repo's
-                           ancestor path segments.
-      root                 Optional positional. Directory to walk for repos.
-                           Defaults to the current working directory.
-      --dry-run            Classify only; report what would change, no DB write.
-      --json               Emit the structured report as JSON.
+A workspace is a folder declared with ``gaia workspace declare <name> <path>``,
+never a name matched against path segments. Walking ``root`` (default: the
+current directory), every git repo at any depth is a project named after its
+folder and owned by the nearest declared workspace that contains it; repos
+owned by another workspace are left to it. The repo's group is the full folder
+path between the workspace root and the repo (``bildwiz/sub``). The walk enters
+every dot-folder except the tool folders ``.git .claude .opencode .gaia
+.terraform .project-worktrees .worktrees .codex .agents`` and ``node_modules``,
+and never enters a repo. Applying refuses an undeclared workspace and never
+records a workspace root; ``--dry-run`` previews an undeclared one as if it were
+declared at ``root``. The ruleset is ``tools/scan/classify.py`` (R1-R7).
 
 Exit codes:
-  0  Success (every discovered repo either matched or was reported as data)
-  1  Error (no root, no git repos under root, unexpected failure)
+  0  Success (every discovered repo was classified or reported as data)
+  1  Error (no root, undeclared workspace on apply, no git repos, failure)
 """
 
 from __future__ import annotations
@@ -68,16 +64,9 @@ def _render_human(report, *, dry_run: bool) -> None:
         print(f"{prefix}projects:")
         for p in report.projects:
             applied = "applied" if p["applied"] else ("would-apply" if dry_run else "not-applied")
-            # Show the workspace -> proyecto (container) -> repo hierarchy plus
-            # the repo's own absolute path (M2-T4/T5). ``project`` (the DB
-            # storage slot) is shown only when it differs from the proyecto
-            # (i.e. when M1 collision-disambiguation renamed the slot).
-            container = p.get("container", p["project"])
-            slot = p["project"]
-            slot_note = f" slot={slot}" if slot != container else ""
             print(
-                f"  - workspace={p['workspace']} project={container} "
-                f"repo={p['repo']}{slot_note} path={p.get('path')} [{applied}]"
+                f"  - workspace={p['workspace']} group={p['container'] or '-'} "
+                f"project={p['project']} path={p['path']} [{applied}]"
             )
             # M3/T8 (AC-6): the stack fingerprint (facet rows) for this repo.
             facets = p.get("facets") or []
@@ -99,18 +88,13 @@ def _render_human(report, *, dry_run: bool) -> None:
                 f"-> assigned={w['assigned_project']} path={w.get('path')}"
             )
 
-    if report.ambiguities:
-        print(f"{prefix}ambiguities (deeper-than-3 nesting, returned as data):")
-        for a in report.ambiguities:
-            print(f"  - repo={a['repo']} extra_levels={a['extra_levels']}")
-
     if report.errors:
-        print(f"{prefix}errors (no workspace match):")
+        print(f"{prefix}errors (inside no declared workspace):")
         for e in report.errors:
-            print(f"  - repo={e['repo']} --workspace={e['W']}: {e['suggestion']}")
+            print(f"  - repo={e['repo']} path={e['path']}: {e['reason']}")
 
     if report.foreign_repos:
-        print(f"{prefix}left to their own workspace (installed inside this root):")
+        print(f"{prefix}left to the nearer declared workspace that owns them:")
         for f in report.foreign_repos:
             print(f"  - repo={f['repo']} workspace={f['workspace']} path={f['path']}")
 
@@ -211,21 +195,27 @@ def register(subparsers) -> argparse.ArgumentParser:
     """Register the `scan` subcommand with the root parser."""
     p = subparsers.add_parser(
         "scan",
-        help="Index repos into (workspace, project) rows -- WRITES; --dry-run previews",
+        help="Index a declared workspace's repos into project rows -- WRITES; --dry-run previews",
         description=(
-            "Walk a directory for git repos and classify each into a "
-            "(workspace, project) row, keyed on --workspace. Deterministic: no "
-            "inference.\n"
+            "Walk a directory for git repos and index those owned by the "
+            "declared workspace --workspace.\n"
+            "\n"
+            "A workspace is a folder declared with `gaia workspace declare "
+            "<name> <path>`, not a name matched against path segments. Every "
+            "git repo at any depth is a project named after its folder, owned "
+            "by the nearest declared workspace containing it; repos owned by "
+            "another workspace are left to it. The group is the full folder "
+            "path between the workspace root and the repo. Dot-folders are "
+            "walked, except .git .claude .opencode .gaia .terraform "
+            ".project-worktrees .worktrees .codex .agents and node_modules; "
+            "the walk never enters a repo.\n"
             "\n"
             "WRITES: rows are persisted to gaia.db and scan-owned facts are "
-            "promoted into the project_identity context contract. Pass "
-            "--dry-run to report the same classification without writing "
-            "anything.\n"
-            "\n"
-            "`gaia install` (and the plugin's first session) already runs this "
-            "once for the installed folder, named after it; run it again to "
-            "re-index. Repos inside the recorded root of another workspace are "
-            "left to that workspace.\n"
+            "promoted into the project_identity context contract. An "
+            "undeclared workspace is refused and no workspace root is ever "
+            "recorded. Pass --dry-run to report the same classification "
+            "without writing; it previews an undeclared workspace as if "
+            "declared at the walked directory.\n"
             "\n"
             "This command indexes only -- it never installs Gaia anywhere."
         ),
@@ -235,11 +225,7 @@ def register(subparsers) -> argparse.ArgumentParser:
         "--workspace",
         required=True,
         metavar="NAME",
-        help=(
-            "REQUIRED workspace name. Matched against each repo's ancestor path "
-            "segments to resolve the workspace; the project is the segment "
-            "immediately before the repo."
-        ),
+        help="Name of the declared workspace to index.",
     )
     p.add_argument(
         "root",
@@ -280,14 +266,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
         return _emit_error(args, f"root not found: {root}")
 
     dry_run = getattr(args, "dry_run", False)
-    from gaia.install_root import registered_roots
-    from gaia.project import DECLARE_COMMAND
-
-    if not dry_run and workspace not in registered_roots().values():
-        return _emit_error(
-            args, f"workspace {workspace!r} is not declared.\nDeclare it with: {DECLARE_COMMAND}"
-        )
-
     try:
         from tools.scan.classify import scan as classify_scan
     except Exception as exc:

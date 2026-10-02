@@ -116,8 +116,8 @@ def populate_project(
         db_path: Optional explicit DB path (test override).
         project_name: Override for the project basename. When None, uses
             project_path.name.
-        group_name: Container directory name when the repo is nested under a
-            grouping directory (e.g. ``"github-repos"``, ``"bildwiz"``).
+        group_name: The folders between the workspace root and the repo,
+            slash-joined (e.g. ``"github-repos"``, ``"bildwiz/sub"``).
             Pass ``None`` when the repo sits directly at the workspace root.
 
     Returns:
@@ -879,9 +879,8 @@ def scan_workspace_to_store(
       nearest-installed-ancestor guessing. The caller (the scan classifier in
       :mod:`tools.scan.classify`, or the migrator) has already decided which
       workspace this root belongs to.
-    * ``group_name`` = the immediate container directory of the repo when it
-      does not sit directly under ``root``; ``None`` when it does. This records
-      the grouping folder without inferring a separate workspace from it.
+    * ``group_name`` = the folders between ``root`` and the repo, slash-joined
+      (:func:`group_path`); ``None`` when the repo sits directly under ``root``.
 
     Returns:
         Dict mapping ``"<workspace>/<project>"`` keys to per-repo result dicts,
@@ -905,10 +904,7 @@ def scan_workspace_to_store(
         # Deterministic: every repo belongs to the caller-provided workspace.
         target_workspace = workspace
 
-        # group_name = the immediate container of the repo when it is not
-        # directly under root; None when it sits directly at root.
-        container = project_path.parent
-        group_name: str | None = container.name if container != root else None
+        group_name = group_path(project_path, root)
 
         try:
             project_res = populate_project(
@@ -1181,85 +1177,46 @@ def _detect_primary_language(project_path: Path) -> str | None:
     return primary_language_from_sections(compute_stack_sections(project_path))
 
 
-def _list_repos(root: Path, max_depth: int = 4) -> list[Path]:
-    """Return git repositories discovered under root via bounded recursive walk.
+def _list_repos(root: Path) -> list[Path]:
+    """Return every git repository under *root*, sorted.
 
-    A directory is a repo if it contains a ``.git`` entry (directory or file --
-    the file form covers submodules, whose gitfile points at the superproject's
-    ``modules/`` store).  A LINKED GIT WORKTREE is deliberately NOT a repo here:
-    it is a second checkout of a repository already discovered elsewhere, and
-    indexing it would collapse it onto the base repo's row and overwrite that
-    row's path (see :func:`is_linked_worktree`).  Its existence is still
-    recorded, as a ``worktree`` facet on the base repo (:func:`worktree_facets`).
-    Container directories that are not themselves repos are descended into so
-    that layouts like::
-
-        ~/ws/github-repos/        <- container, no .git
-            repo-a/               <- repo, has .git
-            repo-b/               <- repo, has .git
-        ~/ws/aaxis/               <- container, no .git
-            bildwiz/              <- sub-container, no .git
-                platform-repo/    <- repo, has .git
-
-    are handled correctly.  Plain directories without ``.git`` anywhere in
-    their subtree are **not** returned as repos (AC-3: ``briefs/``,
-    ``plans/``, and similar sidecar folders are excluded).
-
-    The walk is bounded at ``max_depth`` levels below ``root`` to avoid
-    runaway traversal on deep trees.  Directories whose basename appears in
-    ``_REPO_WALK_SKIP`` are never descended into.
-
-    The returned paths are sorted for deterministic output.  Their
-    ``.parent`` attribute gives the immediate container directory, which
-    T2.2 can consume to infer ``group_name``.
-
-    Args:
-        root: Workspace root to search from.
-        max_depth: Maximum directory depth to descend (default 4).
-
-    Returns:
-        Sorted list of absolute ``Path`` objects, each pointing to the root
-        of a git repository.
+    A folder holding a ``.git`` entry (a directory, or a submodule's gitfile)
+    is a repo and is never descended into. A linked worktree is not a repo
+    (:func:`is_linked_worktree`); it is recorded as a ``worktree`` facet of
+    its base repo instead. Every other folder is walked at any depth, dot-folders
+    included, except the names in ``_REPO_WALK_SKIP`` and symlinked folders.
+    When *root* is itself a repo it is the only one returned.
     """
     if not root.is_dir():
         return []
-
-    # Root itself is a repo -- return it directly without recursing into it.
-    # The worktree exclusion applies here too: "a linked worktree is never a
-    # projects row" is an invariant of discovery, not of the walk depth.
     if (root / ".git").exists():
         return [] if is_linked_worktree(root) else [root]
 
     repos: list[Path] = []
-    _walk_for_repos(root, root, current_depth=0, max_depth=max_depth, repos=repos)
+    _walk_for_repos(root, repos)
     return sorted(repos)
 
 
-# Directories that are never git repos and that the walk must not descend into.
+def group_path(repo: Path, workspace_root: Path) -> str | None:
+    """The folders between *workspace_root* and *repo*, slash-joined; None when there are none."""
+    if repo == workspace_root:
+        return None
+    return "/".join(repo.parent.relative_to(workspace_root).parts) or None
+
+
+# Tool folders that sit beside repos. Build and cache folders need no entry:
+# they live inside repos, where the walk never goes.
 _REPO_WALK_SKIP: frozenset[str] = frozenset({
-    "node_modules",
-    "__pycache__",
-    "vendor",
-    "dist",
-    "build",
-    ".terraform",
-    ".terragrunt-cache",
-    ".venv",
-    "venv",
-    ".cache",
-    ".npm",
-    ".next",
-    ".nuxt",
-    "target",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".tox",
-    # Gaia sidecar directories -- not projects (AC-3)
     ".git",
     ".claude",
-    "briefs",
-    "plans",
+    ".opencode",
+    ".gaia",
+    ".terraform",
+    ".project-worktrees",
+    ".worktrees",
+    ".codex",
+    ".agents",
+    "node_modules",
 })
 
 
@@ -1300,51 +1257,25 @@ def _is_installed_gaia_workspace(directory: Path) -> bool:
     return "gaia" in names
 
 
-def _walk_for_repos(
-    root: Path,
-    current: Path,
-    current_depth: int,
-    max_depth: int,
-    repos: list[Path],
-) -> None:
-    """Recursive helper for :func:`_list_repos`.
+def _walk_for_repos(current: Path, repos: list[Path]) -> None:
+    """Append to *repos* every repo below *current*, under the rules of :func:`_list_repos`.
 
-    Descends into ``current`` looking for git repos.  Stops at
-    ``max_depth`` levels below ``root``.  Any directory that has a
-    ``.git`` entry is treated as a repo leaf and is NOT descended into
-    (nested repos inside a repo are the repo's own concern).
-
-    Args:
-        root: The original workspace root (used only for depth reference).
-        current: Directory to examine at this recursion level.
-        current_depth: How many levels below ``root`` we are now.
-        max_depth: Maximum depth; when reached, stop descending.
-        repos: Accumulator list of repo paths found so far.
+    A symlinked folder is not descended: without a depth bound, a link back up
+    the tree would never end and a link outward would index another tree.
     """
-    if current_depth > max_depth:
-        return
-
     try:
         entries = sorted(current.iterdir())
     except OSError:
         return
 
     for entry in entries:
-        if not entry.is_dir():
-            continue
-        name = entry.name
-        # Skip hidden dirs and explicitly excluded names.
-        if name.startswith(".") or name in _REPO_WALK_SKIP:
+        if entry.name in _REPO_WALK_SKIP or not entry.is_dir():
             continue
         if (entry / ".git").exists():
-            # This directory is a git checkout -- do not recurse either way.
-            # A linked worktree is skipped entirely: it is a view of a repo
-            # discovered elsewhere, not a project of its own.
             if not is_linked_worktree(entry):
                 repos.append(entry)
-        else:
-            # Container directory: recurse to find repos inside it.
-            _walk_for_repos(root, entry, current_depth + 1, max_depth, repos)
+        elif not entry.is_symlink():
+            _walk_for_repos(entry, repos)
 
 
 def _scan_tf_modules(project_path: Path) -> list[dict]:

@@ -733,21 +733,18 @@ def set_workspace_last_scan_at(
     ts: str | None = None,
     *,
     db_path: Path | None = None,
-    root_path: str | None = None,
 ) -> None:
     """Record the ISO8601 timestamp of the most recent successful gaia scan.
 
     Called by bin/cli/scan.py after a scan run completes without errors.
     The workspaces row is created (via _ensure_workspace_row) if it does
-    not yet exist; the update is a no-op when the workspace is unknown.
+    not yet exist. The root is never written here: only
+    :func:`declare_workspace` records one.
 
     Args:
         workspace: Workspace name (workspaces.name PK).
         ts:        ISO8601 UTC timestamp string. Defaults to _now_iso().
         db_path:   Optional explicit DB path (used by tests).
-        root_path: Absolute workspace directory the scan resolved; recorded
-                   only when the row has none, so a declared root is never
-                   replaced by a scan.
     """
     if ts is None:
         ts = _now_iso()
@@ -762,8 +759,8 @@ def set_workspace_last_scan_at(
         # demoted but is installed again on re-scan recovers cleanly.
         con.execute(
             "UPDATE workspaces SET last_scan_at = ?, status = 'active', "
-            "missing_since = NULL, root_path = COALESCE(root_path, ?) WHERE name = ?",
-            (ts, root_path, workspace),
+            "missing_since = NULL WHERE name = ?",
+            (ts, workspace),
         )
         con.commit()
     finally:
