@@ -1302,12 +1302,25 @@ def _view_by_harness_id(args, harness_id: str) -> int:
     grep. The freshest source wins -- see :func:`_freshest_envelope`, which
     this and ``cmd_view``'s own ``--draft-id`` recovery lane both call, so the
     two addressing modes recover identically once a row is in hand.
+
+    A resume chain shares one harness id across every link, so the id matches
+    several rows; the view shows the live link and lists every matched row in
+    ``links``, oldest first. The live link is chosen by the chain's own edges
+    and then by birth order (created_at, id): created_at has one-second
+    resolution, and links born in the same second used to tie and resolve to
+    the chain's first link.
     """
-    from gaia.store.writer import list_agent_contract_handoffs
+    from gaia.store.writer import (
+        collapse_continuation_chains,
+        list_agent_contract_handoffs,
+    )
 
     as_json = bool(getattr(args, "json", False))
-    rows = list_agent_contract_handoffs(harness_agent_id=harness_id, limit=1)
-    if not rows:
+    links = sorted(
+        list_agent_contract_handoffs(harness_agent_id=harness_id),
+        key=lambda link: (link.get("created_at") or "", link.get("id") or 0),
+    )
+    if not links:
         _print_error(
             f"no contract row carries harness_agent_id={harness_id!r}. Rows "
             f"are stamped at SubagentStart (v40); a turn dispatched before "
@@ -1317,7 +1330,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
             as_json=as_json,
         )
         return 1
-    row = rows[0]
+    row = collapse_continuation_chains(links)[-1]
     contract_id = row.get("contract_id")
     envelope, source = _freshest_envelope(contract_id, row)
 
@@ -1342,6 +1355,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
         "harness_agent_id": harness_id,
         "contract_id": contract_id,
         "handoff_id": row.get("id"),
+        "links": [link.get("id") for link in links],
         "agent_id": row.get("agent_id"),
         "agent_state": row.get("agent_state"),
         "cut_reason": row.get("cut_reason"),
