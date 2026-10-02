@@ -909,6 +909,13 @@ class _MockArgs:
         self.__dict__.update(defaults)
 
 
+def _declare(name: str, root) -> None:
+    from gaia.store.writer import declare_workspace
+
+    root.mkdir(parents=True, exist_ok=True)
+    declare_workspace(name, root)
+
+
 def test_cli_scan_apply_promotes_into_contract(tmp_path, monkeypatch, capsys):
     """`gaia scan` (apply) writes projects AND promotes them into the
     project_identity contract via the wired stage 3."""
@@ -920,6 +927,7 @@ def test_cli_scan_apply_promotes_into_contract(tmp_path, monkeypatch, capsys):
 
     # aaxis/aos/aos-iac tree: workspace=aaxis, project=aos, repo=aos-iac.
     (tmp_path / "aaxis" / "aos" / "aos-iac" / ".git").mkdir(parents=True)
+    _declare("aaxis", tmp_path / "aaxis")
 
     args = _MockArgs(workspace="aaxis", root=str(tmp_path / "aaxis"), json=True)
     rc = scan_mod.cmd_scan(args)
@@ -959,6 +967,7 @@ def test_cli_scan_prints_promotion_collision_warning(tmp_path, monkeypatch, caps
         repo.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "remote", "add", "origin", remote], cwd=repo, check=True)
+    _declare("ws-dup-clones", ws_root)
 
     args = _MockArgs(workspace="ws-dup-clones", root=str(ws_root))
     rc = scan_mod.cmd_scan(args)
@@ -984,6 +993,7 @@ def test_cli_scan_reports_a_reclaimed_entry(tmp_path, monkeypatch, capsys):
         WORKSPACE_META_KEY: {"gaia": {"workflow": "pull request into feat/x"}},
         "gaia": {"name": "gaia", "local_path": str(repo)},
     })
+    _declare("ws-parked", ws_root)
 
     rc = scan_mod.cmd_scan(_MockArgs(workspace="ws-parked", root=str(ws_root)))
 

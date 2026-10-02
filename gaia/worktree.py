@@ -125,14 +125,17 @@ def _main_checkout(path: Path) -> Path:
 def _registered_workspace_root(checkout: Path) -> Path:
     """Return the recorded root of the one workspace that registered *checkout* as a project.
 
-    Raises ``WorktreePathError`` when the registry cannot be read, the checkout
-    is not a registered project, or its workspace root is unrecorded or does
-    not contain it.
+    Raises ``WorktreePathError`` when no declared workspace contains the
+    checkout, the registry cannot be read, the checkout is not a registered
+    project, or its workspace root is unrecorded or does not contain it.
     """
-    scan_hint = "run `gaia scan <workspace root> --workspace <name>` for its workspace"
+    from gaia.install_root import owning_root, registered_roots
+    from gaia.project import not_declared_message
+
     database = db_path()
-    if not database.is_file():
-        raise WorktreePathError(f"no Gaia registry at {database}; {scan_hint}")
+    if owning_root(checkout, registered_roots(database)) is None:
+        raise WorktreePathError(not_declared_message(checkout))
+    scan_hint = "run `gaia scan <workspace root> --workspace <name>` for its workspace"
     try:
         connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
         try:

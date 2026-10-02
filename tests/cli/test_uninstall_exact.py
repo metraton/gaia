@@ -47,7 +47,7 @@ def env(tmp_path, monkeypatch):
     with patch.object(install, "_run_bootstrap", return_value={"rc": 0, "detail": ""}), \
          patch.object(install, "_seed_contract_permissions", return_value={"action": "noop", "details": ""}), \
          patch.object(install, "_seed_surface_routing", return_value={"action": "noop", "details": ""}), \
-         patch.object(install, "_first_scan", return_value={"action": "noop", "details": ""}), \
+         patch.object(install, "_workspace_status", return_value={"action": "noop", "details": ""}), \
          patch.object(install, "_warn_launcher_shadowed", return_value=None), \
          patch.object(install, "_warn_launcher_dir_absent", return_value=None):
         yield argparse.Namespace(

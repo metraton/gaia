@@ -41,8 +41,7 @@ def calls(monkeypatch, tmp_path):
     stub("modules.core.plugin_setup", "run_first_time_setup", "setup done")
     stub("modules.core.plugin_setup", "mark_data_home", "home moved")
     stub("gaia.install_root", "installed_root", tmp_path / "root")
-    stub("gaia.install_root", "registered_roots", {})
-    stub("gaia.install_root", "start_first_scan")
+    stub("gaia.install_root", "workspace_status", {"action": "noop", "details": ""})
     stub("modules.session.plugin_upgrade", "reconcile_plugin_install", "")
     monkeypatch.setattr("modules.core.plugin_setup.recorded_in_manifest", contextlib.nullcontext)
     stub("modules.session.session_manifest", "build_session_context", "BIRTH")
@@ -60,7 +59,6 @@ def _start(tmp_path, **overrides):
         is_headless=True,
         pinned_build={"hooks_path": "/h", "hooks_hash": "abc"},
         workspace_dir=tmp_path / "ws",
-        plugin_channel=False,
     )
     fields.update(overrides)
     return SessionStart(**fields)
@@ -85,6 +83,7 @@ def test_start_maintenance_runs_in_order_on_the_explicit_inputs(calls, tmp_path)
         "mark_data_home",
         "installed_root",
         "reconcile_plugin_install",
+        "workspace_status",
         "build_session_context",
     ]
     by_name = {name: (args, kwargs) for name, args, kwargs in calls}
@@ -128,13 +127,15 @@ def test_compaction_takes_the_refresh_branch_instead_of_the_birth_block(calls, t
     assert outcome.context == "## Data home\nhome moved\n\nREFRESH"
 
 
-def test_the_first_scan_starts_only_when_the_host_says_plugin_channel(calls, tmp_path):
-    session_lifecycle.start_session(_start(tmp_path))
-    assert "start_first_scan" not in _names(calls)
+def test_an_undeclared_root_becomes_a_workspace_alarm(calls, monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "gaia.install_root.workspace_status",
+        lambda root: {"action": "skipped", "details": f"{root} is not inside a declared workspace."},
+    )
 
-    session_lifecycle.start_session(_start(tmp_path, plugin_channel=True))
-    scans = [args for name, args, _ in calls if name == "start_first_scan"]
-    assert scans == [(tmp_path / "root",)]
+    outcome = session_lifecycle.start_session(_start(tmp_path))
+
+    assert outcome.notices["## Workspace"] == f"{tmp_path / 'root'} is not inside a declared workspace."
 
 
 def test_a_prompt_beats_the_given_session_then_counts_the_given_workspace(monkeypatch):

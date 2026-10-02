@@ -1,11 +1,9 @@
 """Every CLI that accepts ``--workspace`` resolves the same default workspace.
 
-The coordination CLIs (brief, plan, task, ac, evidence, milestone, ...) and the
-memory CLI each carried their own ``_resolve_workspace``; brief and its siblings
-named the directory (``gaia.project.current``) and ignored the dispatch env
-vars, while memory asked which registered project contains the directory. The
-same cwd then read two different workspaces. This matrix pins them to one
-answer for the same cwd and environment.
+The coordination CLIs and the memory CLI once carried their own
+``_resolve_workspace`` and read two different workspaces from the same cwd.
+This matrix pins them to one answer: the declared root nearest above the cwd,
+``global`` outside every declared root.
 """
 
 from __future__ import annotations
@@ -97,8 +95,8 @@ def _resolved_by_every_cli() -> dict[str, str]:
     [
         ("beta_src", "inner_ws"),
         ("alpha", "outer_ws"),
-        ("outer", "outer"),
-        ("elsewhere", "elsewhere"),
+        ("outer", "outer_ws"),
+        ("elsewhere", "global"),
     ],
 )
 def test_same_cwd_resolves_the_same_workspace(layout, monkeypatch, cwd_key, expected):
@@ -123,7 +121,6 @@ def test_unresolvable_workspace_lands_on_global_for_every_cli(layout, monkeypatc
         raise RuntimeError("no workspace resolves here")
 
     monkeypatch.chdir(layout["elsewhere"])
-    monkeypatch.setattr(gaia.project, "containing_workspace", unresolvable)
     monkeypatch.setattr(gaia.project, "current", unresolvable)
     resolved = _resolved_by_every_cli()
     assert set(resolved.values()) == {"global"}, resolved

@@ -1,4 +1,4 @@
-"""Tests for gaia.project.current() -- workspace identity resolution."""
+"""Tests for gaia.project.current() -- the declared workspace containing a directory."""
 
 import subprocess
 from pathlib import Path
@@ -40,18 +40,12 @@ def test_normalize_remote_empty_input():
 
 
 # ---------------------------------------------------------------------------
-# current() -- PATH-based resolution in a git repo (M2-T7, AC-9)
-#
-# The contract changed with M2-T7: current() is PATH-first, not
-# git-remote-first. A git repo resolves to its repository-ROOT basename
-# (lowercased), NOT to the normalized remote. The remote-derived identity
-# still exists but is captured separately in workspaces.identity by the store
-# writer (which reads the remote directly). See
-# tests/unit/test_project_current_path_based.py for the full AC-9 cases.
+# current() -- the declared root nearest above the directory, else global
 # ---------------------------------------------------------------------------
 
 def _init_git_repo(path: Path, remote_url: str | None = None) -> None:
     """Initialize a git repo at `path` with optional origin remote."""
+    path.mkdir(parents=True)
     subprocess.run(["git", "init", "--quiet"], cwd=str(path), check=True)
     if remote_url is not None:
         subprocess.run(
@@ -60,95 +54,56 @@ def _init_git_repo(path: Path, remote_url: str | None = None) -> None:
         )
 
 
-def test_current_in_git_repo_uses_path_not_ssh_remote(tmp_path):
-    """A repo with an SSH remote resolves to the repo-root path basename, NOT
-    the normalized remote (path-first, AC-9)."""
-    repo = tmp_path / "gaia-dev"
-    repo.mkdir()
-    _init_git_repo(repo, "git@github.com:Metraton/Gaia-Dev.git")
-    assert current(cwd=repo) == "gaia-dev"
+@pytest.fixture()
+def isolated_db(tmp_path, monkeypatch):
+    monkeypatch.setenv("GAIA_DB", str(tmp_path / "gaia.db"))
+    return tmp_path / "gaia.db"
 
 
-def test_current_in_git_repo_uses_path_not_https_remote(tmp_path):
-    """A repo with an HTTPS remote resolves to the repo-root path basename."""
-    repo = tmp_path / "gaia"
-    repo.mkdir()
-    _init_git_repo(repo, "https://github.com/Metraton/Gaia.git")
-    assert current(cwd=repo) == "gaia"
+@pytest.mark.parametrize("remote", [
+    "git@github.com:Metraton/Gaia-Dev.git",
+    "https://bitbucket.org/aaxisdigital/bildwiz.git",
+    None,
+])
+def test_a_repo_outside_every_declared_root_is_global(isolated_db, tmp_path, remote):
+    repo = tmp_path / "Gaia-Dev"
+    _init_git_repo(repo, remote)
+
+    assert current(cwd=repo) == "global"
 
 
-def test_current_in_git_repo_ignores_remote_host(tmp_path):
-    """The remote host/org never appears in the identity; the path wins."""
-    repo = tmp_path / "bildwiz"
-    repo.mkdir()
-    _init_git_repo(repo, "https://bitbucket.org/aaxisdigital/bildwiz.git")
-    result = current(cwd=repo)
-    assert result == "bildwiz"
-    assert "bitbucket.org" not in result
-
-
-# ---------------------------------------------------------------------------
-# current() -- directory-name fallback (level 2)
-# ---------------------------------------------------------------------------
-
-def test_current_no_git_remote_falls_back_to_dirname(tmp_path):
-    """Repo with no `origin` remote falls back to lowercase dirname."""
-    target = tmp_path / "MyProject"
-    target.mkdir()
-    _init_git_repo(target)  # no remote
-    assert current(cwd=target) == "myproject"
-
-
-def test_current_not_a_git_repo_falls_back_to_dirname(tmp_path):
-    """Non-git directory falls back to lowercase dirname."""
+def test_a_plain_folder_outside_every_declared_root_is_global(isolated_db, tmp_path):
     target = tmp_path / "SomeDir"
     target.mkdir()
-    assert current(cwd=target) == "somedir"
+
+    assert current(cwd=target) == "global"
 
 
-def test_current_dirname_is_lowercased(tmp_path):
-    """Mixed-case dirname must be lowercased."""
-    target = tmp_path / "MixedCaseDir"
-    target.mkdir()
-    assert current(cwd=target) == "mixedcasedir"
+def test_a_repo_inside_a_declared_root_resolves_to_its_name(isolated_db, tmp_path):
+    from gaia.store.writer import declare_workspace
+
+    root = tmp_path / "ws"
+    repo = root / "group" / "bildwiz"
+    _init_git_repo(repo, "https://bitbucket.org/aaxisdigital/bildwiz.git")
+    declare_workspace("Clients", root)
+
+    assert current(cwd=repo) == "Clients"
 
 
-# ---------------------------------------------------------------------------
-# current() -- global fallback (level 3)
-# ---------------------------------------------------------------------------
-
-def test_current_global_fallback_when_dirname_empty(monkeypatch):
-    """When cwd resolves to '/' (no name component), return 'global'."""
-    # Path("/") has empty name on POSIX
+def test_current_global_fallback_for_the_filesystem_root(isolated_db):
     assert current(cwd=Path("/")) == "global"
 
 
-def test_current_default_cwd(tmp_path, monkeypatch):
+def test_current_default_cwd(isolated_db, tmp_path, monkeypatch):
     """current() with no arg uses Path.cwd()."""
+    from gaia.store.writer import declare_workspace
+
+    declare_workspace("acme", tmp_path)
     monkeypatch.chdir(tmp_path)
-    target_name = tmp_path.name.lower()
-    # No git in tmp_path -> dirname fallback
-    assert current() == target_name
+
+    assert current() == "acme"
 
 
-# ---------------------------------------------------------------------------
-# current() -- never raises
-# ---------------------------------------------------------------------------
-
-def test_current_returns_string_for_nonexistent_path():
-    """Non-existent path must not raise; returns either dirname or 'global'."""
-    result = current(cwd=Path("/nonexistent/path/to/nowhere"))
-    assert isinstance(result, str)
-    assert result  # non-empty
-
-
-def test_current_handles_subprocess_failure(tmp_path, monkeypatch):
-    """If git subprocess fails or times out, fall back gracefully."""
-    target = tmp_path / "fallback-test"
-    target.mkdir()
-
-    # Force git to be 'unavailable' by patching shutil.which
-    import gaia.project as proj_mod
-    monkeypatch.setattr(proj_mod, "shutil", type("M", (), {"which": staticmethod(lambda _: None)})())
-
-    assert current(cwd=target) == "fallback-test"
+def test_current_returns_global_for_nonexistent_path(isolated_db):
+    """Non-existent path must not raise."""
+    assert current(cwd=Path("/nonexistent/path/to/nowhere")) == "global"

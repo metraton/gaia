@@ -279,10 +279,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if not root.is_dir():
         return _emit_error(args, f"root not found: {root}")
 
+    dry_run = getattr(args, "dry_run", False)
     from gaia.install_root import registered_roots
     from gaia.project import DECLARE_COMMAND
 
-    if workspace not in registered_roots().values():
+    if not dry_run and workspace not in registered_roots().values():
         return _emit_error(
             args, f"workspace {workspace!r} is not declared.\nDeclare it with: {DECLARE_COMMAND}"
         )
@@ -292,7 +293,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
     except Exception as exc:
         return _emit_error(args, f"failed to import tools.scan.classify: {exc}")
 
-    dry_run = getattr(args, "dry_run", False)
     try:
         report = classify_scan(root, workspace, apply=not dry_run)
     except Exception as exc:

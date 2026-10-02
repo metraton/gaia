@@ -33,9 +33,8 @@ names that exact chain (D68: one consent for the whole chain).
 Configuration:
   - GAIA_DB    -- path of the DB. Default ~/.gaia/gaia.db.
   - SCHEMA_FILE-- override of schema.sql. Default <repo>/gaia/store/schema.sql.
-  - WORKSPACE  -- workspace whose identity is registered. Unset = none: the
-                  package folder is never a workspace; `gaia install` registers
-                  the folder it ran in through its first scan.
+
+The bootstrap never registers a workspace: only `gaia workspace declare` does.
 """
 
 from __future__ import annotations
@@ -45,7 +44,6 @@ import hashlib
 import os
 import re
 import sqlite3
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,8 +60,6 @@ SCHEMA_FILE = Path(
     os.environ.get("SCHEMA_FILE")
     or (_SCRIPT_DIR.parent / "gaia" / "store" / "schema.sql")
 ).expanduser()
-
-WORKSPACE = Path(os.environ["WORKSPACE"]).expanduser() if os.environ.get("WORKSPACE") else None
 
 MIG_DIR = _SCRIPT_DIR / "migrations"
 DOCTOR_PY = _SCRIPT_DIR.parent / "bin" / "cli" / "doctor.py"
@@ -121,49 +117,6 @@ def _read_expected_schema_version() -> int:
         _err(f"ERROR: no pude parsear EXPECTED_SCHEMA_VERSION desde {DOCTOR_PY}")
         sys.exit(1)
     return int(m.group(1))
-
-
-def _normalize_remote(raw_remote: str) -> str:
-    """Remote -> identity: lowercase, strip scheme, ssh git@host:owner/repo ->
-    host/owner/repo, strip .git and trailing slash."""
-    s = raw_remote.lower()
-    for prefix in ("https://", "http://", "ssh://", "git+ssh://", "git+https://"):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-            break
-    if s.startswith("git@"):
-        s = s[len("git@"):]
-        s = s.replace(":", "/", 1)
-    if s.endswith(".git"):
-        s = s[: -len(".git")]
-    if s.endswith("/"):
-        s = s[:-1]
-    return s
-
-
-def _resolve_workspace_identity() -> str:
-    """Identity via git remote get-url origin, falling back to the lowercase
-    basename and then 'global'."""
-    raw_remote = ""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(WORKSPACE), "remote", "get-url", "origin"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
-            raw_remote = result.stdout.strip()
-    except OSError:
-        raw_remote = ""
-
-    identity = _normalize_remote(raw_remote) if raw_remote else ""
-    if not identity:
-        try:
-            identity = WORKSPACE.resolve().name.lower()
-        except OSError:
-            identity = ""
-    return identity or "global"
 
 
 # === Reading the database's state ===
@@ -423,7 +376,6 @@ def _apply(expected: int, consent_chain: str | None) -> int:
 
     _log(f"Initializing Gaia DB at {GAIA_DB}")
     _log(f"Using schema:  {SCHEMA_FILE}")
-    _log(f"Using workspace: {WORKSPACE or '(none registered)'}")
 
     now = datetime.now(timezone.utc)
     now_utc = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -539,14 +491,6 @@ def _seed_and_check(con: sqlite3.Connection) -> int:
         _perms,
     )
     _log("agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)")
-
-    if WORKSPACE is not None:
-        workspace_identity = _resolve_workspace_identity()
-        con.execute(
-            "INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
-            (workspace_identity, workspace_identity),
-        )
-        _log(f"Workspace registered (identity={workspace_identity})")
 
     con.executescript(
         """

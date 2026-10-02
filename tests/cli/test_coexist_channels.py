@@ -30,7 +30,7 @@ def isolated(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     skipped = {"action": "skipped", "details": "test"}
     for step in ("_seed_contract_permissions", "_seed_surface_routing"):
         monkeypatch.setattr(install_mod, step, lambda **_: skipped)
-    monkeypatch.setattr(install_mod, "_first_scan", lambda *_: skipped)
+    monkeypatch.setattr(install_mod, "_workspace_status", lambda *_: skipped)
 
 
 def _plugin_session(workspace: Path, tmp_path: Path) -> None:

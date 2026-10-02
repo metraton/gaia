@@ -1,9 +1,10 @@
-"""The workspace is the folder Gaia was installed in, scanned on install.
+"""Installing never declares a workspace; a declared root anchors the install beneath it.
 
-Covers the bootstrap no longer registering the package folder, `gaia install`
-registering and scanning the folder it ran in, a nested workspace keeping its
-own projects, and a subfolder resolving to the installed root instead of
-seeding a `.claude` of its own.
+Covers the bootstrap registering no workspace, `gaia install` leaving the
+registry as the user declared it, a nested declared workspace keeping its own
+projects when the enclosing one is scanned, a declared name never rebinding,
+and a subfolder resolving to the declared root instead of seeding a `.claude`
+of its own.
 """
 
 import os
@@ -30,10 +31,10 @@ def _env(tmp_path: Path, db: Path) -> dict:
     return env
 
 
-def _bootstrap(tmp_path: Path, db: Path) -> None:
+def _bootstrap(tmp_path: Path, db: Path, **extra) -> None:
     proc = subprocess.run(
         [sys.executable, str(_REPO / "scripts" / "bootstrap_database.py")],
-        env=_env(tmp_path, db), capture_output=True, text=True, timeout=300,
+        env={**_env(tmp_path, db), **extra}, capture_output=True, text=True, timeout=300,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
@@ -59,31 +60,28 @@ def test_bootstrap_registers_no_workspace_for_the_package_folder(tmp_path):
     assert _rows(db, "SELECT name, identity FROM workspaces") == []
 
 
-def test_bootstrap_registers_a_workspace_only_when_one_is_named(tmp_path):
-    unnamed = tmp_path / "unnamed.db"
-    named = tmp_path / "named.db"
+def test_bootstrap_registers_no_workspace_even_when_one_is_named(tmp_path):
+    db = tmp_path / "gaia.db"
     workspace = tmp_path / "acme"
     workspace.mkdir()
 
-    for db, extra in ((unnamed, {}), (named, {"WORKSPACE": str(workspace)})):
-        proc = subprocess.run(
-            [sys.executable, str(_REPO / "scripts" / "bootstrap_database.py")],
-            env={**_env(tmp_path, db), **extra}, capture_output=True, text=True, timeout=300,
-        )
-        assert proc.returncode == 0, proc.stdout + proc.stderr
+    _bootstrap(tmp_path, db, WORKSPACE=str(workspace))
 
-    assert _rows(unnamed, "SELECT name FROM workspaces") == []
-    assert _rows(named, "SELECT name FROM workspaces") == [("acme",)]
+    assert _rows(db, "SELECT name FROM workspaces") == []
 
 
-def test_install_registers_and_scans_the_folder_it_ran_in(tmp_path):
+def test_install_inside_a_declared_workspace_leaves_the_registry_as_declared(tmp_path):
+    from gaia.store.writer import declare_workspace
+
     db = tmp_path / "gaia.db"
+    _bootstrap(tmp_path, db)
     workspace = tmp_path / "acme"
-    _git_repo(workspace / "billing")
+    subfolder = _git_repo(workspace / "billing")
+    declare_workspace("acme", workspace, db_path=db)
 
     proc = subprocess.run(
         [sys.executable, str(_REPO / "bin" / "gaia"), "install", "--channel", "npm",
-         "--workspace", str(workspace), "--quiet"],
+         "--workspace", str(subfolder), "--quiet"],
         env=_env(tmp_path, db), capture_output=True, text=True, timeout=600,
     )
 
@@ -91,32 +89,35 @@ def test_install_registers_and_scans_the_folder_it_ran_in(tmp_path):
     assert _rows(db, "SELECT name, root_path FROM workspaces") == [
         ("acme", str(workspace.resolve()))
     ]
-    assert _rows(db, "SELECT workspace, name FROM projects") == [("acme", "billing")]
+    assert _rows(db, "SELECT workspace, name FROM projects") == []
 
 
-def test_first_scan_leaves_a_nested_workspace_with_its_own_projects(tmp_path):
-    from gaia.install_root import first_scan
+def test_scanning_an_enclosing_workspace_leaves_a_nested_one_its_projects(tmp_path):
+    from gaia.store.writer import declare_workspace
+    from tools.scan.classify import scan
 
     db = tmp_path / "gaia.db"
     _bootstrap(tmp_path, db)
     outer = tmp_path / "outer"
     inner = outer / "inner"
     _git_repo(inner / "lib")
-    assert first_scan(inner, database=db)["action"] == "created"
+    declare_workspace("inner", inner, db_path=db)
+    scan(inner, "inner", db_path=db)
     _git_repo(inner / "later")
     _git_repo(outer / "app")
+    declare_workspace("outer", outer, db_path=db)
 
-    result = first_scan(outer, database=db)
+    report = scan(outer, "outer", db_path=db)
 
-    assert result["action"] == "created"
+    assert sorted(repo["repo"] for repo in report.foreign_repos) == ["later", "lib"]
     assert sorted(_rows(db, "SELECT workspace, name FROM projects")) == [
         ("inner", "lib"),
         ("outer", "app"),
     ]
 
 
-def test_first_scan_never_rebinds_a_name_recorded_for_another_root(tmp_path):
-    from gaia.install_root import first_scan
+def test_a_declared_name_is_never_rebound_to_another_root(tmp_path):
+    from gaia.store.writer import WorkspaceDeclarationError, declare_workspace
 
     db = tmp_path / "gaia.db"
     _bootstrap(tmp_path, db)
@@ -124,26 +125,28 @@ def test_first_scan_never_rebinds_a_name_recorded_for_another_root(tmp_path):
     second = tmp_path / "b" / "shop"
     first.mkdir(parents=True)
     second.mkdir(parents=True)
-    assert first_scan(first, database=db)["action"] == "created"
+    assert declare_workspace("shop", first, db_path=db) == "created"
 
-    assert first_scan(first, database=db)["action"] == "noop"
-    assert first_scan(second, database=db)["action"] == "error"
+    assert declare_workspace("shop", first, db_path=db) == "noop"
+    with pytest.raises(WorkspaceDeclarationError):
+        declare_workspace("shop", second, db_path=db)
     assert _rows(db, "SELECT root_path FROM workspaces WHERE name = 'shop'") == [
         (str(first.resolve()),)
     ]
 
 
-def test_a_subfolder_resolves_to_the_installed_root_and_seeds_no_claude_dir(
+def test_a_subfolder_resolves_to_the_declared_root_and_seeds_no_claude_dir(
     tmp_path, monkeypatch
 ):
-    from gaia.install_root import first_scan, installed_root
+    from gaia.install_root import installed_root
+    from gaia.store.writer import declare_workspace
 
     db = tmp_path / "gaia.db"
     _bootstrap(tmp_path, db)
     workspace = tmp_path / "acme"
     subfolder = _git_repo(workspace / "billing") / "src"
     subfolder.mkdir()
-    first_scan(workspace, database=db)
+    declare_workspace("acme", workspace, db_path=db)
     monkeypatch.setenv("GAIA_DB", str(db))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.chdir(subfolder)

@@ -510,7 +510,7 @@ def test_removing_bs_install_leaves_a_working_and_the_database_untouched(one_hom
     with patch.object(install, "_run_bootstrap", return_value={"rc": 0, "detail": ""}), \
          patch.object(install, "_seed_contract_permissions", return_value=quiet), \
          patch.object(install, "_seed_surface_routing", return_value=quiet), \
-         patch.object(install, "_first_scan", return_value=quiet), \
+         patch.object(install, "_workspace_status", return_value=quiet), \
          patch.object(install, "_warn_launcher_shadowed", return_value=None), \
          patch.object(install, "_warn_launcher_dir_absent", return_value=None):
         assert install.cmd_install(argparse.Namespace(

@@ -166,7 +166,7 @@ def test_session_maintenance_protects_each_hosts_live_worktrees_from_the_other(d
     _send("chat.message", "ses-oc")
     run_start_maintenance(SessionStart(
         session_id="cc-session", source="startup", is_headless=False,
-        pinned_build=None, workspace_dir=Path.cwd(), plugin_channel=False,
+        pinned_build=None, workspace_dir=Path.cwd(),
     ))
     opencode_worktree = _contract(db, "0c0c0c", "ses-oc")
     claude_worktree = _contract(db, "cc1cc1", "cc-session")

@@ -193,11 +193,22 @@ class TestCmdScanGuards:
         """A root with no git repos returns a structured error, not a crash."""
         empty = tmp_path / "empty"
         empty.mkdir()
-        args = _MockArgs(workspace="me", root=str(empty), json=True)
+        args = _MockArgs(workspace="me", root=str(empty), dry_run=True, json=True)
         rc = scan_mod.cmd_scan(args)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
         assert "no git repos" in data["error"]
+
+    def test_applying_an_undeclared_workspace_is_refused(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GAIA_DB", str(tmp_path / "gaia.db"))
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+
+        rc = scan_mod.cmd_scan(_MockArgs(workspace="aaxis", root=str(tmp_path / "aaxis"), json=True))
+
+        assert rc == 1
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert "'aaxis' is not declared" in error
+        assert "gaia workspace declare <name> <path>" in error
 
     def test_dry_run_does_not_touch_db(self, tmp_path, monkeypatch):
         """--dry-run must not create or write any DB file."""
