@@ -447,8 +447,9 @@ const SIGNATURE_BATCH_MAX = 4
 
 /** approval_grants statuses gaia/store/writer.py never returns to PENDING.
  *
- * CONSUMED is left out: a call that never ran gets its grant back as PENDING
- * while the window is open, so only a past window makes CONSUMED final.
+ * REVOKED and EXPIRED hold even when a call reserved before the withdrawal
+ * settles. CONSUMED is left out: a call that never ran gets its grant back as
+ * PENDING while the window is open, so only a past window makes CONSUMED final.
  */
 const TERMINAL_GRANT_STATUSES = new Set(["REVOKED", "FAILED", "EXPIRED"])
 

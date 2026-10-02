@@ -7944,7 +7944,11 @@ def settle_plan_command(
     failure_reason: str | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    """Commit or release an exact reservation; a failure leaves the remainder."""
+    """Commit or release an exact reservation; a failure leaves the remainder.
+
+    A grant revoked or expired while its call ran keeps that status: the call's
+    outcome is recorded, but the withdrawal is never undone.
+    """
     if not session_id or not tool_use_id:
         return False
     con = _connect(db_path)
@@ -7961,12 +7965,16 @@ def settle_plan_command(
             con.rollback()
             return False
         index = int(grant["reservation_index"])
+        withdrawn = grant["status"] in ("REVOKED", "EXPIRED")
         if success:
             items = _json.loads(grant["command_set_json"])
             consumed = _json.loads(grant.get("consumed_indexes_json") or "[]")
             consumed.append(index)
             next_index = index + 1
-            status = "CONSUMED" if next_index == len(items) else "PENDING"
+            if withdrawn:
+                status = grant["status"]
+            else:
+                status = "CONSUMED" if next_index == len(items) else "PENDING"
             con.execute(
                 "UPDATE approval_grants SET next_index=?, consumed_indexes_json=?, status=?, "
                 "consumed_at=CASE WHEN ?='CONSUMED' THEN ? ELSE consumed_at END, "
@@ -7976,10 +7984,10 @@ def settle_plan_command(
             )
         else:
             con.execute(
-                "UPDATE approval_grants SET status='FAILED', failed_index=?, failure_reason=?, "
+                "UPDATE approval_grants SET status=?, failed_index=?, failure_reason=?, "
                 "reservation_index=NULL, reservation_session_id=NULL, "
                 "reservation_tool_use_id=NULL, reservation_at=NULL WHERE approval_id=?",
-                (index, failure_reason, approval_id),
+                (grant["status"] if withdrawn else "FAILED", index, failure_reason, approval_id),
             )
         con.commit()
         return True

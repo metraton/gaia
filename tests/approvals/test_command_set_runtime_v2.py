@@ -83,6 +83,36 @@ def test_exact_order_and_post_success_commit(isolated_db):
     )["index"] == 1
 
 
+def _revoke(db_path):
+    assert writer.revoke_approval_grant("P-plan", db_path=db_path)["status"] == "applied"
+
+
+def _expire(db_path):
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE approval_grants SET expires_at='2000-01-01T00:00:00Z' WHERE approval_id='P-plan'")
+    assert writer.cleanup_expired_db_grants(db_path=db_path) == 1
+
+
+@pytest.mark.parametrize("withdraw, withdrawn_status", [(_revoke, "REVOKED"), (_expire, "EXPIRED")])
+def test_a_withdrawal_during_a_running_call_survives_its_success(isolated_db, withdraw, withdrawn_status):
+    first, _ = _approved_set(isolated_db)
+    writer.reserve_plan_command(first, session_id="s", tool_use_id="call-1", db_path=isolated_db)
+    withdraw(isolated_db)
+
+    assert writer.settle_plan_command(
+        "P-plan", session_id="s", tool_use_id="call-1", success=True, db_path=isolated_db,
+    ) is True
+
+    con = sqlite3.connect(isolated_db)
+    con.row_factory = sqlite3.Row
+    row = dict(con.execute("SELECT * FROM approval_grants WHERE approval_id='P-plan'").fetchone())
+    con.close()
+    assert row["status"] == withdrawn_status
+    assert row["next_index"] == 1
+    assert json.loads(row["consumed_indexes_json"]) == [0]
+    assert row["reservation_tool_use_id"] is None
+
+
 def test_failure_freezes_grant_and_preserves_checkpoint(isolated_db):
     first, second = _approved_set(isolated_db)
     writer.reserve_plan_command(first, session_id="s", tool_use_id="call-1", db_path=isolated_db)
