@@ -21,9 +21,10 @@ jobs:
   # Each tree is tested once. .github/scripts/ci_verdict.py looks for an earlier green
   # "CI verdict" on this commit, on another commit with its tree (the squash of
   # a PR head), or on its parent when only version sources changed; when one
-  # exists the pytest shards are skipped and the verdict cites that run. The
-  # short jobs still run: validate-manifests and build-plugins are exactly what
-  # a version-only commit can break. A pull request is judged by its head, not
+  # exists the pytest shards and the bun suite are skipped and the verdict
+  # cites that run. The short jobs still run: validate-manifests and
+  # build-plugins are exactly what a version-only commit can break. A pull
+  # request is judged by its head, not
   # the merge ref, so the squash landing on main finds the same tree. A failed
   # lookup reports "not reusable", which runs everything.
   decide:
@@ -154,6 +155,26 @@ jobs:
           name: test-durations-${{ matrix.group }}
           path: ${{ runner.temp }}/durations-${{ matrix.group }}.json
           retention-days: 30
+
+  # The OpenCode plugin's TypeScript tests (tests/opencode/*.test.ts), which
+  # pytest never collects. `test` must be bun's first argument: `bun run test`
+  # and `bun --cwd <dir> test` both run package.json's pytest script instead.
+  # The ./ prefix makes the argument a path; bare, it is a substring filter.
+  test-opencode:
+    name: OpenCode TypeScript tests (bun)
+    needs: decide
+    if: ${{ needs.decide.outputs.reusable != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Run bun test
+        run: bun test ./tests/opencode
 
   test-durations:
     name: Merge test durations
@@ -663,6 +684,7 @@ jobs:
     needs:
       - decide
       - test-python
+      - test-opencode
       - l2-ci-subset
       - lint-js
       - build-plugins
