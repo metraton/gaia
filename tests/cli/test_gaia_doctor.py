@@ -764,7 +764,7 @@ class TestCheckWorkspaceRoots:
 
         assert r["severity"] == "info"
         assert "never-scanned" in r["detail"]
-        assert r["fix"] == "gaia scan <workspace root> --workspace never-scanned"
+        assert r["fix"] == "gaia workspace declare never-scanned <workspace root>"
 
     def test_fresh_install_workspace_row_does_not_degrade_doctor(
         self, tmp_path, monkeypatch, bootstrapped_db_template,

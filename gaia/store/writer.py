@@ -775,18 +775,25 @@ class WorkspaceDeclarationError(ValueError):
 
 def declare_workspace(
     name: str, root: Path, *, dry_run: bool = False, db_path: Path | None = None,
-) -> str:
-    """Record *name* as a workspace rooted at *root*; return ``"created"``, ``"adopted"`` or ``"noop"``.
+) -> dict:
+    """Record *name* as a workspace rooted at *root*.
 
-    ``adopted`` gives a root to an existing row that had none, so the history
-    already filed under that name stays with it; a retired row becomes active
-    and a retire alias of *name* is dropped, so *name* means itself again. A
-    name declared at another root, or a root declared under another name,
-    raises :class:`WorkspaceDeclarationError` and writes nothing; so does
-    ``dry_run``, which returns the outcome the declaration would have.
+    Returns ``{"outcome", "dropped_alias", "ledger"}``. ``outcome`` is
+    ``"created"``, ``"adopted"`` or ``"noop"``: ``adopted`` gives a root to an
+    existing row that had none, so the history already filed under that name
+    stays with it. A retired row becomes active, and a retire alias of *name*
+    is dropped so *name* means itself again; ``dropped_alias`` names its
+    target and ``ledger`` the undo ledger that records it, which
+    ``gaia workspace retire --undo`` reads back. A name declared at another
+    root, or a root declared under another name, raises
+    :class:`WorkspaceDeclarationError` and writes nothing; so does
+    ``dry_run``, which reports what the declaration would do.
     """
+    from gaia.store.workspace_retire import alias_target, write_declare_ledger
+
     root_path = str(root.resolve())
-    con = _connect(db_path)
+    db_file = Path(db_path) if db_path is not None else _db_path()
+    con = _connect(db_file)
     try:
         holder = con.execute(
             "SELECT name FROM workspaces WHERE root_path = ? AND name != ?",
@@ -801,22 +808,40 @@ def declare_workspace(
         ).fetchone()
         if row is not None and row["root_path"]:
             if row["root_path"] == root_path:
-                return "noop"
+                return {"outcome": "noop", "dropped_alias": None, "ledger": None}
             raise WorkspaceDeclarationError(
                 f"workspace {name!r} is already declared at {row['root_path']}"
             )
-        outcome = "adopted" if row is not None else "created"
+        report = {
+            "outcome": "adopted" if row is not None else "created",
+            "dropped_alias": alias_target(con, name) if row is not None else None,
+            "ledger": None,
+        }
+        if report["dropped_alias"] == name:
+            report["dropped_alias"] = None
         if dry_run:
-            return outcome
+            return report
+        status_previous = con.execute(
+            "SELECT status FROM workspaces WHERE name = ?", (name,)
+        ).fetchone()
+        alias_row = con.execute(
+            "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
+            (name,),
+        ).fetchone()
         _ensure_workspace_row(con, name, root)
         con.execute(
             "UPDATE workspaces SET root_path = ?, status = 'active', missing_since = NULL "
             "WHERE name = ?",
             (root_path, name),
         )
-        con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (name,))
+        if alias_row is not None:
+            con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (name,))
+            report["ledger"] = str(write_declare_ledger(
+                db_file, name, root_path, dict(alias_row),
+                status_previous[0] if status_previous else None,
+            ))
         con.commit()
-        return outcome
+        return report
     finally:
         con.close()
 
@@ -1606,7 +1631,7 @@ def bulk_upsert(
     con = _connect(db_path)
     try:
         if not _is_authorized(con, table, agent):
-            return {"applied": 0, "rejected": len(rows_list)}
+            return {"applied": 0, "rejected": rejected + len(rows_list)}
         con.execute("BEGIN")
         try:
             _ensure_workspace_row(con, workspace)
@@ -1643,66 +1668,9 @@ def bulk_upsert(
         con.close()
 
 
-# ---------------------------------------------------------------------------
-# Public API: save_integration
-# ---------------------------------------------------------------------------
-
-_INTEGRATION_FIELDS = ("kind", "version", "install_path", "topic_key")
-
 # An integrations row with neither a version nor an install path names a word
-# the install capture read in an agent's prose; nothing reads such a row.
+# the retired install capture read in an agent's prose; nothing reads such a row.
 UNEVIDENCED_INTEGRATION_SQL = "(version IS NULL AND install_path IS NULL)"
-
-
-def save_integration(
-    workspace: str,
-    name: str,
-    *,
-    kind: str | None = None,
-    version: str | None = None,
-    install_path: str | None = None,
-    topic_key: str | None = None,
-    agent: str = "system",
-    db_path: Path | None = None,
-) -> dict:
-    """Upsert an integrations row, bypassing per-agent permission enforcement.
-
-    A row carrying neither ``version`` nor ``install_path`` is refused
-    (``status='refused'``) and nothing is written.
-    """
-    if version is None and install_path is None:
-        return {
-            "status": "refused",
-            "reason": f"integration {name!r} has no version and no install_path",
-        }
-    con = _connect(db_path)
-    try:
-        con.execute("BEGIN")
-        try:
-            _ensure_workspace_row(con, workspace)
-            con.execute(
-                """
-                INSERT INTO integrations (workspace, name, kind, version,
-                                          install_path, topic_key, scanner_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(workspace, name) DO UPDATE SET
-                    kind         = COALESCE(excluded.kind, kind),
-                    version      = COALESCE(excluded.version, version),
-                    install_path = COALESCE(excluded.install_path, install_path),
-                    topic_key    = COALESCE(excluded.topic_key, topic_key),
-                    scanner_ts   = excluded.scanner_ts
-                """,
-                (workspace, name, kind, version, install_path, topic_key, _now_iso()),
-            )
-            con.commit()
-        except Exception:
-            con.rollback()
-            raise
-        return _applied()
-    except Exception as exc:
-        return {"status": "error", "reason": str(exc)}
-    finally:
-        con.close()
 
 
 # ---------------------------------------------------------------------------

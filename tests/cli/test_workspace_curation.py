@@ -111,7 +111,7 @@ def test_a_phantom_owning_rows_with_no_owner_is_left_alone(db, capsys):
 
 def test_declaring_a_retired_name_makes_it_mean_itself(db, tmp_path, capsys):
     from bin.cli.workspace import _cmd_declare
-    from gaia.store.workspace_retire import alias_target, apply_retire
+    from gaia.store.workspace_retire import alias_target, apply_retire, undo_retire
     from gaia.store.writer import _connect
 
     _declared(db, "ws", tmp_path / "ws")
@@ -125,12 +125,25 @@ def test_declaring_a_retired_name_makes_it_mean_itself(db, tmp_path, capsys):
 
     args.dry_run = False
     assert _cmd_declare(args) == 0
+    out = capsys.readouterr().out
+    assert "alias me -> ws dropped" in out
     con = _connect(db)
     try:
         assert alias_target(con, "me") == "me"
     finally:
         con.close()
     assert _sql(db, "SELECT status FROM workspaces WHERE name = 'me'") == [("active",)]
+
+    ledger = out.split("undo ledger: ", 1)[1].split(" ", 1)[0]
+    undo_retire(ledger, db_path=db)
+    con = _connect(db)
+    try:
+        assert alias_target(con, "me") == "ws"
+    finally:
+        con.close()
+    assert _sql(db, "SELECT root_path, status FROM workspaces WHERE name = 'me'") == [
+        (None, "retired"),
+    ]
 
 
 def test_a_stale_alias_left_by_an_earlier_declare_is_dropped(db, tmp_path):
@@ -143,20 +156,29 @@ def test_a_stale_alias_left_by_an_earlier_declare_is_dropped(db, tmp_path):
 
 
 def test_an_integration_read_from_prose_is_refused_and_hidden(db):
-    from gaia.store import save_integration
     from gaia.store.provider import get_context
     from gaia.store.writer import bulk_upsert
 
     _sql(db, "INSERT INTO workspaces (name) VALUES ('ws')")
-    assert save_integration("ws", "the", kind="pkg", db_path=db)["status"] == "refused"
-    assert save_integration("ws", "acli", kind="cli", version="1.2", db_path=db)["status"] == "applied"
-    assert bulk_upsert("integrations", "ws", [{"name": "and"}], "gaia-system",
-                       db_path=db)["rejected"] == 1
+    _sql(db, "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) "
+             "VALUES ('integrations', 'gaia-operator', 1)")
+    assert bulk_upsert("integrations", "ws", [{"name": "and"}, {"name": "acli", "version": "1.2"}],
+                       "gaia-operator", db_path=db) == {"applied": 1, "rejected": 1}
     _sql(db, "INSERT INTO integrations (workspace, name, kind) VALUES ('ws', 'or', 'pkg')")
 
     listed = [i["name"] for i in get_context("ws", db_path=db)["workspace"]["integrations"]]
     assert listed == ["acli"]
     assert _sql(db, "SELECT COUNT(*) FROM integrations WHERE name = 'or'") == [(1,)]
+
+
+def test_no_hook_captures_integrations_from_agent_output():
+    import gaia.store
+
+    hooks = Path(__file__).resolve().parents[2] / "hooks"
+    assert not hasattr(gaia.store, "save_integration")
+    assert "def detect" not in (hooks / "modules" / "install_detector.py").read_text(encoding="utf-8")
+    stop = (hooks / "adapters" / "subagent_stop_core.py").read_text(encoding="utf-8")
+    assert "install_detector" not in stop
 
 
 def test_a_facet_for_a_folder_that_is_gone_is_not_listed_and_curate_drops_it(db, tmp_path, capsys):

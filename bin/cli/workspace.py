@@ -48,13 +48,13 @@ def _cmd_declare(args) -> int:
     if not root.is_dir():
         print(f"gaia workspace declare: {root} is not a directory", file=sys.stderr)
         return 2
-    alias = _retire_alias(name)
     dry_run = bool(getattr(args, "dry_run", False))
     try:
-        outcome = declare_workspace(name, root, dry_run=dry_run)
+        report = declare_workspace(name, root, dry_run=dry_run)
     except WorkspaceDeclarationError as exc:
         print(f"gaia workspace declare: {exc}", file=sys.stderr)
         return 1
+    outcome, alias = report["outcome"], report["dropped_alias"]
     if outcome == "noop":
         print(f"workspace {name!r} is already declared at {root}")
         return 0
@@ -66,21 +66,9 @@ def _cmd_declare(args) -> int:
     print(f"workspace {name!r} declared at {root}")
     if alias:
         print(f"alias {name} -> {alias} dropped; {name} means itself again")
+        print(f"  undo ledger: {report['ledger']} (gaia workspace retire --undo <ledger>)")
     print(f"Index its repositories with: gaia scan --workspace {name} {root}")
     return 0
-
-
-def _retire_alias(name: str) -> str | None:
-    """The workspace a retire alias makes ``name`` resolve to, or None."""
-    from gaia.store.workspace_retire import alias_target
-    from gaia.store.writer import _connect
-
-    con = _connect()
-    try:
-        target = alias_target(con, name)
-    finally:
-        con.close()
-    return target if target != name else None
 
 
 def _render_curation(plan: dict) -> None:
@@ -274,8 +262,11 @@ def _render_retire(report: dict) -> None:
     for table, n in (report.get("left_behind") or {}).items():
         print(f"  left under the source: {table}={n}")
     if report.get("release_root"):
-        verb = "released" if mode == "applied" else "to release"
+        verb = "released" if mode in ("applied", "undone") else "to release"
         print(f"  source root {verb}: {report['release_root']}")
+    if report.get("alias_restored"):
+        verb = "restored" if mode == "undone" else "to restore"
+        print(f"  alias {verb}: {report['source']} -> {report['target']}")
     if report.get("restore_root"):
         verb = "restored" if mode == "undone" else "to restore"
         print(f"  source root {verb}: {report['restore_root']}")

@@ -169,9 +169,9 @@ def test_a_declared_name_is_never_rebound_to_another_root(tmp_path):
     second = tmp_path / "b" / "shop"
     first.mkdir(parents=True)
     second.mkdir(parents=True)
-    assert declare_workspace("shop", first, db_path=db) == "created"
+    assert declare_workspace("shop", first, db_path=db)["outcome"] == "created"
 
-    assert declare_workspace("shop", first, db_path=db) == "noop"
+    assert declare_workspace("shop", first, db_path=db)["outcome"] == "noop"
     with pytest.raises(WorkspaceDeclarationError):
         declare_workspace("shop", second, db_path=db)
     assert _rows(db, "SELECT root_path FROM workspaces WHERE name = 'shop'") == [

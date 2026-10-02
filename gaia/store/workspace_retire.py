@@ -363,6 +363,70 @@ def _backup(con: sqlite3.Connection, db_file: Path, label: str) -> Path:
     return target
 
 
+def write_declare_ledger(
+    db_file: Path, name: str, root_path: str, alias_row: dict, status_previous: str | None,
+) -> Path:
+    """Record the retire alias a declaration of ``name`` dropped; :func:`undo_retire` reads it back."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_dir = db_file.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    path = backup_dir / f"{db_file.stem}-workspace-declare-{_safe(name)}-{stamp}-ledger.json"
+    path.write_text(json.dumps({
+        "kind": "workspace-declare",
+        "source": name,
+        "target": alias_row["target"],
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "root_path": root_path,
+        "status_previous": status_previous,
+        "alias_dropped": alias_row,
+    }, indent=2), encoding="utf-8")
+    return path
+
+
+def _undo_declare(ledger: dict, path: Path, *, dry_run: bool, db_file: Path) -> dict:
+    """Put back the alias a declaration dropped and release the root it recorded."""
+    from gaia.store.writer import _connect
+
+    name, alias = ledger["source"], ledger["alias_dropped"]
+    report = {"source": name, "target": alias["target"], "alias_restored": alias,
+              "release_root": ledger["root_path"]}
+    con = _connect(db_file)
+    try:
+        in_force = con.execute(
+            "SELECT 1 FROM workspaces w WHERE w.name = ? AND w.root_path = ? "
+            "AND NOT EXISTS (SELECT 1 FROM workspace_aliases a WHERE a.alias = w.name)",
+            (name, ledger["root_path"]),
+        ).fetchone()
+        if in_force is None:
+            raise WorkspaceRetireError(
+                f"the declaration of {name!r} recorded in {path} is not in force "
+                f"(its root changed or its alias is back)"
+            )
+        if dry_run:
+            report["mode"] = "dry-run"
+            return report
+        con.execute("BEGIN IMMEDIATE")
+        try:
+            con.execute(
+                "UPDATE workspaces SET root_path = NULL, status = COALESCE(?, status) "
+                "WHERE name = ?",
+                (ledger.get("status_previous"), name),
+            )
+            con.execute(
+                "INSERT INTO workspace_aliases (alias, target, created_at, ledger) "
+                "VALUES (?, ?, ?, ?)",
+                (alias["alias"], alias["target"], alias["created_at"], alias["ledger"]),
+            )
+            con.commit()
+        except BaseException:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+    report["mode"] = "undone"
+    return report
+
+
 def _has_integer_pk(con, table: str) -> bool:
     pk = [r for r in con.execute(f'PRAGMA table_info("{table}")') if r[5]]
     return len(pk) == 1 and (pk[0][2] or "").upper() == "INTEGER"
@@ -519,6 +583,9 @@ def _references(con, workspace: str) -> int:
 def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path | None = None) -> dict:
     """Put back what the retire recorded in ``ledger_path`` wrote.
 
+    A ``workspace-declare`` ledger, written when a declaration dropped a
+    retire alias, puts that alias back and releases the declared root.
+
     A row that has left the workspace the retire moved it to since then is
     not pulled back; it is reported under ``diverged``, as is a released root
     when the source's own ``root_path`` is no longer empty. Rows written since the
@@ -539,11 +606,13 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
         ledger = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise WorkspaceRetireError(f"cannot read ledger {path}: {exc}") from exc
+    db_file = Path(db_path) if db_path is not None else _db_path()
+    if ledger.get("kind") == "workspace-declare":
+        return _undo_declare(ledger, path, dry_run=dry_run, db_file=db_file)
     if ledger.get("kind") != "workspace-retire":
-        raise WorkspaceRetireError(f"{path} is not a workspace retire ledger")
+        raise WorkspaceRetireError(f"{path} is not a workspace retire or declare ledger")
     source, target = ledger["source"], ledger["target"]
 
-    db_file = Path(db_path) if db_path is not None else _db_path()
     con = _connect(db_file)
     try:
         live = con.execute(

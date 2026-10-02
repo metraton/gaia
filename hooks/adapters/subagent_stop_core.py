@@ -1220,29 +1220,6 @@ def run_subagent_stop(
                     agent_type, _update_contracts_refused,
                 )
 
-        try:
-            from modules.install_detector import detect, resolve_workspace, build_topic_key
-            _install_match = detect(agent_output)
-            if _install_match.get("matched"):
-                from gaia.store import save_integration
-                _ws = resolve_workspace()
-                _tgt = _install_match["target"]
-                _kind = _install_match.get("kind", "pkg")
-                _tk = build_topic_key(_kind, _tgt)
-                _store_result = save_integration(
-                    workspace=_ws,
-                    name=_tgt,
-                    kind=_kind,
-                    topic_key=_tk,
-                    agent="system",
-                )
-                logger.info(
-                    "Install capture: target=%s kind=%s workspace=%s store=%s",
-                    _tgt, _kind, _ws, _store_result.get("status"),
-                )
-        except Exception as _exc:
-            logger.debug("Install capture failed (non-fatal): %s", _exc)
-
         anchor_hits = None
         try:
             from modules.context.anchor_tracker import (

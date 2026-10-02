@@ -1086,11 +1086,10 @@ def check_episodes_growth() -> dict:
 
 @register_check("Workspace roots", order=49)
 def check_workspace_roots() -> dict:
-    """Report active workspaces whose root is unrecorded, naming the scan that records it.
+    """Report active workspaces whose root is unrecorded, naming the declaration that records it.
 
     ``gaia worktree create`` refuses every repository of such a workspace, and
-    install never scans, so the root stays empty until the user runs the scan.
-    The finding is info, not a warning: a fresh install creates exactly these
+    only `gaia workspace declare` records a root. The finding is info, not a warning: a fresh install creates exactly these
     rows, and they limit worktree creation, not the health of the install.
     """
     from gaia.paths import db_path  # noqa: PLC0415
@@ -1119,7 +1118,7 @@ def check_workspace_roots() -> dict:
         f"no recorded root for {', '.join(missing)}; "
         "`gaia worktree create` refuses their repositories",
         "; ".join(
-            f"gaia scan <workspace root> --workspace {shlex.quote(name)}" for name in missing
+            f"gaia workspace declare {shlex.quote(name)} <workspace root>" for name in missing
         ),
     )
 
