@@ -206,6 +206,17 @@ CASES = [
     ("YARN_ENABLE_SCRIPTS=1 yarn run deploy", SIGNED),
     ("PIP_INDEX_URL=https://example.invalid pip download x", SIGNED),
     ("FOO=1 npx eslint .", UNSIGNED),
+    #    npm reads its variables in any case; uv only in upper case.
+    ("Npm_Config_Prefix=/nonexistent/p npx eslint .", SIGNED),
+    ("npm_CONFIG_package=cowsay npx eslint .", SIGNED),
+    ("uv_index_url=https://example.invalid uv run pytest", UNSIGNED),
+    #    A bundled `env` flag whose last letter takes a value consumes it.
+    ("env -iu HOME npm_config_prefix=/nonexistent/p npx eslint .", SIGNED),
+    ("env -iC . npm_config_prefix=/nonexistent/p npx eslint .", SIGNED),
+    ("env -iuHOME npm_config_prefix=/nonexistent/p npx eslint .", SIGNED),
+    #    `uv run -` reads its program from stdin, like `python3 -`.
+    ("uv run -", SIGNED),
+    ("uv run --frozen -", SIGNED),
     #    `~name` is a user's home or a package name, not a path.
     ("npx ~evil", SIGNED),
     ("uv run --with ~evil pytest", SIGNED),
@@ -240,7 +251,13 @@ def test_npm_run_reads_the_package_json_npm_reads(project, command):
     ('# /// script\n# dependencies = ["requests"]\n# ///\nprint(1)\n', SIGNED),
     ('# /// script\n# requires-python = ">=3.11"\n# ///\nprint(1)\n', UNSIGNED),
     ("print(1)\n", UNSIGNED),
-], ids=["inline-dependencies", "inline-metadata-only", "plain"])
+    ('# /// script\n# "dependencies" = ["requests"]\n# ///\n', SIGNED),
+    ("# /// script\n# 'dependencies' = ['requests']\n# ///\n", SIGNED),
+    ("# /// script\n" + "# x\n" * 100_000 + '# dependencies = ["requests"]\n# ///\n', SIGNED),
+], ids=[
+    "inline-dependencies", "inline-metadata-only", "plain", "double-quoted-key",
+    "single-quoted-key", "block-past-read-cap",
+])
 def test_uv_run_script_with_inline_dependencies_is_signed(project, body, signed):
     (project / "tool.py").write_text(body)
     assert detect_mutative_command("uv run tool.py", cwd=str(project)).is_mutative is signed

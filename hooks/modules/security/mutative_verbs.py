@@ -5440,7 +5440,7 @@ def _resolve_prefix_runner_payload(
         if token == "--":
             i += 1
             continue
-        if token.startswith("-"):
+        if token.startswith("-") and token != "-":
             flag = token.split("=", 1)[0]
             if subcommand_seen and flag in source_flags | extra_flags:
                 value = option_value(i)
@@ -5589,15 +5589,21 @@ def _uv_run_fetch_reason(tokens: "Tuple[str, ...]", payload_index: int) -> "Opti
 _PEP723_SCRIPT_BLOCK_RE = _re.compile(r"^# /// script[ \t]*$(.*?)^# ///[ \t]*$", _re.M | _re.S)
 
 
+_PEP723_DEPENDENCIES_RE = _re.compile(r"""^#\s*(["']?)dependencies\1\s*=""", _re.M)
+
+
 def _script_declares_inline_dependencies(path: str, cwd: "Optional[str]") -> bool:
     """True when the script at *path* carries a PEP 723 ``# /// script`` block
-    with ``dependencies``, which ``uv run`` fetches; False when it has none or
-    cannot be read."""
+    with ``dependencies``, which ``uv run`` fetches, or when the read stopped at
+    its size cap before a complete block; False when it has none or cannot be
+    read."""
     content = _read_script_content(path, cwd)
-    block = _PEP723_SCRIPT_BLOCK_RE.search(content) if content is not None else None
-    return block is not None and _re.search(
-        r"^#\s*dependencies\s*=", block.group(1), _re.M,
-    ) is not None
+    if content is None:
+        return False
+    block = _PEP723_SCRIPT_BLOCK_RE.search(content)
+    if block is None:
+        return len(content) >= _MAX_SCRIPT_READ_BYTES
+    return _PEP723_DEPENDENCIES_RE.search(block.group(1)) is not None
 
 
 def _uv_tool_run_as_uvx(tokens: "Tuple[str, ...]") -> "Optional[str]":
@@ -5681,7 +5687,8 @@ def _check_prefix_runner(
 
     import shlex
 
-    interpreter = None
+    # ``uv run -`` reads a Python program from stdin.
+    interpreter = "python3" if base_cmd == "uv" and payload == "-" else None
     lowered = payload.lower()
     for ext, ext_interpreter in _SCRIPT_EXT_INTERPRETERS.items():
         if lowered.endswith(ext):
@@ -6029,6 +6036,18 @@ def _consume_shell_word(s: str, i: int) -> int:
     return i
 
 
+def _short_bundle_ends_in_value_flag(tok: str, value_flags: FrozenSet[str]) -> bool:
+    """True when the bundled short flags in *tok* end in one that takes the next
+    word as its value (``-iu HOME``).  A value flag earlier in the bundle takes
+    the rest of the bundle instead (``-iuHOME``)."""
+    if tok.startswith("--") or len(tok) < 3:
+        return False
+    for k in range(1, len(tok)):
+        if f"-{tok[k]}" in value_flags:
+            return k == len(tok) - 1
+    return False
+
+
 def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
     """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
@@ -6044,7 +6063,9 @@ def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
             return tok_end
         if tok.startswith("-"):
             i = tok_end
-            if tok in grammar.value_flags:
+            if tok in grammar.value_flags or _short_bundle_ends_in_value_flag(
+                tok, grammar.value_flags,
+            ):
                 while i < n and s[i].isspace():
                     i += 1
                 i = _consume_shell_word(s, i)
@@ -6111,7 +6132,7 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
 
 
 _PACKAGE_CONFIG_ENV_RE = _re.compile(
-    r"(?<!\S)(?:npm_config_|NPM_CONFIG_|UV_|PIP_|PNPM_|YARN_|BUN_)[A-Za-z0-9_]*="
+    r"(?<!\S)(?:(?i:npm_config_)|UV_|PIP_|PNPM_|YARN_|BUN_)[A-Za-z0-9_]*="
 )
 _PACKAGE_TOOL_COMMANDS: FrozenSet[str] = frozenset({
     "npm", "npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "uv", "uvx", "pip",

@@ -788,6 +788,10 @@ class TestBlockedCommandsEnvPrefixEvasion:
         ("env TF_LOG=debug terragrunt run-all destroy", "terragrunt_destroy_all"),
         # env-wrapper defeating the ^-anchored disk_operations regexes
         ("env X=y dd if=/dev/zero of=/dev/sda", "disk_operations"),
+        # bundled env flags whose last letter takes the next word as its value
+        ("env -iu HOME dd if=/dev/zero of=/dev/sda", "disk_operations"),
+        ("env -iC /tmp dd if=/dev/zero of=/dev/sda", "disk_operations"),
+        ("env -iuHOME dd if=/dev/zero of=/dev/sda", "disk_operations"),
         # bare NAME=value assignment prefix defeating the ^-anchored disk regexes
         ("FOO=bar dd if=/dev/zero of=/dev/sda", "disk_operations"),
         # env value that is itself a command substitution
