@@ -1299,12 +1299,29 @@ _RUNNER_PACKAGE_FLAGS: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
     "python": (frozenset({"--spec", "--from"}), frozenset({"--with"})),
 }
 
+# The only options ``uv run`` may carry and stay unsigned; none adds code beyond
+# the project's lockfile, and ``--with``/``-w`` only with local paths.  The
+# value-taking ones are part of the resolver's uv value table, so the command it
+# finds is the one this shape was checked up to.
+_UV_RUN_WITH_FLAGS: FrozenSet[str] = frozenset({"--with", "-w"})
+_UV_RUN_SAFE_VALUE_FLAGS: FrozenSet[str] = frozenset({
+    "--extra", "--no-extra", "--group", "--no-group", "--only-group", "--package",
+    "--color",
+})
+_UV_RUN_SAFE_FLAGS: FrozenSet[str] = frozenset({
+    "--all-extras", "--no-dev", "--only-dev", "--no-default-groups", "--all-groups",
+    "--no-editable", "--exact", "--no-env-file", "--isolated", "--active",
+    "--no-sync", "--locked", "--frozen", "--all-packages", "--no-project", "-m",
+    "--module", "-q", "--quiet", "-v", "--verbose", "--offline", "--no-progress",
+    "--native-tls", "--no-cache", "-n", "--no-config", "--no-python-downloads",
+})
+
 _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "uv": frozenset({
-        "--with", "--with-editable", "--with-requirements", "--python", "-p",
-        "--directory", "--project", "--extra", "--index", "--index-url",
-        "--refresh-package", "--isolated-package",
-    }),
+        "--with-editable", "--with-requirements", "--python", "-p",
+        "--directory", "--project", "--index", "--index-url",
+        "--refresh-package", "--isolated-package", "--env-file",
+    }) | _UV_RUN_WITH_FLAGS | _UV_RUN_SAFE_VALUE_FLAGS,
     "uvx": frozenset({
         "--with", "--from", "--python", "-p", "--index", "--index-url",
     }),
@@ -1324,10 +1341,10 @@ _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "yarn": frozenset({"--package", "-p", "--cwd"}),
 }
 
-# Runner options known to take NO value.  For a runner in
-# ``_RUNNER_CODE_ORIGIN``, an option before the package that is in neither this
-# table nor ``_PREFIX_RUNNER_VALUE_FLAGS`` may have consumed the next token, so
-# the package cannot be identified and the invocation is signed.
+# Runner options known to take NO value.  For a "registry" runner, an option
+# before the package that is in neither this table nor
+# ``_PREFIX_RUNNER_VALUE_FLAGS`` may have consumed the next token, so the
+# package cannot be identified and the invocation is signed.
 _PREFIX_RUNNER_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
     "npx": frozenset({
         "-y", "--yes", "--no", "--no-install", "--ignore-existing", "-q",
@@ -1356,6 +1373,24 @@ _PREFIX_RUNNER_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
         "-q", "--quiet", "--verbose", "--no-cache", "--pypackages",
         "--system-site-packages",
     }),
+}
+
+# The only options an "installed" runner may carry and stay unsigned, besides its
+# directory option: they take no value and cannot change which copy runs.  Not
+# ``_PREFIX_RUNNER_BOOLEAN_FLAGS``: ``--ignore-existing`` takes no value and
+# still skips the local copy.
+_INSTALLED_RUNNER_SAFE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npx": frozenset({
+        "-y", "--yes", "--no", "--no-install", "-q", "--quiet", "-s", "--silent",
+        "--verbose", "--offline", "--prefer-offline",
+    }),
+    "npm": frozenset({
+        "-y", "--yes", "--no", "-q", "--quiet", "-s", "--silent", "--verbose",
+        "--offline", "--prefer-offline",
+    }),
+    "bunx": frozenset({"--bun", "--silent", "--verbose", "--no-install"}),
+    "bun": frozenset({"--bun", "-b", "--silent", "--verbose", "--no-install"}),
+    "pnpm": frozenset({"-s", "--silent", "--use-stderr"}),
 }
 
 # ``npx`` runs an arbitrary SHELL command when given ``--call``/``-c``, so the
@@ -5464,6 +5499,86 @@ def _runner_package_is_local(origin: str, spec: str, project_dir: str) -> bool:
     )
 
 
+def _installed_runner_fetch_reason(
+    base_cmd: str, tokens: "Tuple[str, ...]", payload_index: int,
+    cwd: "Optional[str]",
+) -> "Optional[str]":
+    """Why an "installed" runner may run code that is not the project's copy, or
+    ``None`` when the invocation fits the one shape that provably runs it.
+
+    That shape: every runner option is in ``_INSTALLED_RUNNER_SAFE_FLAGS`` or is
+    the runner's directory option (the last value wins, as npm reads it), and
+    the payload is a path or installed under that directory.  ``npm exec``/``x``
+    read their options up to ``--`` even after the package (npm-exec(1)); the
+    other runners hand everything after the package to the command.
+    """
+    import os
+
+    end = len(tokens) if base_cmd == "npm" else payload_index
+    if "--" in tokens[1:end]:
+        end = tokens.index("--", 1)
+    runner_tokens = tokens[1:end]
+    dir_flags = (
+        frozenset({"--prefix"}) if base_cmd == "npx"
+        else _PACKAGE_MANAGER_DIR_FLAGS.get(base_cmd, frozenset())
+    )
+    safe_flags = _INSTALLED_RUNNER_SAFE_FLAGS.get(base_cmd, frozenset())
+    shell_call = False
+    takes_value = False
+    for token in runner_tokens:
+        if takes_value or not token.startswith("-"):
+            takes_value = False
+            continue
+        flag, sep, _ = token.partition("=")
+        if base_cmd in ("npx", "npm") and flag in _NPX_SHELL_CALL_FLAGS:
+            shell_call = True
+            takes_value = not sep
+        elif flag in dir_flags:
+            takes_value = not sep
+        elif sep or flag not in safe_flags:
+            return f"option '{flag}' is outside the shape known to run the project's copy"
+
+    project_dir = cwd if cwd is not None else os.getcwd()
+    if any(t.partition("=")[0] in dir_flags for t in runner_tokens):
+        override = _extract_dir_override(runner_tokens, dir_flags)
+        if override is None:
+            return "its directory option has no value"
+        project_dir = _resolve_dir_against_cwd(project_dir, override)
+    payload = tokens[payload_index]
+    if shell_call or _runner_package_is_local("installed", payload, project_dir):
+        return None
+    return f"it would fetch {payload}: not a local path or installed under {project_dir}"
+
+
+def _uv_run_fetch_reason(tokens: "Tuple[str, ...]", payload_index: int) -> "Optional[str]":
+    """Why ``uv run`` may add code beyond the project's lockfile, or ``None`` when
+    every option before the command is in ``_UV_RUN_SAFE_FLAGS`` or
+    ``_UV_RUN_SAFE_VALUE_FLAGS`` and every comma-separated ``--with`` item is a
+    local path."""
+    i = 1
+    while i < payload_index:
+        token = tokens[i]
+        if token == "--" or not token.startswith("-"):
+            i += 1
+            continue
+        flag, sep, inline = token.partition("=")
+        if flag in _UV_RUN_WITH_FLAGS or flag in _UV_RUN_SAFE_VALUE_FLAGS:
+            value = inline if sep else (tokens[i + 1] if i + 1 < len(tokens) else "")
+            i += 1 if sep else 2
+            if flag in _UV_RUN_WITH_FLAGS:
+                fetched = [
+                    item for item in value.split(",")
+                    if not _runner_package_is_local("project", item, "")
+                ]
+                if fetched:
+                    return f"--with would fetch {', '.join(fetched)} from a registry"
+            continue
+        if sep or flag not in _UV_RUN_SAFE_FLAGS:
+            return f"option '{flag}' is outside the shape known to add no code"
+        i += 1
+    return None
+
+
 def _check_prefix_runner(
     base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -5484,11 +5599,12 @@ def _check_prefix_runner(
     and is re-classified as written.
 
     A runner listed in ``_RUNNER_CODE_ORIGIN`` whose payload is not itself
-    mutative is still mutative when any package it needs is not a path and is
-    not installed in the project's node_modules at *cwd* (for a "registry"
-    runner, whenever it is not a path): that code would come from a registry
-    unreviewed.  A spec that pins a version cannot be shown to be the local
-    copy, so it counts as fetched.
+    mutative is unsigned only when the whole command fits the shape that
+    provably runs the project's code (``_installed_runner_fetch_reason``,
+    ``_uv_run_fetch_reason``); anything outside that shape is signed, rather
+    than signed only when a known danger is found.  A "registry" runner is
+    signed whenever a package it needs is not a path.  A spec that pins a
+    version cannot be shown to be the local copy, so it counts as fetched.
 
     Fallback choice, stated explicitly because the reachable behavior and the
     documented one disagree: an UNRECOGNIZED runner still falls to T0, and this
@@ -5523,9 +5639,8 @@ def _check_prefix_runner(
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("runner payload")
 
-    subcommand, payload, rest, packages, extra_packages, unknown_option = resolved
+    subcommand, payload, rest, packages, _, unknown_option = resolved
 
-    import os
     import shlex
 
     interpreter = None
@@ -5540,55 +5655,27 @@ def _check_prefix_runner(
 
     inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
     origin = _RUNNER_CODE_ORIGIN.get((base_cmd, subcommand))
-    if not inner.is_mutative and origin in ("installed", "registry") and unknown_option:
-        return MutativeResult(
-            is_mutative=True,
-            category=CATEGORY_MUTATIVE,
-            verb="runner-unknown-option",
-            cli_family=family,
-            confidence="medium",
-            reason=(
-                f"Runner '{base_cmd}' has an option outside its known tables before "
-                f"the package, so the package it fetches cannot be identified"
-            ),
-        )
     if not inner.is_mutative and origin is not None:
-        # The runner's own directory option, read only before the wrapped
-        # command (after it, the option belongs to that command).
-        runner_tokens = semantics.tokens[: len(semantics.tokens) - len(rest) - 1]
-        dir_flags = (
-            frozenset({"--prefix"}) if base_cmd == "npx"
-            else _PACKAGE_MANAGER_DIR_FLAGS.get(base_cmd, frozenset())
-        )
-        override = _extract_dir_override(runner_tokens, dir_flags)
-        if override is None and any(t.partition("=")[0] in dir_flags for t in runner_tokens):
-            return MutativeResult(
-                is_mutative=True,
-                category=CATEGORY_MUTATIVE,
-                verb="registry-fetch",
-                cli_family=family,
-                confidence="medium",
-                reason=f"Runner '{base_cmd}' names a directory option with no value",
+        payload_index = len(semantics.tokens) - len(rest) - 1
+        if origin == "installed":
+            fetch_reason = _installed_runner_fetch_reason(
+                base_cmd, semantics.tokens, payload_index, cwd,
             )
-        project_dir = cwd if cwd is not None else os.getcwd()
-        if override:
-            project_dir = _resolve_dir_against_cwd(project_dir, override)
-        specs = extra_packages if origin == "project" else packages
-        fetched = [
-            spec for spec in specs
-            if not _runner_package_is_local(origin, spec, project_dir)
-        ]
-        if fetched:
+        elif origin == "project":
+            fetch_reason = _uv_run_fetch_reason(semantics.tokens, payload_index)
+        elif unknown_option:
+            fetch_reason = "an option outside its known tables hides which package it fetches"
+        else:
+            fetched = [s for s in packages if not _runner_package_is_local(origin, s, "")]
+            fetch_reason = f"it would fetch {', '.join(fetched)}" if fetched else None
+        if fetch_reason is not None:
             return MutativeResult(
                 is_mutative=True,
                 category=CATEGORY_MUTATIVE,
                 verb="registry-fetch",
                 cli_family=family,
                 confidence="medium",
-                reason=(
-                    f"Runner '{base_cmd}' would fetch {', '.join(fetched)} from "
-                    f"a registry: not a local path or installed under {project_dir}"
-                ),
+                reason=f"Runner '{base_cmd}' is signed: {fetch_reason}",
             )
     return MutativeResult(
         is_mutative=inner.is_mutative,
@@ -7064,18 +7151,24 @@ def _extract_dir_override(
 
     Recognizes both the space form (``--prefix /dir``) and the inline
     ``--prefix=/dir`` form, and either flag position -- before or after the
-    subcommand. Scanning the raw ``tokens`` (not ``non_flag_tokens``)
-    preserves the directory's original case, which matters on case-sensitive
-    filesystems. Returns ``None`` when no flag is present or it has no value.
+    subcommand. When the option repeats, the last value wins, as the managers
+    read it; after ``--`` the options belong to the script. Scanning the raw
+    ``tokens`` (not ``non_flag_tokens``) preserves the directory's original
+    case, which matters on case-sensitive filesystems. Returns ``None`` when no
+    flag is present or its last occurrence has no value.
     """
-    n = len(tokens)
+    override: "Optional[str]" = None
     for i, tok in enumerate(tokens):
+        if tok == "--":
+            break
         flag, sep, value = tok.partition("=")
-        if sep and flag in flags:
-            return value or None
-        if tok in flags and i + 1 < n:
-            return tokens[i + 1]
-    return None
+        if flag not in flags:
+            continue
+        if sep:
+            override = value or None
+        else:
+            override = tokens[i + 1] if i + 1 < len(tokens) else None
+    return override
 
 
 _PACKAGE_MANAGERS: FrozenSet[str] = frozenset({"npm", "bun", "pnpm", "yarn"})

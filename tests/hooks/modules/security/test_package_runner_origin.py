@@ -155,6 +155,33 @@ CASES = [
     ("yarn", SIGNED),
     # 5. A runner whose package is local still answers for what it runs.
     ("npx prisma migrate deploy", SIGNED),
+    # 6. Unsigned only in the shape that provably runs the project's copy.
+    #    A repeated directory option: the last value is the one the tool reads.
+    ("npx --prefix . --prefix /nonexistent/p eslint .", SIGNED),
+    ("npm -C . --prefix /nonexistent/p exec eslint .", SIGNED),
+    ("npm --prefix=. --prefix=/nonexistent/p x eslint", SIGNED),
+    ("bun --cwd . --cwd /nonexistent/p x eslint .", SIGNED),
+    ("pnpm --dir . --dir /nonexistent/p exec eslint .", SIGNED),
+    ("npx --prefix /nonexistent/p --prefix . eslint .", UNSIGNED),
+    #    npm exec/x read their own options after the package too.
+    ("npm exec eslint --prefix /nonexistent/p .", SIGNED),
+    ("npm x eslint -C /nonexistent/p .", SIGNED),
+    ("npm exec eslint --yes --prefix=/nonexistent/p .", SIGNED),
+    ("npm exec eslint --pref /nonexistent/p .", SIGNED),
+    ("npm exec -- eslint --fix .", UNSIGNED),
+    #    Options outside the known-safe set, even ones that take no value.
+    ("npx --ignore-existing eslint .", SIGNED),
+    ("npx --userconfig /tmp/u eslint .", SIGNED),
+    ("npx --package eslint eslint .", SIGNED),
+    ("uv run -w requests pytest", SIGNED),
+    ("uv run -wrequests pytest", SIGNED),
+    ("uv run --with-requirements requirements.txt pytest", SIGNED),
+    ("uv run --group dev --with requests pytest", SIGNED),
+    ("uv run --env-file .env --with requests pytest", SIGNED),
+    ("uv run --with ./vendor/lib,rich pytest", SIGNED),
+    ("uv run --python 3.12 pytest", SIGNED),
+    ("uv run --group dev --frozen pytest", UNSIGNED),
+    ("uv run -w ./vendor/a,./vendor/b pytest", UNSIGNED),
 ]
 
 
@@ -168,6 +195,17 @@ def test_npm_i_and_npm_install_classify_identically(project):
         alias = detect_mutative_command(f"npm i {args}", cwd=str(project))
         full = detect_mutative_command(f"npm install {args}", cwd=str(project))
         assert (alias.is_mutative, alias.verb) == (full.is_mutative, full.verb)
+
+
+@pytest.mark.parametrize("command", [
+    "npm run live --prefix harmless --prefix .",
+    "npm run live -- --prefix harmless",
+])
+def test_npm_run_reads_the_package_json_npm_reads(project, command):
+    harmless = project / "harmless"
+    harmless.mkdir()
+    (harmless / "package.json").write_text(json.dumps({"scripts": {"live": "vite"}}))
+    assert detect_mutative_command(command, cwd=str(project)).is_mutative is True
 
 
 def test_runner_outside_any_project_is_signed(tmp_path):
