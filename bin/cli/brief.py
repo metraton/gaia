@@ -317,12 +317,22 @@ def _cmd_set_project(args) -> int:
     from gaia.briefs import set_brief_project
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     as_json = getattr(args, "json", False)
+    clear = getattr(args, "clear", False)
+    if clear == (args.project is not None):
+        return _err("give a PROJECT or --clear, not both", as_json=as_json)
     try:
-        res = set_brief_project(workspace, args.name, args.project, dry_run=args.dry_run)
+        res = set_brief_project(
+            workspace, args.name, args.project,
+            force=getattr(args, "force", False), dry_run=args.dry_run,
+        )
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
     if as_json:
         print(json.dumps(res, indent=2, default=str))
+    elif clear:
+        verb = "would be" if args.dry_run else "is"
+        print(f"Brief '{args.name}' in '{workspace}' {verb} a workspace-level brief "
+              f"(was {res['previous']})")
     else:
         verb = "would belong" if args.dry_run else "belongs"
         print(f"Brief '{args.name}' in '{workspace}' {verb} to project {res['project']}")
@@ -909,13 +919,22 @@ def register(subparsers) -> None:
     setproject_p = actions.add_parser(
         "set-project",
         help="Tag a brief with the project it is for",
-        description="Tag an existing workspace-level brief with a project of its "
-                    "workspace; it then moves with that project (gaia project move).",
-        epilog="Examples:\n  gaia brief set-project my-feature gaia --workspace=ws --dry-run\n",
+        description="Tag an existing brief with a project of its workspace; it then "
+                    "moves with that project (gaia project move). A brief tagged with "
+                    "another project is retagged only with --force; --clear makes it a "
+                    "workspace-level brief again.",
+        epilog="Examples:\n  gaia brief set-project my-feature gaia --workspace=ws --dry-run\n"
+               "  gaia brief set-project my-feature other-repo --force\n"
+               "  gaia brief set-project my-feature --clear\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     setproject_p.add_argument("name", help="Brief slug.")
-    setproject_p.add_argument("project", help="Project name in the brief's workspace.")
+    setproject_p.add_argument("project", nargs="?", default=None,
+                              help="Project name in the brief's workspace.")
+    setproject_p.add_argument("--clear", action="store_true", default=False,
+                              help="Remove the project tag.")
+    setproject_p.add_argument("--force", action="store_true", default=False,
+                              help="Retag a brief already tagged with another project.")
     setproject_p.add_argument("--workspace", default=None, help="Workspace identity.")
     setproject_p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False,
                               help="Report the project the brief would get, writing nothing.")

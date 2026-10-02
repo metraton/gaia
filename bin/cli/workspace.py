@@ -8,6 +8,7 @@ Subcommands:
   workspace info                  Print structured info about the current workspace
   workspace retire <source> --into <target>
                                   Fold a workspace's rows in gaia.db into another
+  workspace curate                Hide phantoms, drop stale aliases and dangling facets
   workspace merge <from> <to>     Preview/execute a merge of workspace FILES (--confirm to apply)
 
 Patterns inspired by engram (MIT). No runtime dependency on engram.
@@ -47,16 +48,94 @@ def _cmd_declare(args) -> int:
     if not root.is_dir():
         print(f"gaia workspace declare: {root} is not a directory", file=sys.stderr)
         return 2
+    alias = _retire_alias(name)
+    dry_run = bool(getattr(args, "dry_run", False))
     try:
-        outcome = declare_workspace(name, root)
+        outcome = declare_workspace(name, root, dry_run=dry_run)
     except WorkspaceDeclarationError as exc:
         print(f"gaia workspace declare: {exc}", file=sys.stderr)
         return 1
     if outcome == "noop":
         print(f"workspace {name!r} is already declared at {root}")
+        return 0
+    if dry_run:
+        print(f"dry-run: workspace {name!r} would be {outcome} at {root}")
+        if alias:
+            print(f"dry-run: alias {name} -> {alias} would be dropped; {name} would mean itself")
+        return 0
+    print(f"workspace {name!r} declared at {root}")
+    if alias:
+        print(f"alias {name} -> {alias} dropped; {name} means itself again")
+    print(f"Index its repositories with: gaia scan --workspace {name} {root}")
+    return 0
+
+
+def _retire_alias(name: str) -> str | None:
+    """The workspace a retire alias makes ``name`` resolve to, or None."""
+    from gaia.store.workspace_retire import alias_target
+    from gaia.store.writer import _connect
+
+    con = _connect()
+    try:
+        target = alias_target(con, name)
+    finally:
+        con.close()
+    return target if target != name else None
+
+
+def _render_curation(plan: dict) -> None:
+    print(f"# workspace curate: {plan['mode']}")
+    for item in plan["hide"]:
+        history = ", ".join(f"{t}={n}" for t, n in item["history"].items())
+        print(f"  hide {item['workspace']} (status retired)"
+              + (f"; history kept under its name: {history}" if history else ""))
+    for item in plan["retire"]:
+        print(f"  retire {item['workspace']} into {item['into']} (owner found by {item['via']})")
+        for table, counts in (item.get("tables") or {}).items():
+            shown = {k: v for k, v in counts.items() if v}
+            print(f"    {table:<28} " + "  ".join(f"{k}={v}" for k, v in shown.items()))
+        if item.get("refused"):
+            print(f"    REFUSED: {item['refused']}")
+        if item.get("ledger"):
+            print(f"    ledger: {item['ledger']}")
+    for item in plan["unresolved"]:
+        owned = ", ".join(f"{t}={n}" for t, n in item["owned"].items())
+        print(f"  left {item['workspace']} ({owned}): {item['reason']}")
+    for alias in plan["drop_aliases"]:
+        print(f"  drop alias {alias['alias']} -> {alias['target']}")
+    for facet in plan["drop_facets"]:
+        print(f"  drop {facet['scope']} facet {facet['key']} of "
+              f"{facet['workspace']}/{facet['project']}")
+    if plan["hidden_integrations"]:
+        print(f"  {plan['hidden_integrations']} integration(s) with no version or install path: "
+              "kept, left out of listings, not changed")
+    if plan.get("backup"):
+        print(f"  backup: {plan['backup']}")
+
+
+def _cmd_curate(args) -> int:
+    """Handle `gaia workspace curate [--into NAME=TARGET] [--dry-run] [--yes] [--json]`."""
+    import json
+
+    from gaia.store.workspace_curation import apply_curation, plan_curation
+
+    into = {}
+    for value in args.into:
+        name, sep, target = value.partition("=")
+        if not sep:
+            print(f"gaia workspace curate: --into {value!r}: expected NAME=TARGET", file=sys.stderr)
+            return 2
+        into[name.strip()] = target.strip()
+    plan = plan_curation(into=into)
+    if not (args.dry_run or plan["mode"] == "noop"):
+        if not (args.yes or _confirmed("curate the workspace registry")):
+            _render_curation(plan)
+            return 1
+        plan = apply_curation(into=into)
+    if args.json:
+        print(json.dumps(plan, indent=2, default=str))
     else:
-        print(f"workspace {name!r} declared at {root}")
-        print(f"Index its repositories with: gaia scan --workspace {name} {root}")
+        _render_curation(plan)
     return 0
 
 
@@ -313,7 +392,8 @@ def cmd_workspace(args) -> int:
         if hasattr(args, "_workspace_parser"):
             args._workspace_parser.print_help()
         else:
-            print("Usage: gaia workspace <current|declare|list|info|retire|merge>", file=sys.stderr)
+            print("Usage: gaia workspace <current|declare|list|info|retire|curate|merge>",
+                  file=sys.stderr)
         return 0
     return func(args) or 0
 
@@ -346,7 +426,46 @@ def register(subparsers):
     )
     declare_p.add_argument("name", help="Workspace name")
     declare_p.add_argument("path", help="Workspace root directory")
+    declare_p.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", default=False,
+        help="Report the declaration and the retire alias it would drop, writing nothing",
+    )
     declare_p.set_defaults(func=_cmd_declare)
+
+    curate_p = actions.add_parser(
+        "curate",
+        help="Hide phantom workspaces, drop stale aliases and dangling facets (dry-run, backup)",
+        description=(
+            "Curate the workspace registry without deleting history. A workspace with no "
+            "declared root is a phantom: one that owns nothing is marked retired and leaves "
+            "every listing; one that owns rows, or has history and a declared owner, is "
+            "retired into that owner (gaia workspace retire, with its alias, backup and "
+            "undo ledger). The owner is the --into value, the phantom's retire alias, the "
+            "declared root holding its projects, the declared root holding a phantom named "
+            "by a path, or the one declared workspace with a project of its name. Also drops "
+            "retire aliases of declared names and worktree/copy facets whose folder is gone. "
+            "Integrations with no version or install path are only counted: listings "
+            "already leave them out."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  gaia workspace curate --dry-run\n"
+            "  gaia workspace curate --into bildwiz=aaxis --yes\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    curate_p.add_argument(
+        "--into", action="append", default=[], metavar="NAME=TARGET",
+        help="Retire phantom NAME into declared workspace TARGET. Repeatable.",
+    )
+    curate_p.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", default=False,
+        help="List every change, writing nothing",
+    )
+    curate_p.add_argument("--yes", action="store_true", default=False,
+                          help="Skip the interactive confirmation")
+    curate_p.add_argument("--json", action="store_true", default=False, help="JSON output")
+    curate_p.set_defaults(func=_cmd_curate)
 
     list_p = actions.add_parser("list", help="List the declared workspaces and their roots")
     list_p.set_defaults(func=_cmd_list)

@@ -799,6 +799,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # `retire` carry no verb in MUTATIVE_VERBS, so both would run free;
         # `--dry-run` stays free as a SIMULATION_FLAG resolved above.
         MutativeAnchor(path=("workspace", "retire")),
+        # `gaia workspace curate` retires phantom workspaces (re-keying their
+        # rows like retire does), drops stale aliases and deletes facets whose
+        # folder is gone; `--dry-run` stays free as a SIMULATION_FLAG.
+        MutativeAnchor(path=("workspace", "curate")),
         # Curated memory is append-only; `add --replace` is the one in-place
         # rewrite left, and it changes what every later read sees.
         MutativeAnchor(

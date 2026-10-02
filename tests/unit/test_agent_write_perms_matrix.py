@@ -111,7 +111,7 @@ _MINIMAL_ROWS: dict[str, list[dict]] = {
     "workloads": [{"project": "test-project", "name": "test-wl"}],
     "clusters_defined": [{"project": "test-project", "name": "test-cd"}],
     "clusters": [{"name": "test-cluster"}],
-    "integrations": [{"name": "test-integration"}],
+    "integrations": [{"name": "test-integration", "version": "1.0"}],
     "gaia_installations": [{"machine": "test-machine"}],
 }
 

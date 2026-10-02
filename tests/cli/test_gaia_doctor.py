@@ -1125,9 +1125,10 @@ class TestCmdDoctorJson:
         # 1 workspace-roots (order 49 -- active workspaces without the recorded
         #   root that `gaia worktree create` requires) +
         # 1 project-copies (order 51 -- second clones the scan recorded as copies) +
+        # 1 workspace-registry (order 63 -- what `gaia workspace curate` fixes) +
         # 3 channel checks (install-channel 36, hook-registrations 72,
         #   hook-commands 74 -- hooks counted across plugin and every settings file).
-        assert len(data["checks"]) == 38
+        assert len(data["checks"]) == 39
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

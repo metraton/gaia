@@ -756,9 +756,11 @@ def set_workspace_last_scan_at(
         # live: stamp last_scan_at AND reactivate it (status='active',
         # missing_since=NULL). This mirrors project reactivation (v16) at the
         # workspace level (v17 DEMOTE) -- a workspace that was previously
-        # demoted but is installed again on re-scan recovers cleanly.
+        # demoted but is installed again on re-scan recovers cleanly. A retired
+        # workspace stays retired: only `gaia workspace declare` brings it back.
         con.execute(
-            "UPDATE workspaces SET last_scan_at = ?, status = 'active', "
+            "UPDATE workspaces SET last_scan_at = ?, "
+            "status = CASE WHEN status = 'retired' THEN status ELSE 'active' END, "
             "missing_since = NULL WHERE name = ?",
             (ts, workspace),
         )
@@ -771,13 +773,17 @@ class WorkspaceDeclarationError(ValueError):
     """A declaration that would rebind a declared name or root."""
 
 
-def declare_workspace(name: str, root: Path, *, db_path: Path | None = None) -> str:
+def declare_workspace(
+    name: str, root: Path, *, dry_run: bool = False, db_path: Path | None = None,
+) -> str:
     """Record *name* as a workspace rooted at *root*; return ``"created"``, ``"adopted"`` or ``"noop"``.
 
     ``adopted`` gives a root to an existing row that had none, so the history
-    already filed under that name stays with it. A name declared at another
-    root, or a root declared under another name, raises
-    :class:`WorkspaceDeclarationError` and writes nothing.
+    already filed under that name stays with it; a retired row becomes active
+    and a retire alias of *name* is dropped, so *name* means itself again. A
+    name declared at another root, or a root declared under another name,
+    raises :class:`WorkspaceDeclarationError` and writes nothing; so does
+    ``dry_run``, which returns the outcome the declaration would have.
     """
     root_path = str(root.resolve())
     con = _connect(db_path)
@@ -800,12 +806,15 @@ def declare_workspace(name: str, root: Path, *, db_path: Path | None = None) -> 
                 f"workspace {name!r} is already declared at {row['root_path']}"
             )
         outcome = "adopted" if row is not None else "created"
+        if dry_run:
+            return outcome
         _ensure_workspace_row(con, name, root)
         con.execute(
             "UPDATE workspaces SET root_path = ?, status = 'active', missing_since = NULL "
             "WHERE name = ?",
             (root_path, name),
         )
+        con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (name,))
         con.commit()
         return outcome
     finally:
@@ -860,8 +869,8 @@ def mark_workspace_demoted(
             if row is None:
                 con.commit()
                 return False
-            if row["status"] == "missing":
-                # Already demoted -> keep original missing_since intact.
+            if row["status"] in ("missing", "retired"):
+                # Already demoted keeps its original missing_since; retired outranks missing.
                 con.commit()
                 return False
             con.execute(
@@ -1112,10 +1121,12 @@ def upsert_project(
             previously-missing project (pass status='active' and
             missing_since=None together). When ``project_identity`` is
             non-null and the live schema carries the column (v18+), the
-            UPSERT collapses on that stable identity: the SAME physical repo
-            scanned from different workspaces/roots updates the existing row
-            IN PLACE (preserving its original (workspace, name) PK) instead
-            of inserting a duplicate. ``status`` defaults to 'active' when
+            UPSERT collapses on that stable identity (normalized remote
+            first): the same project reached from another workspace updates
+            the existing row in place, keeping its (workspace, name) PK,
+            instead of inserting a duplicate. Moving the row to its nearest
+            declared workspace is ``move_project``'s job (the scan calls it
+            before upserting). ``status`` defaults to 'active' when
             not provided (or explicitly None).
         agent: Agent name. Must have allow_write=1 for table 'projects' in
             agent_permissions.
@@ -1558,6 +1569,16 @@ def bulk_upsert(
                 rejected += 1
         return {"applied": applied, "rejected": rejected}
 
+    if table == "integrations":
+        evidenced = [
+            r for r in rows_list
+            if r.get("version") is not None or r.get("install_path") is not None
+        ]
+        rejected = len(rows_list) - len(evidenced)
+        rows_list = evidenced
+        if not rows_list:
+            return {"applied": 0, "rejected": rejected}
+
     # Generic path: enforce permission + ON CONFLICT DO UPDATE that ONLY
     # updates the columns the caller provided.
     pk_columns = {
@@ -1628,6 +1649,10 @@ def bulk_upsert(
 
 _INTEGRATION_FIELDS = ("kind", "version", "install_path", "topic_key")
 
+# An integrations row with neither a version nor an install path names a word
+# the install capture read in an agent's prose; nothing reads such a row.
+UNEVIDENCED_INTEGRATION_SQL = "(version IS NULL AND install_path IS NULL)"
+
 
 def save_integration(
     workspace: str,
@@ -1641,7 +1666,15 @@ def save_integration(
     db_path: Path | None = None,
 ) -> dict:
     """Upsert an integrations row, bypassing per-agent permission enforcement.
+
+    A row carrying neither ``version`` nor ``install_path`` is refused
+    (``status='refused'``) and nothing is written.
     """
+    if version is None and install_path is None:
+        return {
+            "status": "refused",
+            "reason": f"integration {name!r} has no version and no install_path",
+        }
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
@@ -6810,14 +6843,17 @@ def prune_empty_workspaces(
     """
     con = _connect(db_path)
     try:
-        ws_names = [
-            r["name"]
-            for r in con.execute("SELECT name FROM workspaces ORDER BY name").fetchall()
-        ]
+        ws_rows = con.execute(
+            "SELECT w.name, w.status, w.root_path, "
+            "EXISTS (SELECT 1 FROM workspace_aliases a WHERE a.alias = w.name) AS aliased "
+            "FROM workspaces w ORDER BY w.name"
+        ).fetchall()
+        ws_names = [r["name"] for r in ws_rows]
 
         prunable: list[str] = []
         held: list[dict] = []
-        for ws in ws_names:
+        for row in ws_rows:
+            ws = row["name"]
             proj = con.execute(
                 "SELECT COUNT(*) FROM projects WHERE workspace = ?", (ws,)
             ).fetchone()[0]
@@ -6835,7 +6871,16 @@ def prune_empty_workspaces(
                 "SELECT COUNT(*) FROM briefs WHERE workspace = ?", (ws,)
             ).fetchone()[0]
 
-            if mem or pcc or briefs:
+            # A declared root, a retire alias and the retired status each mean
+            # the row is meant to stay; deleting it cascades away its history.
+            if row["root_path"] or row["status"] == "retired" or row["aliased"]:
+                kept = "declared" if row["root_path"] else "retired"
+                held.append({
+                    "workspace": ws, "projects": 0, "memory": mem, "pcc": pcc,
+                    "briefs": briefs,
+                    "reason": f"workspace {ws!r} is {kept}; NOT pruned -- its history stays",
+                })
+            elif mem or pcc or briefs:
                 held.append({
                     "workspace": ws,
                     "projects": 0,

@@ -60,8 +60,9 @@ def get_context(
         workspace: Workspace name (matches workspaces.name).
         db_path: Optional explicit DB path (used by tests).
         include_missing: When False (default), workspaces with
-            ``status='missing'`` are hidden from the active view (returns
-            None), AND projects with ``status='missing'`` are filtered out,
+            ``status`` 'missing' or 'retired' are hidden from the active view
+            (returns None), integrations with neither version nor install
+            path are left out, AND projects with ``status='missing'`` are filtered out,
             AND the child rows (apps/services/features/...) of those missing
             projects are filtered out too, so a soft-deleted workspace or
             project never contaminates the normal active view. When True,
@@ -78,6 +79,8 @@ def get_context(
         Returns None when the workspace has no row in `workspaces`, OR when
         the workspace has ``status='missing'`` and ``include_missing=False``.
     """
+    from gaia.store.writer import UNEVIDENCED_INTEGRATION_SQL
+
     con = _connect(db_path)
     try:
         # Resolve identity from workspaces table (include status for filtering)
@@ -92,7 +95,7 @@ def get_context(
         # Workspace-level soft-delete filter (AC-4, v17): a demoted workspace
         # (status='missing') is hidden from the active view by default, mirroring
         # the project-level filter below. Pass include_missing=True to expose it.
-        if not include_missing and ws_row["status"] == "missing":
+        if not include_missing and ws_row["status"] in ("missing", "retired"):
             return None
 
         identity = ws_row["name"]
@@ -117,8 +120,12 @@ def get_context(
 
         def _select(table: str) -> list[dict]:
             order_col = _ORDER_COL.get(table, "name")
+            hidden = (
+                f" AND NOT {UNEVIDENCED_INTEGRATION_SQL}"
+                if table == "integrations" and not include_missing else ""
+            )
             cur = con.execute(
-                f"SELECT * FROM {table} WHERE workspace = ? ORDER BY {order_col}",
+                f"SELECT * FROM {table} WHERE workspace = ?{hidden} ORDER BY {order_col}",
                 (workspace,),
             )
             rows = cur.fetchall()

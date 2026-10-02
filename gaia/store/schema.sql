@@ -30,18 +30,20 @@ CREATE TABLE IF NOT EXISTS workspaces (
     identity      TEXT,                       -- identity: for git-bearing workspace = git remote URL normalized lowercase; for organizational workspace = name; scanner-owned
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),  -- scanner-owned
     last_scan_at  TEXT,                       -- ISO8601 timestamp of last successful `gaia scan` run; NULL = never scanned; v7
-    status        TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete). 'missing' = the Gaia install footprint disappeared (workspace demoted); v17
+    status        TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing' | 'retired'. 'missing' = the Gaia install footprint disappeared (workspace demoted; scanner-owned, v17). 'retired' = hidden from listings, rows kept; set by `gaia workspace retire` and `gaia workspace curate`, cleared only by `gaia workspace declare`; v66
     missing_since TEXT,                        -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned; v17
-    root_path     TEXT                         -- absolute workspace root, set only by `gaia workspace declare` (`gaia workspace retire` releases it); non-NULL marks a declared workspace; anchors <root_path>/.project-worktrees; v55
+    root_path     TEXT                         -- absolute workspace root, set only by `gaia workspace declare` (`gaia workspace retire` releases it, `retire --undo` restores it); non-NULL marks a declared workspace; anchors <root_path>/.project-worktrees; v55
 );
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_identity ON workspaces(identity);
+CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
 
 -- ---------------------------------------------------------------------------
 -- workspace_aliases: a retired workspace name and the workspace it now means
 -- (v60). Written only by `gaia workspace retire`, which re-keys what the alias
 -- owned and leaves its history rows keyed to it; readers of `target` also read
--- rows keyed to `alias`. `ledger` is the undo ledger of that retire.
+-- rows keyed to `alias`. `ledger` is the undo ledger of that retire. Declaring
+-- the alias name again (`gaia workspace declare`) drops its row.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS workspace_aliases (
     alias      TEXT NOT NULL PRIMARY KEY,

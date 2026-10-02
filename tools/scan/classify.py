@@ -512,15 +512,14 @@ def _facet_target(
 ) -> tuple[str, str]:
     """Resolve the (workspace, name) where the canonical projects row lives.
 
-    Facets are FK-bound to ``projects(workspace, name)``. Under M1-T1
-    identity-collapse the persisted row for a repo may live under a DIFFERENT
-    (workspace, name) than the one this scan run classified -- the same
-    physical repo scanned from a second root under another workspace collapses
-    onto its first-seen row. Writing facets to the classified (workspace,
-    name) would then violate the FK. Look the row up by its stable
-    ``project_identity`` and return that row's actual (workspace, name); fall
-    back to the classified values when the identity is absent or unmatched
-    (e.g. a brand-new row, or a legacy DB without the identity column).
+    Facets are FK-bound to ``projects(workspace, name)``, and the row for a
+    repo may live under a different (workspace, name) than this run
+    classified: the upsert collapses on ``project_identity``, so a project
+    whose move to its nearest declared workspace was refused keeps the row it
+    had. Writing facets to the classified (workspace, name) would then violate
+    the FK. Look the row up by its ``project_identity`` and return that row's
+    (workspace, name); fall back to the classified values when the identity is
+    absent or unmatched (a brand-new row, or a legacy DB without the column).
     """
     if not project_identity:
         return fallback_workspace, fallback_name

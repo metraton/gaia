@@ -55,6 +55,11 @@ WORKSPACE_META_KEY = "_workspace"
 # silently. NOT a reserved slug -- it is a key INSIDE a project entry.
 MISSING_MARK_KEY = "missing_since"
 
+# Entry key naming the slug of the project an entry's folder is a second clone
+# of. Promotion stamps it on the entry a clone kept after it was folded into a
+# ``copy`` facet; a dispatch from that folder resolves to the named entry.
+COPY_MARK_KEY = "copy_of"
+
 # Entry key holding how work lands in the project -- integration (direct or
 # pull request), target branch, channel -- as the project declared it. Written
 # by an agent through update_contracts (agent-owned, so promotion never touches

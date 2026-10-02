@@ -690,5 +690,26 @@ def test_v65_adds_a_nullable_brief_project_and_leaves_existing_briefs_untouched(
     assert _query(db, "SELECT * FROM briefs") == [row + (None,) for row in before]
 
 
+def test_v66_indexes_workspace_status_and_rewrites_no_row(bootstrapped_db_template, tmp_path):
+    db = copy_bootstrapped_db(bootstrapped_db_template, tmp_path / "gaia.db")
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("DROP INDEX idx_workspaces_status")
+        con.executemany(
+            "INSERT INTO workspaces (name, root_path) VALUES (?, ?)",
+            [("ws", "/w"), ("me", None)],
+        )
+        con.execute("INSERT INTO workspace_aliases (alias, target) VALUES ('me', 'ws')")
+        con.commit()
+    finally:
+        con.close()
+    before = _query(db, "SELECT * FROM workspaces ORDER BY name")
+
+    _apply_migration(db, "v65_to_v66.sql")
+
+    assert _query(db, "PRAGMA index_info(idx_workspaces_status)")[0][2] == "status"
+    assert _query(db, "SELECT * FROM workspaces ORDER BY name") == before
+
+
 if __name__ == "__main__":
     unittest.main()

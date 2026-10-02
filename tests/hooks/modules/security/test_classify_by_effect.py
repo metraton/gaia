@@ -120,6 +120,9 @@ CASES = [
      CONSENT),
     ("twin-gaia-workspace-retire-dry-run",
      "gaia workspace retire me --into ws --dry-run", FREE),
+    # -- Curating retires phantoms and deletes dangling facets ---------------
+    ("gaia-workspace-curate-apply", "gaia workspace curate --yes", CONSENT),
+    ("twin-gaia-workspace-curate-dry-run", "gaia workspace curate --dry-run", FREE),
 ]
 
 

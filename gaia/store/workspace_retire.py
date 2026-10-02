@@ -17,8 +17,9 @@ Every apply backs the database up with the sqlite backup API and writes an
 undo ledger beside the backup before committing; :func:`undo_retire` reads it
 back. A collision on a unique key that ``on_conflict`` did not resolve refuses
 the apply before anything is written. The source ``workspaces`` row is never
-deleted: its history rows reference it and would cascade with it. Its
-``root_path`` is released instead, because a scan hands every repo under a
+deleted: its history rows reference it and would cascade with it. It is
+marked ``status='retired'``, which hides it from listings, and its
+``root_path`` is released, because a scan hands every repo under a
 recorded root to that root's workspace; a source that still claims a root is
 pending, so re-running an applied retire releases a root it left behind.
 """
@@ -466,7 +467,13 @@ def apply_retire(
                     "UPDATE memory_links SET dst_workspace = ? WHERE rowid = ?", (dest, rowid)
                 )
             ledger["repointed"] = plan["_repoint"]
-            con.execute("UPDATE workspaces SET root_path = NULL WHERE name = ?", (source,))
+            ledger["status_previous"] = con.execute(
+                "SELECT status FROM workspaces WHERE name = ?", (source,)
+            ).fetchone()[0]
+            con.execute(
+                "UPDATE workspaces SET root_path = NULL, status = 'retired' WHERE name = ?",
+                (source,),
+            )
 
             previous = con.execute(
                 "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
@@ -580,6 +587,11 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
                 (report["restore_root"], source),
             ).rowcount:
                 diverged["workspaces.root_path"] = 1
+            if ledger.get("status_previous"):
+                con.execute(
+                    "UPDATE workspaces SET status = ? WHERE name = ? AND status = 'retired'",
+                    (ledger["status_previous"], source),
+                )
 
             con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (source,))
             previous = ledger.get("alias_previous")

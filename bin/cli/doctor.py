@@ -29,6 +29,8 @@ Checks (in order):
                         explicit absence (never a false ok) without one
   62. opencode-background-subagents - opencode channel recorded but the shell
                         lacks the variable OpenCode needs for background subagents (info)
+  63. workspace-registry - phantom workspaces, stale aliases, dangling worktree/copy
+                        facets, unevidenced integrations (what `workspace curate` fixes)
   65. agent-routing     - surface_routing table (DB) primary agents resolve to files
   70. settings           - permissions, deny rules
   72. hook-registrations - each shipped (event, matcher) registered exactly once across
@@ -286,7 +288,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 65
+EXPECTED_SCHEMA_VERSION = 66
 
 # Locations the doctor reads outside the workspace, module-level so tests can
 # redirect them to a tmp path.
@@ -1151,6 +1153,58 @@ def check_project_copies() -> dict:
         f"{len(rows)} second clone(s): "
         + "; ".join(f"{copy} copies {ws}/{name} at {path}" for copy, ws, name, path in rows),
         "remove the copy, or give it its own remote if it is a different project",
+    )
+
+
+@register_check("Workspace registry", order=63)
+def check_workspace_registry() -> dict:
+    """Report what `gaia workspace curate` would fix, and the integrations listings leave out.
+
+    A phantom that owns rows or history, a stale alias and a dangling facet
+    warn. A phantom with nothing at all and an unevidenced integration are
+    info: a fresh install leaves exactly such a workspace row, and the
+    integrations stay in the database, hidden, by design.
+    """
+    from gaia.paths import db_path  # noqa: PLC0415
+    from gaia.store.workspace_curation import plan_curation  # noqa: PLC0415
+
+    database = db_path()
+    if not database.is_file():
+        return _result("Workspace registry", "info", f"no DB at {database}")
+    try:
+        plan = plan_curation(db_path=database)
+    except sqlite3.Error as exc:
+        return _result("Workspace registry", "info", f"could not read the registry: {exc}")
+
+    warnings = [
+        f"{len(plan['retire'])} phantom(s) to retire into their owner: "
+        + ", ".join(f"{r['workspace']} -> {r['into']}" for r in plan["retire"])
+        if plan["retire"] else "",
+        f"{len(plan['unresolved'])} phantom(s) owning rows with no declared owner: "
+        + ", ".join(r["workspace"] for r in plan["unresolved"])
+        if plan["unresolved"] else "",
+        f"{len(plan['drop_aliases'])} stale alias(es): "
+        + ", ".join(f"{a['alias']} -> {a['target']}" for a in plan["drop_aliases"])
+        if plan["drop_aliases"] else "",
+        f"{len(plan['drop_facets'])} facet(s) whose folder is gone: "
+        + ", ".join(f["key"] for f in plan["drop_facets"])
+        if plan["drop_facets"] else "",
+    ]
+    notes = [
+        f"{len(plan['hide'])} empty phantom(s) to hide: "
+        + ", ".join(h["workspace"] for h in plan["hide"])
+        if plan["hide"] else "",
+        f"{plan['hidden_integrations']} integration(s) with no version or install path "
+        "left out of listings" if plan["hidden_integrations"] else "",
+    ]
+    detail = "; ".join(part for part in warnings + notes if part)
+    if not detail:
+        return _result("Workspace registry", "pass", "no phantom, stale alias or dangling facet")
+    return _result(
+        "Workspace registry",
+        "warning" if any(warnings) else "info",
+        detail,
+        "gaia workspace curate --dry-run" if any(warnings) or plan["hide"] else None,
     )
 
 

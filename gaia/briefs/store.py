@@ -585,26 +585,30 @@ from gaia.state import VALID_BRIEF_STATUSES as VALID_STATUSES  # noqa: E402
 def set_brief_project(
     workspace: str,
     name: str,
-    project: str,
+    project: str | None,
     *,
+    force: bool = False,
     dry_run: bool = False,
     db_path: Path | None = None,
 ) -> dict:
     """Tag brief ``name`` of ``workspace`` with ``project``, a project of that workspace.
 
-    The brief then moves with the project (``gaia project move``). Returns
+    The brief then moves with the project (``gaia project move``); ``project``
+    None clears the tag, making it a workspace-level brief again. Returns
     ``{"mode", "workspace", "brief", "project", "previous"}`` with ``project``
     the resolved project_identity; a dry-run writes nothing.
 
     Raises:
         ValueError: the brief or the project does not exist in ``workspace``,
-            or the brief is already tagged with another project.
+            or the brief is tagged with another project and ``force`` is off.
     """
     from gaia.state.permissions import _assert_dispatch_can_write_content
     from gaia.store.writer import resolve_project_ref
 
     _assert_dispatch_can_write_content("briefs")
-    identity = resolve_project_ref(workspace, project, db_path=db_path)
+    identity = (
+        resolve_project_ref(workspace, project, db_path=db_path) if project is not None else None
+    )
     con = _connect(db_path)
     try:
         row = con.execute(
@@ -613,11 +617,12 @@ def set_brief_project(
         ).fetchone()
         if row is None:
             raise ValueError(f"brief '{name}' not found in workspace '{workspace}'")
-        if row["project"] not in (None, identity):
+        if identity is not None and row["project"] not in (None, identity) and not force:
             raise ValueError(
-                f"brief '{name}' already belongs to project {row['project']!r}"
+                f"brief '{name}' already belongs to project {row['project']!r}; "
+                f"pass --force to retag it"
             )
-        if not dry_run and row["project"] is None:
+        if not dry_run and row["project"] != identity:
             con.execute(
                 "UPDATE briefs SET project = ?, updated_at = ? WHERE id = ?",
                 (identity, _now_iso(), row["id"]),

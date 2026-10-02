@@ -816,12 +816,15 @@ def _cmd_project(args) -> int:
         r_workspace = row["workspace"]
         r_name = row["name"]
 
+        from gaia.store.workspace_curation import is_dangling_facet
+
         facets = [
             dict(f) for f in con.execute(
                 "SELECT scope, key, value FROM project_facets "
                 "WHERE workspace = ? AND project = ? ORDER BY scope, key",
                 (r_workspace, r_name),
             ).fetchall()
+            if not is_dangling_facet(f["scope"], f["key"])
         ]
 
         contract_slug = None

@@ -384,10 +384,15 @@ def resolve_dispatch_project(
         if target == root or root in target.parents:
             depth = len(root.parts)
             if best is None or depth > best[0]:
-                best = (depth, str(name), str(local_path))
+                best = (depth, entry)
     if best is None:
         return None
-    return _project_display({"name": best[1], "local_path": best[2]})
+    from gaia.identity_shape import COPY_MARK_KEY
+
+    survivor = identity.get(best[1].get(COPY_MARK_KEY) or "")
+    if isinstance(survivor, dict) and survivor.get("name"):
+        return _project_display(survivor)
+    return _project_display(best[1])
 
 
 def _project_display(entry: dict) -> str:

@@ -1,9 +1,9 @@
 """
 test_install_capture_e2e.py -- AC-3 verification.
 
-E2E test: when agent_output contains an npm install pattern, the subagent_stop
-hook pipeline (via the adapter) writes a row to the integrations table in
-~/.gaia/gaia.db with name='acli' via store.save_integration.
+E2E test: the detector finds an install pattern in agent_output, and
+store.save_integration writes an integrations row only when it carries a
+version or an install path; a bare name read from the output is refused.
 
 Strategy:
 - Use a temporary DB (monkeypatched via GAIA_DATA_DIR)
@@ -76,7 +76,8 @@ def test_npm_install_writes_integration(tmp_db: Path):
     tk = build_topic_key(match["kind"], match["target"])
     assert tk == "cli/atlassian/acli"
 
-    # Step 4: save_integration writes to DB
+    # Step 4: a name read from output carries no version or install path, so
+    # the writer refuses it and writes nothing.
     result = save_integration(
         workspace=ws,
         name=match["target"],
@@ -85,20 +86,12 @@ def test_npm_install_writes_integration(tmp_db: Path):
         agent="system",
         db_path=tmp_db,
     )
-    assert result.get("status") == "applied", f"save_integration returned: {result}"
+    assert result.get("status") == "refused", f"save_integration returned: {result}"
 
-    # Step 5: verify row is in integrations table
     con = sqlite3.connect(str(tmp_db))
-    row = con.execute(
-        "SELECT name, kind, topic_key FROM integrations WHERE name = ?",
-        ("acli",),
-    ).fetchone()
+    row = con.execute("SELECT 1 FROM integrations WHERE name = ?", ("acli",)).fetchone()
     con.close()
-
-    assert row is not None, "No integrations row found for 'acli'"
-    assert row[0] == "acli"
-    assert row[1] == "cli"
-    assert row[2] == "cli/atlassian/acli"
+    assert row is None
 
 
 def test_save_integration_idempotent(tmp_db: Path):
@@ -110,6 +103,7 @@ def test_save_integration_idempotent(tmp_db: Path):
         workspace="global",
         name="gcloud",
         kind="cli",
+        version="449.0.0",
         topic_key="cli/google/gcloud",
         agent="system",
         db_path=tmp_db,
@@ -158,6 +152,7 @@ def test_pip_install_capture(tmp_db: Path):
         workspace="global",
         name=match["target"],
         kind=match["kind"],
+        install_path="/usr/lib/python3/site-packages/pytest",
         topic_key=tk,
         agent="system",
         db_path=tmp_db,

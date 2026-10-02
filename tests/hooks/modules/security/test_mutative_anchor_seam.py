@@ -241,6 +241,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("scan",),
             ("release", "check"),
             ("workspace", "retire"),
+            ("workspace", "curate"),
             ("memory", "add"),
             ("memory", "link"),
         }
