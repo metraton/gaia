@@ -23,7 +23,7 @@ The audience is engineers, solution architects, AI practitioners, and tech leade
 
 ### 3. Draft in Markdown, iterate with Jorge
 
-Write the first draft in Markdown at `/home/jorge/ws/me/<slug>.md`. Work section by section -- do not dump an entire draft and ask "what do you think?" Each section should be reviewed before moving to the next.
+Write the first draft in Markdown at `<workspace>/<slug>.md`. Work section by section -- do not dump an entire draft and ask "what do you think?" Each section should be reviewed before moving to the next.
 
 **Article structure** (not rigid, but this is Jorge's natural flow):
 - Opening story -- what happened, told personally
@@ -50,7 +50,7 @@ Write the first draft in Markdown at `/home/jorge/ws/me/<slug>.md`. Work section
 
 Once the Markdown draft is approved, convert to the bilingual HTML format. The Spanish version is not a mechanical translation -- it is natural Latin American Spanish, with the same voice and directness. Read `reference.md` for the HTML template and front matter structure.
 
-Final HTML goes in: `/home/jorge/ws/me/metraton.github.io/_posts/YYYY-MM-DD-slug.html`
+Final HTML goes in: `<workspace>/metraton.github.io/_posts/YYYY-MM-DD-slug.html`
 
 ### 6. Editorial review
 

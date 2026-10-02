@@ -79,7 +79,7 @@ Example -- the request:
 
 ```
 gaia approvals request-set \
-  --command 'python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --channel npm' \
+  --command 'python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm' \
   --what 'Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos.' \
   --question '¿Reinstalo Gaia?' \
   --does 'gaia dev: instala en tu espacio de trabajo la versión nueva de main.' \
@@ -92,14 +92,14 @@ gaia approvals request-set \
 -- and what the user then sees, built by Gaia, headed `Firma 1/1`:
 
 ```
-[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ gaia-system ] [ COMMAND ] [ python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --channel npm ]
+[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ gaia-system ] [ COMMAND ] [ python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm ]
 ```
 
 with Approve / Reject / Details. Details asks again, headed `Detalle 1/1`, with
 your phrases under fixed English labels:
 
 ```
-[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: python3 /home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace /home/jorge/ws/me --ref bbc2f09 --channel npm ] [ DOES: gaia dev: instala en tu espacio de trabajo la versión nueva de main. ] [ IMPACT: actualiza tu base de datos; ese cambio no se deshace. ] [ VERIFICATION: gaia doctor muestra la versión nueva. ] [ SHARED-STATE: No: solo tu espacio de trabajo local. ] [ ROLLBACK: Reinstalar la versión anterior; la base de datos queda actualizada. ]
+[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm ] [ DOES: gaia dev: instala en tu espacio de trabajo la versión nueva de main. ] [ IMPACT: actualiza tu base de datos; ese cambio no se deshace. ] [ VERIFICATION: gaia doctor muestra la versión nueva. ] [ SHARED-STATE: No: solo tu espacio de trabajo local. ] [ ROLLBACK: Reinstalar la versión anterior; la base de datos queda actualizada. ]
 ```
 
 A protected-path write is requested the same way with
@@ -156,15 +156,15 @@ gaia approvals request-set \
 Open a pull request, then merge it: the merge needs the PR number, which only
 exists after the first step. Request the push and the PR creation now; after
 they run and you read the number, request the merge in a new request. The
-first request, run from `/home/jorge/ws/me` with the push sealed in the
+first request, run from `<workspace>` with the push sealed in the
 repository:
 
 ```
 gaia approvals request-set \
   --command 'git push origin feature/demo-login' \
-  --cwd /home/jorge/ws/me/demo-repo \
-  --command 'gh pr create --repo metraton/demo --base main --head feature/demo-login --title "Login de prueba" --body-file /home/jorge/.gaia/scratch/demo-1234/pr.md' \
-  --cwd /home/jorge/ws/me \
+  --cwd <workspace>/demo-repo \
+  --command 'gh pr create --repo metraton/demo --base main --head feature/demo-login --title "Login de prueba" --body-file ~/.gaia/scratch/demo-1234/pr.md' \
+  --cwd <workspace> \
   --what 'Publicar la rama de prueba y abrir su pull request.' \
   --question '¿Publico la rama y abro el PR?' \
   --does 'Sube la rama feature/demo-login al repositorio remoto.' \
@@ -181,7 +181,7 @@ Only the push's Details names its folder, because only the push runs
 elsewhere:
 
 ```
-[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: git push origin feature/demo-login ] [ DOES: Sube la rama feature/demo-login al repositorio remoto. ] [ IMPACT: Otros ven la rama; se puede borrar del remoto. ] [ ROLLBACK: Cerrar el pull request sin fusionar y borrar la rama del remoto. ] [ CWD: /home/jorge/ws/me/demo-repo ]
+[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: git push origin feature/demo-login ] [ DOES: Sube la rama feature/demo-login al repositorio remoto. ] [ IMPACT: Otros ven la rama; se puede borrar del remoto. ] [ ROLLBACK: Cerrar el pull request sin fusionar y borrar la rama del remoto. ] [ CWD: <workspace>/demo-repo ]
 ```
 
 When one question call asks several signatures, each header names its

@@ -12,7 +12,7 @@ Gaia ships as a **single, unified plugin** named `gaia` — one artifact carryin
 
 ## 🚀 Installation
 
-Gaia reaches a workspace through **three channels**, the same three [README.md](./README.md) lists: the npm/pnpm package wired into Claude Code with `gaia install` (Surface 1), the Claude Code plugin from `gaia-marketplace` (Surface 2), and OpenCode on the same package (Surface 3). Pick the one that matches the host you run.
+Gaia reaches an install folder through **three channels**, the same three [README.md](./README.md) lists: the npm/pnpm package wired into Claude Code with `gaia install` (Surface 1), the Claude Code plugin from `gaia-marketplace` (Surface 2), and OpenCode on the same package (Surface 3). Pick the one that matches the host you run.
 
 `gaia install` and `gaia dev` take the channel explicitly with `--channel`; there is no default and no `all`, and run without one they fail listing the channels. The package channel (`npm`) and the plugin exclude each other in one install folder, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package, with `--channel npm` when OpenCode is recorded beside it). OpenCode joins either, and `gaia uninstall --channel opencode` removes it on its own.
 
@@ -327,7 +327,7 @@ which claude
 
 #### If You Have Multiple Installations
 
-Remove the extra copy by hand. (`gaia cleanup` is not for this: it removes Gaia's own links and markers from the workspace and runs data retention.)
+Remove the extra copy by hand. (`gaia cleanup` is not for this: it removes Gaia's own links and markers from the install folder and runs data retention.)
 
 ```bash
 # Remove npm global installation (if exists)
@@ -426,7 +426,7 @@ claude plugin marketplace remove gaia-marketplace   # optional
 
 The plugin's sessions record what they write into the install folder in `.claude/gaia-manifest.json` -- the permissions and `attribution` merged into `.claude/settings.local.json`, the `.claude/hooks` link -- so `gaia uninstall` reverts them, restores the user entries the merge replaced, and keeps what you added since. A plugin install folder from before that record is recognized by Gaia's permissions and attribution.
 
-With OpenCode installed in the same workspace, `gaia uninstall` without a channel removes OpenCode too. Use `gaia uninstall --channel plugin` to take back only the Claude Code side and keep OpenCode, or `--channel opencode` to remove OpenCode and keep the plugin. npm and the plugin share `.claude/`, so uninstalling either takes back every Claude Code entry in the manifest; a plugin still enabled re-records its own writes on its next session.
+With OpenCode installed in the same install folder, `gaia uninstall` without a channel removes OpenCode too. Use `gaia uninstall --channel plugin` to take back only the Claude Code side and keep OpenCode, or `--channel opencode` to remove OpenCode and keep the plugin. npm and the plugin share `.claude/`, so uninstalling either takes back every Claude Code entry in the manifest; a plugin still enabled re-records its own writes on its next session.
 
 ---
 
@@ -466,4 +466,4 @@ A: `npm install @jaguilar87/gaia@latest` then `npx gaia update` - symlinks point
 
 **Version:** the current release (`version` in `package.json`)
 **Last updated:** 2026-09-24
-**Maintained by:** Jorge Aguilar + Gaia (meta-agent)
+**Maintained by:** Jorge Aguilar + Gaia

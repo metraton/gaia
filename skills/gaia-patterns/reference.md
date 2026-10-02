@@ -322,11 +322,11 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 
 ```bash
 # In any project directory:
-ln -sf /home/jorge/ws/me/gaia/agents   .claude/agents
-ln -sf /home/jorge/ws/me/gaia/hooks    .claude/hooks
-ln -sf /home/jorge/ws/me/gaia/skills   .claude/skills
-ln -sf /home/jorge/ws/me/gaia/tools    .claude/tools
-ln -sf /home/jorge/ws/me/gaia/config   .claude/config
+ln -sf <gaia-source-checkout>/agents   .claude/agents
+ln -sf <gaia-source-checkout>/hooks    .claude/hooks
+ln -sf <gaia-source-checkout>/skills   .claude/skills
+ln -sf <gaia-source-checkout>/tools    .claude/tools
+ln -sf <gaia-source-checkout>/config   .claude/config
 ```
 
 Changes to source files take effect immediately (no build step).

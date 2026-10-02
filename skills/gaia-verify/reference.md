@@ -1,6 +1,6 @@
 # Gaia Verify Reference
 
-Exact commands for each mode. Copy and run. The source repo is `/home/jorge/ws/me/gaia`; `<repo>` below is that path and `<TARGET>` is the workspace being validated.
+Exact commands for each mode. Copy and run. `<repo>` below is the Gaia source checkout and `<TARGET>` is the install folder being validated.
 
 ## Mode: live
 
