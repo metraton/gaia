@@ -445,6 +445,9 @@ const ORCHESTRATOR_ASK = /^(P-[0-9a-f]{32})( details)?$/
 /** The host's limit on questions in one call, and so on commands asked at once (D33). */
 const SIGNATURE_BATCH_MAX = 4
 
+/** approval_grants statuses gaia/store/writer.py never moves back to PENDING; an unlisted status keeps a binding. */
+const TERMINAL_GRANT_STATUSES = new Set(["CONSUMED", "REVOKED", "FAILED", "EXPIRED"])
+
 export type OrchestratorAsk = { approvalID: string; mode: SignatureMode }
 
 /**
@@ -1570,27 +1573,27 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return { ok: false, cause }
   }
 
-  /** Whether Gaia still holds an executable grant for this approval.
+  /** Whether Gaia shows this approval's grant can no longer execute.
    *
-   * A grant past its window stays PENDING in the store until a sweep marks it
-   * EXPIRED, so the expiry is read as well as the status. An unreadable answer
-   * counts as live: keeping the binding refuses a decision, releasing it could
-   * stack a second executable retry on the session.
+   * Only a grant row naming the approval counts as evidence: `show` prints a
+   * null or absent grant when its read fails, so absence keeps the binding.
+   * A grant past its window stays PENDING until a sweep marks it EXPIRED,
+   * which is why the expiry is read as well as the status.
    */
-  async function grantIsLive(approvalID: string): Promise<boolean> {
+  async function grantHasEnded(approvalID: string): Promise<boolean> {
     const shown = await gaia(["approvals", "show", approvalID, "--json"])
-    if (!shown.ok) return true
-    let grant: { status?: unknown; expires_at?: unknown } | null | undefined
+    if (!shown.ok) return false
+    let parsed: { approval?: { id?: unknown }; grant?: { approval_id?: unknown; status?: unknown; expires_at?: unknown } | null }
     try {
-      grant = JSON.parse(shown.stdout)?.grant
+      parsed = JSON.parse(shown.stdout)
     } catch {
-      return true
+      return false
     }
-    if (!grant) return false
-    if (grant.status !== "PENDING") return false
-    const expiresAt = typeof grant.expires_at === "string" ? Date.parse(grant.expires_at) : Number.NaN
-    if (Number.isNaN(expiresAt)) return true
-    return expiresAt > Date.now()
+    const grant = parsed?.grant
+    if (parsed?.approval?.id !== approvalID || !grant || grant.approval_id !== approvalID) return false
+    if (TERMINAL_GRANT_STATUSES.has(String(grant.status))) return true
+    if (grant.status !== "PENDING" || typeof grant.expires_at !== "string") return false
+    return Date.parse(grant.expires_at) <= Date.now()
   }
 
   /** Release a control and leave the reason where a reader can find it.
@@ -1700,7 +1703,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<boolean> {
     const existing = retryBySession.get(control.approval.sessionID)
     if (reply === "once" && existing && existing.correlationID !== control.retry.correlationID) {
-      if (await grantIsLive(existing.approvalID)) {
+      if (!await grantHasEnded(existing.approvalID)) {
         await clearControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
         return false
       }
