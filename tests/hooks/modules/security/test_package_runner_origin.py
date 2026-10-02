@@ -59,21 +59,31 @@ CASES = [
     ("bun run missing-script", SIGNED),
     # `pnpm deploy` is a pnpm command, not the script of that name.
     ("pnpm deploy", SIGNED),
-    # 2. Runners: unsigned when the package resolves in the project, signed
-    #    when it would be fetched, signed when that cannot be told.
+    # 2. Runners: unsigned only when the binary resolves from the project's
+    #    installed node_modules; being declared is not running from the project.
     ("npx eslint .", UNSIGNED),
     ("npx cowsay hello", SIGNED),
+    ("npx prettier --check .", SIGNED),
     ("bunx eslint .", UNSIGNED),
     ("bunx cowsay hello", SIGNED),
     ("bun x eslint .", UNSIGNED),
     ("bun x cowsay hello", SIGNED),
-    ("pnpm dlx prettier --check .", UNSIGNED),
+    ("npm x eslint .", UNSIGNED),
+    ("npm x cowsay hello", SIGNED),
+    ("npm exec eslint .", UNSIGNED),
+    ("npm exec cowsay hello", SIGNED),
+    ("pnpm exec eslint .", UNSIGNED),
+    ("pnpm exec cowsay hello", SIGNED),
+    ("bun exec eslint .", UNSIGNED),
+    ("bun exec cowsay hello", SIGNED),
+    # Runners that always fetch from a registry, declared or not.
+    ("pnpm dlx prettier --check .", SIGNED),
     ("pnpm dlx cowsay hello", SIGNED),
-    ("yarn dlx prettier --check .", UNSIGNED),
+    ("yarn dlx prettier --check .", SIGNED),
     ("yarn dlx cowsay hello", SIGNED),
-    ("pipx run ruff check .", UNSIGNED),
+    ("pipx run ruff check .", SIGNED),
     ("pipx run cowsay hello", SIGNED),
-    ("uvx ruff check .", UNSIGNED),
+    ("uvx ruff check .", SIGNED),
     ("uvx pycowsay hello", SIGNED),
     ("npx eslint@9 .", SIGNED),
     ("npx --package cowsay eslint .", SIGNED),
@@ -115,13 +125,6 @@ def test_npm_i_and_npm_install_classify_identically(project):
 
 def test_runner_outside_any_project_is_signed(tmp_path):
     assert detect_mutative_command("npx eslint .", cwd=str(tmp_path)).is_mutative is True
-
-
-def test_malformed_python_manifest_counts_as_undeclared(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\ndependencies = "ruff"\n[dependency-groups]\ndev = 3\n'
-    )
-    assert detect_mutative_command("uvx ruff check .", cwd=str(tmp_path)).is_mutative is True
 
 
 def test_frozen_install_runs_the_project_lifecycle_scripts(project):

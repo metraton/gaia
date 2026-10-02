@@ -1250,31 +1250,43 @@ _PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
 # unwrapped form -- including the Python AST lane's dangerous-call table, which
 # is invoked through the existing lane rather than duplicated here.
 #
-# Each entry maps the runner to the subcommand token that must follow it
-# (``uv run``, ``pipx run``, ``bun x``, ``pnpm dlx``) or ``None`` when the
+# Each entry maps the runner to the subcommand tokens one of which must follow it
+# (``uv run``, ``npm exec``, ``bun x``, ``pnpm dlx``) or ``None`` when the
 # runner takes the wrapped command directly (``npx <pkg> <args>``).
 # ``value_flags`` are the runner's OWN options that consume the following token
 # as their value; without them the value would be mistaken for the wrapped
 # command.  This table is inherently OPEN: a runner nobody listed still bypasses
 # the lane (see the fallback rationale in ``_check_prefix_runner``).
-_PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[str]"] = {
-    "uv": "run",
+_PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[FrozenSet[str]]"] = {
+    "uv": frozenset({"run"}),
     "uvx": None,
-    "poetry": "run",
-    "pipx": "run",
+    "poetry": frozenset({"run"}),
+    "pipx": frozenset({"run"}),
     "npx": None,
     "bunx": None,
-    "bun": "x",
-    "pnpm": "dlx",
-    "yarn": "dlx",
+    "npm": frozenset({"x", "exec"}),
+    "bun": frozenset({"x", "exec"}),
+    "pnpm": frozenset({"dlx", "exec"}),
+    "yarn": frozenset({"dlx"}),
 }
 
-# Runners that fetch the package they run from a registry unless the project
-# already provides it, keyed to the ecosystem whose manifest declares it.  ``uv
-# run`` and ``poetry run`` are absent: they run inside the project environment.
-_REGISTRY_RUNNER_ECOSYSTEMS: Dict[str, str] = {
-    "npx": "node", "bunx": "node", "bun": "node", "pnpm": "node", "yarn": "node",
-    "pipx": "python", "uvx": "python",
+# Where each runner's code comes from, by ``(runner, subcommand)``: "installed"
+# runs the project's node_modules/.bin copy when there is one and otherwise
+# fetches or fails; "registry" always fetches into a throwaway environment, so
+# a dependency the project declares does not make it the project's code.
+# ``uv run`` and ``poetry run`` are absent: they run inside the project.
+_RUNNER_CODE_ORIGIN: Dict[Tuple[str, "Optional[str]"], str] = {
+    ("npx", None): "installed",
+    ("bunx", None): "installed",
+    ("npm", "x"): "installed",
+    ("npm", "exec"): "installed",
+    ("bun", "x"): "installed",
+    ("bun", "exec"): "installed",
+    ("pnpm", "exec"): "installed",
+    ("pnpm", "dlx"): "registry",
+    ("yarn", "dlx"): "registry",
+    ("pipx", "run"): "registry",
+    ("uvx", None): "registry",
 }
 
 # Per ecosystem: the options naming the package to fetch in place of the wrapped
@@ -1297,6 +1309,10 @@ _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "poetry": frozenset({"--directory", "-C", "--project", "-P"}),
     "pipx": frozenset({"--spec", "--python", "--pip-args", "--index-url"}),
     "npx": frozenset({"--package", "-p", "--node-options", "--userconfig"}),
+    "npm": frozenset({
+        "--package", "-p", "--node-options", "--userconfig", "--prefix", "-C",
+        "--workspace", "-w",
+    }),
     "bunx": frozenset({"--package", "-p"}),
     "bun": frozenset({"--package", "-p", "--cwd"}),
     "pnpm": frozenset({"--package", "--dir", "-C", "--filter", "-F"}),
@@ -5294,8 +5310,8 @@ def _check_python_module_runner(
 
 def _resolve_prefix_runner_payload(
     base_cmd: str, semantics: "CommandSemantics",
-) -> "Optional[Tuple[str, Tuple[str, ...], Tuple[str, ...]]]":
-    """Return ``(wrapped_command_token, remaining_args, packages)`` for a runner.
+) -> "Optional[Tuple[Optional[str], str, Tuple[str, ...], Tuple[str, ...]]]":
+    """Return ``(subcommand, wrapped_command_token, remaining_args, packages)``.
 
     Walks the runner's own options -- skipping boolean flags, consuming the
     value of a ``value_flags`` option, and accepting the self-contained
@@ -5314,11 +5330,12 @@ def _resolve_prefix_runner_payload(
     if base_cmd not in _PREFIX_RUNNER_SUBCOMMANDS:
         return None
 
-    required_subcommand = _PREFIX_RUNNER_SUBCOMMANDS[base_cmd]
+    required_subcommands = _PREFIX_RUNNER_SUBCOMMANDS[base_cmd]
     value_flags = _PREFIX_RUNNER_VALUE_FLAGS.get(base_cmd, frozenset())
     raw_tokens = semantics.tokens
-    ecosystem = _REGISTRY_RUNNER_ECOSYSTEMS.get(base_cmd)
-    source_flags, extra_flags = _RUNNER_PACKAGE_FLAGS.get(ecosystem, (frozenset(), frozenset()))
+    ecosystem = "python" if base_cmd in ("uvx", "pipx") else "node"
+    source_flags, extra_flags = _RUNNER_PACKAGE_FLAGS[ecosystem]
+    subcommand: "Optional[str]" = None
     sources: List[str] = []
     extras: List[str] = []
 
@@ -5328,7 +5345,7 @@ def _resolve_prefix_runner_payload(
             return inline
         return raw_tokens[index + 1] if index + 1 < len(raw_tokens) else None
 
-    subcommand_seen = required_subcommand is None
+    subcommand_seen = required_subcommands is None
     i = 1
     while i < len(raw_tokens):
         token = raw_tokens[i]
@@ -5341,12 +5358,12 @@ def _resolve_prefix_runner_payload(
                 value = option_value(i)
                 if value is not None:
                     (sources if flag in source_flags else extras).append(value)
-            if base_cmd == "npx" and token in _NPX_SHELL_CALL_FLAGS:
+            if subcommand_seen and base_cmd in ("npx", "npm") and token in _NPX_SHELL_CALL_FLAGS:
                 # ``npx --call "<shell command>"``: the value is a command
                 # string, not a package -- hand it back as the payload with no
                 # remaining args so the caller re-classifies it as a command.
                 if i + 1 < len(raw_tokens):
-                    return (raw_tokens[i + 1], (), tuple(sources + extras))
+                    return (subcommand, raw_tokens[i + 1], (), tuple(sources + extras))
                 return None
             if token in value_flags:
                 i += 2
@@ -5354,85 +5371,39 @@ def _resolve_prefix_runner_payload(
             i += 1
             continue
         if not subcommand_seen:
-            if token.lower() != required_subcommand:
+            if token.lower() not in required_subcommands:
                 return None
+            subcommand = token.lower()
             subcommand_seen = True
             i += 1
             continue
         packages = tuple((sources or [token]) + extras)
-        return (token, tuple(raw_tokens[i + 1:]), packages)
+        return (subcommand, token, tuple(raw_tokens[i + 1:]), packages)
 
     return None
 
 
-def _is_bare_package_name(ecosystem: str, spec: str) -> bool:
-    """False when *spec* pins a version, range, extra or URL -- what then runs
-    is not provably the local copy."""
-    if ecosystem == "node":
-        pattern = r"(@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*"
-    else:
-        pattern = r"[a-z0-9][\w.-]*"
+def _is_bare_node_package(spec: str) -> bool:
+    """False when *spec* pins a version, range or URL -- what then runs is not
+    provably the local copy."""
+    pattern = r"(@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*"
     return _re.fullmatch(pattern, spec, _re.IGNORECASE) is not None
 
 
-def _declared_python_dependencies(project_dir: str) -> FrozenSet[str]:
-    """Normalized names of every dependency ``pyproject.toml`` declares."""
-    import os
-
-    try:
-        import tomllib
-        with open(os.path.join(project_dir, "pyproject.toml"), "rb") as fh:
-            data = tomllib.load(fh)
-    except (ImportError, OSError, ValueError):
-        return frozenset()
-
-    def table(parent: object, key: str) -> dict:
-        value = parent.get(key) if isinstance(parent, dict) else None
-        return value if isinstance(value, dict) else {}
-
-    def strings(value: object) -> List[str]:
-        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
-
-    project = table(data, "project")
-    poetry = table(table(data, "tool"), "poetry")
-    requirements = strings(project.get("dependencies"))
-    requirements += strings(table(table(data, "tool"), "uv").get("dev-dependencies"))
-    for group in (table(project, "optional-dependencies"), table(data, "dependency-groups")):
-        for entries in group.values():
-            requirements += strings(entries)
-    requirements += list(table(poetry, "dependencies")) + list(table(poetry, "dev-dependencies"))
-    for group in table(poetry, "group").values():
-        requirements += list(table(group, "dependencies"))
-
-    names = set()
-    for requirement in requirements:
-        match = _re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
-        if match:
-            names.add(_re.sub(r"[-_.]+", "-", match.group(0)).lower())
-    return frozenset(names)
-
-
-def _runner_package_is_local(ecosystem: str, spec: str, project_dir: str) -> bool:
-    """True when *spec* is a path, or a bare name the project installs or declares."""
+def _runner_package_is_local(origin: str, spec: str, project_dir: str) -> bool:
+    """True when *spec* is a path, or -- for an "installed" runner -- a bare
+    name installed in the project's node_modules (as a bin or a package)."""
     import os
 
     if ":" in spec:
         return False
     if spec.startswith((".", "/", "~")) or ("/" in spec and not spec.startswith("@")):
         return True
-    if not _is_bare_package_name(ecosystem, spec):
+    if origin != "installed" or not _is_bare_node_package(spec):
         return False
-    if ecosystem == "python":
-        return _re.sub(r"[-_.]+", "-", spec).lower() in _declared_python_dependencies(project_dir)
     modules = os.path.join(project_dir, "node_modules")
-    if os.path.isfile(os.path.join(modules, ".bin", spec)) or os.path.isdir(os.path.join(modules, spec)):
-        return True
-    manifest = _read_package_json(project_dir) or {}
-    return any(
-        isinstance(manifest.get(field), dict) and spec in manifest[field]
-        for field in (
-            "dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
-        )
+    return os.path.isfile(os.path.join(modules, ".bin", spec)) or os.path.isdir(
+        os.path.join(modules, spec)
     )
 
 
@@ -5455,11 +5426,12 @@ def _check_prefix_runner(
     (``_SCRIPT_EXT_INTERPRETERS``); otherwise the payload is itself a command
     and is re-classified as written.
 
-    A registry runner (``_REGISTRY_RUNNER_ECOSYSTEMS``) whose payload is not
-    itself mutative is still mutative when any package it needs is neither
-    installed in nor declared by the project at *cwd*: that code would come
-    from a registry unreviewed.  A spec that pins a version cannot be shown to
-    be the local copy, so it counts as fetched.
+    A runner listed in ``_RUNNER_CODE_ORIGIN`` whose payload is not itself
+    mutative is still mutative when any package it needs is not a path and is
+    not installed in the project's node_modules at *cwd* (for a "registry"
+    runner, whenever it is not a path): that code would come from a registry
+    unreviewed.  A spec that pins a version cannot be shown to be the local
+    copy, so it counts as fetched.
 
     Fallback choice, stated explicitly because the reachable behavior and the
     documented one disagree: an UNRECOGNIZED runner still falls to T0, and this
@@ -5494,7 +5466,7 @@ def _check_prefix_runner(
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("runner payload")
 
-    payload, rest, packages = resolved
+    subcommand, payload, rest, packages = resolved
 
     import os
     import shlex
@@ -5510,12 +5482,12 @@ def _check_prefix_runner(
     rewritten = " ".join(shlex.quote(t) for t in tokens)
 
     inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
-    ecosystem = _REGISTRY_RUNNER_ECOSYSTEMS.get(base_cmd)
-    if not inner.is_mutative and ecosystem is not None:
+    origin = _RUNNER_CODE_ORIGIN.get((base_cmd, subcommand))
+    if not inner.is_mutative and origin is not None:
         project_dir = cwd if cwd is not None else os.getcwd()
         fetched = [
             spec for spec in packages
-            if not _runner_package_is_local(ecosystem, spec, project_dir)
+            if not _runner_package_is_local(origin, spec, project_dir)
         ]
         if fetched:
             return MutativeResult(
@@ -5526,7 +5498,7 @@ def _check_prefix_runner(
                 confidence="medium",
                 reason=(
                     f"Runner '{base_cmd}' would fetch {', '.join(fetched)} from "
-                    f"a registry: not installed in or declared by {project_dir}"
+                    f"a registry: not installed in {project_dir}/node_modules"
                 ),
             )
     return MutativeResult(

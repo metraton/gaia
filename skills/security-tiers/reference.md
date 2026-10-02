@@ -79,7 +79,7 @@ Accepted limitation: a mutation via a bare native command inside `-Command` (no 
 
 The wrapped lane above only fires when `base_cmd` is a PowerShell interpreter. Its sibling hole (a CONFIRMED rc.3 live incident): a Windows command with NO wrapper -- a PEELED `Remove-Item -Recurse -Force`, a cmd.exe `del`/`rd`, or a PowerShell alias -- reached the POSIX verb scanner, which found no subcommand to match, so it fell to safe-by-elimination (**T0**) and mutated WITHOUT a gate. The bare-Windows lane (`_check_windows_native_command`, Step 1b-win in `detect_mutative_command`) closes it by inverting the default to conservative **DEFAULT-DENY** -- but **scoped to recognized Windows tokens only**, so bash/POSIX classification is untouched (an unrecognized `base_cmd` returns `None` and POSIX classification, including the `rm` scratch and `mkdir` sensitive-path overrides that run FIRST, is left completely intact).
 
-**Guiding principle (Microsoft Learn + MITRE anchored):** in a Windows/PowerShell/cmd context, an UNKNOWN command / verb / cmdlet / subcommand is **T3**, not T0. This is the same fallback direction Gaia already uses for an unreadable script file (`_check_script_file`) and an unresolvable `npm run` (`_check_npm_script_runner`).
+**Guiding principle (Microsoft Learn + MITRE anchored):** in a Windows/PowerShell/cmd context, an UNKNOWN command / verb / cmdlet / subcommand is **T3**, not T0. This is the same fallback direction Gaia already uses for an unreadable script file (`_check_script_file`) and an unresolvable `npm run` (`_check_package_manager`).
 
 **Recognition (each entry the trigger AND the classification):**
 

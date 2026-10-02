@@ -502,20 +502,23 @@ pip uses `install`, `uninstall`, `freeze`, `list`, `show`, `search`, `download`,
 
 | Command / Pattern | Notes |
 |---|---|
-| `npm install <package>` | Install package |
+| `npm install` / `npm i` / `npm add`, `bun add`, `pnpm add`, `yarn add`, bare `yarn` | Adds a dependency or may rewrite the lockfile; every spelling classifies as `install` |
 | `npm uninstall <package>` | Uninstall local package |
 | `npm update` | Update packages |
 | `npm publish` | Publish to registry |
 | `npm unpublish <package>@<version>` | Unpublish specific version (within 72h) |
 | `npm deprecate <package>` | Mark package deprecated (preferred over unpublish) |
 | `npm version <semver>` | Bump version |
-| `npm run <script>` | Run script |
+| `npm`/`bun`/`pnpm`/`yarn run <script>`, `pnpm`/`yarn <script>` | Only when the `package.json` body mutates, or cannot be resolved |
+| `npx`, `bunx`, `bun x`, `npm x`, `npm exec`, `pnpm exec`, `bun exec` `<pkg>` | Only when `<pkg>` is not installed in the project's `node_modules` (or pins a version) |
+| `pnpm dlx`, `yarn dlx`, `pipx run`, `uvx` `<pkg>` | Always fetch from a registry, declared dependency or not |
 | `npm audit fix` | Fix vulnerabilities |
 | `npm audit fix --force` | Force fix (may break dependencies) |
-| `npm ci` | Clean install from lockfile |
 | `pip install <package>` | Install package |
 | `pip uninstall <package>` | Uninstall local package |
 | `pip install --upgrade <package>` | Upgrade package |
+
+A frozen install from the lockfile -- `npm ci`, `bun`/`pnpm install --frozen-lockfile`, `yarn install --immutable` -- is not T3 by itself: it is classified by the project's install lifecycle scripts (`preinstall` through `postprepare`), and is T3 only when one of them mutates or no `package.json` is readable.
 
 ---
 

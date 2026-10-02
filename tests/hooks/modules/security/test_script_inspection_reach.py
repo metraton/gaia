@@ -101,20 +101,16 @@ class TestPrefixRunnerReDispatch:
         "uv run pytest -q",
         "uv run ruff check .",
         "poetry run pytest tests/",
-        "pipx run cowsay hello",
         "npx tsc --noEmit",
         "npx eslint .",
     ])
     def test_benign_runner_payloads_stay_non_mutative(self, tmp_path, command):
-        # The packages resolve inside the project; fetched from a registry they
-        # would be signed (test_package_runner_origin.py).
+        # The binaries are installed in the project; fetched from a registry
+        # they would be signed (test_package_runner_origin.py).
         bin_dir = tmp_path / "node_modules" / ".bin"
         bin_dir.mkdir(parents=True)
         for name in ("tsc", "eslint"):
             (bin_dir / name).write_text("#!/usr/bin/env node\n")
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "demo"\nversion = "0"\ndependencies = ["cowsay"]\n'
-        )
         assert detect_mutative_command(command, cwd=str(tmp_path)).is_mutative is False
 
     @pytest.mark.parametrize("command", ["uv pip list", "poetry show", "uv run", "npx"])
