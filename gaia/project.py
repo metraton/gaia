@@ -1,20 +1,11 @@
 """
-gaia.project -- Workspace identity model and consolidate operations.
+gaia.project -- Workspace resolution and consolidate operations.
 
-Workspace identity (``current()``) is PATH-based (M2-T7, AC-9): it is derived
-from the repository's location on disk, not from the git remote, so it is
-stable regardless of remote state and converges across vantage points (root,
-subdirectory, linked worktree of the same repo all resolve identically).
-
-Three-level resolution:
-  1. Git repo -> basename of the repository ROOT (via git-common-dir)
-  2. Directory name in lowercase (when not a git repo)
-  3. Literal ``"global"`` (when neither a git repo nor an identifiable name)
-
-The remote-derived canonical identity (``host/owner/repo``) is still produced
-by :func:`_normalize_remote`, but it is captured separately in the
-``workspaces.identity`` column by the store writer, which reads the remote
-directly -- it no longer flows through ``current()``.
+A workspace exists only when the user declares it (``gaia workspace declare
+NAME PATH``), which records its root_path. ``current()`` is the one answer to
+"which workspace am I in": the declared root nearest above the directory, or
+``"global"`` outside every declared root. A workspace is never named after a
+repository or a folder.
 
 Patterns inspired by engram (https://github.com/koaning/engram), MIT License.
 No runtime dependency on engram.
@@ -148,63 +139,41 @@ def git_common_dir(cwd: Path | str | None = None) -> str | None:
         return None
 
 
-def current(cwd: Path | str | None = None) -> str:
-    """Return the workspace identity for the given directory -- PATH-BASED.
+DECLARE_COMMAND = "gaia workspace declare <name> <path>"
 
-    Resolution is PATH-first (M2-T7, AC-9), NOT git-remote-first. The identity
-    is derived from the repository's own location on disk, so it is stable
-    regardless of remote state and converges across vantage points:
 
-      1. Git repo -> the basename of the REPOSITORY ROOT, resolved via
-         ``git rev-parse --git-common-dir`` (:func:`git_common_dir`). Because
-         the common dir is identical from the repo root, any nested
-         subdirectory, and any linked worktree, two different working-directory
-         paths of the SAME repo always resolve to the SAME identity -- and the
-         git remote never decides the identity ahead of the path.
-      2. Not a git repo -> the basename of ``cwd`` in lowercase.
-      3. Literal ``"global"`` (no git, no identifiable directory name).
+def declared_workspace(cwd: Path | str | None = None) -> str | None:
+    """Return the declared workspace whose root most closely contains *cwd*, or None.
 
-    The git remote URL is deliberately NOT consulted here. The remote-derived
-    canonical identity still exists, but it is captured separately in the
-    ``workspaces.identity`` column by the store writer
-    (``gaia/store/writer.py::_resolve_identity``), which reads the remote
-    directly -- so ``current()`` answering "which workspace am I in" stays
-    coherent with the path-anchored scan model (workspace -> proyecto -> repo)
-    while the remote identity is preserved where it belongs.
-
-    Args:
-        cwd: Directory to resolve identity for. Defaults to ``Path.cwd()``.
-
-    Returns:
-        Workspace identity string. Never empty, never raises.
+    A workspaces row without root_path is history, not a workspace, and is
+    never an answer.
     """
+    from gaia.install_root import owning_root, registered_roots
+
     target = Path(cwd) if cwd is not None else Path.cwd()
     try:
         target = target.resolve()
     except (OSError, RuntimeError):
-        # If resolve fails (broken symlink, permission), fall back to global
+        return None
+    roots = registered_roots()
+    owner = owning_root(target, roots)
+    return roots[owner] if owner is not None else None
+
+
+def current(cwd: Path | str | None = None) -> str:
+    """Return the declared workspace containing *cwd*, else ``"global"``; never raises."""
+    try:
+        return declared_workspace(cwd) or "global"
+    except Exception:
         return "global"
 
-    # Level 1 (PATH-based): repository root basename, vantage-independent.
-    # git_common_dir collapses root / subdir / worktree of the same repo to
-    # one path, so the identity does not diverge across vantage points and
-    # does not depend on the remote.
-    common = git_common_dir(target)
-    if common:
-        # The common dir (e.g. ``/x/repo/.git``) sits inside the repo root;
-        # its parent is the repository root directory.
-        repo_root = Path(common).parent
-        name = repo_root.name.lower().strip()
-        if name:
-            return name
 
-    # Level 2: directory basename (not a git repo).
-    name = target.name.lower().strip()
-    if name:
-        return name
-
-    # Level 3: global
-    return "global"
+def not_declared_message(folder: Path | str) -> str:
+    """The explanation shown when *folder* lies outside every declared workspace."""
+    return (
+        f"{folder} is not inside a declared workspace.\n"
+        f"Declare one with: {DECLARE_COMMAND}"
+    )
 
 
 def resolve_workspace(cwd: Path | str | None = None) -> str:
@@ -221,10 +190,8 @@ def resolve_workspace(cwd: Path | str | None = None) -> str:
            SubagentStop hook chain when dispatching a subagent).
         2. ``GAIA_WORKSPACE`` environment variable (set by
            ``gaia <cmd> --workspace=<name>``).
-        3. :func:`current` -- path-based workspace identity derived from the
-           repository/directory of *cwd*.
-        4. Literal ``"global"`` when nothing else resolves (or *current*
-           raises / returns empty).
+        3. :func:`current` -- the declared workspace containing *cwd*.
+        4. Literal ``"global"`` when nothing else resolves.
 
     The explicit env vars win over the path-derived identity because a
     dispatch may run from a cwd that is not the target workspace; the env var
@@ -233,7 +200,7 @@ def resolve_workspace(cwd: Path | str | None = None) -> str:
     handoff persister, which use the same final fallback.
 
     Args:
-        cwd: Directory to resolve the path-based identity for (step 3).
+        cwd: Directory to resolve the declared workspace for (step 3).
             Defaults to :func:`current`'s own default (``Path.cwd()``).
 
     Returns:
@@ -354,60 +321,6 @@ def merge(
     return result
 
 
-def containing_workspace(cwd: Path | str | None = None) -> str:
-    """Resolve which workspace a directory BELONGS TO, not what it is called.
-
-    :func:`current` answers "what repository am I in" and names its answer a
-    workspace identity, which is the same string only when the repository IS a
-    workspace root. Standing inside a project of a workspace it answers with
-    the project: measured on 2026-08-14, a read from ``/home/jorge/ws/me/gaia``
-    resolved to workspace ``gaia`` -- a real row with zero curated memory -- so
-    every agent working inside that repo read an empty corpus while the same
-    command one directory up returned 1128 rows.
-
-    The projects table already records the relation (workspace, path), so the
-    containing workspace is a lookup rather than an inference. The longest
-    matching path wins, since a project nested inside another must resolve to
-    its own row. Falls back to :func:`current` when no project contains the
-    directory -- a workspace root, or a directory Gaia has never scanned.
-    """
-    target = Path(cwd) if cwd is not None else Path.cwd()
-    try:
-        target = target.resolve()
-    except (OSError, RuntimeError):
-        return current(cwd)
-
-    try:
-        import sqlite3
-        from gaia.paths import db_path
-
-        db_file = db_path()
-        if not db_file or not db_file.exists():
-            return current(cwd)
-        con = sqlite3.connect(str(db_file))
-        try:
-            rows = con.execute(
-                "SELECT workspace, path FROM projects WHERE path IS NOT NULL"
-            ).fetchall()
-        finally:
-            con.close()
-    except Exception:
-        return current(cwd)
-
-    best_workspace = ""
-    best_length = -1
-    for workspace, path in rows:
-        if not workspace or not path:
-            continue
-        candidate = Path(path)
-        if target != candidate and candidate not in target.parents:
-            continue
-        if len(str(candidate)) > best_length:
-            best_workspace = workspace
-            best_length = len(str(candidate))
-    return best_workspace or current(cwd)
-
-
 def cli_workspace(
     explicit: str | None = None,
     cwd: Path | str | None = None,
@@ -415,18 +328,11 @@ def cli_workspace(
     """Return the workspace a CLI call without ``--workspace`` operates on.
 
     Resolution order: ``explicit`` > ``GAIA_DISPATCH_WORKSPACE`` >
-    ``GAIA_WORKSPACE`` > :func:`containing_workspace` of ``cwd`` > ``"global"``.
-    A name retired by ``gaia workspace retire`` then resolves to the
-    workspace it was folded into.
-
-    Every CLI that accepts ``--workspace`` (brief, plan, task, ac, evidence,
-    milestone, memory, ...) delegates here: when each carried its own copy,
-    brief named the directory while memory asked which project contains it,
-    so the same cwd read two different workspaces. When nothing resolves
-    (a cwd with no identifiable name, or a failing lookup) the answer is
-    Gaia's unattributed scope ``"global"``, the same one
-    :func:`resolve_workspace` ends in: no installation's workspace name is
-    baked into the code.
+    ``GAIA_WORKSPACE`` > :func:`current` of ``cwd`` > ``"global"``. A name
+    retired by ``gaia workspace retire`` then resolves to the workspace it was
+    folded into. Every CLI that accepts ``--workspace`` delegates here, and
+    :func:`resolve_workspace` ends in the same :func:`current`, so a CLI and a
+    history writer standing in the same folder name the same workspace.
     """
     if explicit:
         return _retired_into(explicit)
@@ -437,7 +343,7 @@ def cli_workspace(
         if value:
             return _retired_into(value)
     try:
-        ws = containing_workspace(cwd)
+        ws = current(cwd)
     except Exception:
         ws = ""
     return _retired_into(ws) if ws else "global"

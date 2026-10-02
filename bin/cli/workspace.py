@@ -2,7 +2,9 @@
 gaia workspace -- Workspace identity and consolidate operations.
 
 Subcommands:
-  workspace current               Print current workspace identity (resolved from cwd)
+  workspace current               Print the declared workspace containing cwd
+  workspace declare <name> <path> Declare a workspace rooted at <path>
+  workspace list                  List the declared workspaces and their roots
   workspace info                  Print structured info about the current workspace
   workspace retire <source> --into <target>
                                   Fold a workspace's rows in gaia.db into another
@@ -22,9 +24,48 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 
 def _cmd_current(args) -> int:
-    """Handle `gaia workspace current`."""
-    from gaia.project import current
-    print(current())
+    """Handle `gaia workspace current`: the declared workspace containing cwd, else exit 1."""
+    from gaia.project import declared_workspace, not_declared_message
+
+    workspace = declared_workspace()
+    if workspace is None:
+        print(not_declared_message(Path.cwd().resolve()), file=sys.stderr)
+        return 1
+    print(workspace)
+    return 0
+
+
+def _cmd_declare(args) -> int:
+    """Handle `gaia workspace declare NAME PATH`."""
+    from gaia.store.writer import WorkspaceDeclarationError, declare_workspace
+
+    name = args.name.strip()
+    root = Path(args.path).expanduser().resolve()
+    if not name:
+        print("gaia workspace declare: NAME cannot be empty", file=sys.stderr)
+        return 2
+    if not root.is_dir():
+        print(f"gaia workspace declare: {root} is not a directory", file=sys.stderr)
+        return 2
+    try:
+        outcome = declare_workspace(name, root)
+    except WorkspaceDeclarationError as exc:
+        print(f"gaia workspace declare: {exc}", file=sys.stderr)
+        return 1
+    if outcome == "noop":
+        print(f"workspace {name!r} is already declared at {root}")
+    else:
+        print(f"workspace {name!r} declared at {root}")
+        print(f"Index its repositories with: gaia scan --workspace {name} {root}")
+    return 0
+
+
+def _cmd_list(args) -> int:
+    """Handle `gaia workspace list`: every declared workspace and its root."""
+    from gaia.install_root import registered_roots
+
+    for root, name in sorted(registered_roots().items(), key=lambda item: item[1]):
+        print(f"{name}\t{root}")
     return 0
 
 
@@ -40,10 +81,13 @@ def _cmd_info(args) -> int:
         state_dir,
         workspaces_dir,
     )
-    from gaia.project import current
+    from gaia.project import declared_workspace, not_declared_message
 
     cwd = Path.cwd()
-    identity = current()
+    declared = declared_workspace(cwd)
+    identity = declared or "global"
+    if declared is None:
+        print(not_declared_message(cwd.resolve()), file=sys.stderr)
 
     print(f"identity={identity}")
     print(f"cwd={cwd}")
@@ -269,7 +313,7 @@ def cmd_workspace(args) -> int:
         if hasattr(args, "_workspace_parser"):
             args._workspace_parser.print_help()
         else:
-            print("Usage: gaia workspace <current|info|merge>", file=sys.stderr)
+            print("Usage: gaia workspace <current|declare|list|info|retire|merge>", file=sys.stderr)
         return 0
     return func(args) or 0
 
@@ -284,8 +328,28 @@ def register(subparsers):
 
     actions = ws_parser.add_subparsers(dest="workspace_action", metavar="<action>")
 
-    current_p = actions.add_parser("current", help="Print current workspace identity")
+    current_p = actions.add_parser(
+        "current", help="Print the declared workspace containing the current directory"
+    )
     current_p.set_defaults(func=_cmd_current)
+
+    declare_p = actions.add_parser(
+        "declare",
+        help="Declare NAME as a workspace rooted at PATH",
+        description=(
+            "Record NAME as a workspace whose root is PATH. Only declared workspaces "
+            "exist: a folder resolves to the declared root nearest above it. A name "
+            "or a root already declared is never rebound."
+        ),
+        epilog="Example:\n  gaia workspace declare me ~/ws/me\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    declare_p.add_argument("name", help="Workspace name")
+    declare_p.add_argument("path", help="Workspace root directory")
+    declare_p.set_defaults(func=_cmd_declare)
+
+    list_p = actions.add_parser("list", help="List the declared workspaces and their roots")
+    list_p.set_defaults(func=_cmd_list)
 
     info_p = actions.add_parser("info", help="Print structured info about the current workspace")
     info_p.set_defaults(func=_cmd_info)

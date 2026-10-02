@@ -279,6 +279,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
     if not root.is_dir():
         return _emit_error(args, f"root not found: {root}")
 
+    from gaia.install_root import registered_roots
+    from gaia.project import DECLARE_COMMAND
+
+    if workspace not in registered_roots().values():
+        return _emit_error(
+            args, f"workspace {workspace!r} is not declared.\nDeclare it with: {DECLARE_COMMAND}"
+        )
+
     try:
         from tools.scan.classify import scan as classify_scan
     except Exception as exc:

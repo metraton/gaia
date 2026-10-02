@@ -398,7 +398,6 @@ class OpenCodeAdapter(HookAdapter):
             is_headless=False,
             pinned_build=None,
             workspace_dir=Path.cwd(),
-            plugin_channel=False,
         ))
         return BootstrapResult(
             session_type="startup",

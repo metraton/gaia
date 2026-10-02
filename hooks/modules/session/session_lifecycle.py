@@ -21,7 +21,6 @@ class SessionStart:
     is_headless: bool
     pinned_build: Optional[dict]
     workspace_dir: Path
-    plugin_channel: bool
 
 
 @dataclass(frozen=True)
@@ -48,8 +47,12 @@ def start_session(start: SessionStart) -> StartOutcome:
         logger.warning("data home marker not written (non-fatal): %s", exc)
         data_home_notice = ""
 
-    upgrade_notice = _reconcile_install(start.plugin_channel)
-    notices = {"## Database upgrade": upgrade_notice, "## Data home": data_home_notice}
+    upgrade_notice, workspace_notice = _reconcile_install()
+    notices = {
+        "## Database upgrade": upgrade_notice,
+        "## Data home": data_home_notice,
+        "## Workspace": workspace_notice,
+    }
     shown = {title: text for title, text in notices.items() if text}
     alarms = [f"{title}\n{text}" for title, text in shown.items()]
     return StartOutcome(
@@ -139,19 +142,15 @@ def run_start_maintenance(start: SessionStart) -> None:
         logger.debug("sweep_repo_worktrees failed (non-fatal): %s", exc)
 
 
-def _reconcile_install(plugin_channel: bool) -> str:
-    """Migrate and seed the installed database, and start a plugin's first scan; return the notice.
+def _reconcile_install() -> tuple[str, str]:
+    """Migrate and seed the installed database; return the upgrade and workspace notices.
 
     The plugin channel never runs ``gaia install``, so its session start is
-    where both happen. The scan is detached so a large workspace cannot hold
-    the session open.
+    where the database is reconciled. No workspace is registered here: the
+    workspace notice explains how to declare one when the installed folder lies
+    outside every declared root.
     """
-    from gaia.install_root import (
-        InsideManagedWorktree,
-        installed_root,
-        registered_roots,
-        start_first_scan,
-    )
+    from gaia.install_root import InsideManagedWorktree, installed_root, workspace_status
     from modules.core.plugin_setup import recorded_in_manifest
 
     try:
@@ -169,12 +168,15 @@ def _reconcile_install(plugin_channel: bool) -> str:
         logger.warning("plugin upgrade check failed (non-fatal): %s", exc)
         upgrade_notice = f"Gaia could not check its database at session start: {exc}"
 
-    if workspace_root is not None and plugin_channel and workspace_root not in registered_roots():
+    workspace_notice = ""
+    if workspace_root is not None:
         try:
-            start_first_scan(workspace_root)
+            status = workspace_status(workspace_root)
+            if status["action"] == "skipped":
+                workspace_notice = status["details"]
         except Exception as exc:
-            logger.warning("first scan could not start (non-fatal): %s", exc)
-    return upgrade_notice
+            logger.warning("workspace status not read (non-fatal): %s", exc)
+    return upgrade_notice, workspace_notice
 
 
 def start_context(source: str, alarms: list) -> str:

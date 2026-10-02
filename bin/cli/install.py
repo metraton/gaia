@@ -35,11 +35,9 @@ Responsibilities (in order):
   6. Write `.claude/plugin-registry.json` with `installed[].name == "gaia"`
      (the single unified plugin registry identity).
 
-  7. First scan (`gaia.install_root.first_scan`): the workspace is the folder
-     install ran in, registered under its basename with that folder as its
-     root, and the repos beneath it are indexed. A root already recorded is
-     left alone -- re-indexing is `gaia scan` -- and repos inside another
-     workspace's recorded root stay with that workspace. Non-fatal.
+  7. Workspace (`gaia.install_root.workspace_status`): reports the declared
+     workspace the folder lies in, or the `gaia workspace declare` command
+     when it lies in none. Install never declares one. Non-fatal.
 
 Idempotent: re-running over a populated workspace + DB never destroys
 state -- bootstrap.sh uses IF NOT EXISTS / INSERT OR IGNORE, the helpers
@@ -970,12 +968,12 @@ def _seed_surface_routing(db_path: str | None, quiet: bool) -> dict:
     return {"action": "created", "details": summary}
 
 
-def _first_scan(workspace: Path, db_path: str | None) -> dict:
-    """Register and scan *workspace* once; a failure is reported, never fatal."""
-    from gaia.install_root import first_scan
+def _workspace_status(workspace: Path, db_path: str | None) -> dict:
+    """Say whether *workspace* is inside a declared workspace; a failure is reported, never fatal."""
+    from gaia.install_root import workspace_status
 
     try:
-        return first_scan(
+        return workspace_status(
             workspace, database=Path(db_path).expanduser().resolve() if db_path else None
         )
     except Exception as exc:
@@ -1503,8 +1501,8 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
     )
 
     _report_step(
-        name="first scan",
-        result=_first_scan(workspace, db_path),
+        name="workspace",
+        result=_workspace_status(workspace, db_path),
         quiet=quiet,
         verbose=verbose,
     )

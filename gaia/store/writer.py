@@ -745,8 +745,9 @@ def set_workspace_last_scan_at(
         workspace: Workspace name (workspaces.name PK).
         ts:        ISO8601 UTC timestamp string. Defaults to _now_iso().
         db_path:   Optional explicit DB path (used by tests).
-        root_path: Absolute workspace directory the scan resolved; None keeps
-                   the recorded one.
+        root_path: Absolute workspace directory the scan resolved; recorded
+                   only when the row has none, so a declared root is never
+                   replaced by a scan.
     """
     if ts is None:
         ts = _now_iso()
@@ -761,10 +762,55 @@ def set_workspace_last_scan_at(
         # demoted but is installed again on re-scan recovers cleanly.
         con.execute(
             "UPDATE workspaces SET last_scan_at = ?, status = 'active', "
-            "missing_since = NULL, root_path = COALESCE(?, root_path) WHERE name = ?",
+            "missing_since = NULL, root_path = COALESCE(root_path, ?) WHERE name = ?",
             (ts, root_path, workspace),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+class WorkspaceDeclarationError(ValueError):
+    """A declaration that would rebind a declared name or root."""
+
+
+def declare_workspace(name: str, root: Path, *, db_path: Path | None = None) -> str:
+    """Record *name* as a workspace rooted at *root*; return ``"created"``, ``"adopted"`` or ``"noop"``.
+
+    ``adopted`` gives a root to an existing row that had none, so the history
+    already filed under that name stays with it. A name declared at another
+    root, or a root declared under another name, raises
+    :class:`WorkspaceDeclarationError` and writes nothing.
+    """
+    root_path = str(root.resolve())
+    con = _connect(db_path)
+    try:
+        holder = con.execute(
+            "SELECT name FROM workspaces WHERE root_path = ? AND name != ?",
+            (root_path, name),
+        ).fetchone()
+        if holder is not None:
+            raise WorkspaceDeclarationError(
+                f"{root_path} is already declared as workspace {holder['name']!r}"
+            )
+        row = con.execute(
+            "SELECT root_path FROM workspaces WHERE name = ?", (name,)
+        ).fetchone()
+        if row is not None and row["root_path"]:
+            if row["root_path"] == root_path:
+                return "noop"
+            raise WorkspaceDeclarationError(
+                f"workspace {name!r} is already declared at {row['root_path']}"
+            )
+        outcome = "adopted" if row is not None else "created"
+        _ensure_workspace_row(con, name, root)
+        con.execute(
+            "UPDATE workspaces SET root_path = ?, status = 'active', missing_since = NULL "
+            "WHERE name = ?",
+            (root_path, name),
+        )
+        con.commit()
+        return outcome
     finally:
         con.close()
 

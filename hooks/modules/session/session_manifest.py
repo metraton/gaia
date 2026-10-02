@@ -102,10 +102,10 @@ def _read_workspace_identity() -> Optional[str]:
     import sqlite3
 
     try:
-        from gaia.project import containing_workspace
+        from gaia.project import current
         from gaia.paths import db_path as _db_path
 
-        workspace = containing_workspace()
+        workspace = current()
         if not workspace:
             return None
 

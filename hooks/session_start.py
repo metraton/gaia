@@ -156,7 +156,6 @@ if __name__ == "__main__":
             is_headless=_detect_headless(),
             pinned_build=_pinned_build(),
             workspace_dir=Path.cwd(),
-            plugin_channel=bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()),
         ))
 
         response = {"session_type": "startup"}
