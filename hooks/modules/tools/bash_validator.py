@@ -252,6 +252,28 @@ def _record_plan_command_denial(
         return
 
 
+def _uncorrelated_set_denial(pending_set: dict, *, session_id: str, tool_use_id: str) -> str:
+    """Explain why a signed COMMAND_SET item was refused for want of host correlation.
+
+    The refusal touches no grant state, so the message says the signature is
+    still live and names the two ways forward instead of ending in a dead end.
+    """
+    missing = " and ".join(
+        name for name, value in (("session_id", session_id), ("tool_use_id", tool_use_id))
+        if not value
+    )
+    approval_id = pending_set["approval_id"]
+    return (
+        "COMMAND_SET denied: adapter lacks stable tool-call correlation -- the host "
+        f"sent no {missing} for this Bash call, and item [{pending_set['index']}] of "
+        f"{approval_id} is reserved and settled against it. {approval_id} was not "
+        "consumed and stays approved until its window closes: retry the byte-identical "
+        f"command from a call whose host event carries a {missing}, or close BLOCKED "
+        f"naming {approval_id} and this missing {missing} so the user knows the signed "
+        "command did not run."
+    )
+
+
 class BashValidator:
     """Validator for Bash tool invocations.
 
@@ -1136,7 +1158,7 @@ class BashValidator:
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type, cwd=payload_cwd,
+                agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
@@ -1305,7 +1327,9 @@ class BashValidator:
                     )
                     return BashValidationResult(
                         allowed=False, tier=SecurityTier.T3_BLOCKED,
-                        reason="COMMAND_SET denied: adapter lacks stable tool-call correlation",
+                        reason=_uncorrelated_set_denial(
+                            pending_set, session_id=session_id, tool_use_id=tool_use_id,
+                        ),
                     )
             try:
                 from gaia.approvals.core import match_command
