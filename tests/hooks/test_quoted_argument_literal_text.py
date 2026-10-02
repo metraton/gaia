@@ -99,15 +99,22 @@ def test_quotes_inside_an_unquoted_heredoc_body_do_not_stop_a_substitution(delim
     assert SUBSTITUTION_REFUSAL in str(verdict.reason), verdict.reason
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "Known gap, predates this change: the compound lane classifies a heredoc body line as its "
-    "own component, out of the heredoc, so its quotes read as quoting."
-))
-def test_mutation_in_quotes_inside_an_unquoted_heredoc_body_is_t3():
-    verdict = _verdict("cat <<EOF\n'$(rm -rf /tmp/x)'\nEOF", SUBAGENT)
+@pytest.mark.parametrize("command", [
+    "cat <<EOF\n'$(rm -rf /tmp/x)'\nEOF",
+    "cat <<EOF\n'`rm -rf /tmp/x`'\nEOF",
+    "cat <<-EOF\n\t'$(rm -rf /tmp/x)'\n\tEOF",
+], ids=["dollar-paren", "backticks", "tab-stripping-heredoc"])
+def test_mutation_in_quotes_inside_an_unquoted_heredoc_body_is_t3(command):
+    verdict = _verdict(command, SUBAGENT)
 
     assert verdict.allowed is False
     assert "T3" in str(verdict.reason), verdict.reason
+
+
+def test_mutation_inside_a_quoted_delimiter_heredoc_body_is_data():
+    verdict = _verdict("cat <<'EOF'\n'$(rm -rf /tmp/x)'\nEOF", SUBAGENT)
+
+    assert verdict.allowed is True, verdict.reason
 
 
 @pytest.mark.parametrize("pager_flag", ["-Oless", "--open-files-in-pager=less"])

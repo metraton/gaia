@@ -85,6 +85,7 @@ from ..security.fail_open import clear_classification, note_mutative_classificat
 from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
+from ..security.shell_substitution import extract_substitutions, extract_substitutions_truncated
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_memory_write_guard import (
@@ -1644,6 +1645,8 @@ class BashValidator:
             ):
                 has_t3 = True
                 break
+        if not has_t3:
+            has_t3 = self._has_mutative_substitution_outside_components(command, components, cwd)
         if has_t3:
             signed = self._match_signed_pipeline(
                 command, components, session_id=session_id, agent_type=agent_type,
@@ -1720,6 +1723,29 @@ class BashValidator:
             tier=highest_tier,
             reason=f"All {len(components)} components validated",
             consumed_approval_id=consumed_approval_id,
+        )
+
+    @staticmethod
+    def _has_mutative_substitution_outside_components(
+        command: str, components: List[str], cwd: Optional[str],
+    ) -> bool:
+        """Whether the whole command runs a mutative substitution no component shows.
+
+        A split cuts a heredoc's body into lines read outside the heredoc, where
+        quotes quote; in the unquoted body they are plain text and
+        ``'$(rm -rf x)'`` runs. Bodies a component already shows were judged
+        there, in that component's folded cwd, and are not judged again here.
+        """
+        bodies, truncated = extract_substitutions_truncated(command, top_level_only=True)
+        if truncated:
+            return True
+        shown = {
+            body for comp in components
+            for body in extract_substitutions(comp, top_level_only=True)
+        }
+        return any(
+            detect_mutative_command(body, cwd=cwd).is_mutative
+            for body in bodies if body not in shown
         )
 
     def _match_signed_pipeline(
