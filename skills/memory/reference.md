@@ -31,9 +31,14 @@ curated row: `type=user` to `_gaia_user`, host-scoped to `_gaia_host`, the
 rest to the target, with the links whose endpoints land together; a link
 whose endpoints land in different scopes is dropped into the undo ledger.
 Episodes and the other history rows keep the source name and are read
-through the recorded alias, and `--workspace <source>` then resolves to the
-target. A name collision aborts the whole retire unless `--on-conflict
-memory=keep-target|keep-source` settles it; `--undo <ledger>` reverses it.
+through the recorded alias, and a reader's `--workspace <source>` then
+resolves to the target -- except `gaia scan`, which takes the name as given.
+The source keeps its `workspaces` row but releases its root, so a scan of the
+target's root adopts the repos that sat under it; re-running the retire
+releases a root an earlier retire left behind. A name collision aborts the
+whole retire unless `--on-conflict memory=keep-target|keep-source` settles it;
+`--undo <ledger>` reverses it, giving the root back while the source's own
+root is still empty.
 
 `memory.project_ref` (schema v25, scan-v2 SV1) is the stable anchor for
 this: it should hold the project's `project_identity` -- the same

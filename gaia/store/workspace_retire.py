@@ -513,7 +513,8 @@ def undo_retire(ledger_path: Path | str, *, dry_run: bool = False, db_path: Path
     """Put back what the retire recorded in ``ledger_path`` wrote.
 
     A row that has left the workspace the retire moved it to since then is
-    not pulled back; it is reported under ``diverged``. Rows written since the
+    not pulled back; it is reported under ``diverged``, as is a released root
+    when the source's own ``root_path`` is no longer empty. Rows written since the
     retire are never deleted: they stay where they are, or, when they conflict
     with a row the undo would put back (same key, or a child of a moved
     project), the undo is refused whole.
