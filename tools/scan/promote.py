@@ -275,6 +275,9 @@ def _match_slug(
     same remote share that remote on both entries, so once each has its own
     slug, matching the survivor's own row must still find its own exact-path
     entry rather than stopping at the first remote hit it meets along the way.
+    Last, an entry with neither ``local_path`` nor ``remote_url`` under the
+    slug the project's name produces is that project: it was declared before
+    any scan (a workflow, say), and nothing physical can contradict the name.
     Returns None when no entry corresponds -- the caller then creates a new
     slug rather than risk merging two distinct repos.
 
@@ -309,7 +312,39 @@ def _match_slug(
         e_remote = _normalize(entry.get("remote_url"))
         if e_remote and proj_remote and e_remote == proj_remote:
             return slug
+    if proj.get("name"):
+        name_slug = _slugify(proj["name"])
+        declared = dict(eligible).get(name_slug)
+        if declared is not None and not declared.get("local_path") and not declared.get("remote_url"):
+            return name_slug
     return None
+
+
+def _reclaim_parked_entries(result_map: dict) -> int:
+    """Move each project entry parked under the workspace key back onto its own slug.
+
+    An auto-conversion parks the whole old payload, so a slug-keyed entry that
+    rode along would otherwise hide its declared fields from every reader of
+    the project's entry. A key the live entry already holds wins. Returns the
+    number of entries moved.
+    """
+    from gaia.identity_shape import WORKSPACE_META_KEY, is_project_entry, is_reserved_slug
+
+    meta = result_map.get(WORKSPACE_META_KEY)
+    if not isinstance(meta, dict):
+        return 0
+    parked = [
+        slug for slug, value in meta.items()
+        if is_project_entry(value) and not is_reserved_slug(slug)
+        and isinstance(result_map.get(slug), dict)
+    ]
+    for slug in parked:
+        entry = result_map[slug]
+        for key, value in meta.pop(slug).items():
+            entry.setdefault(key, value)
+    if parked and not meta:
+        del result_map[WORKSPACE_META_KEY]
+    return len(parked)
 
 
 def _apply_scan_owned(entry: dict, proj: dict) -> bool:
@@ -420,10 +455,12 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
                 ),
             })
         claimed.add(slug)
+    reclaimed = _reclaim_parked_entries(result)
     marked = _mark_missing(result, list(missing))
     return result, {
         "added_entries": added,
         "refreshed_entries": refreshed,
+        "reclaimed_entries": reclaimed,
         "marked_missing_entries": marked,
         "collisions": collisions,
     }
@@ -441,6 +478,7 @@ def _merge_flat(existing: dict, proj: dict) -> tuple[dict, dict]:
     return result, {
         "added_entries": 0,
         "refreshed_entries": refreshed,
+        "reclaimed_entries": 0,
         "marked_missing_entries": 0,
         "collisions": [],
     }
@@ -567,6 +605,7 @@ def _stats_changed(stats: Optional[dict]) -> bool:
     return (
         stats["added_entries"] > 0
         or stats["refreshed_entries"] > 0
+        or stats["reclaimed_entries"] > 0
         or stats["marked_missing_entries"] > 0
     )
 

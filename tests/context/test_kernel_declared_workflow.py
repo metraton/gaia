@@ -126,3 +126,18 @@ def test_only_the_project_that_declared_its_workflow_carries_it_and_a_rescan_kee
 
     assert len(beta) == len(alpha) - 1
     assert not any(value in line for line in beta for value in DECLARED.values())
+
+
+def test_a_workflow_declared_before_the_first_scan_reaches_the_kernel(db, tmp_path):
+    declared = apply_update(
+        {"contract": "project_identity", "payload": {"alpha": {"workflow": DECLARED}}},
+        "gaia-operator", workspace=WORKSPACE, db_path=db,
+    )
+    assert declared["success"], declared
+
+    _scan(db, tmp_path, "alpha", remote="git@github.com:acme/alpha.git")
+    _scan(db, tmp_path, "beta", remote="git@github.com:acme/beta.git")
+
+    alpha = _contract_lines(db, "alpha")
+    project_at = next(i for i, line in enumerate(alpha) if line.startswith("project: alpha"))
+    assert all(value in alpha[project_at + 1] for value in DECLARED.values())

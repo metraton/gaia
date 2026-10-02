@@ -501,6 +501,43 @@ def test_flat_multi_conversion_preserves_workspace_metadata(tmp_db):
     assert meta["_source"] == "hand-authored"
 
 
+def test_entry_holding_only_a_declared_workflow_is_the_scanned_project(tmp_db):
+    from tools.scan.promote import promote_workspace
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    ws = "declared-first"
+    _write_contract(tmp_db, ws, {"gaia": {"workflow": "pull request into feat/x"}})
+    _seed_project(tmp_db, ws, "gaia", path="/abs/gaia", identity="/abs/gaia/.git")
+    _seed_project(tmp_db, ws, "other", path="/abs/other", identity="/abs/other/.git")
+
+    promote_workspace(ws, db_path=tmp_db, apply=True)
+    payload = _read_contract(tmp_db, ws)
+
+    assert payload["gaia"]["workflow"] == "pull request into feat/x"
+    assert payload["gaia"]["local_path"] == "/abs/gaia"
+    assert payload["gaia"]["name"] == "gaia"
+    assert sorted(payload) == ["gaia", "other"]
+    assert WORKSPACE_META_KEY not in payload
+
+
+def test_rescan_reclaims_a_project_entry_parked_under_the_workspace_key(tmp_db):
+    from tools.scan.promote import promote_workspace
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    ws = "parked"
+    _write_contract(tmp_db, ws, {
+        WORKSPACE_META_KEY: {"gaia": {"workflow": "pull request into feat/x"}},
+        "gaia": {"name": "gaia", "local_path": "/abs/gaia"},
+    })
+    _seed_project(tmp_db, ws, "gaia", path="/abs/gaia", identity="/abs/gaia/.git")
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    payload = _read_contract(tmp_db, ws)
+
+    assert rep["outcome"] == "applied"
+    assert list(payload) == ["gaia"]
+    assert payload["gaia"]["workflow"] == "pull request into feat/x"
+    assert payload["gaia"]["local_path"] == "/abs/gaia"
+
+
 def test_scanner_shape_single_project_not_flat_refreshed(tmp_db):
     """A scanner (workspace_repos) shape must never go through _merge_flat,
     which would inject top-level scan-owned keys and corrupt it. It is

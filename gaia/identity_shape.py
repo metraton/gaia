@@ -62,10 +62,20 @@ MISSING_MARK_KEY = "missing_since"
 # an entry without it declares nothing, and nothing is inferred in its place.
 DECLARED_WORKFLOW_KEY = "workflow"
 
+# An entry holding only an agent-declared workflow is still a project entry:
+# without it here, such a payload classified flat and the first scan parked it
+# under WORKSPACE_META_KEY, out of reach of the kernel.
+_PROJECT_ENTRY_KEYS = ("local_path", "name", DECLARED_WORKFLOW_KEY)
+
 
 def is_reserved_slug(slug: str) -> bool:
     """True when a map key is a reserved slot, not a project entry."""
     return isinstance(slug, str) and slug.startswith("_")
+
+
+def is_project_entry(value) -> bool:
+    """True when ``value`` is a dict carrying a key only a project entry holds."""
+    return isinstance(value, dict) and any(key in value for key in _PROJECT_ENTRY_KEYS)
 
 
 def classify_identity_shape(payload: Optional[dict]) -> str:
@@ -82,11 +92,7 @@ def classify_identity_shape(payload: Optional[dict]) -> str:
     is_map = (
         "name" not in payload
         and all(isinstance(v, dict) for v in payload.values())
-        and any(
-            ("local_path" in v or "name" in v)
-            for v in payload.values()
-            if isinstance(v, dict)
-        )
+        and any(is_project_entry(v) for v in payload.values())
     )
     if is_map:
         return "map"
