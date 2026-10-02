@@ -141,7 +141,7 @@ Gaia is installed once. That one install, and its one database at `~/.gaia/gaia.
 A workspace exists only when you declare it: a name and the folder it covers. Installing Gaia, opening a session or scanning never creates one. Declare it, then let Gaia find its projects:
 
 ```
-gaia workspace declare <name> <path>     # e.g. gaia workspace declare me ~/ws/me
+gaia workspace declare <name> <path>     # e.g. gaia workspace declare personal ~/code/personal
 gaia scan --workspace <name> <path>      # finds the projects inside it
 ```
 
@@ -155,12 +155,12 @@ Declare one with: gaia workspace declare <name> <path>
 Inside a workspace, four rules decide what Gaia sees:
 
 ```
-~/ws/                      workspace "ws"
-├── tools/                 project of "ws", no group
-├── clients/acme/api/      project of "ws", group "clients/acme"
+~/code/                    workspace "code"
+├── tools/                 project of "code", no group
+├── clients/acme/api/      project of "code", group "clients/acme"
 ├── notes/                 not a project: no git
-└── me/                    workspace "me", declared inside "ws"
-    └── gaia/              project of "me", not of "ws"
+└── personal/              workspace "personal", declared inside "code"
+    └── blog/              project of "personal", not of "code"
 ```
 
 - **A project is a git repository**: any folder holding `.git`. A folder without git is not a project.
@@ -238,4 +238,4 @@ Each folder with a README explains what it is wired to and what breaks if you ch
 
 ## License and ownership
 
-MIT, see [LICENSE](./LICENSE). Written and maintained by Jorge Aguilar; issues and questions go to [GitHub Issues](https://github.com/metraton/gaia/issues).
+MIT, see [LICENSE](./LICENSE). Created and maintained by Jorge Aguilar. Bugs and feature requests: [GitHub Issues](https://github.com/metraton/gaia/issues). Questions or contact: a GitHub direct message to [@metraton](https://github.com/metraton) or LinkedIn, linked from that GitHub profile.

@@ -16,7 +16,7 @@ gaia doctor --workspace <dev-install-folder>    # Install provenance: one line p
 ```
 `gaia dev` (`bin/cli/dev.py`) is what the manual sequence below collapses into. It runs `npm pack` (via the shared `_pack_helpers.pack_tarball` primitive) against the chosen source tree and serves that tarball through the channel. `npm` installs it into the install folder's `node_modules` (npm or pnpm, auto-detected from lockfile/workspace markers) and runs the freshly-installed copy's own `gaia install` for that channel; `opencode` does the same and wires OpenCode; `plugin` extracts it into a stable per-install-folder directory that is the local marketplace `gaia-dev`, installs `gaia@gaia-dev` at local scope and disables `gaia@gaia-marketplace` in that install folder (two enabled copies would register every `gaia:*` skill and every hook twice). The channel is required and there is no `all`: without `--channel` the command fails listing the three. `npm` and `plugin` refuse each other in one install folder, naming the channel found and the command that removes it; `opencode` joins either. There is no source-linking mode: the install folder, its `.claude/`, and every global alias only ever depend on the packed tarball. The folder that runs the published version (`<released-install-folder>`) is never a `gaia dev` target. Other flags: `--host` (alias of `--channel`), `--pack-dest <dir>`, `--quiet`, `--verbose` -- see `gaia dev --help`.
 
-`gaia dev` is **T3** (it installs into a workspace) and will block for approval before it runs; the `gaia` launcher and `python3 <path>/bin/gaia dev` classify identically. It runs **no tests** (the fast loop stays cheap; tests are Layer 2/3 + CI) and prints a **restart notice** on success -- restart Claude Code before testing, since the harness pins hook commands at session start (see `SKILL.md` -> "Reloading a change").
+`gaia dev` is **T3** (it installs into an install folder) and will block for approval before it runs; the `gaia` launcher and `python3 <path>/bin/gaia dev` classify identically. It runs **no tests** (the fast loop stays cheap; tests are Layer 2/3 + CI) and prints a **restart notice** on success -- restart Claude Code before testing, since the harness pins hook commands at session start (see `SKILL.md` -> "Reloading a change").
 
 **What `gaia dev` wraps** (for diagnosing which step failed, or working entirely by hand):
 
@@ -36,12 +36,12 @@ Making `gaia` itself available globally from source is a separate concern from w
 cd <gaia-source-checkout>
 npm run gaia:install-local -- --workspace <TARGET>
 ```
-`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. `gaia dev` auto-detects npm vs pnpm from the target workspace, so it covers this case too; use the raw npm script only when diagnosing.
+`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. `gaia dev` auto-detects npm vs pnpm from the target install folder, so it covers this case too; use the raw npm script only when diagnosing.
 
 **fresh (wipe install metadata first):**
 Append `--fresh` to the `validate-sandbox.sh` form, or manually clear `node_modules/ package.json package-lock.json` (or the pnpm equivalents) in `<TARGET>` before reinstalling. Use when a prior install left state you want gone.
 
-**Always pass `--workspace` when invoking from inside the gaia repo.** The self-referencing `node_modules/@jaguilar87/gaia/` entry tricks the workspace auto-detector; `bin/validate-sandbox.sh::is_gaia_repo_root` guards against it, but explicit is safest:
+**Always pass `--workspace` when invoking from inside the gaia repo.** The self-referencing `node_modules/@jaguilar87/gaia/` entry tricks the install-folder auto-detector; `bin/validate-sandbox.sh::is_gaia_repo_root` guards against it, but explicit is safest:
 ```
 cd <gaia-source-checkout>
 npm pack
@@ -60,13 +60,13 @@ bash bin/validate-sandbox.sh \
 
 Scanning is NOT part of install. `gaia scan` is a separate, on-demand flow that populates project context in the DB; it never installs or symlinks.
 
-**DB bootstrap without `gaia install`:** the very first `gaia` CLI call in any workspace lazily creates `~/.gaia/gaia.db` (`_ensure_db_bootstrapped` in `bin/gaia`) -- so a plain `pnpm add` followed by any `gaia` command has a DB even before the explicit wiring. The explicit `gaia install` is what wires the *workspace* (`.claude/` symlinks, settings, registry).
+**DB bootstrap without `gaia install`:** the very first `gaia` CLI call in any folder lazily creates `~/.gaia/gaia.db` (`_ensure_db_bootstrapped` in `bin/gaia`) -- so a plain `pnpm add` followed by any `gaia` command has a DB even before the explicit wiring. The explicit `gaia install` is what wires the *install folder* (`.claude/` symlinks, settings, registry); it declares no workspace.
 
 **Revert:** reinstall a published version over the same install folder (`pnpm add @jaguilar87/gaia@rc` or `@latest`); the next install wins. `--fresh` is the more aggressive lever.
 
 **Picking up the change:** see `SKILL.md` -> "Reloading a change". After `gaia dev` re-installs, **restart Claude Code** -- the harness pins hook commands at session start and does not hot-reload, so the open session keeps running the OLD hooks until restarted (`gaia dev` prints this notice). Plugin-surface skill/agent changes need `/reload-plugins`; a slash-command change needs a full restart.
 
-Under `--target local` the settings-preservation check is **skipped** (no pre-install snapshot of the real workspace is possible); the other checks run.
+Under `--target local` the settings-preservation check is **skipped** (no pre-install snapshot of the real install folder is possible); the other checks run.
 
 ## Layer 2 runbook -- pre-release (confidence gate, every channel, local only)
 
@@ -171,7 +171,7 @@ gaia release publish --local-suite [version] # run npm test in step 2 even when 
 7. `publish.yml` triggers automatically (as a consequence of step 6) and publishes with `--tag <auto-detected>`.
 8. Verify from the registry and update every install folder on every channel: `gaia-verify registry` (`gaia:verify-install:rc` / `:latest`), then update EACH install folder. **A publish updates no install folder on its own** -- a `file:` install keeps the dev-pack tarball and a plugin install keeps its version. Per channel: package, `pnpm add @jaguilar87/gaia@<dist-tag>` (or `npm install`) + `npx gaia update`, which re-wires every channel the install folder's manifest recorded, OpenCode included, then restart Claude Code or OpenCode; plugin, `claude plugin marketplace update gaia-marketplace` + `claude plugin update gaia@gaia-marketplace`, then restart -- it updates only when the fetched `plugin.json` version differs from the installed one. Then `gaia-verify live`. To find WHICH local install folders are still on stale code, run `gaia doctor` in each: its **Install provenance** check (order 57) detects a `file:` install and reports whether it is fresh vs source, hinting `gaia dev --workspace <install-folder> --channel <channel>` to fix. (There is no bulk `sync-local` command -- that action-at-a-distance was removed in favor of per-install-folder `gaia dev` + the `doctor` diagnostic.) The release is done when the published version installs and validates in every target -- not at the tag.
 
-**Why the reinstall is mandatory, not optional:** `gaia dev`'s content-addressed tarball naming (`jaguilar87-gaia-<version>+<sha8>.tgz`) guarantees a *changed* build gets a fresh pnpm store key, but only when `gaia dev` is actually re-run. A publish alone leaves the local `file:` install frozen at whatever it last packed. Skipping step 8's reinstall is exactly how a fixed release keeps exhibiting the old behaviour in a local workspace.
+**Why the reinstall is mandatory, not optional:** `gaia dev`'s content-addressed tarball naming (`jaguilar87-gaia-<version>+<sha8>.tgz`) guarantees a *changed* build gets a fresh pnpm store key, but only when `gaia dev` is actually re-run. A publish alone leaves the local `file:` install frozen at whatever it last packed. Skipping step 8's reinstall is exactly how a fixed release keeps exhibiting the old behaviour in a local install folder.
 
 ### Reconciling a diverged remote -- merge, never rebase; never move a tag
 
@@ -187,7 +187,7 @@ gaia release publish --local-suite [version] # run npm test in step 2 even when 
 
 **From rc to stable:** merge the accumulating branch to `main`, then `gaia release publish X.Y.Z` from `main`. Do not move an rc onto `latest` with `npm dist-tag`: its version still carries `-rc.N` on every channel, and the plugin's tag would not be on `main`.
 
-**Uninstall order:** `npx gaia uninstall` runs **before** `npm uninstall @jaguilar87/gaia` / `pnpm remove @jaguilar87/gaia`. npm >= 7 does not run the package's `preuninstall` script (and pnpm skips lifecycle scripts by default), so `gaia uninstall --preuninstall` never fires on its own; removing the package first leaves the workspace wiring behind with no CLI to revert it. See `SKILL.md` -> "Uninstalling, per channel".
+**Uninstall order:** `npx gaia uninstall` runs **before** `npm uninstall @jaguilar87/gaia` / `pnpm remove @jaguilar87/gaia`. npm >= 7 does not run the package's `preuninstall` script (and pnpm skips lifecycle scripts by default), so `gaia uninstall --preuninstall` never fires on its own; removing the package first leaves the install folder's wiring behind with no CLI to revert it. See `SKILL.md` -> "Uninstalling, per channel".
 
 ## Diagnostic Guide
 
@@ -197,7 +197,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 |---|---|---|
 | Install reports PASS, `~/.gaia/gaia.db` migrated, but `.claude/hooks` symlink still points to an old version after reload | The install-folder detector matched the gaia repo itself (self-referencing `node_modules/@jaguilar87/gaia/`) instead of the consumer install folder. Symlinks got wired to the repo's `node_modules`, not the consumer install folder's. | Always pass `--workspace <dev-install-folder>` explicitly. `bin/validate-sandbox.sh::is_gaia_repo_root` guards this, but explicit `--workspace` is safest. Verify with `readlink <dev-install-folder>/.claude/hooks` -- it must resolve under the install folder, not the repo. |
 | `.claude/` not wired after install | `gaia install` not run, or it exited non-zero | `cat ~/.gaia/last-install-error.json` (written by `gaia install` on failure). Re-run `gaia install --channel npm --workspace <path>`. If it persists, file a bug. |
-| `gaia doctor` walks up to the user `.claude/` instead of the workspace | Workspace not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --channel npm --workspace <path>`. |
+| `gaia doctor` walks up to the user `.claude/` instead of the install folder | Install folder not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --channel npm --workspace <path>`. |
 | DB missing / `no such table` on first use | Lazy bootstrap did not run (e.g. `gaia` never invoked yet) | Run any `gaia` command (it triggers `_ensure_db_bootstrapped`), or `gaia update` for the full seed. There is no postinstall to "re-run". |
 | Plugin mounts but hooks never fire | Generated `hooks/hooks.json` broken at the package root, or CC did not reload | Regenerate (`npm run generate:plugin-root`), re-run `npm run gaia:plugin-dryrun`, and `/reload-plugins`. Inspect the root `hooks/hooks.json` (the canonical hook source); `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block. |
 | `bootstrap exited 1: table projects has no column named identity` | Schema/bootstrap drift (old seed SQL) | Update to a build whose seed matches the current schema. |
@@ -252,6 +252,6 @@ Publishing authenticates by npm trusted publishing (OIDC): npm exchanges the job
 
 | User says | Path used |
 |-----------|-----------|
-| "here" / "this session" / "this project" / live | Nearest `.claude/` ancestor of cwd with a Gaia marker, falling back to `$HOME/ws/me/` if present |
+| "here" / "this session" / "this project" / live | Nearest `.claude/` ancestor of cwd with a Gaia marker, falling back to `$GAIA_WORKSPACE_PATH` when set; with neither, `bin/validate-sandbox.sh` fails and asks for `--workspace <install-folder>` |
 | "in project X" / specific path | Pass `--workspace /absolute/path/to/project` to `bin/validate-sandbox.sh` (bypasses auto-detect) |
 | Nothing specified (pre-release sandbox) | `/tmp/gaia-sandbox-<unix-ts>-<pid>/` (auto-cleanup unless `--stay`) |

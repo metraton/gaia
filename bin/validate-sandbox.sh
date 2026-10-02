@@ -18,7 +18,8 @@
 #     passed, that path is used as-is. Otherwise auto-detection walks up
 #     from cwd looking for a .claude/ with a Gaia instance marker
 #     (.claude/hooks/, .claude/agents/, or node_modules/@jaguilar87/gaia/),
-#     falling back to $HOME/ws/me/ if present. NO cleanup -- the install
+#     falling back to $GAIA_WORKSPACE_PATH when set; with neither it exits 1
+#     and asks for --workspace. NO cleanup -- the install
 #     IS the installation. A fresh tarball install avoids per-path approval
 #     prompts for edited files during a session.
 #     There is no npm postinstall hook (bootstrap is lazy, see
@@ -61,8 +62,10 @@ Options:
                       or auto-detect from cwd).
                       Local mode skips the settings-preservation check
                       (no pre-install snapshot of the real workspace).
-  --workspace <path>  Explicit target directory for --target local.
+  --workspace <path>  Explicit install folder for --target local.
                       Bypasses auto-detection. Ignored with --target sandbox.
+                      Without it, local mode walks up from cwd, then uses
+                      $GAIA_WORKSPACE_PATH; with neither it fails.
   --fresh             Before `npm install`, wipe node_modules/, package.json,
                       and package-lock.json from the workspace. Forces a
                       clean install — useful when a prior install left
@@ -197,9 +200,9 @@ detect_local_workspace() {
     fi
     dir="$(dirname "${dir}")"
   done
-  # Priority 2: fallback to $HOME/ws/me if it exists and has .claude/.
-  if [[ -d "${HOME}/ws/me/.claude" ]]; then
-    echo "${HOME}/ws/me"
+  # Priority 2: the install folder named by GAIA_WORKSPACE_PATH, when it exists.
+  if [[ -n "${GAIA_WORKSPACE_PATH:-}" && -d "${GAIA_WORKSPACE_PATH}" ]]; then
+    echo "${GAIA_WORKSPACE_PATH}"
     return 0
   fi
   return 1
@@ -288,11 +291,11 @@ else
     WORKSPACE="${WORKSPACE_OVERRIDE}"
     echo "[local] target workspace (override): ${WORKSPACE}"
   elif ! WORKSPACE="$(detect_local_workspace)"; then
-    echo "FATAL: --target local could not locate a workspace." >&2
+    echo "FATAL: --target local could not locate an install folder." >&2
     echo "       Walked up from cwd looking for a .claude/ with a Gaia marker" >&2
     echo "       (hooks/, agents/, or node_modules/@jaguilar87/gaia/)," >&2
-    echo "       fallback \$HOME/ws/me/.claude/ also absent." >&2
-    echo "       Pass --workspace <path> to override." >&2
+    echo "       and GAIA_WORKSPACE_PATH is unset or not a directory." >&2
+    echo "       Pass --workspace <install-folder>, or set GAIA_WORKSPACE_PATH." >&2
     exit 1
   else
     echo "[local] target workspace: ${WORKSPACE}"

@@ -90,7 +90,7 @@ Without it subagents run in the foreground and resuming a subagent by `task_id` 
 Installing wires the host; it declares no workspace and scans nothing, and neither does the plugin's first session. A workspace exists only when you declare it, and its projects are found by the scanner:
 
 ```bash
-npx gaia workspace declare <name> <path>            # e.g. npx gaia workspace declare me ~/ws/me
+npx gaia workspace declare <name> <path>            # e.g. npx gaia workspace declare personal ~/code/personal
 npx gaia scan --workspace <name> <path>             # <path> defaults to the current directory
 npx gaia scan --workspace <name> <path> --dry-run   # reports the classification, writes nothing
 ```
@@ -447,9 +447,9 @@ Gaia is designed with these principles:
 
 ### Resources
 
-- **Documentation:** Inside `.claude/*/README.md`
+- **Documentation:** [README.md](./README.md), and the README of each folder: [`agents/`](./agents/README.md), [`skills/`](./skills/README.md), [`hooks/`](./hooks/README.md), [`gaia/`](./gaia/README.md), [`config/`](./config/README.md), [`build/`](./build/README.md), [`bin/`](./bin/README.md), [`tests/`](./tests/README.md)
 - **Issues:** https://github.com/metraton/gaia/issues
-- **Email:** jorge.aguilar87@gmail.com
+- **Contact:** GitHub [@metraton](https://github.com/metraton) or LinkedIn (linked from the GitHub profile)
 
 ### Frequently Asked Questions
 
@@ -466,4 +466,4 @@ A: `npm install @jaguilar87/gaia@latest` then `npx gaia update` - symlinks point
 
 **Version:** the current release (`version` in `package.json`)
 **Last updated:** 2026-09-24
-**Maintained by:** Jorge Aguilar + Gaia
+**Maintained by:** Jorge Aguilar

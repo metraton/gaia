@@ -344,7 +344,7 @@ npm install @jaguilar87/gaia
 cd /tmp
 mkdir test-project && cd test-project
 npm init -y
-npm install ~/ws/me/gaia            # installs from local source
+npm install <gaia-source-checkout>  # installs from local source
 gaia doctor                          # verify installation
 npm test                             # run L1 suite from the source tree
 ```
