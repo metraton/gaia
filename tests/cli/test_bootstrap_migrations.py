@@ -551,5 +551,115 @@ class TestDdlCheckParser(unittest.TestCase):
         )
 
 
+_HARNESS = "/w/harness/Auto-claude-code-research-in-sleep"
+_DUPLICATE = "/w/github-repos/_duplicados/auto-claude-sleep"
+_REMOTE_IDENTITY = "github.com/metraton/auto-claude-code-research-in-sleep"
+
+
+def _apply_v64(db: Path) -> None:
+    """Run v63_to_v64.sql the way the bootstrap does: statement by statement, one transaction."""
+    sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+    import migration_guard
+
+    con = sqlite3.connect(str(db))
+    con.isolation_level = None
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        sql = (_MIGRATIONS_DIR / "v63_to_v64.sql").read_text(encoding="utf-8")
+        for statement in migration_guard.split_statements(sql):
+            con.execute(statement)
+        con.execute("COMMIT")
+    finally:
+        con.close()
+
+
+@pytest.fixture()
+def duplicate_clone_pair(bootstrapped_db_template, tmp_path):
+    """A v63 database holding the real duplicate pair as two rows keyed by git-common-dir."""
+    tmp_db = copy_bootstrapped_db(bootstrapped_db_template, tmp_path / "gaia.db")
+    con = sqlite3.connect(str(tmp_db))
+    try:
+        con.executemany(
+            "INSERT INTO projects (workspace, name, remote_url, path, status, "
+            "project_identity, description) VALUES ('ws', ?, ?, ?, 'active', ?, ?)",
+            [
+                ("auto-claude-sleep",
+                 "git@github.com:Metraton/Auto-claude-code-research-in-sleep.git",
+                 _DUPLICATE, f"{_DUPLICATE}/.git", None),
+                ("Auto-claude-code-research-in-sleep",
+                 "https://github.com/metraton/auto-claude-code-research-in-sleep",
+                 _HARNESS, f"{_HARNESS}/.git", "research harness"),
+                ("local-only", None, "/w/local-only", "/w/local-only/.git", None),
+            ],
+        )
+        con.execute(
+            "INSERT INTO apps (workspace, project, name) VALUES ('ws', 'auto-claude-sleep', 'api')"
+        )
+        con.executemany(
+            "INSERT INTO memory (workspace, name, type, body, project_ref, initiative) "
+            "VALUES ('ws', ?, 'project', 'note', ?, ?)",
+            [
+                ("note-duplicate", f"{_DUPLICATE}/.git", "auto_claude_sleep"),
+                ("note-harness", f"{_HARNESS}/.git", "auto_claude_code_research_in_sleep"),
+                ("note-unscoped", f"{_DUPLICATE}/.git", None),
+                ("note-local", "/w/local-only/.git", "local_only"),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+    return tmp_db
+
+
+def _query(db: Path, sql: str) -> list[tuple]:
+    con = sqlite3.connect(str(db))
+    try:
+        return con.execute(sql).fetchall()
+    finally:
+        con.close()
+
+
+def test_v64_folds_the_duplicate_clone_pair_into_one_project_with_a_copy(duplicate_clone_pair):
+    _apply_v64(duplicate_clone_pair)
+
+    assert _query(
+        duplicate_clone_pair,
+        "SELECT name, project_identity, description FROM projects ORDER BY name",
+    ) == [
+        ("Auto-claude-code-research-in-sleep", _REMOTE_IDENTITY, "research harness"),
+        ("local-only", "/w/local-only/.git", None),
+    ]
+    assert _query(
+        duplicate_clone_pair, "SELECT project, scope, key FROM project_facets"
+    ) == [("Auto-claude-code-research-in-sleep", "copy", _DUPLICATE)]
+    assert _query(duplicate_clone_pair, "SELECT COUNT(*) FROM apps") == [(0,)]
+
+
+def test_v64_keeps_every_memory_note_attached_to_its_project(duplicate_clone_pair):
+    from gaia.store.writer import canonical_project_key, initiative_from_project_ref
+
+    _apply_v64(duplicate_clone_pair)
+
+    notes = _query(
+        duplicate_clone_pair,
+        "SELECT name, project_ref, initiative FROM memory ORDER BY name",
+    )
+    assert [(name, ref) for name, ref, _ in notes] == [
+        ("note-duplicate", _REMOTE_IDENTITY),
+        ("note-harness", _REMOTE_IDENTITY),
+        ("note-local", "/w/local-only/.git"),
+        ("note-unscoped", _REMOTE_IDENTITY),
+    ]
+    project_key = initiative_from_project_ref(_REMOTE_IDENTITY)
+    assert {
+        name: canonical_project_key(ref, initiative) for name, ref, initiative in notes
+    } == {
+        "note-duplicate": project_key,
+        "note-harness": project_key,
+        "note-local": "local_only",
+        "note-unscoped": project_key,
+    }
+
+
 if __name__ == "__main__":
     unittest.main()

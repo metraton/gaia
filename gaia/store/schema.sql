@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS projects (
     path             TEXT,           -- absolute path on disk to the project root; scanner-owned (findability: project -> path + workspace)
     status           TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete)
     missing_since    TEXT,           -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned
-    project_identity TEXT,           -- stable, vantage-independent project identity (git-common-dir realpath > normalized remote > realpath path); scanner-owned. NULL allowed for legacy/uninitialized rows. The partial unique index idx_projects_identity collapses the SAME physical repo scanned from different workspaces/roots into ONE row. See workspace-identity brief M1-T2.
+    project_identity TEXT,           -- the project's identity (normalized remote host/owner/repo > git-common-dir realpath > realpath path, v64); a second clone of the remote is a 'copy' facet of this row, not a row; scanner-owned. NULL allowed for legacy/uninitialized rows. The partial unique index idx_projects_identity collapses the SAME physical repo scanned from different workspaces/roots into ONE row. See workspace-identity brief M1-T2.
     description      TEXT,           -- human-authored summary/purpose of the project; agent-owned. Never written by the scan path (gaia.store.writer._PROJECTS_AGENT_OWNED); survives any number of scanner rescans unchanged. Added v23 (workspace-identity brief M3-T9).
     superseded_by    TEXT,           -- points to the successor project_identity after a 'movido' adjudication; NULL until then. Column added v25 (scan-v2 SV1); populated in SV4.
     PRIMARY KEY (workspace, name),

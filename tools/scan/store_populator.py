@@ -44,50 +44,33 @@ from tools.scan.role_detector import detect_role
 # ---------------------------------------------------------------------------
 
 def resolve_project_identity(project_path: Path) -> str:
-    """Resolve a STABLE, vantage-independent identity for a physical project.
+    """Resolve the identity that names one project wherever its clones sit.
 
-    Unlike :func:`resolve_identity` (which derives a *workspace* identity from
-    the git remote and is intentionally vantage-independent at the WORKSPACE
-    level), this resolves a *project* identity that pins the SAME physical repo
-    to one value regardless of which root it was scanned from -- so a repo
-    scanned from the workspace root and again from its own subdirectory
-    collapses to a single ``projects`` row instead of duplicating.
+    First non-empty wins:
 
-    Resolution order (first non-empty wins):
+      1. Normalized ``origin`` remote (``host/owner/repo``,
+         :func:`gaia.project._normalize_remote`). It survives moving the
+         folder, and every clone of one remote resolves to it, so a second
+         clone is a copy of the project rather than another project.
+      2. ``git rev-parse --git-common-dir`` (realpath), for a repo with no
+         remote. Identical from the repo root, a subdirectory and a linked
+         worktree, but it changes when the folder moves.
+      3. ``realpath`` of ``project_path``, for a folder with no git metadata.
 
-      1. ``git rev-parse --git-common-dir`` (realpath). The shared ``.git``
-         directory is identical from the repo root, any nested subdir, and any
-         linked worktree -- the strongest vantage-independent fingerprint.
-      2. Normalized git remote (``host/owner/repo``) via
-         :func:`gaia.project._normalize_remote`. Survives fresh clones of the
-         same remote on different machines/paths.
-      3. ``realpath`` of ``project_path``. Last-resort fallback for a repo with
-         no usable git metadata and no remote: the canonical on-disk path is at
-         least stable across symlinked vantages of the same directory.
-
-    The function never raises and never returns an empty string.
-
-    Args:
-        project_path: Absolute path to the project root being populated.
-
-    Returns:
-        A stable identity string. Never empty, never raises.
+    Never raises and never returns an empty string.
     """
     from gaia.project import git_common_dir, _normalize_remote
 
-    # 1. git-common-dir (realpath) -- strongest vantage-independent fingerprint.
-    common = git_common_dir(project_path)
-    if common:
-        return common
-
-    # 2. Normalized remote.
     remote = _git_remote_origin(project_path)
     if remote:
         normalized = _normalize_remote(remote)
         if normalized:
             return normalized
 
-    # 3. Realpath of the project path.
+    common = git_common_dir(project_path)
+    if common:
+        return common
+
     try:
         return str(Path(project_path).resolve())
     except (OSError, RuntimeError):
@@ -1141,6 +1124,30 @@ def worktree_facets(project_path: Path) -> list[dict]:
     return facets
 
 
+def copy_facet(copy_path: Path) -> dict:
+    """The ``copy``-scope facet recording *copy_path* as a second clone of a project.
+
+    A second clone of a project's remote is not a project of its own: like a
+    linked worktree it is recorded on the project's row, ``key`` = the clone's
+    absolute path and ``value`` = the branch it has checked out
+    (``"detached"`` when it holds none).
+    """
+    import shutil
+    import subprocess
+
+    branch = None
+    if shutil.which("git") is not None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(copy_path), "symbolic-ref", "--short", "-q", "HEAD"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            branch = (result.stdout or "").strip() if result.returncode == 0 else None
+        except (subprocess.TimeoutExpired, OSError):
+            branch = None
+    return {"scope": "copy", "key": str(copy_path), "value": branch or "detached"}
+
+
 def _platform_from_remote(url: str | None) -> str | None:
     if not url:
         return None
@@ -1184,8 +1191,9 @@ def _list_repos(root: Path) -> list[Path]:
     is a repo and is never descended into. A linked worktree is not a repo
     (:func:`is_linked_worktree`); it is recorded as a ``worktree`` facet of
     its base repo instead. Every other folder is walked at any depth, dot-folders
-    included, except the names in ``_REPO_WALK_SKIP`` and symlinked folders.
-    When *root* is itself a repo it is the only one returned.
+    included, except the names in ``_REPO_WALK_SKIP``, symlinked folders and
+    build trees (``_BUILD_TREE_MARKERS``). When *root* is itself a repo it is
+    the only one returned.
     """
     if not root.is_dir():
         return []
@@ -1204,8 +1212,9 @@ def group_path(repo: Path, workspace_root: Path) -> str | None:
     return "/".join(repo.parent.relative_to(workspace_root).parts) or None
 
 
-# Tool folders that sit beside repos. Build and cache folders need no entry:
-# they live inside repos, where the walk never goes.
+# Tool, environment and cache folders that sit beside repos and hold checkouts
+# nobody declared as projects (`.repo` is the `repo` tool's mirror of every
+# manifest project).
 _REPO_WALK_SKIP: frozenset[str] = frozenset({
     ".git",
     ".claude",
@@ -1216,8 +1225,22 @@ _REPO_WALK_SKIP: frozenset[str] = frozenset({
     ".worktrees",
     ".codex",
     ".agents",
+    ".repo",
+    ".venv",
+    ".tox",
+    ".cache",
     "node_modules",
 })
+
+# A build tree kept outside its source repo is recognised by the file its build
+# system writes at its top, whatever the folder is called: CMake fetches
+# dependencies as git checkouts under `_deps/`, BitBake unpacks recipes as git
+# checkouts under `tmp/work/`.
+_BUILD_TREE_MARKERS: tuple[str, ...] = ("CMakeCache.txt", "conf/bblayers.conf")
+
+
+def _is_build_tree(directory: Path) -> bool:
+    return any((directory / marker).is_file() for marker in _BUILD_TREE_MARKERS)
 
 
 def _is_installed_gaia_workspace(directory: Path) -> bool:
@@ -1274,7 +1297,7 @@ def _walk_for_repos(current: Path, repos: list[Path]) -> None:
         if (entry / ".git").exists():
             if not is_linked_worktree(entry):
                 repos.append(entry)
-        elif not entry.is_symlink():
+        elif not entry.is_symlink() and not _is_build_tree(entry):
             _walk_for_repos(entry, repos)
 
 

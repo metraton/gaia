@@ -286,7 +286,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 63
+EXPECTED_SCHEMA_VERSION = 64
 
 # Locations the doctor reads outside the workspace, module-level so tests can
 # redirect them to a tmp path.
@@ -1119,6 +1119,38 @@ def check_workspace_roots() -> dict:
         "; ".join(
             f"gaia scan <workspace root> --workspace {shlex.quote(name)}" for name in missing
         ),
+    )
+
+
+@register_check("Project copies", order=51)
+def check_project_copies() -> dict:
+    """Report every second clone of a project, recorded by the scan as a ``copy`` facet."""
+    from gaia.paths import db_path  # noqa: PLC0415
+
+    database = db_path()
+    if not database.is_file():
+        return _result("Project copies", "info", f"no DB at {database}")
+    try:
+        con = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            rows = con.execute(
+                "SELECT f.key, p.workspace, p.name, p.path FROM project_facets f "
+                "JOIN projects p ON p.workspace = f.workspace AND p.name = f.project "
+                "WHERE f.scope = 'copy' ORDER BY f.key"
+            ).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        return _result("Project copies", "info", f"could not read project copies: {exc}")
+
+    if not rows:
+        return _result("Project copies", "pass", "no project has a second clone")
+    return _result(
+        "Project copies",
+        "warning",
+        f"{len(rows)} second clone(s): "
+        + "; ".join(f"{copy} copies {ws}/{name} at {path}" for copy, ws, name, path in rows),
+        "remove the copy, or give it its own remote if it is a different project",
     )
 
 

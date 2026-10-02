@@ -22,7 +22,10 @@ PATH``; its name is never matched against path segments. The scan of workspace
                  ``node_modules``. The walk never enters a repo or follows a
                  symlinked folder (``store_populator._list_repos``).
   R5 reconcile = upsert keyed by ``project_identity``; soft-delete scoped to the
-                 ``(workspace, name)`` set discovered this run.
+                 ``(workspace, name)`` set discovered this run. A repo whose
+                 identity names a project already held by another live clone
+                 is a copy: a ``copy`` facet of that project and a
+                 ``repo_copy`` warning, never a row of its own.
   R6 output    = always structured data (:class:`ScanReport`), never a crash.
   R7 declared  = applying refuses a ``W`` that is not declared, and the scan
                  never writes a workspace root. A dry-run of an undeclared ``W``
@@ -42,6 +45,7 @@ from tools.scan.store_populator import (
     _git_remote_origin,
     _list_repos,
     _platform_from_remote,
+    copy_facet,
     group_path,
     resolve_project_identity,
 )
@@ -531,6 +535,118 @@ def _facet_target(
     return fallback_workspace, fallback_name
 
 
+def _project_row_by_identity(identity: Optional[str], db_path: Path | None) -> Optional[dict]:
+    if not identity or not _db_file_exists(db_path):
+        return None
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT workspace, name, path FROM projects WHERE project_identity = ?",
+            (identity,),
+        ).fetchone()
+    finally:
+        con.close()
+    return dict(row) if row is not None else None
+
+
+def _is_live_clone(path: Optional[str], identity: str) -> bool:
+    return bool(path) and Path(path).is_dir() and resolve_project_identity(Path(path)) == identity
+
+
+def _clone_preference(c: RepoClassification) -> tuple:
+    """Order new clones of one remote: the folder named like the remote, then the shallowest."""
+    remote_name = (c.project_identity or "").rsplit("/", 1)[-1]
+    return (c.repo.lower() != remote_name, len(Path(c.path).parts), c.path)
+
+
+def _split_copies(
+    classified: list[RepoClassification], db_path: Path | None
+) -> tuple[list[RepoClassification], dict[str, tuple[RepoClassification, dict]]]:
+    """Separate the clone that is each project from the clones that copy it.
+
+    The project's row keeps the clone it already records while that clone is
+    still on disk with the same identity; a recorded clone that is gone has
+    moved, and the preferred clone found now takes the row. Returns the project
+    clones in walk order and ``{copy path: (copy, {workspace, project, path})}``.
+    """
+    groups: dict[Optional[str], list[RepoClassification]] = {}
+    for c in classified:
+        groups.setdefault(c.project_identity, []).append(c)
+
+    copies: dict[str, tuple[RepoClassification, dict]] = {}
+    for identity, group in groups.items():
+        row = _project_row_by_identity(identity, db_path)
+        if row is not None and _is_live_clone(row["path"], identity):
+            canonical = next((c for c in group if c.path == row["path"]), None)
+            target = {"workspace": row["workspace"], "project": row["name"], "path": row["path"]}
+        else:
+            canonical = min(group, key=_clone_preference)
+            target = {
+                "workspace": canonical.workspace,
+                "project": canonical.project,
+                "path": canonical.path,
+            }
+        for c in group:
+            if c is not canonical:
+                copies[c.path] = (c, target)
+    return [c for c in classified if c.path not in copies], copies
+
+
+def _kept_copy_facets(
+    identity: Optional[str], seen_paths: set[str], db_path: Path | None
+) -> list[dict]:
+    """The project's recorded copies outside this walk that are still live clones of it."""
+    row = _project_row_by_identity(identity, db_path)
+    if row is None:
+        return []
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        keys = [
+            r["key"] for r in con.execute(
+                "SELECT key FROM project_facets "
+                "WHERE workspace = ? AND project = ? AND scope = 'copy'",
+                (row["workspace"], row["name"]),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+    return [
+        copy_facet(Path(key)) for key in keys
+        if key not in seen_paths and key != row["path"] and _is_live_clone(key, identity)
+    ]
+
+
+def _record_copy(
+    target: dict, copy: RepoClassification, *, agent: str, db_path: Path | None
+) -> None:
+    """Add a copy facet to a project row this walk did not reach, without pruning its facets."""
+    from gaia.store import bulk_upsert
+    from tools.scan.store_populator import _now_iso
+
+    bulk_upsert(
+        "project_facets", target["workspace"],
+        [{"project": target["project"], **copy_facet(Path(copy.path)), "scanner_ts": _now_iso()}],
+        agent, db_path=db_path,
+    )
+
+
+def _copy_warning(copy: RepoClassification, target: dict) -> dict:
+    return {
+        "kind": "repo_copy",
+        "repo": copy.repo,
+        "workspace": copy.workspace,
+        "path": copy.path,
+        "copy_of": target,
+        "message": (
+            f"repo {copy.repo!r} at {copy.path} is a second clone of project "
+            f"({target['workspace']!r}, {target['project']!r}) at {target['path']}; "
+            f"recorded as a copy of it, not as a project."
+        ),
+    }
+
+
 def scan(
     root: Path,
     W: str,
@@ -606,8 +722,10 @@ def scan(
     create_count = 0
     update_count = 0
 
-    for repo in repos:
-        c = classify_repo(repo, W, workspace_root)
+    project_clones, copies = _split_copies(
+        [classify_repo(repo, W, workspace_root) for repo in repos], db_path
+    )
+    for c in project_clones:
         report.resolved_workspace = c.workspace
 
         ws_claims = claimed_by_ws.setdefault(c.workspace, {})
@@ -649,6 +767,11 @@ def scan(
         # projects table (a worktree is a view of this repo, not a project) but
         # which must still be placed -- as rows derived from this repo.
         facets = stack_output_to_facets(sections) + worktree_facets(Path(c.path))
+        facets += [
+            copy_facet(Path(path))
+            for path, (_, target) in copies.items() if target["path"] == c.path
+        ]
+        facets += _kept_copy_facets(c.project_identity, set(copies), db_path)
         primary_language = primary_language_from_sections(sections)
 
         applied = False
@@ -786,6 +909,15 @@ def scan(
                             f"-- likely moved here."
                         ),
                     })
+
+    slots = {p["path"]: (p["workspace"], p["project"]) for p in report.projects}
+    for copy, target in copies.values():
+        if target["path"] in slots:
+            target = {**target, "workspace": slots[target["path"]][0],
+                      "project": slots[target["path"]][1]}
+        elif apply:
+            _record_copy(target, copy, agent=agent, db_path=db_path)
+        report.warnings.append(_copy_warning(copy, target))
 
     # SV2: vanished / move_candidates (direction: vanished here -> active
     # elsewhere) / orphaned_autored. Computed for every workspace this scan
