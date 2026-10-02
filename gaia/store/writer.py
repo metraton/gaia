@@ -821,8 +821,8 @@ def declare_workspace(
             report["dropped_alias"] = None
         if dry_run:
             return report
-        status_previous = con.execute(
-            "SELECT status FROM workspaces WHERE name = ?", (name,)
+        previous = con.execute(
+            "SELECT status, missing_since FROM workspaces WHERE name = ?", (name,)
         ).fetchone()
         alias_row = con.execute(
             "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
@@ -838,7 +838,8 @@ def declare_workspace(
             con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (name,))
             report["ledger"] = str(write_declare_ledger(
                 db_file, name, root_path, dict(alias_row),
-                status_previous[0] if status_previous else None,
+                previous["status"] if previous else None,
+                previous["missing_since"] if previous else None,
             ))
         con.commit()
         return report

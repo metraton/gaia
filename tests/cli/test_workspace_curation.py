@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 from pathlib import Path
 
@@ -143,6 +144,114 @@ def test_declaring_a_retired_name_makes_it_mean_itself(db, tmp_path, capsys):
         con.close()
     assert _sql(db, "SELECT root_path, status FROM workspaces WHERE name = 'me'") == [
         (None, "retired"),
+    ]
+
+
+def _phantom_under(db: Path, name: str, root: Path, project: str) -> None:
+    _sql(db, "INSERT INTO workspaces (name) VALUES (?)", (name,))
+    _sql(db, "INSERT INTO projects (workspace, name, path, status) VALUES (?, ?, ?, 'active')",
+         (name, project, str(root / name / project)))
+
+
+@pytest.mark.parametrize("overlap", ["project", "project_identity"])
+def test_two_phantoms_folding_the_same_row_into_one_owner_refuse_the_second_in_the_dry_run(
+    db, tmp_path, capsys, overlap,
+):
+    root = _declared(db, "aaxis", tmp_path / "aaxis")
+    for name in ("p1", "p2"):
+        _phantom_under(db, name, root, "app" if overlap == "project" else f"app-{name}")
+        if overlap == "project_identity":
+            _sql(db, "INSERT INTO project_context_contracts (workspace, contract_name, payload) "
+                     "VALUES (?, 'project_identity', '{}')", (name,))
+
+    assert _curate(dry_run=True) == 0
+    before_p2, from_p2 = capsys.readouterr().out.split("retire p2 into aaxis")
+    assert "REFUSED" not in before_p2
+    assert "REFUSED: unresolved collisions" in from_p2
+
+    assert _curate() == 0
+    assert _sql(db, "SELECT name, status FROM workspaces WHERE name IN ('p1', 'p2') ORDER BY name") == [
+        ("p1", "retired"), ("p2", "active"),
+    ]
+    assert _sql(db, "SELECT COUNT(*) FROM projects WHERE workspace = 'p2'") == [(1,)]
+
+
+def test_a_failure_mid_apply_commits_no_retire(db, tmp_path, monkeypatch):
+    real_write_text = Path.write_text
+
+    def failing_write_text(self, *args, **kwargs):
+        if "retire-p2-into" in self.name:
+            raise OSError("disk full")
+        return real_write_text(self, *args, **kwargs)
+
+    root = _declared(db, "aaxis", tmp_path / "aaxis")
+    _phantom_under(db, "p1", root, "one")
+    _phantom_under(db, "p2", root, "two")
+    _sql(db, "INSERT INTO workspaces (name) VALUES ('empty')")
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+
+    with pytest.raises(OSError, match="disk full"):
+        _curate()
+
+    assert _sql(db, "SELECT name, status FROM workspaces WHERE name IN ('p1', 'p2', 'empty') "
+                    "ORDER BY name") == [("empty", "active"), ("p1", "active"), ("p2", "active")]
+    assert _sql(db, "SELECT workspace FROM projects ORDER BY name") == [("p1",), ("p2",)]
+    assert _sql(db, "SELECT * FROM workspace_aliases") == []
+    assert not list((db.parent / "backups").glob("*retire-p1-into*-ledger.json"))
+
+
+@pytest.mark.parametrize("into", ["ghost=aaxis", "orphan=nowhere"])
+def test_an_into_naming_no_phantom_or_no_declared_target_exits_non_zero_and_applies_nothing(
+    db, tmp_path, capsys, into,
+):
+    _declared(db, "aaxis", tmp_path / "aaxis")
+    _sql(db, "INSERT INTO workspaces (name) VALUES ('orphan'), ('empty')")
+    _sql(db, "INSERT INTO briefs (workspace, name, status) VALUES ('orphan', 'b', 'open')")
+
+    assert _curate(into=[into]) != 0
+    assert "nothing was changed" in capsys.readouterr().err
+    assert _sql(db, "SELECT name, status FROM workspaces WHERE name IN ('orphan', 'empty') "
+                    "ORDER BY name") == [("empty", "active"), ("orphan", "active")]
+
+
+def test_undoing_a_declaration_refuses_when_a_later_change_touched_the_name(db, tmp_path):
+    from gaia.store.workspace_retire import (
+        WorkspaceRetireError, alias_target, apply_retire, undo_retire,
+    )
+    from gaia.store.writer import _connect, declare_workspace
+
+    _declared(db, "ws", tmp_path / "ws")
+    _sql(db, "INSERT INTO workspaces (name) VALUES ('me'), ('x')")
+    apply_retire("me", "ws", db_path=db)
+    (tmp_path / "me").mkdir()
+    declared = declare_workspace("me", tmp_path / "me", db_path=db)
+    later = apply_retire("x", "me", db_path=db)["ledger"]
+
+    with pytest.raises(WorkspaceRetireError, match=re.escape(f"the latest is {later}")):
+        undo_retire(declared["ledger"], db_path=db)
+    con = _connect(db)
+    try:
+        assert alias_target(con, "me") == "me"
+    finally:
+        con.close()
+
+
+def test_undoing_a_declaration_takes_a_backup_and_restores_missing_since(db, tmp_path):
+    from gaia.store.workspace_retire import undo_retire
+    from gaia.store.writer import declare_workspace
+
+    _declared(db, "ws", tmp_path / "ws")
+    _sql(db, "INSERT INTO workspaces (name, status, missing_since) "
+             "VALUES ('me', 'missing', '2026-01-01T00:00:00Z')")
+    _sql(db, "INSERT INTO workspace_aliases (alias, target) VALUES ('me', 'ws')")
+    (tmp_path / "me").mkdir()
+    ledger = declare_workspace("me", tmp_path / "me", db_path=db)["ledger"]
+
+    report = undo_retire(ledger, db_path=db)
+
+    assert Path(report["backup"]).is_file()
+    assert _sql(db, "SELECT root_path, status, missing_since FROM workspaces WHERE name = 'me'") == [
+        (None, "missing", "2026-01-01T00:00:00Z"),
     ]
 
 

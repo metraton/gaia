@@ -365,6 +365,7 @@ def _backup(con: sqlite3.Connection, db_file: Path, label: str) -> Path:
 
 def write_declare_ledger(
     db_file: Path, name: str, root_path: str, alias_row: dict, status_previous: str | None,
+    missing_since_previous: str | None,
 ) -> Path:
     """Record the retire alias a declaration of ``name`` dropped; :func:`undo_retire` reads it back."""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
@@ -378,16 +379,45 @@ def write_declare_ledger(
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "root_path": root_path,
         "status_previous": status_previous,
+        "missing_since_previous": missing_since_previous,
         "alias_dropped": alias_row,
     }, indent=2), encoding="utf-8")
     return path
 
 
+# Every ledger name carries the microsecond UTC stamp it was written at
+# (``_backup``, ``write_declare_ledger``); the ledgers' own ``created_at`` has
+# only seconds and cannot order two changes made within one.
+_LEDGER_STAMP = re.compile(r"\d{8}T\d{12}Z")
+
+
+def latest_ledger(db_file: Path, name: str) -> Path | None:
+    """The newest retire or declare ledger whose source or target is ``name``."""
+    newest: tuple[str, Path] | None = None
+    for path in (db_file.parent / "backups").glob("*-ledger.json"):
+        stamp = _LEDGER_STAMP.search(path.name)
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if stamp is None or name not in (ledger.get("source"), ledger.get("target")):
+            continue
+        if newest is None or stamp.group() > newest[0]:
+            newest = (stamp.group(), path)
+    return newest[1] if newest else None
+
+
 def _undo_declare(ledger: dict, path: Path, *, dry_run: bool, db_file: Path) -> dict:
-    """Put back the alias a declaration dropped and release the root it recorded."""
+    """Put back the alias a declaration dropped, its status and missing_since, and release its root."""
     from gaia.store.writer import _connect
 
     name, alias = ledger["source"], ledger["alias_dropped"]
+    latest = latest_ledger(db_file, name)
+    if latest is not None and latest.resolve() != path.resolve():
+        raise WorkspaceRetireError(
+            f"the declaration of {name!r} recorded in {path} is not the latest change to "
+            f"{name!r}; the latest is {latest}"
+        )
     report = {"source": name, "target": alias["target"], "alias_restored": alias,
               "release_root": ledger["root_path"]}
     con = _connect(db_file)
@@ -405,12 +435,13 @@ def _undo_declare(ledger: dict, path: Path, *, dry_run: bool, db_file: Path) -> 
         if dry_run:
             report["mode"] = "dry-run"
             return report
+        report["backup"] = str(_backup(con, db_file, f"undo-declare-{_safe(name)}"))
         con.execute("BEGIN IMMEDIATE")
         try:
             con.execute(
-                "UPDATE workspaces SET root_path = NULL, status = COALESCE(?, status) "
-                "WHERE name = ?",
-                (ledger.get("status_previous"), name),
+                "UPDATE workspaces SET root_path = NULL, status = COALESCE(?, status), "
+                "missing_since = ? WHERE name = ?",
+                (ledger.get("status_previous"), ledger.get("missing_since_previous"), name),
             )
             con.execute(
                 "INSERT INTO workspace_aliases (alias, target, created_at, ledger) "
@@ -461,6 +492,93 @@ def _rekey(con, table: str, rowids: list[int], workspace: str, *, only_from: str
     return changed
 
 
+def _collision_message(plan: dict) -> str:
+    return "unresolved collisions: " + "; ".join(
+        f"{t}: {', '.join(keys)}" for t, keys in plan["collisions"].items()
+    )
+
+
+def _execute(con: sqlite3.Connection, plan: dict, ledger_path: Path, backup: Path) -> dict:
+    """Write ``plan`` inside the caller's open transaction; return its undo ledger, unsaved."""
+    from gaia.store.writer import _ensure_workspace_row
+
+    source, target = plan["source"], plan["target"]
+    ledger: dict[str, Any] = {
+        "kind": "workspace-retire",
+        "source": source,
+        "target": target,
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "backup": str(backup),
+        "created_workspaces": [],
+        "dropped": [],
+        "moved": {},
+        "alias_previous": None,
+        "aliases_retargeted": plan["aliases_retargeted"],
+        "root_path_previous": plan["release_root"],
+    }
+    destinations = {d for rows in plan["_moves"].values() for _, d in rows}
+    for workspace in sorted(destinations - {target}):
+        if con.execute("SELECT 1 FROM workspaces WHERE name = ?", (workspace,)).fetchone() is None:
+            _ensure_workspace_row(con, workspace)
+            ledger["created_workspaces"].append(workspace)
+    for table, rowid in plan["_drops"]:
+        ledger["dropped"].append(_capture_and_delete(con, table, rowid))
+    for table, rows in plan["_moves"].items():
+        by_dest: dict[str, list[int]] = {}
+        for rowid, dest in rows:
+            by_dest.setdefault(dest, []).append(rowid)
+        for dest, rowids in by_dest.items():
+            _rekey(con, table, rowids, dest)
+            ledger["moved"].setdefault(table, {})[dest] = rowids
+    for rowid, dest in plan["_repoint"]:
+        con.execute("UPDATE memory_links SET dst_workspace = ? WHERE rowid = ?", (dest, rowid))
+    ledger["repointed"] = plan["_repoint"]
+    ledger["status_previous"] = con.execute(
+        "SELECT status FROM workspaces WHERE name = ?", (source,)
+    ).fetchone()[0]
+    con.execute(
+        "UPDATE workspaces SET root_path = NULL, status = 'retired' WHERE name = ?", (source,),
+    )
+    previous = con.execute(
+        "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
+        (source,),
+    ).fetchone()
+    ledger["alias_previous"] = dict(previous) if previous else None
+    con.execute("UPDATE workspace_aliases SET target = ? WHERE target = ?", (target, source))
+    con.execute(
+        "INSERT OR REPLACE INTO workspace_aliases (alias, target, ledger) VALUES (?, ?, ?)",
+        (source, target, str(ledger_path)),
+    )
+    return ledger
+
+
+def retire_in_transaction(
+    con: sqlite3.Connection, source: str, target: str, *, on_conflict: dict[str, str],
+    ledger_path: Path, backup: Path,
+) -> tuple[dict, dict | None]:
+    """Plan and write one retire inside the caller's open transaction.
+
+    The plan reads what earlier writes of that transaction left, so a batch of
+    retires is planned against its cumulative state. Returns the report and the
+    unsaved undo ledger, which is ``None`` when nothing is pending.
+
+    Raises:
+        WorkspaceRetireError: invalid names or an unresolved collision, before
+            this retire writes anything.
+    """
+    _validate(con, source, target, on_conflict)
+    plan = _plan(con, source, target, on_conflict)
+    report = _public(plan)
+    if plan["collisions"]:
+        report["mode"] = "refused"
+        raise WorkspaceRetireError(_collision_message(plan), report)
+    if not _pending(plan):
+        report["mode"] = "noop"
+        return report, None
+    report["mode"] = "applied"
+    return report, _execute(con, plan, ledger_path, backup)
+
+
 def apply_retire(
     source: str, target: str, *, on_conflict: dict[str, str] | None = None,
     db_path: Path | None = None,
@@ -472,7 +590,7 @@ def apply_retire(
             left unresolved -- in both cases before any write.
     """
     from gaia.paths import db_path as _db_path
-    from gaia.store.writer import _connect, _ensure_workspace_row
+    from gaia.store.writer import _connect
 
     on_conflict = on_conflict or {}
     db_file = Path(db_path) if db_path is not None else _db_path()
@@ -483,72 +601,17 @@ def apply_retire(
         report = _public(plan)
         if plan["collisions"]:
             report["mode"] = "refused"
-            raise WorkspaceRetireError(
-                "unresolved collisions: " + "; ".join(
-                    f"{t}: {', '.join(keys)}" for t, keys in plan["collisions"].items()
-                ),
-                report,
-            )
+            raise WorkspaceRetireError(_collision_message(plan), report)
         if not _pending(plan):
             report["mode"] = "noop"
             return report
 
         backup = _backup(con, db_file, f"retire-{_safe(source)}-into-{_safe(target)}")
         ledger_path = backup.with_name(backup.stem + "-ledger.json")
-        ledger: dict[str, Any] = {
-            "kind": "workspace-retire",
-            "source": source,
-            "target": target,
-            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "backup": str(backup),
-            "created_workspaces": [],
-            "dropped": [],
-            "moved": {},
-            "alias_previous": None,
-            "aliases_retargeted": plan["aliases_retargeted"],
-            "root_path_previous": plan["release_root"],
-        }
-
         con.execute("BEGIN IMMEDIATE")
         try:
             con.execute("PRAGMA defer_foreign_keys = ON")
-            destinations = {d for rows in plan["_moves"].values() for _, d in rows}
-            for workspace in sorted(destinations - {target}):
-                if con.execute("SELECT 1 FROM workspaces WHERE name = ?", (workspace,)).fetchone() is None:
-                    _ensure_workspace_row(con, workspace)
-                    ledger["created_workspaces"].append(workspace)
-            for table, rowid in plan["_drops"]:
-                ledger["dropped"].append(_capture_and_delete(con, table, rowid))
-            for table, rows in plan["_moves"].items():
-                by_dest: dict[str, list[int]] = {}
-                for rowid, dest in rows:
-                    by_dest.setdefault(dest, []).append(rowid)
-                for dest, rowids in by_dest.items():
-                    _rekey(con, table, rowids, dest)
-                    ledger["moved"].setdefault(table, {})[dest] = rowids
-            for rowid, dest in plan["_repoint"]:
-                con.execute(
-                    "UPDATE memory_links SET dst_workspace = ? WHERE rowid = ?", (dest, rowid)
-                )
-            ledger["repointed"] = plan["_repoint"]
-            ledger["status_previous"] = con.execute(
-                "SELECT status FROM workspaces WHERE name = ?", (source,)
-            ).fetchone()[0]
-            con.execute(
-                "UPDATE workspaces SET root_path = NULL, status = 'retired' WHERE name = ?",
-                (source,),
-            )
-
-            previous = con.execute(
-                "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
-                (source,),
-            ).fetchone()
-            ledger["alias_previous"] = dict(previous) if previous else None
-            con.execute("UPDATE workspace_aliases SET target = ? WHERE target = ?", (target, source))
-            con.execute(
-                "INSERT OR REPLACE INTO workspace_aliases (alias, target, ledger) VALUES (?, ?, ?)",
-                (source, target, str(ledger_path)),
-            )
+            ledger = _execute(con, plan, ledger_path, backup)
             ledger_path.write_text(json.dumps(ledger, indent=2, default=str), encoding="utf-8")
             con.commit()
         except BaseException:

@@ -21,6 +21,7 @@ keeps every history row readable:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -147,59 +148,76 @@ def _owner(con: sqlite3.Connection, name: str, roots: dict[Path, str], into: dic
     return None, ""
 
 
-def plan_curation(*, into: dict[str, str] | None = None, db_path: Path | None = None) -> dict:
-    """Report, writing nothing, what :func:`apply_curation` would change.
+class WorkspaceCurationError(ValueError):
+    """An ``--into`` names no phantom or no declared target; nothing was written."""
 
-    ``into`` maps a phantom to the declared workspace that owns it when the
-    owner cannot be found from its alias, its projects' paths or its name.
+
+def _check_into(into: dict[str, str], phantoms: list[str], declared: set[str]) -> None:
+    for name, target in into.items():
+        if name not in phantoms:
+            raise WorkspaceCurationError(f"--into {name}={target}: {name!r} is not a phantom workspace")
+        if target not in declared:
+            raise WorkspaceCurationError(f"--into {name}={target}: {target!r} is not a declared workspace")
+
+
+def _curate(
+    con: sqlite3.Connection, roots: dict[Path, str], into: dict[str, str], backup: Path,
+) -> tuple[dict, list[tuple[dict, Path, dict]]]:
+    """Write the whole curation inside ``con``'s open transaction.
+
+    Each retire is planned against what the writes before it left, so two
+    phantoms folding the same project or contract into one owner refuse the
+    second. Returns the report and, per applied retire, its item, ledger path
+    and unsaved ledger, which name ``backup``.
     """
-    from gaia.install_root import registered_roots
-    from gaia.paths import db_path as _db_path
-    from gaia.store.workspace_retire import WorkspaceRetireError, plan_retire
-    from gaia.store.writer import _connect
+    from gaia.store.workspace_retire import WorkspaceRetireError, _safe, retire_in_transaction
 
-    into = into or {}
-    db_file = Path(db_path) if db_path is not None else _db_path()
-    roots = registered_roots(db_file)
-    con = _connect(db_file)
-    try:
-        found = find_conditions(con)
-        hide, retire, unresolved = [], [], []
-        for name in found["phantoms"]:
-            owned = _owned_rows(con, name)
-            history = _history_rows(con, name)
-            owner, via = _owner(con, name, roots, into)
-            if owner is not None and owner not in roots.values():
-                unresolved.append({"workspace": name, "owned": owned, "history": history,
-                                   "reason": f"{owner!r} is not a declared workspace"})
-            elif owner is None and not owned:
-                hide.append({"workspace": name, "history": history})
-            elif owner is None:
-                unresolved.append({"workspace": name, "owned": owned, "history": history,
-                                   "reason": "no declared owner found; pass --into NAME=TARGET"})
-            elif not owned and not history:
-                hide.append({"workspace": name, "history": history})
-            else:
-                retire.append({"workspace": name, "into": owner, "via": via,
-                               "owned": owned, "history": history})
-    finally:
-        con.close()
+    con.execute("PRAGMA defer_foreign_keys = ON")
+    found = find_conditions(con)
+    _check_into(into, found["phantoms"], set(roots.values()))
+    hide, retire, unresolved = [], [], []
+    for name in found["phantoms"]:
+        owned = _owned_rows(con, name)
+        history = _history_rows(con, name)
+        owner, via = _owner(con, name, roots, into)
+        if owner is None and owned:
+            unresolved.append({"workspace": name, "owned": owned, "history": history,
+                               "reason": "no declared owner found; pass --into NAME=TARGET"})
+        elif owner is None or not (owned or history):
+            hide.append({"workspace": name, "history": history})
+        else:
+            retire.append({"workspace": name, "into": owner, "via": via,
+                           "owned": owned, "history": history})
 
+    # Facets go before the retires, which would re-key them away from the
+    # (workspace, project) the report names.
+    for alias, _ in found["stale_aliases"]:
+        con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (alias,))
+    for facet in found["dangling_facets"]:
+        con.execute(
+            "DELETE FROM project_facets WHERE workspace = ? AND project = ? AND scope = ? AND key = ?",
+            facet,
+        )
+    ledgers = []
     for item in retire:
+        ledger_path = backup.with_name(
+            f"{backup.stem}-retire-{_safe(item['workspace'])}-into-{_safe(item['into'])}-ledger.json"
+        )
         try:
-            report = plan_retire(item["workspace"], item["into"],
-                                 on_conflict=_INTEGRATIONS_ON_CONFLICT, db_path=db_file)
+            report, ledger = retire_in_transaction(
+                con, item["workspace"], item["into"], on_conflict=_INTEGRATIONS_ON_CONFLICT,
+                ledger_path=ledger_path, backup=backup,
+            )
         except WorkspaceRetireError as exc:
             item["refused"] = str(exc)
-            continue
-        dropped = sum(1 for f in found["dangling_facets"] if f[0] == item["workspace"])
-        if dropped:
-            report["tables"]["project_facets"]["move"] -= dropped
-        item["tables"] = {t: c for t, c in report["tables"].items() if any(c.values())}
-        if report["collisions"]:
-            item["refused"] = "unresolved collisions: " + "; ".join(
-                f"{t}: {', '.join(keys)}" for t, keys in report["collisions"].items()
-            )
+            report, ledger = exc.report, None
+        item["tables"] = {t: c for t, c in (report.get("tables") or {}).items() if any(c.values())}
+        if ledger is not None:
+            ledgers.append((item, ledger_path, ledger))
+    # A retire applied before v66 left its source active, and re-running it is
+    # a noop that never reaches the status.
+    for item in hide + [r for r in retire if "refused" not in r]:
+        con.execute("UPDATE workspaces SET status = ? WHERE name = ?", (RETIRED, item["workspace"]))
 
     plan = {
         "hide": hide,
@@ -216,18 +234,53 @@ def plan_curation(*, into: dict[str, str] | None = None, db_path: Path | None = 
         "refused" not in r for r in plan["retire"]
     )
     plan["mode"] = "dry-run" if pending else "noop"
+    return plan, ledgers
+
+
+def plan_curation(*, into: dict[str, str] | None = None, db_path: Path | None = None) -> dict:
+    """Report, writing nothing, what :func:`apply_curation` would change.
+
+    The batch runs in a transaction that is rolled back, so the report is the
+    one :func:`apply_curation` commits, each retire planned against the ones
+    before it. ``into`` maps a phantom to the declared workspace that owns it
+    when the owner cannot be found from its alias, its projects' paths or its name.
+
+    Raises:
+        WorkspaceCurationError: an ``into`` key that is not a phantom, or a
+            target that is not declared.
+    """
+    from gaia.install_root import registered_roots
+    from gaia.paths import db_path as _db_path
+    from gaia.store.writer import _connect
+
+    db_file = Path(db_path) if db_path is not None else _db_path()
+    roots = registered_roots(db_file)
+    con = _connect(db_file)
+    try:
+        con.execute("BEGIN")
+        try:
+            # The ledgers that would name db_file as their backup are never saved.
+            plan, _ = _curate(con, roots, into or {}, backup=db_file)
+        finally:
+            con.rollback()
+    finally:
+        con.close()
     return plan
 
 
 def apply_curation(*, into: dict[str, str] | None = None, db_path: Path | None = None) -> dict:
-    """Apply :func:`plan_curation`; return its report with ``mode='applied'`` and the backup path.
+    """Apply :func:`plan_curation` in one transaction; return its report with the backup path.
 
-    The database is backed up first. Each retire runs through
-    :func:`gaia.store.workspace_retire.apply_retire`, so it writes its own
-    backup and undo ledger; a retire the plan marks ``refused`` is skipped.
+    The database is backed up first, and every retire's undo ledger names that
+    backup. A retire the plan marks ``refused`` is skipped; any failure rolls
+    the whole batch back and removes the ledgers it saved.
+
+    Raises:
+        WorkspaceCurationError: as :func:`plan_curation`, before any write.
     """
+    from gaia.install_root import registered_roots
     from gaia.paths import db_path as _db_path
-    from gaia.store.workspace_retire import _backup, apply_retire
+    from gaia.store.workspace_retire import _backup
     from gaia.store.writer import _connect
 
     db_file = Path(db_path) if db_path is not None else _db_path()
@@ -235,51 +288,26 @@ def apply_curation(*, into: dict[str, str] | None = None, db_path: Path | None =
     if plan["mode"] == "noop":
         return plan
 
+    roots = registered_roots(db_file)
     con = _connect(db_file)
+    saved: list[Path] = []
     try:
-        plan["backup"] = str(_backup(con, db_file, "curate"))
-    finally:
-        con.close()
-
-    # Facets are dropped before the retires, which would re-key them away from
-    # the (workspace, project) the plan names.
-    _write(db_file, [
-        ("DELETE FROM workspace_aliases WHERE alias = ?", (alias["alias"],))
-        for alias in plan["drop_aliases"]
-    ] + [
-        ("DELETE FROM project_facets "
-         "WHERE workspace = ? AND project = ? AND scope = ? AND key = ?",
-         (facet["workspace"], facet["project"], facet["scope"], facet["key"]))
-        for facet in plan["drop_facets"]
-    ])
-    retired = [item for item in plan["retire"] if "refused" not in item]
-    for item in retired:
-        item["ledger"] = apply_retire(item["workspace"], item["into"],
-                                      on_conflict=_INTEGRATIONS_ON_CONFLICT,
-                                      db_path=db_file).get("ledger")
-    # A retire applied before v66 left its source active, and re-running it is
-    # a noop that never reaches the status.
-    _write(db_file, [
-        ("UPDATE workspaces SET status = ? WHERE name = ?", (RETIRED, item["workspace"]))
-        for item in plan["hide"] + retired
-    ])
-    plan["mode"] = "applied"
-    return plan
-
-
-def _write(db_file: Path, statements: list[tuple[str, tuple]]) -> None:
-    """Run ``statements`` in one transaction."""
-    from gaia.store.writer import _connect
-
-    con = _connect(db_file)
-    try:
+        backup = _backup(con, db_file, "curate")
         con.execute("BEGIN IMMEDIATE")
         try:
-            for sql, params in statements:
-                con.execute(sql, params)
+            plan, ledgers = _curate(con, roots, into or {}, backup=backup)
+            for item, path, ledger in ledgers:
+                path.write_text(json.dumps(ledger, indent=2, default=str), encoding="utf-8")
+                saved.append(path)
+                item["ledger"] = str(path)
             con.commit()
         except BaseException:
             con.rollback()
+            for path in saved:
+                path.unlink(missing_ok=True)
             raise
     finally:
         con.close()
+    plan["backup"] = str(backup)
+    plan["mode"] = "applied"
+    return plan

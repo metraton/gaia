@@ -105,7 +105,9 @@ def _cmd_curate(args) -> int:
     """Handle `gaia workspace curate [--into NAME=TARGET] [--dry-run] [--yes] [--json]`."""
     import json
 
-    from gaia.store.workspace_curation import apply_curation, plan_curation
+    from gaia.store.workspace_curation import (
+        WorkspaceCurationError, apply_curation, plan_curation,
+    )
 
     into = {}
     for value in args.into:
@@ -114,12 +116,16 @@ def _cmd_curate(args) -> int:
             print(f"gaia workspace curate: --into {value!r}: expected NAME=TARGET", file=sys.stderr)
             return 2
         into[name.strip()] = target.strip()
-    plan = plan_curation(into=into)
-    if not (args.dry_run or plan["mode"] == "noop"):
-        if not (args.yes or _confirmed("curate the workspace registry")):
-            _render_curation(plan)
-            return 1
-        plan = apply_curation(into=into)
+    try:
+        plan = plan_curation(into=into)
+        if not (args.dry_run or plan["mode"] == "noop"):
+            if not (args.yes or _confirmed("curate the workspace registry")):
+                _render_curation(plan)
+                return 1
+            plan = apply_curation(into=into)
+    except WorkspaceCurationError as exc:
+        print(f"gaia workspace curate: {exc}; nothing was changed", file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(plan, indent=2, default=str))
     else:
