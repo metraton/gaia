@@ -1273,8 +1273,9 @@ _PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[FrozenSet[str]]"] = {
 # Where each runner's code comes from, by ``(runner, subcommand)``: "installed"
 # runs the project's node_modules/.bin copy when there is one and otherwise
 # fetches or fails; "registry" always fetches into a throwaway environment, so
-# a dependency the project declares does not make it the project's code.
-# ``uv run`` and ``poetry run`` are absent: they run inside the project.
+# a dependency the project declares does not make it the project's code;
+# "project" runs inside the project environment, and only the packages its
+# ``--with`` adds are fetched.  ``poetry run`` is absent: it fetches nothing.
 _RUNNER_CODE_ORIGIN: Dict[Tuple[str, "Optional[str]"], str] = {
     ("npx", None): "installed",
     ("bunx", None): "installed",
@@ -1287,6 +1288,7 @@ _RUNNER_CODE_ORIGIN: Dict[Tuple[str, "Optional[str]"], str] = {
     ("yarn", "dlx"): "registry",
     ("pipx", "run"): "registry",
     ("uvx", None): "registry",
+    ("uv", "run"): "project",
 }
 
 # Per ecosystem: the options naming the package to fetch in place of the wrapped
@@ -5347,9 +5349,9 @@ def _check_python_module_runner(
 
 def _resolve_prefix_runner_payload(
     base_cmd: str, semantics: "CommandSemantics",
-) -> "Optional[Tuple[Optional[str], str, Tuple[str, ...], Tuple[str, ...], bool]]":
+) -> "Optional[Tuple[Optional[str], str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], bool]]":
     """Return ``(subcommand, wrapped_command_token, remaining_args, packages,
-    unknown_option)``.
+    extra_packages, unknown_option)``.
 
     Walks the runner's own options -- skipping boolean flags, consuming the
     value of a ``value_flags`` option, and accepting the self-contained
@@ -5360,7 +5362,8 @@ def _resolve_prefix_runner_payload(
     add``) that ordinary verb detection already owns.
 
     ``packages`` are the package specs the runner has to find or fetch: the
-    values of its package options, or else the wrapped command itself.
+    values of its package options, or else the wrapped command itself;
+    ``extra_packages`` are the subset added beside it (``--with``).
     ``unknown_option`` is True when an option outside both runner flag tables
     came first; a positional after it that is not the subcommand is skipped as
     its possible value.
@@ -5374,7 +5377,7 @@ def _resolve_prefix_runner_payload(
     required_subcommands = _PREFIX_RUNNER_SUBCOMMANDS[base_cmd]
     value_flags = _PREFIX_RUNNER_VALUE_FLAGS.get(base_cmd, frozenset())
     raw_tokens = semantics.tokens
-    ecosystem = "python" if base_cmd in ("uvx", "pipx") else "node"
+    ecosystem = "python" if base_cmd in ("uv", "uvx", "pipx", "poetry") else "node"
     source_flags, extra_flags = _RUNNER_PACKAGE_FLAGS[ecosystem]
     boolean_flags = _PREFIX_RUNNER_BOOLEAN_FLAGS.get(base_cmd, frozenset()) | _NPX_SHELL_CALL_FLAGS
     subcommand: "Optional[str]" = None
@@ -5408,7 +5411,7 @@ def _resolve_prefix_runner_payload(
                 if i + 1 < len(raw_tokens):
                     return (
                         subcommand, raw_tokens[i + 1], (), tuple(sources + extras),
-                        unknown_option,
+                        tuple(extras), unknown_option,
                     )
                 return None
             if flag not in value_flags and flag not in boolean_flags:
@@ -5428,7 +5431,10 @@ def _resolve_prefix_runner_payload(
             i += 1
             continue
         packages = tuple((sources or [token]) + extras)
-        return (subcommand, token, tuple(raw_tokens[i + 1:]), packages, unknown_option)
+        return (
+            subcommand, token, tuple(raw_tokens[i + 1:]), packages, tuple(extras),
+            unknown_option,
+        )
 
     return None
 
@@ -5517,7 +5523,7 @@ def _check_prefix_runner(
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("runner payload")
 
-    subcommand, payload, rest, packages, unknown_option = resolved
+    subcommand, payload, rest, packages, extra_packages, unknown_option = resolved
 
     import os
     import shlex
@@ -5534,7 +5540,7 @@ def _check_prefix_runner(
 
     inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
     origin = _RUNNER_CODE_ORIGIN.get((base_cmd, subcommand))
-    if not inner.is_mutative and origin is not None and unknown_option:
+    if not inner.is_mutative and origin in ("installed", "registry") and unknown_option:
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_MUTATIVE,
@@ -5547,9 +5553,29 @@ def _check_prefix_runner(
             ),
         )
     if not inner.is_mutative and origin is not None:
+        # The runner's own directory option, read only before the wrapped
+        # command (after it, the option belongs to that command).
+        runner_tokens = semantics.tokens[: len(semantics.tokens) - len(rest) - 1]
+        dir_flags = (
+            frozenset({"--prefix"}) if base_cmd == "npx"
+            else _PACKAGE_MANAGER_DIR_FLAGS.get(base_cmd, frozenset())
+        )
+        override = _extract_dir_override(runner_tokens, dir_flags)
+        if override is None and any(t.partition("=")[0] in dir_flags for t in runner_tokens):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="registry-fetch",
+                cli_family=family,
+                confidence="medium",
+                reason=f"Runner '{base_cmd}' names a directory option with no value",
+            )
         project_dir = cwd if cwd is not None else os.getcwd()
+        if override:
+            project_dir = _resolve_dir_against_cwd(project_dir, override)
+        specs = extra_packages if origin == "project" else packages
         fetched = [
-            spec for spec in packages
+            spec for spec in specs
             if not _runner_package_is_local(origin, spec, project_dir)
         ]
         if fetched:
@@ -5561,7 +5587,7 @@ def _check_prefix_runner(
                 confidence="medium",
                 reason=(
                     f"Runner '{base_cmd}' would fetch {', '.join(fetched)} from "
-                    f"a registry: not installed in {project_dir}/node_modules"
+                    f"a registry: not a local path or installed under {project_dir}"
                 ),
             )
     return MutativeResult(

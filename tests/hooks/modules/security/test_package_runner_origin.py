@@ -113,6 +113,16 @@ CASES = [
     ("npx --some-opt /tmp/x cowsay", SIGNED),
     ("npx --some-flag eslint .", SIGNED),
     ("npx -y eslint .", UNSIGNED),
+    # The runner looks for the binary under its own directory option, not the
+    # cwd where eslint happens to be installed.
+    ("npx --prefix /nonexistent/p eslint .", SIGNED),
+    ("npm -C /nonexistent/p exec eslint .", SIGNED),
+    ("bun --cwd /nonexistent/p x eslint .", SIGNED),
+    ("npx --prefix . eslint .", UNSIGNED),
+    # `uv run` runs in the project, but `--with` fetches from PyPI.
+    ("uv run --with requests pytest", SIGNED),
+    ("uv run --with ./vendor/lib pytest", UNSIGNED),
+    ("uv run pytest", UNSIGNED),
     ("npm exec --yes eslint .", UNSIGNED),
     # `npm cit` is `npm ci` followed by the test script, whose body mutates here.
     ("npm cit", SIGNED),
