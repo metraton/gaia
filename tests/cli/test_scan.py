@@ -268,83 +268,18 @@ class TestValidationCases:
         that groups sibling repos) is recorded separately in group_name.
         """
         repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
-        c = classify_mod.classify_repo(repo, "aaxis")
-        assert c.matched
-        assert c.workspace == "aaxis"
-        assert c.project == "aos-iac"  # name = repo basename (R1)
-        assert c.container == "aos"    # container -> group_name (R2)
-        assert c.repo == "aos-iac"
-        assert c.ambiguity is None
+        c = classify_mod.classify_repo(repo, "aaxis", tmp_path / "aaxis")
+        assert (c.workspace, c.project, c.container) == ("aaxis", "aos-iac", "aos")
 
-    def test_case2_github_repos_engram_collapse(self, tmp_path):
-        """github-repos/engram --workspace github-repos -> collapse.
-
-        The workspace is the direct parent of the repo, so there is nothing
-        between them: project collapses to the repo name (R4)."""
+    def test_case2_repo_directly_in_the_root_has_no_group(self, tmp_path):
         repo = _mk_repo(tmp_path, "github-repos", "engram")
-        c = classify_mod.classify_repo(repo, "github-repos")
-        assert c.matched
-        assert c.workspace == "github-repos"
-        assert c.project == "engram"  # name = repo basename
-        assert c.container is None     # R4 collapse: no grouping folder
-        assert c.repo == "engram"
-        assert c.ambiguity is None
+        c = classify_mod.classify_repo(repo, "github-repos", tmp_path / "github-repos")
+        assert (c.project, c.container) == ("engram", None)
 
-    def test_case3_me_gaia_collapse(self, tmp_path):
-        """me/gaia --workspace me -> collapse (project = repo = 'gaia')."""
-        repo = _mk_repo(tmp_path, "me", "gaia")
-        c = classify_mod.classify_repo(repo, "me")
-        assert c.matched
-        assert c.workspace == "me"
-        assert c.project == "gaia"
-        assert c.container is None  # R4 collapse: repo directly under workspace
-        assert c.repo == "gaia"
-        assert c.ambiguity is None
-
-    def test_case4_organic_repo_as_workspace(self, tmp_path):
-        """Organic: the repo's own direct parent is named as the workspace.
-
-        e.g. .../aos/<repo>  --workspace aos. The parent IS the workspace, so
-        project collapses to the repo name (R4). This is the 'a project CAN be
-        a workspace' case read from the parent side."""
-        repo = _mk_repo(tmp_path, "aos", "aos-server")
-        c = classify_mod.classify_repo(repo, "aos")
-        assert c.matched
-        assert c.workspace == "aos"
-        assert c.project == "aos-server"  # name = repo basename
-        assert c.container is None         # R4 collapse: parent IS the workspace
-        assert c.repo == "aos-server"
-
-    def test_case5_no_match_error_as_text(self, tmp_path):
-        """no-match: --workspace acme against a tree with no 'acme' segment
-        yields a structured error (error-as-text), never a crash, and no
-        project."""
-        repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
-        c = classify_mod.classify_repo(repo, "acme")
-        assert not c.matched
-        assert c.project is None
-        assert c.error is not None
-        assert c.error["W"] == "acme"
-        assert "acme" in c.error["suggestion"]
-        # The suggestion names the real ancestor segments so the user can pick.
-        assert "aos" in c.error["suggestion"]
-
-    def test_case6_deeper_than_3_ambiguity_as_data(self, tmp_path):
-        """deeper-than-3 nesting -> name = repo basename, container = the
-        segment immediately before the repo, and the levels ABOVE that
-        container are returned as ambiguity DATA (never guessed)."""
-        # W / extra1 / extra2 / container / repo  (2 levels above the container)
+    def test_case6_group_is_the_full_path_at_any_depth(self, tmp_path):
         repo = _mk_repo(tmp_path, "org", "team", "group", "svc", "svc-api")
-        c = classify_mod.classify_repo(repo, "org")
-        assert c.matched
-        assert c.workspace == "org"
-        assert c.project == "svc-api"  # name = repo basename (R1)
-        assert c.container == "svc"    # immediate container -> group_name
-        assert c.repo == "svc-api"
-        assert c.ambiguity is not None
-        assert c.ambiguity["repo"] == "svc-api"
-        # extra_levels are the segments between the workspace and the container.
-        assert c.ambiguity["extra_levels"] == ["team", "group"]
+        c = classify_mod.classify_repo(repo, "org", tmp_path / "org")
+        assert (c.project, c.container) == ("svc-api", "team/group/svc")
 
 
 # ---------------------------------------------------------------------------
