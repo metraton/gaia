@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 
+from gaia.store.writer import declare_workspace
 from tools.scan import classify as classify_mod
 from tools.scan.store_populator import (
     _list_repos,
@@ -225,6 +226,7 @@ def test_scan_keeps_the_base_repo_path_and_records_the_worktree(
     replaced ``projects.path`` with its own.
     """
     root = workspace_with_worktree["root"]
+    declare_workspace("century", root, db_path=tmp_db)
     report = classify_mod.scan(root, "century", db_path=tmp_db, apply=True)
 
     assert report.error is None
@@ -255,6 +257,7 @@ def test_scan_emits_no_collision_warning_for_a_worktree(
 def test_rescan_prunes_a_removed_worktree(workspace_with_worktree, tmp_db):
     """The derived record is refreshed, not accumulated: remove -> row gone."""
     root = workspace_with_worktree["root"]
+    declare_workspace("century", root, db_path=tmp_db)
     classify_mod.scan(root, "century", db_path=tmp_db, apply=True)
     assert _facet_rows(tmp_db, "century", "widget", "worktree") != []
 

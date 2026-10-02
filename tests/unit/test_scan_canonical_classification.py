@@ -8,8 +8,8 @@ The deterministic rule:
     ``workspace``. There is NO sub-workspace detection and NO
     nearest-installed-ancestor inference -- the caller (tools.scan.classify,
     driven by ``--workspace``) has already decided the workspace.
-  * ``group_name`` = the immediate container of the repo when it is not directly
-    under ``root``; ``None`` when it sits directly at ``root``.
+  * ``group_name`` = every folder between ``root`` and the repo, slash-joined;
+    ``None`` when the repo sits directly at ``root``.
   * ``_is_installed_gaia_workspace`` remains a LIVE signal helper (used by
     ``_scan_gaia_installations``) and is exercised here as a pure function.
     Its former companions -- ``_list_installed_workspaces``,
@@ -23,7 +23,7 @@ Coverage:
   (2) the live install-signal helper classifies a Gaia registry vs a
       third-party .claude correctly as a pure function.
   (3) a project under an intermediate folder is attributed to the caller
-      workspace, with group_name = the repo's immediate container.
+      workspace, with group_name = the full folder path to the repo.
   (4) the real-world aaxis/ tree: all repos are owned by the caller workspace;
       no separate sub-workspace is registered.
   (5) a dir that is both git + install is a single project under the caller
@@ -187,8 +187,8 @@ class TestProjectPathPopulated:
 # scan_workspace_to_store no longer detects sub-workspaces or attributes a repo
 # to a nearest installed ancestor. The caller (tools.scan.classify, driven by
 # --workspace) has already decided the workspace; the populator records every
-# discovered repo under it. group_name = the immediate container of the repo
-# when it is not directly under root, else None.
+# discovered repo under it. group_name = the folders between root and the
+# repo, slash-joined, else None.
 # ---------------------------------------------------------------------------
 
 class TestDeterministicAttribution:
@@ -208,8 +208,7 @@ class TestDeterministicAttribution:
         assert len(rows) == 1, f"expected 1 project under 'ws', got {rows}"
         name, group_name, path = rows[0]
         assert name == "proj"
-        # group_name = the immediate container of the repo (its parent dir).
-        assert group_name == "group", f"expected group_name='group', got {group_name!r}"
+        assert group_name == "nfi/group", f"expected group_name='nfi/group', got {group_name!r}"
         assert path == str(proj)
 
     def test_project_directly_under_root_has_no_group(self, tmp_db, tmp_path):

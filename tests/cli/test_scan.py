@@ -1,20 +1,8 @@
 """
 Unit tests for the DETERMINISTIC gaia scan surface.
 
-Covers the new scan (post inference-removal), driven by a single REQUIRED
-``--workspace <name>`` parameter:
-
-  * bin/cli/scan.py -- the thin CLI front-end (register / cmd_scan / rendering).
-  * tools/scan/classify.py -- the deterministic classifier (R1-R6).
-
-The 6 confirmed validation cases (see TestValidationCases) anchor the ruleset:
-
-  1. aaxis/aos/aos-iac  --workspace aaxis        -> (aaxis, aos, aos-iac)
-  2. github-repos/engram --workspace github-repos -> collapse (project = repo)
-  3. me/gaia            --workspace me            -> collapse (project = repo)
-  4. organic: aos itself as the workspace         -> collapse (project = repo)
-  5. no-match: --workspace acme                   -> error-as-text (structured)
-  6. deeper-than-3 nesting                         -> ambiguity returned as data
+Covers bin/cli/scan.py (register / cmd_scan / rendering) and the classifier
+tools/scan/classify.py (R1-R7). Scans that apply declare their workspace first.
 
 Test isolation:
   * Every scan that writes runs against an explicit temp DB (db_path=...); the
@@ -70,6 +58,11 @@ def _mk_repo(base: Path, *segments: str) -> Path:
     repo = base.joinpath(*segments)
     (repo / ".git").mkdir(parents=True, exist_ok=True)
     return repo
+
+
+def _declare(db_path: Path, name: str, root: Path) -> None:
+    from gaia.store.writer import declare_workspace
+    declare_workspace(name, root, db_path=db_path)
 
 
 @pytest.fixture()
@@ -316,15 +309,14 @@ class TestScanReport:
         assert by_container["loose-repo"] is None
         assert report.errors == []
 
-    def test_scan_all_no_match_is_error_report(self, tmp_path):
-        """When no repo matches W, the report carries errors and no projects,
-        and resolved_workspace stays None (non-crashing)."""
+    def test_repo_inside_no_declared_workspace_is_an_error_entry(self, tmp_db, tmp_path):
+        """A walked repo outside every declared root is reported, never owned."""
         _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
-        report = classify_mod.scan(tmp_path / "aaxis", "acme", apply=False)
-        assert report.projects == []
-        assert report.resolved_workspace is None
-        assert len(report.errors) == 1
-        assert report.errors[0]["W"] == "acme"
+        _mk_repo(tmp_path, "aaxis", "loose", "stray")
+        _declare(tmp_db, "aos", tmp_path / "aaxis" / "aos")
+        report = classify_mod.scan(tmp_path / "aaxis", "aos", db_path=tmp_db, apply=False)
+        assert [p["repo"] for p in report.projects] == ["aos-iac"]
+        assert [(e["repo"], e["W"]) for e in report.errors] == [("stray", "aos")]
 
     def test_scan_persists_and_reconciles(self, tmp_db, tmp_path):
         """apply=True writes projects rows, then a second scan with one repo
@@ -338,6 +330,7 @@ class TestScanReport:
         root = tmp_path / "aaxis"
         _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
         _mk_repo(tmp_path, "aaxis", "other", "other-repo")
+        _declare(tmp_db, "aaxis", root)
 
         r1 = classify_mod.scan(root, "aaxis", db_path=tmp_db, apply=True)
         assert r1.error is None
@@ -393,10 +386,9 @@ class TestScanReport:
         shutil.rmtree(repo / ".git")
         subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
 
-        # Scan from the workspace root, then again from a deeper root that still
-        # contains the same repo (project resolves to the repo name there).
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
         classify_mod.scan(tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True)
-        classify_mod.scan(tmp_path / "aaxis" / "aos", "aos", db_path=tmp_db, apply=True)
+        classify_mod.scan(tmp_path / "aaxis" / "aos", "aaxis", db_path=tmp_db, apply=True)
 
         con = sqlite3.connect(str(tmp_db))
         try:
@@ -430,6 +422,7 @@ class TestScanReport:
 
         # Repo whose basename is 'svc' (Y), directly under workspace 'aaxis'.
         repo = _mk_repo(tmp_path, "aaxis", "svc")
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
         identity = resolve_project_identity(repo)  # P -- what the scan resolves
 
         # Seed a row persisted under name X ('svc-legacy') != basename 'svc',
@@ -499,6 +492,7 @@ class TestScanReport:
              "git@github.com:aaxis/svc.git"],
             cwd=str(repo), check=True,
         )
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
 
         rep = classify_mod.scan(tmp_path / "aaxis", "aaxis",
                                 db_path=tmp_db, apply=True)
@@ -559,6 +553,7 @@ class TestBasenameNamingForwardFix:
         _mk_repo(tmp_path, "aaxis", "bildwiz", "bildwiz-iac")
         _mk_repo(tmp_path, "aaxis", "bildwiz", "newco-pitot")
         _mk_repo(tmp_path, "aaxis", "bildwiz", "control-tower-livekit")
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
 
         report = classify_mod.scan(
             tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True
@@ -585,6 +580,7 @@ class TestBasenameNamingForwardFix:
         repo like 'gaia' as a direct child) still works: name = basename,
         group_name = None (R4 collapse, unchanged)."""
         _mk_repo(tmp_path, "me", "gaia")
+        _declare(tmp_db, "me", tmp_path / "me")
 
         report = classify_mod.scan(
             tmp_path / "me", "me", db_path=tmp_db, apply=True
@@ -593,27 +589,3 @@ class TestBasenameNamingForwardFix:
 
         persisted = self._persisted(tmp_db, "me")
         assert persisted == {"gaia": None}, persisted
-
-
-# ---------------------------------------------------------------------------
-# match_workspace_index -- the segment matcher (R3)
-# ---------------------------------------------------------------------------
-
-class TestMatchWorkspaceIndex:
-    def test_last_occurrence_wins(self):
-        segs = ["aaxis", "sub", "aaxis", "proj", "repo"]
-        # The deepest 'aaxis' (index 2) is the most specific boundary.
-        assert classify_mod.match_workspace_index(segs, "aaxis") == 2
-
-    def test_repo_itself_never_matches(self):
-        """The repo segment (segs[-1]) is never eligible to be the workspace."""
-        segs = ["a", "b", "repo"]
-        assert classify_mod.match_workspace_index(segs, "repo") is None
-
-    def test_nested_token_split_match(self):
-        segs = ["aaxis", "aos", "proj", "repo"]
-        assert classify_mod.match_workspace_index(segs, "aaxis/aos") == 1
-
-    def test_no_match_returns_none(self):
-        segs = ["a", "b", "repo"]
-        assert classify_mod.match_workspace_index(segs, "zzz") is None
