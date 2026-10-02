@@ -151,6 +151,34 @@ class TestQuotedHeaderGainsNoWiderExemption:
         assert _validate(command).allowed is False
 
 
+class TestCommentBeforeTheOpenerMeansNoHeredoc:
+    """Bash ends the line at a word-starting ``#``, so ``<<'PLAN'`` after it opens
+    nothing and every following line runs as a command of its own."""
+
+    @pytest.mark.parametrize("header", [
+        "gaia plan save --brief=b --content-file=- #",
+        "gaia plan save --brief=b --content-file=- #note",
+        "gaia plan save --brief=b # --content-file=-",
+        "gaia plan save --brief=b --reason 'v2' --content-file=-\t#",
+    ])
+    def test_body_after_a_comment_is_analysed_as_commands(self, checkout, header):
+        command = _heredoc(header, "'PLAN'", "PLAN", "echo pwned > notes.md\n")
+        result = _validate(command)
+        assert result.allowed is False
+        assert "[SHELL_WRITE]" in (result.reason or ""), result.reason
+
+    @pytest.mark.parametrize("header", [
+        "gaia plan save --brief=b --reason '#3 rewrite' --content-file=-",
+        'gaia plan save --brief=b --reason "#3 rewrite" --content-file=-',
+        "gaia plan save --brief=b#2 --reason=v#2 --content-file=-",
+    ], ids=["single-quoted", "double-quoted", "mid-word"])
+    def test_hash_that_is_not_a_comment_keeps_the_data_treatment(self, checkout, header):
+        command = _heredoc(header, "'PLAN'", "PLAN", HOSTILE_PROSE_BODY)
+        result = _validate(command)
+        assert result.allowed is True, result.reason
+        assert result.tier.value != "T3"
+
+
 class TestRedirectOnTheCommandLineIsStillAWrite:
     def test_redirect_in_the_header_into_the_checkout_is_refused(self, checkout):
         command = _heredoc(
@@ -282,6 +310,8 @@ class TestDataHeredocHeader:
         "gaia plan save --reason \"x\" --content-file=- <<'PLAN' > out\na\nPLAN",
         "gh pr create --title \"t\" --body-file - <<'X'\na\nX",
         "cat \"x\" <<'X'\na\nX",
+        "gaia plan save --brief=b --content-file=- # <<'PLAN'\na\nPLAN",
+        "gaia plan save --brief=b --reason '' #x --content-file=- <<'PLAN'\na\nPLAN",
     ])
     def test_everything_else_is_not_exempt(self, command):
         assert self._header(command) is None

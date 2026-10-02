@@ -15,8 +15,8 @@ it from reaching text the shell would run:
   ``"$(cat <<'EOF' ... EOF)"`` idiom that passes a value to a CLI). Interpreters
   (``bash``, ``python3 -``, ``ssh``, ``kubectl exec``) are never receivers;
 - the declaring line is one plain command: no unquoted operator, redirect,
-  substitution or variable, so the heredoc is that command's stdin and nothing
-  else's. A quoted argument (``--reason "..."``, which every plan rewrite
+  substitution, variable or comment, so the heredoc is that command's stdin and
+  nothing else's -- and is a heredoc at all. A quoted argument (``--reason "..."``, which every plan rewrite
   carries) is allowed only where the shell keeps it literal: single quotes
   as-is, double quotes only with no ``$``, backtick or backslash inside. The
   receiver and the ``--<name>-file -`` flag must be unquoted words, so a quoted
@@ -44,7 +44,12 @@ _DOUBLE_QUOTE_EXPANSION = frozenset("$`\\")
 
 
 def _literal_words(header: str) -> Optional[List[Tuple[str, bool]]]:
-    """Split a header into ``(value, quoted)`` words; None if the shell would expand or chain it."""
+    """Split a header into ``(value, quoted)`` words, or None where the shell reads it otherwise.
+
+    None covers an unclosed quote, any unquoted operator, redirect,
+    substitution or variable, and a word-starting unquoted ``#``: bash ends the
+    line there, so a ``<<`` after it opens no heredoc and the body lines run.
+    """
     words: List[Tuple[str, bool]] = []
     parts: List[str] = []
     quoted = False
@@ -68,7 +73,7 @@ def _literal_words(header: str) -> Optional[List[Tuple[str, bool]]]:
             quoted = True
             index = closing + 1
             continue
-        if char in _UNQUOTED_SHELL_SYNTAX:
+        if char in _UNQUOTED_SHELL_SYNTAX or (char == "#" and not parts):
             return None
         parts.append(char)
         index += 1

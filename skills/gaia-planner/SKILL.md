@@ -118,10 +118,12 @@ it protects.
    ```
 
    The body is stdin the CLI stores, so any `>`, `;`, `|`, `&&`, backticks,
-   `$(...)` or quotes in its prose are fine. Keep the command line itself to that
-   one `gaia` call: a `$`, backtick or backslash inside a double-quoted
-   `--reason`, a redirect, or anything chained before the call or after the
-   terminator makes the hook read the body as shell again. Close
+   `$(...)` or quotes in its prose are fine. Write the reason without a `'`: one
+   inside it closes the quotes early and turns the data treatment off. Keep the
+   command line itself to that one `gaia` call: a `$`, backtick or backslash
+   inside a double-quoted `--reason`, a word starting with an unquoted `#`, a
+   redirect, or anything chained before the call or after the terminator makes
+   the hook read the body as shell again. Close
    with `gaia brief verify <name>` clean.
 
 7. **While the plan is `draft`, re-plan directly with the verb that matches the
