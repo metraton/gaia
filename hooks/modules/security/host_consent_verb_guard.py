@@ -391,7 +391,10 @@ def _is_reader(words: List[_Word]) -> bool:
         while index < len(words) and words[index].text.startswith("-"):
             index += 2 if words[index].text == "-C" else 1
         subcommand = words[index].text if index < len(words) else ""
-        return subcommand in _GIT_READ_SUBCOMMANDS
+        opens_a_pager = any(
+            w.text.startswith(("-O", "--open-files-in-pager")) for w in words[index:]
+        )
+        return subcommand in _GIT_READ_SUBCOMMANDS and not opens_a_pager
     return False
 
 

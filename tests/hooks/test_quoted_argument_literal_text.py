@@ -20,8 +20,11 @@ from modules.tools.cloud_pipe_validator import validate_cloud_pipe  # noqa: E402
 
 GAIA = str(REPO / "bin" / "gaia")
 DRAFT = "a1b2c3d4e5f60718.abc"
-SUBAGENT = {"agent_id": "a1b2c3d4e5f60718", "agent_type": "gaia-system", "session_id": "s-quoted"}
-ORCHESTRATOR = {"session_id": "s-quoted"}
+SUBAGENT = {
+    "agent_id": "a1b2c3d4e5f60718", "agent_type": "gaia-system", "session_id": "s-quoted",
+    "cwd": str(REPO),
+}
+ORCHESTRATOR = {"session_id": "s-quoted", "cwd": str(REPO)}
 SUBSTITUTION_REFUSAL = "command substitution detected"
 
 
@@ -83,6 +86,36 @@ def test_substitution_bash_would_run_or_cannot_be_parsed_is_refused(command):
 
     assert verdict.allowed is False
     assert SUBSTITUTION_REFUSAL in str(verdict.reason), verdict.reason
+
+
+@pytest.mark.parametrize("delimiter", [GAIA, "EOF"], ids=["gaia-path-delimiter", "plain-delimiter"])
+@pytest.mark.parametrize("line", ["'$(id)'", "'`id`'"], ids=["dollar-paren", "backticks"])
+def test_quotes_inside_an_unquoted_heredoc_body_do_not_stop_a_substitution(delimiter, line):
+    command = f"{GAIA} memory search x <<{delimiter}\n{GAIA} memory search {line}\n{delimiter}"
+
+    verdict = _verdict(command, ORCHESTRATOR)
+
+    assert verdict.allowed is False
+    assert SUBSTITUTION_REFUSAL in str(verdict.reason), verdict.reason
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "Known gap, predates this change: the compound lane classifies a heredoc body line as its "
+    "own component, out of the heredoc, so its quotes read as quoting."
+))
+def test_mutation_in_quotes_inside_an_unquoted_heredoc_body_is_t3():
+    verdict = _verdict("cat <<EOF\n'$(rm -rf /tmp/x)'\nEOF", SUBAGENT)
+
+    assert verdict.allowed is False
+    assert "T3" in str(verdict.reason), verdict.reason
+
+
+@pytest.mark.parametrize("pager_flag", ["-Oless", "--open-files-in-pager=less"])
+def test_git_grep_that_opens_a_pager_is_not_a_reader(pager_flag):
+    verdict = _verdict(f"git -C {REPO} grep {pager_flag} opencode-present", SUBAGENT)
+
+    assert verdict.allowed is False
+    assert verdict.reason == REJECTION_MESSAGE, verdict.reason
 
 
 def test_mutation_inside_double_quoted_substitution_stays_t3():
