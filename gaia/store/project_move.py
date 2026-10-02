@@ -17,12 +17,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from gaia.store.writer import (
-    _connect,
-    _db_path,
-    _find_collision_free_name,
-    _project_child_fk_tables,
-)
+from gaia.store.writer import _connect, _db_path, _project_child_fk_tables
 
 
 class ProjectMoveError(ValueError):
@@ -69,6 +64,21 @@ def _require_declared(workspace: str, db_path: Path | None) -> None:
         )
 
 
+def _free_name(con: sqlite3.Connection, workspace: str, name: str) -> str:
+    """``name``, or ``name-2``, ``name-3``... when another row holds the slot.
+
+    Any occupant counts, one without an identity included:
+    ``writer._find_collision_free_name`` treats that one as the same repo so an
+    upsert can adopt it, which a move cannot do without a primary-key clash.
+    """
+    candidate, suffix = name, 2
+    while con.execute(
+        "SELECT 1 FROM projects WHERE workspace = ? AND name = ?", (workspace, candidate)
+    ).fetchone():
+        candidate, suffix = f"{name}-{suffix}", suffix + 1
+    return candidate
+
+
 def _ficha_slug(payload: dict | None, row: sqlite3.Row) -> str | None:
     from gaia.identity_shape import classify_identity_shape
     from tools.scan.promote import _match_slug
@@ -81,7 +91,7 @@ def _ficha_slug(payload: dict | None, row: sqlite3.Row) -> str | None:
 
 
 def _carry_ficha(con: sqlite3.Connection, row: sqlite3.Row, to_workspace: str) -> str | None:
-    """Move the project's entry into the target contract; keys the target entry already holds win."""
+    """Move the project's entry into the target contract, replacing a target entry for the same repo."""
     from gaia.identity_shape import WORKSPACE_META_KEY, classify_identity_shape
     from tools.scan.promote import (
         _new_slug, _select_identity_payload, _upsert_identity_payload,
@@ -99,9 +109,7 @@ def _carry_ficha(con: sqlite3.Connection, row: sqlite3.Row, to_workspace: str) -
     target_slug = _ficha_slug(target, row)
     if target_slug is None:
         target_slug = _new_slug(entry.get("name") or row["name"], set(target))
-        target[target_slug] = entry
-    else:
-        target[target_slug] = {**entry, **target[target_slug]}
+    target[target_slug] = entry
 
     _upsert_identity_payload(con, row["workspace"], source)
     _upsert_identity_payload(con, to_workspace, target)
@@ -131,6 +139,7 @@ def _plan(con: sqlite3.Connection, row: sqlite3.Row, to_workspace: str) -> dict:
     }
 
     slug = _ficha_slug(_select_identity_payload(con, source), row)
+    replaced = _ficha_slug(_select_identity_payload(con, to_workspace), row) if slug else None
     contracts = [
         r[0] for r in con.execute(
             "SELECT contract_name FROM project_context_contracts WHERE workspace = ? "
@@ -140,6 +149,7 @@ def _plan(con: sqlite3.Connection, row: sqlite3.Row, to_workspace: str) -> dict:
     tables["project_context_contracts"] = {
         "moves": [f"project_identity.{slug}"] if slug else [],
         "stays": contracts,
+        "replaces": [f"project_identity.{replaced}"] if replaced else [],
     }
 
     memory = 0
@@ -162,12 +172,14 @@ def _plan(con: sqlite3.Connection, row: sqlite3.Row, to_workspace: str) -> dict:
         )
     ] if moving_briefs else []
 
+    name_in_target = _free_name(con, to_workspace, row["name"])
     return {
         "project": row["name"],
         "project_identity": identity,
         "from": source,
         "to": to_workspace,
-        "name_in_target": _find_collision_free_name(con, to_workspace, row["name"], identity),
+        "name_in_target": name_in_target,
+        "name_taken_in_target": row["name"] if name_in_target != row["name"] else None,
         "tables": tables,
         "collisions": {"briefs": collisions} if collisions else {},
     }
@@ -230,6 +242,12 @@ def move_project(
                 )
             plan["ficha_slug"] = _carry_ficha(con, row, to_workspace)
             con.commit()
+        except sqlite3.IntegrityError as exc:
+            con.rollback()
+            raise ProjectMoveError(
+                f"moving {project!r} into {to_workspace!r} would break a key there "
+                f"({exc}); nothing was written"
+            ) from exc
         except Exception:
             con.rollback()
             raise

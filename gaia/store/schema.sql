@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
     last_scan_at  TEXT,                       -- ISO8601 timestamp of last successful `gaia scan` run; NULL = never scanned; v7
     status        TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete). 'missing' = the Gaia install footprint disappeared (workspace demoted); v17
     missing_since TEXT,                        -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned; v17
-    root_path     TEXT                         -- absolute workspace directory resolved by `gaia scan`; NULL until the next scan; anchors <root_path>/.project-worktrees; scanner-owned; v55
+    root_path     TEXT                         -- absolute workspace root, set only by `gaia workspace declare` (`gaia workspace retire` releases it); non-NULL marks a declared workspace; anchors <root_path>/.project-worktrees; v55
 );
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_identity ON workspaces(identity);

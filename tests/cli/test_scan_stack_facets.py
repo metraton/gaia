@@ -236,7 +236,7 @@ def test_rescan_prunes_stale_facets(tmp_path, tmp_db):
 # regression guard: identity-collapse across workspaces (the T8 FK bug)
 # ---------------------------------------------------------------------------
 
-def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
+def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db, capsys):
     """A repo indexed under one workspace, then owned by a nested workspace
     declared later, is ONE projects row that moves to the nearest declared
     workspace, with its facets, and stays there when the outer one rescans."""
@@ -267,6 +267,15 @@ def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
         f"the nearest declared workspace did not win: {[tuple(r) for r in rows]}"
     )
     assert r3.foreign_repos and _facet_rows(tmp_db, "aaxis", "aos-iac") == []
+
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "bin"))
+    from cli.scan import _render_human
+
+    _render_human(r2, dry_run=False)
+    printed = capsys.readouterr().out
+    assert "project 'aos-iac' moved from workspace 'aaxis' to 'aos'" in printed, printed
+    assert "nearest declared workspace" in printed, printed
 
     rows = _facet_rows(tmp_db, "aos", "aos-iac")
     seen = {(s, k) for (s, k, v) in rows}

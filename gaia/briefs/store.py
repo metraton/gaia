@@ -582,6 +582,58 @@ _LEGAL_TRANSITIONS: dict[str, set[str]] = {
 from gaia.state import VALID_BRIEF_STATUSES as VALID_STATUSES  # noqa: E402
 
 
+def set_brief_project(
+    workspace: str,
+    name: str,
+    project: str,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Tag brief ``name`` of ``workspace`` with ``project``, a project of that workspace.
+
+    The brief then moves with the project (``gaia project move``). Returns
+    ``{"mode", "workspace", "brief", "project", "previous"}`` with ``project``
+    the resolved project_identity; a dry-run writes nothing.
+
+    Raises:
+        ValueError: the brief or the project does not exist in ``workspace``,
+            or the brief is already tagged with another project.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_write_content
+    from gaia.store.writer import resolve_project_ref
+
+    _assert_dispatch_can_write_content("briefs")
+    identity = resolve_project_ref(workspace, project, db_path=db_path)
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id, project FROM briefs WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"brief '{name}' not found in workspace '{workspace}'")
+        if row["project"] not in (None, identity):
+            raise ValueError(
+                f"brief '{name}' already belongs to project {row['project']!r}"
+            )
+        if not dry_run and row["project"] is None:
+            con.execute(
+                "UPDATE briefs SET project = ?, updated_at = ? WHERE id = ?",
+                (identity, _now_iso(), row["id"]),
+            )
+            con.commit()
+    finally:
+        con.close()
+    return {
+        "mode": "dry-run" if dry_run else "applied",
+        "workspace": workspace,
+        "brief": name,
+        "project": identity,
+        "previous": row["project"],
+    }
+
+
 def set_status_brief(
     workspace: str,
     name: str,

@@ -651,7 +651,14 @@ def _move_to_owner(
             dry_run=not apply, db_path=db_path,
         )
     except ProjectMoveError as exc:
-        return {"kind": "project_move_refused", **fields, "message": str(exc)}
+        return {
+            "kind": "project_move_refused", **fields,
+            "message": (
+                f"project {recorded['name']!r} stays in workspace "
+                f"{recorded['workspace']!r}, not moved to {c.workspace!r}, the nearest "
+                f"declared workspace holding {c.path}: {exc}"
+            ),
+        }
     verb = "moved" if apply else "would move"
     return {
         "kind": "project_moved", **fields,

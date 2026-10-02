@@ -80,6 +80,11 @@ def _render_human(report, *, dry_run: bool) -> None:
 
     collisions = [w for w in report.warnings if w["kind"] == "repo_collision"]
     copies = [w for w in report.warnings if w["kind"] == "repo_copy"]
+    moves = [w for w in report.warnings if w["kind"] in ("project_moved", "project_move_refused")]
+    if moves:
+        print(f"{prefix}projects recorded under another workspace than their nearest declared one:")
+        for w in moves:
+            print(f"  ! {w['message']}")
     if collisions:
         # M2-T6 (AC-5): would-be collisions are surfaced explicitly, never
         # silently merged/renamed.

@@ -262,38 +262,50 @@ def _project_identity_entries(
     return identity if isinstance(identity, dict) else {}
 
 
-def project_home_workspace(
+def _dispatched_project_row(
     workspace: str,
-    name: str,
+    ref: str,
     local_path: Optional[str] = None,
     db_path: Optional[Path] = None,
-) -> str:
-    """The workspace whose ``project_identity`` contract holds project ``name``'s entry.
+) -> Optional[dict]:
+    """The active ``projects`` row a dispatch names, in whichever workspace holds it, or None.
 
-    That is the workspace of the project's active ``projects`` row: ``workspace``
-    itself when it holds one, else the only other workspace that does (a project
-    moved by ``gaia project move`` or a rescan). ``workspace`` when the name is
-    unknown, ambiguous, or the read fails.
+    Matched by path when the dispatch carries one, else by project_identity,
+    else by name; a name several projects hold resolves to the one in
+    ``workspace`` or to none.
     """
-    sql = (
-        "SELECT DISTINCT workspace FROM projects "
-        "WHERE name = ? COLLATE NOCASE AND status = 'active'"
-    )
-    params: list = [name]
     if local_path:
-        sql += " AND path = ?"
-        params.append(local_path)
+        lookups = [("path = ?", local_path)]
+    else:
+        lookups = [("project_identity = ?", ref), ("name = ? COLLATE NOCASE", ref)]
     try:
         con = _db_connect(db_path)
         try:
-            holders = [r[0] for r in con.execute(sql, params)]
+            for where, value in lookups:
+                rows = [dict(r) for r in con.execute(
+                    "SELECT workspace, name, path, remote_url FROM projects "
+                    f"WHERE {where} AND status = 'active'", (value,),
+                )]
+                if len(rows) > 1:
+                    rows = [r for r in rows if r["workspace"] == workspace]
+                if len(rows) == 1:
+                    return rows[0]
         finally:
             con.close()
     except sqlite3.Error:
-        return workspace
-    if workspace in holders or len(holders) != 1:
-        return workspace
-    return holders[0]
+        return None
+    return None
+
+
+def _project_entry(row: dict, db_path: Optional[Path] = None) -> Optional[dict]:
+    """The ``project_identity`` entry of the repo behind ``row``, matched as promotion matches it."""
+    from tools.scan.promote import _match_slug
+
+    entries = _project_identity_entries(row["workspace"], db_path=db_path)
+    slug = _match_slug(entries, {
+        "path": row["path"], "remote_url": row["remote_url"], "name": row["name"],
+    })
+    return entries[slug] if slug else None
 
 
 def resolve_project_by_name(
@@ -304,9 +316,10 @@ def resolve_project_by_name(
     """Resolve a project NAMED at dispatch, as ``"name (/abs/path)"``.
 
     The ``project=<name>`` dispatch token names the project the orchestrator
-    already knows the turn is about; this matches it (case-insensitively)
-    against the ``name`` of each ``project_identity`` entry of the project's
-    current workspace (:func:`project_home_workspace`). A name the
+    already knows the turn is about, by project_identity or by name. It
+    resolves to the project's row (:func:`_dispatched_project_row`) and that
+    row's entry in the workspace holding it; failing that, to the entry of
+    ``workspace`` whose ``name`` matches case-insensitively. A name the
     substrate does not know yet still returns verbatim -- the orchestrator's
     assertion is dispatch data, and a bare name beats a dropped one -- just
     without the ``(path)`` suffix only a known entry can supply.
@@ -316,8 +329,11 @@ def resolve_project_by_name(
     wanted = str(name).strip()
     if not wanted:
         return None
-    home = project_home_workspace(workspace, wanted, db_path=db_path)
-    for entry in _project_identity_entries(home, db_path=db_path).values():
+    row = _dispatched_project_row(workspace, wanted, db_path=db_path)
+    entry = _project_entry(row, db_path) if row else None
+    if entry and entry.get("name"):
+        return _project_display(entry)
+    for entry in _project_identity_entries(workspace, db_path=db_path).values():
         if not isinstance(entry, dict):
             continue
         entry_name = entry.get("name")
@@ -389,16 +405,20 @@ def dispatch_project_entry(
     """The ``project_identity`` entry a born row's ``dispatch_project`` names, or None.
 
     Inverts :func:`resolve_project_by_name` and :func:`resolve_dispatch_project`,
-    which both format through :func:`_project_display`, and reads the entry
-    from the project's current workspace (:func:`project_home_workspace`); a
-    project named at dispatch that the substrate does not know matches nothing.
+    which both format through :func:`_project_display`: the entry of the
+    project's row (:func:`_dispatched_project_row`) wherever it now lives, else
+    the entry of ``workspace`` with that display. A project named at dispatch
+    that the substrate does not know matches nothing.
     """
     if not workspace or not dispatch_project:
         return None
     name, _, rest = dispatch_project.partition(" (")
     local_path = rest[:-1] if rest.endswith(")") else None
-    home = project_home_workspace(workspace, name, local_path, db_path=db_path)
-    for entry in _project_identity_entries(home, db_path=db_path).values():
+    row = _dispatched_project_row(workspace, name, local_path, db_path=db_path)
+    entry = _project_entry(row, db_path) if row else None
+    if entry is not None:
+        return entry
+    for entry in _project_identity_entries(workspace, db_path=db_path).values():
         if isinstance(entry, dict) and entry.get("name") and (
             _project_display(entry) == dispatch_project
         ):

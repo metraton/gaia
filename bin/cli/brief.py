@@ -18,6 +18,7 @@ Subcommands:
                                           verify_brief and prints inconsistencies;
                                           does NOT change AC/milestone/plan status)
     gaia brief set-status <name> <status> Validated state-machine transition
+    gaia brief set-project <name> <project> Tag a brief so it moves with its project
                                           (DB-only)
     gaia brief deps <name> [--json]       Print dependency graph
     gaia brief search <query> [--limit N] FTS5 search over objective/context/approach
@@ -308,6 +309,23 @@ def _cmd_set_status(args) -> int:
             print(f"Brief '{name}' already at status '{new_status}' (noop)")
         else:
             print(f"Brief '{name}': {res['old_status']} -> {res['new_status']}")
+    return 0
+
+
+def _cmd_set_project(args) -> int:
+    """Tag an existing brief with the project it is for, so it moves with that project."""
+    from gaia.briefs import set_brief_project
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    try:
+        res = set_brief_project(workspace, args.name, args.project, dry_run=args.dry_run)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        verb = "would belong" if args.dry_run else "belongs"
+        print(f"Brief '{args.name}' in '{workspace}' {verb} to project {res['project']}")
     return 0
 
 
@@ -887,6 +905,23 @@ def register(subparsers) -> None:
     close_p.add_argument("--workspace", default=None,
                          help="Workspace identity.")
 
+    # -- set-project --------------------------------------------------------
+    setproject_p = actions.add_parser(
+        "set-project",
+        help="Tag a brief with the project it is for",
+        description="Tag an existing workspace-level brief with a project of its "
+                    "workspace; it then moves with that project (gaia project move).",
+        epilog="Examples:\n  gaia brief set-project my-feature gaia --workspace=ws --dry-run\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    setproject_p.add_argument("name", help="Brief slug.")
+    setproject_p.add_argument("project", help="Project name in the brief's workspace.")
+    setproject_p.add_argument("--workspace", default=None, help="Workspace identity.")
+    setproject_p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False,
+                              help="Report the project the brief would get, writing nothing.")
+    setproject_p.add_argument("--json", action="store_true", default=False,
+                              help="Emit JSON. bool.")
+
     # -- set-status ---------------------------------------------------------
     setstatus_p = actions.add_parser(
         "set-status",
@@ -1373,6 +1408,7 @@ def cmd_brief(args) -> int:
         "list": _cmd_list,
         "close": _cmd_close,
         "set-status": _cmd_set_status,
+        "set-project": _cmd_set_project,
         "deps": _cmd_deps,
         "search": _cmd_search,
         "delete": _cmd_delete,
@@ -1393,7 +1429,7 @@ def cmd_brief(args) -> int:
 
     print(
         "Usage: gaia brief "
-        "<new|edit|show|list|close|set-status|deps|search|delete|verify|"
+        "<new|edit|show|list|close|set-status|set-project|deps|search|delete|verify|"
         "milestone|decision|ac>",
         file=sys.stderr,
     )

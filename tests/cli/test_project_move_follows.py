@@ -161,6 +161,94 @@ def test_the_dry_run_lists_what_moves_and_what_stays_and_writes_nothing(alpha_in
     assert {t: _query(db, f"SELECT * FROM {t} ORDER BY 1, 2") for t in tables} == before
 
 
+def test_a_same_name_project_without_identity_in_the_target_leaves_alpha_a_free_name(alpha_in_a):
+    from gaia.store.project_move import move_project
+    from gaia.store.writer import _connect
+
+    db = alpha_in_a
+    con = _connect(db)
+    con.execute("INSERT INTO projects (workspace, name, status) VALUES ('b', 'alpha', 'active')")
+    con.commit()
+    con.close()
+
+    preview = move_project("alpha", "b", from_workspace="a", dry_run=True, db_path=db)
+    assert preview["name_in_target"] == "alpha-2"
+    assert preview["name_taken_in_target"] == "alpha"
+
+    move_project("alpha", "b", from_workspace="a", db_path=db)
+    assert _query(db, "SELECT workspace, name, project_identity FROM projects ORDER BY name") == [
+        ("b", "alpha", None), ("b", "alpha-2", IDENTITY),
+    ]
+
+
+def test_alpha_own_entry_replaces_a_target_entry_for_the_same_repo(alpha_in_a, tmp_path):
+    from gaia.store.project_move import move_project
+    from tools.context.context_provider import _project_identity_entries
+
+    db = alpha_in_a
+    stale = {"integration": "direct"}
+    declared = apply_update(
+        {"contract": "project_identity", "payload": {"alpha": {
+            "name": "alpha", "local_path": str(tmp_path / "a" / "alpha"), "workflow": stale,
+        }}},
+        "gaia-operator", workspace="b", db_path=db,
+    )
+    assert declared["success"], declared
+
+    preview = move_project("alpha", "b", dry_run=True, db_path=db)
+    assert preview["tables"]["project_context_contracts"]["replaces"] == ["project_identity.alpha"]
+
+    move_project("alpha", "b", db_path=db)
+    entries = [e for e in _project_identity_entries("b", db_path=db).values()
+               if isinstance(e, dict) and e.get("name") == "alpha"]
+    assert [e["workflow"] for e in entries] == [WORKFLOW]
+
+
+def test_an_existing_brief_tagged_with_its_project_follows_the_move(alpha_in_a):
+    from gaia.briefs import get_brief, set_brief_project, upsert_brief
+    from gaia.store.project_move import move_project
+
+    db = alpha_in_a
+    upsert_brief("a", "alpha-old", {"title": "Written before v65"}, db_path=db)
+
+    preview = set_brief_project("a", "alpha-old", "alpha", dry_run=True, db_path=db)
+    assert preview == {"mode": "dry-run", "workspace": "a", "brief": "alpha-old",
+                       "project": IDENTITY, "previous": None}
+    assert get_brief("a", "alpha-old", db_path=db)["project"] is None
+
+    assert set_brief_project("a", "alpha-old", "alpha", db_path=db)["mode"] == "applied"
+    move_project("alpha", "b", db_path=db)
+    assert get_brief("b", "alpha-old", db_path=db)["project"] == IDENTITY
+
+
+def test_a_dispatch_by_identity_reads_alpha_and_not_the_session_workspace_namesake(
+    alpha_in_a, tmp_path,
+):
+    from gaia.store.project_move import move_project
+    from gaia.store.writer import upsert_project
+
+    db = alpha_in_a
+    move_project("alpha", "b", db_path=db)
+    upsert_project(
+        "a", "alpha",
+        {"project_identity": "github.com/other/alpha", "path": str(tmp_path / "a" / "other"),
+         "remote_url": "git@github.com:other/alpha.git", "status": "active"},
+        "gaia-system", db_path=db, strip_agent_owned=True,
+    )
+    assert promote_workspace("a", db_path=db)["outcome"] == "applied"
+
+    dispatched = resolve_project_by_name("a", IDENTITY, db_path=db)
+    assert dispatched == f"alpha ({tmp_path / 'a' / 'alpha'})"
+    lines = build_dispatch_kernel(
+        {"contract_id": "a0123456789abcdef.beefcafe0123", "agent_id": "a0123456789abcdef",
+         "workspace": "a", "dispatch_prompt": "ship", "kernel_sections": "{}",
+         "dispatch_project": dispatched},
+        db_path=db,
+    ).splitlines()
+    at = lines.index(f"project: {dispatched}")
+    assert all(value in lines[at + 1] for value in WORKFLOW.values()), lines
+
+
 def test_an_undeclared_target_an_unknown_and_an_ambiguous_project_are_refused(alpha_in_a):
     from gaia.store.project_move import ProjectMoveError, move_project
     from gaia.store.writer import upsert_project
