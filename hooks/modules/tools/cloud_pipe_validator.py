@@ -55,6 +55,7 @@ from typing import Optional
 from .hook_response import build_hook_permission_response
 from .stage_decomposer import StageDecomposer
 from ..security.mutative_verbs import NATIVE_OUTPUT_FLAG_CLIS
+from ..security.shell_substitution import mask_quoted_text
 
 logger = logging.getLogger(__name__)
 
@@ -262,11 +263,17 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
 
 
 def _strip_quoted_sections(text: str) -> str:
+    """Replace content inside single and double quotes with spaces, honoring backslash escapes.
+
+    A quote left open falls back to the escape-blind toggle this rule has always
+    used, so an unparseable command is read no more leniently than before.
     """
-    Replace content inside single and double quotes with spaces.
-    Handles simple quoting (no nested quotes, no escape sequences needed
-    for the operators we scan for).
-    """
+    masked = mask_quoted_text(text)
+    return masked if masked is not None else _toggle_quoted_sections(text)
+
+
+def _toggle_quoted_sections(text: str) -> str:
+    """Mask quoted content by toggling on every quote character, escapes ignored."""
     result = []
     in_single = False
     in_double = False

@@ -115,11 +115,12 @@ own classifiers ADDITIVELY, so this can only ADD a verdict, never remove one.
 
 Public API:
     extract_substitutions(command: str) -> list[str]
+    mask_quoted_text(command: str) -> str | None
 """
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Enough nesting depth for any honest command; past this the obfuscation-depth
 # limit in bash_validator has its own say. The bound only keeps a pathological
@@ -662,3 +663,34 @@ def extract_substitutions_truncated(
     out: List[str] = []
     truncated = _collect(command, 0, out, not top_level_only)
     return out, truncated
+
+
+def mask_quoted_text(command: str) -> Optional[str]:
+    """Return *command* with every quoted span's contents blanked, or None while a quote is open.
+
+    Quote boundaries are found the way bash finds them: an unquoted backslash
+    escapes the next character, so ``\\'`` opens no quote, and inside double
+    quotes ``\\"`` does not close one. The escaped character itself stays
+    visible, so ``\\>`` is still read as shell syntax. ``$'...'`` is read as a
+    plain single-quoted span: an escaped quote inside it ends the span early,
+    which can only expose more text, never hide it. Each character keeps its
+    offset, so a scan of the result points at the same position in *command*.
+    """
+    out = list(command)
+    i, length = 0, len(command)
+    while i < length:
+        ch = command[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch not in "'\"":
+            i += 1
+            continue
+        j = i + 1
+        while j < length and command[j] != ch:
+            j += 2 if ch == '"' and command[j] == "\\" else 1
+        if j >= length:
+            return None
+        out[i + 1:j] = " " * (j - i - 1)
+        i = j + 1
+    return "".join(out)

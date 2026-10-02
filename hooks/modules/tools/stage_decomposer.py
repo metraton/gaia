@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from .shell_parser import ShellCommandParser
+from ..security.shell_substitution import extract_substitutions, mask_quoted_text
 
 
 @dataclass
@@ -303,7 +304,15 @@ class StageDecomposer:
     _SUBST_BACKTICK_RE = re.compile(r"`([^`]*)`")
 
     def _extract_substitutions(self, command: str) -> List[str]:
-        """Return a list of inner strings from $(...) and `...` substitutions."""
+        """Return the inner strings of the $(...) and `...` substitutions bash would run.
+
+        Quoting decides what runs, so a balanced command is read by the
+        quote-aware extractor. A command with a quote left open or an ANSI-C
+        ``$'...'`` span keeps the quote-blind patterns below, which report every
+        opener they see.
+        """
+        if "$'" not in command and mask_quoted_text(command) is not None:
+            return extract_substitutions(command)
         results: List[str] = []
         results.extend(m.group(1).strip() for m in self._SUBST_PAREN_RE.finditer(command))
         results.extend(m.group(1).strip() for m in self._SUBST_BACKTICK_RE.finditer(command))
