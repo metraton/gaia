@@ -168,7 +168,7 @@ gaia project move <project> --into <workspace> --dry-run   # lists what moves an
 gaia project move <project> --into <workspace>
 ```
 
-The project goes in one step, with its briefs (those created for it with `gaia brief new --project`) and its profile: what Gaia knows about it, its declared workflow included. Its memory belongs to the project and is read from any workspace, so it moves with it without being copied. Briefs written for the workspace as a whole stay where they are. A workspace that is not declared is refused as the target, and a name found in two workspaces asks for `--from <workspace>`.
+The project goes in one step, with its briefs (those created for it with `gaia brief new --project`; an existing brief can be tagged with its project, `gaia brief set-project <slug> <project>`) and its profile: what Gaia knows about it, its declared workflow included. Its memory belongs to the project and is read from any workspace, so it moves with it without being copied. Briefs written for the workspace as a whole stay where they are. A workspace that is not declared is refused as the target, and a name found in two workspaces asks for `--from <workspace>`.
 
 **Database migrations.** A new release may move `~/.gaia/gaia.db` to a newer schema. `gaia install` and `gaia update` do it on their own, and so does the plugin at SessionStart when the database is behind. On its own means without asking: a backup goes to `backups/` beside the database, and the whole chain runs in one transaction. What decides whether it can go on alone is what the chain reaches:
 

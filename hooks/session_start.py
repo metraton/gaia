@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""SessionStart hook — first-time setup, the plugin's first scan, context injection.
+"""SessionStart hook — first-time setup, the declared-workspace notice, context injection.
+
+It registers and scans no workspace; outside every declared one it says so and
+names `gaia workspace declare <name> <path>`.
 
 Every write happens only when the host executes this file: importing it -- as
 doctor's importability check does -- links no hooks and records no manifest.
