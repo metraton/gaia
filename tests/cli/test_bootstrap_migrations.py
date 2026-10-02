@@ -557,7 +557,11 @@ _REMOTE_IDENTITY = "github.com/metraton/auto-claude-code-research-in-sleep"
 
 
 def _apply_v64(db: Path) -> None:
-    """Run v63_to_v64.sql the way the bootstrap does: statement by statement, one transaction."""
+    _apply_migration(db, "v63_to_v64.sql")
+
+
+def _apply_migration(db: Path, filename: str) -> None:
+    """Run one migration the way the bootstrap does: statement by statement, one transaction."""
     sys.path.insert(0, str(_REPO_ROOT / "scripts"))
     import migration_guard
 
@@ -565,7 +569,7 @@ def _apply_v64(db: Path) -> None:
     con.isolation_level = None
     try:
         con.execute("BEGIN IMMEDIATE")
-        sql = (_MIGRATIONS_DIR / "v63_to_v64.sql").read_text(encoding="utf-8")
+        sql = (_MIGRATIONS_DIR / filename).read_text(encoding="utf-8")
         for statement in migration_guard.split_statements(sql):
             con.execute(statement)
         con.execute("COMMIT")
@@ -659,6 +663,31 @@ def test_v64_keeps_every_memory_note_attached_to_its_project(duplicate_clone_pai
         "note-local": "local_only",
         "note-unscoped": project_key,
     }
+
+
+def test_v65_adds_a_nullable_brief_project_and_leaves_existing_briefs_untouched(
+    bootstrapped_db_template, tmp_path,
+):
+    db = copy_bootstrapped_db(bootstrapped_db_template, tmp_path / "gaia.db")
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("ALTER TABLE briefs DROP COLUMN project")
+        con.execute("INSERT INTO workspaces (name) VALUES ('ws')")
+        con.execute(
+            "INSERT INTO briefs (workspace, name, status, title, created_at, updated_at) "
+            "VALUES ('ws', 'roadmap', 'open', 'Roadmap', '2026-01-01T00:00:00Z', "
+            "'2026-01-01T00:00:00Z')"
+        )
+        con.commit()
+    finally:
+        con.close()
+    before = _query(db, "SELECT * FROM briefs")
+
+    _apply_migration(db, "v64_to_v65.sql")
+
+    column = [c for c in _query(db, "PRAGMA table_info(briefs)") if c[1] == "project"]
+    assert [(c[2], c[3]) for c in column] == [("TEXT", 0)]
+    assert _query(db, "SELECT * FROM briefs") == [row + (None,) for row in before]
 
 
 if __name__ == "__main__":

@@ -469,6 +469,7 @@ CREATE TABLE IF NOT EXISTS briefs (
     topic_key    TEXT,                 -- optional dimension key
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    project      TEXT,                 -- project_identity of the project the brief was created for; moves with it (`gaia project move`); NULL = workspace-level brief; v65
     UNIQUE (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );

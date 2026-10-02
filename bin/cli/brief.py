@@ -183,6 +183,14 @@ def _cmd_new(args) -> int:
     headless = getattr(args, "headless", False)
     as_json = getattr(args, "json", False)
 
+    project_identity = None
+    if getattr(args, "project", None):
+        from gaia.store.writer import resolve_project_ref
+        try:
+            project_identity = resolve_project_ref(workspace, args.project)
+        except ValueError as exc:
+            return _err(str(exc), as_json=as_json)
+
     if headless:
         # DB-only flow: no $EDITOR, no filesystem, slug derived from --title.
         title = getattr(args, "title", None)
@@ -235,6 +243,7 @@ def _cmd_new(args) -> int:
             "context": context_val,
             "approach": approach,
             "out_of_scope": out_of_scope,
+            "project": project_identity,
         }
         # Strip None values so DEFAULTs in upsert_brief / NULL columns stay clean.
         fields = {k: v for k, v in fields.items() if v is not None}
@@ -271,6 +280,8 @@ def _cmd_new(args) -> int:
     except Exception as exc:
         return _err(f"failed to parse brief: {exc}", as_json=as_json)
 
+    if project_identity:
+        parsed["project"] = project_identity
     res = upsert_brief(workspace, name, parsed)
     print(f"Created brief '{name}' (id={res['brief_id']}, "
           f"acs={res['acs']}, milestones={res['milestones']})")
@@ -730,6 +741,9 @@ def register(subparsers) -> None:
                        help="Brief slug. Optional with --headless.")
     new_p.add_argument("--workspace", default=None,
                        help="Workspace identity.")
+    new_p.add_argument("--project", default=None, metavar="NAME",
+                       help="Project of the workspace the brief is for; it moves "
+                            "with the project. Default: a workspace-level brief.")
     new_p.add_argument("--headless", action="store_true", default=False,
                        help="Build from flags. bool. Default: false.")
     new_p.add_argument("--title", default=None,

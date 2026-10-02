@@ -262,6 +262,40 @@ def _project_identity_entries(
     return identity if isinstance(identity, dict) else {}
 
 
+def project_home_workspace(
+    workspace: str,
+    name: str,
+    local_path: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> str:
+    """The workspace whose ``project_identity`` contract holds project ``name``'s entry.
+
+    That is the workspace of the project's active ``projects`` row: ``workspace``
+    itself when it holds one, else the only other workspace that does (a project
+    moved by ``gaia project move`` or a rescan). ``workspace`` when the name is
+    unknown, ambiguous, or the read fails.
+    """
+    sql = (
+        "SELECT DISTINCT workspace FROM projects "
+        "WHERE name = ? COLLATE NOCASE AND status = 'active'"
+    )
+    params: list = [name]
+    if local_path:
+        sql += " AND path = ?"
+        params.append(local_path)
+    try:
+        con = _db_connect(db_path)
+        try:
+            holders = [r[0] for r in con.execute(sql, params)]
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return workspace
+    if workspace in holders or len(holders) != 1:
+        return workspace
+    return holders[0]
+
+
 def resolve_project_by_name(
     workspace: str,
     name: Optional[str],
@@ -271,7 +305,8 @@ def resolve_project_by_name(
 
     The ``project=<name>`` dispatch token names the project the orchestrator
     already knows the turn is about; this matches it (case-insensitively)
-    against the ``name`` of each ``project_identity`` entry. A name the
+    against the ``name`` of each ``project_identity`` entry of the project's
+    current workspace (:func:`project_home_workspace`). A name the
     substrate does not know yet still returns verbatim -- the orchestrator's
     assertion is dispatch data, and a bare name beats a dropped one -- just
     without the ``(path)`` suffix only a known entry can supply.
@@ -281,7 +316,8 @@ def resolve_project_by_name(
     wanted = str(name).strip()
     if not wanted:
         return None
-    for entry in _project_identity_entries(workspace, db_path=db_path).values():
+    home = project_home_workspace(workspace, wanted, db_path=db_path)
+    for entry in _project_identity_entries(home, db_path=db_path).values():
         if not isinstance(entry, dict):
             continue
         entry_name = entry.get("name")
@@ -353,12 +389,16 @@ def dispatch_project_entry(
     """The ``project_identity`` entry a born row's ``dispatch_project`` names, or None.
 
     Inverts :func:`resolve_project_by_name` and :func:`resolve_dispatch_project`,
-    which both format through :func:`_project_display`; a project named at
-    dispatch that the substrate does not know matches nothing.
+    which both format through :func:`_project_display`, and reads the entry
+    from the project's current workspace (:func:`project_home_workspace`); a
+    project named at dispatch that the substrate does not know matches nothing.
     """
     if not workspace or not dispatch_project:
         return None
-    for entry in _project_identity_entries(workspace, db_path=db_path).values():
+    name, _, rest = dispatch_project.partition(" (")
+    local_path = rest[:-1] if rest.endswith(")") else None
+    home = project_home_workspace(workspace, name, local_path, db_path=db_path)
+    for entry in _project_identity_entries(home, db_path=db_path).values():
         if isinstance(entry, dict) and entry.get("name") and (
             _project_display(entry) == dispatch_project
         ):

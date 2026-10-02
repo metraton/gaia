@@ -103,7 +103,9 @@ def upsert_brief(
         fields: dict matching the parse_brief_markdown shape; recognized keys:
             ``status``, ``surface_type``, ``topic_key``, ``title``,
             ``objective``, ``context``, ``approach``, ``out_of_scope``,
-            ``acceptance_criteria``, ``milestones``, ``dependencies``.
+            ``acceptance_criteria``, ``milestones``, ``dependencies``, and
+            ``project`` -- the project_identity a new brief is created for,
+            written on insert only; an existing brief keeps its project.
         db_path: optional explicit DB path (tests).
 
     An AC/milestone `status` set via `gaia ac set-status` / `gaia milestone
@@ -149,14 +151,15 @@ def upsert_brief(
                     """
                     INSERT INTO briefs (workspace, name, status, surface_type, title,
                                         objective, context, approach, out_of_scope,
-                                        topic_key, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        topic_key, project, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         workspace, name,
                         data["status"], data["surface_type"], data["title"],
                         data["objective"], data["context"], data["approach"],
-                        data["out_of_scope"], data["topic_key"], now, now,
+                        data["out_of_scope"], data["topic_key"],
+                        fields.get("project"), now, now,
                     ),
                 )
                 brief_id = con.execute(

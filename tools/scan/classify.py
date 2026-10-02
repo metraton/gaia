@@ -25,7 +25,10 @@ PATH``; its name is never matched against path segments. The scan of workspace
                  ``(workspace, name)`` set discovered this run. A repo whose
                  identity names a project already held by another live clone
                  is a copy: a ``copy`` facet of that project and a
-                 ``repo_copy`` warning, never a row of its own.
+                 ``repo_copy`` warning, never a row of its own. A project
+                 recorded under another workspace moves to its owner
+                 (``gaia.store.project_move``) with a ``project_moved``
+                 warning.
   R6 output    = always structured data (:class:`ScanReport`), never a crash.
   R7 declared  = applying refuses a ``W`` that is not declared, and the scan
                  never writes a workspace root. A dry-run of an undeclared ``W``
@@ -632,6 +635,34 @@ def _record_copy(
     )
 
 
+def _move_to_owner(
+    c: RepoClassification, recorded: dict, *, apply: bool, db_path: Path | None
+) -> dict:
+    """Move the project recorded under another workspace into ``c.workspace``, its owner (R2)."""
+    from gaia.store.project_move import ProjectMoveError, move_project
+
+    fields = {
+        "repo": c.repo, "path": c.path,
+        "from": recorded["workspace"], "workspace": c.workspace,
+    }
+    try:
+        move_project(
+            c.project_identity, c.workspace, from_workspace=recorded["workspace"],
+            dry_run=not apply, db_path=db_path,
+        )
+    except ProjectMoveError as exc:
+        return {"kind": "project_move_refused", **fields, "message": str(exc)}
+    verb = "moved" if apply else "would move"
+    return {
+        "kind": "project_moved", **fields,
+        "message": (
+            f"project {recorded['name']!r} {verb} from workspace "
+            f"{recorded['workspace']!r} to {c.workspace!r}, the nearest declared "
+            f"workspace holding {c.path}."
+        ),
+    }
+
+
 def _copy_warning(copy: RepoClassification, target: dict) -> dict:
     return {
         "kind": "repo_copy",
@@ -737,6 +768,12 @@ def scan(
         # SV2: create-vs-update, decided BEFORE the write so dry-run and
         # apply agree on the same answer (read-only; see _identity_exists).
         existed_before = _identity_exists(c.project_identity, db_path)
+
+        recorded = _project_row_by_identity(c.project_identity, db_path)
+        if recorded is not None and recorded["workspace"] != c.workspace:
+            report.warnings.append(
+                _move_to_owner(c, recorded, apply=apply, db_path=db_path)
+            )
 
         # M3/T8 (AC-6): compute the repo's stack fingerprint (languages,
         # frameworks with version, build tools, detected infra/deployment/

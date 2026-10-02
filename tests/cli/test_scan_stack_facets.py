@@ -238,9 +238,8 @@ def test_rescan_prunes_stale_facets(tmp_path, tmp_db):
 
 def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
     """A repo indexed under one workspace, then owned by a nested workspace
-    declared later, collapses to ONE projects row. Facets must be written to the
-    canonical row's (workspace, name) -- resolved by project_identity -- or the
-    project_facets FK fails (classify._facet_target)."""
+    declared later, is ONE projects row that moves to the nearest declared
+    workspace, with its facets, and stays there when the outer one rescans."""
     from gaia.store.writer import _connect
 
     repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
@@ -250,22 +249,26 @@ def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
 
     r1 = _scan_declared(tmp_path / "aaxis", "aaxis", tmp_db)
     r2 = _scan_declared(tmp_path / "aaxis" / "aos", "aos", tmp_db)
+    r3 = _scan_declared(tmp_path / "aaxis", "aaxis", tmp_db)
 
     # No facet write blew up (the FK regression manifested as an aborted scan).
     assert r1.facet_failures == [], r1.facet_failures
     assert r2.facet_failures == [], r2.facet_failures
+    assert [w["kind"] for w in r2.warnings] == ["project_moved"], r2.warnings
 
     con = _connect(tmp_db)
     try:
-        proj_count = con.execute(
-            "SELECT COUNT(*) FROM projects WHERE project_identity IS NOT NULL"
-        ).fetchone()[0]
+        rows = con.execute(
+            "SELECT workspace, name, status FROM projects WHERE project_identity IS NOT NULL"
+        ).fetchall()
     finally:
         con.close()
-    assert proj_count == 1, f"identity-collapse regressed: {proj_count} project rows"
+    assert [tuple(r) for r in rows] == [("aos", "aos-iac", "active")], (
+        f"the nearest declared workspace did not win: {[tuple(r) for r in rows]}"
+    )
+    assert r3.foreign_repos and _facet_rows(tmp_db, "aaxis", "aos-iac") == []
 
-    # Facets landed on the canonical row (aaxis, aos-iac), keyed correctly.
-    rows = _facet_rows(tmp_db, "aaxis", "aos-iac")
+    rows = _facet_rows(tmp_db, "aos", "aos-iac")
     seen = {(s, k) for (s, k, v) in rows}
     assert ("language", "python") in seen, rows
     assert ("infrastructure", "terraform") in seen, rows
