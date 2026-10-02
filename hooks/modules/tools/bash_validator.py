@@ -257,6 +257,8 @@ def _uncorrelated_set_denial(pending_set: dict, *, session_id: str, tool_use_id:
 
     The refusal touches no grant state, so the message says the signature is
     still live and names the two ways forward instead of ending in a dead end.
+    A chain reaches here too (its components carry no ``tool_use_id``), so the
+    message also names running the item alone.
     """
     missing = " and ".join(
         name for name, value in (("session_id", session_id), ("tool_use_id", tool_use_id))
@@ -264,11 +266,11 @@ def _uncorrelated_set_denial(pending_set: dict, *, session_id: str, tool_use_id:
     )
     approval_id = pending_set["approval_id"]
     return (
-        "COMMAND_SET denied: adapter lacks stable tool-call correlation -- the host "
-        f"sent no {missing} for this Bash call, and item [{pending_set['index']}] of "
-        f"{approval_id} is reserved and settled against it. {approval_id} was not "
-        "consumed and stays approved until its window closes: retry the byte-identical "
-        f"command from a call whose host event carries a {missing}, or close BLOCKED "
+        "COMMAND_SET denied: adapter lacks stable tool-call correlation -- this call "
+        f"carries no {missing}, and item [{pending_set['index']}] of {approval_id} is "
+        f"reserved and settled against it. {approval_id} was not consumed and stays "
+        "approved until its window closes: retry the byte-identical command alone (not "
+        f"inside a chain) from a call whose host event carries a {missing}, or close BLOCKED "
         f"naming {approval_id} and this missing {missing} so the user knows the signed "
         "command did not run."
     )
@@ -462,8 +464,11 @@ class BashValidator:
         """Quick check if command has operators (before parsing).
 
         Detects pipes, logical operators, semicolons, redirects, and
-        background operators.  This is a fast pre-filter — the full
-        shell parser handles quote-aware splitting downstream.
+        background operators.  This is a fast, quote-blind pre-filter: an
+        operator inside quotes (``bash -c 'a; b'``) also returns True, and the
+        quote-aware shell parser downstream then yields a single component, so
+        the branch that handles that outcome must forward every input the
+        operator-free path gets (``tool_use_id`` above all).
 
         Note: '>' and '&' are included so a command still carrying one of
         these tokens after EARLY NORMALIZATION's sanitization pass (e.g. an
@@ -471,8 +476,6 @@ class BashValidator:
         sanitization strips) is still routed through the compound-parsing
         path below instead of being mis-treated as a simple command.
         """
-        # Fast check for common operators outside quotes
-        # This avoids expensive parsing for 70% of commands
         if not any(op in command for op in ['|', '&&', '||', ';', '\n', '>', '&']):
             return False
         return True
@@ -1673,6 +1676,8 @@ class BashValidator:
         # explicit `cd` still overrides it via cwd_after_component below.
         running_cwd: Optional[str] = cwd
         for i, component in enumerate(components, 1):
+            # tool_use_id is withheld on purpose: a COMMAND_SET item runs alone
+            # and must never be reserved as one component of a chain.
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=running_cwd,
