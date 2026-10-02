@@ -26,10 +26,6 @@ GAIA_DB="${GAIA_DB:-$HOME/.gaia/gaia.db}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 SCHEMA_FILE="${SCHEMA_FILE:-$SCRIPT_DIR/../gaia/store/schema.sql}"
 
-# Workspace cuya identidad se va a registrar en projects. Default: directorio
-# raíz del repo (dos niveles arriba de scripts/). Configurable vía env.
-WORKSPACE="${WORKSPACE:-}"
-
 # Verificar que sqlite3 está instalado. Sin esto, todo lo demás falla con
 # errores oscuros; preferimos un mensaje claro al inicio.
 if ! command -v sqlite3 > /dev/null 2>&1; then
@@ -49,7 +45,6 @@ mkdir -p "$(dirname "$GAIA_DB")"
 # Banner inicial: deja claro contra qué DB estamos operando antes de tocar nada.
 echo "[bootstrap] Initializing Gaia DB at $GAIA_DB"
 echo "[bootstrap] Using schema:  $SCHEMA_FILE"
-echo "[bootstrap] Using workspace: ${WORKSPACE:-(none registered)}"
 
 # === Section 1.5: Pre-schema ADD COLUMN reconciliation (existing DBs) ===
 #
@@ -413,74 +408,7 @@ else
     echo "[bootstrap] schema_version up-to-date (no migrations pending)"
 fi
 
-# === Section 4: Registrar workspace actual ===
-#
-# El schema v2.0 (commit be9698f) renombró:
-#   - projects (organizational container) -> workspaces
-#   - repos (git-bearing) -> projects
-# El seed aquí inserta una fila inicial en `workspaces` (el contenedor
-# organizacional, no la tabla de repos git). El scanner luego puebla
-# `projects` cuando descubre repos git dentro del workspace.
-
-# Detectamos la identity del workspace via git remote get-url origin, igual que
-# gaia.store.writer._resolve_identity(). La normalización (lowercase, strip
-# protocolo, strip .git, ssh form) la hacemos en SQL/bash puro -- no llamamos
-# a Python.
-#
-# Fallback: si no hay remote, usamos el basename del workspace en lowercase.
-# Si tampoco eso, usamos 'global'.
-#
-# Solo con WORKSPACE explícito: la carpeta del paquete nunca es un workspace;
-# `gaia install` registra la carpeta donde corre mediante su primer escaneo.
-
-if [ -n "$WORKSPACE" ]; then
-WORKSPACE_IDENTITY=""
-RAW_REMOTE=""
-
-# Capturamos el remote sin pipes; si git falla, RAW_REMOTE queda vacío.
-if command -v git > /dev/null 2>&1; then
-    RAW_REMOTE="$(git -C "$WORKSPACE" remote get-url origin 2> /dev/null || true)"
-fi
-
-if [ -n "$RAW_REMOTE" ]; then
-    # Normalización mínima: lowercase + strip de prefijos comunes + strip .git.
-    # Equivalente a gaia.project._normalize_remote() en bash puro.
-    s="${RAW_REMOTE,,}"             # lowercase (bash 4+)
-    s="${s#https://}"
-    s="${s#http://}"
-    s="${s#ssh://}"
-    s="${s#git+ssh://}"
-    s="${s#git+https://}"
-    # SSH form: git@host:owner/repo -> host/owner/repo
-    if [[ "$s" == git@* ]]; then
-        s="${s#git@}"
-        s="${s/:/\/}"               # primer ':' -> '/'
-    fi
-    s="${s%.git}"
-    s="${s%/}"
-    WORKSPACE_IDENTITY="$s"
-fi
-
-if [ -z "$WORKSPACE_IDENTITY" ]; then
-    # Fallback nivel 2: basename del workspace en lowercase.
-    base="$(basename "$(cd "$WORKSPACE" && pwd)")"
-    WORKSPACE_IDENTITY="${base,,}"
-fi
-
-if [ -z "$WORKSPACE_IDENTITY" ]; then
-    # Fallback nivel 3: literal 'global'.
-    WORKSPACE_IDENTITY="global"
-fi
-
-# El name (PK) y la identity son el mismo string en este flujo bootstrap.
-# El scanner puede actualizar identity más adelante; aquí sólo garantizamos
-# que existe una fila en `workspaces` para el workspace actual.
-sqlite3 "$GAIA_DB" <<EOF
-INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('${WORKSPACE_IDENTITY}', '${WORKSPACE_IDENTITY}');
-EOF
-
-echo "[bootstrap] Workspace registered (identity=${WORKSPACE_IDENTITY})"
-fi
+# The bootstrap never registers a workspace: only `gaia workspace declare` does.
 
 # === Section 5: FTS5 backfill ===
 

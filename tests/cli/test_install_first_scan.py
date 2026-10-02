@@ -8,6 +8,7 @@ of its own.
 """
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -67,6 +68,26 @@ def test_bootstrap_registers_no_workspace_even_when_one_is_named(tmp_path):
 
     _bootstrap(tmp_path, db, WORKSPACE=str(workspace))
 
+    assert _rows(db, "SELECT name FROM workspaces") == []
+
+
+@pytest.mark.skipif(shutil.which("sqlite3") is None, reason="the shell bootstrap needs sqlite3")
+def test_shell_bootstrap_registers_no_workspace_even_when_one_is_named(tmp_path):
+    db = tmp_path / "gaia.db"
+    _bootstrap(tmp_path, db)
+    workspace = _git_repo(tmp_path / "acme")
+    subprocess.run(
+        ["git", "-C", str(workspace), "remote", "add", "origin", "git@github.com:o/acme.git"],
+        check=True,
+    )
+
+    proc = subprocess.run(
+        ["bash", str(_REPO / "scripts" / "bootstrap_database.sh")],
+        env={**_env(tmp_path, db), "WORKSPACE": str(workspace)},
+        capture_output=True, text=True, timeout=300,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
     assert _rows(db, "SELECT name FROM workspaces") == []
 
 

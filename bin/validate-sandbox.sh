@@ -507,11 +507,9 @@ seed_sandbox_db() {
 
   # Run bootstrap to apply the full schema (tables, triggers, FTS5 mirrors).
   # We pass GAIA_DB so bootstrap_database.sh writes to the sandbox DB.
-  # WORKSPACE override points bootstrap at the sandbox dir for project registration.
   local bootstrap_script="${REPO_ROOT}/scripts/bootstrap_database.sh"
   if [[ -f "${bootstrap_script}" ]]; then
-    GAIA_DB="${sandbox_db}" WORKSPACE="${WORKSPACE}" \
-      bash "${bootstrap_script}" >/dev/null
+    GAIA_DB="${sandbox_db}" bash "${bootstrap_script}" >/dev/null
   else
     # Fallback: create the schema directly from the installed package's schema.sql
     local schema_sql="${WORKSPACE}/node_modules/@jaguilar87/gaia/gaia/store/schema.sql"
@@ -523,14 +521,14 @@ seed_sandbox_db() {
     fi
   fi
 
-  # Determine sandbox workspace_id: the directory basename (no git remote in
-  # an ephemeral /tmp dir, so gaia.project.current() falls back to basename).
-  local sandbox_ws_id
-  sandbox_ws_id="$(basename "${WORKSPACE}")"
-
-  # Ensure the workspace row exists (FK required by episodes).
+  # Declare the sandbox as a workspace rooted at its own directory, so the
+  # episodes below (FK on workspaces) belong to the workspace gaia.project.current()
+  # resolves from inside the sandbox.
+  local sandbox_ws_id="gaia-sandbox"
+  local sandbox_root
+  sandbox_root="$(cd "${WORKSPACE}" && pwd -P)"
   sqlite3 "${sandbox_db}" \
-    "INSERT OR IGNORE INTO workspaces(name, status) VALUES('${sandbox_ws_id}', 'active');"
+    "INSERT OR IGNORE INTO workspaces(name, status, root_path) VALUES('${sandbox_ws_id}', 'active', '${sandbox_root}');"
 
   # Seed episodes from the fixture's episodes.jsonl into the sandbox DB.
   # Each JSONL line is a complete episode object. We extract the fields that
