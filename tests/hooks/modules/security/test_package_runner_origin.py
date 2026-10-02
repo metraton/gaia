@@ -30,6 +30,10 @@ def project(tmp_path):
             "deploy": "vite build",
             "live": "kubectl apply -f k8s/",
             "prepare": "tsc -p .",
+            "start": "vite",
+            "test": "kubectl apply -f k8s/",
+            "build": "tsc -p .",
+            "postbuild": "kubectl apply -f k8s/",
         },
         "dependencies": {"prettier": "^3.0.0", "prisma": "^5.0.0"},
     }))
@@ -59,6 +63,14 @@ CASES = [
     ("bun run missing-script", SIGNED),
     # `pnpm deploy` is a pnpm command, not the script of that name.
     ("pnpm deploy", SIGNED),
+    ("npm test", SIGNED),
+    ("npm t", SIGNED),
+    ("npm start", UNSIGNED),
+    ("bun live", SIGNED),
+    ("bun deploy", UNSIGNED),
+    # `build` is harmless, but npm runs `postbuild` right after it.
+    ("npm run build", SIGNED),
+    ("yarn build", SIGNED),
     # 2. Runners: unsigned only when the binary resolves from the project's
     #    installed node_modules; being declared is not running from the project.
     ("npx eslint .", UNSIGNED),
@@ -86,6 +98,14 @@ CASES = [
     ("uvx ruff check .", SIGNED),
     ("uvx pycowsay hello", SIGNED),
     ("npx eslint@9 .", SIGNED),
+    # `user/repo` is a GitHub fetch, not a path.
+    ("npx user/repo", SIGNED),
+    ("pnpm dlx user/repo", SIGNED),
+    ("npm exec user/repo", SIGNED),
+    # An option's separate value is never the package.
+    ("npx --cache /tmp/c cowsay", SIGNED),
+    ("npx --prefix /tmp/p cowsay", SIGNED),
+    ("npm exec --globalconfig /tmp/g cowsay", SIGNED),
     ("npx --package cowsay eslint .", SIGNED),
     ("uvx --from cowsay ruff", SIGNED),
     # 3. Adding a dependency.
@@ -95,11 +115,17 @@ CASES = [
     ("bun add left-pad", SIGNED),
     ("pnpm add left-pad", SIGNED),
     ("yarn add left-pad", SIGNED),
+    ("npm it left-pad", SIGNED),
+    ("npm install-test left-pad", SIGNED),
     # 4. Frozen install from the lockfile versus an install that may rewrite it.
     ("npm ci", UNSIGNED),
     ("bun install --frozen-lockfile", UNSIGNED),
     ("pnpm install --frozen-lockfile", UNSIGNED),
     ("yarn install --immutable", UNSIGNED),
+    ("pnpm install --frozen-lockfile=true", UNSIGNED),
+    ("pnpm install --frozen-lockfile=false", SIGNED),
+    ("bun install --frozen-lockfile=false", SIGNED),
+    ("yarn install --immutable=false", SIGNED),
     ("npm i", SIGNED),
     ("npm install", SIGNED),
     ("bun install", SIGNED),

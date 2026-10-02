@@ -502,15 +502,15 @@ pip uses `install`, `uninstall`, `freeze`, `list`, `show`, `search`, `download`,
 
 | Command / Pattern | Notes |
 |---|---|
-| `npm install` / `npm i` / `npm add`, `bun add`, `pnpm add`, `yarn add`, bare `yarn` | Adds a dependency or may rewrite the lockfile; every spelling classifies as `install` |
+| `npm install` / `npm i` / `npm add` / `npm it`, `bun add`, `pnpm add`, `yarn add`, bare `yarn` | Adds a dependency or may rewrite the lockfile; every spelling classifies as `install` |
 | `npm uninstall <package>` | Uninstall local package |
 | `npm update` | Update packages |
 | `npm publish` | Publish to registry |
 | `npm unpublish <package>@<version>` | Unpublish specific version (within 72h) |
 | `npm deprecate <package>` | Mark package deprecated (preferred over unpublish) |
 | `npm version <semver>` | Bump version |
-| `npm`/`bun`/`pnpm`/`yarn run <script>`, `pnpm`/`yarn <script>` | Only when the `package.json` body mutates, or cannot be resolved |
-| `npx`, `bunx`, `bun x`, `npm x`, `npm exec`, `pnpm exec`, `bun exec` `<pkg>` | Only when `<pkg>` is not installed in the project's `node_modules` (or pins a version) |
+| `npm`/`bun`/`pnpm`/`yarn run <script>`, `pnpm`/`yarn`/`bun <script>`, `npm test`/`start`/`stop`/`restart` | Only when the `package.json` body, or its `pre`/`post` script, mutates, or the script cannot be resolved |
+| `npx`, `bunx`, `bun x`, `npm x`, `npm exec`, `pnpm exec`, `bun exec` `<pkg>` | Only when `<pkg>` is not a `./`, `../`, `/`, `~` or `file:` path and is not installed in the project's `node_modules` (a pinned version or `user/repo` counts as fetched) |
 | `pnpm dlx`, `yarn dlx`, `pipx run`, `uvx` `<pkg>` | Always fetch from a registry, declared dependency or not |
 | `npm audit fix` | Fix vulnerabilities |
 | `npm audit fix --force` | Force fix (may break dependencies) |
@@ -518,7 +518,7 @@ pip uses `install`, `uninstall`, `freeze`, `list`, `show`, `search`, `download`,
 | `pip uninstall <package>` | Uninstall local package |
 | `pip install --upgrade <package>` | Upgrade package |
 
-A frozen install from the lockfile -- `npm ci`, `bun`/`pnpm install --frozen-lockfile`, `yarn install --immutable` -- is not T3 by itself: it is classified by the project's install lifecycle scripts (`preinstall` through `postprepare`), and is T3 only when one of them mutates or no `package.json` is readable.
+A frozen install from the lockfile -- `npm ci`, `bun`/`pnpm install --frozen-lockfile`, `yarn install --immutable`, not their `=false` spellings -- is not T3 by itself: it is classified by the project's install lifecycle scripts (`preinstall` through `postprepare`), and is T3 only when one of them mutates or no `package.json` is readable.
 
 ---
 

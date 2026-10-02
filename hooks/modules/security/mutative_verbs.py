@@ -1308,10 +1308,13 @@ _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     }),
     "poetry": frozenset({"--directory", "-C", "--project", "-P"}),
     "pipx": frozenset({"--spec", "--python", "--pip-args", "--index-url"}),
-    "npx": frozenset({"--package", "-p", "--node-options", "--userconfig"}),
+    "npx": frozenset({
+        "--package", "-p", "--node-options", "--userconfig", "--globalconfig",
+        "--cache", "--registry", "--prefix",
+    }),
     "npm": frozenset({
-        "--package", "-p", "--node-options", "--userconfig", "--prefix", "-C",
-        "--workspace", "-w",
+        "--package", "-p", "--node-options", "--userconfig", "--globalconfig",
+        "--cache", "--registry", "--prefix", "-C", "--workspace", "-w",
     }),
     "bunx": frozenset({"--package", "-p"}),
     "bun": frozenset({"--package", "-p", "--cwd"}),
@@ -5391,13 +5394,14 @@ def _is_bare_node_package(spec: str) -> bool:
 
 
 def _runner_package_is_local(origin: str, spec: str, project_dir: str) -> bool:
-    """True when *spec* is a path, or -- for an "installed" runner -- a bare
-    name installed in the project's node_modules (as a bin or a package)."""
+    """True when *spec* is a local path, or -- for an "installed" runner -- a
+    bare name installed in the project's node_modules (as a bin or a package).
+
+    Only an explicit path prefix is local: npm reads ``user/repo`` as a GitHub
+    fetch."""
     import os
 
-    if ":" in spec:
-        return False
-    if spec.startswith((".", "/", "~")) or ("/" in spec and not spec.startswith("@")):
+    if spec.startswith(("./", "../", "/", "~", "file:")):
         return True
     if origin != "installed" or not _is_bare_node_package(spec):
         return False
@@ -7006,12 +7010,13 @@ _PACKAGE_MANAGER_DIR_FLAGS: Dict[str, FrozenSet[str]] = {
     "yarn": frozenset({"--cwd"}),
 }
 
-# Other spellings of ``install``, npm's typo aliases and ``add`` included; bare
-# ``yarn`` (``None``) is ``yarn install``.
+# Other spellings of ``install``: npm's typo aliases, ``add``, and ``it``/
+# ``install-test`` (an install followed by the test script); bare ``yarn``
+# (``None``) is ``yarn install``.
 _INSTALL_ALIASES: Dict[str, FrozenSet[Optional[str]]] = {
     "npm": frozenset({
         "i", "in", "ins", "inst", "insta", "instal",
-        "isnt", "isnta", "isntal", "isntall", "add",
+        "isnt", "isnta", "isntal", "isntall", "add", "it", "install-test",
     }),
     "bun": frozenset({"i", "add", "a"}),
     "pnpm": frozenset({"i", "add"}),
@@ -7031,11 +7036,25 @@ _INSTALL_LIFECYCLE_SCRIPTS: Tuple[str, ...] = (
     "preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare",
 )
 
+# The npm commands that run the script of a fixed name; any other script needs
+# ``npm run``.
+_NPM_SCRIPT_COMMANDS: Dict[str, str] = {
+    "test": "test", "t": "test", "tst": "test",
+    "start": "start", "stop": "stop", "restart": "restart",
+}
+
 # Built-in commands of the managers whose ``<manager> <name>`` runs the script
 # of that name.  A builtin wins over a script that shares its name, so the
-# shorthand applies only outside this set; ``test``/``start``/``stop``/
-# ``restart`` run scripts and are deliberately absent.
+# shorthand applies only outside this set.  pnpm's and yarn's ``test``/
+# ``start``/``stop``/``restart`` run scripts and are deliberately absent;
+# ``bun test`` is bun's own test runner.
 _SCRIPT_SHORTHAND_BUILTINS: Dict[str, FrozenSet[str]] = {
+    "bun": frozenset({
+        "a", "add", "audit", "build", "c", "create", "exec", "i", "info",
+        "init", "install", "link", "outdated", "patch", "patch-commit", "pm",
+        "publish", "remove", "repl", "rm", "run", "test", "unlink", "update",
+        "upgrade", "why", "x",
+    }),
     "pnpm": frozenset({
         "access", "add", "adduser", "approve-builds", "audit", "bin", "bugs",
         "c", "cache", "cat-file", "cat-index", "ci", "completion", "config",
@@ -7114,12 +7133,21 @@ def _classify_package_script(
     manager: str, script_name: str, family: str,
     cwd: "Optional[str]", _depth: int,
 ) -> MutativeResult:
-    """Classify ``<manager> run <script>`` by its body; unresolvable is T3."""
+    """Classify ``<manager> run <script>`` by its body and by the ``pre<script>``
+    and ``post<script>`` bodies run around it; an unresolvable script is T3."""
     # Budget exhausted: stop descending AND retain -- see the constant.
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result(f"{manager} script body")
 
     body = _resolve_npm_script_body(script_name, cwd=cwd)
+    if body is not None:
+        for hook in (f"pre{script_name}", f"post{script_name}"):
+            hook_body = _resolve_npm_script_body(hook, cwd=cwd)
+            if hook_body is None:
+                continue
+            result = _classify_package_script_body(manager, hook, hook_body, family, cwd, _depth)
+            if result.is_mutative:
+                return result
     if body is None:
         return MutativeResult(
             is_mutative=True,
@@ -7189,8 +7217,10 @@ def _check_package_manager(
 ) -> "Optional[MutativeResult]":
     """Classify npm/bun/pnpm/yarn by where the code they run comes from.
 
-    * ``run <script>``, and pnpm's and yarn's ``<script>`` shorthand outside
-      their builtins, classify by the script's ``package.json`` body.
+    * ``run <script>``, npm's ``test``/``start``/``stop``/``restart``, and the
+      bun, pnpm and yarn ``<script>`` shorthand outside their builtins classify
+      by the script's ``package.json`` body.
+    * An option written ``--flag=false`` (or ``=0``/``=no``) counts as absent.
     * A frozen install (``_FROZEN_INSTALL_FORMS``) classifies by the project's
       install lifecycle scripts.
     * Any other spelling of ``install`` (``_INSTALL_ALIASES``) is re-classified
@@ -7205,7 +7235,11 @@ def _check_package_manager(
 
     tokens = semantics.tokens
     positionals = _package_manager_positionals(base_cmd, tokens)
-    flags = {t.split("=", 1)[0] for t in tokens[1:] if t.startswith("-")}
+    flags = set()
+    for token in tokens[1:]:
+        name, sep, value = token.partition("=")
+        if token.startswith("-") and not (sep and value.lower() in ("false", "0", "no")):
+            flags.add(name)
     sub_index, sub = positionals[0] if positionals else (None, None)
     args = [token for _, token in positionals[1:]]
 
@@ -7238,6 +7272,12 @@ def _check_package_manager(
         if not args:
             return None
         return _classify_package_script(base_cmd, args[0], family, cwd, _depth)
+
+    # Without the script npm falls back to its own default (`node server.js`
+    # for start), which ordinary detection keeps judging as before.
+    npm_script = _NPM_SCRIPT_COMMANDS.get(sub) if base_cmd == "npm" else None
+    if npm_script is not None and _resolve_npm_script_body(npm_script, cwd=cwd) is not None:
+        return _classify_package_script(base_cmd, npm_script, family, cwd, _depth)
 
     builtins = _SCRIPT_SHORTHAND_BUILTINS.get(base_cmd)
     if (
