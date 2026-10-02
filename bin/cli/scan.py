@@ -78,14 +78,24 @@ def _render_human(report, *, dry_run: bool) -> None:
                 )
                 print(f"      facets: {summary}")
 
-    if report.warnings:
+    collisions = [w for w in report.warnings if w["kind"] == "repo_collision"]
+    copies = [w for w in report.warnings if w["kind"] == "repo_copy"]
+    if collisions:
         # M2-T6 (AC-5): would-be collisions are surfaced explicitly, never
         # silently merged/renamed.
         print(f"{prefix}WARNING -- repo collisions (would-be silent data loss):")
-        for w in report.warnings:
+        for w in collisions:
             print(
                 f"  ! repo={w['repo']} requested_project={w['requested_project']} "
                 f"-> assigned={w['assigned_project']} path={w.get('path')}"
+            )
+    if copies:
+        print(f"{prefix}WARNING -- second clones recorded as copies, not projects:")
+        for w in copies:
+            target = w["copy_of"]
+            print(
+                f"  ! repo={w['repo']} path={w['path']} "
+                f"copy_of={target['workspace']}/{target['project']} at {target['path']}"
             )
 
     if report.errors:

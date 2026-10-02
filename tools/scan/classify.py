@@ -274,8 +274,8 @@ def _upsert(
     Args:
         remote_url: The repo's raw ``git remote get-url origin`` value (SV2),
             or None when unavailable. This is the base signal move-detection
-            (SV2 ``move_candidates``) matches on: unlike ``project_identity``
-            (git-common-dir), the remote survives a physical directory move.
+            (SV2 ``move_candidates``) matches on across rows written before
+            v64, whose ``project_identity`` was the git-common-dir.
     """
     from gaia.store.writer import upsert_project
 
@@ -730,12 +730,8 @@ def scan(
 
         ws_claims = claimed_by_ws.setdefault(c.workspace, {})
 
-        # SV2: the repo's raw git remote -- the move-stable signal
-        # (project_identity/git-common-dir changes when a repo is physically
-        # moved; the remote does not). Read-only, cheap (short subprocess
-        # timeout, never raises). Computed once here and reused both for the
-        # persisted `remote_url` column (_upsert) and for this run's
-        # move_candidates matching below.
+        # The raw remote is persisted as `remote_url` and matched against
+        # missing rows elsewhere for move_candidates.
         remote_url = _git_remote_origin(Path(c.path))
 
         # SV2: create-vs-update, decided BEFORE the write so dry-run and

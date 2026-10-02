@@ -11,9 +11,9 @@ The populators NEVER touch agent-owned columns. They only set scanner-owned
 columns; the store API protects agent fields by listing scanner columns
 explicitly in its UPSERT statements.
 
-Identity resolution: for each project path, identity is resolved via
-``gaia.project.current(project_path)`` (B0). This means two clones of the same
-remote on different machines collapse to the same workspace identity row.
+Identity resolution: each project path resolves through
+:func:`resolve_project_identity` (normalized remote first), so every clone of
+one remote names the same ``projects`` row.
 
 Public API::
 
@@ -991,8 +991,8 @@ def is_linked_worktree(project_path: Path) -> bool:
 
     A linked worktree (``git worktree add``) is a second checkout of the SAME
     repository on another branch -- a view, not a project. It must never become
-    a ``projects`` row: its :func:`resolve_project_identity` is the shared
-    git-common-dir, identical to the base repo's, so the writer's
+    a ``projects`` row: its :func:`resolve_project_identity` (the shared remote,
+    or the shared git-common-dir) is the base repo's, so the writer's
     identity-collapse UPDATE would overwrite the base repo's ``path``,
     ``remote_url``, ``primary_language``, ``role`` and ``group_name`` with the
     worktree's.

@@ -2392,8 +2392,8 @@ def resolve_project_ref_by_cwd(
 #
 # `initiative` (memory.initiative) is the clean, vantage-independent key that
 # unifies BOTH git projects and logical (non-repo) initiatives. It is DISTINCT
-# from `project_ref` (the git-common-dir path): project_ref stays the git
-# anchor; initiative is the human-facing grouping key that downstream reads
+# from `project_ref` (the project's `projects.project_identity`): project_ref
+# stays the anchor; initiative is the human-facing grouping key that downstream reads
 # (memory injection / get-relevant) group by. Populated at write time, never
 # guessed -- resolves to None rather than fabricate a key.
 # ---------------------------------------------------------------------------
@@ -2417,15 +2417,13 @@ def normalize_initiative(raw: str | None) -> str | None:
 
 
 def initiative_from_project_ref(project_ref: str | None) -> str | None:
-    """Derive the canonical initiative key from a git ``project_ref``.
+    """Derive the canonical initiative key from a ``project_ref``.
 
-    ``project_ref`` is the git-common-dir path stored on a project-anchored
-    memory row (e.g. ``/home/jorge/ws/me/gaia/.git``). The initiative is the
-    repository basename with the trailing ``.git`` removed and then normalized
-    -- ``/home/jorge/ws/me/gaia/.git`` -> ``"gaia"``. A ref that is not a
-    ``.git`` path (e.g. a bare identity like ``github.com/me/x``) still yields
-    its last path segment normalized (``"x"``). Returns ``None`` for an empty
-    ref.
+    ``project_ref`` is the project identity stored on a project-anchored memory
+    row: a normalized remote (``github.com/metraton/gaia``), or for a repo
+    without one its git-common-dir (``/home/jorge/ws/me/gaia/.git``). The key is
+    the last path segment, with a trailing ``.git`` removed, normalized -- both
+    examples give ``"gaia"``. Returns ``None`` for an empty ref.
     """
     if not project_ref:
         return None
@@ -7290,11 +7288,13 @@ def relocate_memory(
 #
 # Post-scan, a detected move leaves TWO rows in `projects`:
 #   * the OLD row (the `from` side): now status='missing' (soft-deleted by the
-#     reconcile pass), still carrying the pre-move project_identity (its
-#     git-common-dir at the old location) and any agent-owned `description`.
+#     reconcile pass), still carrying the pre-move project_identity and any
+#     agent-owned `description`.
 #   * the NEW row (the `to` side): freshly upserted, status='active', carrying
-#     a DIFFERENT project_identity (the git-common-dir changed when the repo
-#     physically moved). This is the successor.
+#     a DIFFERENT project_identity. Since v64 a repo with a remote keeps its
+#     identity when it moves, so its row follows it and no candidate arises;
+#     the pair appears for a repo without a remote (its git-common-dir moved)
+#     or for rows written before v64. This is the successor.
 #
 # The 'movido' adjudication links the two WITHOUT ever hard-deleting either:
 #   * When the successor row ALREADY exists (the realistic post-scan state, and

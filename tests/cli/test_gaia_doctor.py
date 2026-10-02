@@ -682,6 +682,57 @@ class TestCheckEpisodesGrowth:
         assert "no DB at" in r["detail"]
 
 
+class TestCheckProjectCopies:
+    """A second clone the scan recorded as a copy facet is a doctor warning naming both clones."""
+
+    def _db_with_facets(self, tmp_path, monkeypatch, bootstrapped_db_template, facets):
+        import sqlite3
+
+        from tests.conftest import copy_bootstrapped_db
+
+        db_path = copy_bootstrapped_db(bootstrapped_db_template, tmp_path / "gaia.db")
+        con = sqlite3.connect(str(db_path))
+        con.execute(
+            "INSERT INTO projects (workspace, name, path, status) "
+            "VALUES ('ws', 'auto-claude-sleep', '/w/auto-claude-sleep', 'active')"
+        )
+        con.executemany(
+            "INSERT INTO project_facets (workspace, project, scope, key, value) "
+            "VALUES ('ws', 'auto-claude-sleep', ?, ?, 'main')",
+            facets,
+        )
+        con.commit()
+        con.close()
+        monkeypatch.setenv("GAIA_DB", str(db_path))
+
+    def test_a_copy_facet_is_a_warning_naming_the_copy_and_its_project(
+        self, tmp_path, monkeypatch, bootstrapped_db_template,
+    ):
+        self._db_with_facets(tmp_path, monkeypatch, bootstrapped_db_template, [
+            ("copy", "/w/_duplicados/auto-claude-sleep"),
+            ("worktree", "/w/wt/auto-claude-sleep"),
+        ])
+
+        r = doctor_mod.check_project_copies()
+
+        assert r["severity"] == "warning"
+        assert r["detail"] == (
+            "1 second clone(s): /w/_duplicados/auto-claude-sleep copies "
+            "ws/auto-claude-sleep at /w/auto-claude-sleep"
+        )
+
+    def test_worktrees_alone_are_not_copies(
+        self, tmp_path, monkeypatch, bootstrapped_db_template,
+    ):
+        self._db_with_facets(tmp_path, monkeypatch, bootstrapped_db_template, [
+            ("worktree", "/w/wt/auto-claude-sleep"),
+        ])
+
+        r = doctor_mod.check_project_copies()
+
+        assert r["severity"] == "pass"
+
+
 class TestCheckWorkspaceRoots:
     """An active workspace with no recorded root blocks `gaia worktree create` for its repos."""
 
@@ -1073,9 +1124,10 @@ class TestCmdDoctorJson:
         # 1 opencode-background-subagents (order 62 -- info naming the shell line) +
         # 1 workspace-roots (order 49 -- active workspaces without the recorded
         #   root that `gaia worktree create` requires) +
+        # 1 project-copies (order 51 -- second clones the scan recorded as copies) +
         # 3 channel checks (install-channel 36, hook-registrations 72,
         #   hook-commands 74 -- hooks counted across plugin and every settings file).
-        assert len(data["checks"]) == 37
+        assert len(data["checks"]) == 38
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

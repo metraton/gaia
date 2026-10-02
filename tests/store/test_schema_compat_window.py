@@ -173,7 +173,9 @@ def test_the_shipped_chain_seals_every_version_with_the_last_breaking_one(tmp_pa
     minimums = _minimums(db)
     assert minimums[51] == 51
     assert minimums[52] == 51
-    assert minimums[EXPECTED_SCHEMA_VERSION] == 51
+    assert minimums[63] == 51
+    assert minimums[64] == 64
+    assert minimums[EXPECTED_SCHEMA_VERSION] == 64
 
 
 def test_an_older_engine_leaves_a_compatible_newer_database_untouched(tmp_path):

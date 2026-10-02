@@ -948,11 +948,11 @@ def test_cli_scan_apply_promotes_into_contract(tmp_path, monkeypatch, capsys):
     assert entry.get("local_path", "").endswith("aos-iac")
 
 
-def test_cli_scan_prints_promotion_collision_warning(tmp_path, monkeypatch, capsys):
-    """AC-2 -- end-to-end: `gaia scan` (human, non-JSON output) over a fixture
-    of two real clones of the same remote prints the visible WARNING block,
-    analogous to the repo-collision block classify.py already emits for the
-    rows layer (bin/cli/scan.py ~L93-99)."""
+def test_cli_scan_prints_the_copy_warning_for_a_second_clone(tmp_path, monkeypatch, capsys):
+    """End-to-end: `gaia scan` (human output) over two real clones of one remote
+    promotes one project and prints the second clone as a copy of it; the
+    promotion-collision block above stays reachable only for rows that already
+    exist as two projects."""
     import subprocess
     import cli.scan as scan_mod
 
@@ -974,8 +974,9 @@ def test_cli_scan_prints_promotion_collision_warning(tmp_path, monkeypatch, caps
     assert rc == 0
 
     out = capsys.readouterr().out
-    assert "WARNING -- promotion collisions" in out
-    assert "matched_slug=clone_one -> assigned_slug=clone_two" in out
+    assert "WARNING -- second clones recorded as copies, not projects:" in out
+    assert f"repo=clone-two path={ws_root / 'clone-two'} copy_of=ws-dup-clones/clone-one" in out
+    assert "WARNING -- promotion collisions" not in out
 
 
 def test_cli_scan_reports_a_reclaimed_entry(tmp_path, monkeypatch, capsys):
