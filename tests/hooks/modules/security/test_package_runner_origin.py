@@ -106,6 +106,17 @@ CASES = [
     ("npx --cache /tmp/c cowsay", SIGNED),
     ("npx --prefix /tmp/p cowsay", SIGNED),
     ("npm exec --globalconfig /tmp/g cowsay", SIGNED),
+    # An option the runner tables do not know may take the next token as its
+    # value, so the package cannot be told apart: fail closed.
+    ("pnpm --store-dir /x dlx cowsay", SIGNED),
+    ("bunx --some-opt ./x cowsay", SIGNED),
+    ("npx --some-opt /tmp/x cowsay", SIGNED),
+    ("npx --some-flag eslint .", SIGNED),
+    ("npx -y eslint .", UNSIGNED),
+    ("npm exec --yes eslint .", UNSIGNED),
+    # `npm cit` is `npm ci` followed by the test script, whose body mutates here.
+    ("npm cit", SIGNED),
+    ("npm install-ci-test", SIGNED),
     ("npx --package cowsay eslint .", SIGNED),
     ("uvx --from cowsay ruff", SIGNED),
     # 3. Adding a dependency.
@@ -162,4 +173,14 @@ def test_frozen_install_runs_the_project_lifecycle_scripts(project):
 
 
 def test_frozen_install_without_a_manifest_is_signed(tmp_path):
-    assert detect_mutative_command("npm ci", cwd=str(tmp_path)).is_mutative is True
+    for command in ("npm ci", "npm cit"):
+        assert detect_mutative_command(command, cwd=str(tmp_path)).is_mutative is True
+
+
+@pytest.mark.parametrize("scripts,signed", [
+    ({"test": "vitest run", "postinstall": "kubectl apply -f k8s/"}, SIGNED),
+    ({"test": "vitest run"}, UNSIGNED),
+], ids=["mutating-postinstall", "harmless"])
+def test_install_ci_test_is_a_frozen_install(tmp_path, scripts, signed):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": scripts}))
+    assert detect_mutative_command("npm cit", cwd=str(tmp_path)).is_mutative is signed

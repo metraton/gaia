@@ -1322,6 +1322,40 @@ _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "yarn": frozenset({"--package", "-p", "--cwd"}),
 }
 
+# Runner options known to take NO value.  For a runner in
+# ``_RUNNER_CODE_ORIGIN``, an option before the package that is in neither this
+# table nor ``_PREFIX_RUNNER_VALUE_FLAGS`` may have consumed the next token, so
+# the package cannot be identified and the invocation is signed.
+_PREFIX_RUNNER_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npx": frozenset({
+        "-y", "--yes", "--no", "--no-install", "--ignore-existing", "-q",
+        "--quiet", "-s", "--silent", "--verbose", "--prefer-offline",
+        "--prefer-online", "--offline", "--legacy-peer-deps",
+    }),
+    "npm": frozenset({
+        "-y", "--yes", "--no", "-q", "--quiet", "-s", "--silent", "--verbose",
+        "--prefer-offline", "--prefer-online", "--offline", "--legacy-peer-deps",
+        "--workspaces", "--ws", "--include-workspace-root", "--if-present",
+    }),
+    "bunx": frozenset({"--bun", "--silent", "--verbose", "--no-install"}),
+    "bun": frozenset({"--bun", "-b", "--silent", "--verbose", "--no-install"}),
+    "pnpm": frozenset({
+        "-s", "--silent", "--shell-mode", "-r", "--recursive", "-w",
+        "--workspace-root", "--parallel", "--if-present", "--reverse",
+        "--stream", "--no-bail", "--use-stderr",
+    }),
+    "yarn": frozenset({"-q", "--quiet", "--silent", "--verbose"}),
+    "uvx": frozenset({
+        "--isolated", "--no-cache", "-n", "--offline", "-q", "--quiet", "-v",
+        "--verbose", "--no-config", "--refresh", "--native-tls", "--no-progress",
+        "--preview",
+    }),
+    "pipx": frozenset({
+        "-q", "--quiet", "--verbose", "--no-cache", "--pypackages",
+        "--system-site-packages",
+    }),
+}
+
 # ``npx`` runs an arbitrary SHELL command when given ``--call``/``-c``, so the
 # flag's value is a command string to re-classify, not a package name.
 _NPX_SHELL_CALL_FLAGS: FrozenSet[str] = frozenset({"--call", "-c"})
@@ -5313,8 +5347,9 @@ def _check_python_module_runner(
 
 def _resolve_prefix_runner_payload(
     base_cmd: str, semantics: "CommandSemantics",
-) -> "Optional[Tuple[Optional[str], str, Tuple[str, ...], Tuple[str, ...]]]":
-    """Return ``(subcommand, wrapped_command_token, remaining_args, packages)``.
+) -> "Optional[Tuple[Optional[str], str, Tuple[str, ...], Tuple[str, ...], bool]]":
+    """Return ``(subcommand, wrapped_command_token, remaining_args, packages,
+    unknown_option)``.
 
     Walks the runner's own options -- skipping boolean flags, consuming the
     value of a ``value_flags`` option, and accepting the self-contained
@@ -5326,6 +5361,9 @@ def _resolve_prefix_runner_payload(
 
     ``packages`` are the package specs the runner has to find or fetch: the
     values of its package options, or else the wrapped command itself.
+    ``unknown_option`` is True when an option outside both runner flag tables
+    came first; a positional after it that is not the subcommand is skipped as
+    its possible value.
 
     Returns ``None`` whenever the command is not a runner invocation with a
     resolvable payload, so the caller leaves classification unchanged.
@@ -5338,7 +5376,9 @@ def _resolve_prefix_runner_payload(
     raw_tokens = semantics.tokens
     ecosystem = "python" if base_cmd in ("uvx", "pipx") else "node"
     source_flags, extra_flags = _RUNNER_PACKAGE_FLAGS[ecosystem]
+    boolean_flags = _PREFIX_RUNNER_BOOLEAN_FLAGS.get(base_cmd, frozenset()) | _NPX_SHELL_CALL_FLAGS
     subcommand: "Optional[str]" = None
+    unknown_option = False
     sources: List[str] = []
     extras: List[str] = []
 
@@ -5366,22 +5406,29 @@ def _resolve_prefix_runner_payload(
                 # string, not a package -- hand it back as the payload with no
                 # remaining args so the caller re-classifies it as a command.
                 if i + 1 < len(raw_tokens):
-                    return (subcommand, raw_tokens[i + 1], (), tuple(sources + extras))
+                    return (
+                        subcommand, raw_tokens[i + 1], (), tuple(sources + extras),
+                        unknown_option,
+                    )
                 return None
+            if flag not in value_flags and flag not in boolean_flags:
+                unknown_option = True
             if token in value_flags:
                 i += 2
                 continue
             i += 1
             continue
         if not subcommand_seen:
-            if token.lower() not in required_subcommands:
+            if token.lower() in required_subcommands:
+                subcommand = token.lower()
+                subcommand_seen = True
+            elif not unknown_option:
                 return None
-            subcommand = token.lower()
-            subcommand_seen = True
+            # Otherwise the token may be an unknown option's value: keep looking.
             i += 1
             continue
         packages = tuple((sources or [token]) + extras)
-        return (subcommand, token, tuple(raw_tokens[i + 1:]), packages)
+        return (subcommand, token, tuple(raw_tokens[i + 1:]), packages, unknown_option)
 
     return None
 
@@ -5470,7 +5517,7 @@ def _check_prefix_runner(
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("runner payload")
 
-    subcommand, payload, rest, packages = resolved
+    subcommand, payload, rest, packages, unknown_option = resolved
 
     import os
     import shlex
@@ -5487,6 +5534,18 @@ def _check_prefix_runner(
 
     inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
     origin = _RUNNER_CODE_ORIGIN.get((base_cmd, subcommand))
+    if not inner.is_mutative and origin is not None and unknown_option:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="runner-unknown-option",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"Runner '{base_cmd}' has an option outside its known tables before "
+                f"the package, so the package it fetches cannot be identified"
+            ),
+        )
     if not inner.is_mutative and origin is not None:
         project_dir = cwd if cwd is not None else os.getcwd()
         fetched = [
@@ -7023,10 +7082,19 @@ _INSTALL_ALIASES: Dict[str, FrozenSet[Optional[str]]] = {
     "yarn": frozenset({None, "add"}),
 }
 
+# ``npm ci`` followed by the test script.
+_NPM_CI_TEST_COMMANDS: FrozenSet[str] = frozenset({
+    "cit", "install-ci-test", "clean-install-test", "sit",
+})
+
 # Subcommands that install exactly what the lockfile pins, and the flags of
 # which one must be present for them to refuse to rewrite it.
 _FROZEN_INSTALL_FORMS: Dict[str, Tuple[FrozenSet[Optional[str]], FrozenSet[str]]] = {
-    "npm": (frozenset({"ci", "clean-install", "ic", "install-clean", "isntall-clean"}), frozenset()),
+    "npm": (
+        frozenset({"ci", "clean-install", "ic", "install-clean", "isntall-clean"})
+        | _NPM_CI_TEST_COMMANDS,
+        frozenset(),
+    ),
     "bun": (frozenset({"install", "i"}), frozenset({"--frozen-lockfile"})),
     "pnpm": (frozenset({"install", "i"}), frozenset({"--frozen-lockfile"})),
     "yarn": (frozenset({None, "install"}), frozenset({"--immutable", "--frozen-lockfile"})),
@@ -7252,7 +7320,13 @@ def _check_package_manager(
         sub in frozen_subs and not args and not flags & {"-g", "--global"}
         and (not frozen_flags or flags & frozen_flags)
     ):
-        return _classify_frozen_install(base_cmd, family, cwd, _depth)
+        frozen = _classify_frozen_install(base_cmd, family, cwd, _depth)
+        if (
+            not frozen.is_mutative and base_cmd == "npm" and sub in _NPM_CI_TEST_COMMANDS
+            and _resolve_npm_script_body("test", cwd=cwd) is not None
+        ):
+            return _classify_package_script(base_cmd, "test", family, cwd, _depth)
+        return frozen
 
     if sub in _INSTALL_ALIASES[base_cmd]:
         import shlex
