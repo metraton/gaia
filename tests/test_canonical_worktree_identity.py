@@ -145,13 +145,20 @@ def test_workspace_without_recorded_root_fails_closed(tmp_path):
         workspace_worktrees_root(repo)
 
 
-def test_scan_records_the_root_that_resolution_uses(tmp_path):
+def test_only_the_declared_root_anchors_worktrees_never_the_scan(tmp_path):
     from gaia.paths import db_path
+    from gaia.store.writer import declare_workspace
     from tools.scan.classify import scan
 
     root = tmp_path / "Org Folder"
     repo = _repo(root / "group" / "svc")
 
+    refused = scan(root, "Org Folder", db_path=db_path())
+    assert "not declared" in refused.error
+    with pytest.raises(WorktreePathError, match="is not inside a declared workspace"):
+        workspace_worktrees_root(repo)
+
+    declare_workspace("Org Folder", root, db_path=db_path())
     report = scan(root, "Org Folder", db_path=db_path())
 
     assert report.resolved_workspace == "Org Folder"

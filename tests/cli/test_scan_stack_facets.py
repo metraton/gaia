@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+from gaia.store.writer import declare_workspace
 from tools.scan import classify as classify_mod
 
 
@@ -52,6 +53,12 @@ def _mk_repo(base: Path, *segments: str) -> Path:
     repo = base.joinpath(*segments)
     (repo / ".git").mkdir(parents=True, exist_ok=True)
     return repo
+
+
+def _scan_declared(root: Path, workspace: str, db_path: Path):
+    """Apply a scan of *workspace*, declared at *root*."""
+    declare_workspace(workspace, root, db_path=db_path)
+    return classify_mod.scan(root, workspace, db_path=db_path, apply=True)
 
 
 def _write_python_helm_tf_repo(repo: Path) -> None:
@@ -114,7 +121,7 @@ def test_apply_persists_stack_fingerprint_as_facets(tmp_path, tmp_db):
     repo = _mk_repo(root, "svc")
     _write_python_helm_tf_repo(repo)
 
-    report = classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "myws", tmp_db)
     assert report.error is None, report.error
     assert report.facet_failures == [], report.facet_failures
     assert [p["repo"] for p in report.projects] == ["svc"], report.projects
@@ -140,7 +147,7 @@ def test_report_projects_carry_facets_on_apply(tmp_path, tmp_db):
     repo = _mk_repo(root, "svc")
     _write_python_helm_tf_repo(repo)
 
-    report = classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "myws", tmp_db)
     payload = report.to_dict()
     facets = payload["projects"][0]["facets"]
     scopes = {f["scope"] for f in facets}
@@ -190,9 +197,9 @@ def test_rescan_refreshes_without_duplicating(tmp_path, tmp_db):
     repo = _mk_repo(root, "svc")
     _write_python_helm_tf_repo(repo)
 
-    classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    _scan_declared(root, "myws", tmp_db)
     count_after_first = _facet_count(tmp_db, "myws", "svc")
-    classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    _scan_declared(root, "myws", tmp_db)
     count_after_second = _facet_count(tmp_db, "myws", "svc")
 
     assert count_after_first > 0, "first scan persisted no facets"
@@ -208,13 +215,13 @@ def test_rescan_prunes_stale_facets(tmp_path, tmp_db):
     repo = _mk_repo(root, "svc")
     _write_python_helm_tf_repo(repo)
 
-    classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    _scan_declared(root, "myws", tmp_db)
     first = dict(((s, k), v) for (s, k, v) in _facet_rows(tmp_db, "myws", "svc"))
     assert ("orchestration", "helm") in first, first
 
     # The chart is removed from the repo; rescan must drop the stale facet.
     (repo / "Chart.yaml").unlink()
-    classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    _scan_declared(root, "myws", tmp_db)
     second = dict(((s, k), v) for (s, k, v) in _facet_rows(tmp_db, "myws", "svc"))
 
     assert ("orchestration", "helm") not in second, (
@@ -230,11 +237,10 @@ def test_rescan_prunes_stale_facets(tmp_path, tmp_db):
 # ---------------------------------------------------------------------------
 
 def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
-    """The SAME physical repo scanned from two roots under DIFFERENT workspaces
-    collapses to ONE projects row (M1-T1). Facets must be written to the
-    canonical row's (workspace, name) -- resolved by project_identity -- not to
-    the second scan's classified (workspace, name), or the project_facets FK
-    fails. This guards the regression fixed in classify._facet_target."""
+    """A repo indexed under one workspace, then owned by a nested workspace
+    declared later, collapses to ONE projects row. Facets must be written to the
+    canonical row's (workspace, name) -- resolved by project_identity -- or the
+    project_facets FK fails (classify._facet_target)."""
     from gaia.store.writer import _connect
 
     repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
@@ -242,15 +248,8 @@ def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
     subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
     _write_python_helm_tf_repo(repo)
 
-    # First scan: workspace aaxis -> the repo classifies to project "aos-iac"
-    # (its own basename; the container "aos" goes to group_name), so the
-    # canonical row lives at (aaxis, aos-iac).
-    r1 = classify_mod.scan(tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True)
-    # Second scan from a deeper root under a different workspace name: the
-    # repo collapses onto the SAME identity row (still (aaxis, aos-iac)).
-    r2 = classify_mod.scan(
-        tmp_path / "aaxis" / "aos", "aos", db_path=tmp_db, apply=True
-    )
+    r1 = _scan_declared(tmp_path / "aaxis", "aaxis", tmp_db)
+    r2 = _scan_declared(tmp_path / "aaxis" / "aos", "aos", tmp_db)
 
     # No facet write blew up (the FK regression manifested as an aborted scan).
     assert r1.facet_failures == [], r1.facet_failures
@@ -307,7 +306,7 @@ def test_ruby_gemfile_resolves_primary_language(tmp_path, tmp_db):
         'source "https://rubygems.org"\ngem "jekyll"\n', encoding="utf-8"
     )
 
-    report = classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "myws", tmp_db)
     assert report.error is None, report.error
 
     # The language facet is detected ...
@@ -328,7 +327,7 @@ def test_python_manifest_in_subdir_resolves_primary_language(tmp_path, tmp_db):
     sub.mkdir(parents=True, exist_ok=True)
     (sub / "requirements.txt").write_text("fastapi>=0.100.0\n", encoding="utf-8")
 
-    report = classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "myws", tmp_db)
     assert report.error is None, report.error
 
     seen = {(f["scope"], f["key"]) for f in report.projects[0]["facets"]}
@@ -351,7 +350,7 @@ def test_java_manifest_in_subdir_resolves_primary_language(tmp_path, tmp_db):
         encoding="utf-8",
     )
 
-    report = classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "myws", tmp_db)
     assert report.error is None, report.error
 
     seen = {(f["scope"], f["key"]) for f in report.projects[0]["facets"]}
@@ -368,7 +367,7 @@ def test_javascript_package_json_still_resolves_primary_language(tmp_path, tmp_d
         '{"name": "app", "version": "1.0.0"}\n', encoding="utf-8"
     )
 
-    report = classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "myws", tmp_db)
     assert report.error is None, report.error
     assert _primary_language(tmp_db, "myws", "app") == "javascript"
 
@@ -387,7 +386,7 @@ def test_iac_only_repo_has_no_primary_language(tmp_path, tmp_db):
         "apiVersion: v2\nname: infra\nversion: 0.1.0\n", encoding="utf-8"
     )
 
-    report = classify_mod.scan(root, "myws", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "myws", tmp_db)
     assert report.error is None, report.error
 
     # There IS infra, but no language facet ...

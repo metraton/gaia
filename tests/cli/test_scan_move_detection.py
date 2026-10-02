@@ -15,7 +15,7 @@ Coverage (the 7 SV2 cases):
   3. Two live clones of the same remote -> NO ``move_candidate``
      (anti-false-positive: a remote matching >1 candidate is never guessed).
   4. ``rename_candidate`` when the folder basename != the persisted project name
-     (an R4-collapse repo whose slot was collision-disambiguated).
+     (a repo whose slot was collision-disambiguated, R1).
   5. ``vanished[]`` populated with
      {workspace, project, path, project_identity, remote, missing_since}.
   6. ``orphaned_autored`` detects a non-empty ``description`` on a vanished row
@@ -43,6 +43,7 @@ from pathlib import Path
 
 import pytest
 
+from gaia.store.writer import declare_workspace
 from tools.scan import classify as classify_mod
 
 
@@ -74,6 +75,13 @@ def _init_git_repo(path: Path, remote: str | None = None) -> Path:
             cwd=str(path), check=True,
         )
     return path
+
+
+def _scan_declared(tmp_path: Path, db_path: Path, workspace: str):
+    """Apply a scan of *workspace*, declared at ``tmp_path/<workspace>``."""
+    root = tmp_path / workspace
+    declare_workspace(workspace, root, db_path=db_path)
+    return classify_mod.scan(root, workspace, db_path=db_path, apply=True)
 
 
 def _seed_workspace(db_path: Path, workspace: str) -> None:
@@ -188,9 +196,7 @@ class TestRemoteUrlPersisted:
         remote = "https://github.com/org/proj1.git"
         _init_git_repo(tmp_path / "wsA" / "proj1", remote=remote)
 
-        report = classify_mod.scan(
-            tmp_path / "wsA", "wsA", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "wsA")
         assert report.error is None
         assert any(p["applied"] for p in report.projects)
 
@@ -220,9 +226,7 @@ class TestMoveCandidate1to1:
         # The repo re-appears in a NEW workspace with the same remote.
         _init_git_repo(tmp_path / "new-ws" / "moved-proj", remote=remote)
 
-        report = classify_mod.scan(
-            tmp_path / "new-ws", "new-ws", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "new-ws")
         assert report.error is None
 
         assert len(report.move_candidates) == 1, report.move_candidates
@@ -248,9 +252,7 @@ class TestMoveCandidate1to1:
             remote="https://github.com/org/moved.git",
         )
 
-        report = classify_mod.scan(
-            tmp_path / "new-ws", "new-ws", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "new-ws")
         assert len(report.move_candidates) == 1, report.move_candidates
         assert report.move_candidates[0]["remote"] == "github.com/org/moved"
 
@@ -284,16 +286,14 @@ class TestTwoClonesNoCandidate:
         doomed = _init_git_repo(
             tmp_path / "ws-main" / "doomed", remote=shared_remote,
         )
-        classify_mod.scan(tmp_path / "ws-main", "ws-main", db_path=tmp_db, apply=True)
+        _scan_declared(tmp_path, tmp_db, "ws-main")
 
         # Now the doomed repo vanishes from disk (keeper remains so the scan
         # still finds a repo under the root).
         import shutil
         shutil.rmtree(doomed)
 
-        report = classify_mod.scan(
-            tmp_path / "ws-main", "ws-main", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "ws-main")
         assert report.error is None
 
         # 'doomed' vanished, and its remote matches TWO active clones -> the
@@ -320,17 +320,14 @@ class TestRenameCandidate:
             status="active", path="/somewhere/else/app",
         )
 
-        # A new repo whose folder basename is ALSO "app" is scanned. It
-        # collapses (R4: directly under the workspace), so project==repo=="app",
-        # but the slot is taken -> the writer disambiguates to "app-2".
+        # A new repo whose folder basename is ALSO "app" is scanned; the slot
+        # is taken, so the writer disambiguates it to "app-2".
         _init_git_repo(
             tmp_path / "ws" / "app",
             remote="https://github.com/org/real-app.git",
         )
 
-        report = classify_mod.scan(
-            tmp_path / "ws", "ws", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "ws")
         assert report.error is None
 
         assert len(report.rename_candidates) == 1, report.rename_candidates
@@ -354,14 +351,12 @@ class TestVanishedPopulated:
         )
         doomed = _init_git_repo(tmp_path / "ws" / "doomed", remote=remote)
 
-        classify_mod.scan(tmp_path / "ws", "ws", db_path=tmp_db, apply=True)
+        _scan_declared(tmp_path, tmp_db, "ws")
 
         import shutil
         shutil.rmtree(doomed)
 
-        report = classify_mod.scan(
-            tmp_path / "ws", "ws", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "ws")
         assert report.error is None
 
         vanished = [v for v in report.vanished if v["project"] == "doomed"]
@@ -389,7 +384,7 @@ class TestVanishedPopulated:
             tmp_path / "ws" / "doomed",
             remote="https://github.com/org/doomed.git",
         )
-        classify_mod.scan(tmp_path / "ws", "ws", db_path=tmp_db, apply=True)
+        _scan_declared(tmp_path, tmp_db, "ws")
 
         import shutil
         shutil.rmtree(doomed)
@@ -420,7 +415,7 @@ class TestOrphanedAutored:
             tmp_path / "ws" / "doomed",
             remote="https://github.com/org/doomed.git",
         )
-        classify_mod.scan(tmp_path / "ws", "ws", db_path=tmp_db, apply=True)
+        _scan_declared(tmp_path, tmp_db, "ws")
 
         # An agent authored a description on the project (scan never writes it).
         _set_project_description(tmp_db, "ws", "doomed", "the payments engine")
@@ -431,9 +426,7 @@ class TestOrphanedAutored:
         import shutil
         shutil.rmtree(doomed)
 
-        report = classify_mod.scan(
-            tmp_path / "ws", "ws", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "ws")
         assert report.error is None
 
         orphaned = [o for o in report.orphaned_autored if o["project"] == "doomed"]
@@ -453,14 +446,12 @@ class TestOrphanedAutored:
             tmp_path / "ws" / "doomed",
             remote="https://github.com/org/doomed.git",
         )
-        classify_mod.scan(tmp_path / "ws", "ws", db_path=tmp_db, apply=True)
+        _scan_declared(tmp_path, tmp_db, "ws")
 
         import shutil
         shutil.rmtree(doomed)
 
-        report = classify_mod.scan(
-            tmp_path / "ws", "ws", db_path=tmp_db, apply=True,
-        )
+        report = _scan_declared(tmp_path, tmp_db, "ws")
         # 'doomed' vanished but carried no authored description.
         assert any(v["project"] == "doomed" for v in report.vanished)
         assert report.orphaned_autored == [], (
@@ -499,9 +490,7 @@ class TestDiffAndMode:
             remote="https://github.com/org/proj1.git",
         )
 
-        first = classify_mod.scan(
-            tmp_path / "ws", "ws", db_path=tmp_db, apply=True,
-        )
+        first = _scan_declared(tmp_path, tmp_db, "ws")
         assert first.mode == "apply"
         assert set(first.diff.keys()) == {
             "did_create", "did_update", "did_move", "did_mark_missing",
@@ -510,9 +499,7 @@ class TestDiffAndMode:
         assert first.diff["did_update"] == 0
 
         # Re-scan: the identity now exists -> it is an UPDATE, not a create.
-        second = classify_mod.scan(
-            tmp_path / "ws", "ws", db_path=tmp_db, apply=True,
-        )
+        second = _scan_declared(tmp_path, tmp_db, "ws")
         assert second.diff["did_create"] == 0
         assert second.diff["did_update"] == 1
         assert second.diff["did_mark_missing"] == 0
