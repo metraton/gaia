@@ -583,9 +583,9 @@ class TestMarketplaceRegistrable:
         """marketplace.json owner must have a non-empty 'name'."""
         assert self.marketplace["owner"].get("name"), "Owner 'name' is missing or empty"
 
-    def test_marketplace_owner_has_email(self):
-        """marketplace.json owner must have a non-empty 'email'."""
-        assert self.marketplace["owner"].get("email"), "Owner 'email' is missing or empty"
+    def test_marketplace_owner_ships_no_email(self):
+        """marketplace.json owner carries no email; the marketplace schema only requires 'name'."""
+        assert "email" not in self.marketplace["owner"], "Owner 'email' must not ship in the package"
 
 
 class TestBuiltPluginManifest:
