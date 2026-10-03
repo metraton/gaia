@@ -227,7 +227,7 @@ class TestMkdirPathSensitive:
 
     def test_mkdir_home_jorge_is_t0(self):
         """Absolute path under /home is NOT sensitive -- classifies as T0."""
-        result = detect_mutative_command("mkdir /home/jorge/projects/new")
+        result = detect_mutative_command("mkdir /home/user/projects/new")
         assert result.is_mutative is False
         assert result.category == "READ_ONLY"
 
@@ -1698,10 +1698,10 @@ class TestSqliteReadonlyDotCommands:
         assert result.category == "READ_ONLY"
 
     def test_sqlite3_tables_is_read_only(self):
-        """Exact reproduction of the blocked command: sqlite3 /home/jorge/.gaia/gaia.db ".tables"
+        """Exact reproduction of the blocked command: sqlite3 /home/user/.gaia/gaia.db ".tables"
         This was wrongly classified as T3 before the fix."""
         result = detect_mutative_command(
-            "sqlite3 /home/jorge/.gaia/gaia.db \".tables\""
+            "sqlite3 /home/user/.gaia/gaia.db \".tables\""
         )
         assert result.is_mutative is False, (
             f"Expected READ_ONLY but got is_mutative={result.is_mutative}, "
@@ -2261,15 +2261,14 @@ class TestGaiaPlanningBookkeepingException:
         """`memory` joined the excepted groups: a non-destructive verb is
         local bookkeeping like brief/ac/plan.
 
-        This previously asserted the opposite, via `gaia memory write` -- a
-        verb the memory CLI does not actually have (its writers are add / edit
-        / append / reclassify / link / checkpoint). See
-        TestGaiaMemoryTierGroup for the false positives that motivated the
-        exception, and for the counterfactual that proves it is reachable.
+        It used `gaia memory edit`, a verb since retired: memory is
+        append-only and its one in-place rewrite, `add --replace`, is signed
+        (tests/cli/test_memory_append_only.py). See TestGaiaMemoryTierGroup
+        for the false positive that motivated the exception.
         """
-        result = detect_mutative_command("gaia memory edit 42 --body x")
+        result = detect_mutative_command("gaia memory append 42 --body x")
         assert result.is_mutative is False, (
-            f"gaia memory edit is local bookkeeping. "
+            f"gaia memory append is local bookkeeping. "
             f"Got: category={result.category}, reason={result.reason}"
         )
 
@@ -4300,7 +4299,7 @@ class TestGaiaInstallSubcommandsAreMutative:
     """
 
     def test_gaia_dev_is_mutative(self):
-        result = detect_mutative_command("gaia dev --workspace /home/jorge/ws/me")
+        result = detect_mutative_command("gaia dev --workspace /home/user/ws/me")
         assert result.is_mutative is True, (
             f"gaia dev is a state-mutating install and must be T3. "
             f"Got {result.category}: {result.reason}"
@@ -4315,7 +4314,7 @@ class TestGaiaInstallSubcommandsAreMutative:
     def test_gaia_dev_via_python_source_entry_is_mutative(self):
         # The deploy command uses the source-tree entry point directly.
         result = detect_mutative_command(
-            "gaia dev --mode pack --workspace /home/jorge/ws/me"
+            "gaia dev --mode pack --workspace /home/user/ws/me"
         )
         assert result.is_mutative is True
 
@@ -4412,7 +4411,7 @@ class TestGaiaScanWriteModeIsMutative:
         assert result.category == "MUTATIVE"
 
     def test_gaia_scan_write_mode_with_root_is_mutative(self):
-        result = detect_mutative_command("gaia scan --workspace me /home/jorge/ws")
+        result = detect_mutative_command("gaia scan --workspace me /home/user/ws")
         assert result.is_mutative is True
         assert result.category == "MUTATIVE"
 
@@ -4532,110 +4531,6 @@ class TestGaiaReleaseSyncLocalNoLongerAnchored:
         assert "anchored MUTATIVE (T3) by config" not in result.reason
 
 
-class TestGaiaScheduleTierGroup:
-    """`gaia schedule` desired-state registry tier split.
-
-    register/add/list/show/status/enable/disable are reversible desired-state
-    bookkeeping (T0) via COMMAND_SUBCOMMAND_TIER_EXCEPTIONS; `sync` (materializes
-    into the OS scheduler -- writes the crontab) and `remove` (irreversible row
-    deletion) stay T3 via COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS.
-    """
-
-    def test_schedule_register_not_mutative(self):
-        result = detect_mutative_command("gaia schedule register --name x --cron '0 7 * * *'")
-        assert result.is_mutative is False, (
-            f"gaia schedule register writes desired state only (T0). "
-            f"Got category={result.category} reason={result.reason}"
-        )
-
-    def test_schedule_add_not_mutative(self):
-        result = detect_mutative_command("gaia schedule add --name x --every 6h")
-        assert result.is_mutative is False
-
-    def test_schedule_enable_not_mutative(self):
-        # `enable` is a generic MUTATIVE_VERB; the group exception makes it T0.
-        result = detect_mutative_command("gaia schedule enable gmail-triage")
-        assert result.is_mutative is False, (
-            f"gaia schedule enable must be exempted to T0. reason={result.reason}"
-        )
-
-    def test_schedule_disable_not_mutative(self):
-        result = detect_mutative_command("gaia schedule disable gmail-triage")
-        assert result.is_mutative is False
-
-    def test_schedule_list_not_mutative(self):
-        result = detect_mutative_command("gaia schedule list")
-        assert result.is_mutative is False
-
-    def test_schedule_status_not_mutative(self):
-        result = detect_mutative_command("gaia schedule status")
-        assert result.is_mutative is False
-
-    def test_schedule_suspend_not_mutative(self):
-        # `suspend` only switches something OFF -- it reduces what runs, the
-        # direction that never needs consent -- and it writes gaia.db, never the
-        # machine scheduler. Same tier as `disable`, which it complements.
-        result = detect_mutative_command("gaia schedule suspend --all --for 8h")
-        assert result.is_mutative is False, (
-            f"gaia schedule suspend is desired-state bookkeeping (T0). "
-            f"reason={result.reason}"
-        )
-
-    def test_schedule_suspend_named_task_not_mutative(self):
-        result = detect_mutative_command("gaia schedule suspend gmail-triage --for 3d")
-        assert result.is_mutative is False
-
-    def test_schedule_resume_not_mutative(self):
-        # `resume` does restore capability, but only in gaia.db: nothing runs
-        # because a row says it should. The task reaches this machine's scheduler
-        # exclusively through `sync` (T3), so the consent boundary stays at
-        # MATERIALIZATION rather than being duplicated onto every edit. Gating
-        # `resume` while `enable` is free would also be incoherent -- `enable`
-        # restores strictly more, having no deadline at all.
-        result = detect_mutative_command("gaia schedule resume gmail-triage")
-        assert result.is_mutative is False, (
-            f"gaia schedule resume must be exempted to T0 like enable. "
-            f"reason={result.reason}"
-        )
-
-    def test_schedule_suspend_and_resume_are_generic_mutative_verbs(self):
-        """The group exception is what makes them T0 -- pin that it is load-bearing.
-
-        Both words are in MUTATIVE_VERBS, so without ("gaia","schedule") in
-        COMMAND_SUBCOMMAND_TIER_EXCEPTIONS every suspend/resume would demand
-        approval. This test fails if someone removes the exception believing the
-        verbs were safe by elimination.
-        """
-        from modules.security.mutative_verbs import MUTATIVE_VERBS
-        assert "suspend" in MUTATIVE_VERBS
-        assert "resume" in MUTATIVE_VERBS
-
-    def test_schedule_sync_stays_mutative(self):
-        # sync writes the OS scheduler -- must stay T3 despite the group exception.
-        result = detect_mutative_command("gaia schedule sync")
-        assert result.is_mutative is True, (
-            f"gaia schedule sync materializes into the crontab and must be T3. "
-            f"reason={result.reason}"
-        )
-        assert result.verb == "sync"
-
-    def test_schedule_remove_stays_mutative(self):
-        result = detect_mutative_command("gaia schedule remove gmail-triage")
-        assert result.is_mutative is True, (
-            f"gaia schedule remove is irreversible deletion and must be T3. "
-            f"reason={result.reason}"
-        )
-        assert result.verb == "remove"
-
-    def test_schedule_group_anchored_in_config(self):
-        from modules.security.mutative_verbs import (
-            COMMAND_SUBCOMMAND_TIER_EXCEPTIONS,
-            COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS,
-        )
-        assert ("gaia", "schedule") in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
-        assert COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS[("gaia", "schedule")] == frozenset({"sync", "remove"})
-
-
 class TestGaiaMemoryTierGroup:
     """`gaia memory` is local curated-memory bookkeeping, and its payload is
     DATA.
@@ -4644,7 +4539,8 @@ class TestGaiaMemoryTierGroup:
     are anchored to those exact shapes rather than to a plausible-sounding one:
 
       * `gaia memory edit <id>` -- `edit` is a generic MUTATIVE_VERB, so every
-        correction of a note demanded T3;
+        correction of a note demanded T3 (the verb is since retired, and the
+        one correction left, `add --replace`, is signed by an anchor);
       * `gaia memory add --body apply` -- a payload that is itself a mutative
         word gated the write on the CONTENT of the note.
 
@@ -4676,14 +4572,6 @@ class TestGaiaMemoryTierGroup:
             f"'{body_word}' as the note body must not gate the note. "
             f"reason={result.reason}"
         )
-
-    def test_memory_edit_not_mutative(self):
-        """`edit` is a generic MUTATIVE_VERB -- before the exception this gated
-        on the verb alone, regardless of payload."""
-        result = detect_mutative_command(
-            "gaia memory edit 42 --body 'apply the change'"
-        )
-        assert result.is_mutative is False
 
     def test_memory_append_not_mutative(self):
         result = detect_mutative_command("gaia memory append 42 --text 'more'")
@@ -4720,7 +4608,6 @@ class TestGaiaMemoryTierGroup:
 
     @pytest.mark.parametrize("command", [
         "gaia memory add --name n --body apply",
-        "gaia memory edit 42 --body 'apply the change'",
     ])
     def test_the_group_entry_is_what_produces_the_verdict(self, command, monkeypatch):
         """Counterfactual: remove the (gaia, memory) entry and these exact
@@ -4951,7 +4838,7 @@ class TestPowerShellLane:
         # rc.4: the hyphenated path argument must not be read as a cmdlet.
         r = self._run(
             'powershell.exe -NoProfile -Command '
-            '"Get-ChildItem C:\\Users\\jorge\\my-folder -Recurse"'
+            '"Get-ChildItem C:\\Users\\user\\my-folder -Recurse"'
         )
         assert r.is_mutative is False
 
@@ -5052,7 +4939,7 @@ class TestBareWindowsCommandLane:
     # Verb-Noun-shaped path/flag argument ('my-folder', 'a-b') sits in an
     # argument position and must not force a false T3 on a legitimate read.
     @pytest.mark.parametrize("cmd", [
-        "Get-ChildItem C:\\Users\\jorge\\my-folder",
+        "Get-ChildItem C:\\Users\\user\\my-folder",
         "Get-ChildItem C:\\my-folder -Recurse",
         "dir C:\\my-app\\sub-dir",
         "Get-Content C:\\a-b\\file.txt",

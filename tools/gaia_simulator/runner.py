@@ -19,6 +19,17 @@ from typing import Any, Optional
 
 from gaia_simulator.extractor import ReplayEvent
 
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from gaia.paths import db_path  # noqa: E402
+
+
+def _replay_data_home(work_dir: Path) -> Path:
+    """The data home a replay's hooks write logs and session state into."""
+    return work_dir / ".gaia-replay"
+
 
 @dataclass(frozen=True)
 class ReplayResult:
@@ -197,7 +208,7 @@ class HookRunner:
 
     def _read_latest_audit_record(self, work_dir: Path) -> dict[str, Any]:
         """Read the most recent audit record emitted during replay, if any."""
-        logs_dir = work_dir / ".claude" / "logs"
+        logs_dir = _replay_data_home(work_dir) / "logs"
         audit_files = sorted(logs_dir.glob("audit-*.jsonl"))
         if not audit_files:
             return {}
@@ -300,12 +311,8 @@ class HookRunner:
         claude_dir = base_dir / ".claude"
         claude_dir.mkdir(parents=True, exist_ok=True)
 
-        # Logs directory
-        (claude_dir / "logs").mkdir(exist_ok=True)
-
-        # Session directory
-        session_dir = claude_dir / "session" / "active"
-        session_dir.mkdir(parents=True, exist_ok=True)
+        # Logs and session state go to the replay's data home, which the hooks
+        # create on demand (see _replay_data_home).
 
         # NOTE: project-context/ and project-context.json are intentionally NOT
         # created. That artifact was retired (agent-contract-handoff M1 /
@@ -406,8 +413,13 @@ class HookRunner:
                 regression_type="missing_hook",
             )
 
+        # The replay gets its own data home so its logs and session state never
+        # land in the user's; GAIA_DB is pinned first so the database the
+        # hooks read does not move with it.
         env = os.environ.copy()
         env.pop("CLAUDE_PLUGIN_ROOT", None)
+        env["GAIA_DB"] = str(db_path())
+        env["GAIA_DATA_DIR"] = str(_replay_data_home(work_dir))
 
         if event.hook_name == "post_tool_use":
             self._prime_post_tool_use_state(event, work_dir)

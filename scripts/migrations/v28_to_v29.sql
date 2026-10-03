@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v28 -> v29: add `task_notifications` table (brief: headless task
 -- scheduler / "programador de tareas headless").
 --

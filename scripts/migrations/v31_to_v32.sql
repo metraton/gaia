@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v31 -> v32: add memory.initiative (canonical project/initiative
 -- grouping key) and backfill it on existing rows.
 --

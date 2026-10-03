@@ -1,36 +1,19 @@
 """
-gaia update -- Refresh DB schema, .claude/ config, and symlinks after a
-package upgrade.
+gaia update -- an alias of `gaia install`.
 
-Idempotent end-to-end. Where `gaia install` is "first-time setup",
-`gaia update` is "re-sync after npm install bumped the version" -- they
-share helpers but differ in orchestration and phrasing.
+`gaia install` is the only reconciler: it migrates the DB, runs the permission
+and routing seeds, wires the workspace, records the manifest, and exits
+non-zero when a step fails. `gaia update` takes the same flags and runs
+exactly that (`cli.install.cmd_install`), so the two can never drift.
 
-Order of operations:
-  1. Bootstrap DB (no-op if schema already current).
-  2. settings.json (create if missing).
-  3. settings.local.json -- merge permissions/env/agent.
-  4. settings.local.json -- merge hooks (npm mode).
-  5. settings.local.json -- force worktree.bgIsolation to "none".
-  6. Symlinks under .claude/ (recreate only if broken or stale).
-  7. plugin-registry.json (record current version).
-
-Verification (the `--verify` flag) reuses the existing checks so we don't
-duplicate doctor's logic. For the legacy 6-check report, see the
-`_run_verification` helper preserved here for backward compatibility with
-existing tests.
-
-Flags:
-  --dry-run   Detect what would change without mutating files.
-  --verbose   Show all check results (including passing ones).
-  --json      Machine-readable output.
-  --skip-bootstrap  Don't invoke the DB bootstrapper (helpful when DB is on a
-                    read-only mount or already known good).
-  --workspace PATH  Override workspace detection.
+The one thing update adds is `--dry-run` (with `--json`): a read-only preview
+of what the workspace helpers would change and the legacy health report
+(`_run_verification`). It never touches the DB or the filesystem.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -39,12 +22,12 @@ from pathlib import Path
 
 # bin/cli/update.py -> bin/cli -> bin -> gaia/
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.py"
 
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from cli import _install_helpers  # type: ignore  # noqa: E402
+from cli import install  # type: ignore  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -103,41 +86,6 @@ def _detect_versions(cwd: Path, pkg_root: Path) -> dict:
             pass
 
     return {"current": current, "previous": previous}
-
-
-# ---------------------------------------------------------------------------
-# Bootstrap helper (best-effort, never fatal in update mode)
-# ---------------------------------------------------------------------------
-
-def _run_bootstrap_idempotent(verbose: bool) -> dict:
-    """Run bootstrap_database.py; return result dict with action + details.
-
-    Failures are reported but never abort the update flow -- the user can
-    still benefit from settings/symlink fixes even if the DB is unreachable.
-    """
-    if not _BOOTSTRAP_SCRIPT.is_file():
-        return {"action": "skipped", "details": "bootstrap script missing"}
-    cmd = [sys.executable or "python3", str(_BOOTSTRAP_SCRIPT)]
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=not verbose,
-            text=True,
-            check=False,
-            timeout=120,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"action": "error", "details": f"bootstrap failed: {exc}"}
-
-    if result.returncode == 0:
-        return {"action": "noop", "details": "DB schema up to date"}
-
-    # A swallowed failure is a dead end: the migration consent gate refuses on
-    # this path and its whole message -- what stopped, and the command that
-    # continues deliberately -- lives in stderr.
-    if not verbose and result.stderr:
-        sys.stderr.write(result.stderr)
-    return {"action": "error", "details": f"bootstrap exited {result.returncode}"}
 
 
 # ---------------------------------------------------------------------------
@@ -325,70 +273,64 @@ def register(subparsers):
     """Register the 'update' subcommand."""
     p = subparsers.add_parser(
         "update",
-        help="Sync Gaia after a package upgrade (settings, hooks, symlinks, registry)",
+        help="Alias of `gaia install` (migrate, seed, wire, record the manifest)",
         description=(
-            "Sync Gaia after a package upgrade. Idempotent: every step is a\n"
-            "no-op when state is already current.\n"
+            "Alias of `gaia install`: same flags, same steps, same exit code --\n"
+            "non-zero when the DB migration or a required step fails. The\n"
+            "workspace defaults to the nearest directory holding .claude/.\n"
+            "Without --channel it re-wires the channels `gaia install` recorded\n"
+            "in the workspace manifest, and fails naming `gaia install --channel`\n"
+            "when none is recorded.\n"
             "\n"
-            "  - Bootstrap DB (re-applies migrations only if needed)\n"
-            "  - settings.json (create if missing)\n"
-            "  - settings.local.json (merge permissions, env, agent, hooks)\n"
-            "  - .claude/<name> symlinks (recreate broken/stale)\n"
-            "  - plugin-registry.json (record current version)\n"
-            "\n"
-            "--dry-run: print what would change without modifying files.\n"
+            "--dry-run [--json]: preview what the workspace helpers would change\n"
+            "and the health report, without touching the DB or any file.\n"
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    install.add_install_arguments(p)
     p.add_argument(
         "--dry-run",
         dest="dry_run",
         action="store_true",
         default=False,
-        help="Detect what would change without mutating files",
-    )
-    p.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        default=False,
-        help="Show all check results (including passing ones)",
+        help="Preview what would change; runs nothing",
     )
     p.add_argument(
         "--json",
         action="store_true",
         default=False,
-        help="Output results as JSON",
-    )
-    p.add_argument(
-        "--skip-bootstrap",
-        dest="skip_bootstrap",
-        action="store_true",
-        default=False,
-        help="Skip bootstrap.sh invocation (advanced; helpful for ro mounts)",
-    )
-    p.add_argument(
-        "--workspace",
-        dest="workspace",
-        type=str,
-        default=None,
-        help="Override workspace detection (default: walk up from cwd)",
+        help="With --dry-run: output the preview as JSON",
     )
     return p
 
 
 def cmd_update(args) -> int:
-    """Execute the update subcommand."""
-    workspace_arg = getattr(args, "workspace", None)
-    if workspace_arg:
-        root = Path(workspace_arg).expanduser().resolve()
-    else:
-        root = _find_project_root()
+    """Re-run `gaia install` for the channels the workspace recorded, or the read-only preview with --dry-run.
+
+    A --channel (or --host) names the channel instead, exactly as `gaia install` takes it.
+    """
+    if not getattr(args, "workspace", None):
+        args.workspace = str(_find_project_root())
+    if getattr(args, "dry_run", False):
+        return _preview(args)
+    if getattr(args, "channel", None) or getattr(args, "host", None):
+        return install.cmd_install(args)
+    workspace = Path(args.workspace).expanduser().resolve()
+    channels = install.recorded_channels(workspace)
+    if not channels:
+        print(f"gaia update: no install channel is recorded for {workspace}; install one first: "
+              f"gaia install --channel npm|opencode --workspace {workspace}", file=sys.stderr)
+        return 1
+    return install.install_channels(args, channels, command="gaia update")
+
+
+def _preview(args) -> int:
+    """Report what the workspace helpers would change and the health checks; mutates nothing."""
+    root = Path(args.workspace).expanduser().resolve()
     pkg_root = _find_package_root()
     claude_dir = root / ".claude"
-    dry_run = getattr(args, "dry_run", False)
     verbose = getattr(args, "verbose", False)
     as_json = getattr(args, "json", False)
-    skip_bootstrap = getattr(args, "skip_bootstrap", False)
 
     versions = _detect_versions(root, pkg_root)
 
@@ -399,35 +341,28 @@ def cmd_update(args) -> int:
             print(f"\nUpdating Gaia from {previous} to {current}...\n")
         else:
             print(f"\nUpdating Gaia (current: {current})...\n")
-        if dry_run:
-            print("  (dry-run mode -- no files will be modified)\n")
+        print("  (dry-run mode -- no files will be modified)\n")
 
-    # Step 1 -- bootstrap DB
-    if skip_bootstrap or dry_run:
-        bootstrap_result = {"action": "skipped", "details": "skipped (flag or dry-run)"}
-    else:
-        bootstrap_result = _run_bootstrap_idempotent(verbose=verbose)
+    bootstrap_result = {"action": "skipped", "details": "skipped (dry-run)"}
 
-    # Steps 2-7 -- workspace helpers (each idempotent + dry-run aware).
     # Order matches `gaia install` so install/update share the same sequence.
-    settings_helper = _install_helpers.configure_settings_json(root, dry_run=dry_run)
-    perms_helper = _install_helpers.merge_local_permissions(root, dry_run=dry_run)
-    hooks_helper = _install_helpers.merge_local_hooks(root, plugin_root=pkg_root, dry_run=dry_run)
-    worktree_helper = _install_helpers.merge_worktree_settings(root, dry_run=dry_run)
-    sym_helper = _install_helpers.manage_symlinks(root, plugin_root=pkg_root, dry_run=dry_run)
+    settings_helper = _install_helpers.configure_settings_json(root, dry_run=True)
+    perms_helper = _install_helpers.merge_local_permissions(root, dry_run=True)
+    hooks_helper = _install_helpers.merge_local_hooks(root, plugin_root=pkg_root, dry_run=True)
+    worktree_helper = _install_helpers.merge_worktree_settings(root, dry_run=True)
+    sym_helper = _install_helpers.manage_symlinks(root, plugin_root=pkg_root, dry_run=True)
     reg_helper = _install_helpers.register_plugin(
-        root, plugin_root=pkg_root, source="cli-update", dry_run=dry_run,
+        root, plugin_root=pkg_root, source="cli-update", dry_run=True,
     )
 
-    # Compat: derive legacy shape from helper results (do NOT re-invoke).
-    settings_result = _legacy_settings_shape(settings_helper, dry_run)
-    symlinks_result = _legacy_symlinks_shape(sym_helper, dry_run)
+    settings_result = _legacy_settings_shape(settings_helper, True)
+    symlinks_result = _legacy_symlinks_shape(sym_helper, True)
     verify_result = _run_verification(claude_dir)
 
     result = {
         "root": str(root),
         "versions": versions,
-        "dry_run": dry_run,
+        "dry_run": True,
         "bootstrap": bootstrap_result,
         "settings_json": settings_result,
         "permissions": perms_helper,

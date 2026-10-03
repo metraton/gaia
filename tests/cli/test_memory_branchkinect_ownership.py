@@ -39,7 +39,7 @@ def test_branchkinect_create_or_append_then_graduate_and_link(tmp_path, monkeypa
 
     # Search found the owning thread, so the next observation appends instead
     # of creating a second carry-forward row.
-    update_memory_field("me", slug, "body", "Second finding", append=True)
+    update_memory_field("me", slug, "body", "Second finding")
     upsert_memory(
         "me", "decision_branchkinect_delivery", type="decision",
         body="Delivery complete because the acceptance evidence passed.",

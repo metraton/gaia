@@ -287,7 +287,7 @@ The abstract interface in `hooks/adapters/base.py` defines the adapter contract.
 | `format_context_response` | `(result: ContextResult) -> HookResponse` | Format a context injection result |
 | `detect_channel` | `() -> DistributionChannel` | Detect whether Gaia is running as NPM or PLUGIN |
 
-Additional abstract methods for P1/P2 events: `adapt_session_start`, `format_bootstrap_response`, `adapt_stop`, `adapt_task_completed`, `adapt_subagent_start`, `format_quality_response`, `format_verification_response`.
+Additional abstract methods for P1/P2 events: `adapt_session_start`, `format_bootstrap_response`, `adapt_subagent_start`. `adapt_stop`, `adapt_task_completed`, `format_quality_response` and `format_verification_response` belong to the Claude Code adapter alone, the only host whose Stop and TaskCompleted hooks call them.
 
 **Invariants:**
 1. Business logic modules NEVER see `HookResponse`. They produce `ValidationResult`, `CompletionResult`, etc.

@@ -3,8 +3,8 @@
 A physical repository scanned from two different roots -- once from the
 workspace root and once from inside the repo's own subdirectory (which resolves
 a DIFFERENT workspace identity) -- must collapse into a SINGLE `projects` row
-keyed by the stable `project_identity` (git-common-dir realpath > normalized
-remote > realpath path), instead of duplicating across (workspace, name).
+keyed by the stable `project_identity` (normalized remote > git-common-dir
+realpath > realpath path), instead of duplicating across (workspace, name).
 
 This is the AC-2 behavior: scanning the same repo from the workspace root and
 again from the repo subdir produces exactly one project row for that canonical
@@ -53,25 +53,29 @@ def _make_repo(parent: Path, name: str, remote_url: str | None = None) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Identity resolution unit: git-common-dir wins, then remote, then realpath.
+# Identity resolution unit: remote wins, then git-common-dir, then realpath.
 # ---------------------------------------------------------------------------
 
 class TestResolveProjectIdentity:
-    def test_git_common_dir_is_vantage_independent(self, tmp_path):
-        """Same repo, resolved from root and from a nested subdir, yields the
-        same project_identity (the shared .git common dir, realpath'd)."""
+    def test_the_normalized_remote_wins_from_any_vantage(self, tmp_path):
         from tools.scan.store_populator import resolve_project_identity
 
-        repo = _make_repo(tmp_path, "repo", "git@github.com:owner/repo.git")
+        repo = _make_repo(tmp_path, "repo", "git@github.com:Owner/Repo.git")
         subdir = repo / "src" / "deep"
         subdir.mkdir(parents=True)
 
-        id_from_root = resolve_project_identity(repo)
-        id_from_subdir = resolve_project_identity(subdir)
+        assert resolve_project_identity(repo) == "github.com/owner/repo"
+        assert resolve_project_identity(subdir) == "github.com/owner/repo"
 
-        assert id_from_root == id_from_subdir
-        # It is the realpath of the repo's .git directory.
-        assert id_from_root == str((repo / ".git").resolve())
+    def test_git_common_dir_is_vantage_independent_without_a_remote(self, tmp_path):
+        from tools.scan.store_populator import resolve_project_identity
+
+        repo = _make_repo(tmp_path, "repo")
+        subdir = repo / "src" / "deep"
+        subdir.mkdir(parents=True)
+
+        assert resolve_project_identity(repo) == str((repo / ".git").resolve())
+        assert resolve_project_identity(subdir) == str((repo / ".git").resolve())
 
     def test_distinct_repos_get_distinct_identities(self, tmp_path):
         from tools.scan.store_populator import resolve_project_identity

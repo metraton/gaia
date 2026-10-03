@@ -915,21 +915,30 @@ class TestIntegration:
         assert "deprecated" in result.stderr.lower()
 
     def test_context_scan_dry_run(self, tmp_path):
-        """Smoke test: python bin/gaia context scan --dry-run exits 0."""
+        """python bin/gaia context scan --dry-run resolves the .claude/ root it runs under."""
         import os
         import subprocess
 
-        bin_gaia = _BIN_DIR / "gaia"
-        gaia_ops_dev = _BIN_DIR.parent
+        # The root is found by walking cwd's ancestors, so the test owns one:
+        # run from the checkout it passed only when another process had left a
+        # .claude/ above it (the CI $HOME). project-context/ is required because
+        # any ancestor carrying that marker outranks a nearer bare .claude/.
+        project = tmp_path / "project"
+        (project / ".claude" / "project-context").mkdir(parents=True)
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_DATA"}
+        env["GAIA_DATA_DIR"] = str(tmp_path / "data")
 
         result = subprocess.run(
-            [sys.executable, str(bin_gaia), "context", "scan", "--dry-run"],
+            [sys.executable, str(_BIN_DIR / "gaia"), "context", "scan", "--dry-run", "--json"],
             capture_output=True,
             text=True,
-            cwd=str(gaia_ops_dev),
-            env={**os.environ, "GAIA_DATA_DIR": str(tmp_path)},
+            cwd=str(project),
+            env=env,
         )
         assert result.returncode == 0, (
             f"Expected exit 0, got {result.returncode}\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
+        report = json.loads(result.stdout)
+        assert report["dry_run"] is True
+        assert report["project_root"] == str(project.resolve())

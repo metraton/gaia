@@ -29,12 +29,13 @@ The unified output row shape is:
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from gaia.store.workspace_retire import workspace_scope
 
 
 # ---------------------------------------------------------------------------
@@ -47,19 +48,45 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
-# task_notifications reads (headless scheduled-task reports)
+# task_notifications reads (reports, reminders, routines)
 # ---------------------------------------------------------------------------
 #
-# Read-side complement to the writer's add/ack API. Used by the `gaia
-# notifications list|show` CLI and by the hooks (SessionStart list + per-prompt
-# unread counter). All read-only (T0). ``workspace=None`` means "all workspaces"
-# for the count/list helpers; the CLI scopes to the active workspace by default.
+# Used by the `gaia notifications list|show` CLI and by the hooks (SessionStart
+# line + per-prompt counter). "Unread" here means open AND due now: due-ness is
+# evaluated against the clock on every read and nothing is written. A scoped
+# read includes the global (NULL-workspace) rows; ``workspace=None`` means all.
+
+_OPEN = (
+    "((kind = 'report' AND unread = 1) OR (kind <> 'report' AND closed_at IS NULL))"
+)
+
+
+def notification_scope(con: sqlite3.Connection, workspace: str | None) -> tuple[str, list]:
+    """SQL ``AND`` clause and params limiting to ``workspace``, its aliases and global rows."""
+    if workspace is None:
+        return "", []
+    scope = workspace_scope(con, workspace)
+    marks = ",".join("?" * len(scope))
+    return f" AND (workspace IN ({marks}) OR workspace IS NULL)", scope
+
+
+def _due_rows(con: sqlite3.Connection, select: str, workspace: str | None,
+              tail: str = "", tail_params: tuple = ()) -> list:
+    from gaia import notifications_time as clock
+
+    scope_sql, scope_params = notification_scope(con, workspace)
+    return con.execute(
+        f"{select} FROM task_notifications WHERE {_OPEN} "
+        f"AND (due_at IS NULL OR due_at <= ?){scope_sql}{tail}",
+        (clock.to_iso(clock.now_utc()), *scope_params, *tail_params),
+    ).fetchall()
+
 
 def count_unread_notifications(
     workspace: str | None = None,
     db_path: Path | None = None,
 ) -> int:
-    """Return the number of unread task-notifications, optionally scoped.
+    """Return the number of notifications open and due now, optionally scoped.
 
     Fail-soft: returns 0 on any query/connection error so the per-prompt hook
     counter never breaks the pipeline.
@@ -69,16 +96,8 @@ def count_unread_notifications(
     except Exception:
         return 0
     try:
-        if workspace is None:
-            row = con.execute(
-                "SELECT COUNT(*) FROM task_notifications WHERE unread = 1"
-            ).fetchone()
-        else:
-            row = con.execute(
-                "SELECT COUNT(*) FROM task_notifications WHERE unread = 1 AND workspace = ?",
-                (workspace,),
-            ).fetchone()
-        return int(row[0]) if row else 0
+        rows = _due_rows(con, "SELECT COUNT(*)", workspace)
+        return int(rows[0][0]) if rows else 0
     except Exception:
         return 0
     finally:
@@ -90,28 +109,44 @@ def list_unread_notifications(
     limit: int = 50,
     db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Return unread task-notifications, newest first, as plain dicts.
+    """Return notifications open and due now, newest first, as plain dicts.
 
-    Each dict carries: id, workspace, task_name, headline, body, session_id,
-    created_at, unread, acked_at. Fail-soft: returns [] on any error.
+    Each dict carries every task_notifications column. Fail-soft: returns []
+    on any error.
     """
     try:
         con = _connect(db_path)
     except Exception:
         return []
     try:
-        if workspace is None:
-            rows = con.execute(
-                "SELECT * FROM task_notifications WHERE unread = 1 "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT * FROM task_notifications WHERE unread = 1 AND workspace = ? "
-                "ORDER BY created_at DESC, id DESC LIMIT ?",
-                (workspace, limit),
-            ).fetchall()
+        rows = _due_rows(
+            con, "SELECT *", workspace,
+            " ORDER BY COALESCE(due_at, created_at) DESC, id DESC LIMIT ?", (limit,),
+        )
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def list_upcoming_notifications(
+    workspace: str | None = None,
+    limit: int = 50,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return open reminders and routines, soonest due first, whether due yet or not."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        scope_sql, scope_params = notification_scope(con, workspace)
+        rows = con.execute(
+            f"SELECT * FROM task_notifications WHERE kind <> 'report' AND closed_at IS NULL"
+            f"{scope_sql} ORDER BY due_at IS NOT NULL, due_at, id LIMIT ?",
+            (*scope_params, limit),
+        ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         return []
@@ -142,415 +177,224 @@ def get_notification(
 
 
 # ---------------------------------------------------------------------------
-# memory reads -- live-pending count per initiative
+# memory reads -- a project's live-pending threads and standing anchors
 # ---------------------------------------------------------------------------
 
+def not_superseded(row: str = "memory") -> str:
+    """SQL condition true while the ``memory`` row ``row`` is not the old end of a supersedes link.
+
+    ``row`` is the table name or alias of that row in the enclosing query. The
+    old end is matched by workspace and name, since a link across owners keeps
+    it in ``dst_workspace`` rather than the link's own workspace.
+    """
+    return (
+        "NOT EXISTS (SELECT 1 FROM memory_links sl "
+        f"WHERE sl.kind = 'supersedes' AND sl.dst_name = {row}.name "
+        f"AND COALESCE(sl.dst_workspace, sl.workspace) = {row}.workspace)"
+    )
+
+
+_PENDING_THREADS_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
+    "       m.initiative, m.project_ref, m.class, m.status "
+    "FROM memory m "
+    "WHERE m.deleted_at IS NULL "
+    "  AND m.class = 'thread' "
+    "  AND m.status IN ('carry_forward', 'open') "
+    "  AND (COALESCE(m.initiative, '') != '' OR COALESCE(m.project_ref, '') != '') "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC"
+)
+
+
+def pending_threads_by_project(
+    keys: list[str],
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Live-pending thread rows of the projects in ``keys``, freshest first.
+
+    A project's pending work is one corpus whichever workspace wrote it
+    (AC-12 of brief ``una-gaia-cualquier-instalacion``), so no workspace
+    filters the rows: a row belongs to a project when
+    ``gaia.store.writer.canonical_project_key`` of its ``initiative`` and
+    ``project_ref`` is in ``keys``. The thread predicate is
+    ``bin/cli/memory.py::_PENDING_VIVO_SELECT``'s, both excluding superseded
+    rows through :func:`not_superseded`; keep the two aligned, since this set is
+    what ``gaia memory get-relevant --initiative`` returns and every
+    "N more live-pending" count must equal it.
+
+    Returns ``[]`` for empty ``keys`` and on any DB error -- never raises,
+    since callers render it as an optional annotation or a best-effort read.
+    """
+    return _rows_of_projects(_PENDING_THREADS_WITH_A_PROJECT, keys, db_path)
+
+
+_LIVE_ANCHORS_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
+    "       m.initiative, m.project_ref, m.class, m.status "
+    "FROM memory m "
+    "WHERE m.deleted_at IS NULL "
+    "  AND m.class = 'anchor' "
+    "  AND (COALESCE(m.initiative, '') != '' OR COALESCE(m.project_ref, '') != '') "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY COALESCE(m.updated_at, '') DESC"
+)
+
+
+def anchors_by_project(
+    keys: list[str],
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Live anchor rows of the projects in ``keys``, freshest first, bodies included.
+
+    The project's standing notes, from every workspace and matched by
+    ``canonical_project_key`` exactly as :func:`pending_threads_by_project`
+    matches its threads; a row another row supersedes is excluded. Returns
+    ``[]`` for empty ``keys`` and on any DB error.
+    """
+    return _rows_of_projects(_LIVE_ANCHORS_WITH_A_PROJECT, keys, db_path)
+
+
+def _rows_of_projects(select: str, keys: list[str], db_path: Path | None) -> list[dict]:
+    """Rows of ``select`` whose canonical project key is in ``keys``; ``[]`` on any error."""
+    if not keys:
+        return []
+    try:
+        from gaia.store.writer import canonical_project_key
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        wanted = set(keys)
+        return [
+            dict(r) for r in con.execute(select)
+            if canonical_project_key(r["project_ref"], r["initiative"]) in wanted
+        ]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def project_row_workspaces(
+    name: str,
+    *,
+    include_deleted: bool = False,
+    db_path: Path | None = None,
+) -> list[str]:
+    """Sorted workspaces holding a row ``name`` that belongs to a project.
+
+    Membership is ``canonical_project_key`` of the row's ``project_ref`` and
+    ``initiative``, as in :func:`pending_threads_by_project`; a row with no
+    project is its workspace's alone and is never returned. Tombstoned rows
+    count only with ``include_deleted``. ``[]`` on any DB error.
+    """
+    try:
+        from gaia.store.writer import canonical_project_key
+        con = _connect(db_path)
+    except Exception:
+        return []
+    live = "" if include_deleted else " AND deleted_at IS NULL"
+    try:
+        rows = con.execute(
+            f"SELECT workspace, project_ref, initiative FROM memory WHERE name = ?{live}",
+            (name,),
+        ).fetchall()
+        return sorted({
+            r["workspace"] for r in rows
+            if canonical_project_key(r["project_ref"], r["initiative"])
+        })
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 def count_pending_by_initiative(
-    workspace: str,
     initiatives: list[str],
     db_path: Path | None = None,
 ) -> dict[str, int]:
-    """Live-pending thread count per initiative, scoped like a project.
+    """Live-pending thread count per project key, from every workspace.
 
-    Mirrors the selection predicate ``bin/cli/memory.py::_PENDING_VIVO_SELECT``
-    (``class='thread'``, ``status`` in ``carry_forward``/``open``,
-    ``deleted_at IS NULL``, a supersedes-destination row excluded) plus the
-    host-sentinel union ``_reader_workspaces`` performs there -- keep both
-    aligned if either changes; a count here that diverges from what
-    ``gaia memory get-relevant --initiative <key>`` returns for the same key
-    is exactly the drift this function exists to prevent, since a project's
-    on-screen count and its actual corpus size must always agree.
-
-    Returns ``{}`` for an empty ``initiatives`` list and on any DB error --
-    never raises, since a caller renders this as an optional annotation.
+    Counts :func:`pending_threads_by_project`, so a project's on-screen count
+    and the corpus ``gaia memory get-relevant --initiative <key>`` returns
+    agree by construction. Keys with no pending rows are absent.
     """
-    if not initiatives:
-        return {}
-    try:
-        from gaia.store.writer import HOST_WORKSPACE
-        workspaces = (
-            [workspace] if workspace == HOST_WORKSPACE
-            else [workspace, HOST_WORKSPACE]
-        )
-    except Exception:
-        workspaces = [workspace]
+    from gaia.store.writer import canonical_project_key
 
+    counts: dict[str, int] = {}
+    for row in pending_threads_by_project(initiatives, db_path):
+        key = canonical_project_key(row["project_ref"], row["initiative"])
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# memory reads -- who the user is
+# ---------------------------------------------------------------------------
+
+# Every workspace, not the caller's: user memory belongs to no workspace
+# (AC-11), and rows written before the _gaia_user sentinel existed still sit
+# under the workspace that wrote them until they are relocated.
+_USER_ANCHORS = (
+    "SELECT m.workspace, m.name, m.description, m.body "
+    "FROM memory m "
+    "WHERE m.type = 'user' AND m.class = 'anchor' AND m.deleted_at IS NULL "
+    f"  AND {not_superseded('m')} "
+    "  AND (? IS NULL OR COALESCE(m.audience, 'any') IN (?, 'any')) "
+    "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
+)
+
+
+def user_anchor_rows(
+    db_path: Path | None = None, *, audience: str | None = None,
+) -> list[dict]:
+    """The user's standing rows: live ``type='user'`` anchors no row supersedes.
+
+    The one selection behind both the session birth block and the dispatch
+    kernel, so the orchestrator and every subagent know the user by the same
+    rows. ``audience`` names the reader's role: given, only rows addressed to
+    that role or to ``any`` come back; omitted, every row does, which is what
+    the orchestrator's birth block reads. Returns ``[]`` on any DB error.
+    """
     try:
         con = _connect(db_path)
     except Exception:
-        return {}
+        return []
     try:
-        ws_ph = ", ".join("?" for _ in workspaces)
-        init_ph = ", ".join("?" for _ in initiatives)
-        sql = (
-            "SELECT initiative, COUNT(*) AS cnt FROM memory "
-            f"WHERE workspace IN ({ws_ph}) "
-            "  AND deleted_at IS NULL "
-            "  AND class = 'thread' "
-            "  AND status IN ('carry_forward', 'open') "
-            f"  AND initiative IN ({init_ph}) "
-            "  AND name NOT IN ("
-            "    SELECT dst_name FROM memory_links "
-            f"    WHERE workspace IN ({ws_ph}) AND kind = 'supersedes'"
-            "  ) "
-            "GROUP BY initiative"
-        )
-        params = list(workspaces) + list(initiatives) + list(workspaces)
-        rows = con.execute(sql, params).fetchall()
-        return {r["initiative"]: r["cnt"] for r in rows}
+        return [dict(r) for r in con.execute(_USER_ANCHORS, (audience, audience))]
     except Exception:
-        return {}
+        return []
+    finally:
+        con.close()
+
+
+_LIVE_OWNED_ROWS = (
+    "SELECT m.workspace, m.name, m.type, m.class, m.description, m.body, "
+    "       m.initiative, m.updated_at "
+    "FROM memory m "
+    "WHERE m.deleted_at IS NULL AND (m.type = 'user' OR m.initiative IS NOT NULL) "
+    f"  AND {not_superseded('m')} "
+    "ORDER BY m.workspace, m.name"
+)
+
+
+def live_owned_memory_rows(db_path: Path | None = None) -> list[dict]:
+    """Every live row no row supersedes that has an owner: the user, or a project key.
+
+    Every workspace and every class, so a contradiction between a standing
+    row and a forgotten log row is still visible. Raises on a DB error: the
+    caller reports it instead of showing an empty corpus as a clean one.
+    """
+    con = _connect(db_path)
+    try:
+        return [dict(r) for r in con.execute(_LIVE_OWNED_ROWS)]
     finally:
         con.close()
 
 
 # ---------------------------------------------------------------------------
-# scheduled_tasks reads (OS-agnostic desired state)
-# ---------------------------------------------------------------------------
-#
-# Read-side complement to the writer's upsert/enable/delete API. Used by the
-# `gaia schedule list|show|status` CLI, by `gaia schedule sync`, and by the
-# SessionStart reconciliation block. All read-only (T0). Each task dict includes
-# a parsed ``schedule_spec`` (dict) under ``spec`` and, for named-scope tasks,
-# the ``machines`` list.
-
-# A suspension is "off with a deadline"; `enabled = 0` is "off, permanently".
-# Both are read here and kept as DISTINCT states all the way out to the CLI, so
-# neither the user nor an agent parsing the output has to guess which one is in
-# force. `effective_state` is the single derived answer:
-#
-#   disabled   -- enabled = 0. Permanent; no deadline; dominates, because a
-#                 lapsing suspension still leaves a disabled task switched off.
-#   suspended  -- a LIVE suspension row covers it (per-task or workspace-wide).
-#   active     -- neither applies, INCLUDING the case where a suspension exists
-#                 but has already lapsed. That is the automatic reactivation:
-#                 nothing rewrites the row, the comparison against now simply
-#                 stops being true.
-
-_SUSPENSION_SCOPE_GLOBAL = "global"
-_SUSPENSION_SCOPE_TASK = "task"
-
-
-def _parse_iso(value: str | None) -> datetime | None:
-    """Parse an ISO8601 UTC stamp to an aware datetime, or None when unusable."""
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(value).rstrip("Z"))
-    except ValueError:
-        return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
-
-
-def humanize_seconds(total: int) -> str:
-    """Render a positive second count as a compact "2d 3h" / "45m" duration.
-
-    Used for the "time left" on a live suspension and the "ago" on a lapsed one.
-    Truncates rather than rounds, and never emits more than two units -- the
-    caller is announcing a deadline, not timing a benchmark.
-    """
-    total = max(0, int(total))
-    if total < 60:
-        return f"{total}s"
-    units = (("d", 86400), ("h", 3600), ("m", 60))
-    parts: list[str] = []
-    for label, size in units:
-        if total >= size:
-            parts.append(f"{total // size}{label}")
-            total %= size
-        if len(parts) == 2:
-            break
-    return " ".join(parts)
-
-
-def _evaluate_suspension(row: sqlite3.Row | dict, now: datetime) -> dict[str, Any]:
-    """Turn one stored suspension row into its evaluated, read-time form.
-
-    THIS is where expiry happens -- a comparison against ``now``, not a process
-    that wakes up. ``indefinite`` (no ``until``) never lapses; otherwise the row
-    is live while ``until`` is in the future and ``expired`` once it is not.
-    """
-    s = dict(row)
-    s["scope"] = _SUSPENSION_SCOPE_GLOBAL if s.get("task_id") is None else _SUSPENSION_SCOPE_TASK
-    until_dt = _parse_iso(s.get("until"))
-    s["indefinite"] = until_dt is None
-    if until_dt is None:
-        s["expired"] = False
-        s["remaining_seconds"] = None
-        s["remaining"] = None
-        s["lapsed_seconds"] = None
-        s["lapsed_ago"] = None
-    else:
-        delta = int((until_dt - now).total_seconds())
-        s["expired"] = delta <= 0
-        s["remaining_seconds"] = delta if delta > 0 else None
-        s["remaining"] = humanize_seconds(delta) if delta > 0 else None
-        s["lapsed_seconds"] = -delta if delta <= 0 else None
-        s["lapsed_ago"] = humanize_seconds(-delta) if delta <= 0 else None
-    s["live"] = not s["expired"]
-    return s
-
-
-def _load_suspension_index(con: sqlite3.Connection) -> dict[tuple[Any, Any], dict[str, Any]]:
-    """Load every suspension once, keyed by (workspace, task_id).
-
-    Keyed by both coordinates rather than filtered by workspace so a caller
-    listing ACROSS workspaces still resolves each task against its own
-    workspace's global switch. ``task_id`` is None for the workspace-wide row.
-
-    Fail-soft to {}: a DB predating the schedule_suspensions table (v46 and
-    earlier, before `gaia install` applies v47) must still list and show tasks
-    rather than error out.
-    """
-    try:
-        rows = con.execute(
-            "SELECT * FROM schedule_suspensions ORDER BY id"
-        ).fetchall()
-    except Exception:
-        return {}
-    now = datetime.now(tz=timezone.utc)
-    return {(r["workspace"], r["task_id"]): _evaluate_suspension(r, now) for r in rows}
-
-
-def _row_to_task(
-    con: sqlite3.Connection,
-    row: sqlite3.Row,
-    suspensions: dict[tuple[Any, Any], dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    task = dict(row)
-    try:
-        task["spec"] = json.loads(task.get("schedule_spec") or "{}")
-    except Exception:
-        task["spec"] = {}
-    if task.get("machine_scope") == "named":
-        ms = con.execute(
-            "SELECT machine_name FROM scheduled_task_machines WHERE task_id = ? "
-            "ORDER BY machine_name",
-            (task["id"],),
-        ).fetchall()
-        task["machines"] = [r["machine_name"] for r in ms]
-    else:
-        task["machines"] = []
-
-    if suspensions is None:
-        suspensions = _load_suspension_index(con)
-    ws = task.get("workspace")
-    own = suspensions.get((ws, task["id"]))
-    glob = suspensions.get((ws, None))
-    # A per-task suspension is reported in preference to the global switch when
-    # both are live, because it is the more specific decision the user made.
-    live = next((s for s in (own, glob) if s is not None and s["live"]), None)
-    task["suspension"] = live or own or glob
-    if not task.get("enabled"):
-        task["effective_state"] = "disabled"
-    elif live is not None:
-        task["effective_state"] = "suspended"
-    else:
-        task["effective_state"] = "active"
-    return task
-
-
-def list_scheduled_tasks(
-    workspace: str | None = None,
-    include_disabled: bool = True,
-    db_path: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Return desired-state tasks (optionally workspace-scoped), newest first.
-
-    Fail-soft: returns [] on any error so the CLI / hook never breaks.
-    """
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return []
-    try:
-        clauses = []
-        params: list[Any] = []
-        if workspace is not None:
-            clauses.append("workspace IS ?")
-            params.append(workspace)
-        if not include_disabled:
-            clauses.append("enabled = 1")
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        rows = con.execute(
-            f"SELECT * FROM scheduled_tasks{where} ORDER BY created_at DESC, id DESC",
-            tuple(params),
-        ).fetchall()
-        susp = _load_suspension_index(con)
-        return [_row_to_task(con, r, susp) for r in rows]
-    except Exception:
-        return []
-    finally:
-        con.close()
-
-
-def get_scheduled_task(
-    name: str,
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> dict[str, Any] | None:
-    """Return one desired-state task by (workspace, name), or None."""
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return None
-    try:
-        row = con.execute(
-            "SELECT * FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
-            (name, workspace),
-        ).fetchone()
-        return _row_to_task(con, row) if row else None
-    finally:
-        con.close()
-
-
-def scheduled_tasks_for_machine(
-    machine_name: str,
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Return ACTIVE desired-state tasks that apply to ``machine_name``.
-
-    A task applies when machine_scope='all', or machine_scope='named' and
-    ``machine_name`` is in its scheduled_task_machines. This is what a sync on a
-    given machine, and the SessionStart reconciliation block, iterate over.
-
-    Excludes both ways a task can be switched off -- ``enabled = 0`` (permanent)
-    and a LIVE suspension (deadline not yet reached). That is what makes a
-    suspension desired state rather than a crontab edit: the machine only changes
-    when the user consents to `gaia schedule sync`, and when the suspension
-    lapses this set grows back on its own with no write anywhere.
-    Fail-soft: returns [] on any error.
-    """
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return []
-    try:
-        clauses = ["enabled = 1"]
-        params: list[Any] = []
-        if workspace is not None:
-            clauses.append("workspace IS ?")
-            params.append(workspace)
-        where = " WHERE " + " AND ".join(clauses)
-        rows = con.execute(
-            f"SELECT * FROM scheduled_tasks{where} ORDER BY name",
-            tuple(params),
-        ).fetchall()
-        susp = _load_suspension_index(con)
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            task = _row_to_task(con, r, susp)
-            if task.get("effective_state") != "active":
-                continue
-            if task.get("machine_scope") == "all" or machine_name in task.get("machines", []):
-                out.append(task)
-        return out
-    except Exception:
-        return []
-    finally:
-        con.close()
-
-
-def list_schedule_suspensions(
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Return stored suspensions, expiry-evaluated, global scope first.
-
-    Each row carries the derived fields ``scope`` (global|task), ``indefinite``,
-    ``live`` / ``expired``, ``remaining`` / ``lapsed_ago``, plus ``task_name``
-    for a per-task row. A row with ``expired`` true is a LAPSE that has not been
-    acknowledged: the tasks it covered are active again, and it stays here until
-    `gaia schedule resume` clears it.
-
-    ``resumed_names`` lists the tasks a lapse actually brought back, and is
-    deliberately narrower than ``covered_names``: a task that is separately
-    ``disabled``, or that is still held by ANOTHER live suspension, is excluded.
-    Announcing either one as "active again" would be a false statement about
-    what is running -- the exact thing this feature exists to prevent.
-
-    Fail-soft: returns [] when the table does not exist yet or on any error.
-    """
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return []
-    try:
-        clauses = []
-        params: list[Any] = []
-        if workspace is not None:
-            clauses.append("workspace IS ?")
-            params.append(workspace)
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        rows = con.execute(
-            f"SELECT * FROM schedule_suspensions{where} "
-            "ORDER BY (task_id IS NOT NULL), task_id, id",
-            tuple(params),
-        ).fetchall()
-    except Exception:
-        return []
-
-    try:
-        now = datetime.now(tz=timezone.utc)
-        index = _load_suspension_index(con)
-
-        def _still_held(task_id: Any, ws: Any, excluding_id: int) -> bool:
-            """True when another LIVE suspension still covers this task."""
-            for other in (index.get((ws, task_id)), index.get((ws, None))):
-                if other is None or int(other["id"]) == excluding_id:
-                    continue
-                if other["live"]:
-                    return True
-            return False
-
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            s = _evaluate_suspension(r, now)
-            covered = con.execute(
-                "SELECT id, name, enabled, workspace FROM scheduled_tasks WHERE id = ?"
-                if s["task_id"] is not None else
-                "SELECT id, name, enabled, workspace FROM scheduled_tasks "
-                "WHERE workspace IS ? ORDER BY name",
-                (s["task_id"],) if s["task_id"] is not None else (s["workspace"],),
-            ).fetchall()
-            s["task_name"] = covered[0]["name"] if (s["task_id"] is not None and covered) else None
-            s["covered_names"] = [c["name"] for c in covered]
-            s["resumed_names"] = [
-                c["name"] for c in covered
-                if c["enabled"]
-                and not _still_held(c["id"], c["workspace"], int(s["id"]))
-            ]
-            out.append(s)
-        return out
-    except Exception:
-        return []
-    finally:
-        con.close()
-
-
-def get_scheduled_task_state(
-    task_id: int,
-    machine_name: str,
-    db_path: Path | None = None,
-) -> dict[str, Any] | None:
-    """Return per-machine materialization state for a task, or None."""
-    try:
-        con = _connect(db_path)
-    except Exception:
-        return None
-    try:
-        row = con.execute(
-            "SELECT * FROM scheduled_task_state WHERE task_id = ? AND machine_name = ?",
-            (task_id, machine_name),
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        con.close()
-
-
-# ---------------------------------------------------------------------------
-# Duration / date parsing for --since / --until / --for
+# Duration / date parsing for --since / --until
 # ---------------------------------------------------------------------------
 
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
@@ -608,46 +452,6 @@ def parse_when(value: str) -> str:
             f"could not parse '{value}' as duration (e.g. '24h', '7d') "
             f"or date (YYYY-MM-DD / YYYY-MM-DDTHH:MM:SS)"
         ) from exc
-
-
-def parse_deadline(value: str) -> str:
-    """Normalize a suspension deadline to an ISO8601 UTC string.
-
-    The FORWARD-reading sibling of ``parse_when``: same accepted grammar, same
-    output shape, opposite sign on the duration. ``--since 24h`` anchors in the
-    past; ``--for 8h`` sets a deadline 8 hours from now. Kept as a separate entry
-    point rather than a flag on parse_when so a caller cannot get the direction
-    wrong by forgetting an argument.
-
-      * Duration: ``"8h"``, ``"3d"``, ``"90m"``, ``"2w"`` -- now PLUS N units.
-      * Date-only:   ``"2026-09-01"`` -> ``2026-09-01T00:00:00Z``.
-      * Datetime:    ``"2026-09-01T18:00:00"`` (Z optional).
-
-    Raises:
-        ValueError: when the input matches none of the above.
-    """
-    if not value or not value.strip():
-        raise ValueError("empty deadline value")
-    s = value.strip()
-
-    m = _DURATION_RE.match(s)
-    if m:
-        delta = _DURATION_DELTAS[m.group(2).lower()](int(m.group(1)))
-        return (datetime.now(tz=timezone.utc) + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
-        return f"{s}T00:00:00Z"
-
-    try:
-        dt = datetime.fromisoformat(s.rstrip("Z"))
-    except ValueError as exc:
-        raise ValueError(
-            f"could not parse '{value}' as duration (e.g. '8h', '3d') "
-            f"or date (YYYY-MM-DD / YYYY-MM-DDTHH:MM:SS)"
-        ) from exc
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------
@@ -776,8 +580,9 @@ def _query_episodes(
     where = []
     params: list[Any] = []
     if workspace:
-        where.append("workspace = ?")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"workspace IN ({','.join('?' * len(scope))})")
+        params.extend(scope)
     if since_iso:
         where.append("timestamp >= ?")
         params.append(since_iso)
@@ -871,8 +676,9 @@ def _query_harness_events(
     where = []
     params: list[Any] = []
     if workspace:
-        where.append("(workspace = ? OR workspace IS NULL)")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"(workspace IN ({','.join('?' * len(scope))}) OR workspace IS NULL)")
+        params.extend(scope)
     if since_iso:
         where.append("ts >= ?")
         params.append(since_iso)
@@ -1306,8 +1112,9 @@ def _query_subagent_defects(
     where: list[str] = []
     params: list[Any] = []
     if workspace:
-        where.append("ea.workspace = ?")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"ea.workspace IN ({','.join('?' * len(scope))})")
+        params.extend(scope)
     if since_iso:
         where.append("ea.timestamp >= ?")
         params.append(since_iso)
@@ -1371,8 +1178,9 @@ def _query_orchestrator_defects(
     ]
     params: list[Any] = list(NON_DEFECT_EVENT_SEVERITIES)
     if workspace:
-        where.append("(workspace = ? OR workspace IS NULL)")
-        params.append(workspace)
+        scope = workspace_scope(con, workspace)
+        where.append(f"(workspace IN ({','.join('?' * len(scope))}) OR workspace IS NULL)")
+        params.extend(scope)
     if since_iso:
         where.append("ts >= ?")
         params.append(since_iso)
@@ -1546,14 +1354,15 @@ def search_episodes_fts(
         return []
     try:
         if workspace:
+            scope = workspace_scope(con, workspace)
             rows = con.execute(
                 "SELECT e.*, rank AS fts_rank "
                 "FROM episodes_fts "
                 "JOIN episodes e ON e.rowid = episodes_fts.rowid "
-                "WHERE episodes_fts MATCH ? AND e.workspace = ? "
+                f"WHERE episodes_fts MATCH ? AND e.workspace IN ({','.join('?' * len(scope))}) "
                 "ORDER BY rank "
                 "LIMIT ?",
-                (query, workspace, limit),
+                (query, *scope, limit),
             ).fetchall()
         else:
             rows = con.execute(
@@ -1646,6 +1455,33 @@ def get_memory_class_status(
         con.close()
 
 
+_LINK_COLUMNS = (
+    "src_name, dst_name, kind, created_at, workspace AS src_workspace, "
+    "COALESCE(dst_workspace, workspace) AS dst_workspace"
+)
+
+
+def _links_from(con: sqlite3.Connection, workspace: str, names: list[str]) -> list:
+    """Edges whose src is one of ``names`` in ``workspace``."""
+    ph = ",".join("?" * len(names))
+    return con.execute(
+        f"SELECT {_LINK_COLUMNS} FROM memory_links "
+        f"WHERE workspace = ? AND src_name IN ({ph})",
+        [workspace, *names],
+    ).fetchall()
+
+
+def _links_into(con: sqlite3.Connection, workspace: str, names: list[str]) -> list:
+    """Edges whose dst is one of ``names`` in ``workspace``, whichever workspace stores the edge."""
+    ph = ",".join("?" * len(names))
+    return con.execute(
+        f"SELECT {_LINK_COLUMNS} FROM memory_links "
+        f"WHERE dst_name IN ({ph}) "
+        f"AND ((dst_workspace IS NULL AND workspace = ?) OR dst_workspace = ?)",
+        [*names, workspace, workspace],
+    ).fetchall()
+
+
 def memory_links_for(
     workspace: str,
     names,
@@ -1654,26 +1490,18 @@ def memory_links_for(
 ) -> list[dict]:
     """Batch-load every ``memory_links`` edge that touches any of ``names``.
 
-    Two index-aligned IN-list queries (outgoing on src, incoming on dst),
-    merged and de-duplicated by ``(src_name, dst_name, kind)``. Never one query
-    per node. Each edge dict: ``{src_name, dst_name, kind, created_at}``.
+    Two IN-list queries (outgoing on src, incoming on dst -- an incoming
+    edge may be stored under another owner's workspace), merged and
+    de-duplicated by ``(src_name, dst_name, kind)``. Never one query per node.
+    Each edge dict: ``{src_name, dst_name, kind, created_at}``.
     """
     names = _dedup_preserve(names)
     if not names:
         return []
     con = _ro_connect(db_path)
     try:
-        ph = ",".join("?" * len(names))
-        out_rows = con.execute(
-            f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-            f"WHERE workspace = ? AND src_name IN ({ph})",
-            [workspace, *names],
-        ).fetchall()
-        in_rows = con.execute(
-            f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-            f"WHERE workspace = ? AND dst_name IN ({ph})",
-            [workspace, *names],
-        ).fetchall()
+        out_rows = _links_from(con, workspace, names)
+        in_rows = _links_into(con, workspace, names)
     finally:
         con.close()
     edges: list[dict] = []
@@ -1763,9 +1591,10 @@ def memory_lineage(
     """BFS the ``memory_links`` graph from ``slug`` in BOTH directions.
 
     Uses a visited-set (cycle-safe) and stops after ``max_depth`` hops. At each
-    depth level it issues exactly TWO batch queries (outgoing over the frontier
-    IN-list, incoming over the frontier IN-list) -- never one per node -- so a
-    deep lineage costs ``2 * hops`` queries, not ``2 * nodes``.
+    depth level it issues TWO batch queries (outgoing over the frontier
+    IN-list, incoming over the frontier IN-list) per workspace the frontier
+    spans -- never one per node. A link across owners carries the walk into
+    the other end's workspace, which ``home`` records per node.
 
     Returns::
 
@@ -1774,6 +1603,7 @@ def memory_lineage(
             "nodes":  [name, ...],            # sorted, includes seed
             "depth":  {name: hop_count},
             "role":   {name: role_label},     # seed -> "queried"
+            "home":   {name: workspace},
             "edges":  [{src_name, dst_name, kind, created_at}, ...],
         }
     """
@@ -1782,26 +1612,19 @@ def memory_lineage(
         visited = {slug}
         depth = {slug: 0}
         role = {slug: "queried"}
+        home = {slug: workspace}
         edges: list[dict] = []
         edge_seen: set = set()
         frontier = [slug]
         hop = 0
         while frontier and hop < max_depth:
-            ph = ",".join("?" * len(frontier))
-            out_rows = con.execute(
-                f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-                f"WHERE workspace = ? AND src_name IN ({ph})",
-                [workspace, *frontier],
-            ).fetchall()
-            in_rows = con.execute(
-                f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
-                f"WHERE workspace = ? AND dst_name IN ({ph})",
-                [workspace, *frontier],
-            ).fetchall()
+            found: list[tuple] = []
+            for frontier_workspace in dict.fromkeys(home[n] for n in frontier):
+                names = [n for n in frontier if home[n] == frontier_workspace]
+                found += [(x, "out") for x in _links_from(con, frontier_workspace, names)]
+                found += [(x, "in") for x in _links_into(con, frontier_workspace, names)]
             next_frontier: list[str] = []
-            for r, direction in (
-                [(x, "out") for x in out_rows] + [(x, "in") for x in in_rows]
-            ):
+            for r, direction in found:
                 key = (r["src_name"], r["dst_name"], r["kind"])
                 if key not in edge_seen:
                     edge_seen.add(key)
@@ -1811,11 +1634,13 @@ def memory_lineage(
                         "kind": r["kind"],
                         "created_at": r["created_at"],
                     })
-                neighbor = r["dst_name"] if direction == "out" else r["src_name"]
+                end = "dst" if direction == "out" else "src"
+                neighbor = r[f"{end}_name"]
                 if neighbor not in visited:
                     visited.add(neighbor)
                     depth[neighbor] = hop + 1
                     role[neighbor] = _role_for_edge(r["kind"], direction)
+                    home[neighbor] = r[f"{end}_workspace"]
                     next_frontier.append(neighbor)
             frontier = next_frontier
             hop += 1
@@ -1826,6 +1651,7 @@ def memory_lineage(
         "nodes": sorted(visited),
         "depth": depth,
         "role": role,
+        "home": home,
         "edges": edges,
     }
 
@@ -1992,20 +1818,31 @@ def build_memory_story(
 
         {
             "seed": slug,
-            "nodes": [{name, depth, role}, ...],
+            "nodes": [{name, depth, role, workspace}, ...],
             "edges": [{src_name, dst_name, kind, created_at}, ...],
             "timeline": [event, ...],
             "final_states": [{name, class, status, type, ...}, ...],
         }
+
+    History and final state are read in each node's own workspace, which
+    differs from ``workspace`` past a link across owners.
     """
     lin = memory_lineage(workspace, slug, max_depth=max_depth, db_path=db_path)
     names = lin["nodes"]
     node_set = set(names)
-    history = memory_history_for(workspace, names, db_path=db_path)
-    finals = memory_final_states(workspace, names, lin["role"], db_path=db_path)
+    history: list[dict] = []
+    finals_by_name: dict[str, dict] = {}
+    for node_workspace in dict.fromkeys(lin["home"][n] for n in names):
+        group = [n for n in names if lin["home"][n] == node_workspace]
+        history += memory_history_for(node_workspace, group, db_path=db_path)
+        for state in memory_final_states(node_workspace, group, lin["role"], db_path=db_path):
+            finals_by_name[state["name"]] = state
+    history.sort(key=lambda h: (h["changed_at"] or "", h["id"]))
+    finals = [finals_by_name[n] for n in names]
     timeline = _fuse_timeline(node_set, history, lin["edges"])
     nodes = [
-        {"name": n, "depth": lin["depth"].get(n), "role": lin["role"].get(n)}
+        {"name": n, "depth": lin["depth"].get(n), "role": lin["role"].get(n),
+         "workspace": lin["home"][n]}
         for n in names
     ]
     return {

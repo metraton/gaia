@@ -1,18 +1,14 @@
-# PRINCIPLE 3 — "You author a sequence, not positions."
+# IDEAS 3 OF 4 — what comes in order stays in order.
 #
-# There is no cell coordinate anywhere in the dialect: the only positional dial
-# is `order`, and it does two jobs at once — the packing order across the row and
-# the stacking order when the deck collapses to one column. Filling runs FORWARD:
-# the placement cursor never moves backwards, so nothing returns to fill the hole
-# a tall cell left. Whatever belongs beside something tall has to be authored
-# around it, before anything that claims a whole row.
+# A page of the tour's ideas step. It teaches the order question before any
+# piece is chosen: say what the reader meets first and what follows, put each
+# idea after the one it needs, and leave side by side the ideas that could go in
+# either order, because only what depends on another idea has an order.
 #
 # FORM: flow. Deliberate: the page's subject IS a sequence read in one direction,
 # which is what `flow` names, and the form comes with the chip that makes the
-# sequence traceable (`order` is what makes a chip read directionally, since a
-# grid cannot draw arrows). It also drops the orphan-row and verticality checks,
-# which is correct — a sequence is legitimately a stack of rows, not a dense
-# board, and the two bands here are exactly that.
+# sequence traceable. It also drops the orphan-row and verticality checks, which
+# is correct — a sequence is legitimately a stack of rows, not a dense board.
 #
 # WHAT IT EXERCISES: `order` as the only coordinate · the forward-fill rule
 # demonstrated with a rowspan anchor and the four cells that pack around it · a
@@ -20,26 +16,37 @@
 # a filter chip tracing a directional sequence.
 
 id: p3-sequence
-layout: grid
 form: flow
 # Two root columns, so each band is a full-width row: a sequence reads down the
 # page, one row at a time.
 columns: 2
 
 filters:
+  # One relation, so one label: p6 declares the same key and CHIP-X fails a key
+  # whose label differs by page.
   - key: packing
-    label: "The packing order"
+    label: "What comes first?"
     steps:
-      - "Click the chip to light the three cells that carry an explicit <code>order</code>."
-      - "That one number is the whole positional vocabulary — there is no row or column to set."
-      - "It reads 1 → 2 → 3 here, and it is the same order the page stacks in when it collapses."
+      - "Click the chip to light the three boxes that say the order of the story."
+      - "First, then, always: the order is a decision about the story, not about the screen."
+      - "It reads 1 → 2 → 3 here, on a wide screen and on a narrow one."
 
 sections:
 
-  # ── ROW 1 · ORDER IS THE ONLY COORDINATE, AND IT DOES TWO JOBS ────────────
+  - id: p3-lead
+    order: 0
+    span: 2
+    lead: true
+    kicker: "IDEAS · 3 OF 4"
+    title: "What comes in order stays in order"
+    description:
+      - "decide what comes first; that order holds on every screen"
+    detail: "Some ideas are a sequence: first this, then that. Write it down as an idea before any piece: which things come in order, and which only sit together. The order you decide is the order the reader meets them, left to right on a wide screen and top to bottom on a narrow one."
+
+  # ── ROW 1 · first, then, always ───────────────────────────────────────────
   - id: p3-order
-    title: "You author a sequence"
-    subtitle: "one dial, two jobs: how children pack, and how they stack when collapsed"
+    title: "Say what comes first"
+    subtitle: "an order is an idea: first this, then that, and it holds on every screen"
     variant: neutral
     order: 1
     span: 2
@@ -47,43 +54,43 @@ sections:
     children:
       - id: p3-o-1
         order: 1
-        kicker: "ORDER 1"
-        title: "No coordinate"
+        kicker: "FIRST"
+        title: "Name the first"
         description:
-          - "there is no row or column"
-          - "to set — only this number"
-        detail: "Nothing in the dialect names a cell position. To move something you change its <code>order</code>; the grid does the rest. That is why a change is a RECALCULATION — moving one child repacks its whole row — and never a nudge."
+          - "what does the reader meet"
+          - "first? that is step one"
+        detail: "An order starts with a decision: what must the reader meet first? Write the sequence as sentences, like 'first they sign up, then they pay, then they receive', before any piece exists. The page will follow it."
         variant: neutral
         filters: [packing]
       - id: p3-o-2
         order: 2
-        kicker: "ORDER 2"
-        title: "The packing order"
+        kicker: "THEN"
+        title: "Then the next"
         description:
-          - "children flow in order across"
-          - "the tracks, wrapping downward"
-        detail: "Children are sorted by <code>order</code> (falling back to list position, which is why an explicit order on every sibling is worth the keystrokes) and then flow left to right, wrapping to the next row when the tracks run out. A band interrupts the flow by claiming a whole row of its own."
+          - "each idea follows the one"
+          - "it depends on or builds on"
+        detail: "Each next idea is the one that follows from the previous: it depends on it, happens after it, or builds on it. If two ideas could swap places without changing the story, they are not in order: they only sit together."
         variant: neutral
         filters: [packing]
       - id: p3-o-3
         order: 3
-        kicker: "ORDER 3"
-        title: "The stacking order"
+        kicker: "ALWAYS"
+        title: "On every screen"
         description:
-          - "and the same sequence is the"
-          - "collapse order at one column"
-        detail: "At the narrowest tier every grid drops to a single track and the whole page becomes one vertical stack — in exactly this order. So the sequence you author is also the reading order on a narrow screen: one number carries both, and they can never disagree."
+          - "the same order on a wide"
+          - "screen and on a narrow one"
+        detail: "The order you decide is the reading order everywhere: left to right on a wide screen, top to bottom on a narrow one. One decision carries both, so the story never reads backwards."
         variant: neutral
         filters: [packing]
 
-  # ── ROW 2 · FORWARD FILL — the tall cell and what packs around it ─────────
+  # ── ROW 2 · what must come before what, and what has no order ─────────────
   # The anchor is authored FIRST and is 2 rows tall; the four cells that follow
   # pack beside it and under it because the cursor is still in that row. The
   # labelled separator then claims a whole row, and the cell after it can only
   # land below — never back up into a track left open above.
   - id: p3-anchor
-    title: "Filling runs forward"
-    subtitle: "nothing goes back to fill the hole a tall cell left — so sequence is design"
+    title: "What must come before what"
+    subtitle: "each idea after what it needs; the rest sit side by side"
     variant: neutral
     order: 2
     span: 2
@@ -92,62 +99,62 @@ sections:
       - id: p3-a-anchor
         order: 1
         rowspan: 2
-        kicker: ANCHOR
-        title: "The tall cell"
+        kicker: FIRST
+        title: "The step all need"
         description:
-          - "rowspan: 2, authored FIRST"
-          - "so the cursor is still here"
-        detail: "A tall cell claims one track across two rows and leaves the rest of both rows open. Authoring it first is what lets the cells after it pack into that space: the placement cursor is still on this row, so it fills the tracks beside the anchor and then continues on the row below."
+          - "one step comes first"
+          - "because the rest rely on it"
+        detail: "Ideas come in order when each one needs another to have happened. Find the step every other step relies on and tell it first; it stands taller because the steps after it all lean on it."
         variant: accent
       - id: p3-a-beside-1
         order: 2
-        kicker: PACKS
-        title: "Beside it"
+        kicker: THEN
+        title: "What it enables"
         description:
-          - "authored second, so it lands"
-          - "in the next free track"
-        detail: "Nothing about this cell says <em>row 1, track 2</em>. It sits there because it is second in the sequence and that is where the cursor was — the position is a consequence of the order, which is the whole of principle 3."
+          - "second, because it needs"
+          - "the first step done"
+        detail: "Ask of each idea: what must already be true before it can happen? The idea that makes it true comes before it. That question, not taste, decides the order."
         variant: neutral
       - id: p3-a-beside-2
         order: 3
-        kicker: PACKS
-        title: "And beside that"
+        kicker: THEN
+        title: "What follows"
         description:
-          - "the row is now full, so the"
-          - "next cell wraps downward"
-        detail: "Three tracks, and the anchor took one of them across two rows. With this cell the first row closes, so the cursor wraps to the row below — where the anchor is still occupying the first track."
+          - "each step needs the one"
+          - "before it, not a later one"
+        detail: "If two ideas could happen in either order, they are not a sequence: they go together, side by side, and belong to the page about what goes together."
         variant: neutral
       - id: p3-a-under-1
         order: 4
-        kicker: FORWARD
-        title: "Under, not back"
+        kicker: IN ORDER
+        title: "One direction"
         description:
-          - "the anchor still holds track 1"
-          - "so this starts at track 2"
-        detail: "The cursor steps over the track the anchor still occupies and starts here. It moved FORWARD to do it — it never searches backwards for a gap it already passed. That asymmetry is the rule the whole principle rests on."
+          - "the reader walks forward"
+          - "and never has to go back"
+        detail: "A sequence reads in one direction. If the reader must jump back to understand a step, that step is out of order: move it to where what it needs has already been told."
         variant: neutral
       - id: p3-a-under-2
         order: 5
-        kicker: FORWARD
-        title: "Closing the block"
+        kicker: IN ORDER
+        title: "The run ends"
         description:
-          - "fifth in order, and the two"
-          - "rows are now a full rectangle"
-        detail: "With this cell the anchor's two rows are completely filled: 3 tracks × 2 rows = 6 cells = 2 (the anchor) + 4. Had any of these four been authored after the divider below, that space could never have been recovered."
+          - "the last of the steps"
+          - "that rely on the first"
+        detail: "The steps that rely on the first one end here. Whatever comes next does not need them; it only comes after them, so it starts a new part below a line."
         variant: neutral
       - id: p3-a-sep
         type: separator
         order: 6
         span: 3
         style: dotted
-        text: "the cursor never moves backwards"
+        text: "a new part of the story"
       - id: p3-a-tail
         order: 7
         span: 3
-        kicker: LATE
-        title: "Authored after the line"
+        kicker: AFTER
+        title: "The next part"
         description:
-          - "a full-width row takes the"
-          - "next row, whatever is open"
-        detail: "This cell spans every track, so it can only start on a row where the full width is free — it lands below the divider no matter how much space is open above it. That is the practical rule: whatever belongs beside something tall must come BEFORE whatever claims a whole row. Note the divider's own row is thin (40px, not a full 130px slot): a separator is still a cell, but its footprint matches its ink."
+          - "it comes after the steps"
+          - "but does not need them"
+        detail: "This idea spans the whole width and is told after the line: it follows the steps above without depending on them. The rule of the ideas step: put in order only what depends on what came before it; everything else starts a new part."
         variant: muted

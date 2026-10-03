@@ -73,6 +73,7 @@ def _approved_set(repo: str, expect_exit: dict | None = None) -> str:
     approval_id = core.request_command_set(
         items, what="Publicar la rama y abrir el PR", question="¿Publico la rama?",
         session_id=SESSION, agent_id=AGENT_TYPE, rollback="Borrar la rama remota y cerrar el PR.",
+        verification="gh pr view", shared_state="Sí: la rama remota y el PR.",
     )
     core.record_presentation(
         approval_id, native_ref="toolu_question", session_id=SESSION, agent_id="gaia-orchestrator",
@@ -254,7 +255,10 @@ def test_terminal_event_close_hooks_json_registers_bash_failure_from_the_manifes
     hooks = json.loads((_REPO_ROOT / "hooks" / "hooks.json").read_text())["hooks"]
     assert hooks.get("PostToolUseFailure") == [{
         "matcher": "Bash",
-        "hooks": [{"type": "command", "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"}],
+        "hooks": [{
+            "type": "command",
+            "command": 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"',
+        }],
     }]
 
     build_plugin = _load_build_plugin()

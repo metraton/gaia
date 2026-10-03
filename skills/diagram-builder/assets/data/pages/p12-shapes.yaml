@@ -1,0 +1,75 @@
+# SHAPES — "a page can take a shape the grid does not draw."
+#
+# A STORY page. Two shapes, each from ordinary fields. A RING: the telling loop
+# as two legs, each its own section, both in natural `order`, so the collapsed
+# column still reads 1 to 6; the direction lives in the kicker text and in the
+# chip's steps, never in a reversed `order`. A STAIRCASE: a `compact` grid whose
+# rowspans rest on declared holes, so every step lands on one shared floor. The
+# deck's CORE chip (`gate`) is inherited first; the page adds `loop` after it.
+#
+# FORM: flow. The word-fit floor applies; the orphan-row check does not.
+#
+# WHAT IT EXERCISES: `lead: true` · a ring as two legs in their own sections ·
+# the return-leg rule · `treatment: [compact]` with a rowspan staircase on
+# spacers · a core chip inherited plus a page chip.
+
+id: p12-shapes
+form: flow
+columns: 1
+
+filters:
+  - key: loop
+    label: "Which steps close the loop?"
+    steps:
+      - "Six steps in two legs. The outbound leg runs 1 to 3; the return leg runs 4 to 6 in its own section."
+      - "Both legs keep their natural <code>order</code>, so one column still reads 1 to 6. The direction is in the kicker: step 6 says <b>back to 1</b>."
+
+sections:
+
+  - id: p12-lead
+    order: 1
+    lead: true
+    kicker: "STORY · 2 OF 2"
+    title: "Does your story come back, or climb?"
+    description:
+      - "a story that returns is a ring; a story that grows is a staircase"
+    detail: "Before any piece, say what the story does in one sentence. This one goes out and comes back (say it, name who acts, test it, tell a listener, hear the gap, say it again), so the page is a ring: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a staircase. The shape is decided by the sentence you tell, never by the boxes you have."
+
+  - id: p12-out
+    title: "Outbound leg · steps 1 to 3"
+    order: 2
+    columns: 3
+    children:
+      - { id: p12-s1, order: 1, kicker: "STEP 1 OF 6 →", title: "Say it once", description: ["one sentence, before any box"], filters: [loop],
+          detail: "The story starts as one sentence said aloud. If it needs two sentences, it is two stories, and each one gets its own page." }
+      - { id: p12-s2, order: 2, kicker: "STEP 2 OF 6 →", title: "Name who acts", description: ["the actors the reader follows"], filters: [loop],
+          detail: "Each actor you name is something the reader will follow across the page. Name only the actors the sentence needs." }
+      - { id: p12-s3, order: 3, kicker: "STEP 3 OF 6 ↓", title: "Does it hold?", description: ["a gate: still one sentence"], filters: [loop, gate],
+          detail: "The first gate on the story: if naming the actors split the sentence in two, stop and make two pages. The kicker's arrow turns the corner into the return leg." }
+
+  - id: p12-back
+    title: "Return leg · steps 4 to 6"
+    order: 3
+    columns: 3
+    children:
+      - { id: p12-s4, order: 1, kicker: "STEP 4 OF 6", title: "Tell a listener", description: ["a gate: can they say it back?"], filters: [loop, gate],
+          detail: "The second gate: someone who did not write the story says it back to you. The return leg is its own section, so it never needs a reversed <code>order</code>." }
+      - { id: p12-s5, order: 2, kicker: "STEP 5 OF 6", title: "Hear the gap", description: ["what they could not repeat"], filters: [loop],
+          detail: "What the listener dropped is either missing from the story or something the story did not need. Both are decided before any box is drawn." }
+      - { id: p12-s6, order: 3, kicker: "STEP 6 OF 6 · BACK TO 1", title: "Say it again", description: ["the sentence, now tighter"], filters: [loop],
+          detail: "The ring closes in text: the kicker says where the path goes next, and the chip's steps say it again." }
+
+  - id: p12-stairs
+    title: "A story that climbs"
+    order: 4
+    columns: 3
+    treatment: [compact]
+    children:
+      - { id: p12-t3, order: 1, rowspan: 3, kicker: "COST 3", title: "Found on screen", description: ["the latest, dearest find"],
+          detail: "This story grows: the later a mistake is found, the more it costs, so each step stands taller than the last. A story that climbs is told as a staircase, from the smallest step to the largest." }
+      - { id: p12-gap-1, order: 2, type: spacer }
+      - { id: p12-gap-2, order: 3, type: spacer, rowspan: 2 }
+      - { id: p12-t2, order: 4, rowspan: 2, kicker: "COST 2", title: "Found in the sketch",
+          detail: "A mistake found in the sketch costs a redraw of lines, still cheap. The empty place above this step is written on purpose, so every step stands on the same floor." }
+      - { id: p12-t1, order: 5, kicker: "COST 1", title: "Found in the story",
+          detail: "A mistake found while saying the story costs one sentence. That is why the story comes first: every later step is dearer." }

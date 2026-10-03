@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v18 -> v19: audit-immutability gap closure (Task B).
 --
 -- Adds BEFORE UPDATE trigger bu_approvals_status_has_event on the approvals

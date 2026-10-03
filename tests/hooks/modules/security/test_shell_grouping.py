@@ -23,7 +23,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.shell_grouping import strip_grouping_wrappers
 
 
-@pytest.mark.parametrize("wrapped,expected", [
+@pytest.mark.table("wrapped,expected", [
     ("(rm -rf /)", "rm -rf /"),
     ("( rm -rf / )", "rm -rf /"),
     ("((rm -rf /))", "rm -rf /"),
@@ -42,7 +42,7 @@ def test_wrapper_is_removed(wrapped, expected):
     assert strip_grouping_wrappers(wrapped) == expected
 
 
-@pytest.mark.parametrize("command", [
+@pytest.mark.table("command", [
     # Balanced: the substitution is an argument, not a wrapper.
     "ls -la $(pwd)",
     "echo $(git rev-parse HEAD)",

@@ -146,6 +146,53 @@ def test_task_gates_cli_add_task_not_found(tmp_db, tmp_path, monkeypatch, capsys
     assert rc == 1  # missing task -> ValueError -> error exit
 
 
+def _mark_stale_pass(db_path: Path, gate_id: int, reason: str) -> None:
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute(
+            "UPDATE task_gates SET status = 'pass', stale_at = ?, stale_reason = ? "
+            "WHERE id = ?",
+            ("2026-09-30T12:00:00Z", reason, gate_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_task_gate_list_marks_a_stale_pass(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.task import _cmd_gate_add, _cmd_gate_list
+
+    monkeypatch.chdir(tmp_path)
+    _seed_task(tmp_db)
+    gate_ids = []
+    for _ in range(2):
+        assert _cmd_gate_add(argparse.Namespace(
+            brief="gate-brief", order_num=1, type="command",
+            evidence_type=None, evidence_shape="shape", artifact_path=None,
+            workspace="me", json=True,
+        )) == 0
+        gate_ids.append(json.loads(capsys.readouterr().out)["gate_id"])
+    stale_id, pending_id = gate_ids
+    _mark_stale_pass(tmp_db, stale_id, "goal edited")
+
+    list_args = argparse.Namespace(
+        brief="gate-brief", order_num=1, workspace="me", json=False,
+    )
+    assert _cmd_gate_list(list_args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    stale_line = next(line for line in lines if f"id={stale_id} " in line)
+    pending_line = next(line for line in lines if f"id={pending_id} " in line)
+    assert "stale since 2026-09-30T12:00:00Z (goal edited)" in stale_line
+    assert "stale" not in pending_line
+
+    list_args.json = True
+    assert _cmd_gate_list(list_args) == 0
+    by_id = {g["id"]: g for g in json.loads(capsys.readouterr().out)}
+    assert by_id[stale_id]["stale_at"] == "2026-09-30T12:00:00Z"
+    assert by_id[stale_id]["stale_reason"] == "goal edited"
+    assert by_id[pending_id]["stale_at"] is None
+
+
 def test_task_gate_add_parser_has_no_status_input():
     from cli.task import register
 

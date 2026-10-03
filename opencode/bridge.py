@@ -90,12 +90,6 @@ def _attest(raw: dict[str, object]) -> dict[str, object]:
 # same schema-valid empty acknowledgment without adapter dispatch. Routed
 # here rather than denied, so a genuinely open lifecycle point is not
 # misreported as this bridge's "Unsupported" placeholder.
-#
-# PostToolUseFailure (session.error) and SessionEnd (session.deleted) used
-# to be acknowledged here too, alongside PostCompact -- until plan 65 T11
-# gave them a real close to perform (see the "Stop"/"PostToolUseFailure"/
-# "SessionEnd" branch below): a dispatched child's row must be promoted or
-# cut on ANY of idle/error/deleted, not only idle.
 _ACKNOWLEDGED_EVENT_KINDS = {"PostCompact"}
 
 
@@ -257,9 +251,9 @@ def _handle(raw: dict[str, object], *, shell_env_transport: bool) -> dict[str, o
         return _record_decision_applied(raw)
     if raw.get("event") == _CONSENT_RETRY_REFUSED_EVENT:
         return _record_consent_retry_refused(raw)
-    from adapters.opencode import OpenCodeAdapter
+    from adapters.registry import get_adapter
 
-    adapter = OpenCodeAdapter()
+    adapter = get_adapter("opencode")
     event = adapter.parse_event(json.dumps(raw))
     kind = event.event_type.value
 
@@ -273,19 +267,17 @@ def _handle(raw: dict[str, object], *, shell_env_transport: bool) -> dict[str, o
             response = adapter.adapt_pre_tool_use(event)
     elif kind == "PostToolUse":
         response = adapter.adapt_post_tool_use(event)
-    elif kind in ("Stop", "PostToolUseFailure", "SessionEnd"):
-        # session.idle/error/deleted (plan 65, T11): the ONE real close for a
-        # dispatched child's row, regardless of which of the three signals
-        # arrives first -- resolve_close (dispatch_lifecycle) is idempotent,
-        # so a later signal for the same session is a harmless no-op.
+    elif kind == "SubagentStop":
         response = adapter.adapt_subagent_stop(event)
+    elif kind == "SessionEnd":
+        response = adapter.adapt_session_end(event)
+    elif kind == "SessionStart":
+        response = adapter.format_bootstrap_response(adapter.adapt_session_start(event.payload))
     elif kind == "SubagentStart":
         response = adapter.format_context_response(adapter.adapt_subagent_start(event.payload))
+    elif kind == "UserPromptSubmit":
+        response = adapter.adapt_user_prompt_submit(event)
     elif kind == "PreCompact":
-        # session.compacting (plan 65, T12): the one compaction signal that
-        # can still inject, dispatched here rather than folded into
-        # _ACKNOWLEDGED_EVENT_KINDS because -- unlike PostCompact -- it now
-        # has a real per-host adapter method.
         response = adapter.adapt_pre_compact(event)
     elif kind in _ACKNOWLEDGED_EVENT_KINDS:
         return _ack()

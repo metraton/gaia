@@ -57,7 +57,9 @@ def get_session_events() -> Dict[str, Any]:
     Returns:
         Dict with categorized session events (commits, pushes, file_mods)
     """
-    context_path = Path(".claude/session/active/context.json")
+    from ..core.paths import get_session_dir
+
+    context_path = get_session_dir() / "context.json"
 
     if not context_path.exists():
         logger.debug("No session context found")

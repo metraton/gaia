@@ -385,8 +385,16 @@ def _is_reader(words: List[_Word]) -> bool:
     if program in _READERS:
         return True
     if program == "git":
-        subcommand = next((w.text for w in words[1:] if not w.text.startswith("-")), "")
-        return subcommand in _GIT_READ_SUBCOMMANDS
+        # Only -C's operand is skipped: -c can set a config value git executes
+        # (a pager, an alias), so a call carrying it is not read as a reader.
+        index = 1
+        while index < len(words) and words[index].text.startswith("-"):
+            index += 2 if words[index].text == "-C" else 1
+        subcommand = words[index].text if index < len(words) else ""
+        opens_a_pager = any(
+            w.text.startswith(("-O", "--open-files-in-pager")) for w in words[index:]
+        )
+        return subcommand in _GIT_READ_SUBCOMMANDS and not opens_a_pager
     return False
 
 

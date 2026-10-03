@@ -1,62 +1,38 @@
 """
-Deterministic scan classification -- the núcleo of ``gaia scan``.
+Scan classification -- the core of ``gaia scan``.
 
-This module replaces the historical inference layer (workspace-type detection,
-nearest-installed-ancestor attribution, install-anchor demotion). Classification
-is now DETERMINISTIC and driven by a single required parameter: the workspace
-name ``W``. There is no guessing -- a repo's workspace is the ancestor path
-segment that matches ``W``, and the project NAME is the repo's own basename.
+A workspace is a folder the user declared with ``gaia workspace declare NAME
+PATH``; its name is never matched against path segments. The scan of workspace
+``W`` walks ``root`` and applies, per repo (a folder holding ``.git``):
 
-THE RULESET (per repo -- a folder containing ``.git`` -- found by walking down
-from ``root``):
-
-  R1 repo      = basename of the folder holding ``.git``. This is ALSO the
-                 project NAME (the ``projects.name`` storage slot).
-  R2 container = the path segment immediately before the repo (its parent),
-                 when there is one between the workspace and the repo. Recorded
-                 in the ``group_name`` column -- NOT used as the project name.
-                 ``None`` when the repo sits directly under the workspace.
-  R3 workspace = resolved by matching ``W`` against the repo's ancestor
-                 segments. If ``W`` matches a segment -> valid. If it matches
-                 NO segment -> error-as-text (structured, non-crashing, with a
-                 suggestion). ``W`` is resolved per-repo with early-exit on
-                 no-match (no git cost is paid for a repo that cannot match).
-  R4 collapse  = if NOTHING is between the workspace segment and the repo (the
-                 parent of the repo IS the workspace) -> container = None.
-                 (The project name is the repo basename either way -- R2 and R4
-                 are collapsed into the single rule "name = repo basename".)
-  R5 reconcile = upsert keyed by ``project_identity`` (writer identity-collapse
-                 UPSERT); soft-delete scoped to the exact ``(workspace,
-                 name)`` set discovered this run.
-  R6 output    = always structured data (see :class:`ScanReport`). Non-crashing.
-
-Naming history: R2 previously used the *container* segment as the project NAME,
-which made every repo under one container (e.g. ``aaxis/bildwiz/<repo>``)
-collide on the single name ``bildwiz`` and forced the writer to disambiguate
-with ``-2``/``-3`` suffixes -- opaque names (``bildwiz-7``) that lost the real
-basename (``newco-pitot``). The name is now ALWAYS the repo basename, and the
-container is preserved separately in ``group_name``. A genuine collision only
-arises when two DIFFERENT physical repos share the SAME basename under one
-workspace; the writer still disambiguates that (rarer) case.
-
-Principle: a workspace is never a project, but a project CAN be a workspace (the
-same folder, its role decided by ``W``). Deeper-than-3 nesting -> the container
-is the segment just before the repo (its immediate parent), and the extra
-levels are returned as ambiguity DATA -- the scan never guesses which of them
-"should" have been the container.
-
-Reused primitives (kept from the correct low-level layer):
-  * ``_list_repos`` / ``_walk_for_repos`` / ``_REPO_WALK_SKIP`` -- the .git walk.
-  * ``resolve_project_identity`` (git-common-dir) -- stable per-repo identity.
-  * ``upsert_project`` (writer identity-collapse UPSERT) -- persistence.
-  * ``mark_missing_in`` (writer survivor loop) -- reconcile / soft-delete.
-
-Public API::
-
-    ancestor_segments(repo) -> list[str]
-    match_workspace_index(segs, W) -> int | None
-    classify_repo(repo, W) -> RepoClassification
-    scan(root, W, *, agent, db_path, apply) -> ScanReport
+  R1 project   = the repo's basename, the ``projects.name`` slot. Two different
+                 repos sharing a basename in one workspace get distinct slots
+                 and a ``repo_collision`` warning.
+  R2 owner     = the nearest declared workspace whose root contains the repo;
+                 a repo has exactly one owner. A repo owned by another
+                 workspace is left to it (``foreign_repos``); a repo inside no
+                 declared workspace is reported in ``errors``.
+  R3 group     = every folder between the owner's root and the repo, joined
+                 with ``/`` (``bildwiz/sub``), at any depth; stored in
+                 ``projects.group_name``. None when the repo sits directly in
+                 the root.
+  R4 walk      = every folder at any depth, dot-folders included, except the
+                 tool folders ``.git .claude .opencode .gaia .terraform
+                 .project-worktrees .worktrees .codex .agents`` and
+                 ``node_modules``. The walk never enters a repo or follows a
+                 symlinked folder (``store_populator._list_repos``).
+  R5 reconcile = upsert keyed by ``project_identity``; soft-delete scoped to the
+                 ``(workspace, name)`` set discovered this run. A repo whose
+                 identity names a project already held by another live clone
+                 is a copy: a ``copy`` facet of that project and a
+                 ``repo_copy`` warning, never a row of its own. A project
+                 recorded under another workspace moves to its owner
+                 (``gaia.store.project_move``) with a ``project_moved``
+                 warning.
+  R6 output    = always structured data (:class:`ScanReport`), never a crash.
+  R7 declared  = applying refuses a ``W`` that is not declared, and the scan
+                 never writes a workspace root. A dry-run of an undeclared ``W``
+                 previews it as if it were declared at ``root``.
 """
 
 from __future__ import annotations
@@ -65,194 +41,46 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from gaia.install_root import owning_root, registered_roots
+from gaia.project import DECLARE_COMMAND
 from tools.scan.role_detector import detect_role
 from tools.scan.store_populator import (
     _git_remote_origin,
     _list_repos,
     _platform_from_remote,
+    copy_facet,
+    group_path,
     resolve_project_identity,
 )
 
 
 # ---------------------------------------------------------------------------
-# Pure segment algorithm (R1-R4)
+# Per-repo classification (R1, R3)
 # ---------------------------------------------------------------------------
-
-def ancestor_segments(repo: Path) -> list[str]:
-    """Return the path segments of ``repo`` ending with the repo basename.
-
-    The returned list is ``[.., grandparent, parent, repo_name]`` -- ordered
-    root-to-leaf. ``segs[-1]`` is the repo (R1), ``segs[-2]`` is its parent
-    (the R2 project candidate). Everything before ``segs[-1]`` is an ancestor
-    segment eligible to match ``W`` (R3).
-
-    Uses the resolved (absolute) parts so matching is done against real path
-    segments, never against ``.`` or ``..`` tokens.
-    """
-    try:
-        parts = list(Path(repo).resolve().parts)
-    except (OSError, RuntimeError):
-        parts = list(Path(repo).parts)
-    # Drop the filesystem anchor (e.g. "/") -- it is never a matchable segment.
-    if parts and parts[0] in ("/", "\\"):
-        parts = parts[1:]
-    # On some platforms the anchor is like "C:\\"; strip a trailing separator.
-    parts = [p.rstrip("/\\") or p for p in parts]
-    return parts
-
-
-def match_workspace_index(segs: list[str], W: str) -> Optional[int]:
-    """Return the index of the LAST ancestor segment matching ``W``, else None.
-
-    Only the ancestor segments (``segs[:-1]``) are eligible -- the repo itself
-    (``segs[-1]``) is never a workspace (R3, "a workspace is never a project"
-    read from the repo side: the repo's own name cannot be the workspace).
-
-    Matching is a two-tier contains/split test (R3 "contains/split"):
-      1. Exact segment equality (``segment == W``) -- the strong signal.
-      2. Exact equality after splitting ``W`` on the path separator, so a
-         caller may pass a nested workspace token like ``"aaxis/aos"`` and it
-         matches when those segments appear consecutively as ancestors.
-
-    The LAST match wins so that when ``W`` appears more than once in the path,
-    the deepest occurrence (nearest the repo) is chosen -- that is the most
-    specific workspace boundary.
-    """
-    ancestors = segs[:-1]
-    if not ancestors:
-        return None
-
-    # Tier 1: exact single-segment match, last occurrence.
-    idx: Optional[int] = None
-    for i, seg in enumerate(ancestors):
-        if seg == W:
-            idx = i
-    if idx is not None:
-        return idx
-
-    # Tier 2: split W on the separator and match a consecutive run of ancestors.
-    w_parts = [p for p in W.replace("\\", "/").split("/") if p]
-    if len(w_parts) > 1:
-        n = len(w_parts)
-        last: Optional[int] = None
-        for i in range(0, len(ancestors) - n + 1):
-            if ancestors[i:i + n] == w_parts:
-                last = i + n - 1  # index of the LAST segment of the run
-        if last is not None:
-            return last
-
-    return None
-
 
 @dataclass
 class RepoClassification:
-    """Outcome of classifying a single repo against ``W`` (R1-R4).
-
-    Exactly one of ``project`` / ``error`` is populated:
-      * matched   -> ``project`` set, ``error`` None. ``ambiguity`` may be set
-                     when the repo nests deeper than 3 levels below ``W``.
-      * no-match  -> ``project`` None, ``error`` set (R3 error-as-text).
-
-    ``project`` is now ALWAYS the repo basename (R1) -- the ``projects.name``
-    storage slot. ``container`` is the grouping folder between the workspace
-    and the repo (R2), persisted in ``group_name``; it is ``None`` when the
-    repo sits directly under the workspace (R4 collapse).
-    """
+    """One repo of workspace ``workspace``: its project slot (R1), its group (R3,
+    held in ``container``) and its stable identity."""
 
     repo: str
     path: str
-    workspace: Optional[str] = None
-    project: Optional[str] = None
-    container: Optional[str] = None
-    project_identity: Optional[str] = None
-    workspace_path: Optional[str] = None
-    error: Optional[dict] = None
-    ambiguity: Optional[dict] = None
-
-    @property
-    def matched(self) -> bool:
-        return self.error is None
+    workspace: str
+    project: str
+    container: Optional[str]
+    project_identity: Optional[str]
 
 
-def _suggestion_for(segs: list[str], W: str) -> str:
-    """Build a human suggestion when ``W`` matched no ancestor segment.
-
-    Names the ancestor segments that WERE available so the user can pick a real
-    one, and points at the immediate parent as the most likely intended value.
-    """
-    ancestors = segs[:-1]
-    if not ancestors:
-        return f"repo has no ancestor segments to match --workspace {W!r}"
-    parent = ancestors[-1] if ancestors else None
-    available = ", ".join(repr(a) for a in ancestors)
-    hint = f"did you mean --workspace {parent!r}?" if parent else ""
-    return (
-        f"--workspace {W!r} matched no ancestor segment; "
-        f"available segments: [{available}]. {hint}".strip()
-    )
-
-
-def classify_repo(repo: Path, W: str) -> RepoClassification:
-    """Classify one repo against workspace name ``W`` (R1-R4). Never raises.
-
-    Control flow (matches the ordered algorithm):
-      segs = ancestor_segments(repo)
-      idx  = match_workspace_index(segs, W)      # ancestors only
-      if idx is None: -> no-match error (early exit, no git cost)
-      between = segs[idx+1:-1]
-      project = repo_name                         # R1: name = repo basename
-      if not between:            container = None            # R4 collapse
-      else:                      container = between[-1]      # R2 immediate parent
-                                 if len(between) > 1:         # deeper-than-3
-                                     ambiguity = between[:-1]
-      identity = resolve_project_identity(repo)             # reuse
-    """
-    segs = ancestor_segments(repo)
-    repo_name = segs[-1] if segs else Path(repo).name
-
-    idx = match_workspace_index(segs, W)
-    if idx is None:
-        # R3 no-match: early exit, structured error, no git-common-dir cost.
-        return RepoClassification(
-            repo=repo_name,
-            path=str(repo),
-            error={
-                "repo": repo_name,
-                "W": W,
-                "suggestion": _suggestion_for(segs, W),
-            },
-        )
-
-    between = segs[idx + 1:-1]
-    ambiguity: Optional[dict] = None
-    # R1 collapse of R2+R4: the project NAME is ALWAYS the repo basename.
-    project = repo_name
-    if not between:
-        # R4 collapse: parent of repo IS the workspace -> no container.
-        container = None
-    else:
-        # R2: the immediate container is the segment right before the repo.
-        container = between[-1]
-        if len(between) > 1:
-            # Deeper-than-3 nesting: return the levels ABOVE the immediate
-            # container as ambiguity DATA (do not guess). extra_levels are the
-            # segments between the workspace and the container (between[:-1]).
-            ambiguity = {
-                "repo": repo_name,
-                "extra_levels": list(between[:-1]),
-            }
-
-    identity = resolve_project_identity(repo)
-    workspace_dir = Path(repo).resolve().parents[len(segs) - 2 - idx]
+def classify_repo(repo: Path, W: str, workspace_root: Path) -> RepoClassification:
+    """Classify *repo*, owned by workspace *W* declared at *workspace_root*."""
+    resolved = Path(repo).resolve()
     return RepoClassification(
-        repo=repo_name,
+        repo=resolved.name,
         path=str(repo),
         workspace=W,
-        project=project,
-        container=container,
-        project_identity=identity,
-        workspace_path=str(workspace_dir),
-        ambiguity=ambiguity,
+        project=resolved.name,
+        container=group_path(resolved, Path(workspace_root).resolve()),
+        project_identity=resolve_project_identity(repo),
     )
 
 
@@ -268,18 +96,16 @@ class ScanReport:
         resolved_workspace: The workspace name ``W`` once at least one repo
             matched it, else None (no repo matched -> pure error report).
         repos_found: One ``{"repo", "path"}`` dict per discovered git repo.
-        projects: One dict per matched repo:
+        projects: One dict per repo owned by the scanned workspace:
             ``{repo, project, container, workspace, project_identity, path,
-            facets, applied}``. ``container`` is the proyecto level (shared
-            across the repos of a multi-repo container; equals ``repo`` on R4
-            collapse); ``project`` is the DB storage slot
-            (collision-disambiguated); ``path`` is the repo's own absolute path
-            (M2-T4/T5). ``facets`` is the repo's stack fingerprint (M3/T8,
-            AC-6) -- a list of ``{scope, key, value}`` rows previewed on a
-            dry-run and persisted to ``project_facets`` on apply.
-        errors: One dict per no-match repo: ``{repo, W, suggestion}`` (R3).
-        ambiguities: One dict per deeper-than-3 repo:
-            ``{repo, extra_levels}``.
+            remote, facets, applied}``. ``container`` is the repo's group (R3)
+            or None; ``project`` is the DB storage slot (collision-disambiguated);
+            ``path`` is the repo's own absolute path; ``remote`` its raw origin
+            URL, the move-stable signal, or None. ``facets`` is the repo's
+            stack fingerprint -- a list of ``{scope, key, value}`` rows
+            previewed on a dry-run and persisted to ``project_facets`` on apply.
+        errors: One dict per repo inside no declared workspace (R2):
+            ``{repo, W, path, reason}``.
         warnings: One dict per would-be collision (M2-T6, AC-5). A collision
             is any repo whose requested project slot ``(workspace, project)``
             was already occupied by a DIFFERENT physical repo, forcing the
@@ -296,6 +122,10 @@ class ScanReport:
             and never aborts the scan. Empty on a clean run and always empty in
             dry-run (facets are only persisted on apply). Shape:
             ``{workspace, project, path, error}``.
+        foreign_repos: Repos under ``root`` whose nearest declared workspace is
+            not the scanned one (R2). They are left to that workspace -- never
+            classified, created or re-owned here. Shape: ``{repo, path,
+            workspace}``.
         vanished: One dict per project row that would be / was marked missing
             during reconcile (R5, SV2). Shape: ``{workspace, project, path,
             project_identity, remote, missing_since}``. ``missing_since`` is
@@ -311,13 +141,9 @@ class ScanReport:
             Shape: ``{from: {workspace, project, path}, to: {workspace,
             project, path}, signal, remote, confidence, reason}``.
             ``confidence`` is one of ``high`` / ``medium`` / ``low``.
-        rename_candidates: Rows (SV2) where the physical folder's basename no
-            longer matches the persisted project name -- scoped to R4-collapse
-            repos (``container == repo``) so ordinary multi-level container
-            layouts (R2, where project deliberately differs from the repo
-            basename) never appear here. Typically produced by M1-T1
-            collision-disambiguation (the slot was renamed to avoid clobbering
-            a different physical repo). Shape: ``{workspace, project, repo,
+        rename_candidates: Rows where the physical folder's basename does not
+            match the persisted project name, typically a slot renamed by
+            collision-disambiguation (R1). Shape: ``{workspace, project, repo,
             path, expected_name, reason}``.
         orphaned_autored: Detection-only (SV2, never mutates) list of vanished
             projects that carried an agent-authored ``description``, together
@@ -342,10 +168,10 @@ class ScanReport:
     repos_found: list[dict] = field(default_factory=list)
     projects: list[dict] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)
-    ambiguities: list[dict] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
     marked_missing: int = 0
     facet_failures: list[dict] = field(default_factory=list)
+    foreign_repos: list[dict] = field(default_factory=list)
     vanished: list[dict] = field(default_factory=list)
     move_candidates: list[dict] = field(default_factory=list)
     rename_candidates: list[dict] = field(default_factory=list)
@@ -364,10 +190,10 @@ class ScanReport:
             "repos_found": self.repos_found,
             "projects": self.projects,
             "errors": self.errors,
-            "ambiguities": self.ambiguities,
             "warnings": self.warnings,
             "marked_missing": self.marked_missing,
             "facet_failures": self.facet_failures,
+            "foreign_repos": self.foreign_repos,
             "vanished": self.vanished,
             "move_candidates": self.move_candidates,
             "rename_candidates": self.rename_candidates,
@@ -445,32 +271,25 @@ def _upsert(
 
     Reuses the writer's identity-collapse UPSERT (keyed on ``project_identity``
     via the partial unique index) so the SAME physical repo scanned from
-    different roots collapses to ONE row. group_name records the container
-    directory between the workspace and the project, when there is one.
+    different roots collapses to ONE row. group_name records the repo's group
+    (R3).
 
     Args:
         remote_url: The repo's raw ``git remote get-url origin`` value (SV2),
             or None when unavailable. This is the base signal move-detection
-            (SV2 ``move_candidates``) matches on: unlike ``project_identity``
-            (git-common-dir), the remote survives a physical directory move.
+            (SV2 ``move_candidates``) matches on across rows written before
+            v64, whose ``project_identity`` was the git-common-dir.
     """
     from gaia.store.writer import upsert_project
 
     repo_path = Path(classification.path)
-    # group_name: the container directory immediately between the workspace
-    # segment and the repo (R2). ``None`` when the repo sits directly under the
-    # workspace (R4 collapse -- no grouping folder). This is the repo's own
-    # parent-folder name, matching store_populator.scan_workspace_to_store's
-    # group_name semantics.
-    group_name = classification.container
-
     res = upsert_project(
         workspace=classification.workspace,
         name=classification.project,
         fields={
             "project_identity": classification.project_identity,
             "path": str(repo_path),
-            "group_name": group_name,
+            "group_name": classification.container,
             "status": "active",
             "missing_since": None,
             # SV2: base signal for cross-workspace move detection. Written
@@ -693,15 +512,14 @@ def _facet_target(
 ) -> tuple[str, str]:
     """Resolve the (workspace, name) where the canonical projects row lives.
 
-    Facets are FK-bound to ``projects(workspace, name)``. Under M1-T1
-    identity-collapse the persisted row for a repo may live under a DIFFERENT
-    (workspace, name) than the one this scan run classified -- the same
-    physical repo scanned from a second root under another workspace collapses
-    onto its first-seen row. Writing facets to the classified (workspace,
-    name) would then violate the FK. Look the row up by its stable
-    ``project_identity`` and return that row's actual (workspace, name); fall
-    back to the classified values when the identity is absent or unmatched
-    (e.g. a brand-new row, or a legacy DB without the identity column).
+    Facets are FK-bound to ``projects(workspace, name)``, and the row for a
+    repo may live under a different (workspace, name) than this run
+    classified: the upsert collapses on ``project_identity``, so a project
+    whose move to its nearest declared workspace was refused keeps the row it
+    had. Writing facets to the classified (workspace, name) would then violate
+    the FK. Look the row up by its ``project_identity`` and return that row's
+    (workspace, name); fall back to the classified values when the identity is
+    absent or unmatched (a brand-new row, or a legacy DB without the column).
     """
     if not project_identity:
         return fallback_workspace, fallback_name
@@ -719,6 +537,153 @@ def _facet_target(
     return fallback_workspace, fallback_name
 
 
+def _project_row_by_identity(identity: Optional[str], db_path: Path | None) -> Optional[dict]:
+    if not identity or not _db_file_exists(db_path):
+        return None
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT workspace, name, path FROM projects WHERE project_identity = ?",
+            (identity,),
+        ).fetchone()
+    finally:
+        con.close()
+    return dict(row) if row is not None else None
+
+
+def _is_live_clone(path: Optional[str], identity: str) -> bool:
+    return bool(path) and Path(path).is_dir() and resolve_project_identity(Path(path)) == identity
+
+
+def _clone_preference(c: RepoClassification) -> tuple:
+    """Order new clones of one remote: the folder named like the remote, then the shallowest."""
+    remote_name = (c.project_identity or "").rsplit("/", 1)[-1]
+    return (c.repo.lower() != remote_name, len(Path(c.path).parts), c.path)
+
+
+def _split_copies(
+    classified: list[RepoClassification], db_path: Path | None
+) -> tuple[list[RepoClassification], dict[str, tuple[RepoClassification, dict]]]:
+    """Separate the clone that is each project from the clones that copy it.
+
+    The project's row keeps the clone it already records while that clone is
+    still on disk with the same identity; a recorded clone that is gone has
+    moved, and the preferred clone found now takes the row. Returns the project
+    clones in walk order and ``{copy path: (copy, {workspace, project, path})}``.
+    """
+    groups: dict[Optional[str], list[RepoClassification]] = {}
+    for c in classified:
+        groups.setdefault(c.project_identity, []).append(c)
+
+    copies: dict[str, tuple[RepoClassification, dict]] = {}
+    for identity, group in groups.items():
+        row = _project_row_by_identity(identity, db_path)
+        if row is not None and _is_live_clone(row["path"], identity):
+            canonical = next((c for c in group if c.path == row["path"]), None)
+            target = {"workspace": row["workspace"], "project": row["name"], "path": row["path"]}
+        else:
+            canonical = min(group, key=_clone_preference)
+            target = {
+                "workspace": canonical.workspace,
+                "project": canonical.project,
+                "path": canonical.path,
+            }
+        for c in group:
+            if c is not canonical:
+                copies[c.path] = (c, target)
+    return [c for c in classified if c.path not in copies], copies
+
+
+def _kept_copy_facets(
+    identity: Optional[str], seen_paths: set[str], db_path: Path | None
+) -> list[dict]:
+    """The project's recorded copies outside this walk that are still live clones of it."""
+    row = _project_row_by_identity(identity, db_path)
+    if row is None:
+        return []
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        keys = [
+            r["key"] for r in con.execute(
+                "SELECT key FROM project_facets "
+                "WHERE workspace = ? AND project = ? AND scope = 'copy'",
+                (row["workspace"], row["name"]),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+    return [
+        copy_facet(Path(key)) for key in keys
+        if key not in seen_paths and key != row["path"] and _is_live_clone(key, identity)
+    ]
+
+
+def _record_copy(
+    target: dict, copy: RepoClassification, *, agent: str, db_path: Path | None
+) -> None:
+    """Add a copy facet to a project row this walk did not reach, without pruning its facets."""
+    from gaia.store import bulk_upsert
+    from tools.scan.store_populator import _now_iso
+
+    bulk_upsert(
+        "project_facets", target["workspace"],
+        [{"project": target["project"], **copy_facet(Path(copy.path)), "scanner_ts": _now_iso()}],
+        agent, db_path=db_path,
+    )
+
+
+def _move_to_owner(
+    c: RepoClassification, recorded: dict, *, apply: bool, db_path: Path | None
+) -> dict:
+    """Move the project recorded under another workspace into ``c.workspace``, its owner (R2)."""
+    from gaia.store.project_move import ProjectMoveError, move_project
+
+    fields = {
+        "repo": c.repo, "path": c.path,
+        "from": recorded["workspace"], "workspace": c.workspace,
+    }
+    try:
+        move_project(
+            c.project_identity, c.workspace, from_workspace=recorded["workspace"],
+            dry_run=not apply, db_path=db_path,
+        )
+    except ProjectMoveError as exc:
+        return {
+            "kind": "project_move_refused", **fields,
+            "message": (
+                f"project {recorded['name']!r} stays in workspace "
+                f"{recorded['workspace']!r}, not moved to {c.workspace!r}, the nearest "
+                f"declared workspace holding {c.path}: {exc}"
+            ),
+        }
+    verb = "moved" if apply else "would move"
+    return {
+        "kind": "project_moved", **fields,
+        "message": (
+            f"project {recorded['name']!r} {verb} from workspace "
+            f"{recorded['workspace']!r} to {c.workspace!r}, the nearest declared "
+            f"workspace holding {c.path}."
+        ),
+    }
+
+
+def _copy_warning(copy: RepoClassification, target: dict) -> dict:
+    return {
+        "kind": "repo_copy",
+        "repo": copy.repo,
+        "workspace": copy.workspace,
+        "path": copy.path,
+        "copy_of": target,
+        "message": (
+            f"repo {copy.repo!r} at {copy.path} is a second clone of project "
+            f"({target['workspace']!r}, {target['project']!r}) at {target['path']}; "
+            f"recorded as a copy of it, not as a project."
+        ),
+    }
+
+
 def scan(
     root: Path,
     W: str,
@@ -727,24 +692,26 @@ def scan(
     db_path: Path | None = None,
     apply: bool = True,
 ) -> ScanReport:
-    """Classify + reconcile every repo under ``root`` against workspace ``W``.
-
-    Implements the ordered algorithm end-to-end and returns a structured,
-    non-crashing :class:`ScanReport` (R6).
+    """Classify and reconcile every repo under *root* that workspace *W* owns (R1-R7).
 
     Args:
         root:    Directory to walk for git repos (the CLI positional ``root``).
-        W:       REQUIRED workspace name to resolve per-repo (R3).
+        W:       Name of the workspace being scanned.
         agent:   Agent identity for the writer permission gate.
         db_path: Optional explicit DB path (tests MUST pass a temp DB).
-        apply:   When False, classify only -- no DB writes (dry-run). The report
-                 still lists projects/errors/ambiguities, with ``applied=False``.
-
-    Returns:
-        A :class:`ScanReport`. Never raises for classification issues -- a repo
-        that does not match ``W`` becomes an entry in ``errors``; a repo nested
-        deeper than 3 levels becomes an entry in ``ambiguities``.
+        apply:   When False, classify only -- no DB writes (dry-run); the report
+                 lists the same projects with ``applied=False``.
     """
+    roots = registered_roots(_resolve_db_path(db_path))
+    workspace_root = next((path for path, name in roots.items() if name == W), None)
+    if workspace_root is None:
+        if apply:
+            return error_report(
+                f"workspace {W!r} is not declared.\nDeclare it with: {DECLARE_COMMAND}"
+            )
+        workspace_root = Path(root).resolve()
+        roots = {**roots, workspace_root: W}
+
     repos = _list_repos(root)
     if not repos:
         return error_report(f"no git repos under root: {root}")
@@ -752,6 +719,24 @@ def scan(
     report = ScanReport(mode="apply" if apply else "dry-run")
     for repo in repos:
         report.repos_found.append({"repo": repo.name, "path": str(repo)})
+
+    own_repos = []
+    for repo in repos:
+        owner = owning_root(repo.resolve(), roots)
+        if owner is None:
+            report.errors.append({
+                "repo": repo.name,
+                "W": W,
+                "path": str(repo),
+                "reason": f"inside no declared workspace; {DECLARE_COMMAND}",
+            })
+        elif roots[owner] != W:
+            report.foreign_repos.append(
+                {"repo": repo.name, "path": str(repo), "workspace": roots[owner]}
+            )
+        else:
+            own_repos.append(repo)
+    repos = own_repos
 
     if apply:
         _ensure_scan_permissions(db_path)
@@ -770,38 +755,31 @@ def scan(
     # simulate the same sequential-commit visibility without touching the DB.
     claimed_by_ws: dict[str, dict[str, str]] = {}
 
-    # The workspace directory each matched repo's W segment names; recorded as
-    # the workspace root only when every repo agrees on one directory.
-    workspace_paths: set[str] = set()
-
     # SV2 diff counters (create vs update, both dry-run and apply).
     create_count = 0
     update_count = 0
 
-    for repo in repos:
-        c = classify_repo(repo, W)
-        if not c.matched:
-            report.errors.append(c.error)  # R3 no-match, early-exit already done
-            continue
-
+    project_clones, copies = _split_copies(
+        [classify_repo(repo, W, workspace_root) for repo in repos], db_path
+    )
+    for c in project_clones:
         report.resolved_workspace = c.workspace
-        workspace_paths.add(c.workspace_path)
-        if c.ambiguity:
-            report.ambiguities.append(c.ambiguity)
 
         ws_claims = claimed_by_ws.setdefault(c.workspace, {})
 
-        # SV2: the repo's raw git remote -- the move-stable signal
-        # (project_identity/git-common-dir changes when a repo is physically
-        # moved; the remote does not). Read-only, cheap (short subprocess
-        # timeout, never raises). Computed once here and reused both for the
-        # persisted `remote_url` column (_upsert) and for this run's
-        # move_candidates matching below.
+        # The raw remote is persisted as `remote_url` and matched against
+        # missing rows elsewhere for move_candidates.
         remote_url = _git_remote_origin(Path(c.path))
 
         # SV2: create-vs-update, decided BEFORE the write so dry-run and
         # apply agree on the same answer (read-only; see _identity_exists).
         existed_before = _identity_exists(c.project_identity, db_path)
+
+        recorded = _project_row_by_identity(c.project_identity, db_path)
+        if recorded is not None and recorded["workspace"] != c.workspace:
+            report.warnings.append(
+                _move_to_owner(c, recorded, apply=apply, db_path=db_path)
+            )
 
         # M3/T8 (AC-6): compute the repo's stack fingerprint (languages,
         # frameworks with version, build tools, detected infra/deployment/
@@ -828,6 +806,11 @@ def scan(
         # projects table (a worktree is a view of this repo, not a project) but
         # which must still be placed -- as rows derived from this repo.
         facets = stack_output_to_facets(sections) + worktree_facets(Path(c.path))
+        facets += [
+            copy_facet(Path(path))
+            for path, (_, target) in copies.items() if target["path"] == c.path
+        ]
+        facets += _kept_copy_facets(c.project_identity, set(copies), db_path)
         primary_language = primary_language_from_sections(sections)
 
         applied = False
@@ -903,32 +886,11 @@ def scan(
         report.projects.append({
             "repo": c.repo,
             "project": final_name,
-            # Vocabulary (workspace -> container -> repo):
-            #   * ``project`` (above) is the DB storage slot ``projects.name``,
-            #     which is now ALWAYS the repo basename (collision-disambiguated
-            #     only when two DIFFERENT repos share a basename under one
-            #     workspace).
-            #   * ``container`` is the grouping folder between the workspace and
-            #     the repo (persisted as ``group_name``). For a multi-repo
-            #     container (N>1) every repo shares the same ``container`` (e.g.
-            #     three repos under "desing-repos" all carry
-            #     container="desing-repos"), so grouping the report by
-            #     ``container`` yields "one container with >1 repo". For a repo
-            #     directly under the workspace (R4 collapse) ``container`` is
-            #     ``None`` -- there is no grouping folder.
             "container": c.container,
             "workspace": c.workspace,
             "project_identity": c.project_identity,
-            # M2-T4 (AC-3): each repo carries its own absolute path, distinct
-            # from the project/container grouping.
             "path": c.path,
-            # SV2: raw git remote (None when unavailable). The move-stable
-            # signal -- see ScanReport.move_candidates.
             "remote": remote_url,
-            # M3/T8 (AC-6): the stack fingerprint persisted for this repo as
-            # rows in project_facets. On a dry-run this is the PREVIEW of what
-            # would be written (nothing is persisted); on apply it is exactly
-            # what populate_facets wrote. Each item is {scope, key, value}.
             "facets": facets,
             "applied": applied,
         })
@@ -986,6 +948,15 @@ def scan(
                             f"-- likely moved here."
                         ),
                     })
+
+    slots = {p["path"]: (p["workspace"], p["project"]) for p in report.projects}
+    for copy, target in copies.values():
+        if target["path"] in slots:
+            target = {**target, "workspace": slots[target["path"]][0],
+                      "project": slots[target["path"]][1]}
+        elif apply:
+            _record_copy(target, copy, agent=agent, db_path=db_path)
+        report.warnings.append(_copy_warning(copy, target))
 
     # SV2: vanished / move_candidates (direction: vanished here -> active
     # elsewhere) / orphaned_autored. Computed for every workspace this scan
@@ -1082,11 +1053,7 @@ def scan(
         from gaia.store.writer import set_workspace_last_scan_at
         if report.resolved_workspace:
             try:
-                set_workspace_last_scan_at(
-                    report.resolved_workspace,
-                    db_path=db_path,
-                    root_path=next(iter(workspace_paths)) if len(workspace_paths) == 1 else None,
-                )
+                set_workspace_last_scan_at(report.resolved_workspace, db_path=db_path)
             except Exception:  # pragma: no cover -- non-fatal
                 pass
         report.diff = {

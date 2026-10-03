@@ -5,89 +5,145 @@ title: "Diagram Deck"
 subtitle: "A portable, data-driven diagram — edit data/ and run npm run build"
 version: "0.2.0"   # optional — shown in the header; bump it when the deck changes meaningfully
 
-# PALETTE — the deck's SKIN. The semantic roles are identical in every palette
-# (`bad` is always "high risk", `good` always "hardened", `muted` always "secondary
-# text"), so switching this changes how the deck LOOKS and never what it MEANS.
-#   neutral         the house palette (the default when this key is omitted)
-#   rose-pine       Rosé Pine — Dawn on the light theme, Main on the dark
-#   rose-pine-moon  the same, with Rosé Pine Moon on the dark theme
-#   contrast        high contrast, for projecting in a room
-# `npm run contrast` measures every palette against WCAG 2.1 AA.
-# The seed ships rose-pine so a fresh scaffold shows the palette axis working;
-# set it to `neutral` for the house look.
-palette: rose-pine
+# LOOK — where the deck will be seen. One line decides the colours and the text
+# sizes of every page; no box or section changes. Meaning never changes either:
+# `bad` is always "high risk" whatever the look.
+#   projector  a projector or a big room: high contrast, larger text
+#   report     a sober document read up close: the house colours, compact text
+#   brand      a deck that carries an identity: a coloured palette, house sizes
+# Every look keeps the minimum text sizes and the contrast floor.
+# Without `look`, `palette` picks the colours alone (see build.md).
+look: brand
 
-# PAGES — one page per PRINCIPLE, then ONE page for the flow form whose phases
-# are sections, then ONE page for the compositions and edge cases that are not
-# a principle. Each principle page demonstrates the principle that names it, and
-# the content of every box explains the tool that box is demonstrating, so the
-# deck documents itself and the guardrail keeps it honest. The flow page is a
-# FORM demo, not a lesson; the last page is the deck's edge-case fixture.
+# CORE CHIPS — the deck's recurring actors, declared once. Every page inherits
+# them FIRST, in this order, with this label; a page adds its own chips after
+# them. A page that does not carry a core actor says so in its entry below with
+# `omit_filters`, so the deck's chip coverage reads in this one file. The
+# teaching pages use chips partially, so the seed leaves `harmony` off (every
+# box and rail in a chip); a chip-driven deck sets `harmony: true`.
+filters:
+  - key: gate
+    label: "Which boxes are the gates?"
+    steps:
+      - "A core chip: declared once in document.yaml, inherited first by every page that does not omit it."
+      - "It lights the two gates wherever they appear, with the same label on every page."
+
+# PAGES — a tour for a person learning the skill, in the order they make a
+# diagram: STORY (what you want to tell), IDEAS (what is distinct, what goes
+# together, what comes in order, what crosses everything), PIECES (from each
+# idea to the piece that expresses it) and DATA (how the values you write fill
+# the look). Each page declares its step as the prefix of its `name`, and its
+# lead band teaches that step. The PATH guard in tools/test-guards.mjs fails a
+# page with no step or a step out of order; the CATALOGUE guard finds the
+# pieces step by its `pieces-` id prefix, so that block stays contiguous.
 # The scaffold copies all of them; the first step of the guide is to DELETE the
 # pages the new deck does not need.
 pages:
-  # ── How the canvas works (principles 1–3) ──
-  - id: p1-merged-cell
-    name: "1 · Merged cell"
+  # ── STORY · decide what you want to tell ──
+  - id: p10-flow-phases
+    name: "Story · the story moves"
     order: 1
     visible: true
-    file: pages/p1-merged-cell.yaml
-  - id: p2-cells-or-zones
-    name: "2 · Cells or zones"
+    file: pages/p10-flow-phases.yaml
+    omit_filters: [gate]
+  - id: p12-shapes
+    name: "Story · it comes back or climbs"
     order: 2
     visible: true
-    file: pages/p2-cells-or-zones.yaml
-  - id: p3-sequence
-    name: "3 · Sequence"
+    file: pages/p12-shapes.yaml
+  # ── IDEAS · what is distinct, together, in order, across ──
+  - id: p7-structure
+    name: "Ideas · what is distinct"
     order: 3
     visible: true
-    file: pages/p3-sequence.yaml
-  # ── How you speak through the canvas (principles 4–6) ──
-  - id: p4-slots
-    name: "4 · Slots"
+    file: pages/p7-structure.yaml
+    omit_filters: [gate]
+  - id: p2-cells-or-zones
+    name: "Ideas · what goes together"
     order: 4
     visible: true
-    file: pages/p4-slots.yaml
-  - id: p5-channels
-    name: "5 · Channels"
+    file: pages/p2-cells-or-zones.yaml
+    omit_filters: [gate]
+  - id: p3-sequence
+    name: "Ideas · what comes in order"
     order: 5
     visible: true
-    file: pages/p5-channels.yaml
+    file: pages/p3-sequence.yaml
+    omit_filters: [gate]
   - id: p6-relations
-    name: "6 · Relations"
+    name: "Ideas · what crosses everything"
     order: 6
     visible: true
     file: pages/p6-relations.yaml
-  # ── What judges it (principles 7–9) ──
-  - id: p7-structure
-    name: "7 · Structure"
+    omit_filters: [gate]
+  # ── PIECES · the catalogue. One entry per piece SKILL.md names, and nothing
+  # else: the piece live, its YAML, what it says, and its neighbour.
+  - id: pieces-1-frame-and-leaves
+    name: "Pieces · frame and leaves"
     order: 7
     visible: true
-    file: pages/p7-structure.yaml
-  - id: p8-does-not-fit
-    name: "8 · Does not fit"
+    file: pages/pieces-1-frame-and-leaves.yaml
+    omit_filters: [gate]
+  - id: pieces-2-slots
+    name: "Pieces · slots"
     order: 8
     visible: true
-    file: pages/p8-does-not-fit.yaml
-  - id: p9-the-hole
-    name: "9 · The hole"
+    file: pages/pieces-2-slots.yaml
+    omit_filters: [gate]
+  - id: pieces-3-size-and-order
+    name: "Pieces · size and order"
     order: 9
     visible: true
-    file: pages/p9-the-hole.yaml
-  # ── A FORM, not a principle. The flow whose phases are sections: the shape
-  # the semantic doctrine's "when the idea MOVES, the layout is the path" names,
-  # and the seed side of the "flow — phases as sections" skeleton in reference.md.
-  - id: p10-flow-phases
-    name: "Flow · phases as sections"
+    file: pages/pieces-3-size-and-order.yaml
+    omit_filters: [gate]
+  - id: pieces-4-colour-and-relation
+    name: "Pieces · colour and relation"
     order: 10
     visible: true
-    file: pages/p10-flow-phases.yaml
-  # ── LAST · not a principle. The compositions and edge cases the nine pages
-  # above do not need but the engine must keep supporting — three of them are
-  # the only live subjects invariants G and X have. It sits at the END because a
-  # reader should meet the principles before the borderline cases they permit.
-  - id: overview
-    name: "Compositions & edge cases"
+    file: pages/pieces-4-colour-and-relation.yaml
+    omit_filters: [gate]
+  # ── DATA · the values you write fill the look ──
+  - id: p1-merged-cell
+    name: "Data · width and height"
     order: 11
     visible: true
+    file: pages/p1-merged-cell.yaml
+    omit_filters: [gate]
+  - id: p4-slots
+    name: "Data · text in its slot"
+    order: 12
+    visible: true
+    file: pages/p4-slots.yaml
+    omit_filters: [gate]
+  - id: p5-channels
+    name: "Data · colour and frame"
+    order: 13
+    visible: true
+    file: pages/p5-channels.yaml
+    omit_filters: [gate]
+  - id: p11-colour-and-rails
+    name: "Data · hues and rails"
+    order: 14
+    visible: true
+    file: pages/p11-colour-and-rails.yaml
+  - id: p8-does-not-fit
+    name: "Data · too much to say"
+    order: 15
+    visible: true
+    file: pages/p8-does-not-fit.yaml
+    omit_filters: [gate]
+  - id: p9-the-hole
+    name: "Data · the empty place"
+    order: 16
+    visible: true
+    file: pages/p9-the-hole.yaml
+    omit_filters: [gate]
+  # Last: combinations of values the pages above do not need but the engine
+  # must keep supporting; three are the only live subjects invariants G and X
+  # have. It teaches data, not orientation, so it closes the tour.
+  - id: overview
+    name: "Data · values that combine"
+    order: 17
+    visible: true
     file: pages/overview.yaml
+    omit_filters: [gate]

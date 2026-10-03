@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v51 -> v52: durable provenance for the current task-close epoch.
 --
 -- harness_events remains the queryable audit channel, but its retention policy

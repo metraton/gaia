@@ -147,6 +147,7 @@ def test_approval_live_fixes_opencode_presentation_outside_the_orchestrator_of_t
                 "--what", "Publicar la rama.", "--question", "¿Publico la rama?",
                 "--does", "Sube la rama.", "--impact", "Queda visible.",
                 "--rollback", "Borrar la rama remota.",
+                "--verification", "git ls-remote", "--shared-state", "Sí: la rama remota.",
                 "--agent-id", AGENT_ID, "--session-id", "ses-not-a-child", "--json",
             ],
             cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=120,

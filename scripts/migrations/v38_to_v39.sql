@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v38 -> v39: structural cut marker on agent_contract_handoffs.
 --
 -- WHAT CHANGES

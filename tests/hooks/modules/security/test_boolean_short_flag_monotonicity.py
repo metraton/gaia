@@ -117,7 +117,7 @@ VALUE_CARRYING_FORMS = [
 ]
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command",
     VALUE_CARRYING_FORMS,
     ids=[row[0] for row in VALUE_CARRYING_FORMS],

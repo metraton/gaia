@@ -63,7 +63,7 @@ gws gmail users messages modify --params '{"userId":"me","id":"<message-id>"}' -
 | Encrypted credentials | `~/.config/gws/credentials.enc` | Created by `gws auth login` |
 | Encryption | AES-256-GCM | Key stored in OS keyring |
 
-> **Keyring backend callout.** `gws` resolves the encryption key through an OS keyring and prints `Using keyring backend: <name>` to **stderr** on every invocation — a harmless banner, not an error, and it does not touch stdout (JSON output stays clean). It only becomes a problem in **headless / WSL / SSH** environments where no Secret Service (e.g. GNOME Keyring, `libsecret`) is running: keyring resolution then fails and `gws auth login` cannot store or read credentials. Fix by ensuring a keyring backend is available (start the Secret Service, or install/configure `keyring` with an alternative backend) BEFORE running `gws auth setup`. This matters for scheduled / unattended Gmail runs — see "Headless Mode" in `gmail-triage/SKILL.md`.
+> **Keyring backend callout.** `gws` resolves the encryption key through an OS keyring and prints `Using keyring backend: <name>` to **stderr** on every invocation — a harmless banner, not an error, and it does not touch stdout (JSON output stays clean). It only becomes a problem in **headless / WSL / SSH** environments where no Secret Service (e.g. GNOME Keyring, `libsecret`) is running: keyring resolution then fails and `gws auth login` cannot store or read credentials. Fix by ensuring a keyring backend is available (start the Secret Service, or install/configure `keyring` with an alternative backend) BEFORE running `gws auth setup`.
 
 ## Error Quick Reference
 

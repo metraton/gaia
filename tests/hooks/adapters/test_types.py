@@ -85,7 +85,7 @@ class TestHookEventType:
         # USER_PROMPT_SUBMIT which has value "UserPromptSubmit"
         assert HookEventType.PROMPT_SUBMIT.value != HookEventType.USER_PROMPT_SUBMIT.value
 
-    @pytest.mark.parametrize("event_type", list(HookEventType))
+    @pytest.mark.table("event_type", list(HookEventType))
     def test_all_values_are_strings(self, event_type):
         """Every HookEventType value is a non-empty string."""
         assert isinstance(event_type.value, str)

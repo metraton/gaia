@@ -162,16 +162,55 @@ def test_registry_selects_opencode_only_when_explicitly_requested(monkeypatch):
     assert isinstance(get_adapter(), OpenCodeAdapter)
 
 
-def test_apply_patch_extracts_all_file_and_move_paths():
+def test_apply_patch_extracts_every_added_and_updated_path():
     assert _apply_patch_paths("""*** Begin Patch
 *** Add File: src/a.py
 *** Update File: src/b.py
-*** Move to: src/c.py
-*** Delete File: src/d.py
-*** End Patch""") == ["src/a.py", "src/b.py", "src/c.py", "src/d.py"]
+*** End Patch""") == ["src/a.py", "src/b.py"]
 
 
-@pytest.mark.parametrize("patch", ["", "*** Begin Patch\n*** End Patch", "*** Begin Patch\n*** Rename File: a\n*** End Patch"])
+@pytest.mark.parametrize(("patch", "command"), [
+    ("*** Begin Patch\n*** Delete File: src/d.py\n*** End Patch", "rm -- src/d.py"),
+    ("*** Begin Patch\n*** Update File: src/b.py\n*** Move to: src/c.py\n*** End Patch", "mv -- src/b.py src/c.py"),
+])
+def test_apply_patch_refuses_delete_and_move_naming_the_bash_command(patch, command):
+    with pytest.raises(ValueError, match=f"`{command}`"):
+        _apply_patch_paths(patch)
+
+
+@pytest.mark.parametrize("patch", [
+    "", "*** Begin Patch\n*** End Patch", "*** Begin Patch\n*** Rename File: a\n*** End Patch",
+    "*** Begin Patch\n*** Move to: src/c.py\n*** End Patch",
+])
 def test_apply_patch_rejects_malformed_or_unsupported_markers(patch):
     with pytest.raises(ValueError):
         _apply_patch_paths(patch)
+
+
+def _lifecycle(event_name: str, session_id: str):
+    return OpenCodeAdapter().parse_event(json.dumps({"event": event_name, "sessionID": session_id}))
+
+
+@pytest.mark.parametrize("event_name", ["session.idle", "session.error"])
+def test_idle_and_error_are_typed_as_the_child_row_close_not_as_claude_code_stop_or_tool_failure(event_name):
+    assert _lifecycle(event_name, "ses-x").event_type is HookEventType.SUBAGENT_STOP
+
+
+def test_deleting_the_main_session_unregisters_it_without_closing_any_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from modules.session.session_registry import _load_registry, register_session
+
+    register_session("ses-main")
+    closes = []
+    monkeypatch.setattr(
+        "modules.agents.dispatch_lifecycle.resolve_close",
+        lambda **kwargs: closes.append(kwargs) or {"status": "no_row"},
+    )
+    event = _lifecycle("session.deleted", "ses-main")
+
+    response = OpenCodeAdapter().adapt_session_end(event)
+
+    assert event.event_type is HookEventType.SESSION_END
+    assert response.output == {"contract_valid": True, "closed": {"status": "no_row"}}
+    assert "ses-main" not in _load_registry()["sessions"]
+    assert closes == [{"harness_agent_id": "ses-main", "session_id": "ses-main"}]

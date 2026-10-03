@@ -25,7 +25,7 @@ from gaia.store import writer
 LIVE_SESSION = "ses-live"
 DEAD_SESSION = "ses-dead"
 AGENT = "developer"
-CWD = "/home/jorge/ws/me/gaia"
+CWD = "/home/user/ws/me/gaia"
 
 
 def _iso(ago: timedelta) -> str:

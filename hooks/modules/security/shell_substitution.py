@@ -115,11 +115,12 @@ own classifiers ADDITIVELY, so this can only ADD a verdict, never remove one.
 
 Public API:
     extract_substitutions(command: str) -> list[str]
+    mask_quoted_text(command: str) -> str | None
 """
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Enough nesting depth for any honest command; past this the obfuscation-depth
 # limit in bash_validator has its own say. The bound only keeps a pathological
@@ -406,6 +407,7 @@ def _find_closing_backtick(text: str, start: int) -> int:
 
 def _collect(
     command: str, depth: int, out: List[str], recurse: bool = True,
+    heredoc_body: bool = False,
 ) -> bool:
     """Append every executing substitution body in *command* to *out*.
 
@@ -413,6 +415,10 @@ def _collect(
     so that what counts as execution here is what would execute there. Recurses
     into each body it finds, so a nested substitution is reported alongside its
     parent rather than hidden inside it.
+
+    ``heredoc_body=True`` reads *command* as the body of an unquoted heredoc,
+    where quote characters, ``#`` and ``<<`` are plain text: ``'$(id)'`` there
+    still runs ``id``.
 
     ``recurse=False`` stops at the OUTERMOST bodies. A caller that re-classifies
     each body through a classifier which itself calls back here does not want
@@ -468,6 +474,7 @@ def _collect(
                 if expands:
                     truncated = _collect(
                         command[body_start:resume], depth + 1, out, recurse,
+                        heredoc_body=True,
                     ) or truncated
                 cursor = resume
             else:
@@ -513,7 +520,7 @@ def _collect(
                 at_word_start = False
                 continue
             # Fall through: ``$(`` and backticks DO expand inside double quotes.
-        else:
+        elif not heredoc_body:
             # ANSI-C quoting is a form of QUOTE, not an expansion, so it is
             # recognized here rather than beside ``$(``. Inside double quotes a
             # ``$'`` is an ordinary dollar followed by an ordinary quote, which
@@ -662,3 +669,34 @@ def extract_substitutions_truncated(
     out: List[str] = []
     truncated = _collect(command, 0, out, not top_level_only)
     return out, truncated
+
+
+def mask_quoted_text(command: str) -> Optional[str]:
+    """Return *command* with every quoted span's contents blanked, or None while a quote is open.
+
+    Quote boundaries are found the way bash finds them: an unquoted backslash
+    escapes the next character, so ``\\'`` opens no quote, and inside double
+    quotes ``\\"`` does not close one. The escaped character itself stays
+    visible, so ``\\>`` is still read as shell syntax. ``$'...'`` is read as a
+    plain single-quoted span: an escaped quote inside it ends the span early,
+    which can only expose more text, never hide it. Each character keeps its
+    offset, so a scan of the result points at the same position in *command*.
+    """
+    out = list(command)
+    i, length = 0, len(command)
+    while i < length:
+        ch = command[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch not in "'\"":
+            i += 1
+            continue
+        j = i + 1
+        while j < length and command[j] != ch:
+            j += 2 if ch == '"' and command[j] == "\\" else 1
+        if j >= length:
+            return None
+        out[i + 1:j] = " " * (j - i - 1)
+        i = j + 1
+    return "".join(out)

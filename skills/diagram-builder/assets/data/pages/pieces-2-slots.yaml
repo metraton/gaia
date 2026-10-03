@@ -1,0 +1,181 @@
+# PIECES 2 OF 4 — the four slots of a box, and the heading of a section.
+# Entry shape and guard: see the header of pieces-1-frame-and-leaves.yaml.
+
+id: pieces-2-slots
+form: dashboard
+columns: 1
+
+sections:
+
+  - id: pieces-2-lead
+    order: 1
+    span: 1
+    lead: true
+    kicker: "PIECES · 2 OF 4"
+    title: "Every slot has a character"
+    description:
+      - "small, loud, short, unlimited: write each thing in the slot that fits it"
+
+  - id: piece-kicker
+    order: 2
+    title: "kicker"
+    subtitle: "“this is measured, that is estimated”"
+    columns: 3
+    children:
+      - id: piece-kicker-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - { id: piece-kicker-box, kicker: "MEASURED", title: "42 ms" }
+      - id: piece-kicker-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-kicker-yaml
+            kicker: "YAML"
+            title: "kicker: MEASURED"
+            description: ["title: 42 ms"]
+            detail: "<code>- { id: latency, kicker: MEASURED, title: 42 ms }</code>"
+          - id: piece-kicker-says
+            kicker: "WHAT IT SAYS"
+            title: "The qualifier"
+            description: ["The small line above the title: a step, a code, a certainty."]
+          - id: piece-kicker-neighbour
+            kicker: "NEIGHBOUR · OUTSIDE"
+            title: "A whole page"
+            description: ["Choose the dashed frame when a page must split them at a glance."]
+
+  - id: piece-title
+    order: 3
+    title: "title"
+    subtitle: "the loud line"
+    columns: 3
+    children:
+      - id: piece-title-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - { id: piece-title-box, title: "97%", description: ["of the checks pass"] }
+      - id: piece-title-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-title-yaml
+            kicker: "YAML"
+            title: "title: 97%"
+            description: ["description: [of the checks pass]"]
+            detail: "<code>- { id: pass-rate, title: \"97%\", description: [of the checks pass] }</code>"
+          - id: piece-title-says
+            kicker: "WHAT IT SAYS"
+            title: "The loud line"
+            description: ["The number goes here when the number is the message."]
+          - id: piece-title-neighbour
+            kicker: "NEIGHBOUR · ROWSPAN"
+            title: "The proportion"
+            description: ["Choose height when the proportion is the message."]
+
+  - id: piece-description
+    order: 4
+    title: "description"
+    subtitle: "short, and it clamps"
+    columns: 3
+    children:
+      - id: piece-description-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - { id: piece-description-box, title: "A card", description: ["one short line of context"] }
+      - id: piece-description-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-description-yaml
+            kicker: "YAML"
+            title: "description:"
+            description: ["[one short line of context]"]
+            detail: "<code>- id: a-card</code><br><code>  title: A card</code><br><code>  description: [one short line of context]</code>"
+          - id: piece-description-says
+            kicker: "WHAT IT SAYS"
+            title: "The context"
+            description: ["A line or two under the title; it clamps, never grows."]
+          - id: piece-description-neighbour
+            kicker: "NEIGHBOUR · DETAIL"
+            title: "More to say"
+            description: ["Choose the detail when it takes more than two lines."]
+
+  - id: piece-detail
+    order: 5
+    title: "detail"
+    subtitle: "“there is too much to say”"
+    columns: 3
+    children:
+      - id: piece-detail-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - id: piece-detail-box
+            title: "Click this card"
+            description: ["the rest waits behind the click"]
+            detail: "This is the detail. It has no limit, so the card never grows: what does not fit moves here instead of shrinking."
+      - id: piece-detail-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-detail-yaml
+            kicker: "YAML"
+            title: "detail: …"
+            description: ["the click panel, no limit"]
+            detail: "<code>- id: click-this</code><br><code>  title: Click this card</code><br><code>  description: [the rest waits behind the click]</code><br><code>  detail: \"This is the detail. It has no limit, …\"</code>"
+          - id: piece-detail-says
+            kicker: "WHAT IT SAYS"
+            title: "The rest"
+            description: ["Unlimited text behind a click, so a cell never grows."]
+          - id: piece-detail-neighbour
+            kicker: "NEIGHBOUR · SECTION"
+            title: "Parts at once"
+            description: ["Choose a section of boxes when all parts must be seen."]
+
+  - id: piece-section-title
+    order: 6
+    title: "section title"
+    subtitle: "names one zone"
+    columns: 3
+    children:
+      - id: piece-section-title-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - id: piece-section-title-zone
+            title: "The checks"
+            subtitle: "run before anyone looks"
+            columns: 2
+            children:
+              - { id: piece-section-title-a, title: "Build" }
+              - { id: piece-section-title-b, title: "Model" }
+      - id: piece-section-title-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-section-title-yaml
+            kicker: "YAML"
+            title: "title: The checks"
+            description: ["subtitle: run before anyone looks"]
+            detail: "<code>- id: the-checks</code><br><code>  title: The checks</code><br><code>  subtitle: run before anyone looks</code><br><code>  columns: 2</code><br><code>  children: [ … ]</code>"
+          - id: piece-section-title-says
+            kicker: "WHAT IT SAYS"
+            title: "A zone's name"
+            description: ["It names one framed group, not the whole page."]
+          - id: piece-section-title-neighbour
+            kicker: "NEIGHBOUR · LEAD BAND"
+            title: "The page's claim"
+            description: ["Choose the lead band to say what the whole page says."]

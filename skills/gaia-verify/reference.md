@@ -1,10 +1,10 @@
 # Gaia Verify Reference
 
-Exact commands for each mode. Copy and run. The source repo is `/home/jorge/ws/me/gaia`; `<repo>` below is that path and `<TARGET>` is the workspace being validated.
+Exact commands for each mode. Copy and run. `<repo>` below is the Gaia source checkout and `<TARGET>` is the install folder being validated.
 
 ## Mode: live
 
-Already wired workspace (npm/pnpm surface). No temp dir, no cleanup.
+Already wired install folder (npm/pnpm surface). No temp dir, no cleanup.
 
 ```bash
 cd <TARGET>
@@ -33,7 +33,7 @@ rm -rf /tmp/gaia-sandbox-*
 
 ## Mode: plugin
 
-Validates the exact npm tarball as a plugin -- pack, extract, and validate the extracted root headless. Touches no real workspace, spawns no session. Do NOT publish or install to the real registry.
+Validates the exact npm tarball as a plugin -- pack, extract, and validate the extracted root headless. Touches no real install folder, spawns no session. Do NOT publish or install to the real registry.
 
 ```bash
 cd <repo>
@@ -43,9 +43,9 @@ npm run gaia:plugin-dryrun                  # pack -> temp extract -> asserts + 
 
 Optional live functional probe (needs Claude auth/tokens, opt-in):
 ```bash
-npm run gaia:plugin-dryrun -- --functional  # `claude --plugin-dir <temp> -p '...'` from a temp cwd
+npm run gaia:plugin-dryrun -- --functional  # live functional probe from a temp cwd
 ```
-If hooks do not fire, inspect the root `hooks/hooks.json` (the canonical hook source; `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block -- regenerate both with `npm run generate:plugin-root`). After publish, the marketplace path can also be exercised inside CC: `/plugin marketplace add <repo>` (`source: github`, pinned `ref`) + `/plugin install gaia@gaia-marketplace` + `/reload-plugins`.
+If hooks do not fire, inspect the root `hooks/hooks.json` (the canonical hook source; `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block -- regenerate both with `npm run generate:plugin-root`). After publish, the marketplace path can also be exercised inside CC: `/plugin marketplace add metraton/gaia#<ref>` (entry `source: "."`, so the ref added is the code installed) + `/plugin install gaia@gaia-marketplace` + `/reload-plugins`.
 
 ## Mode: registry
 

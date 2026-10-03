@@ -267,3 +267,39 @@ class TestEdgeCases:
         result = unwrapper.unwrap("bash -c echo hello world")
         assert result.inner == "echo hello world"
         assert result.depth == 1
+
+
+@pytest.mark.parametrize("command", [
+    "bash -lc 'echo hello'",
+    "bash -e -c 'echo hello'",
+    "bash --login -c 'echo hello'",
+    "bash -o pipefail -c 'echo hello'",
+    "bash -eo pipefail -c 'echo hello'",
+    "bash --rcfile /x/rc -c 'echo hello'",
+    "FOO=1 bash -c 'echo hello'",
+    "timeout 10 bash -c 'echo hello'",
+    "env -i FOO=1 bash -c 'echo hello'",
+    "sudo -u root bash -c 'echo hello'",
+    "setsid -f bash -c 'echo hello'",
+    "strace -o /tmp/t bash -c 'echo hello'",
+    "ksh -c 'echo hello'",
+    "fish --command 'echo hello'",
+    "fish --command='echo hello'",
+])
+def test_every_shell_string_spelling_unwraps_to_its_payload(command):
+    result = ShellUnwrapper().unwrap(command)
+
+    assert result.inner == "echo hello"
+    assert result.depth == 1
+
+
+@pytest.mark.parametrize("command", [
+    "bash script.sh",
+    "bash -n script.sh",
+    "bash -o pipefail script.sh",
+    "bash --rcfile -c script.sh",
+    "bash -- -c 'echo hello'",
+    "docker run img bash -c 'echo hello'",
+])
+def test_shell_given_no_command_string_is_not_unwrapped(command):
+    assert ShellUnwrapper().is_wrapped(command) is False

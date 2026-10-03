@@ -109,19 +109,36 @@ class TestRemoveClaudeMd(unittest.TestCase):
             result = _remove_claude_md(root, dry_run=False)
             self.assertFalse(result["found"])
 
+    @staticmethod
+    def _gaia_creates_claude_md(root: Path) -> None:
+        from cli import _manifest
+
+        (root / ".claude").mkdir()
+        baseline, _ = _manifest.baseline_for(root)
+        (root / "CLAUDE.md").write_text("identity\n")
+        _manifest.record(root, baseline, channel="npm", version="0.0.0-test")
+
     def test_removes_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "CLAUDE.md").write_text("identity\n")
+            self._gaia_creates_claude_md(root)
             result = _remove_claude_md(root, dry_run=False)
             self.assertTrue(result["found"])
             self.assertTrue(result["removed"])
             self.assertFalse((root / "CLAUDE.md").exists())
 
-    def test_dry_run_does_not_remove(self):
+    def test_keeps_file_gaia_did_not_create(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "CLAUDE.md").write_text("identity\n")
+            result = _remove_claude_md(root, dry_run=False)
+            self.assertTrue(result["preserved"])
+            self.assertTrue((root / "CLAUDE.md").exists())
+
+    def test_dry_run_does_not_remove(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._gaia_creates_claude_md(root)
             result = _remove_claude_md(root, dry_run=True)
             self.assertTrue(result["found"])
             self.assertTrue((root / "CLAUDE.md").exists())

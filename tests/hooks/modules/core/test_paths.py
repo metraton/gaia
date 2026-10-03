@@ -171,7 +171,7 @@ class TestGetLogsDir:
         clear_path_cache()
         data_dir = tmp_path / "plugin-data"
         data_dir.mkdir()
-        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
+        with patch("modules.core.paths.get_data_home", return_value=data_dir):
             yield data_dir
 
     def test_returns_logs_path(self, setup):
@@ -198,7 +198,7 @@ class TestGetMemoryDir:
         clear_path_cache()
         data_dir = tmp_path / "plugin-data"
         data_dir.mkdir()
-        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
+        with patch("modules.core.paths.get_data_home", return_value=data_dir):
             yield data_dir
 
     def test_returns_memory_path(self, setup):
@@ -235,7 +235,7 @@ class TestGetSessionDir:
         clear_path_cache()
         data_dir = tmp_path / "plugin-data"
         data_dir.mkdir()
-        with patch("modules.core.paths.get_plugin_data_dir", return_value=data_dir):
+        with patch("modules.core.paths.get_data_home", return_value=data_dir):
             yield data_dir
 
     def test_returns_session_active_path(self, setup):

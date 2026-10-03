@@ -129,7 +129,7 @@ class TestMemoryDigestCrossProject:
         assert payload["items"][0]["initiative"] == "balance"
 
     def test_per_initiative_overflow_hint(self, tmp_db, capsys):
-        # One initiative with 3 pending -> top-1 shown + "+2 más" hint.
+        # One initiative with 3 pending -> top-1 shown + "+2 more" hint.
         _insert(tmp_db, "gaia_a", class_="thread", status="open",
                 initiative="gaia", updated_at="2026-07-15T10:00:00Z")
         _insert(tmp_db, "gaia_b", class_="thread", status="open",
@@ -143,16 +143,16 @@ class TestMemoryDigestCrossProject:
         # top-1 only rendered as an item.
         assert len(gaia_items) == 1
         assert gaia_items[0]["pending_count"] == 3
-        assert "+2 más en gaia" in block
+        assert "+2 more in gaia" in block
 
     def test_global_overflow_beyond_top_k(self, tmp_db, capsys):
-        # More initiatives than TOP_K -> "+N proyectos más".
+        # More initiatives than TOP_K -> "+N more projects".
         for i in range(memory_mod._DIGEST_TOP_K + 3):
             _insert(tmp_db, f"proj_{i}_open", class_="thread", status="open",
                     initiative=f"proj{i}", updated_at=f"2026-07-15T{i:02d}:00:00Z")
         payload = _run(_args(), capsys)
         assert payload["overflow_projects"] == 3
-        assert "proyectos más" in payload["block"]
+        assert "+3 more projects" in payload["block"]
 
     def test_null_initiative_is_otros_bucket(self, tmp_db, capsys):
         _insert(tmp_db, "loose_open", class_="thread", status="open",
@@ -210,7 +210,7 @@ class TestMemoryPendingByProject:
         names = {i["name"] for i in payload["items"]}
         assert inits == {"gaia"}
         assert "balance_x" not in names
-        assert "Pendientes de gaia" in payload["block"]
+        assert "Pending in gaia" in payload["block"]
 
     def test_project_mode_returns_whole_corpus_uncapped(self, tmp_db, capsys):
         # Well past any historical top-N: every row must come back, and the
@@ -222,7 +222,7 @@ class TestMemoryPendingByProject:
         payload = _run(_args(initiative="gaia"), capsys)
         assert len(payload["items"]) == total
         assert payload["overflow"] == 0
-        assert "más en gaia" not in payload["block"]
+        assert "more in gaia" not in payload["block"]
         assert payload["block"].count("\n- gaia_") == total
 
     def test_project_mode_normalises_key(self, tmp_db, capsys):
@@ -246,7 +246,7 @@ class TestMemoryPendingByProject:
 # Whole-corpus retrieval: body projected, description untruncated
 # ---------------------------------------------------------------------------
 
-# The fixed body shape of a promoted defect (skills/memory/reference.md). The
+# The fixed body shape of a promoted defect (skills/memory/reference-defect-promotion.md). The
 # retrieval surface must return it intact: the consumer splits on "## " to
 # recover the fields, so a body truncated anywhere destroys the last field.
 _DEFECT_HEADINGS = ("## Symptom", "## Component", "## Evidence",

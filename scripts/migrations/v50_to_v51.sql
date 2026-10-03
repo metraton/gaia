@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v50 -> v51: discard the deliberate-read capture taken by v49_to_v50.
 --
 -- WHAT THIS DESTROYS, STATED BEFORE THE CONSENT IS GIVEN
@@ -27,8 +28,8 @@
 --   Gaia's own guard; the guard names a migration as the sanctioned route. This
 --   file is that route -- and it does not bypass consent, it relocates it:
 --   scripts/migration_guard.py classifies DROP TABLE as row-reaching, so on any
---   database where this table holds rows the file is refused until
---   GAIA_MIGRATION_CONSENT names it.
+--   database where this table holds rows its chain is refused until
+--   `gaia migrate apply --consent-chain vA..vB` names that chain.
 --
 -- IDEMPOTENCY
 --   IF EXISTS carries it. A fresh install replays floor+1 .. 51, so

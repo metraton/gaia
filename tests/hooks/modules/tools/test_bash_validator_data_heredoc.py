@@ -90,6 +90,95 @@ class TestQuotedHeredocToGaiaContentFlagIsData:
         assert result.allowed is True, result.reason
 
 
+HOSTILE_PROSE_BODY = (
+    "## Plan v2\n"
+    "Route: sync > keycloak; then audit | report && notify || retry.\n"
+    "Keep `kubectl delete ns prod` and $(rm -rf /tmp/gaia-heredoc-probe) as prose.\n"
+    "It's \"quoted\" -- git push --force origin main is a risk, not a step.\n"
+    "Write the summary > notes.md; dd if=/dev/zero of=/dev/sda stays text.\n"
+)
+
+
+class TestPlannerRewriteWithQuotedReasonIsData:
+    """The rewrite shape gaia-planner step 6 and step 8 prescribe.
+
+    A first save carries no quoted argument and passed; a rewrite needs
+    ``--reason``, whose value is shell-quoted, and the quote alone used to
+    disqualify the header so the body fell back to the operator splitter.
+    """
+
+    @pytest.mark.parametrize("header", [
+        'gaia plan save --brief=b --reason "v2: adds F6; drops R7 > R13" --content-file=-',
+        "gaia plan save --brief=b --reason='rewrite | after D126 && gates' --content-file=-",
+        'gaia plan save --brief b --reason "body v2" --content-file -',
+        'gaia plan change apply b 7 --content-file=-',
+        'gaia plan change apply b 7 --workspace "century-inc" --content-file=-',
+    ], ids=["double-quoted", "single-quoted-equals", "separate-values",
+            "change-apply", "change-apply-quoted-workspace"])
+    def test_hostile_prose_body_passes(self, checkout, header):
+        command = _heredoc(header, "'PLAN'", "PLAN", HOSTILE_PROSE_BODY)
+        result = _validate(command)
+        assert result.allowed is True, result.reason
+        assert result.tier.value != "T3"
+        assert result.modified_input is None
+
+
+class TestQuotedHeaderGainsNoWiderExemption:
+    @pytest.mark.parametrize("header", [
+        'gh pr create --title "t" --body-file -',
+        'python3 - "arg"',
+        'bash -s "arg"',
+    ], ids=["gh-body-file", "python-stdin", "bash-stdin"])
+    def test_heredoc_to_a_non_gaia_receiver_is_not_allowed(self, checkout, header):
+        command = _heredoc(
+            header, "'X'", "X", "import shutil; shutil.rmtree('/tmp/x')\nrm -rf /tmp/x\n",
+        )
+        result = _validate(command)
+        assert result.allowed is False
+
+    def test_command_chained_after_the_terminator_is_still_analysed(self, checkout):
+        command = (
+            "gaia plan save --brief=b --reason \"v2\" --content-file=- <<'PLAN'\n"
+            "prose; more > prose\nPLAN\nrm -rf /tmp/gaia-heredoc-probe"
+        )
+        assert _validate(command).allowed is False
+
+    def test_command_chained_before_the_gaia_call_is_still_analysed(self, checkout):
+        command = _heredoc(
+            "rm -rf /tmp/gaia-heredoc-probe && gaia plan save --reason \"v2\" --content-file=-",
+            "'PLAN'", "PLAN", HOSTILE_PROSE_BODY,
+        )
+        assert _validate(command).allowed is False
+
+
+class TestCommentBeforeTheOpenerMeansNoHeredoc:
+    """Bash ends the line at a word-starting ``#``, so ``<<'PLAN'`` after it opens
+    nothing and every following line runs as a command of its own."""
+
+    @pytest.mark.parametrize("header", [
+        "gaia plan save --brief=b --content-file=- #",
+        "gaia plan save --brief=b --content-file=- #note",
+        "gaia plan save --brief=b # --content-file=-",
+        "gaia plan save --brief=b --reason 'v2' --content-file=-\t#",
+    ])
+    def test_body_after_a_comment_is_analysed_as_commands(self, checkout, header):
+        command = _heredoc(header, "'PLAN'", "PLAN", "echo pwned > notes.md\n")
+        result = _validate(command)
+        assert result.allowed is False
+        assert "[SHELL_WRITE]" in (result.reason or ""), result.reason
+
+    @pytest.mark.parametrize("header", [
+        "gaia plan save --brief=b --reason '#3 rewrite' --content-file=-",
+        'gaia plan save --brief=b --reason "#3 rewrite" --content-file=-',
+        "gaia plan save --brief=b#2 --reason=v#2 --content-file=-",
+    ], ids=["single-quoted", "double-quoted", "mid-word"])
+    def test_hash_that_is_not_a_comment_keeps_the_data_treatment(self, checkout, header):
+        command = _heredoc(header, "'PLAN'", "PLAN", HOSTILE_PROSE_BODY)
+        result = _validate(command)
+        assert result.allowed is True, result.reason
+        assert result.tier.value != "T3"
+
+
 class TestRedirectOnTheCommandLineIsStillAWrite:
     def test_redirect_in_the_header_into_the_checkout_is_refused(self, checkout):
         command = _heredoc(
@@ -160,12 +249,13 @@ class TestHeredocFeedingAnInterpreterIsStillCommands:
         command = "cat <<'X' | bash\nrm -rf /tmp/gaia-heredoc-probe\nX"
         assert _validate(command).allowed is False
 
-    def test_permanent_deny_floor_still_reads_a_data_body(self):
+    def test_permanent_deny_floor_reads_only_the_header(self):
+        """A body that names a floor command is stored prose, not a run of it."""
         command = _heredoc(
             "gaia plan save --brief=b --content-file=-", "'PLAN'", "PLAN",
-            "kubectl delete namespace prod\n",
+            "kubectl delete namespace prod\ngit push --force origin main\n",
         )
-        assert _validate(command).allowed is False
+        assert _validate(command).allowed is True
 
     def test_command_after_the_terminator_is_still_analysed(self):
         command = (
@@ -212,6 +302,24 @@ class TestDataHeredocHeader:
         "gaia plan save --brief=b --content-file=- <<'PLAN' | bash\na\nPLAN",
         "gaia plan save --brief=b --content-file=- <<'PLAN'\na\nnever terminated",
         "gaia plan save --brief=b --content-file=- <<'PLAN'\na\nPLAN\necho more",
+        "gaia plan save --reason \"$(rm -rf /x)\" --content-file=- <<'PLAN'\na\nPLAN",
+        "gaia plan save --reason \"`id`\" --content-file=- <<'PLAN'\na\nPLAN",
+        "gaia plan save --reason \"a\\\"b\" --content-file=- <<'PLAN'\na\nPLAN",
+        "gaia plan save --reason \"unterminated --content-file=- <<'PLAN'\na\nPLAN",
+        "gaia plan save --reason '--content-file=-' <<'PLAN'\na\nPLAN",
+        "gaia plan save --reason \"x\" --content-file=- <<'PLAN' > out\na\nPLAN",
+        "gh pr create --title \"t\" --body-file - <<'X'\na\nX",
+        "cat \"x\" <<'X'\na\nX",
+        "gaia plan save --brief=b --content-file=- # <<'PLAN'\na\nPLAN",
+        "gaia plan save --brief=b --reason '' #x --content-file=- <<'PLAN'\na\nPLAN",
     ])
     def test_everything_else_is_not_exempt(self, command):
         assert self._header(command) is None
+
+    @pytest.mark.parametrize("header", [
+        'gaia plan save --brief=b --reason "v2; a > b | c && d" --content-file=-',
+        "gaia plan save --brief=b --reason='it''s v2' --content-file=-",
+        "gaia plan save --brief=b --reason 'say \"$HOME\" `x`' --content-file -",
+    ])
+    def test_quoted_values_keep_the_header_whole(self, header):
+        assert self._header(f"{header} <<'PLAN'\na; b\nPLAN\n") == header

@@ -21,7 +21,7 @@ Package: `@jaguilar87/gaia` | Node >=18 | Python >=3.12
 | `hooks/task_completed.py` | TaskCompleted | (all) |
 | `hooks/post_compact.py` | PostCompact | (all) |
 
-SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest: Environment, then `Project Context — Projects` (scanned workspaces, each with its projects underneath), `Project Context — Contract Index`, unread task notifications, scheduled-task drift, scheduled-task suspensions, and workspace memory (digest + anchors). Pending approvals are not part of this manifest -- approvals are in-loop and single-session, with no cross-session resurfacing (no `[ACTIONABLE]` block, no per-turn verified-pendings feed); see `pending-approvals` skill. UserPromptSubmit emits only sparse notices such as the first-run welcome and unread-notification counter; routing remains DB-backed and callable for diagnostics, but is not injected into every turn. SubagentStart claims the born dispatch row and injects the kernel into every dispatched agent: `# Your Contract` (identity, goal, role/surface, `project`, `can_read`/`can_write`), `# Your CLI`, and `# What I know about you` (durable memory anchor slugs, detail one `gaia memory show <slug>` away). Project context, episodic memory indexes, and surface routing are NOT preloaded -- the agent pulls what it needs on demand, within its `can_read` menu, with the verbs in `agent-protocol/read-map.md`.
+On the plugin channel, which never runs `gaia install`, SessionStart first brings the database up to the code (`hooks/modules/session/plugin_upgrade.py`): one read of the ledger when nothing is pending; a behind database goes through `gaia migrate apply` (a structure-only chain applies after its backup, a data-reaching one is left and its `gaia migrate apply --consent-chain vA..vB` is named in a `## Database upgrade` block and the user-facing `systemMessage`); a database ahead of the code is never moved; and a package version other than the one recorded in `<plugin data>/seeded-version` re-runs install's contract-permission and surface-routing seeds, with no hooks written to settings. SessionStart then emits a one-shot `hookSpecificOutput.additionalContext` manifest: first a `## Database schema` block, only when `gaia.db` and the code disagree on schema version (behind names `gaia migrate apply`; ahead says every write is refused and names the newer Gaia to install), then the four-section birth block (`hooks/modules/session/session_manifest.py::build_session_context`): `## Projects` (each project with its live-pending count), `## Environment` (machine, installation, folder, the `gaia` CLI path, the data home and database, the tools on PATH, and one line of recurring work that is due -- unread reports, due reminders and routines), then `## The user` and `## User preferences` (the user's standing rows, whole). Project memory never loads at birth. Pending approvals are not part of this manifest -- approvals are in-loop and single-session, with no cross-session resurfacing (no `[ACTIONABLE]` block, no per-turn verified-pendings feed); see `pending-approvals` skill. UserPromptSubmit emits only sparse notices such as the first-run welcome and the unread-notifications counter; routing remains DB-backed and callable for diagnostics, but is not injected into every turn. SubagentStart claims the born dispatch row and injects the kernel into every dispatched agent (`hooks/modules/context/kernel_builder.py::build_kernel_context`): `# Your Contract` (identity, goal, role/surface, `project` with its declared `workflow` line when the project's `project_identity` entry declares one, `can_read`/`can_write`, the acceptance gates on a plan-bound turn), `# Your CLI`, and `# How the user works` (the user's standing rows with their bodies, minus those whose audience is the orchestrator alone); the dispatch also carries the session's recent-events digest (`hooks/modules/session/session_event_injector.py::build_session_events`). Project context, episodic memory indexes, and surface routing are NOT preloaded -- the agent pulls what it needs on demand, within its `can_read` menu, with the verbs in `agent-protocol/read-map.md`.
 
 ### Hook Modules (13 packages)
 
@@ -102,7 +102,7 @@ The package ships a single `gaia` entry point (`bin/gaia`, mapped by the `bin` f
 | `gaia doctor` | `bin/cli/doctor.py` | System health checks: schema, FTS5 sync, agent_permissions, symlinks, settings.local.json |
 | `gaia history` | `bin/cli/history.py` | Recent agent sessions: list, show, search |
 | `gaia install` | `bin/cli/install.py` | Bootstrap DB + .claude/ structure + symlinks for a fresh install (no npm postinstall -- run manually or via lazy bootstrap on first `gaia` use) |
-| `gaia memory` | `bin/cli/memory.py` | Curated memory (append/add/edit/reclassify/delete/link) + episodic log: FTS5 search, show episode, health checks |
+| `gaia memory` | `bin/cli/memory.py` | Curated memory, append-only (add/append/reclassify/link/checkpoint; add --replace and delete signed) + episodic log: FTS5 search, show episode, health checks |
 | `gaia metrics` | `bin/cli/metrics.py` | Usage analytics: tier classification, agent invocations, anomaly counters |
 | `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
 | `gaia plan` | `bin/cli/plan.py` | Manage plans (one per brief, DB-canonical): save, show, list, status |
@@ -158,18 +158,22 @@ npm publish                    # publishes @jaguilar87/gaia
 There is **no npm postinstall hook**. `package.json` carries an explicit `_install_note` documenting this: the DB is bootstrapped lazily on first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped only for the `install`/`uninstall` subcommands themselves), and workspace `.claude/` config is applied on demand via `gaia install` or by the SessionStart hook. `gaia install --postinstall` still exists as a flag for fail-soft, non-interactive invocation, but nothing in the npm lifecycle calls it automatically.
 
 `gaia install` (interactive or `--postinstall`), first run (no `.claude/`):
-1. Run `scripts/bootstrap_database.py` -- seeds the schema, agent rows, and `schema_version`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
+1. Run `gaia migrate apply` (engine `scripts/bootstrap_database.py`) -- backs up an existing DB, applies the pending chain and its `schema_version` seals in one transaction, seeds agent rows; a chain reaching existing rows stops and names `gaia migrate apply --consent-chain vA..vB`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
 2. Create `.claude/` if missing (created early so subsequent steps can write into it).
 3. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
-4. Merge hooks from `hooks.json` into `settings.local.json`.
+4. Register hooks in `settings.local.json` through the single writer `plugin_setup.sync_workspace_hooks` (the same one SessionStart runs): npm channel writes each (event, matcher, command) `hooks.json` ships and prunes retired ones; plugin channel -- `CLAUDE_PLUGIN_ROOT` set or the workspace enabling the Gaia plugin -- writes none. User entries are kept.
 5. Create `.claude/{agents, tools, hooks, config, skills}` symlinks (5) plus a `CHANGELOG.md` file link.
 6. Write `plugin-registry.json` with `installed[].name == "gaia"` (the single unified plugin identity).
 7. Write the PATH launcher unless `--no-path`: POSIX still gets the `~/.local/bin/gaia` bash shim; Windows instead gets `gaia.cmd` + `gaia.ps1` (`_install_windows_launchers` / `_render_cmd_launcher` / `_render_ps1_launcher` in `bin/cli/install.py`), each baking in the resolved workspace and exporting `GAIA_WORKSPACE_PATH` before dispatching to `bin/gaia`. On Windows only, install ALSO warns (`_warn_launcher_shadowed` / `_launcher_path_precedence`) when `~/.local/bin` does not precede the npm prefix on PATH -- the npm shim would win and the launcher would be shadowed.
 8. **Windows only:** persist `GAIA_WORKSPACE_PATH` to the USER environment via `setx` (`_persist_workspace_env` in `bin/cli/install.py`). The launcher's export is process-scoped, so if npm's own `gaia.cmd` wins the PATH lookup the env var is never set and `doctor._derive_workspace` derives the npm prefix -> false CRITICAL. The persisted (durable, last-install-wins, single-valued) value makes the NEXT `gaia doctor` (a fresh process) resolve the workspace regardless of which `gaia` wins PATH. No-op on POSIX. When no workspace resolves and the env var is unset, `gaia doctor` emits a legible, actionable message naming both remedies (`--workspace <path>` or reinstall) instead of a raw CRITICAL.
 
-Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` separately to populate it -- install never triggers a scan.
+9. Workspace status (`gaia.install_root.workspace_status`): install declares no workspace and scans nothing. A workspace exists only when the user declares it with `gaia workspace declare <name> <path>` (`gaia.store.writer.declare_workspace`, which writes `root_path`); a name or root already declared is never rebound. Install reports the declared workspace holding the folder, or `gaia.project.not_declared_message` when none does. The plugin channel's SessionStart shows the same notice (`session_lifecycle._reconcile_install`). Repos are indexed only by `gaia scan --workspace <name>`, which owns each repo to the nearest declared workspace containing it (`tools/scan/classify.py`, R2) and never writes a root.
 
-`gaia update` (`.claude/` exists): shares the same helpers via `_install_helpers.py` -- show version transition, create `settings.json` only if missing, merge permissions/env/hooks (union, preserves user config), recreate/fix broken symlinks, run schema migrations and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`, verify hooks/Python/DB schema/config.
+Workspace writes from hooks (`.claude/hooks` link, `settings.local.json`) anchor to `gaia.install_root.installed_root()` -- the nearest recorded root, else the nearest `.claude/.plugin-initialized`, above the cwd -- so a session opened in a subfolder never seeds its own `.claude/`. A cwd inside a managed worktree (a recorded root's `.project-worktrees`, or the legacy central worktrees root) has no workspace: `installed_root()` raises `InsideManagedWorktree` and those writes are skipped rather than landing in the enclosing workspace. The `.claude/hooks` link only targets an installed package's hooks dir, never a git checkout (source tree or worktree), and SessionStart creates it only when executed, never when imported.
+
+Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`; `gaia scan --workspace <name>` indexes a declared workspace into it.
+
+`gaia update` (`.claude/` exists): shares the same helpers via `_install_helpers.py` -- show version transition, create `settings.json` only if missing, merge permissions/env/hooks (union, preserves user config), recreate/fix broken symlinks, run `gaia migrate apply` and re-seed agent permissions if `schema_version` is behind `EXPECTED_SCHEMA_VERSION`, verify hooks/Python/DB schema/config.
 
 The hook invoker is `python3 <script>` rather than executing the script directly, so missing exec bits on cross-platform checkouts do not break the install.
 
@@ -192,23 +196,62 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 
 ### Layers
 
-| Layer | Command | Cost | Speed | Count |
-|-------|---------|------|-------|-------|
-| L1 | `npm test` | Free | ~0.25s | ~1462 |
-| L2 | `npm run test:layer2` | ~$0.10 | Minutes | ~11 |
-| L3 | `npm run test:layer3` | Free | Minutes | ~13 |
+| Layer | Command | Cost | Speed |
+|-------|---------|------|-------|
+| L1 | `npm test` | Free | Minutes (`pytest --collect-only -q` counts it) |
+| L2 | `npm run test:layer2` | ~$0.10 | Minutes |
+| L3 | `npm run test:layer3` | Free | Minutes |
 
-### L1 Categories (46 test files)
+### Layer-1 test admission
+
+A test enters layer 1 only if it catches a regression a user or a release
+would feel: install, upgrade or uninstall; security classification; approvals;
+contract and gate integrity; data safety; a CLI contract other components
+depend on. Before writing one, break that behaviour and watch the test fail;
+a test that cannot fail for its regression is not evidence.
+
+Not admitted, and deleted rather than repaired when found:
+
+- **Text** -- a phrase of a skill, agent, README or workflow file. Prose that a
+  program parses is a contract, not text: a denial's `approval_id` line, a
+  CLI's JSON, a frontmatter field the host reads.
+- **Internal detail** -- a helper's shape, a dataclass default, a private
+  function whose break no user-visible path shows. Deleting one names the kept
+  test that fails for the same break, shown by a mutation.
+- **Environment** -- a test that passes or fails with the machine. The suite
+  takes for granted only the own toolchain (D111): python and python3 by name,
+  git, sh, bash, node, npm, bun and gaia (`OWN_TOOLCHAIN` in
+  `tests/conftest.py`); anything else is a fixture the test writes.
+- **Duplicate** -- a second test of a promise another test already fails for.
+- **Slow boundary duplicate** -- one more subprocess bootstrap, install or
+  upgrade of a path already driven. A test slower than 1 s must replace two or
+  more tests.
+- **Live or expensive integration** -- valuable but too slow for every pull
+  request: it goes to `NIGHTLY_ONLY` in `tests/conftest.py`, which
+  `.github/workflows/nightly.yml` runs.
+
+Every test declares the behaviour it protects -- its docstring, its class's or
+its module's. `tests/test_layer1_admission.py` enforces the mechanical part on
+every layer-1 file and fails naming `file:line` and rule: R1, a Markdown file
+of `skills/` or `agents/` read and asserted with a literal `in`; R2, a
+workflow under `.github/workflows` read and asserted against a literal; R3, a
+test with no declaration. Its `ADMISSION_ALLOWLIST` is closed: each entry names
+file, rule and reason, and exists only while the pinned text is a parsed
+contract.
+
+### L1 Categories
 
 | Category | Directory | What it tests |
 |----------|-----------|---------------|
-| Prompt regression | `tests/layer1_prompt_regression/` | Routing table, skill content rules, agent frontmatter, agent prompts, security tier consistency, skills cross-reference, context contracts |
-| Hooks | `tests/hooks/modules/` | Security modules (mutative_verbs, blocked_commands, tiers, approval_grants, approval_scopes, command_semantics), tools (bash_validator, shell_parser, cloud_pipe_validator, task_validator), core (paths, state), context (context_writer) |
-| System | `tests/system/` | Directory structure, permissions, agent definitions, configuration, schema compatibility |
-| Tools | `tests/tools/` | context_provider, episodic, pending_updates, deep_merge, review_engine, surface_router |
-| Integration | `tests/integration/` | Context enrichment, subagent lifecycle, subagent stop, nonce approval relay |
-| Performance | `tests/performance/` | Context injection benchmarks |
-| Cross-layer | `tests/test_cross_layer_consistency.py` | Consistency between hooks, config, and agents |
+| Routing | `tests/layer1_prompt_regression/` | The routing table seeded from agent frontmatter |
+| Hooks | `tests/hooks/` | Security classification, approvals, denials, tools (bash_validator, task_validator), host adapters, session and subagent lifecycle |
+| Approvals | `tests/approvals/` | The host-neutral approval core, signatures, COMMAND_SET execution |
+| CLI | `tests/cli/` | `gaia` subcommands: install, uninstall, bootstrap and migrations, doctor, dev, release, scan, memory, tasks |
+| Contracts | `tests/contract/` | The agent contract envelope, its validator and the SubagentStop gate |
+| System | `tests/system/` | Agent definitions in the build manifest, test-DB schema parity with production |
+| Tools | `tests/tools/` | context_provider, episodic, surface_router, the simulators |
+| Integration | `tests/integration/` | Cross-component paths: subagent lifecycle, grants, OpenCode plugin |
+| Admission | `tests/test_layer1_admission.py` | The layer-1 admission rule above |
 
 ### L2 (LLM Evaluation)
 
@@ -229,10 +272,10 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 |--------|-----|
 | Hook module (security, tools, core) | `pytest tests/hooks/ -v` |
 | Agent definition (.md) | `pytest tests/layer1_prompt_regression/ tests/system/ -v` |
-| Skill content | `pytest tests/layer1_prompt_regression/ -v` |
-| Config file | `pytest tests/system/ tests/test_cross_layer_consistency.py -v` |
+| Skill content | `pytest tests/skills/ -v` (skill prose itself is not pinned by tests) |
 | Context/routing | `pytest tests/tools/ tests/integration/ -v` |
-| CLI tool (bin/) | `pytest tests/layer3_e2e/ -v -m e2e` |
+| CLI tool (bin/) | `pytest tests/cli/ -v` |
+| A new or changed test | `pytest tests/test_layer1_admission.py -v` |
 | Any change (pre-commit) | `npm test` (full L1) |
 | Pre-publish | `npm run generate:plugin-root && npm run pre-publish:validate` |
 
@@ -248,7 +291,7 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 | `gaia status` | Installation snapshot: version, mode, DB path, last scan | Quick status check |
 | `gaia metrics` | Usage analytics: tier distribution, agent invocations, anomalies | Performance analysis |
 | `gaia history` | Session history viewer | Debugging past sessions |
-| `gaia memory` | Curated memory (append/add/edit/reclassify/delete/link) + episodic inspect/search | Recall past episodes, curate notes, memory health |
+| `gaia memory` | Curated memory, append-only (add/append/reclassify/link/checkpoint; add --replace and delete signed) + episodic inspect/search | Recall past episodes, curate notes, memory health |
 | `gaia approvals` | List/accept/reject pending T3 approvals | Approval workflow |
 | `gaia brief` / `gaia plan` | Brief and plan management against the DB substrate | Planning, brief lifecycle |
 | `gaia context` | Display and refresh project context | Audit context state |
@@ -279,11 +322,11 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 
 ```bash
 # In any project directory:
-ln -sf /home/jorge/ws/me/gaia/agents   .claude/agents
-ln -sf /home/jorge/ws/me/gaia/hooks    .claude/hooks
-ln -sf /home/jorge/ws/me/gaia/skills   .claude/skills
-ln -sf /home/jorge/ws/me/gaia/tools    .claude/tools
-ln -sf /home/jorge/ws/me/gaia/config   .claude/config
+ln -sf <gaia-source-checkout>/agents   .claude/agents
+ln -sf <gaia-source-checkout>/hooks    .claude/hooks
+ln -sf <gaia-source-checkout>/skills   .claude/skills
+ln -sf <gaia-source-checkout>/tools    .claude/tools
+ln -sf <gaia-source-checkout>/config   .claude/config
 ```
 
 Changes to source files take effect immediately (no build step).
@@ -301,7 +344,7 @@ npm install @jaguilar87/gaia
 cd /tmp
 mkdir test-project && cd test-project
 npm init -y
-npm install ~/ws/me/gaia            # installs from local source
+npm install <gaia-source-checkout>  # installs from local source
 gaia doctor                          # verify installation
 npm test                             # run L1 suite from the source tree
 ```

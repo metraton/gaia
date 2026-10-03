@@ -141,6 +141,7 @@ def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND), session_id=SESSI
         "--rationale", "Publish the branch and the image under one consent",
         "--verification", "git -C . log --oneline -1",
         "--rollback", "revert the published revision",
+        "--shared-state", "Sí: publica en el remoto compartido.",
         "--agent-id", AGENT_ID,
         "--session-id", session_id,
         "--json",
@@ -526,6 +527,74 @@ def test_concurrent_approvals_are_asked_one_at_a_time_and_each_answer_closes_onl
     assert _approval_status(db_path, second_id) == "approved"
     assert _grant(db_path, first_id) is None and _grant(db_path, second_id) is not None
     assert _control_closures(db_path) == [("decided", first_id), ("decided", second_id)]
+
+
+def _approve_first_then_second(env, first_id, second_id, between=()):
+    return _drive(env, [
+        _before("blocked-first", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve-first", "answer": "approve", "approvalIDs": [first_id]},
+        *between,
+        {"kind": "control-decision", "label": "approve-second", "answer": "approve", "approvalIDs": [second_id]},
+    ])
+
+
+@pytest.mark.parametrize("how", ["expire", "revoke"])
+def test_a_session_whose_bound_grant_ended_can_approve_a_renewal(db_env, how):
+    """A grant that can no longer execute does not keep its session bound against the next approval."""
+    env, db_path = db_env
+    first_id, renewal_id = _request_one_set_per_command(env)
+
+    driven = _approve_first_then_second(env, first_id, renewal_id, between=[
+        {"kind": "end-grant", "label": "grant-ended", "approvalID": first_id, "how": how},
+    ])
+
+    assert _step(driven, "approve-first")["allowed"] is True, driven
+    assert _step(driven, "grant-ended")["allowed"] is True, driven
+    assert _approval_status(db_path, renewal_id) == "approved"
+    assert _grant(db_path, renewal_id)["status"] == "PENDING"
+    assert _control_closures(db_path) == [("decided", first_id), ("decided", renewal_id)]
+
+
+def test_a_session_bound_to_a_live_grant_still_refuses_a_second_approval(db_env):
+    env, db_path = db_env
+    first_id, second_id = _request_one_set_per_command(env)
+
+    _approve_first_then_second(env, first_id, second_id)
+
+    assert _approval_status(db_path, first_id) == "approved"
+    assert _approval_status(db_path, second_id) == "pending"
+    assert _grant(db_path, second_id) is None
+    assert _control_closures(db_path) == [("decided", first_id), ("retry_conflict", second_id)]
+
+
+def test_a_bound_grant_gaia_cannot_show_still_refuses_a_second_approval(db_env):
+    """A missing grant is no evidence the bound one ended: `show` prints the same null on a failed read."""
+    env, db_path = db_env
+    first_id, second_id = _request_one_set_per_command(env)
+
+    driven = _approve_first_then_second(env, first_id, second_id, between=[
+        {"kind": "end-grant", "label": "grant-lost", "approvalID": first_id, "how": "delete"},
+    ])
+
+    assert _step(driven, "grant-lost")["allowed"] is True, driven
+    assert _approval_status(db_path, second_id) == "pending"
+    assert _grant(db_path, second_id) is None
+    assert _control_closures(db_path) == [("decided", first_id), ("retry_conflict", second_id)]
+
+
+def test_a_bound_grant_consumed_inside_its_window_still_refuses_a_second_approval(db_env):
+    """A grant spent by a call that never ran is restored to PENDING while its window is open."""
+    env, db_path = db_env
+    first_id, second_id = _request_one_set_per_command(env)
+
+    driven = _approve_first_then_second(env, first_id, second_id, between=[
+        {"kind": "end-grant", "label": "grant-consumed", "approvalID": first_id, "how": "consume"},
+    ])
+
+    assert _step(driven, "grant-consumed")["allowed"] is True, driven
+    assert _approval_status(db_path, second_id) == "pending"
+    assert _grant(db_path, second_id) is None
+    assert _control_closures(db_path) == [("decided", first_id), ("retry_conflict", second_id)]
 
 
 def test_an_activated_approval_is_told_to_the_orchestrator_and_traced(db_env):

@@ -1,0 +1,228 @@
+# PIECES 1 OF 4 — the frame and its leaves.
+#
+# The catalogue for the PERSON: pages pieces-1..4 hold one entry per piece
+# SKILL.md names, and nothing else. An entry is a root section `piece-<slug>`
+# holding, left, the piece drawn live (`-live`) and, right, three readings: the
+# YAML that draws it (`-yaml`), what it says in one sentence (`-says`) and its
+# neighbour with when to choose it instead (`-neighbour`, kicker
+# `NEIGHBOUR · <piece>`). The CATALOGUE guard in tools/test-guards.mjs reads
+# the vocabulary from SKILL.md and holds these pages to it in both directions.
+
+id: pieces-1-frame-and-leaves
+form: dashboard
+columns: 1
+
+sections:
+
+  - id: pieces-1-lead
+    order: 1
+    span: 1
+    lead: true
+    kicker: "PIECES · 1 OF 4"
+    title: "A section arranges, a component carries"
+    description:
+      - "each entry: the piece live, its YAML, what it says, and its neighbour"
+
+  - id: piece-section
+    order: 2
+    title: "section"
+    subtitle: "“these go together”"
+    columns: 3
+    children:
+      - id: piece-section-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - id: piece-section-frame
+            title: "One thing"
+            columns: 2
+            children:
+              - { id: piece-section-a, title: "Part A" }
+              - { id: piece-section-b, title: "Part B" }
+      - id: piece-section-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-section-yaml
+            kicker: "YAML"
+            title: "title: One thing"
+            description: ["columns: 2", "children: [part-a, part-b]"]
+            detail: "<code>- id: one-thing</code><br><code>  title: One thing</code><br><code>  columns: 2</code><br><code>  children:</code><br><code>    - { id: part-a, title: Part A }</code><br><code>    - { id: part-b, title: Part B }</code>"
+          - id: piece-section-says
+            kicker: "WHAT IT SAYS"
+            title: "One thing, its parts"
+            description: ["The frame says these are one thing; its boxes are the parts."]
+          - id: piece-section-neighbour
+            kicker: "NEIGHBOUR · SEPARATOR"
+            title: "Only a pause"
+            description: ["Choose it when both sides are parts of the same thing."]
+
+  - id: piece-component
+    order: 3
+    title: "component"
+    subtitle: "a leaf that carries"
+    columns: 3
+    children:
+      - id: piece-component-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-component-box, title: "A box" }
+          - { id: piece-component-rail, type: rail, title: "A rail" }
+      - id: piece-component-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-component-yaml
+            kicker: "YAML"
+            title: "type: rail"
+            description: ["box · separator · rail · spacer"]
+            detail: "<code>- { id: a-box, title: A box }</code><br><code>- { id: a-rail, type: rail, title: A rail }</code><br>A component without <code>type</code> is a box."
+          - id: piece-component-says
+            kicker: "WHAT IT SAYS"
+            title: "A leaf"
+            description: ["A component carries content and never holds other pieces."]
+          - id: piece-component-neighbour
+            kicker: "NEIGHBOUR · SECTION"
+            title: "It has parts"
+            description: ["Choose a section when the thing has parts of its own."]
+
+  - id: piece-box
+    order: 4
+    title: "box"
+    subtitle: "the card"
+    columns: 3
+    children:
+      - id: piece-box-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - id: piece-box-card
+            kicker: "STEP 1"
+            title: "A card"
+            description: ["one short line"]
+            detail: "The detail waits behind the click."
+      - id: piece-box-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-box-yaml
+            kicker: "YAML"
+            title: "title: A card"
+            description: ["kicker: STEP 1", "description: one short line"]
+            detail: "<code>- id: a-card</code><br><code>  kicker: STEP 1</code><br><code>  title: A card</code><br><code>  description: [one short line]</code><br><code>  detail: The detail waits behind the click.</code>"
+          - id: piece-box-says
+            kicker: "WHAT IT SAYS"
+            title: "The card"
+            description: ["The one piece with a kicker, a title, a description and a detail."]
+          - id: piece-box-neighbour
+            kicker: "NEIGHBOUR · RAIL"
+            title: "Only a label"
+            description: ["Choose a rail when the thing is only a lane or level name."]
+
+  - id: piece-separator
+    order: 5
+    title: "separator"
+    subtitle: "a pause inside one thing"
+    columns: 3
+    children:
+      - id: piece-separator-live
+        span: 1
+        columns: 2
+        treatment: [plain]
+        children:
+          - { id: piece-separator-a, title: "Part A" }
+          - { id: piece-separator-b, title: "Part B" }
+          - { id: piece-separator-line, type: separator, span: 2, style: dotted, text: "a pause" }
+          - { id: piece-separator-c, title: "Part C" }
+          - { id: piece-separator-d, title: "Part D" }
+      - id: piece-separator-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-separator-yaml
+            kicker: "YAML"
+            title: "type: separator"
+            description: ["span: 2", "text: a pause"]
+            detail: "<code>- { id: a-pause, type: separator, span: 2, style: dotted, text: a pause }</code><br>Its <code>span</code> is the section's columns, so the line crosses the whole section."
+          - id: piece-separator-says
+            kicker: "WHAT IT SAYS"
+            title: "Same thing, a pause"
+            description: ["A line inside one section: both sides are parts of it."]
+          - id: piece-separator-neighbour
+            kicker: "NEIGHBOUR · SECTION"
+            title: "Different things"
+            description: ["Choose sections when the two sides are different things."]
+
+  - id: piece-rail
+    order: 6
+    title: "rail"
+    subtitle: "“label this lane, this level”"
+    columns: 3
+    children:
+      - id: piece-rail-live
+        span: 1
+        columns: 1
+        treatment: [plain]
+        children:
+          - { id: piece-rail-0, type: rail, indent: 0, title: "Level one" }
+          - { id: piece-rail-1, type: rail, indent: 1, title: "Level two" }
+          - { id: piece-rail-2, type: rail, indent: 2, title: "Level three" }
+      - id: piece-rail-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-rail-yaml
+            kicker: "YAML"
+            title: "type: rail"
+            description: ["title: Level two", "indent: 1"]
+            detail: "<code>- { id: level-1, type: rail, indent: 0, title: Level one }</code><br><code>- { id: level-2, type: rail, indent: 1, title: Level two }</code><br><code>- { id: level-3, type: rail, indent: 2, title: Level three }</code>"
+          - id: piece-rail-says
+            kicker: "WHAT IT SAYS"
+            title: "A label"
+            description: ["A title-only label for a lane or one level of a tree."]
+          - id: piece-rail-neighbour
+            kicker: "NEIGHBOUR · SECTION TITLE"
+            title: "It heads a frame"
+            description: ["Choose a section title when the label heads a group."]
+
+  - id: piece-spacer
+    order: 7
+    title: "spacer"
+    subtitle: "“nothing goes here, on purpose”"
+    columns: 3
+    children:
+      - id: piece-spacer-live
+        span: 1
+        columns: 3
+        treatment: [plain]
+        children:
+          - { id: piece-spacer-a, title: "One" }
+          - { id: piece-spacer-hole, type: spacer, span: 1 }
+          - { id: piece-spacer-c, title: "Three" }
+      - id: piece-spacer-read
+        span: 2
+        columns: 3
+        treatment: [plain]
+        children:
+          - id: piece-spacer-yaml
+            kicker: "YAML"
+            title: "type: spacer"
+            description: ["span: 1"]
+            detail: "<code>- { id: one, title: One }</code><br><code>- { id: the-hole, type: spacer, span: 1 }</code><br><code>- { id: three, title: Three }</code>"
+          - id: piece-spacer-says
+            kicker: "WHAT IT SAYS"
+            title: "The gap is meant"
+            description: ["A declared hole: it closes the grid and draws nothing."]
+          - id: piece-spacer-neighbour
+            kicker: "NEIGHBOUR · SPAN"
+            title: "Close the gap"
+            description: ["Choose span when the gap was not meant: merge into it."]

@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v52 -> v53: contract-scoped worktree-capture evidence.
 --
 -- A turn without a brief still has an agent_contract_handoffs row -- every

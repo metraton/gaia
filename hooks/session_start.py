@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""SessionStart hook — first-time setup + context injection (no auto-scan)."""
+"""SessionStart hook — first-time setup, the declared-workspace notice, context injection.
+
+It registers and scans no workspace; outside every declared one it says so and
+names `gaia workspace declare <name> <path>`.
+
+Every write happens only when the host executes this file: importing it -- as
+doctor's importability check does -- links no hooks and records no manifest.
+"""
 
 import os
 import sys
@@ -13,8 +20,8 @@ sys.path.insert(0, str(_hooks_dir))
 _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
+from modules.core.plugin_setup import recorded_in_manifest
 from modules.core.workspace_bootstrap import ensure_workspace_hooks_link
-ensure_workspace_hooks_link()
 
 
 # ---------------------------------------------------------------------------
@@ -33,8 +40,8 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
       2. SDK CLI invocation: the parent process is `claude` invoked with
          a print/output flag (`-p`, `--print`, `--output-format json`).
          The SDK CLI does NOT set CLAUDE_HEADLESS, so without this fallback
-         every `claude -p ...` call would register as interactive and
-         pollute liveness tracking.
+         every print-mode call of the host CLI would register as interactive
+         and pollute liveness tracking.
       3. Stdout is not a TTY. This is the weakest signal -- pipes happen
          in interactive sessions too -- so it is only used as a tertiary
          tiebreaker, never as a primary trigger.
@@ -96,8 +103,7 @@ def _detect_headless(proc_root: Optional[Path] = None) -> bool:
 
 from modules.core.stdin import has_stdin_data
 from modules.core.logging_setup import configure_hook_logging
-from modules.core.plugin_setup import run_first_time_setup
-from modules.session.session_registry import register_session, SessionRegistryError
+from modules.session.session_lifecycle import SessionStart, start_session
 
 # Configure logging -- file handler only when GAIA_DEBUG is set; no
 # hooks-*.log is written by default (see modules.core.logging_setup).
@@ -105,15 +111,33 @@ configure_hook_logging("session_start")
 logger = logging.getLogger(__name__)
 
 
+def _pinned_build() -> Optional[dict]:
+    """Return the content digest of the hooks tree this process runs, or None.
+
+    This file's own tree is what Claude Code loaded for the session, which a
+    repack could already have re-pointed ``.claude/hooks`` away from; doctor
+    compares the digest to tell a restart is due.
+    """
+    try:
+        from gaia.hooks_build import hooks_content_hash
+        running_hooks_dir = Path(__file__).resolve().parent
+        return {
+            "hooks_path": str(running_hooks_dir),
+            "hooks_hash": hooks_content_hash(running_hooks_dir),
+        }
+    except Exception as exc:
+        logger.debug("pinned_build computation failed (non-fatal): %s", exc)
+        return None
+
+
 if __name__ == "__main__":
+    with recorded_in_manifest():
+        ensure_workspace_hooks_link()
+
     if not has_stdin_data():
         sys.exit(0)
 
     try:
-        # Parse the stdin event so we can recover session_id from it.
-        # Claude Code always includes session_id in the JSON event piped
-        # to the hook; CLAUDE_SESSION_ID is *not* guaranteed in the hook
-        # subprocess env. Reading from the event is the reliable source.
         _raw_stdin = sys.stdin.read()
         try:
             event_data = json.loads(_raw_stdin) if _raw_stdin else {}
@@ -122,206 +146,32 @@ if __name__ == "__main__":
         except (json.JSONDecodeError, TypeError):
             event_data = {}
 
+        # The event carries session_id; CLAUDE_SESSION_ID is not guaranteed
+        # to be exported into the hook subprocess.
         from modules.core.state import resolve_session_id
-        _sid = resolve_session_id(event_data)
 
-        # Pin the build this session is actually running. The RUNNING
-        # session_start hook IS the code Claude Code loaded for this session,
-        # so ``__file__``'s resolved parent is the authoritative running-hooks
-        # tree -- more precise than re-resolving the ``.claude/hooks`` symlink
-        # (which could already point elsewhere if a repack raced this hook).
-        # We snapshot its content digest so `gaia doctor` can later tell the
-        # user whether the wired hooks still match what is running (ACTIVE) or
-        # a `gaia dev` landed a newer build that needs a restart (STALE).
-        # Fully best-effort: any failure leaves the marker absent (doctor
-        # reports UNKNOWN), it never blocks session start.
-        _pinned_build = None
-        try:
-            from gaia.hooks_build import hooks_content_hash
-            _running_hooks_dir = Path(__file__).resolve().parent
-            _pinned_build = {
-                "hooks_path": str(_running_hooks_dir),
-                "hooks_hash": hooks_content_hash(_running_hooks_dir),
-            }
-        except Exception as _pin_exc:
-            logger.debug("pinned_build computation failed (non-fatal): %s", _pin_exc)
-
-        # Register this session in the user-scoped session registry.
-        # Heartbeat-only liveness: PID isn't tracked because the hook
-        # process is ephemeral. Failures are non-fatal — a missing
-        # registry entry must never block session start.
-        try:
-            if _sid and _sid != "default":
-                _is_headless = _detect_headless()
-                register_session(
-                    session_id=_sid,
-                    is_headless=_is_headless,
-                    pinned_build=_pinned_build,
-                )
-        except SessionRegistryError as _reg_exc:
-            logger.warning("session_registry register failed (non-fatal): %s", _reg_exc)
-
-        # Opportunistic GC of entries whose heartbeat is older than 24h.
-        # Cheap (one JSON read/write) and keeps the registry from growing
-        # unbounded across crashed/orphan sessions.
-        try:
-            from modules.session.session_registry import cleanup_stale_entries
-            _removed = cleanup_stale_entries()
-            if _removed:
-                logger.info("session_registry: cleaned %d stale entries", _removed)
-        except Exception as _gc_exc:
-            logger.debug("cleanup_stale_entries failed (non-fatal): %s", _gc_exc)
-
-        # Flush expired approval artefacts (grants, pending files, orphan
-        # pending-index files). force=True bypasses the 60s throttle used by
-        # pre_tool_use; SessionStart fires once per session, so users
-        # should not have to wait for the throttle window before stale
-        # approvals disappear.
-        try:
-            from modules.security.approval_grants import cleanup_expired_grants
-            _cleaned = cleanup_expired_grants(force=True)
-            if _cleaned:
-                logger.info(
-                    "approval_grants: cleaned %d expired/orphan files at SessionStart",
-                    _cleaned,
-                )
-        except Exception as _ag_exc:
-            logger.debug("cleanup_expired_grants failed (non-fatal): %s", _ag_exc)
-
-        # Stale DB pendings are REPORTED here, never reaped. An approval belongs
-        # to the user's session, so a sweep firing at launch can transition one
-        # the user is about to grant in another window -- and a pending goes
-        # stale at the moment its own agent finishes without using it, which is
-        # SubagentStop (approval_cleanup.cleanup()), the only place that
-        # knowledge exists. The count goes to the log, not into the injected
-        # context: the actionable pendings block was withdrawn deliberately, and
-        # `gaia approvals` is where the user inspects them on demand.
-        try:
-            from modules.security.approval_cleanup import count_stale_db_pendings
-            _stale_pendings = count_stale_db_pendings()
-            if _stale_pendings:
-                logger.info(
-                    "approval_cleanup: %d DB pending(s) past TTL at SessionStart "
-                    "(reported only; SubagentStop reaps them)",
-                    _stale_pendings,
-                )
-        except Exception as _pend_exc:
-            logger.debug("count_stale_db_pendings failed (non-fatal): %s", _pend_exc)
-
-        # Throttled DB auto-backup (AC-7). The user DB (~/.gaia/gaia.db) is
-        # precious; back it up automatically, but SessionStart fires many
-        # times a day, so maybe_backup_db() snapshots at most once per 24h
-        # (skips when the newest snapshot is younger than the window) and
-        # rotates to keep only the last 5. Copy-based + additive: it never
-        # moves, deletes, or writes the live DB. Non-fatal like the grant /
-        # pending sweeps above -- any failure logs and continues.
-        try:
-            from modules.session.db_backup import maybe_backup_db
-            _snap_path = maybe_backup_db()
-            if _snap_path:
-                logger.info("db_backup: created SessionStart snapshot %s", _snap_path)
-        except Exception as _bak_exc:
-            logger.debug("maybe_backup_db failed (non-fatal): %s", _bak_exc)
-
-        # Contract-drafts GC. The draft substrate (~/.gaia/contract_drafts)
-        # accumulates one JSON per agent contract; finalize writes the terminal
-        # DB row but never deletes the draft file, so the directory grows
-        # unbounded. Prune drafts older than GAIA_CONTRACT_DRAFTS_MAX_DAYS
-        # (default 7) here -- once per session at launch, never during a turn,
-        # so it can never race the SubagentStop backstop and a live draft
-        # (recent mtime) is always preserved. Non-fatal like the sweeps above.
-        try:
-            from modules.session.contract_drafts_gc import gc_contract_drafts
-            _gc_n = gc_contract_drafts()
-            if _gc_n:
-                logger.info(
-                    "contract_drafts_gc: pruned %d stale draft(s) at SessionStart",
-                    _gc_n,
-                )
-        except Exception as _gc_exc:
-            logger.debug("gc_contract_drafts failed (non-fatal): %s", _gc_exc)
-
-        # Abandoned agentic worktree sweep. gaia.retention.worktree_collector
-        # only decided WHICH worktrees are collectible; until now nothing
-        # fired that decision automatically, so worktrees accumulated on
-        # disk between manual `gaia cleanup` runs. Scoped to Path.cwd() --
-        # the same workspace root ensure_workspace_hooks_link() above already
-        # treats as the project -- so a session only ever sweeps its own
-        # repo's worktree family. Ordered AFTER register_session() above on
-        # purpose: this session's own heartbeat is already fresh in the
-        # registry by the time the sweep runs, so a worktree THIS session
-        # owns reads ALIVE and is protected -- the collector's own
-        # never-judge-the-active-turn's-own-worktree rule, satisfied by this
-        # ordering rather than a special case in the collector.
-        try:
-            from gaia.retention.worktree_collector import sweep_repo_worktrees
-            _wt_collected = sweep_repo_worktrees(Path.cwd())
-            if _wt_collected:
-                logger.info(
-                    "worktree_collector: collected %d abandoned worktree(s) at SessionStart",
-                    len(_wt_collected),
-                )
-        except Exception as _wt_exc:
-            logger.debug("sweep_repo_worktrees failed (non-fatal): %s", _wt_exc)
-
-        # First-time setup: create project permissions if needed.
-        # mark_done=False so UserPromptSubmit can detect first-run
-        # and show the welcome message before marking initialized.
-        setup_message = run_first_time_setup(mark_done=False)
-        if setup_message:
-            logger.info("First-time setup: %s", setup_message)
-
-        # Note: SessionStart no longer triggers an automatic project scan.
-        # Scanning is a separate, on-demand flow (`gaia scan`). Project context
-        # injection (below, via build_session_context) is unaffected -- it reads
-        # whatever the DB already holds, it does not scan.
-
-        # Build the SessionStart manifest (Phase 4). Combines the Environment
-        # block, projects index, contract index, and workspace memory into
-        # a one-shot additionalContext payload (pending approvals are no longer
-        # surfaced). Fully fail-safe -- an empty manifest just
-        # means no hookSpecificOutput in the response, which Claude Code
-        # treats as "nothing to inject".
-        #
-        # source == "compact": Claude Code fires SessionStart with this
-        # source right after compaction (matcherMetadata.values includes
-        # "compact" alongside startup/resume/clear/fork). This is the ONLY
-        # event/shape combination that can deliver additionalContext around
-        # compaction -- PreCompact and PostCompact's hookSpecificOutput are
-        # not part of Claude Code's validated schema and are not consumed by
-        # the runtime (see hooks/post_compact.py's module docstring). So the
-        # post-compaction context refresh (agent roster + active anomalies)
-        # is built here, via the same builder post_compact.py used to own,
-        # instead of the full startup/resume manifest -- re-running project
-        # scan/memory/environment content on every compaction would be both
-        # redundant (already delivered at true session start) and heavier
-        # than the lightweight refresh this moment calls for.
-        source = event_data.get("source", "")
-        additional_context = ""
-        try:
-            if source == "compact":
-                from modules.context.compact_context_builder import build_compact_context
-                additional_context = build_compact_context()
-            else:
-                from modules.session.session_manifest import build_session_context
-                additional_context = build_session_context()
-        except Exception as _manifest_exc:
-            logger.debug(
-                "build_session_context failed (non-fatal): %s", _manifest_exc
-            )
+        # "compact" is the only SessionStart source Claude Code fires after
+        # compaction, and SessionStart the only event whose additionalContext
+        # it consumes around it (see hooks/post_compact.py).
+        outcome = start_session(SessionStart(
+            session_id=resolve_session_id(event_data),
+            source=event_data.get("source", ""),
+            is_headless=_detect_headless(),
+            pinned_build=_pinned_build(),
+            workspace_dir=Path.cwd(),
+        ))
 
         response = {"session_type": "startup"}
-        if setup_message:
-            response["setup_message"] = setup_message
-        if additional_context:
+        if outcome.setup_message:
+            response["setup_message"] = outcome.setup_message
+        if outcome.notices:
+            response["systemMessage"] = "\n\n".join(outcome.notices.values())
+        if outcome.context:
             response["hookSpecificOutput"] = {
                 "hookEventName": "SessionStart",
-                "additionalContext": additional_context,
+                "additionalContext": outcome.context,
             }
-            logger.info(
-                "SessionStart context injected (%d chars)",
-                len(additional_context),
-            )
+            logger.info("SessionStart context injected (%d chars)", len(outcome.context))
 
         print(json.dumps(response))
         sys.exit(0)

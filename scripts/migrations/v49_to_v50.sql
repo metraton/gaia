@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v49 -> v50: row age, the kernel's own access counter pair, and the
 -- one-shot capture-then-reset of the deliberate-read axis.
 --

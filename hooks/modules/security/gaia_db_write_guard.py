@@ -4,9 +4,12 @@ gaia_db_write_guard.py -- B3 M6 security hook.
 PreToolUse Bash hook that rejects commands writing directly to ~/.gaia/gaia.db
 bypassing the store API.
 
-Pattern detected:
+Patterns detected:
     sqlite3\\s+.*(gaia\\.db|~/\\.gaia/.*\\.db).*(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE)
-    case-insensitive, inside quotes / heredocs.
+    case-insensitive, inside quotes / heredocs; and any shell writer whose
+    DESTINATION is the gaia.db file or a side file -- cp/mv/install/ln/rsync,
+    redirect, tee, dd of=, truncate, or a mutative inline interpreter naming it
+    -- behind any wrapper the classifier peels.
 
 Read-only SQL (SELECT) is allowed. The write block is categorical and NOT
 approvable -- like blocked_commands.py, it denies with SecurityTier.T3_BLOCKED
@@ -18,14 +21,21 @@ go through the sanctioned paths instead:
 
 Public API:
     is_db_write_attempt(command: str) -> bool
+    writes_db_file(command: str) -> bool
     rejection_message() -> str
     check(command: str) -> tuple[bool, str | None]   -- main entrypoint
 """
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Optional, Tuple
+
+from .data_heredoc import data_heredoc_header
+from .mutative_verbs import _peel_leading_command_wrappers, detect_mutative_command
+from .shell_substitution import extract_substitutions
+from .shell_write_guard import _split_components, _tokenize, _writer_targets
 
 # ---------------------------------------------------------------------------
 # Detection regex
@@ -52,6 +62,22 @@ REJECTION_MESSAGE = (
     "Use `gaia context` CLI or emit update_contracts. "
     "Raw SQL bypasses agent_permissions enforcement."
 )
+
+FILE_WRITE_REJECTION_MESSAGE = (
+    "Writing the gaia.db file from the shell (copy, move, redirect, truncate, "
+    "or an interpreter) is not allowed: it replaces or corrupts the store "
+    "without agent_permissions enforcement. Use the `gaia` CLI."
+)
+
+# The store and its SQLite side files; a write to any of them corrupts the store.
+_GAIA_DB_FILE_NAMES = frozenset({
+    "gaia.db", "gaia.db-wal", "gaia.db-shm", "gaia.db-journal",
+})
+_GAIA_DB_NAME_RE = re.compile(r"gaia\.db\b")
+# The last operand is the destination.
+_COPY_WRITERS = frozenset({"cp", "mv", "install", "ln", "rsync"})
+_TRUNCATORS = frozenset({"truncate"})
+_INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php"})
 
 
 def is_db_write_attempt(command: str) -> bool:
@@ -81,6 +107,62 @@ def is_db_write_attempt(command: str) -> bool:
     return True
 
 
+def _is_gaia_db_file(token: str) -> bool:
+    return os.path.basename(token.strip("'\"")) in _GAIA_DB_FILE_NAMES
+
+
+def _component_writes_db(component: str) -> bool:
+    """Report whether one command component writes the Gaia DB file by any shell writer.
+
+    Keyed on the DESTINATION: a component that only reads the file (``ls``,
+    ``cp gaia.db /tmp/x``) or only names it in quoted text is not a write.
+    """
+    peeled, _ = _peel_leading_command_wrappers(component)
+    if any(_is_gaia_db_file(t) for t in _writer_targets(peeled)):
+        return True
+
+    tokens = _tokenize(peeled)
+    if not tokens:
+        return False
+    base = os.path.basename(tokens[0])
+    operands = [t for t in tokens[1:] if not t.startswith("-")]
+    if base in _COPY_WRITERS:
+        return bool(operands) and _is_gaia_db_file(operands[-1])
+    if base in _TRUNCATORS:
+        return any(_is_gaia_db_file(t) for t in operands)
+    if base.rstrip("0123456789.") in _INTERPRETERS and _GAIA_DB_NAME_RE.search(peeled):
+        return detect_mutative_command(peeled).is_mutative
+    return False
+
+
+def writes_db_file(command: str) -> bool:
+    """Return True iff some component of *command* writes the Gaia DB file through the shell."""
+    return any(
+        _component_writes_db(component.strip())
+        for component in _split_components(command or "")
+        if component.strip()
+    )
+
+
+def _sql_scope(command: str) -> str:
+    """Return the part of *command* the shell would run, for the SQL-shell check.
+
+    A lone Gaia CLI call stores its argument values and runs none of them, so
+    only its substitutions are read -- and of those, a quoted heredoc echoed by
+    a bare ``cat`` contributes nothing but its header. Anything else is read whole.
+    """
+    components = [c for c in _split_components(command) if c.strip()]
+    if len(components) != 1:
+        return command
+    peeled, _ = _peel_leading_command_wrappers(components[0].strip())
+    tokens = _tokenize(peeled)
+    if not tokens or os.path.basename(tokens[0]) != "gaia":
+        return command
+    return "\n".join(
+        data_heredoc_header(body) or body for body in extract_substitutions(command)
+    )
+
+
 def rejection_message() -> str:
     """Return the canonical rejection message."""
     return REJECTION_MESSAGE
@@ -95,8 +177,11 @@ def check(command: str) -> Tuple[bool, Optional[str]]:
     Returns:
         (allowed, reason)
         - (True, None)  if command is safe
-        - (False, msg)  if command is a direct sqlite3 write to gaia.db
+        - (False, msg)  if command writes gaia.db outside the store API --
+          SQL through the SQL shell, or any shell writer over the file
     """
-    if is_db_write_attempt(command):
+    if is_db_write_attempt(_sql_scope(command)):
         return False, REJECTION_MESSAGE
+    if writes_db_file(command):
+        return False, FILE_WRITE_REJECTION_MESSAGE
     return True, None

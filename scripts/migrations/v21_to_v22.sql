@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v21 -> v22: clean invalid agent_contract_handoffs.task_status
 -- rows and add a CHECK constraint enumerating the legal plan_status values.
 --

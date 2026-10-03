@@ -17,7 +17,7 @@ desde el filesystem hacia `~/.gaia/gaia.db`.
 | # | Dominio | Origen | Tabla destino |
 |---|---------|--------|---------------|
 | 01 | Episodes | `.claude/project-context/episodic-memory/episodes.jsonl` | `episodes` (+`episodes_fts`) |
-| 02 | Memory | `~/.claude/projects/-home-jorge-ws-me/memory/*.md` | `memory` (+`memory_fts`) |
+| 02 | Memory | `~/.claude/projects/<project-slug>/memory/*.md` | `memory` (+`memory_fts`) |
 | 03 | Context contracts | `.claude/project-context/project-context.json` | `context_contracts` |
 | 04 | Harness events | ~~`.claude/events/events.jsonl`~~ (ELIMINADO) | `harness_events` |
 
@@ -39,12 +39,16 @@ Cada dominio tiene 2 archivos:
 
 ```
 bootstrap.sh                             # crea/inicializa ~/.gaia/gaia.db con schema.sql (out of scope; gaia-system anterior)
-./migrate_01_episodes.sh                 # ~50-80 MB de SQL, batch 80
-./migrate_02_memory.sh                   # 28 .md (MEMORY.md excluido)
-./migrate_03_context_contracts.sh        # 12 secciones
+./migrate_01_episodes.sh <episodes.jsonl>                # ~50-80 MB de SQL, batch 80
+./migrate_02_memory.sh <memory-dir>                      # 28 .md (MEMORY.md excluido)
+./migrate_03_context_contracts.sh <project-context.json> # 12 secciones
 # migrate_04_harness_events.sh ELIMINADO — dominio 04 completado; eventos en DB-canonical
-./validate.sh                            # aserciones read-only (V4 eliminada junto con 04)
+EPISODES_SRC=<episodes.jsonl> EVENTS_SRC=<events.jsonl> NOTES_DIR=<memory-dir> \
+  ./validate.sh                                          # aserciones read-only (V4 eliminada junto con 04)
 ```
+
+La ruta de origen no tiene default: cada wrapper la recibe como primer argumento
+y sin ella se detiene con una línea de uso; `migrate_05_briefs.py` la recibe con `--src`.
 
 Cada script imprime `[migrate_NN] OK` al terminar.
 
@@ -77,7 +81,7 @@ Una vez que `validate.sh` reporte `ALL PASS` y los datos se hayan absorbido en
 los flujos normales de Gaia, todo el directorio `tools/migration/` se borra:
 
 ```
-rm -rf /home/jorge/ws/me/gaia/tools/migration
+rm -rf <gaia-source-checkout>/tools/migration
 rm -f  /tmp/migrate_0{1,2,3,4}_*.sql
 ```
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,7 +18,7 @@ LIVENESS = re.compile(
 )
 
 
-@pytest.mark.skipif(shutil.which("bun") is None, reason="bun is required")
+@pytest.mark.usefixtures("bun")
 def test_real_loader_emits_positive_liveness_and_explicit_negative_failure_scan():
     result = subprocess.run(
         ["bun", str(DRIVER)],
@@ -48,7 +47,7 @@ def test_real_loader_emits_positive_liveness_and_explicit_negative_failure_scan(
     print("OPENCODE_LOAD_FAILURES_IN_INTERVAL=0")
 
 
-@pytest.mark.skipif(shutil.which("bun") is None, reason="bun is required")
+@pytest.mark.usefixtures("bun")
 def test_plugin_initialization_failure_is_loud_and_distinguishable():
     result = subprocess.run(
         ["bun", str(DRIVER), "fail-log"],
@@ -64,7 +63,7 @@ def test_plugin_initialization_failure_is_loud_and_distinguishable():
     assert "OPENCODE_LIVENESS" not in result.stdout
 
 
-@pytest.mark.skipif(shutil.which("bun") is None, reason="bun is required")
+@pytest.mark.usefixtures("bun")
 def test_host_logger_method_receives_its_app_as_this():
     result = subprocess.run(
         ["bun", str(DRIVER), "context-log"],
@@ -79,7 +78,7 @@ def test_host_logger_method_receives_its_app_as_this():
     assert json.loads(result.stdout) == {"context": "preserved"}
 
 
-@pytest.mark.skipif(shutil.which("bun") is None, reason="bun is required")
+@pytest.mark.usefixtures("bun")
 def test_plugin_import_does_not_claim_liveness_before_factory_invocation():
     result = subprocess.run(
         ["bun", str(DRIVER), "import-only"],

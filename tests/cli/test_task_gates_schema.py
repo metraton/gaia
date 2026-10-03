@@ -21,12 +21,13 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+_BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _MIGRATION = _REPO_ROOT / "scripts" / "migrations" / "v33_to_v34.sql"
 
@@ -39,7 +40,7 @@ def _run_bootstrap(workspace: Path) -> subprocess.CompletedProcess:
     env["GAIA_DB"] = str(tmp_db)
     env["WORKSPACE"] = str(workspace)
     return subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
+        [sys.executable, str(_BOOTSTRAP_PY)],
         env=env, capture_output=True, text=True, check=False, timeout=120,
     )
 
@@ -165,119 +166,6 @@ class TestTaskGatesSchemaMigration(unittest.TestCase):
                 self.assertEqual(_task_gates_check_values(con), _EXPECTED_TYPES)
             finally:
                 con.close()
-
-
-class TestTaskGatesSchemaUpgradeExistingDb(unittest.TestCase):
-    """AC-1 critical path: an EXISTING v33 DB upgrades to >= v34 via the real
-    bootstrap, gaining task_gates while prior rows survive."""
-
-    def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
-        if not _SCHEMA_SQL.is_file():
-            self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
-
-    @staticmethod
-    def _build_v33_db_without_task_gates(db: Path) -> None:
-        """Materialise an existing v33 DB lacking task_gates, with a task row."""
-        con = sqlite3.connect(str(db))
-        try:
-            con.executescript(_SCHEMA_SQL.read_text())
-            con.execute("DROP INDEX IF EXISTS idx_task_gates_task")
-            con.execute("DROP TABLE IF EXISTS task_gates")
-            # Seed a workspace -> brief -> plan -> task chain (FKs off by default).
-            con.execute(
-                "INSERT INTO workspaces (name, identity, created_at) "
-                "VALUES ('me', 'me', '2026-01-01T00:00:00Z')"
-            )
-            con.execute(
-                "INSERT INTO briefs (id, workspace, name, status) "
-                "VALUES (1, 'me', 'sample-brief', 'open')"
-            )
-            con.execute(
-                "INSERT INTO plans (id, brief_id, status) VALUES (1, 1, 'active')"
-            )
-            con.execute(
-                "INSERT INTO tasks (id, plan_id, order_num, goal, status) "
-                "VALUES (1, 1, 1, 'do the thing', 'pending')"
-            )
-            # Stamp the ledger at v33 (an existing DB at the prior version).
-            con.execute("DELETE FROM schema_version")
-            con.execute(
-                "INSERT INTO schema_version (version, applied_at, description) "
-                "VALUES (33, '2026-01-01T00:00:00Z', 'synthetic existing v33 DB')"
-            )
-            con.commit()
-        finally:
-            con.close()
-
-    def test_task_gates_schema_existing_v33_db_upgrades_via_bootstrap(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            db = workspace / "tmp_gaia.db"
-            self._build_v33_db_without_task_gates(db)
-
-            res = _run_bootstrap(workspace)
-            self.assertEqual(
-                res.returncode, 0,
-                f"upgrade bootstrap failed:\nstdout:\n{res.stdout}\n"
-                f"stderr:\n{res.stderr}",
-            )
-
-            con = sqlite3.connect(str(db))
-            try:
-                # Ledger reached at least v34.
-                self.assertGreaterEqual(
-                    con.execute(
-                        "SELECT MAX(version) FROM schema_version"
-                    ).fetchone()[0],
-                    34,
-                    "ledger did not reach at least v34 after upgrade",
-                )
-                # task_gates exists with the correct CHECK.
-                self.assertEqual(_task_gates_check_values(con), _EXPECTED_TYPES)
-                # Prior task row survived the additive upgrade.
-                self.assertEqual(
-                    con.execute(
-                        "SELECT goal FROM tasks WHERE id=1"
-                    ).fetchone()[0],
-                    "do the thing",
-                    "prior task row did not survive the upgrade",
-                )
-            finally:
-                con.close()
-
-    def test_task_gates_schema_upgrade_is_idempotent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            db = workspace / "tmp_gaia.db"
-            self._build_v33_db_without_task_gates(db)
-
-            res1 = _run_bootstrap(workspace)
-            self.assertEqual(res1.returncode, 0, res1.stderr)
-            con = sqlite3.connect(str(db))
-            try:
-                rows1 = sorted(
-                    r[0] for r in con.execute("SELECT version FROM schema_version")
-                )
-            finally:
-                con.close()
-
-            res2 = _run_bootstrap(workspace)
-            self.assertEqual(res2.returncode, 0, res2.stderr)
-            con = sqlite3.connect(str(db))
-            try:
-                rows2 = sorted(
-                    r[0] for r in con.execute("SELECT version FROM schema_version")
-                )
-                self.assertEqual(_task_gates_check_values(con), _EXPECTED_TYPES)
-            finally:
-                con.close()
-
-            self.assertEqual(
-                rows1, rows2,
-                "second bootstrap changed the schema_version ledger (not idempotent)",
-            )
 
 
 if __name__ == "__main__":

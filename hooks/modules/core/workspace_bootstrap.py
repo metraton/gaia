@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import platform
+import stat
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -34,50 +35,67 @@ def _read_pkg_version(pkg_root: Path) -> Optional[str]:
         return None
 
 
-def _version_tuple(v: Optional[str]) -> tuple:
-    """Coarse comparable tuple from a semver-ish string.
+def _version_key(v: Optional[str]) -> tuple:
+    """Sort key ordering versions by semver precedence, pre-releases included.
 
-    Compares on MAJOR.MINOR.PATCH only (prerelease/build metadata dropped),
-    which is enough to decide "is the installed package at least as new as
-    the executing copy". Unknown/unreadable versions sort lowest so a missing
-    version never wins the freshness comparison.
+    ``5.5.0-rc.3 < 5.5.0-rc.10 < 5.5.0``; build metadata is ignored. An
+    unknown or unreadable version sorts lowest, so it never wins the
+    freshness comparison.
     """
     if not v:
-        return (-1,)
-    base = v.split("+", 1)[0].split("-", 1)[0]
-    out = []
-    for part in base.split("."):
-        try:
-            out.append(int(part))
-        except ValueError:
-            out.append(0)
-    return tuple(out) if out else (-1,)
+        return ((-1,), ())
+    core, _, prerelease = v.split("+", 1)[0].partition("-")
+    numbers = tuple(int(part) if part.isdigit() else 0 for part in core.split("."))
+    if not prerelease:
+        return (numbers, (1,))
+    identifiers = tuple(
+        (0, int(part), "") if part.isdigit() else (1, 0, part)
+        for part in prerelease.split(".")
+    )
+    return (numbers, (0, identifiers))
 
 
-def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path) -> Path:
-    """Return whichever hooks dir belongs to the fresher gaia package.
-
-    Prefers the top-level installed package (``nm_hooks``) when it exists and
-    its version is >= the executing copy's version; otherwise keeps the
-    executing copy (``exec_hooks_dir``). The executing copy's package root is
-    ``exec_hooks_dir.parent`` (``.../gaia/hooks`` -> ``.../gaia``). Never
-    raises; on any doubt it falls back to the executing copy, preserving the
-    prior behaviour.
-    """
+def _is_link(path: Path) -> bool:
+    """True for a symlink or a Windows junction, which ``is_symlink`` misses."""
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    if is_junction is not None:
+        return is_junction()
     try:
-        if not nm_hooks.exists():
-            return exec_hooks_dir
-        nm_ver = _version_tuple(_read_pkg_version(nm_gaia))
-        exec_ver = _version_tuple(_read_pkg_version(exec_hooks_dir.parent))
-        if nm_ver >= exec_ver:
-            return nm_hooks
-    except Exception:
-        pass
-    return exec_hooks_dir
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path) -> Optional[Path]:
+    """Return the hooks dir of the fresher installed gaia package, or None when none qualifies.
+
+    The candidates are the top-level installed package (``nm_hooks``, winning
+    ties) and the executing copy (``exec_hooks_dir``, whose package root is
+    ``exec_hooks_dir.parent``). A package root that is a git checkout -- the
+    source tree or a worktree of it -- never qualifies, whatever its version:
+    a workspace linked there loses its hooks when the checkout is released.
+    """
+    candidates = [
+        (hooks, package)
+        for hooks, package in ((nm_hooks, nm_gaia), (exec_hooks_dir, exec_hooks_dir.parent))
+        if hooks.is_dir() and not (package / ".git").exists()
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: _version_key(_read_pkg_version(candidate[1])))[0]
 
 
 def ensure_workspace_hooks_link() -> None:
-    """Create or repair <workspace>/.claude/hooks → the FRESHEST gaia hooks dir.
+    """Create or repair <workspace>/.claude/hooks → the FRESHEST installed gaia hooks dir.
+
+    <workspace> is the installed root containing the cwd
+    (``gaia.install_root.installed_root``), so a session opened in a subfolder
+    repairs the installed link instead of seeding a ``.claude`` of its own. A
+    cwd inside a managed worktree has no workspace, and no installed package
+    qualifies when both candidates are git checkouts: either way nothing is linked.
 
     Never raises. All failures are logged as warnings so that a broken
     workspace layout never prevents the hook from running its real logic.
@@ -94,23 +112,28 @@ def ensure_workspace_hooks_link() -> None:
     try:
         # hooks/modules/core/workspace_bootstrap.py → up 3 levels = hooks/
         # of the EXECUTING copy (may be a stale installed extraction).
-        cache_hooks_dir = Path(__file__).resolve().parent.parent.parent
+        exec_hooks_dir = Path(__file__).resolve().parent.parent.parent
 
-        workspace = Path.cwd()
+        from gaia.install_root import InsideManagedWorktree, installed_root
+
+        try:
+            workspace = installed_root()
+        except InsideManagedWorktree as exc:
+            logger.info("workspace_bootstrap: %s -- no hooks link", exc)
+            return
         workspace_hooks_dir = workspace / ".claude" / "hooks"
 
-        # Prefer the top-level installed package's hooks dir when it is at
-        # least as new as the executing copy -- this is the freshness anchor.
         nm_gaia = workspace / "node_modules" / "@jaguilar87" / "gaia"
-        nm_hooks = nm_gaia / "hooks"
-        cache_hooks_dir = _pick_fresher_hooks_dir(cache_hooks_dir, nm_gaia, nm_hooks)
+        cache_hooks_dir = _pick_fresher_hooks_dir(exec_hooks_dir, nm_gaia, nm_gaia / "hooks")
+        if cache_hooks_dir is None:
+            logger.info("workspace_bootstrap: no installed gaia hooks dir -- no hooks link")
+            return
 
         # Case 1: real directory with files — npm install placed real files,
-        # nothing to do. Check via lstat to avoid following symlinks.
+        # nothing to do.
         try:
             st = workspace_hooks_dir.lstat()
-            import stat as _stat
-            is_symlink = _stat.S_ISLNK(st.st_mode)
+            is_symlink = _is_link(workspace_hooks_dir)
         except FileNotFoundError:
             is_symlink = False
             st = None
@@ -142,9 +165,13 @@ def ensure_workspace_hooks_link() -> None:
                     return
             except OSError as exc:
                 logger.warning("workspace_bootstrap: readlink failed (%s) — will recreate", exc)
-            # Stale or wrong target — remove and recreate.
+            # Stale or wrong target — remove and recreate. A junction is a
+            # directory entry: rmdir drops the link, never the target's files.
             try:
-                workspace_hooks_dir.unlink()
+                if workspace_hooks_dir.is_symlink():
+                    workspace_hooks_dir.unlink()
+                else:
+                    os.rmdir(workspace_hooks_dir)
             except OSError as exc:
                 logger.warning("workspace_bootstrap: unlink failed (%s) — skipping", exc)
                 return

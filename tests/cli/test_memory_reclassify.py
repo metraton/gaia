@@ -1,6 +1,6 @@
 """
 Tests for ``gaia memory reclassify`` and the T5 --class/--status flags on
-``gaia memory add`` / ``gaia memory edit``.
+``gaia memory add``.
 
 Brief: memory-model-refactor-class-status-links-structural-enforcement (T5).
 
@@ -19,8 +19,6 @@ Coverage:
   * CLI: reclassify error when --status=open on existing anchor row
   * CLI: reclassify --status=null clears the column on a thread row
   * CLI: add --class --status creates the row with those values
-  * CLI: edit --class --status updates the row
-  * CLI: edit can operate as pure reclassify (no --field)
 """
 
 from __future__ import annotations
@@ -384,91 +382,6 @@ def test_cli_add_status_on_anchor_class_errors(tmp_db, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "thread" in (captured.err + captured.out).lower()
-    # The primary upsert landed but reclassify failed: row exists with
-    # class='log' (v11 DEFAULT) and status=NULL since reclassify never ran.
-    # (We do NOT roll back the upsert -- documented behaviour in the
-    # _cmd_add docstring.)
-    row = _row(tmp_db, "atom_bad_status")
-    assert row is not None
-    assert row[1] == "log"  # v11 DEFAULT 'log' applied on upsert
-    assert row[2] is None   # status never set
+    # The row and its class/status are one transaction: nothing lands.
+    assert _row(tmp_db, "atom_bad_status") is None
 
-
-# ---------------------------------------------------------------------------
-# CLI: gaia memory edit --class --status
-# ---------------------------------------------------------------------------
-
-def test_cli_edit_with_class_and_status(seeded, capsys):
-    parser, _ = _build_parser()
-    args = parser.parse_args([
-        "memory", "edit",
-        "--name=atom_plain",
-        "--class=thread",
-        "--status=open",
-        "--workspace=me",
-    ])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 0, f"stderr={captured.err}, stdout={captured.out}"
-    assert _row(seeded, "atom_plain") == ("atom_plain", "thread", "open")
-
-
-def test_cli_edit_field_and_reclassify_in_one_call(seeded, capsys):
-    parser, _ = _build_parser()
-    args = parser.parse_args([
-        "memory", "edit",
-        "--name=atom_plain",
-        "--field=body",
-        "--content=patched body",
-        "--class=anchor",
-        "--workspace=me",
-    ])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 0, f"stderr={captured.err}, stdout={captured.out}"
-    assert _row(seeded, "atom_plain") == ("atom_plain", "anchor", None)
-
-
-def test_cli_edit_status_null_clears_on_thread(seeded, capsys):
-    """edit can clear a thread's status via --status=null."""
-    parser, _ = _build_parser()
-    args = parser.parse_args([
-        "memory", "edit",
-        "--name=atom_thread_seed",
-        "--status=null",
-        "--workspace=me",
-    ])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 0, f"stderr={captured.err}, stdout={captured.out}"
-    assert _row(seeded, "atom_thread_seed") == ("atom_thread_seed", "thread", None)
-
-
-def test_cli_edit_requires_some_change(seeded, capsys):
-    """Without --field or --class/--status, edit fails with a clear error."""
-    parser, _ = _build_parser()
-    args = parser.parse_args([
-        "memory", "edit",
-        "--name=atom_plain",
-        "--workspace=me",
-    ])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 1
-    combined = (captured.err + captured.out).lower()
-    assert "field" in combined or "class" in combined
-
-
-def test_cli_edit_enforcement_blocks_non_curator(seeded, monkeypatch, capsys):
-    parser, _ = _build_parser()
-    monkeypatch.setenv("GAIA_DISPATCH_AGENT", "developer")
-    args = parser.parse_args([
-        "memory", "edit",
-        "--name=atom_plain",
-        "--class=anchor",
-        "--workspace=me",
-    ])
-    rc = args.func(args)
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert "developer" in (captured.err + captured.out).lower()

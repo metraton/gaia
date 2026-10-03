@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { matchesBinaryQuestion } from "../../../opencode/plugin"
 import { EventCursor, selectedBinaryLabel, signedQuestion } from "./control_plane_smoke"
 
 const approvalID = `P-${"a".repeat(32)}`
@@ -29,14 +28,6 @@ describe("signedQuestion", () => {
     for (const custom of [true, "false", null, 0]) {
       expect(signedQuestion([{ ...question, custom }])).toBeUndefined()
     }
-  })
-
-  test("keeps the plugin-emitted question strict at creation", () => {
-    const { custom: _, ...withoutCustom } = question
-    const { multiple: __, ...withoutMultiple } = question
-    expect(matchesBinaryQuestion([question], question)).toBe(true)
-    expect(matchesBinaryQuestion([withoutCustom], question)).toBe(false)
-    expect(matchesBinaryQuestion([withoutMultiple], question)).toBe(false)
   })
 
   test("rejects malformed, additional, and consent-bearing drift", () => {

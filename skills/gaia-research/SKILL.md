@@ -80,9 +80,9 @@ correctly follows an instruction that does not fit their case.
    twice.
 
 2. **Get the code, and never run it.** If the repo is not cloned yet, clone it
-   shallow into its category folder under `/home/jorge/ws/github-repos/`:
+   shallow into its category folder under `<research-repos-folder>/`:
    `git clone --depth 1 --no-recurse-submodules <url>
-   /home/jorge/ws/github-repos/<category>/<repo>` -- a mutation, so classify it
+   <research-repos-folder>/<category>/<repo>` -- a mutation, so classify it
    through `security-tiers` before running it like any other. Then the security
    policy, which is settled and not negotiable:
 

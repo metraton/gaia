@@ -26,7 +26,14 @@ from pathlib import Path
 
 import pytest
 
+from gaia.store.writer import declare_workspace
 from tools.scan import classify as classify_mod
+
+
+def _scan_declared(root: Path, workspace: str, db_path: Path):
+    """Apply a scan of *workspace*, declared at *root*."""
+    declare_workspace(workspace, root, db_path=db_path)
+    return classify_mod.scan(root, workspace, db_path=db_path, apply=True)
 
 
 def _mk_repo(base: Path, *segments: str) -> Path:
@@ -102,7 +109,7 @@ def test_apply_multi_repo_container_persists_distinct_rows(tmp_path, tmp_db):
     _mk_repo(root, "desing-repos", "drawio-skill")
     _mk_repo(root, "desing-repos", "effective-html")
 
-    report = classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "github-repos", tmp_db)
     assert all(p["applied"] for p in report.projects), report.projects
 
     con = _connect(tmp_db)
@@ -136,8 +143,8 @@ def test_same_repo_rescanned_does_not_duplicate(tmp_path, tmp_db):
     _mk_repo(root, "desing-repos", "repo-a")
     _mk_repo(root, "desing-repos", "repo-b")
 
-    classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=True)
-    classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=True)
+    _scan_declared(root, "github-repos", tmp_db)
+    _scan_declared(root, "github-repos", tmp_db)
 
     con = _connect(tmp_db)
     try:
@@ -208,7 +215,7 @@ def test_apply_run_also_emits_collision_warning(tmp_path, tmp_db):
     _mk_repo(root, "team-a", "iac")
     _mk_repo(root, "team-b", "iac")
 
-    report = classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=True)
+    report = _scan_declared(root, "github-repos", tmp_db)
 
     assert report.warnings, "apply-run emitted no collision warning -- AC-5 unmet"
     assert all(w["kind"] == "repo_collision" for w in report.warnings)

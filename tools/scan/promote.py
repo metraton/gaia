@@ -6,7 +6,7 @@ Scan promotion -- stage 3 of the scan pipeline (discover -> VALIDATE -> promote)
 is the DECOUPLED third stage: it reads what scan already persisted in the
 ``projects`` table and PROMOTES the scan-owned facts up into the
 ``project_identity`` project-context contract, so the SessionStart projects
-block (``hooks/modules/session/session_manifest.py::build_projects_context_block``,
+block (``hooks/modules/session/session_manifest.py::build_projects_section``,
 which reads ``project_context_contracts WHERE contract_name='project_identity'``)
 reflects what was scanned -- without ever clobbering agent-authored enrichment.
 
@@ -193,6 +193,12 @@ def validate_promotion(workspace: str, *, db_path: Optional[Path] = None) -> dic
             "WHERE workspace = ? AND status = 'missing' ORDER BY name",
             (workspace,),
         ).fetchall()
+        copies: dict[str, list[str]] = {}
+        for facet in con.execute(
+            "SELECT project, key FROM project_facets WHERE workspace = ? AND scope = 'copy'",
+            (workspace,),
+        ).fetchall():
+            copies.setdefault(facet["project"], []).append(facet["key"])
     finally:
         con.close()
 
@@ -210,7 +216,9 @@ def validate_promotion(workspace: str, *, db_path: Optional[Path] = None) -> dic
             )
             continue
         warnings = [] if r.get("remote_url") else ["no remote_url (advisory)"]
-        result["promotable"].append({**r, "warnings": warnings})
+        result["promotable"].append(
+            {**r, "warnings": warnings, "copies": copies.get(r["name"], [])}
+        )
 
     return result
 
@@ -275,6 +283,9 @@ def _match_slug(
     same remote share that remote on both entries, so once each has its own
     slug, matching the survivor's own row must still find its own exact-path
     entry rather than stopping at the first remote hit it meets along the way.
+    Last, an entry with neither ``local_path`` nor ``remote_url`` under the
+    slug the project's name produces is that project: it was declared before
+    any scan (a workflow, say), and nothing physical can contradict the name.
     Returns None when no entry corresponds -- the caller then creates a new
     slug rather than risk merging two distinct repos.
 
@@ -309,7 +320,39 @@ def _match_slug(
         e_remote = _normalize(entry.get("remote_url"))
         if e_remote and proj_remote and e_remote == proj_remote:
             return slug
+    if proj.get("name"):
+        name_slug = _slugify(proj["name"])
+        declared = dict(eligible).get(name_slug)
+        if declared is not None and not declared.get("local_path") and not declared.get("remote_url"):
+            return name_slug
     return None
+
+
+def _reclaim_parked_entries(result_map: dict) -> int:
+    """Move each project entry parked under the workspace key back onto its own slug.
+
+    An auto-conversion parks the whole old payload, so a slug-keyed entry that
+    rode along would otherwise hide its declared fields from every reader of
+    the project's entry. A key the live entry already holds wins. Returns the
+    number of entries moved.
+    """
+    from gaia.identity_shape import WORKSPACE_META_KEY, is_project_entry, is_reserved_slug
+
+    meta = result_map.get(WORKSPACE_META_KEY)
+    if not isinstance(meta, dict):
+        return 0
+    parked = [
+        slug for slug, value in meta.items()
+        if is_project_entry(value) and not is_reserved_slug(slug)
+        and isinstance(result_map.get(slug), dict)
+    ]
+    for slug in parked:
+        entry = result_map[slug]
+        for key, value in meta.pop(slug).items():
+            entry.setdefault(key, value)
+    if parked and not meta:
+        del result_map[WORKSPACE_META_KEY]
+    return len(parked)
 
 
 def _apply_scan_owned(entry: dict, proj: dict) -> bool:
@@ -356,13 +399,38 @@ def _mark_missing(result_map: dict, missing: list) -> int:
     return marked
 
 
+def _mark_copies(result_map: dict, copies_by_slug: dict[str, list[str]], claimed: set) -> int:
+    """Point the entry recorded at each second clone's folder at the surviving project's slug.
+
+    A clone folded into a copy facet keeps the entry an earlier promotion gave
+    it; marked with :data:`COPY_MARK_KEY`, a dispatch from that folder resolves
+    to the project instead of to an entry that no projects row backs. Returns
+    the number of entries that changed.
+    """
+    from gaia.identity_shape import COPY_MARK_KEY
+
+    marked = 0
+    for survivor, paths in copies_by_slug.items():
+        wanted = {os.path.normpath(p) for p in paths}
+        for slug, entry in result_map.items():
+            if slug in claimed or not isinstance(entry, dict) or not entry.get("local_path"):
+                continue
+            if os.path.normpath(entry["local_path"]) in wanted and entry.get(COPY_MARK_KEY) != survivor:
+                entry[COPY_MARK_KEY] = survivor
+                marked += 1
+    return marked
+
+
 def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tuple[dict, dict]:
     """Merge scan-owned facts into a map-shape payload. Returns (payload, stats).
 
-    Three branches, in order: create an entry for a newly-seen project, refresh
-    the scan-owned keys of one already there, and mark the entries whose repo
-    vanished. Marking runs LAST so a project that both reappeared and is stale
-    in ``missing`` resolves to present.
+    Four steps, in order: create an entry for a newly-seen project, refresh
+    the scan-owned keys of one already there, reclaim the project entries
+    parked under the workspace key (:func:`_reclaim_parked_entries`), and mark
+    the entries whose repo vanished. Reclaiming runs after the projects resolve
+    so a parked entry finds the slug this run created for it; marking runs LAST
+    so a project that both reappeared and is stale in ``missing`` resolves to
+    present.
 
     ``claimed`` accumulates every slug resolved (matched or newly created) by a
     project already processed in THIS run, and is threaded into every
@@ -387,6 +455,7 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
     result = copy.deepcopy(existing_map)
     used = set(result.keys())
     claimed: set = set()
+    copies_by_slug: dict[str, list[str]] = {}
     added = refreshed = 0
     collisions: list = []
     for proj in promotable:
@@ -420,11 +489,17 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
                 ),
             })
         claimed.add(slug)
+        if proj.get("copies"):
+            copies_by_slug[slug] = proj["copies"]
+    reclaimed = _reclaim_parked_entries(result)
     marked = _mark_missing(result, list(missing))
+    marked_copies = _mark_copies(result, copies_by_slug, claimed)
     return result, {
         "added_entries": added,
         "refreshed_entries": refreshed,
+        "reclaimed_entries": reclaimed,
         "marked_missing_entries": marked,
+        "marked_copy_entries": marked_copies,
         "collisions": collisions,
     }
 
@@ -441,6 +516,7 @@ def _merge_flat(existing: dict, proj: dict) -> tuple[dict, dict]:
     return result, {
         "added_entries": 0,
         "refreshed_entries": refreshed,
+        "reclaimed_entries": 0,
         "marked_missing_entries": 0,
         "collisions": [],
     }
@@ -567,7 +643,9 @@ def _stats_changed(stats: Optional[dict]) -> bool:
     return (
         stats["added_entries"] > 0
         or stats["refreshed_entries"] > 0
+        or stats["reclaimed_entries"] > 0
         or stats["marked_missing_entries"] > 0
+        or stats.get("marked_copy_entries", 0) > 0
     )
 
 
@@ -663,6 +741,7 @@ def promote_workspace(
         "shape": None,
         "added_entries": 0,
         "refreshed_entries": 0,
+        "reclaimed_entries": 0,
         "marked_missing_entries": 0,
         "collisions": [],
         "rejected": [],
@@ -697,7 +776,9 @@ def promote_workspace(
 
     report["added_entries"] = stats["added_entries"]
     report["refreshed_entries"] = stats["refreshed_entries"]
+    report["reclaimed_entries"] = stats["reclaimed_entries"]
     report["marked_missing_entries"] = stats["marked_missing_entries"]
+    report["marked_copy_entries"] = stats.get("marked_copy_entries", 0)
     report["collisions"] = stats.get("collisions", [])
     report["preview"] = new_payload
 

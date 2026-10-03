@@ -177,25 +177,35 @@ def test_denial_renders_guidance_without_displacing_the_approval_id():
     assert message.endswith("approval_id: P-bbbb")
 
 
-def test_gh_auth_switch_denial_names_the_per_process_alternative():
-    """End to end: what the classifier knows reaches the message a subagent reads.
+def test_gh_auth_switch_denial_suggestions_classify_free():
+    """Every command the rendered denial suggests is one the classifier lets through.
 
-    Composed the way the validator composes it -- the guidance is not written
-    here, it is whatever detect_mutative_command attached to the command. A
-    test that passed a literal string would prove the renderer works and leave
-    the wiring between the two untested, which is exactly where this was broken.
+    The suggestions are read back out of the message a subagent receives and
+    fed to the classifier: advice that is itself gated would send the agent
+    round the same denial.
     """
+    import re
+
     from modules.security.mutative_verbs import detect_mutative_command
+    from modules.security.tiers import SecurityTier, classify_command_tier
 
     result = detect_mutative_command("gh auth switch -u someone")
-    assert result.is_mutative is True
-
     message = build_t3_blocked_denial_message(
-        approval_id="P-cccc",
+        approval_id="P-dddd",
         command="gh auth switch -u someone",
         verb=result.verb,
         category=result.category,
         guidance=result.guidance,
     )
-    assert 'GH_TOKEN="$(gh auth token --user <account>)"' in message
-    assert "ghx" in message
+
+    suggested = re.findall(r"`([^`]+)`", message)
+    per_process = re.search(r'GH_TOKEN="\$\([^)]*\)" gh \.\.\.', message)
+    assert suggested and per_process, f"message names no suggestion: {message!r}"
+    suggested.append(
+        per_process.group(0).replace("<account>", "someone").replace("gh ...", "gh pr list")
+    )
+
+    for command in suggested:
+        assert classify_command_tier(command) == SecurityTier.T0_READ_ONLY, (
+            f"suggested {command!r} is not free: {classify_command_tier(command)}"
+        )

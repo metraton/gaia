@@ -22,7 +22,7 @@ a DB ALREADY at the v37 shape (the fresh-install case, where schema.sql has
 produced agent_state and there is no task_status to SELECT), it is a harmless
 no-op rather than a "no such column" abort. That idempotency depends on the
 bootstrap runner's ADD COLUMN guard, so the migration is applied here through
-the SAME helper the runner uses (bootstrap_database._filter_add_column_idempotent).
+the SAME helper the runner uses (bootstrap_database._run_script).
 """
 
 from __future__ import annotations
@@ -138,10 +138,11 @@ def _build_v36_db(db_path: Path) -> list[tuple]:
 
 
 def _apply_migration(con: sqlite3.Connection, bootstrap) -> None:
-    """Apply the migration exactly as the bootstrap runner does: filter ADD
-    COLUMN lines against the live schema, then run inside one transaction."""
-    mig_sql = bootstrap._filter_add_column_idempotent(con, _MIGRATION)
-    con.executescript(f"BEGIN;\n{mig_sql}\nCOMMIT;")
+    """Apply the migration exactly as the bootstrap runner does: statement by
+    statement through its _run_script, inside one transaction."""
+    con.execute("BEGIN")
+    bootstrap._run_script(con, _MIGRATION.read_text(encoding="utf-8"))
+    con.execute("COMMIT")
 
 
 def _columns(con: sqlite3.Connection, table: str) -> set[str]:

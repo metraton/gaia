@@ -52,9 +52,9 @@ bash bin/validate-sandbox.sh --version @jaguilar87/gaia@X.Y.Z --target sandbox
 | `npm run gaia:verify-install:local` | `/tmp/gaia-sandbox-<ts>/` (ephemeral) | Validating a local build before publishing -- packs working tree, full 8-check harness, auto-cleanup |
 | `npm run gaia:verify-install:rc` | `/tmp/gaia-sandbox-<ts>/` (ephemeral) | Smoke-test the `@rc` dist-tag as a real consumer would |
 | `npm run gaia:verify-install:latest` | `/tmp/gaia-sandbox-<ts>/` (ephemeral) | Smoke-test the `@latest` dist-tag |
-| `npm run gaia:install-local` | `$HOME/ws/me/` or nearest `.claude/` ancestor | **OVERWRITE** local workspace install with current working tree (development fresh-install; replaces symlink-based live mode) |
+| `npm run gaia:install-local` | `--workspace <install-folder>`, else the nearest `.claude/` ancestor of cwd with a Gaia marker, else `$GAIA_WORKSPACE_PATH`; with none it fails | **OVERWRITE** the local install folder with the current working tree (development fresh-install; replaces symlink-based live mode) |
 
-`gaia:install-local` is the dev iteration loop: edit code in the gaia repo, run it, restart Claude Code. Same harness runs in both modes -- the only difference is workspace path and that the checksum-preservation check is skipped under `--target local` (no pre-snapshot possible for a real workspace).
+`gaia:install-local` is the dev iteration loop: edit code in the gaia repo, run it, restart Claude Code. Same harness runs in both modes -- the only difference is the install folder path and that the checksum-preservation check is skipped under `--target local` (no pre-snapshot possible for a real install folder).
 
 Keep the sandbox for debugging:
 

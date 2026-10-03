@@ -96,9 +96,17 @@ gaia paths db                   # Print only db_path()
 
 gaia workspace current          # Print resolved workspace identity
 gaia workspace info             # Structured info: identity, cwd, paths
-gaia workspace merge FROM TO    # Preview a workspace merge
+gaia workspace merge FROM TO    # Preview a merge of workspace files
 gaia workspace merge FROM TO --confirm  # Execute the merge
+gaia workspace retire SRC --into DST --dry-run  # Report what folding SRC's gaia.db rows into DST moves
+gaia workspace retire SRC --into DST --yes      # Fold them (backup + undo ledger; T3)
+gaia workspace retire --undo LEDGER --yes       # Put back what that retire changed
 ```
+
+`workspace retire` re-keys what SRC owns (projects, briefs, contracts,
+integrations, schedules, memory) and leaves its history rows keyed to SRC,
+recording the alias `SRC -> DST` that readers of DST follow
+(`gaia/store/workspace_retire.py`).
 
 `gaia paths` always invokes `ensure_layout()` before printing so that the
 directory tree under `~/.gaia/` (or `$GAIA_DATA_DIR`) is materialized on
@@ -110,6 +118,7 @@ first use with mode 0700.
 |-----------------|----------------|----------------------------------------|
 | `GAIA_DATA_DIR` | `~/.gaia`      | Override the root data directory (ROOT-scoped: moves the database and every sibling directory) |
 | `GAIA_DB`       | `<root>/gaia.db` | Override the database file alone (FILE-scoped: leaves scratch, evidence and logs under the root) |
+| `GAIA_CLI_ALIASES` | unset (no aliases) | Declare your own wrappers as the CLI they wrap, e.g. `mywrapper=gh` (see below) |
 
 Precedence for the database file, highest first: **`GAIA_DB`**, then
 **`GAIA_DATA_DIR`**, then `~/.gaia/gaia.db`. `GAIA_DB` outranks `GAIA_DATA_DIR`
@@ -121,6 +130,32 @@ database-path resolver in the tree already ranks it that way
 Setting both at *different* places prints a warning to stderr naming which one
 won; setting both at the same file is the established isolation idiom and stays
 silent. The ladder is pinned by `tests/paths/test_db_path_precedence.py`.
+
+### Declaring a wrapper as another CLI (`GAIA_CLI_ALIASES`)
+
+The security hooks gate some commands by the CLI that runs them -- the
+permanent blocks (`gh repo delete`), consent anchors such as `gh workflow run`,
+`gh run rerun` and `gh pr update-branch`, and the publish-attribution guard on
+`gh pr|issue|release|api`. A wrapper you installed around a CLI (a launcher that
+pins an account, for example) runs the same subcommands under another name, so
+by default those gates do not recognize it. Gaia ships no wrapper names; declare
+yours in the environment the host (Claude Code, OpenCode) is started from:
+
+```bash
+export GAIA_CLI_ALIASES="mywrapper=gh"          # one wrapper
+export GAIA_CLI_ALIASES="mywrapper=gh,kc=kubectl" # several, comma-separated
+```
+
+Each pair is `wrapper=cli`, matched against the command's base name. With the
+variable unset there is no alias. A declared wrapper is classified both as
+written and as the CLI it wraps, and the stricter verdict stands: it is blocked
+wherever that CLI is blocked, asks consent wherever that CLI asks, and never
+loses a gate of its own, so a wrong entry can only cost an extra prompt or
+block. A leading `-C <dir>` on a declared `gh` wrapper is skipped
+before the publish guard reads the subcommand. Malformed pairs are ignored. The
+hooks read the variable at start-up, so restart the host after changing it.
+Implemented in `hooks/modules/security/cli_aliases.py`; pinned by
+`tests/hooks/modules/security/test_cli_alias_from_config.py`.
 
 ## Standalone use
 

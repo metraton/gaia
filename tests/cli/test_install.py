@@ -2,19 +2,19 @@
 Tests for bin/cli/install.py -- gaia install subcommand.
 
 Smoke tests + orchestration tests only -- never invoke
-bootstrap_database.sh against a real DB; the helper modules are mocked or
+bootstrap_database.py against a real DB; the helper modules are mocked or
 exercised against tmp dirs.
 
 Parity coverage (cmd_install vs gaia-update.js fresh-install path):
-  - bootstrap_database.sh         -- mocked
+  - bootstrap_database.py         -- mocked
   - configure_settings_json       -- exercised + verified call order
   - merge_local_permissions       -- exercised + verified call order
   - merge_local_hooks             -- exercised + verified call order
   - manage_symlinks               -- exercised + verified call order
   - register_plugin               -- exercised + verified call order
 
-Scanning is decoupled from install: cmd_install never triggers a scan (the
-former Step 7 / _maybe_run_fresh_scan path is removed).
+The first scan install runs (gaia.install_root.first_scan) is covered by
+tests/cli/test_install_first_scan.py.
 """
 
 import argparse
@@ -53,6 +53,7 @@ from cli.install import (  # noqa: E402
     _npm_config_prefix_posix,
 )
 import cli.install as install_mod  # noqa: E402  # for monkeypatching the marker path
+from tests.conftest import require_tool  # noqa: E402
 
 
 class TestRegisterSubcommand(unittest.TestCase):
@@ -137,7 +138,7 @@ class TestCmdInstallDispatch(unittest.TestCase):
     """
 
     def _make_args(self, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", False)
         ns.verbose = overrides.get("verbose", False)
@@ -189,7 +190,7 @@ class TestCmdInstallBootstrapMarker(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", True)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)
@@ -254,201 +255,82 @@ class TestCmdInstallBootstrapMarker(unittest.TestCase):
 
 
 class TestBootstrapScriptIntegration(unittest.TestCase):
-    """Run the real bootstrap_database.sh against a tmp sqlite DB.
+    """Run the real bootstrap_database.py against a tmp sqlite DB.
 
     This is the test that would have caught the rc.4 regression: the seed SQL
-    in Section 4 referenced `projects.identity` (a column dropped in the
-    workspaces/projects rename, commit be9698f). Without an integration test
-    that actually executes the bash script against the schema, drift between
-    bootstrap seed and schema goes undetected until npm install.
+    referenced `projects.identity` (a column dropped in the workspaces/projects
+    rename, commit be9698f). Without an integration test that actually executes
+    the bootstrap against the schema, drift between bootstrap seed and schema
+    goes undetected until npm install. The Python engine is the one `gaia
+    install` runs, and it needs neither `bash` nor the `sqlite3` CLI.
     """
 
-    _BOOTSTRAP_SH = (
-        Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_database.sh"
+    _BOOTSTRAP_PY = (
+        Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_database.py"
     )
     _SCHEMA_SQL = (
         Path(__file__).resolve().parents[2] / "gaia" / "store" / "schema.sql"
     )
 
     def setUp(self):
-        if not self._BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {self._BOOTSTRAP_SH}")
+        if not self._BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {self._BOOTSTRAP_PY}")
         if not self._SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {self._SCHEMA_SQL}")
 
     def _run_bootstrap_against_tmp_db(self, workspace: Path) -> subprocess.CompletedProcess:
-        """Invoke bootstrap_database.sh with GAIA_DB pointed at a tmp file."""
+        """Invoke bootstrap_database.py with GAIA_DB pointed at a tmp file."""
         tmp_db = workspace / "tmp_gaia.db"
         env = os.environ.copy()
         env["GAIA_DB"] = str(tmp_db)
+        env["GAIA_DATA_DIR"] = str(workspace)
+        env["HOME"] = str(workspace)
         env["WORKSPACE"] = str(workspace)
         return subprocess.run(
-            ["bash", str(self._BOOTSTRAP_SH)],
+            [sys.executable, str(self._BOOTSTRAP_PY)],
             env=env,
             capture_output=True,
             text=True,
             check=False,
-            # 120s, matching the `bootstrapped_db_template` fixture's timeout
-            # for the same script (conftest.py). 30s assumed an idle machine;
-            # under xdist parallelism (many workers spawning the script's
-            # ~31 sqlite3 subprocesses concurrently) it expired intermittently
-            # even though the script itself was healthy (serial runs: 196/196).
             timeout=120,
         )
 
-    def test_bootstrap_runs_cleanly_on_fresh_db(self):
-        """A fresh bootstrap must exit 0 with no sqlite parse errors."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            res = self._run_bootstrap_against_tmp_db(workspace)
-            self.assertEqual(
-                res.returncode, 0,
-                f"bootstrap exited rc={res.returncode}\n"
-                f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}",
-            )
-            # No sqlite3 "no such" / parse-error lines should appear.
-            combined = (res.stdout + res.stderr).lower()
-            self.assertNotIn(
-                "parse error", combined,
-                f"bootstrap produced a sqlite parse error:\n{res.stdout}\n{res.stderr}",
-            )
-            self.assertNotIn(
-                "no column named", combined,
-                f"bootstrap referenced a column that does not exist in schema:\n"
-                f"{res.stdout}\n{res.stderr}",
-            )
-
-    def test_bootstrap_seeds_workspaces_table(self):
-        """Section 4 must insert into `workspaces`, not the obsolete `projects.identity`."""
+    def test_bootstrap_keeps_permission_rows_of_a_live_agent(self):
+        """gaia-operator is a live agent (agents/gaia-operator.md): a bootstrap
+        must never delete its agent_permissions rows, and must leave every
+        other agent's rows as they were."""
         import sqlite3
+        select_rows = (
+            "SELECT table_name, agent_name, allow_write FROM agent_permissions "
+            "ORDER BY table_name, agent_name"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            res = self._run_bootstrap_against_tmp_db(workspace)
-            self.assertEqual(res.returncode, 0, res.stderr)
+            first = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(first.returncode, 0, first.stderr)
 
             con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
             try:
-                rows = con.execute(
-                    "SELECT name, identity FROM workspaces"
-                ).fetchall()
-            finally:
-                con.close()
-
-            self.assertGreaterEqual(
-                len(rows), 1,
-                "bootstrap must seed at least one row in workspaces (the current workspace)",
-            )
-            # identity == name in the bootstrap fallback path.
-            name, identity = rows[0]
-            self.assertEqual(name, identity)
-
-    def test_bootstrap_is_idempotent(self):
-        """Running bootstrap twice on the same DB must not fail or duplicate rows."""
-        import sqlite3
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            res1 = self._run_bootstrap_against_tmp_db(workspace)
-            self.assertEqual(res1.returncode, 0, res1.stderr)
-            res2 = self._run_bootstrap_against_tmp_db(workspace)
-            self.assertEqual(res2.returncode, 0, res2.stderr)
-
-            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
-            try:
-                ws_count = con.execute("SELECT COUNT(*) FROM workspaces").fetchone()[0]
-                perm_count = con.execute(
-                    "SELECT COUNT(*) FROM agent_permissions"
-                ).fetchone()[0]
-            finally:
-                con.close()
-
-            self.assertEqual(ws_count, 1, "second run must not duplicate workspaces row")
-            self.assertEqual(
-                perm_count, 13,
-                "agent_permissions count must remain 13 after second run",
-            )
-
-    def test_bootstrap_passes_with_legacy_gaia_operator_row(self):
-        """Regression: a pre-existing DB carrying the legacy 'gaia-operator' row
-        from older Gaia versions must NOT block bootstrap.
-
-        Pass 6 fixed the seed SQL so bootstrap reaches Section 6. Pass 7 fixed
-        the strict-equality check in Section 6 that was incompatible with the
-        idempotent INSERT OR IGNORE semantics. This test simulates the exact
-        condition observed in qxo (~/.gaia/gaia.db had both 'gaia-operator'
-        legacy + 'gaia-system' current), proving bootstrap now exits 0 and
-        cleans up the legacy row.
-        """
-        import sqlite3
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            tmp_db = workspace / "tmp_gaia.db"
-
-            # Pre-seed the DB with the schema + a legacy gaia-operator row,
-            # mimicking an upgraded install where the old agent name persists.
-            schema_path = self._SCHEMA_SQL
-            con = sqlite3.connect(str(tmp_db))
-            try:
-                con.executescript(schema_path.read_text())
                 con.execute(
-                    "INSERT OR IGNORE INTO agent_permissions "
-                    "(table_name, agent_name, allow_write) "
-                    "VALUES ('clusters', 'gaia-operator', 1)"
+                    "INSERT INTO agent_permissions (table_name, agent_name, allow_write) "
+                    "VALUES ('integrations', 'gaia-operator', 1)"
                 )
                 con.commit()
+                rows_before = con.execute(select_rows).fetchall()
             finally:
                 con.close()
 
-            # Sanity: the legacy row is present before bootstrap.
-            con = sqlite3.connect(str(tmp_db))
+            second = self._run_bootstrap_against_tmp_db(workspace)
+            self.assertEqual(second.returncode, 0, second.stderr)
+
+            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
             try:
-                pre_legacy = con.execute(
-                    "SELECT COUNT(*) FROM agent_permissions "
-                    "WHERE agent_name = 'gaia-operator'"
-                ).fetchone()[0]
-            finally:
-                con.close()
-            self.assertEqual(
-                pre_legacy, 1,
-                "test setup did not seed the legacy gaia-operator row",
-            )
-
-            res = self._run_bootstrap_against_tmp_db(workspace)
-            self.assertEqual(
-                res.returncode, 0,
-                f"bootstrap MUST tolerate a legacy gaia-operator row "
-                f"(Pass 7 fix). Got rc={res.returncode}\n"
-                f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}",
-            )
-
-            # Section 3a cleanup: legacy row should be gone after bootstrap.
-            con = sqlite3.connect(str(tmp_db))
-            try:
-                post_legacy = con.execute(
-                    "SELECT COUNT(*) FROM agent_permissions "
-                    "WHERE agent_name = 'gaia-operator'"
-                ).fetchone()[0]
-                distinct_agents = con.execute(
-                    "SELECT COUNT(DISTINCT agent_name) FROM agent_permissions"
-                ).fetchone()[0]
+                rows_after = con.execute(select_rows).fetchall()
             finally:
                 con.close()
 
-            self.assertEqual(
-                post_legacy, 0,
-                "Section 3a must DELETE legacy gaia-operator rows -- the "
-                "DELETE is the migration that fixes the distinct-agents drift",
-            )
-            self.assertGreaterEqual(
-                distinct_agents, 5,
-                "After cleanup, distinct agents must be >= 5 (the canonical set)",
-            )
-
-            # Section 6 Check 2 should report '>=' wording, not strict '=='.
-            self.assertIn(
-                "distinct agents >= 5", res.stdout,
-                "Check 2 must use the lenient '>=' formulation (Pass 7 fix); "
-                "strict equality regressed when DBs survived a Gaia upgrade",
-            )
+            self.assertIn(("integrations", "gaia-operator", 1), rows_after)
+            self.assertEqual(rows_after, rows_before)
 
 
 class TestCmdInstallOrchestration(unittest.TestCase):
@@ -461,7 +343,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)  # quiet by default for tests
         ns.verbose = overrides.get("verbose", False)
@@ -557,7 +439,7 @@ class TestCmdInstallOrchestration(unittest.TestCase):
                 return {"action": "noop", "path": "x", "details": ""}
 
             ns = argparse.Namespace(
-                postinstall=False, quiet=True, verbose=False,
+                channel="npm", postinstall=False, quiet=True, verbose=False,
                 db_path=None, workspace=None, skip_workspace=False,
             )
             with patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}):
@@ -597,7 +479,7 @@ class TestCmdInstallCreatesClaudeDir(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)
@@ -1042,7 +924,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
 
     def test_windows_invokes_setx_with_workspace(self):
         """The Windows branch calls setx GAIA_WORKSPACE_PATH <workspace>."""
-        workspace = Path("C:/Users/jorge/ws/app")
+        workspace = Path("C:/Users/user/ws/app")
         completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with self._win():
             with patch("cli.install.subprocess.run", return_value=completed) as mock_run:
@@ -1069,7 +951,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
         self.assertIn("Access is denied", res["details"])
 
     def test_cmd_install_invokes_persist_on_windows(self):
-        """cmd_install (Windows branch, without --no-path) calls
+        """cmd_install (Windows branch, with the --path opt-in) calls
         _persist_workspace_env with the resolved workspace."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
@@ -1077,8 +959,8 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
             (workspace / ".claude").mkdir()
 
             ns = argparse.Namespace(
-                postinstall=False, quiet=True, verbose=False, db_path=None,
-                workspace=str(workspace), skip_workspace=False, no_path=False,
+                channel="npm", postinstall=False, quiet=True, verbose=False, db_path=None,
+                workspace=str(workspace), skip_workspace=False, path=True,
             )
 
             noop = {"action": "noop", "path": "x", "details": ""}
@@ -1120,7 +1002,7 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
             (workspace / ".claude").mkdir()
 
             ns = argparse.Namespace(
-                postinstall=False, quiet=True, verbose=False, db_path=None,
+                channel="npm", postinstall=False, quiet=True, verbose=False, db_path=None,
                 workspace=str(workspace), skip_workspace=False, no_path=True,
             )
             noop = {"action": "noop", "path": "x", "details": ""}
@@ -1330,133 +1212,18 @@ class TestNpmGlobalPrefixResolution(unittest.TestCase):
                 )
 
 
-class TestLauncherShellBehavior(unittest.TestCase):
-    """Preserve the legacy wrapper renderer used for migration recognition.
-
-    The former launcher was a single ``exec`` to a hardcoded
-    absolute path. There are no fallbacks to test; the only behaviors that
-    matter are (1) it execs the embedded path, (2) it propagates the target's
-    exit code, and (3) it does NOT walk up from cwd. The third assertion is
-    the regression guard for the rc.5 cwd-walk bug.
-
-    Note: the harness runs on `/tmp` mounted with `noexec`, which makes
-    direct exec via ``[ -x file ]`` unreliable for files there. Fixtures
-    are staged under `$HOME` (exec-mounted on this harness) so the embedded
-    `exec python3` call resolves correctly.
-    """
-
-    def setUp(self):
-        self._tmp = tempfile.mkdtemp(prefix="gaia-launcher-test-", dir=str(Path.home()))
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self._tmp, ignore_errors=True)
-
-    def _make_fake_gaia(self, dst: Path, label: str, exit_code: int = 0) -> None:
-        """Create a python script at *dst* that prints `label` and exits."""
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(
-            "import sys\n"
-            f"print('{label}')\n"
-            f"sys.exit({exit_code})\n"
-        )
-        dst.chmod(0o755)
-
-    def _write_launcher(self, link: Path, workspace: Path) -> None:
-        link.parent.mkdir(parents=True, exist_ok=True)
-        link.write_text(_render_launcher(workspace))
-        link.chmod(0o755)
-
-    def _run_launcher(self, launcher: Path, *, cwd: Path, args=None):
-        cmd = ["bash", str(launcher)]
-        if args:
-            cmd.extend(args)
-        return subprocess.run(
-            cmd,
-            cwd=str(cwd),
-            env={**os.environ},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    def test_execs_hardcoded_path(self):
-        """The shim execs the workspace path baked in at render time."""
-        tmp_p = Path(self._tmp)
-        workspace = tmp_p / "ws"
-        target = workspace / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "gaia"
-        self._make_fake_gaia(target, "HARDCODED")
-
-        launcher = tmp_p / "bin" / "gaia"
-        self._write_launcher(launcher, workspace)
-
-        # Run from a deep unrelated cwd -- the hardcoded path must still resolve.
-        unrelated_cwd = tmp_p / "unrelated"
-        unrelated_cwd.mkdir()
-        result = self._run_launcher(launcher, cwd=unrelated_cwd, args=["arg1"])
-
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("HARDCODED", result.stdout)
-
-    def test_does_not_walk_up_from_cwd(self):
-        """Regression guard: the shim must NOT find a cwd-local Gaia install.
-
-        Stage a Gaia install in the cwd's node_modules tree but render the
-        shim against a different (empty) workspace. The shim must NOT exec
-        the cwd-local install -- it must try the hardcoded path and fail.
-        """
-        tmp_p = Path(self._tmp)
-
-        # Render shim against an empty workspace (no node_modules tree)
-        empty_workspace = tmp_p / "empty_ws"
-        empty_workspace.mkdir()
-        launcher = tmp_p / "bin" / "gaia"
-        self._write_launcher(launcher, empty_workspace)
-
-        # Build a "cwd workspace" with a working Gaia install -- the OLD walk-up
-        # shim would have picked this up; the new shim must NOT.
-        cwd_workspace = tmp_p / "cwd_ws"
-        cwd_local = (
-            cwd_workspace / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "gaia"
-        )
-        self._make_fake_gaia(cwd_local, "CWD_LOCAL")
-
-        result = self._run_launcher(launcher, cwd=cwd_workspace)
-
-        # Shim execs empty_workspace's path which does not exist -- bash exits
-        # non-zero (127 or similar) and CWD_LOCAL was never run.
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn("CWD_LOCAL", result.stdout)
-
-    def test_propagates_exit_code(self):
-        """Launcher must propagate the underlying process's exit code."""
-        tmp_p = Path(self._tmp)
-        workspace = tmp_p / "ws"
-        target = workspace / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "gaia"
-        self._make_fake_gaia(target, "EXIT42", exit_code=42)
-
-        launcher = tmp_p / "bin" / "gaia"
-        self._write_launcher(launcher, workspace)
-
-        unrelated_cwd = tmp_p / "unrelated"
-        unrelated_cwd.mkdir()
-        result = self._run_launcher(launcher, cwd=unrelated_cwd)
-
-        self.assertEqual(result.returncode, 42)
-
-
 class TestCmdInstallPathLauncher(unittest.TestCase):
-    """Verify cmd_install installs the launcher unless --no-path is set."""
+    """Verify cmd_install installs the launcher only when --path opts in."""
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)
         ns.db_path = overrides.get("db_path", None)
         ns.workspace = str(workspace) if workspace else None
         ns.skip_workspace = overrides.get("skip_workspace", False)
-        ns.no_path = overrides.get("no_path", False)
+        ns.path = overrides.get("path", True)
         return ns
 
     def _patch_helpers_noop(self):
@@ -1474,7 +1241,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
                   return_value=noop),
         ]
 
-    def test_default_installs_launcher(self):
+    def test_path_opt_in_installs_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -1508,7 +1275,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             self.assertTrue(link.is_symlink())
             self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
-    def test_no_path_flag_skips_launcher(self):
+    def test_without_path_opt_in_skips_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
@@ -1522,7 +1289,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             started = [p.start() for p in patches]
             try:
                 with redirect_stdout(io.StringIO()):
-                    rc = cmd_install(self._make_args(workspace, no_path=True))
+                    rc = cmd_install(self._make_args(workspace, path=False))
             finally:
                 for p in patches:
                     p.stop()
@@ -1619,7 +1386,7 @@ class TestInstallErrorMarker(unittest.TestCase):
     """
 
     def _make_args(self, workspace, **overrides):
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.postinstall = overrides.get("postinstall", False)
         ns.quiet = overrides.get("quiet", True)
         ns.verbose = overrides.get("verbose", False)

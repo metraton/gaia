@@ -1,14 +1,13 @@
-# PRINCIPLE 1 — "Everything you see is a merged cell."
+# DATA 1 OF 7 — the value you write, the look you get: width and height.
 #
-# One page, one principle. The page DEMONSTRATES the principle that names it,
-# and the content of every box EXPLAINS the tool that box is demonstrating —
-# so the deck is its own documentation and the guardrail keeps it honest.
+# A page of the tour's data step. Every box carries the `columns`, `span` or
+# `rowspan` value its own text names, so the reader sees the value and the look
+# it produces in the same place.
 #
 # FORM: dashboard. Deliberate, not the default-by-omission. This page is a grid
-# of peer zones, each showing one merge, so `dashboard` is the form that teaches
-# it — and it is also the STRICTEST scope in the invariant table (it turns on the
-# orphan-row check, the word-fit floor and the verticality advisory). The page
-# that teaches the cell should be judged by the cell's own invariants.
+# of peer zones, each showing one value at work, and `dashboard` is also the
+# STRICTEST scope in the invariant table (it turns on the orphan-row check, the
+# word-fit floor and the verticality advisory).
 #
 # WHAT IT EXERCISES: the uniform slot · `columns` as track declaration · a REAL
 # partial merge (span 2 of 3, with the siblings that create the third track) · a
@@ -18,7 +17,6 @@
 # read from a shared floor.
 
 id: p1-merged-cell
-layout: grid
 form: dashboard
 # Two root columns: the two narrow zones sit side by side on row 1, and the two
 # bands beneath them each take a full row of their own.
@@ -26,10 +24,20 @@ columns: 2
 
 sections:
 
-  # ── ROW 1, LEFT · what a cell IS before any merge ────────────────────────
+  - id: p1-lead
+    order: 0
+    span: 2
+    lead: true
+    kicker: "DATA · 1 OF 7"
+    title: "Two numbers fill width and height"
+    description:
+      - "span says how far a box reaches; rowspan says how big it is"
+    detail: "The data step: you never place a box, you write its values and the look follows. <code>span</code> is a count of columns, so it fills the box's width, and width reads as reach. <code>rowspan</code> is a count of rows, so it fills its height, and height reads as magnitude. Change a number and the page recalculates."
+
+  # ── ROW 1, LEFT · what one box takes before any value is added ────────────
   - id: p1-cell
-    title: "One slot, two axes"
-    subtitle: "the atom every merge is made of — you never resize it, you merge it"
+    title: "What one box takes"
+    subtitle: "each box you write takes one slot; a number you add makes it bigger"
     variant: neutral
     order: 1
     span: 1
@@ -37,39 +45,39 @@ sections:
     children:
       - id: p1-slot
         order: 1
-        kicker: SLOT
-        title: "The slot"
+        kicker: YOU WRITE
+        title: "One box"
         description:
-          - "130px tall, an equal share wide"
-          - "the unit both merges count in"
-        detail: "The base cell is a fixed <code>--cell-h</code> (130px) tall and an equal <code>fr</code> share of its grid's width. Every geometry in the deck is a whole number of these: <code>span</code> counts them sideways, <code>rowspan</code> counts them downward. There is no third way to make something bigger."
+          - "one entry in the list"
+          - "one slot on the page"
+        detail: "Every box you write takes exactly one slot: a fixed height and an equal share of its group's width. You never write a size in pixels. To make a box bigger you write a number, <code>span</code> sideways or <code>rowspan</code> downward, and the look follows."
         variant: neutral
       - id: p1-equal
         order: 2
-        kicker: EQUAL
-        title: "Equal by rule"
+        kicker: YOU GET
+        title: "Equal neighbours"
         description:
-          - "cells in one grid share a width"
-          - "and never grow to fit content"
-        detail: "Width varies from section to section but is identical WITHIN a grid — the tracks are equal <code>fr</code> shares that stretch to fill. A cell never grows to accommodate its text: what does not fit moves (to the detail panel, to a merge, to a nested section), which is principle 8."
+          - "boxes in one group share"
+          - "one width, whatever they say"
+        detail: "Boxes in the same group get the same width, so the reader compares them as peers. Writing more words never makes a box wider: what does not fit moves to the detail, to a wider span, or into a group of its own."
         variant: neutral
       - id: p1-clamp
         order: 3
-        kicker: CLAMP
-        title: "Text clamps"
+        kicker: YOU WRITE
+        title: "Short text"
         description:
-          - "title 2 lines, description 3"
-          - "the rest lives behind a click"
-        detail: "The title clamps at 2 lines and the whole description at 3, which is what keeps every box exactly one slot tall no matter how many lines the data carries. This paragraph is the <code>detail</code> field: unbounded, rendered in the bottom-centre panel, and the right home for anything longer than a gloss."
+          - "a title of two lines at most"
+          - "and a description of three"
+        detail: "The title shows at most two lines and the description three, so every box keeps one slot's height whatever you write. This paragraph is the <code>detail</code>: it has no limit and opens on click, so the longer thing you have to say goes here."
         variant: neutral
       - id: p1-tracks
         order: 4
-        kicker: DIAL
+        kicker: YOU WRITE
         title: "columns: 2"
         description:
-          - "this grid declares two tracks"
-          - "so four cells fill two rows"
-        detail: "<code>columns: N</code> is the only thing that creates tracks in a leaf grid. Four single cells in two tracks close a 2×2 rectangle — the identity <code>Σ(spanCols × rowspanRows) == tracks × rows</code> that <code>npm run check</code> asserts on the data, with no browser."
+          - "this group asks for two columns"
+          - "so four boxes fill two rows"
+        detail: "<code>columns: 2</code> on a group is a value you write, and it decides how many boxes sit side by side. Four boxes in two columns close a 2×2 rectangle; <code>npm run model</code> checks that arithmetic on the data, with no browser."
         variant: neutral
 
   # ── ROW 1, RIGHT · a REAL partial merge, with the row that holds it up ────
@@ -78,8 +86,8 @@ sections:
   # promoted to a full-width band. Row 1 = the three tracks; row 2 = the merge
   # plus the one sibling that closes the rectangle.
   - id: p1-partial
-    title: "A partial merge"
-    subtitle: "span: 2 of 3 — and the siblings that create the tracks it eats"
+    title: "A wider box"
+    subtitle: "span: 2 of 3 — the value that widens it, and the boxes that make room"
     variant: neutral
     order: 2
     span: 1
@@ -87,49 +95,49 @@ sections:
     children:
       - id: p1-t1
         order: 1
-        kicker: TRACK
-        title: "Track 1"
-        description: ["one cell, one track"]
-        detail: "Three single cells declare that this grid really has three tracks. Without them the engine's grow-with-content clamp would shrink the grid to what its content can fill, and the merge below would silently become a full-width band."
+        kicker: COLUMN
+        title: "Column 1"
+        description: ["one box, one column"]
+        detail: "Three plain boxes say this group really has three columns. Without them the group would shrink to what its content fills, and the wide box below would take the whole row instead of two thirds of it."
         variant: neutral
       - id: p1-t2
         order: 2
-        kicker: TRACK
-        title: "Track 2"
+        kicker: COLUMN
+        title: "Column 2"
         description: ["the second of three"]
-        detail: "A merge consumes tracks that must ALREADY EXIST. Something has to sit beside it creating them — that is what this row is."
+        detail: "A wide box takes columns that already exist, so something beside it has to create them: that is what this row of boxes is for."
         variant: neutral
       - id: p1-t3
         order: 3
-        kicker: TRACK
-        title: "Track 3"
+        kicker: COLUMN
+        title: "Column 3"
         description: ["the third of three"]
-        detail: "With three single cells present the grid keeps three tracks at the authored tier, which is the precondition for a partial merge to read as partial."
+        detail: "With three plain boxes present, the group keeps its three columns, and the value written below reads as two of them."
         variant: neutral
       - id: p1-merge
         order: 4
         span: 2
-        kicker: MERGE
+        kicker: YOU WRITE
         title: "span: 2 of 3"
         description:
-          - "merges two of three tracks"
-          - "wider reach, same one row"
-        detail: "<code>1 &lt; span &lt; columns</code> is a REAL partial merge (<code>.mspan</code>, <code>grid-column: span 2</code>): it occupies exactly two of the three tracks and keeps its proportion as the grid collapses (<code>--span2</code>). <code>span == columns</code> would be something else entirely — a full-width band that takes its own row. Width is REACH: this cell claims two thirds of the row's scope, not two thirds more importance."
+          - "it reaches two of three columns"
+          - "and stays one row tall"
+        detail: "Write <code>span: 2</code> in a three-column group and the box takes exactly two of the three columns, keeping that share as the page narrows. Write <code>span: 3</code> and it becomes a full-width band on its own row. Width reads as REACH: this box covers two thirds of the row's scope, not two thirds more importance."
         variant: accent
       - id: p1-close
         order: 5
-        kicker: HOLDS
-        title: "The third track"
+        kicker: YOU WRITE
+        title: "The third column"
         description:
-          - "one track stayed open"
-          - "this cell closes it"
-        detail: "A merge that leaves the rest of its row empty is a hole, and a hole asserts something (principle 9). Here the remaining track is filled on purpose, so the section is a full rectangle: 3 tracks × 2 rows = 6 cells = 1+1+1+2+1."
+          - "one column stayed open"
+          - "this box fills it"
+        detail: "A wide box that leaves the rest of its row empty leaves a hole, and a hole says something. Here one more box fills the remaining column on purpose, so the group is a full rectangle: 3 columns × 2 rows = 6 slots = 1+1+1+2+1."
         variant: neutral
 
   # ── ROW 2 · a full-width BAND (span == root columns) ─────────────────────
   - id: p1-band
     title: "A full-width band"
-    subtitle: "span == columns: the child stops sharing and takes the whole row"
+    subtitle: "span equal to columns: the box stops sharing and takes the whole row"
     variant: neutral
     order: 3
     span: 2
@@ -137,53 +145,48 @@ sections:
     children:
       - id: p1-band-what
         order: 1
-        kicker: BAND
+        kicker: YOU WRITE
         title: "span == columns"
         description:
-          - "this section is span 2 of the"
-          - "page's 2 root columns"
-        detail: "A band is not a separate primitive — it is the SAME <code>span</code> dial pushed to the parent's full column count (<code>.msp</code>, <code>grid-column: 1 / -1</code>). The section you are reading is one: <code>span: 2</code> in a <code>columns: 2</code> page."
+          - "this group writes span: 2 on"
+          - "a page of 2 columns"
+        detail: "A band is the same <code>span</code> value written up to the parent's full column count. The group you are reading is one: <code>span: 2</code> on a page whose root has <code>columns: 2</code>."
         variant: neutral
       - id: p1-band-row
         order: 2
-        kicker: OWNS
+        kicker: YOU GET
         title: "It owns the row"
         description:
-          - "no sibling can share it"
-          - "consecutive bands stack down"
-        detail: "Because a band carries a definite full-width position, the placement cursor cannot put anything beside it: it takes the first row where the whole width is free. Two bands in a row therefore stack top to bottom, which is exactly how this page's last two sections sit."
+          - "nothing can sit beside it"
+          - "two bands stack one on the other"
+        detail: "A full-width band leaves no room beside it, so it takes the first row where the whole width is free. Two bands written one after the other therefore stack top to bottom, which is how this page's last two groups sit."
         variant: neutral
       - id: p1-band-base
         order: 3
-        kicker: BASE
+        kicker: YOU GET
         title: "A base layer"
         description:
-          - "placed last, it reads as the"
+          - "written last, it reads as the"
           - "floor the page rests on"
-        detail: "Position is meaning: a band placed last renders as a full-width base beneath everything above it, which is why a foundation, a substrate or a shared timeline belongs there. A band spans the block width at EVERY collapse tier — it never shrinks back to its single cell."
+        detail: "Where you write it is part of what it says: a band written last shows as a full-width base under everything above it, which is where a foundation, a shared platform or a timeline belongs. It stays full width on every screen."
         variant: neutral
 
   # ── ROW 3 · HEIGHT AS MAGNITUDE — the rowspan ladder, colour in parallel ──
   # rowspan 1·2·3·4 side by side: the cell's HEIGHT encodes the magnitude, and
   # the colour role escalates with it (neutral -> good -> warn -> bad), so the
-  # same claim is carried by two channels at once (principle 5, "double them to
-  # reinforce"). The tallest bar is what creates the four rows the others merge
-  # into.
+  # same claim is carried by two values at once. The tallest bar is what creates
+  # the four rows the others merge into.
   #
   # THE BARS REST ON A BASE, AND THE BASE IS AUTHORED. Placement is sparse and
-  # top-down, so four bars written first each start in row 1 and HANG FROM THE
-  # CEILING — the taper opens downward, which reads as four bars of different
-  # heights with no common baseline to compare them against. A bar chart's
-  # magnitudes are only comparable from a shared floor. So each column is opened
-  # with `type: spacer` cells — 3 above bar 4, 2 above bar 3, 1 above bar 2 — and
-  # the interleaved order (sp,sp,sp,bar4 / sp,sp,bar3 / sp,bar2 / bar1) lands
-  # every bar's BOTTOM edge in row 4. The spacers are the declared holes that buy
-  # the alignment: 6 spacers + 10 bar cells = 16 = 4 tracks × 4 rows, so the
-  # taper closes EXACTLY instead of relying on the rowspan exemption for a hole
-  # that was never meant (principle 9 — the hole speaks: close it, or declare it).
+  # top-down, so four bars written first would each start in row 1 and hang from
+  # the ceiling, with no common baseline to compare them against. So each column
+  # is opened with `type: spacer` cells — 3 above bar 4, 2 above bar 3, 1 above
+  # bar 2 — and the interleaved order lands every bar's BOTTOM edge in row 4:
+  # 6 spacers + 10 bar cells = 16 = 4 tracks × 4 rows, so the taper closes
+  # EXACTLY instead of relying on the rowspan exemption.
   - id: p1-ladder
     title: "Height is magnitude"
-    subtitle: "rowspan 1·2·3·4 resting on a shared base — the colour scaling in parallel, one claim, two channels"
+    subtitle: "rowspan 1·2·3·4 on a shared floor, the colour rising with it — one claim, two values"
     variant: neutral
     order: 4
     span: 2
@@ -206,9 +209,9 @@ sections:
         kicker: 4 ROWS
         title: "rowspan: 4"
         description:
-          - "four slots — the tallest bar"
-          - "bad — the top of the scale"
-        detail: "The tallest bar is also what CREATES the four rows its shorter neighbours merge into: a merge consumes rows that must exist, and here the extreme of the scale is what brings them into being. It is authored FIRST because it is the only bar that reaches row 1 — the three cells before it are spacers holding that row open for it."
+          - "four slots, the tallest bar"
+          - "bad, the top of the scale"
+        detail: "Write <code>rowspan: 4</code> and the box is four slots tall; write <code>variant: bad</code> and it is red. Both values say the same thing: this is the largest. It is written FIRST because it is the only bar that reaches the top row; the three spacers before it hold that row open."
         variant: bad
       - id: p1-gap-4
         type: spacer
@@ -223,8 +226,8 @@ sections:
         title: "rowspan: 3"
         description:
           - "three slots tall"
-          - "warn — the amber step"
-        detail: "Because size and colour both grow, the magnitude is legible twice: read the ladder by height and you get the same ranking you get by colour. That is principle 5 used deliberately — two channels DOUBLED on one claim to reinforce it, rather than split across two claims."
+          - "warn, the amber step"
+        detail: "Height and colour are two values written on one box to carry one claim. Read the bars by height or by colour and you get the same ranking, so the claim is legible twice."
         variant: warn
       - id: p1-gap-6
         type: spacer
@@ -236,8 +239,8 @@ sections:
         title: "rowspan: 2"
         description:
           - "twice the slot height"
-          - "colour steps up with it"
-        detail: "<code>rowspan: K</code> is the vertical merge (<code>.mrsp</code>, <code>grid-row: span 2</code>): the cell becomes K slots tall, K× 130px plus the gaps between them. Its column position is untouched — the horizontal cascade never moves it sideways."
+          - "the colour steps up with it"
+        detail: "<code>rowspan: 2</code> makes the box two slots tall, the gap between them included. Its column does not change: the value adds height and nothing else."
         variant: good
       - id: p1-bar-1
         order: 10
@@ -245,7 +248,7 @@ sections:
         kicker: 1 ROW
         title: "rowspan: 1"
         description:
-          - "the base slot, unmerged"
+          - "the base slot, one row"
           - "the zero of both scales"
-        detail: "The shortest bar is just a cell: <code>rowspan: 1</code> is the default and merges nothing. It anchors both channels at once — the smallest height AND the quietest colour role (<code>neutral</code>). Authored LAST, it lands in row 4 — the base row every taller bar also ends in, which is what makes the four heights comparable."
+        detail: "<code>rowspan: 1</code> is what you get when you write nothing: one slot. It is the smallest height and the quietest colour (<code>neutral</code>). Written LAST, it lands in the bottom row, where every taller bar also ends, and that shared floor is what makes the four heights comparable."
         variant: neutral

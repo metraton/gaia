@@ -249,7 +249,7 @@ class TestCmdUpdate(unittest.TestCase):
     def _make_args(self, dry_run=False, verbose=False, as_json=False,
                    skip_bootstrap=True, workspace=None):
         import argparse
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.dry_run = dry_run
         ns.verbose = verbose
         ns.json = as_json
@@ -311,7 +311,7 @@ class TestCmdUpdateOrchestration(unittest.TestCase):
 
     def _make_args(self, workspace=None, dry_run=False):
         import argparse
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.dry_run = dry_run
         ns.verbose = False
         ns.json = True  # JSON to silence print
@@ -397,43 +397,16 @@ class TestCmdUpdateOrchestration(unittest.TestCase):
             # Every helper must be called with dry_run=True
             self.assertTrue(all(d is True for d in captured["dry_run_seen"]))
 
-    def test_uses_cli_update_source_in_registry(self):
-        """registry.source must be 'cli-update' from this command (parity sentinel)."""
+    def test_without_dry_run_update_is_install(self):
+        """`gaia update` runs `gaia install` itself and returns its exit code."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / ".claude").mkdir()
-            pkg_root = Path(tmp) / "pkg"
-            pkg_root.mkdir()
-            (pkg_root / "package.json").write_text(json.dumps({"version": "5.0.0"}))
-
-            captured = {}
-
-            def fake_register(workspace, plugin_root=None, source=None, dry_run=False):
-                captured["source"] = source
-                return {"action": "noop", "path": "x", "details": ""}
-
-            with patch("cli.update._find_package_root", return_value=pkg_root):
-                with patch(
-                    "cli.update._install_helpers.register_plugin", side_effect=fake_register,
-                ), patch(
-                    "cli.update._install_helpers.configure_settings_json",
-                    return_value={"action": "noop", "path": "x", "details": ""},
-                ), patch(
-                    "cli.update._install_helpers.merge_local_permissions",
-                    return_value={"action": "noop", "path": "x", "details": ""},
-                ), patch(
-                    "cli.update._install_helpers.merge_local_hooks",
-                    return_value={"action": "noop", "path": "x", "details": ""},
-                ), patch(
-                    "cli.update._install_helpers.manage_symlinks",
-                    return_value={"action": "noop", "path": "x", "details": ""},
-                ):
-                    import io
-                    from contextlib import redirect_stdout
-                    with redirect_stdout(io.StringIO()):
-                        cmd_update(self._make_args(workspace=root))
-
-            self.assertEqual(captured["source"], "cli-update")
+            args = self._make_args(workspace=root)
+            with patch("cli.update.install.cmd_install", return_value=7) as cmd_install:
+                rc = cmd_update(args)
+            self.assertEqual(rc, 7)
+            cmd_install.assert_called_once_with(args)
 
 
 if __name__ == "__main__":

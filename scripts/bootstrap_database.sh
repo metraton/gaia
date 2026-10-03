@@ -26,10 +26,6 @@ GAIA_DB="${GAIA_DB:-$HOME/.gaia/gaia.db}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 SCHEMA_FILE="${SCHEMA_FILE:-$SCRIPT_DIR/../gaia/store/schema.sql}"
 
-# Workspace cuya identidad se va a registrar en projects. Default: directorio
-# raíz del repo (dos niveles arriba de scripts/). Configurable vía env.
-WORKSPACE="${WORKSPACE:-$SCRIPT_DIR/..}"
-
 # Verificar que sqlite3 está instalado. Sin esto, todo lo demás falla con
 # errores oscuros; preferimos un mensaje claro al inicio.
 if ! command -v sqlite3 > /dev/null 2>&1; then
@@ -49,7 +45,6 @@ mkdir -p "$(dirname "$GAIA_DB")"
 # Banner inicial: deja claro contra qué DB estamos operando antes de tocar nada.
 echo "[bootstrap] Initializing Gaia DB at $GAIA_DB"
 echo "[bootstrap] Using schema:  $SCHEMA_FILE"
-echo "[bootstrap] Using workspace: $WORKSPACE"
 
 # === Section 1.5: Pre-schema ADD COLUMN reconciliation (existing DBs) ===
 #
@@ -200,24 +195,6 @@ INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VA
 EOF
 
 echo "[bootstrap] agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)"
-
-# === Section 3a: Cleanup legacy agent_permissions rows ===
-#
-# Section 3 (above) inserts the canonical "gaia-system" name. A previous
-# version of this bootstrap (or the legacy scripts/seed_agent_permissions.py)
-# inserted rows under the old name "gaia-operator" -- see the rename note in
-# Section 3 above (line 83-86). Those legacy rows persist across upgrades
-# because INSERT OR IGNORE never removes anything. Without cleanup, the
-# distinct-agents check below sees 6 agents on upgraded DBs instead of 5,
-# and the strict equality variant of the check (pre-fix) used to fail.
-#
-# DELETE is safe here: the legacy "gaia-operator" rows have no live consumer
-# in the current model -- the gaia-system agent owns its own table_name set
-# (gaia_installations, integrations) which never collided with the legacy
-# row's table_name. We are pruning orphan data, not migrating it.
-sqlite3 "$GAIA_DB" <<'EOF'
-DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator';
-EOF
 
 # === Section 3b: Seed schema_version baseline (floor) ===
 #
@@ -431,69 +408,7 @@ else
     echo "[bootstrap] schema_version up-to-date (no migrations pending)"
 fi
 
-# === Section 4: Registrar workspace actual ===
-#
-# El schema v2.0 (commit be9698f) renombró:
-#   - projects (organizational container) -> workspaces
-#   - repos (git-bearing) -> projects
-# El seed aquí inserta una fila inicial en `workspaces` (el contenedor
-# organizacional, no la tabla de repos git). El scanner luego puebla
-# `projects` cuando descubre repos git dentro del workspace.
-
-# Detectamos la identity del workspace via git remote get-url origin, igual que
-# gaia.store.writer._resolve_identity(). La normalización (lowercase, strip
-# protocolo, strip .git, ssh form) la hacemos en SQL/bash puro -- no llamamos
-# a Python.
-#
-# Fallback: si no hay remote, usamos el basename del workspace en lowercase.
-# Si tampoco eso, usamos 'global'.
-
-WORKSPACE_IDENTITY=""
-RAW_REMOTE=""
-
-# Capturamos el remote sin pipes; si git falla, RAW_REMOTE queda vacío.
-if command -v git > /dev/null 2>&1; then
-    RAW_REMOTE="$(git -C "$WORKSPACE" remote get-url origin 2> /dev/null || true)"
-fi
-
-if [ -n "$RAW_REMOTE" ]; then
-    # Normalización mínima: lowercase + strip de prefijos comunes + strip .git.
-    # Equivalente a gaia.project._normalize_remote() en bash puro.
-    s="${RAW_REMOTE,,}"             # lowercase (bash 4+)
-    s="${s#https://}"
-    s="${s#http://}"
-    s="${s#ssh://}"
-    s="${s#git+ssh://}"
-    s="${s#git+https://}"
-    # SSH form: git@host:owner/repo -> host/owner/repo
-    if [[ "$s" == git@* ]]; then
-        s="${s#git@}"
-        s="${s/:/\/}"               # primer ':' -> '/'
-    fi
-    s="${s%.git}"
-    s="${s%/}"
-    WORKSPACE_IDENTITY="$s"
-fi
-
-if [ -z "$WORKSPACE_IDENTITY" ]; then
-    # Fallback nivel 2: basename del workspace en lowercase.
-    base="$(basename "$(cd "$WORKSPACE" && pwd)")"
-    WORKSPACE_IDENTITY="${base,,}"
-fi
-
-if [ -z "$WORKSPACE_IDENTITY" ]; then
-    # Fallback nivel 3: literal 'global'.
-    WORKSPACE_IDENTITY="global"
-fi
-
-# El name (PK) y la identity son el mismo string en este flujo bootstrap.
-# El scanner puede actualizar identity más adelante; aquí sólo garantizamos
-# que existe una fila en `workspaces` para el workspace actual.
-sqlite3 "$GAIA_DB" <<EOF
-INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('${WORKSPACE_IDENTITY}', '${WORKSPACE_IDENTITY}');
-EOF
-
-echo "[bootstrap] Workspace registered (identity=${WORKSPACE_IDENTITY})"
+# The bootstrap never registers a workspace: only `gaia workspace declare` does.
 
 # === Section 5: FTS5 backfill ===
 
@@ -581,8 +496,8 @@ fi
 # gitops-operator, gaia-system, cloud-troubleshooter). Uses -ge for the same
 # reason Checks 1, 3, 5 do: the seed is INSERT OR IGNORE (idempotent), so a
 # DB carrying rows from prior Gaia versions may legitimately have additional
-# distinct agent_name values (e.g. the legacy "gaia-operator" before the
-# rename to "gaia-system" documented in Section 3 above). Strict equality
+# distinct agent_name values (e.g. the live "gaia-operator" agent, whose rows
+# a bootstrap never deletes). Strict equality
 # breaks every install on machines where ~/.gaia/gaia.db survived a Gaia
 # upgrade -- contradicts the "idempotent over many runs" principle declared
 # at line 12 of this script.
@@ -594,16 +509,6 @@ else
     ALL_OK=0
 fi
 
-# Check 3: al menos 1 workspace registrado (el actual). El bootstrap seedea
-# `workspaces`, no `projects`; el scanner es quien crea filas en `projects`
-# cuando descubre repos git dentro del workspace.
-WORKSPACE_COUNT="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM workspaces;")"
-if [ "$WORKSPACE_COUNT" -ge 1 ]; then
-    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- PASS"
-else
-    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- FAIL"
-    ALL_OK=0
-fi
 
 # Check 4: los 12 FTS5 triggers existen.
 # 3 por mirror (insert/delete/update) × 3 mirrors antiguos +

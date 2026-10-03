@@ -73,35 +73,18 @@ class TestNoPendingSurfacingBuilderRemains:
     def test_session_context_contains_no_pending_block(self, monkeypatch):
         """build_session_context must assemble without any pending block.
 
-        Stub the remaining builders so the assembler runs deterministically and
-        offline; the result must contain none of the pending-surfacing markers.
+        Stub the section builders so the assembler runs deterministically and
+        offline (the Environment section does live I/O: DB, crontab, PATH);
+        the result must contain none of the pending-surfacing markers.
         """
-        monkeypatch.setattr(
-            session_manifest, "build_where_i_am_block", lambda: "ENV"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_capabilities_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_projects_context_block", lambda: "PROJ"
-        )
-        # Recurring work (schedule drift/suspensions + task notifications,
-        # collapsed): stub to "" here -- this test targets the
-        # pending-approvals contract, not that block's own rendering, and it
-        # does live I/O (DB / crontab) that must not leak environment-dependent
-        # content into this deterministic join test.
-        monkeypatch.setattr(
-            session_manifest, "build_recurring_work_block", lambda: ""
-        )
-        # The assembler now calls build_workspace_memory_block ONCE, with
-        # sections=["anchor"] -- the no-sections digest call was retired.
-        monkeypatch.setattr(
-            session_manifest,
-            "build_workspace_memory_block",
-            lambda *a, **kw: "ANCHOR",
-        )
+        import gaia.store.reader as reader
+
+        monkeypatch.setattr(reader, "user_anchor_rows", lambda *a, **kw: [])
+        monkeypatch.setattr(session_manifest, "build_schema_direction_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_environment_section", lambda: "ENV")
+        monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "PROJ")
 
         result = session_manifest.build_session_context()
-        assert result == "ENV\n\nPROJ\n\nANCHOR"
+        assert result == "PROJ\n\nENV"
         assert "[ACTIONABLE]" not in result
         assert "PENDING-APPROVALS-VERIFIED" not in result

@@ -31,7 +31,7 @@ APPROVAL_ID = "P-a4e54958238e4428b49e5623ab4f527a"
 SESSION_ID = "ses_f53ee3ac2ffeLzO3PSaVXUxFYy"
 RETRY_CALL_ID = "call_RPws80NkLnr3VjRiriMk6QSx"
 ROLE = "gaia-operator"
-COMMAND = "cp /dev/null /home/jorge/.gaia/scratch/oc-lote-probe1.txt"
+COMMAND = "cp /dev/null /home/user/.gaia/scratch/oc-lote-probe1.txt"
 FINGERPRINT = hashlib.sha256(COMMAND.encode("utf-8")).hexdigest()
 
 
@@ -49,6 +49,12 @@ def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
 
 
 def _refusals(db_env):
+    """Recorded refusals in insertion order.
+
+    The reader returns newest-first by a one-second timestamp, so two rows
+    written across a second boundary come back reversed; row id is the order
+    they were written in.
+    """
     from gaia.approvals.decision_audit import CONSENT_RETRY_REFUSED_EVENT
     from gaia.store.reader import cross_surface_query
 
@@ -56,11 +62,17 @@ def _refusals(db_env):
         surface="harness_events", type=CONSENT_RETRY_REFUSED_EVENT,
         db_path=Path(db_env["GAIA_DB"]),
     )
+    rows = sorted(rows, key=lambda row: row["raw"]["id"])
     return [(row["raw"]["severity"], json.loads(row["raw"]["payload"])) for row in rows]
 
 
-def test_the_bridge_records_a_refused_retry_with_the_comparison_that_refused_it(db_env):
+def test_the_bridge_records_a_refused_retry_with_the_comparison_that_refused_it(db_env, monkeypatch):
+    """The two refusals read back in the order recorded, even across a second boundary."""
     import bridge as opencode_bridge
+    import gaia.store.writer as writer
+
+    stamps = iter(("2026-09-29T15:30:41Z", "2026-09-29T15:30:42Z"))
+    monkeypatch.setattr(writer, "_now_iso", lambda: next(stamps))
 
     refusals = (
         ("role_mismatch", ROLE, "developer"),

@@ -240,6 +240,10 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("context", "prune-workspaces"),
             ("scan",),
             ("release", "check"),
+            ("workspace", "retire"),
+            ("workspace", "curate"),
+            ("memory", "add"),
+            ("memory", "link"),
         }
 
     def test_cloud_cli_paths_are_the_reviewed_mutative_forms(self):
@@ -340,13 +344,17 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         }
 
     def test_only_the_reviewed_shipped_anchors_carry_a_flag_condition(self):
-        """The flag half of the seam has three shipped users.
+        """The flag half of the seam has five shipped users.
 
         ``kubectl run`` -- a bare invocation names no form that actually
         starts a workload, so the condition is carried by the flag that does:
         an explicit image. ``terraform``/``terragrunt init`` -- a bare
         invocation is idempotent bootstrapping, so the condition is carried
-        by the three flags that actually mutate state. Every other shipped
+        by the three flags that actually mutate state. ``gaia memory add`` --
+        a new row is append-only bookkeeping; only ``--replace`` rewrites an
+        existing row in place. ``gaia memory link`` -- creating an edge is
+        bookkeeping; only ``--delete`` removes one, and memory_links keeps no
+        history. Every other shipped
         anchor still decides by path alone. A new flagged entry arriving here
         is a review point same as any other addition.
         """
@@ -361,6 +369,8 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("kubectl", "run"): frozenset({"--image"}),
             ("terraform", "init"): state_flags,
             ("terragrunt", "init"): state_flags,
+            ("gaia", "memory", "add"): frozenset({"--replace"}),
+            ("gaia", "memory", "link"): frozenset({"--delete"}),
         }
 
 

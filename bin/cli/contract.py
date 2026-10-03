@@ -1290,6 +1290,37 @@ def _freshest_envelope(contract_id: Optional[str], row: dict) -> "tuple[Optional
     return envelope, "db_row"
 
 
+_HINT_ROWS_PER_COLUMN = 5
+
+
+def _other_identifier_hint(value: str) -> str:
+    """Name the harness id of rows that ``value`` matches as an agent_id or a
+    session_id instead, or return "" when it matches neither.
+
+    Both are easy to mistake for the harness id: an agent_id has the same
+    shape in Claude Code, and in OpenCode the session_id column holds the
+    PARENT's session while the harness id is the child's own.
+    """
+    from gaia.store.writer import list_agent_contract_handoffs
+
+    hints = []
+    for column in ("agent_id", "session_id"):
+        rows = list_agent_contract_handoffs(
+            **{column: value}, limit=_HINT_ROWS_PER_COLUMN,
+        )
+        if not rows:
+            continue
+        stamped = list(dict.fromkeys(
+            row["harness_agent_id"] for row in rows if row.get("harness_agent_id")
+        ))
+        row_ids = ", ".join(str(row.get("id")) for row in rows)
+        named = ", ".join(stamped) if stamped else "none, the rows were never stamped"
+        hints.append(
+            f" {value!r} is the {column} of row(s) {row_ids}; their harness id: {named}."
+        )
+    return "".join(hints)
+
+
 def _view_by_harness_id(args, harness_id: str) -> int:
     """Resolve and print a turn's contract by the HARNESS's per-run agent id.
 
@@ -1302,22 +1333,36 @@ def _view_by_harness_id(args, harness_id: str) -> int:
     grep. The freshest source wins -- see :func:`_freshest_envelope`, which
     this and ``cmd_view``'s own ``--draft-id`` recovery lane both call, so the
     two addressing modes recover identically once a row is in hand.
+
+    A resume chain shares one harness id across every link, so the id matches
+    several rows; the view shows the live link and lists every matched row in
+    ``links`` in birth order. The live link is chosen by the chain's own
+    edges, then by birth order (created_at, id): created_at has one-second
+    resolution, so links born in the same second tie on it.
     """
-    from gaia.store.writer import list_agent_contract_handoffs
+    from gaia.store.writer import (
+        collapse_continuation_chains,
+        list_agent_contract_handoffs,
+    )
 
     as_json = bool(getattr(args, "json", False))
-    rows = list_agent_contract_handoffs(harness_agent_id=harness_id, limit=1)
-    if not rows:
+    links = sorted(
+        list_agent_contract_handoffs(harness_agent_id=harness_id),
+        key=lambda link: (link.get("created_at") or "", link.get("id") or 0),
+    )
+    if not links:
         _print_error(
-            f"no contract row carries harness_agent_id={harness_id!r}. Rows "
-            f"are stamped at SubagentStart (v40); a turn dispatched before "
-            f"that version, or one whose start never reached the stamping "
-            f"seam, is only reachable by session/date via 'gaia contract "
-            f"list'.",
+            f"no contract row carries harness_agent_id={harness_id!r}. "
+            f"--harness-id expects the host's per-run id: the Task result's "
+            f"agentId in Claude Code, the child session id in OpenCode."
+            f"{_other_identifier_hint(harness_id)} Rows are stamped at "
+            f"SubagentStart (v40); a turn dispatched before that version, or "
+            f"one whose start never reached the stamping seam, is only "
+            f"reachable by session/date via 'gaia contract list'.",
             as_json=as_json,
         )
         return 1
-    row = rows[0]
+    row = collapse_continuation_chains(links)[-1]
     contract_id = row.get("contract_id")
     envelope, source = _freshest_envelope(contract_id, row)
 
@@ -1342,6 +1387,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
         "harness_agent_id": harness_id,
         "contract_id": contract_id,
         "handoff_id": row.get("id"),
+        "links": [link.get("id") for link in links],
         "agent_id": row.get("agent_id"),
         "agent_state": row.get("agent_state"),
         "cut_reason": row.get("cut_reason"),
@@ -1562,26 +1608,45 @@ def _birth_agent_name(row: dict) -> "str | None":
     return str(name) if name else None
 
 
-def _row_in_date_range(row: dict, since: Optional[str], until: Optional[str]) -> bool:
-    """Whether ``created_at`` falls inside the requested range.
+def _until_bound(value: str) -> str:
+    """Normalize ``--until`` through ``parse_when``; a bare date covers its whole day."""
+    from gaia.store.reader import parse_when
 
-    The column stores ISO-8601 UTC (``strftime('%Y-%m-%dT%H:%M:%SZ')``), which
-    sorts lexicographically, so a plain string comparison is a correct range
-    test for any ISO prefix the user passes (``2026-07-26`` or a full stamp).
-    ``--until`` is inclusive of the whole day when given as a bare date, hence
-    the prefix-aware upper bound.
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()):
+        return f"{value.strip()}T23:59:59Z"
+    return parse_when(value)
+
+
+def _plan_task_filter(args) -> Optional[list[int]]:
+    """The ``tasks.id`` set named by ``--plan-task`` and ``--brief``, or None.
+
+    ``--brief`` resolves through the brief's plan tasks because the rows'
+    ``brief_id`` column is not stamped at dispatch birth.
     """
-    created = row.get("created_at") or ""
-    if since and created < since:
-        return False
-    if until and created[: len(until)] > until:
-        return False
-    return True
+    from gaia.store.writer import list_brief_plan_task_ids
+
+    plan_task = getattr(args, "plan_task", None)
+    brief = getattr(args, "brief", None)
+    if brief is None:
+        return None if plan_task is None else [plan_task]
+    ids = list_brief_plan_task_ids(brief, workspace=args.workspace)
+    if plan_task is not None:
+        ids = [i for i in ids if i == plan_task]
+    return ids
 
 
 def cmd_list(args) -> int:
     """List persisted agent_contract_handoffs rows (read-only, SELECT only)."""
+    from gaia.store.reader import parse_when
     from gaia.store.writer import list_agent_contract_handoffs
+
+    try:
+        since = parse_when(args.since) if args.since else None
+        until = _until_bound(args.until) if args.until else None
+        plan_task_ids = _plan_task_filter(args)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     cut = getattr(args, "cut", None)
     rows = list_agent_contract_handoffs(
@@ -1593,10 +1658,11 @@ def cmd_list(args) -> int:
         harness_agent_id=getattr(args, "harness_id", None),
         cut_reason=None if cut in (None, _CUT_ANY) else cut,
         any_cut=cut == _CUT_ANY,
+        plan_task_ids=plan_task_ids,
+        since=since,
+        until=until,
         limit=args.limit,
     )
-    if args.since or args.until:
-        rows = [r for r in rows if _row_in_date_range(r, args.since, args.until)]
 
     # The derived name rides alongside the real columns in BOTH renderings, so a
     # --json consumer does not have to parse raw_handoff_json to learn which
@@ -1721,26 +1787,16 @@ def cmd_chain(args) -> int:
     return 0
 
 
-def _resolve_finalize_workspace(explicit: Optional[str]) -> str:
+def _resolve_workspace(explicit: Optional[str]) -> str:
     """Resolve the workspace to record this finalize's row under.
 
-    Harness-agnostic (decision #1): an explicit ``--workspace`` always wins;
-    otherwise this reads ``gaia.project.current()`` -- Gaia's OWN path-based
-    workspace resolution, never a Claude-Code env var -- and falls back to
-    ``"me"``, exactly mirroring every other bin/cli/*.py plugin's
-    ``_resolve_workspace`` (see bin/cli/task.py).
+    The shared CLI resolver ``gaia.project.cli_workspace``: an explicit
+    ``--workspace`` wins, then the dispatch env, then the project containing
+    the cwd, else ``"global"``.
     """
-    if explicit:
-        return explicit
-    try:
-        from gaia.project import current as _project_current
+    from gaia.project import cli_workspace
 
-        ws = _project_current()
-        if ws:
-            return ws
-    except Exception:
-        pass
-    return "me"
+    return cli_workspace(explicit)
 
 
 def _finalize_worktree_scope() -> str:
@@ -1809,7 +1865,7 @@ def cmd_finalize(args) -> int:
     agent_status = envelope.get("agent_status") or {}
     agent_id = agent_status.get("agent_id")
     agent_state = agent_status.get("agent_state")
-    workspace = _resolve_finalize_workspace(getattr(args, "workspace", None))
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
 
     # Identity coherence, made VISIBLE at the last seam before the row lands.
     # A draft id IS ``{agent_id}.{token}`` and resolution globs on that prefix
@@ -2437,6 +2493,24 @@ def _build_subcommands(sub) -> None:
             "historical or cut row's real evidence; view never writes and "
             "recovers from raw_handoff_json when no draft file remains."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia contract list --plan-task 824\n"
+            "  gaia contract list --brief my-brief --since 24h\n"
+            "  gaia contract list --cut --until 2026-09-30\n"
+        ),
+    )
+    p_list.add_argument(
+        "--plan-task", dest="plan_task", type=int, metavar="TASK_ID", default=None,
+        help=(
+            "Turns of one plan task (tasks.id, the task_id=<N> of a dispatch), "
+            "including resumed turns whose continuation chain leads back to it"
+        ),
+    )
+    p_list.add_argument(
+        "--brief", dest="brief", metavar="SLUG", default=None,
+        help="Turns of every task in this brief's plan (scoped by --workspace when given)",
     )
     p_list.add_argument(
         "--agent-id", "--agent", dest="agent_id", metavar="AGENT_ID", default=None,
@@ -2486,12 +2560,18 @@ def _build_subcommands(sub) -> None:
         help="Filter by workspace (default: all workspaces)",
     )
     p_list.add_argument(
-        "--since", dest="since", metavar="ISO_DATE", default=None,
-        help="Only rows created at or after this ISO date/timestamp",
+        "--since", dest="since", metavar="DUR_OR_DATE", default=None,
+        help=(
+            "Only rows created at or after this point: a duration back from "
+            "now (24h, 7d) or a date/timestamp (YYYY-MM-DD[THH:MM:SS])"
+        ),
     )
     p_list.add_argument(
-        "--until", dest="until", metavar="ISO_DATE", default=None,
-        help="Only rows created at or before this ISO date/timestamp (inclusive)",
+        "--until", dest="until", metavar="DUR_OR_DATE", default=None,
+        help=(
+            "Only rows created at or before this point, same forms as --since; "
+            "a bare date includes its whole day"
+        ),
     )
     p_list.add_argument(
         "--limit", dest="limit", type=int, default=20, metavar="N",
@@ -2531,7 +2611,8 @@ def _build_subcommands(sub) -> None:
         dest="workspace",
         metavar="WORKSPACE",
         default=None,
-        help="Workspace to record the row under (default: gaia.project.current() or 'me')",
+        help="Workspace to record the row under. Default: gaia.project.cli_workspace() "
+             "(env, then the project containing the cwd, else 'global')",
     )
     # Attribution flags -- SUPPLIED by the caller from its dispatch envelope,
     # never read from the environment (see the module docstring's "Attribution

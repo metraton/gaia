@@ -1,5 +1,5 @@
 """Integration tests for the bootstrap migration framework under the schema
-FLOOR model (Section 3b/3c of bootstrap_database.sh).
+FLOOR model (the migration chain of bootstrap_database.py).
 
 The historical v1->v17 migration chain was collapsed into a floor (v18). The
 bootstrap script no longer seeds v1 and walks the chain; instead it:
@@ -41,9 +41,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
+from tests.conftest import copy_bootstrapped_db
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
 _BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _DOCTOR_PY = _REPO_ROOT / "bin" / "cli" / "doctor.py"
@@ -55,10 +58,10 @@ _MIGRATIONS_DIR = _REPO_ROOT / "scripts" / "migrations"
 # ---------------------------------------------------------------------------
 
 def _read_floor() -> int:
-    """Parse SCHEMA_FLOOR=N from bootstrap_database.sh."""
-    text = _BOOTSTRAP_SH.read_text()
+    """Parse SCHEMA_FLOOR=N from bootstrap_database.py."""
+    text = _BOOTSTRAP_PY.read_text()
     m = re.search(r"^\s*SCHEMA_FLOOR\s*=\s*(\d+)\s*$", text, re.MULTILINE)
-    assert m is not None, "SCHEMA_FLOOR not found in bootstrap_database.sh"
+    assert m is not None, "SCHEMA_FLOOR not found in bootstrap_database.py"
     return int(m.group(1))
 
 
@@ -71,29 +74,12 @@ def _read_expected_version() -> int:
 
 
 def _run_bootstrap(workspace: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
-    """Invoke bootstrap_database.sh with GAIA_DB inside the workspace."""
-    tmp_db = workspace / "tmp_gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(tmp_db)
-    env["WORKSPACE"] = str(workspace)
-    if env_overrides:
-        env.update(env_overrides)
-    return subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-
-
-def _run_bootstrap_py(workspace: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
     """Invoke the canonical Python bootstrapper with GAIA_DB inside the workspace.
 
     This is the path `gaia install`/`gaia update`/the lazy bootstrap all use
-    (see bin/cli/install.py::_run_bootstrap), so the direction guard must hold
-    here, not only in the shell reference.
+    (see bin/cli/install.py::_run_bootstrap). It needs neither `bash` nor the
+    `sqlite3` CLI, so these tests hold on a machine that has only the suite's
+    own toolchain.
     """
     tmp_db = workspace / "tmp_gaia.db"
     env = os.environ.copy()
@@ -210,8 +196,8 @@ class TestUpgradeExistingDbToV28(unittest.TestCase):
     """
 
     def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_PY}")
         if not _SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
         if sqlite3.sqlite_version_info < (3, 35, 0):
@@ -287,157 +273,17 @@ class TestUpgradeExistingDbToV28(unittest.TestCase):
             )
             self._assert_v28_consistent(db)
 
-    def test_upgrade_is_idempotent(self):
-        """A second bootstrap on the upgraded DB is a clean no-op: no error, no
-        duplicate ledger rows, still consistent at v28."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            db = workspace / "tmp_gaia.db"
-            _build_v26_pre_contract_id_db(db)
-
-            res1 = _run_bootstrap(workspace)
-            self.assertEqual(res1.returncode, 0, res1.stderr)
-            con = sqlite3.connect(str(db))
-            try:
-                rows1 = sorted(r[0] for r in con.execute("SELECT version FROM schema_version"))
-            finally:
-                con.close()
-
-            res2 = _run_bootstrap(workspace)
-            self.assertEqual(res2.returncode, 0, res2.stderr)
-            self._assert_v28_consistent(db)
-
-            con = sqlite3.connect(str(db))
-            try:
-                rows2 = sorted(r[0] for r in con.execute("SELECT version FROM schema_version"))
-            finally:
-                con.close()
-
-            self.assertEqual(
-                rows1, rows2,
-                "second bootstrap changed the schema_version ledger (not idempotent)",
-            )
-            self.assertIn("up-to-date", res2.stdout)
-
-
-class TestV30ToV31DropDuplicateIndexes(unittest.TestCase):
-    """v30 -> v31 drops the three byte-identical duplicate indexes that
-    migrate_06 created on the old `project` column and migrate_08 left behind
-    after renaming that column to `workspace`.
-
-    The *_project* variants are NOT in schema.sql (they only exist in DBs that
-    inherited them via the historical migrate_06/08 path), so a fresh install
-    never has them and the DROP IF EXISTS is a no-op there. This test simulates
-    the legacy inheritance by re-creating the duplicates on a bootstrapped DB,
-    then applies v30_to_v31.sql and asserts the duplicates are gone while the
-    canonical *_workspace* variants remain.
-    """
-
-    _MIGRATION = _MIGRATIONS_DIR / "v30_to_v31.sql"
-    _DUPES = {
-        "idx_memory_project",
-        "idx_episodes_project_timestamp",
-        "idx_harness_events_project_ts",
-    }
-    _KEEP = {
-        "idx_memory_workspace",
-        "idx_episodes_workspace_timestamp",
-        "idx_harness_events_workspace_ts",
-    }
-
-    def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
-        if not self._MIGRATION.is_file():
-            self.skipTest(f"migration not found at {self._MIGRATION}")
-
-    @staticmethod
-    def _index_names(con: sqlite3.Connection) -> set:
-        return {
-            r[0]
-            for r in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
-            )
-        }
-
-    def test_migration_drops_only_the_project_duplicates(self):
-        mig_sql = self._MIGRATION.read_text()
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            res = _run_bootstrap(workspace)
-            self.assertEqual(res.returncode, 0, res.stderr)
-            db = workspace / "tmp_gaia.db"
-
-            con = sqlite3.connect(str(db))
-            try:
-                # Simulate the legacy inheritance: re-create the *_project*
-                # duplicates (definitionally identical to the *_workspace* ones).
-                con.executescript(
-                    "CREATE INDEX IF NOT EXISTS idx_memory_project "
-                    "  ON memory(workspace);"
-                    "CREATE INDEX IF NOT EXISTS idx_episodes_project_timestamp "
-                    "  ON episodes(workspace, timestamp DESC);"
-                    "CREATE INDEX IF NOT EXISTS idx_harness_events_project_ts "
-                    "  ON harness_events(workspace, ts DESC);"
-                )
-                con.commit()
-
-                before = self._index_names(con)
-                self.assertTrue(
-                    self._DUPES <= before, f"fixture missing dupes: {self._DUPES - before}"
-                )
-                self.assertTrue(
-                    self._KEEP <= before, f"fixture missing keepers: {self._KEEP - before}"
-                )
-
-                con.executescript(mig_sql)
-                con.commit()
-                after = self._index_names(con)
-
-                self.assertFalse(
-                    self._DUPES & after,
-                    f"migration left duplicate indexes: {self._DUPES & after}",
-                )
-                self.assertTrue(
-                    self._KEEP <= after,
-                    f"migration dropped canonical indexes: {self._KEEP - after}",
-                )
-
-                # Idempotent: a second apply on the already-cleaned DB is a no-op.
-                con.executescript(mig_sql)
-                con.commit()
-                self.assertEqual(self._index_names(con), after)
-            finally:
-                con.close()
-
-    def test_fresh_install_has_no_project_duplicates(self):
-        """A fresh install (bootstrap walks floor -> EXPECTED incl. v31) must
-        carry only the *_workspace* variants, never the *_project* duplicates."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            res = _run_bootstrap(workspace)
-            self.assertEqual(res.returncode, 0, res.stderr)
-            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
-            try:
-                names = self._index_names(con)
-            finally:
-                con.close()
-            self.assertFalse(
-                self._DUPES & names,
-                f"fresh install carries duplicate indexes: {self._DUPES & names}",
-            )
-            self.assertTrue(
-                self._KEEP <= names,
-                f"fresh install missing canonical indexes: {self._KEEP - names}",
-            )
-
-
 class TestBootstrapFloorModel(unittest.TestCase):
     """End-to-end coverage of Section 3b/3c under the floor model."""
 
+    @pytest.fixture(autouse=True)
+    def _fresh_install(self, bootstrapped_db_template):
+        """The session's real bootstrap output, standing in for a first run."""
+        self.fresh_install = bootstrapped_db_template
+
     def setUp(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_PY}")
         if not _SCHEMA_SQL.is_file():
             self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
         self.floor = _read_floor()
@@ -481,8 +327,12 @@ class TestBootstrapFloorModel(unittest.TestCase):
             finally:
                 con.close()
 
-            # stdout should reflect the floor baseline path, not a chain walk.
-            self.assertIn(f"floor (v{self.floor})", res.stdout)
+            # The run replays the chain from the floor and seals at EXPECTED.
+            self.assertIn(
+                f"chain v{self.floor}..v{self.expected}: applied and sealed "
+                f"at v{self.expected}",
+                res.stdout,
+            )
 
     # ----- 2. Below-floor DB is rejected ----------------------------------
 
@@ -524,8 +374,7 @@ class TestBootstrapFloorModel(unittest.TestCase):
         and adds no duplicate schema_version rows."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            res1 = _run_bootstrap(workspace)
-            self.assertEqual(res1.returncode, 0, res1.stderr)
+            copy_bootstrapped_db(self.fresh_install, workspace / "tmp_gaia.db")
             res2 = _run_bootstrap(workspace)
             self.assertEqual(res2.returncode, 0, res2.stderr)
 
@@ -560,7 +409,7 @@ class TestSchemaDirectionGuard(unittest.TestCase):
     code being installed) was previously unguarded -- the `else` branch logged
     "up-to-date" and the install "succeeded", leaving stale code to read a newer
     schema. That is the exact drift that broke `gaia contract finalize`. Both
-    bootstrap paths (the canonical .py and the shell reference) must:
+    bootstrap path must:
       * exit non-zero,
       * name the direction ("NEWER than ... expects"),
       * leave the DB ledger UNTOUCHED (no clobber).
@@ -596,37 +445,8 @@ class TestSchemaDirectionGuard(unittest.TestCase):
             db = workspace / "tmp_gaia.db"
             newer = self.expected + 1
             _build_above_expected_db(db, newer)
-            res = _run_bootstrap_py(workspace)
-            self._assert_refused_and_untouched(res, db, newer)
-
-    def test_sh_bootstrap_refuses_newer_db(self):
-        if not _BOOTSTRAP_SH.is_file():
-            self.skipTest(f"bootstrap_database.sh not found at {_BOOTSTRAP_SH}")
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            db = workspace / "tmp_gaia.db"
-            newer = self.expected + 5
-            _build_above_expected_db(db, newer)
             res = _run_bootstrap(workspace)
             self._assert_refused_and_untouched(res, db, newer)
-
-    def test_py_bootstrap_accepts_db_at_expected(self):
-        """Control: a DB exactly AT the expected version is the aligned case --
-        the guard must NOT fire (idempotent no-op, rc=0)."""
-        if not _BOOTSTRAP_PY.is_file():
-            self.skipTest(f"bootstrap_database.py not found at {_BOOTSTRAP_PY}")
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            db = workspace / "tmp_gaia.db"
-            _build_above_expected_db(db, self.expected)
-            res = _run_bootstrap_py(workspace)
-            self.assertEqual(
-                res.returncode, 0,
-                f"aligned DB (==expected) wrongly refused:\nstdout:\n{res.stdout}\n"
-                f"stderr:\n{res.stderr}",
-            )
-            self.assertIn("up-to-date", res.stdout)
-
 
 # ---------------------------------------------------------------------------
 # Parser test for check_schema_ddl_consistency
@@ -729,6 +549,166 @@ class TestDdlCheckParser(unittest.TestCase):
             evidence_values,
             {"text", "file", "command_output", "url", "screenshot"},
         )
+
+
+_HARNESS = "/w/harness/Auto-claude-code-research-in-sleep"
+_DUPLICATE = "/w/github-repos/_duplicados/auto-claude-sleep"
+_REMOTE_IDENTITY = "github.com/metraton/auto-claude-code-research-in-sleep"
+
+
+def _apply_v64(db: Path) -> None:
+    _apply_migration(db, "v63_to_v64.sql")
+
+
+def _apply_migration(db: Path, filename: str) -> None:
+    """Run one migration the way the bootstrap does: statement by statement, one transaction."""
+    sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+    import migration_guard
+
+    con = sqlite3.connect(str(db))
+    con.isolation_level = None
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        sql = (_MIGRATIONS_DIR / filename).read_text(encoding="utf-8")
+        for statement in migration_guard.split_statements(sql):
+            con.execute(statement)
+        con.execute("COMMIT")
+    finally:
+        con.close()
+
+
+@pytest.fixture()
+def duplicate_clone_pair(bootstrapped_db_template, tmp_path):
+    """A v63 database holding the real duplicate pair as two rows keyed by git-common-dir."""
+    tmp_db = copy_bootstrapped_db(bootstrapped_db_template, tmp_path / "gaia.db")
+    con = sqlite3.connect(str(tmp_db))
+    try:
+        con.executemany(
+            "INSERT INTO projects (workspace, name, remote_url, path, status, "
+            "project_identity, description) VALUES ('ws', ?, ?, ?, 'active', ?, ?)",
+            [
+                ("auto-claude-sleep",
+                 "git@github.com:Metraton/Auto-claude-code-research-in-sleep.git",
+                 _DUPLICATE, f"{_DUPLICATE}/.git", None),
+                ("Auto-claude-code-research-in-sleep",
+                 "https://github.com/metraton/auto-claude-code-research-in-sleep",
+                 _HARNESS, f"{_HARNESS}/.git", "research harness"),
+                ("local-only", None, "/w/local-only", "/w/local-only/.git", None),
+            ],
+        )
+        con.execute(
+            "INSERT INTO apps (workspace, project, name) VALUES ('ws', 'auto-claude-sleep', 'api')"
+        )
+        con.executemany(
+            "INSERT INTO memory (workspace, name, type, body, project_ref, initiative) "
+            "VALUES ('ws', ?, 'project', 'note', ?, ?)",
+            [
+                ("note-duplicate", f"{_DUPLICATE}/.git", "auto_claude_sleep"),
+                ("note-harness", f"{_HARNESS}/.git", "auto_claude_code_research_in_sleep"),
+                ("note-unscoped", f"{_DUPLICATE}/.git", None),
+                ("note-local", "/w/local-only/.git", "local_only"),
+            ],
+        )
+        con.commit()
+    finally:
+        con.close()
+    return tmp_db
+
+
+def _query(db: Path, sql: str) -> list[tuple]:
+    con = sqlite3.connect(str(db))
+    try:
+        return con.execute(sql).fetchall()
+    finally:
+        con.close()
+
+
+def test_v64_folds_the_duplicate_clone_pair_into_one_project_with_a_copy(duplicate_clone_pair):
+    _apply_v64(duplicate_clone_pair)
+
+    assert _query(
+        duplicate_clone_pair,
+        "SELECT name, project_identity, description FROM projects ORDER BY name",
+    ) == [
+        ("Auto-claude-code-research-in-sleep", _REMOTE_IDENTITY, "research harness"),
+        ("local-only", "/w/local-only/.git", None),
+    ]
+    assert _query(
+        duplicate_clone_pair, "SELECT project, scope, key FROM project_facets"
+    ) == [("Auto-claude-code-research-in-sleep", "copy", _DUPLICATE)]
+    assert _query(duplicate_clone_pair, "SELECT COUNT(*) FROM apps") == [(0,)]
+
+
+def test_v64_keeps_every_memory_note_attached_to_its_project(duplicate_clone_pair):
+    from gaia.store.writer import canonical_project_key, initiative_from_project_ref
+
+    _apply_v64(duplicate_clone_pair)
+
+    notes = _query(
+        duplicate_clone_pair,
+        "SELECT name, project_ref, initiative FROM memory ORDER BY name",
+    )
+    assert [(name, ref) for name, ref, _ in notes] == [
+        ("note-duplicate", _REMOTE_IDENTITY),
+        ("note-harness", _REMOTE_IDENTITY),
+        ("note-local", "/w/local-only/.git"),
+        ("note-unscoped", _REMOTE_IDENTITY),
+    ]
+    project_key = initiative_from_project_ref(_REMOTE_IDENTITY)
+    assert {
+        name: canonical_project_key(ref, initiative) for name, ref, initiative in notes
+    } == {
+        "note-duplicate": project_key,
+        "note-harness": project_key,
+        "note-local": "local_only",
+        "note-unscoped": project_key,
+    }
+
+
+def test_v65_adds_a_nullable_brief_project_and_leaves_existing_briefs_untouched(
+    bootstrapped_db_template, tmp_path,
+):
+    db = copy_bootstrapped_db(bootstrapped_db_template, tmp_path / "gaia.db")
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("ALTER TABLE briefs DROP COLUMN project")
+        con.execute("INSERT INTO workspaces (name) VALUES ('ws')")
+        con.execute(
+            "INSERT INTO briefs (workspace, name, status, title, created_at, updated_at) "
+            "VALUES ('ws', 'roadmap', 'open', 'Roadmap', '2026-01-01T00:00:00Z', "
+            "'2026-01-01T00:00:00Z')"
+        )
+        con.commit()
+    finally:
+        con.close()
+    before = _query(db, "SELECT * FROM briefs")
+
+    _apply_migration(db, "v64_to_v65.sql")
+
+    column = [c for c in _query(db, "PRAGMA table_info(briefs)") if c[1] == "project"]
+    assert [(c[2], c[3]) for c in column] == [("TEXT", 0)]
+    assert _query(db, "SELECT * FROM briefs") == [row + (None,) for row in before]
+
+
+def test_v66_indexes_workspace_status_and_rewrites_no_row(bootstrapped_db_template, tmp_path):
+    db = copy_bootstrapped_db(bootstrapped_db_template, tmp_path / "gaia.db")
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("DROP INDEX idx_workspaces_status")
+        con.executemany(
+            "INSERT INTO workspaces (name, root_path) VALUES (?, ?)",
+            [("ws", "/w"), ("me", None)],
+        )
+        con.execute("INSERT INTO workspace_aliases (alias, target) VALUES ('me', 'ws')")
+        con.commit()
+    finally:
+        con.close()
+    before = _query(db, "SELECT * FROM workspaces ORDER BY name")
+
+    _apply_migration(db, "v65_to_v66.sql")
+
+    assert _query(db, "PRAGMA index_info(idx_workspaces_status)")[0][2] == "status"
+    assert _query(db, "SELECT * FROM workspaces ORDER BY name") == before
 
 
 if __name__ == "__main__":

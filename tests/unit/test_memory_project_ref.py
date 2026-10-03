@@ -99,7 +99,7 @@ def test_upsert_memory_update_without_project_ref_preserves_existing(db: Path) -
         "me", "sticky", type="project", body="v1",
         project_ref="github.com/x/gaia", db_path=db,
     )
-    upsert_memory("me", "sticky", type="project", body="v2", db_path=db)
+    upsert_memory("me", "sticky", type="project", body="v2", replace=True, db_path=db)
 
     con = _connect(db)
     try:
@@ -124,7 +124,7 @@ def test_upsert_memory_update_with_new_project_ref_overwrites(db: Path) -> None:
     )
     upsert_memory(
         "me", "reanchor", type="project", body="v2",
-        project_ref="github.com/x/new", db_path=db,
+        project_ref="github.com/x/new", replace=True, db_path=db,
     )
 
     con = _connect(db)
@@ -151,7 +151,7 @@ def test_get_memory_exposes_project_ref(db: Path) -> None:
 
 # ---------------------------------------------------------------------------
 # reanchor_memory_project_ref() -- the RE-ANCHOR correction path
-# (gaia memory edit --project / --project-ref)
+# (gaia memory add --replace --project / --project-ref)
 # ---------------------------------------------------------------------------
 
 def _get_project_ref(db_path: Path, workspace: str, name: str):
@@ -432,8 +432,8 @@ def test_normalize_initiative(raw, expected) -> None:
 @pytest.mark.parametrize(
     "ref,expected",
     [
-        ("/home/jorge/ws/me/gaia/.git", "gaia"),
-        ("/home/jorge/ws/me/balance/.git", "balance"),
+        ("/home/user/ws/me/gaia/.git", "gaia"),
+        ("/home/user/ws/me/balance/.git", "balance"),
         ("github.com/me/direct", "direct"),
         ("myrepo.git", "myrepo"),
         ("/a/b/c/", "c"),
@@ -466,10 +466,10 @@ def test_upsert_memory_derives_initiative_from_project_ref(db: Path) -> None:
 
     upsert_memory(
         "me", "project_g_notes", type="project", body="notes",
-        project_ref="/home/jorge/ws/me/gaia/.git", db_path=db,
+        project_ref="/home/user/ws/me/gaia/.git", db_path=db,
     )
     assert _get_initiative(db, "me", "project_g_notes") == "gaia"
-    assert _get_project_ref(db, "me", "project_g_notes") == "/home/jorge/ws/me/gaia/.git"
+    assert _get_project_ref(db, "me", "project_g_notes") == "/home/user/ws/me/gaia/.git"
 
 
 def test_upsert_memory_explicit_initiative_wins_over_project_ref(db: Path) -> None:
@@ -479,7 +479,7 @@ def test_upsert_memory_explicit_initiative_wins_over_project_ref(db: Path) -> No
 
     upsert_memory(
         "me", "override", type="project", body="notes",
-        project_ref="/home/jorge/ws/me/gaia/.git", initiative="century",
+        project_ref="/home/user/ws/me/gaia/.git", initiative="century",
         db_path=db,
     )
     assert _get_initiative(db, "me", "override") == "century"
@@ -501,7 +501,7 @@ def test_upsert_memory_update_without_initiative_preserves_existing(db: Path) ->
         "me", "sticky_init", type="project", body="v1",
         initiative="branchkinect", db_path=db,
     )
-    upsert_memory("me", "sticky_init", type="project", body="v2", db_path=db)
+    upsert_memory("me", "sticky_init", type="project", body="v2", replace=True, db_path=db)
 
     assert _get_initiative(db, "me", "sticky_init") == "branchkinect"
 

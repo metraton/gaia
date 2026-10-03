@@ -508,7 +508,7 @@ class TestProjectTag:
     def test_project_ref_git_path_renders_basename_tag(self, tmp_db, capsys):
         _insert_memory(tmp_db, "atom_tagged", "atom", "thread", "open",
                        "tagged row", "2026-05-22T10:00:00Z",
-                       project_ref="/home/jorge/ws/me/gaia/.git")
+                       project_ref="/home/user/ws/me/gaia/.git")
         _insert_memory(tmp_db, "atom_untagged", "atom", "thread", "open",
                        "no tag", "2026-05-22T09:00:00Z", project_ref=None)
 
@@ -523,7 +523,7 @@ class TestProjectTag:
         assert "[" not in untagged
 
     def test_project_tag_helper(self):
-        assert memory_mod._project_tag("/home/jorge/ws/me/gaia/.git") == "gaia"
+        assert memory_mod._project_tag("/home/user/ws/me/gaia/.git") == "gaia"
         assert memory_mod._project_tag("id/p1") == "p1"
         assert memory_mod._project_tag("gaia") == "gaia"
         assert memory_mod._project_tag(None) == ""
@@ -542,7 +542,7 @@ class TestEmptySectionsOmitHeader:
         assert rc == 0
         payload = json.loads(out)
         block = payload["block"]
-        assert "What the user has established" in block
+        assert "## The user" in block
         assert "For this session" not in block
         assert "Open threads" not in block
 
@@ -618,7 +618,7 @@ class TestHeaderStructure:
         payload = json.loads(out)
         block = payload["block"]
         assert "## Memory — For this session" in block
-        assert "## What the user has established" in block
+        assert "## The user" in block
         assert "## Memory — Open threads" in block
 
 
@@ -653,7 +653,7 @@ class TestSectionsFilter:
         assert rc == 0
         payload = json.loads(out)
         block = payload["block"]
-        assert "## What the user has established" in block
+        assert "## The user" in block
         assert "## Memory — For this session" not in block
         assert "## Memory — Open threads" not in block
         # items are anchors only
@@ -668,7 +668,7 @@ class TestSectionsFilter:
         assert rc == 0
         block = json.loads(out)["block"]
         assert "## Memory — For this session" in block
-        assert "## What the user has established" in block
+        assert "## The user" in block
         assert "## Memory — Open threads" in block
 
     def test_sections_omitted_now_renders_digest_not_sections(self, tmp_db, capsys):
@@ -681,7 +681,7 @@ class TestSectionsFilter:
         assert rc == 0
         block = json.loads(out)["block"]
         assert "## Memory — Live pending across every project" in block
-        assert "## What the user has established" not in block
+        assert "## The user" not in block
 
     def test_sections_empty_string_falls_back_to_all(self, tmp_db, capsys):
         """A blank/whitespace --sections is a safe fallback to all sections."""
@@ -691,7 +691,7 @@ class TestSectionsFilter:
         assert rc == 0
         block = json.loads(out)["block"]
         assert "## Memory — For this session" in block
-        assert "## What the user has established" in block
+        assert "## The user" in block
         assert "## Memory — Open threads" in block
 
     def test_sections_unknown_token_ignored_falls_back_to_all(self, tmp_db, capsys):
@@ -701,7 +701,7 @@ class TestSectionsFilter:
         out = capsys.readouterr().out
         assert rc == 0
         block = json.loads(out)["block"]
-        assert "## What the user has established" in block
+        assert "## The user" in block
         assert "## Memory — For this session" in block
 
     def test_sections_multi_subset(self, tmp_db, capsys):
@@ -711,6 +711,6 @@ class TestSectionsFilter:
         out = capsys.readouterr().out
         assert rc == 0
         block = json.loads(out)["block"]
-        assert "## What the user has established" in block
+        assert "## The user" in block
         assert "## Memory — Open threads" in block
         assert "## Memory — For this session" not in block

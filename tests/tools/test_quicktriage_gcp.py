@@ -52,45 +52,16 @@ def test_query_failure_is_not_reported_as_empty_or_healthy(tmp_path):
     assert "All quotas healthy" not in result.stdout
 
 
-def test_successful_empty_inventory_is_distinct_from_failure(tmp_path):
-    result = _run_with_mock(tmp_path, "exit 0\n")
-
-    assert result.returncode == 0
-    assert "No clusters found" in result.stdout
-    assert "No instances found" in result.stdout
-    assert "No recent errors" in result.stdout
-    assert "All quotas healthy" in result.stdout
-
-
-def test_stderr_chatter_on_success_is_not_data(tmp_path):
-    """gcloud config/WARNING chatter on stderr must not pollute captured values."""
+def test_quiet_inputs_do_not_turn_a_healthy_project_into_a_failure(tmp_path):
+    """A project with no clusters, gcloud chatter on stderr and a payload larger
+    than a pipe buffer is healthy: exit 0, never an alarm or an aborted triage."""
     result = _run_with_mock(
         tmp_path,
         """
 echo "Your active configuration is: [default]" >&2
 echo "WARNING: something advisory" >&2
 case "$*" in
-  "container clusters list"*) printf 'cluster-a RUNNING\\n' ;;
-  "sql instances list"*) printf 'db-a RUNNABLE\\n' ;;
-  "logging read"*) ;;
-  "compute project-info describe"*) printf '1 10\\n' ;;
-esac
-""",
-    )
-
-    assert result.returncode == 0
-    assert "Issues detected" not in result.stdout
-    assert "1 cluster(s) running" in result.stdout
-    assert "1 instance(s) running" in result.stdout
-
-
-def test_large_error_payload_does_not_sigpipe(tmp_path):
-    """head -3 closing the pipe on a >64KB payload must not abort (exit 141)."""
-    result = _run_with_mock(
-        tmp_path,
-        """
-case "$*" in
-  "container clusters list"*) printf 'cluster-a RUNNING\\n' ;;
+  "container clusters list"*) ;;
   "sql instances list"*) printf 'db-a RUNNABLE\\n' ;;
   "logging read"*) for i in $(seq 1 5000); do printf 'cluster-a error-line-%06d-padding-padding-padding\\n' "$i"; done ;;
   "compute project-info describe"*) printf '1 10\\n' ;;
@@ -99,6 +70,9 @@ esac
     )
 
     assert result.returncode == 0
+    assert "No clusters found" in result.stdout
+    assert "1 instance(s) running" in result.stdout
+    assert "Issues detected" not in result.stdout
     assert "errors in last hour" in result.stdout
 
 

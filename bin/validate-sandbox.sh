@@ -18,7 +18,8 @@
 #     passed, that path is used as-is. Otherwise auto-detection walks up
 #     from cwd looking for a .claude/ with a Gaia instance marker
 #     (.claude/hooks/, .claude/agents/, or node_modules/@jaguilar87/gaia/),
-#     falling back to $HOME/ws/me/ if present. NO cleanup -- the install
+#     falling back to $GAIA_WORKSPACE_PATH when set; with neither it exits 1
+#     and asks for --workspace. NO cleanup -- the install
 #     IS the installation. A fresh tarball install avoids per-path approval
 #     prompts for edited files during a session.
 #     There is no npm postinstall hook (bootstrap is lazy, see
@@ -61,8 +62,10 @@ Options:
                       or auto-detect from cwd).
                       Local mode skips the settings-preservation check
                       (no pre-install snapshot of the real workspace).
-  --workspace <path>  Explicit target directory for --target local.
+  --workspace <path>  Explicit install folder for --target local.
                       Bypasses auto-detection. Ignored with --target sandbox.
+                      Without it, local mode walks up from cwd, then uses
+                      $GAIA_WORKSPACE_PATH; with neither it fails.
   --fresh             Before `npm install`, wipe node_modules/, package.json,
                       and package-lock.json from the workspace. Forces a
                       clean install — useful when a prior install left
@@ -197,9 +200,9 @@ detect_local_workspace() {
     fi
     dir="$(dirname "${dir}")"
   done
-  # Priority 2: fallback to $HOME/ws/me if it exists and has .claude/.
-  if [[ -d "${HOME}/ws/me/.claude" ]]; then
-    echo "${HOME}/ws/me"
+  # Priority 2: the install folder named by GAIA_WORKSPACE_PATH, when it exists.
+  if [[ -n "${GAIA_WORKSPACE_PATH:-}" && -d "${GAIA_WORKSPACE_PATH}" ]]; then
+    echo "${GAIA_WORKSPACE_PATH}"
     return 0
   fi
   return 1
@@ -288,11 +291,11 @@ else
     WORKSPACE="${WORKSPACE_OVERRIDE}"
     echo "[local] target workspace (override): ${WORKSPACE}"
   elif ! WORKSPACE="$(detect_local_workspace)"; then
-    echo "FATAL: --target local could not locate a workspace." >&2
+    echo "FATAL: --target local could not locate an install folder." >&2
     echo "       Walked up from cwd looking for a .claude/ with a Gaia marker" >&2
     echo "       (hooks/, agents/, or node_modules/@jaguilar87/gaia/)," >&2
-    echo "       fallback \$HOME/ws/me/.claude/ also absent." >&2
-    echo "       Pass --workspace <path> to override." >&2
+    echo "       and GAIA_WORKSPACE_PATH is unset or not a directory." >&2
+    echo "       Pass --workspace <install-folder>, or set GAIA_WORKSPACE_PATH." >&2
     exit 1
   else
     echo "[local] target workspace: ${WORKSPACE}"
@@ -442,7 +445,7 @@ install_package() {
 # (~/.local/bin/gaia), and a throwaway sandbox must never become the gaia the
 # user's shells run.
 wire_workspace() {
-  local install_args=(--workspace "${WORKSPACE}")
+  local install_args=(--channel npm --workspace "${WORKSPACE}")
   if [[ "${TARGET}" == "sandbox" ]]; then
     install_args+=(--no-path)
   fi
@@ -507,11 +510,9 @@ seed_sandbox_db() {
 
   # Run bootstrap to apply the full schema (tables, triggers, FTS5 mirrors).
   # We pass GAIA_DB so bootstrap_database.sh writes to the sandbox DB.
-  # WORKSPACE override points bootstrap at the sandbox dir for project registration.
   local bootstrap_script="${REPO_ROOT}/scripts/bootstrap_database.sh"
   if [[ -f "${bootstrap_script}" ]]; then
-    GAIA_DB="${sandbox_db}" WORKSPACE="${WORKSPACE}" \
-      bash "${bootstrap_script}" >/dev/null
+    GAIA_DB="${sandbox_db}" bash "${bootstrap_script}" >/dev/null
   else
     # Fallback: create the schema directly from the installed package's schema.sql
     local schema_sql="${WORKSPACE}/node_modules/@jaguilar87/gaia/gaia/store/schema.sql"
@@ -523,14 +524,14 @@ seed_sandbox_db() {
     fi
   fi
 
-  # Determine sandbox workspace_id: the directory basename (no git remote in
-  # an ephemeral /tmp dir, so gaia.project.current() falls back to basename).
-  local sandbox_ws_id
-  sandbox_ws_id="$(basename "${WORKSPACE}")"
-
-  # Ensure the workspace row exists (FK required by episodes).
+  # Declare the sandbox as a workspace rooted at its own directory, so the
+  # episodes below (FK on workspaces) belong to the workspace gaia.project.current()
+  # resolves from inside the sandbox.
+  local sandbox_ws_id="gaia-sandbox"
+  local sandbox_root
+  sandbox_root="$(cd "${WORKSPACE}" && pwd -P)"
   sqlite3 "${sandbox_db}" \
-    "INSERT OR IGNORE INTO workspaces(name, status) VALUES('${sandbox_ws_id}', 'active');"
+    "INSERT OR IGNORE INTO workspaces(name, status, root_path) VALUES('${sandbox_ws_id}', 'active', '${sandbox_root}');"
 
   # Seed episodes from the fixture's episodes.jsonl into the sandbox DB.
   # Each JSONL line is a complete episode object. We extract the fields that

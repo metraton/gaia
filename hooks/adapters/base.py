@@ -22,9 +22,7 @@ from .types import (
     HookResponse,
     HostCapability,
     HostDistribution,
-    QualityResult,
     ValidationResult,
-    VerificationResult,
 )
 
 
@@ -236,30 +234,6 @@ class HookAdapter(ABC):
     # ------------------------------------------------------------------ #
 
     @abstractmethod
-    def adapt_stop(self, raw: dict) -> QualityResult:
-        """Parse Stop event and assess response quality.
-
-        Preconditions:
-            - raw is the HookEvent.payload dict for a Stop event
-
-        Postconditions:
-            - Returns QualityResult with quality assessment
-        """
-        ...
-
-    @abstractmethod
-    def adapt_task_completed(self, raw: dict) -> VerificationResult:
-        """Parse TaskCompleted event and verify completion criteria.
-
-        Preconditions:
-            - raw is the HookEvent.payload dict for a TaskCompleted event
-
-        Postconditions:
-            - Returns VerificationResult with criteria assessment
-        """
-        ...
-
-    @abstractmethod
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Parse SubagentStart event and prepare agent context.
 
@@ -269,20 +243,6 @@ class HookAdapter(ABC):
         Postconditions:
             - Returns ContextResult with agent-specific context
         """
-        ...
-
-    # ------------------------------------------------------------------ #
-    # P2 formatters
-    # ------------------------------------------------------------------ #
-
-    @abstractmethod
-    def format_quality_response(self, result: QualityResult) -> HookResponse:
-        """Format a QualityResult for CLI consumption."""
-        ...
-
-    @abstractmethod
-    def format_verification_response(self, result: VerificationResult) -> HookResponse:
-        """Format a VerificationResult for CLI consumption."""
         ...
 
     @abstractmethod

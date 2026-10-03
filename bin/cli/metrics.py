@@ -281,22 +281,27 @@ def _read_jsonl(path: Path) -> list:
 def _read_audit_logs(root: Path, since_iso: str = None, until_iso: str = None) -> list:
     """Read every audit-*.jsonl entry, optionally bounded to [since_iso, until_iso].
 
+    Entries come from the data home's logs/ (where every channel writes now)
+    and from the workspace .claude/logs an earlier layout wrote to.
+
     ``since_iso`` / ``until_iso`` are ISO8601 strings (as produced by
     parse_when()); when both are None (the default), behaves exactly as
     before -- no filtering. Callers pass the retention-capped bound here
     (see cmd_metrics), never the raw requested window, since these files
     only retain ~30d.
     """
-    logs_dir = root / ".claude" / "logs"
-    if not logs_dir.exists():
-        return []
+    from gaia.paths import logs_dir
+
     all_entries = []
-    try:
-        for f in logs_dir.iterdir():
-            if f.name.startswith("audit-") and f.name.endswith(".jsonl"):
-                all_entries.extend(_read_jsonl(f))
-    except OSError:
-        pass
+    for directory in (logs_dir(), root / ".claude" / "logs"):
+        if not directory.is_dir():
+            continue
+        try:
+            for f in directory.iterdir():
+                if f.name.startswith("audit-") and f.name.endswith(".jsonl"):
+                    all_entries.extend(_read_jsonl(f))
+        except OSError:
+            pass
 
     if since_iso or until_iso:
         all_entries = [

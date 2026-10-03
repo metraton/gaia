@@ -45,7 +45,17 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("GAIA_WORKSPACE", "me")
     # The child's Task binding is not what is measured here.
     monkeypatch.setattr("gaia.store.writer.is_harness_session_bound", lambda _session: True)
-    from modules.security import mutative_verbs, tiers
+    # A real HOME is not a git working tree, but tmp_path can sit under one (a
+    # TMPDIR inside a checkout), where the shell-write guard would refuse the
+    # Bash writes these tests expect to be signed.
+    from modules.security import mutative_verbs, shell_write_guard, tiers
+
+    in_working_tree = shell_write_guard._in_working_tree
+    monkeypatch.setattr(
+        shell_write_guard,
+        "_in_working_tree",
+        lambda path: not Path(path).is_relative_to(fake) and in_working_tree(path),
+    )
 
     mutative_verbs.detect_mutative_command.cache_clear()
     mutative_verbs._detect_mutative_command.cache_clear()

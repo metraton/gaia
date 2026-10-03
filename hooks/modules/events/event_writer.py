@@ -97,8 +97,11 @@ class EventWriter:
 
     def __init__(self, events_dir: Optional[Path] = None):
         # Retained for compatibility with the legacy reader; not used for
-        # writes. Resolved lazily-safe (never raises here).
-        self.events_dir = events_dir or get_events_dir()
+        # writes. Never raises here: an unwritable data home leaves it None.
+        try:
+            self.events_dir = events_dir or get_events_dir()
+        except OSError:
+            self.events_dir = None
 
     def write_event(
         self,

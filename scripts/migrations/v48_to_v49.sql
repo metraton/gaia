@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v48 -> v49: reconcile memory_au on installations that stamped v48
 -- before the trigger DDL existed in v47_to_v48.sql.
 --

@@ -10,11 +10,18 @@ namespace is removed once, where the name enters, and nowhere else.
 Only Gaia's own namespace is removed. A name carrying any other plugin's
 namespace (``other:gaia-orchestrator``) is returned unchanged, so it never
 equals a bare Gaia name and cannot borrow the permissions of one.
+
+The orchestrator's name, and what an install artifact must carry for a host to
+start as it, are owned here too.
 """
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+
+ORCHESTRATOR = "gaia-orchestrator"
 
 # The plugin name Claude Code prefixes to Gaia's agents. Must equal ``name`` in
 # .claude-plugin/plugin.json (generated from build/gaia.manifest.json, the one
@@ -44,3 +51,46 @@ def canonical_agent_name(name: object) -> str:
 def dispatch_agent_from_env() -> str:
     """Return the canonical dispatched-agent name, or "" for a human CLI caller."""
     return canonical_agent_name(os.environ.get(DISPATCH_AGENT_ENV))
+
+
+def _frontmatter_name(agent_file: Path) -> str | None:
+    """Return the ``name`` an agent file declares in its frontmatter, or None."""
+    try:
+        lines = agent_file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not lines or lines[0].strip() != "---":
+        return None
+    for line in lines[1:]:
+        if line.strip() == "---":
+            return None
+        key, separator, value = line.partition(":")
+        if separator and key == "name":
+            return value.strip().strip("'\"")
+    return None
+
+
+def missing_orchestrator_identity(package_root: Path, *, plugin: bool) -> str | None:
+    """Name what *package_root* lacks to start a host as the orchestrator, or None.
+
+    A package install only needs the agent file declaring that name, because
+    `gaia install` writes the ``agent`` setting into the workspace; a plugin tree
+    must also carry that setting in its root settings.json, since the host reads
+    nothing else.
+    """
+    agent_file = package_root / "agents" / f"{ORCHESTRATOR}.md"
+    if not agent_file.is_file():
+        return f"{agent_file} is missing, so the host cannot start as {ORCHESTRATOR}"
+    if _frontmatter_name(agent_file) != ORCHESTRATOR:
+        return (f"{agent_file} does not declare name: {ORCHESTRATOR} in its "
+                f"frontmatter, so the host cannot start as {ORCHESTRATOR}")
+    if not plugin:
+        return None
+    settings = package_root / "settings.json"
+    try:
+        agent = json.loads(settings.read_text(encoding="utf-8")).get("agent")
+    except (OSError, ValueError, AttributeError):
+        agent = None
+    if agent != ORCHESTRATOR:
+        return f"{settings} does not set agent to {ORCHESTRATOR}"
+    return None

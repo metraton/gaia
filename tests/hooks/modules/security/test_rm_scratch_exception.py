@@ -150,7 +150,7 @@ def test_rm_relative_outside_stays_t3(scratch):
 
 
 def test_rm_absolute_outside_stays_t3(scratch):
-    result = detect_mutative_command("rm /home/jorge/ws/algo")
+    result = detect_mutative_command("rm /home/user/ws/algo")
     assert result.is_mutative is True
 
 
@@ -280,7 +280,7 @@ def test_e2e_scratch_glob_is_t3(validator, scratch):
 
 
 def test_e2e_outside_absolute_is_t3(validator, scratch):
-    assert _tier(validator, "rm /home/jorge/ws/algo") == "T3"
+    assert _tier(validator, "rm /home/user/ws/algo") == "T3"
 
 
 def test_e2e_no_path_is_t3(validator, scratch):

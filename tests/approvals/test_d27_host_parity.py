@@ -42,6 +42,7 @@ def approval_id(tmp_path, monkeypatch):
         question="¿Publico la rama?",
         session_id="ses-parity-requester", agent_id="developer",
         requested_from="/tmp/parity", rollback="Borrar la rama remota.",
+        verification="git ls-remote", shared_state="Sí: la rama remota.",
     )
 
 

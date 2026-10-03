@@ -185,7 +185,7 @@ def without_the_git_config_lane(monkeypatch):
     _clear_classifier_caches()
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command", ALL_WRITES, ids=[c for c, _ in ALL_WRITES]
 )
 def test_readonly_noun_shadow_write_forms_are_mutative_and_t3(case_id, command):
@@ -201,7 +201,7 @@ def test_readonly_noun_shadow_write_forms_are_mutative_and_t3(case_id, command):
     )
 
 
-@pytest.mark.parametrize("case_id,command", READS, ids=[c for c, _ in READS])
+@pytest.mark.table("case_id,command", READS, ids=[c for c, _ in READS])
 def test_readonly_noun_shadow_read_forms_stay_free(case_id, command):
     """Face (b): reading the same noun keeps costing nothing.
 
@@ -219,7 +219,7 @@ def test_readonly_noun_shadow_read_forms_stay_free(case_id, command):
     )
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case_id,command", ANCHORED_WRITES, ids=[c for c, _ in ANCHORED_WRITES]
 )
 def test_readonly_noun_shadow_counterfactual_without_the_anchor(
@@ -235,7 +235,7 @@ def test_readonly_noun_shadow_counterfactual_without_the_anchor(
     assert classify_command_tier(command) == T0
 
 
-@pytest.mark.parametrize("case_id,command", GIT_WRITES, ids=[c for c, _ in GIT_WRITES])
+@pytest.mark.table("case_id,command", GIT_WRITES, ids=[c for c, _ in GIT_WRITES])
 def test_readonly_noun_shadow_counterfactual_without_the_git_lane(
     case_id, command, without_the_git_config_lane
 ):
@@ -249,7 +249,7 @@ def test_readonly_noun_shadow_counterfactual_without_the_git_lane(
     assert classify_command_tier(command) == T0
 
 
-@pytest.mark.parametrize("case_id,command", READS, ids=[c for c, _ in READS])
+@pytest.mark.table("case_id,command", READS, ids=[c for c, _ in READS])
 def test_readonly_noun_shadow_reads_are_free_without_the_new_entries_too(
     case_id, command, without_the_config_anchors, without_the_git_config_lane
 ):

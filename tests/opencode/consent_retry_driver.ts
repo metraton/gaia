@@ -22,6 +22,7 @@
  * Usage: bun consent_retry_driver.ts '<scenario json>'
  */
 
+import { Database } from "bun:sqlite"
 import { isAbsolute } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -202,8 +203,16 @@ const { GaiaOpenCodePlugin } = await import(scenario.pluginModulePath === undefi
   : pathToFileURL(scenario.pluginModulePath).href)
 let plugin: any
 
-// create/promptAsync/prompt only record: under D39 the plugin opens no session,
-// sends no prompt and posts no message, so any entry here is a regression.
+// create/promptAsync/prompt only record: under D39 the consent path opens no
+// session, sends no prompt and posts no message, so any entry in
+// controlPrompts is a regression. The SubagentStop gate's repair of a child that
+// ended unfinalized, which these scenarios' children do, is recorded apart.
+const repairPrompts: Record<string, any>[] = []
+function isContractRepair(request: any): boolean {
+  const parts = request?.body?.parts
+  return Array.isArray(parts) && parts.length === 1 && parts[0]?.synthetic === true
+    && typeof parts[0]?.text === "string" && parts[0].text.startsWith("[CONTRACT REJECTED]")
+}
 const client = {
   session: {
     async messages({ sessionID }: { sessionID: string }) {
@@ -214,7 +223,8 @@ const client = {
       return { data: { id: `control-${controlPrompts.length}` } }
     },
     async promptAsync(request: any) {
-      controlPrompts.push(request)
+      if (isContractRepair(request)) repairPrompts.push(request)
+      else controlPrompts.push(request)
       return { data: undefined, response: { ok: true, status: 204 } }
     },
     async prompt(request: any) {
@@ -361,6 +371,19 @@ async function runStep(step: any): Promise<void> {
       record.stdout = (await new Response(child.stdout).text()).trim()
       record.exitCode = await child.exited
       record.allowed = record.exitCode === 0
+    } else if (step.kind === "end-grant") {
+      // The grant changes the way time, a spent call, a sweep or a lost row
+      // would, with no host event: an expired window keeps the PENDING status.
+      const statements: Record<string, string> = {
+        expire: "UPDATE approval_grants SET expires_at = '2000-01-01T00:00:00Z' WHERE approval_id = ?",
+        revoke: "UPDATE approval_grants SET status = 'REVOKED' WHERE approval_id = ?",
+        consume: "UPDATE approval_grants SET status = 'CONSUMED' WHERE approval_id = ?",
+        delete: "DELETE FROM approval_grants WHERE approval_id = ?",
+      }
+      const db = new Database(String(process.env.GAIA_DB))
+      record.changes = db.query(statements[step.how]).run(step.approvalID).changes
+      db.close()
+      record.allowed = record.changes === 1
     } else if (step.kind === "compact") {
       const output = { context: [] as string[] }
       await plugin["experimental.session.compacting"]({ sessionID: step.sessionID }, output)

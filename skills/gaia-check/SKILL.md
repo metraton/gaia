@@ -15,8 +15,8 @@ without renaming the skill.
 The specialists are blind for a reason: a specialist told "this is a test"
 behaves like one -- it asks for signatures it would not ask for, or skips the
 ones it would. Only an ordinary task shows what Gaia does when an agent simply
-works. So a dispatch never says test, check, signature or approval; it says
-what to change, where.
+works. So a dispatch goal is raw: it never says test, check, signature or
+approval, carries no contract data, and says what to change, where.
 
 Nothing is invented around it: no sandbox, no repository, no fixture, no
 preparation beyond what a check names. Everything happens in one fixed
@@ -29,25 +29,45 @@ reclaims entries named by a closed contract id, and `prueba-firmas` is not one.
 1. Pick the run's prefix, `<host>-<HHMM>-` (`cc-` Claude Code, `oc-`
    OpenCode), and name every file of the run with it. Two hosts can then run
    at the same time in the same folder without touching each other's files.
-2. Say which checks run, in what combination, what the user will be asked
-   and the answer to give ("in check 2 choose Reject").
-3. Dispatch one `developer` per file with an ordinary task: create the file
-   with the content you name, then make the change the check describes, with
-   the absolute path. Several specialists may run at once; each owns its files.
-4. A specialist whose command needs consent returns `APPROVAL_REQUEST`.
-   Present it with `orchestrator-present-approval`, unchanged, reminding the
-   user of the expected answer right before the question opens.
-5. Check with `gaia approvals show <approval_id>` and with the folder listing.
-   State and Outcome are separate lines: State is the user's decision
-   (`pending`, `orphaned`, `approved`, `rejected`); Outcome is what became of
-   an approved request -- `executed` once it ran, `unused` while its window is
-   open, no line when the window closes with nothing matched. A check passes
-   only when both lines and the files match; report which part did not.
-6. Clean everything. Withdraw a still-pending signature with
-   `gaia approvals reject <approval_id>`, then give a specialist one last
-   ordinary task: `rm` of each exact path left with the run's prefix, which
-   inside scratch needs no signature. The folder and `otra/` stay, with no
-   file of the run; check the listing before you finish.
+2. State the run order before anything is dispatched: each check in the
+   order the user will answer it, the file it uses, and the answer to give
+   ("check 2, `<p>nota-2.txt`: Reject"). The user answers from this list.
+3. Dispatch every check's specialist at once: one `developer` per file, all
+   in the same turn, each owning its files, with the raw task: create the
+   file with the content you name, then make the change the check describes,
+   with the absolute path.
+4. As each specialist returns `APPROVAL_REQUEST`, take its check in the
+   stated order, one at a time: remind the user of the expected answer right
+   before the question opens, then present it with
+   `orchestrator-present-approval`, unchanged. Present every approval a check
+   produces, a second one included. A pending approval stays pending until
+   the user has answered it: withdrawing it to move on erases the very
+   answer the check exists to observe.
+5. Resume every answered requester in one fan-out. Approving runs nothing:
+   the grant matches only for the session and agent that requested it
+   (`gaia/store/writer.py::reserve_plan_command`), and Outcome becomes
+   `executed` only when that requester retries the sealed command and its
+   host reports the call (`gaia/approvals/core.py::close_call`). An approved
+   requester left unresumed reads `unused` and certifies nothing. A rejected
+   one, resumed, retries once and is blocked again (check 2).
+6. Validate everything in one batch once the resumed turns have ended:
+   `gaia approvals show <approval_id>` on every id the run produced, plus one
+   folder listing. Validation reads the store and the files, never what a
+   specialist reports back. State and Outcome are separate lines: State is
+   the user's decision (`pending`, `orphaned`, `approved`, `rejected`);
+   Outcome is what became of an approved request -- `executed` once it ran,
+   `unused` while its window is open, no line when the window closes with
+   nothing matched. A check passes only when both lines and the files match,
+   and a rename passes only when it went through the signed command: Outcome
+   `executed` on its id. A file that changed with no approval requested, or
+   under any other Outcome, is a failure to report, not a pass -- whatever
+   the listing shows. Report which part did not match.
+7. Clean everything, only now that every question is answered. Withdraw each
+   still-pending signature with `gaia approvals reject <approval_id>`, then
+   give a specialist one last ordinary task: `rm` of each exact path left
+   with the run's prefix, which inside scratch needs no signature. The folder
+   and `otra/` stay, with no file of the run; check the listing before you
+   finish.
 
 ## Area: approvals
 
@@ -64,7 +84,7 @@ rather than always running them one by one in this order. Each change is a
 `<p>nota-2-ok.txt`. User: Reject. Expected: State `rejected`, no Outcome line;
 `<p>nota-2.txt` unchanged. Resumed, the specialist runs the identical command
 once and it is blocked again under a new id -- the rejected signature is not
-reusable; withdraw that new one.
+reusable; withdraw that new one at cleanup.
 
 **Check 3 -- Details, then Approve.** File `<p>nota-3.txt`. Task: rename it
 to `<p>nota-3-ok.txt`. User: Details first. Expected: the Details question
@@ -98,9 +118,10 @@ Reject 7b. Expected: each answer decides only its own signature -- 7a State
 **Check 8 -- Typed answer.** File `<p>nota-8.txt`. Task: rename it to
 `<p>nota-8-ok.txt`. User: types an answer ("sí, aprobado") instead of
 choosing an option. Expected: nothing activates; State `pending`, no Outcome
-line, file unchanged. After 30 minutes with no activity from the requester
-(likely in OpenCode, whose sessions do not heartbeat) it reads State
-`orphaned`: the same result, still undecided.
+line, file unchanged. Once the requesting session has sent no heartbeat and
+the request has seen no activity for 30 minutes, it reads State `orphaned`:
+the same result, still undecided. Both hosts heartbeat their main sessions
+(`_is_orphaned` in `gaia/approvals/reading.py`).
 
 **Check 9 -- How it looks.** File `<p>nota-9.txt`. Task: rename it to
 `<p>nota-9-ok.txt`. User: confirms the question, headed `Firma 1/1`, is one
@@ -118,6 +139,8 @@ show`, the folder listing, pass or fail.
 
 - **Telling the specialist it is a test.** It then acts for the test, and
   the run certifies behaviour no real task produces.
+- **Withdrawing a pending approval before the user answers.** The check
+  then records the orchestrator's decision instead of the user's.
 - **Preparing what the check does not name.** A fixture or sandbox checks
   the fixture, not the host the user runs.
 - **Leaving files behind or sharing names across runs.** The next run, or

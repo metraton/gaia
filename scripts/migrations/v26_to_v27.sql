@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v26 -> v27: DB-backed surface routing.
 --
 -- Retires config/surface-routing.json as the routing source of truth and moves

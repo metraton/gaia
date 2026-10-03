@@ -15,9 +15,8 @@ Coverage:
   * CLI: --body-file variant
   * register: `append` is a registered nested action
   * SECURITY PIN: `gaia memory append` is classified NON-mutative (not T3).
-    So is `gaia memory edit` (a deliberate, documented group exception --
-    see ``mutative_verbs.py``); `gaia memory delete` stays MUTATIVE (T3), the
-    one destructive verb the exception still gates. This pins the
+    `gaia memory delete` stays MUTATIVE (T3), the one destructive verb the
+    group exception in ``mutative_verbs.py`` still gates. This pins the
     security-classification decision so a future edit to MUTATIVE_VERBS that
     added `append` would fail loudly here.
 """
@@ -231,24 +230,6 @@ def test_append_is_classified_non_mutative():
     r = detect_mutative_command("gaia memory append atom_running --body=more")
     assert r.is_mutative is False, (
         f"gaia memory append must be non-mutative (T0); got {r.category}"
-    )
-
-
-def test_memory_edit_is_read_only():
-    """`gaia memory edit` is READ_ONLY (T0) -- a deliberate, documented
-    exception in ``modules.security.mutative_verbs`` (the ``("gaia",
-    "memory")`` group exception): correcting a curated note's body is
-    reversible local bookkeeping, and `edit` is absent from the group's
-    deny-verb set (only delete/destroy/purge/wipe/drop/shred/erase stay
-    gated within the exception). This is the confirmed, current contract --
-    NOT a regression -- so it is pinned as a positive assertion rather than
-    left to the (retired) assumption that `edit` still trips the generic
-    MUTATIVE_VERBS scan."""
-    from modules.security.mutative_verbs import detect_mutative_command
-    edit_r = detect_mutative_command("gaia memory edit --name=x --field=body --content=z")
-    assert edit_r.is_mutative is False, (
-        f"gaia memory edit must stay READ_ONLY by the documented group "
-        f"exception; got {edit_r.category}"
     )
 
 

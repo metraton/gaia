@@ -34,9 +34,11 @@ as done one layer up.
 3. **Treat a stale verdict as pending.** A gate whose `stale_at` is set keeps
    its old verdict for the record, but something it depended on changed since.
    Re-run it exactly as if no verdict existed.
-4. **Re-execute; do not re-read.** Run the exact string tokenized, never
-   through a shell (`command-execution`), and capture stdout, stderr and the
-   exit code. Exit 0 is pass. Re-observing is the whole point: an oracle that
+4. **Re-execute; do not re-read.** Run the exact string directly as one
+   command, never through a shell (`command-execution`): the Bash tool reports
+   the exit code itself, so do not wrap the command in `bash -c` or append
+   `echo $?` to capture it. Keep stdout, stderr and that reported exit code.
+   Exit 0 is pass. Re-observing is the whole point: an oracle that
    accepts a prior claim is a `self_review` with extra steps.
 5. **Check that the gate could fail.** For a gate on a change, look for its red
    run (`gaia evidence list`, negative evidence tied to this gate). A check that

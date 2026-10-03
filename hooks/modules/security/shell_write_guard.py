@@ -79,7 +79,7 @@ def _split_components(text: str) -> List[str]:
     index = 0
     while index < len(text):
         char = text[index]
-        if quote is None and char == "\\":
+        if quote != "'" and char == "\\":
             current.append(text[index:index + 2])
             index += 2
             continue
@@ -120,7 +120,7 @@ def _unquoted_spans(text: str) -> List[Tuple[int, int]]:
     index = 0
     while index < len(text):
         char = text[index]
-        if quote is None and char == "\\":
+        if quote != "'" and char == "\\":
             index += 2
             continue
         if quote is None and char in ("'", '"'):

@@ -129,10 +129,10 @@ class TestGroupingWrappedWritesBlocked:
     @pytest.mark.parametrize("cmd", [
         "(cat .claude/settings.json)",
         "$(grep -r pattern .claude/hooks/)",
-        "(cd /home/jorge/ws/me && ls .claude/hooks/)",
+        "(cd /home/user/ws/me && ls .claude/hooks/)",
         'gaia contract add evidence_report.key_outputs '
         '"(cp payload.py .claude/hooks/pre_tool_use.py) was never run"',
-        'grep -rn "SessionStart" /home/jorge/ws/me/.claude/settings.local.json',
+        'grep -rn "SessionStart" /home/user/ws/me/.claude/settings.local.json',
     ])
     def test_wrapped_read_or_mention_still_allowed(self, cmd):
         """Unwrapping is applied to the component STRING, never per token.

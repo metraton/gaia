@@ -37,16 +37,8 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 def _resolve_workspace(explicit: str | None) -> str:
-    if explicit:
-        return explicit
-    try:
-        from gaia.project import current as _project_current
-        ws = _project_current()
-        if ws:
-            return ws
-    except Exception:
-        pass
-    return "me"
+    from gaia.project import cli_workspace
+    return cli_workspace(explicit)
 
 
 def _err(msg: str, as_json: bool = False) -> int:
@@ -197,7 +189,7 @@ def register(subparsers) -> None:
     )
     ms_parser.add_argument(
         "--workspace", metavar="W", default=None,
-        help="Workspace identity. Default: gaia.project.current() or 'me'.",
+        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global'); a brief named here is looked up in the other workspaces when the resolved one lacks it.",
     )
 
     actions = ms_parser.add_subparsers(dest="milestone_action", metavar="<action>")
@@ -297,6 +289,11 @@ def cmd_milestone(args) -> int:
         "edit":       _cmd_edit,
     }
     if action in handlers:
+        from cli._brief_scope import follow_brief
+
+        ambiguity = follow_brief(args, getattr(args, "brief", None))
+        if ambiguity:
+            return _err(ambiguity, as_json=getattr(args, "json", False))
         return handlers[action](args)
 
     print("Usage: gaia milestone <set-status|add|remove|edit>", file=sys.stderr)

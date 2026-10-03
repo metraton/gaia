@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v33 -> v34: add the task_gates child table (planner-authored typed
 -- verification gate slot, harness R1-A).
 --

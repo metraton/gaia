@@ -82,8 +82,10 @@ from ..security.approval_messages import (
     build_t3_degraded_block_message,
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
-from ..security.shell_unwrapper import ShellUnwrapper
+from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
+from ..security.program_heredoc import heredoc_program
+from ..security.shell_substitution import extract_substitutions, extract_substitutions_truncated
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_memory_write_guard import (
@@ -192,22 +194,12 @@ FORBIDDEN_FOOTER_PATTERNS = [
     r"Co-authored-by:\s+Gemini\b",
 ]
 
-# ---------------------------------------------------------------------------
-# Indirect execution wrappers — commands that execute arbitrary strings.
-# These bypass regex-based command blocking because the real command is
-# hidden inside a string argument.  Classified as T2 (requires approval)
-# so the user sees what will actually run.
-# ---------------------------------------------------------------------------
-# Optional prefix commands that can wrap any shell invocation.
-# nohup, sudo, env, nice, etc. — the regex allows zero or more of these
-# before the real interpreter token so "nohup bash -c ..." is still caught.
+# Indirect execution other than a shell's command string, which
+# shell_command_string recognises: eval, inline interpreter code and a
+# process substitution fed to a shell.
 _WRAPPER_PREFIX = r"(?:(?:nohup|sudo|env|nice|ionice|setsid|strace|ltrace|time)\s+)*"
 
 INDIRECT_EXEC_PATTERNS = [
-    re.compile(r"^" + _WRAPPER_PREFIX + r"bash\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"sh\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"zsh\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"dash\s+-c\s+", re.IGNORECASE),
     re.compile(r"^\s*eval\s+", re.IGNORECASE),
     re.compile(r"^" + _WRAPPER_PREFIX + r"python3?\s+-c\s+", re.IGNORECASE),
     re.compile(r"^" + _WRAPPER_PREFIX + r"node\s+-e\s+", re.IGNORECASE),
@@ -259,6 +251,30 @@ def _record_plan_command_denial(
         )
     except Exception:
         return
+
+
+def _uncorrelated_set_denial(pending_set: dict, *, session_id: str, tool_use_id: str) -> str:
+    """Explain why a signed COMMAND_SET item was refused for want of host correlation.
+
+    The refusal touches no grant state, so the message says the signature is
+    still live and names the two ways forward instead of ending in a dead end.
+    A chain reaches here too (its components carry no ``tool_use_id``), so the
+    message also names running the item alone.
+    """
+    missing = " and ".join(
+        name for name, value in (("session_id", session_id), ("tool_use_id", tool_use_id))
+        if not value
+    )
+    approval_id = pending_set["approval_id"]
+    return (
+        "COMMAND_SET denied: adapter lacks stable tool-call correlation -- this call "
+        f"carries no {missing}, and item [{pending_set['index']}] of {approval_id} is "
+        f"reserved and settled against it. {approval_id} was not consumed and stays "
+        "approved until its window closes: retry the byte-identical command alone (not "
+        f"inside a chain) from a call whose host event carries a {missing}, or close BLOCKED "
+        f"naming {approval_id} and this missing {missing} so the user knows the signed "
+        "command did not run."
+    )
 
 
 class BashValidator:
@@ -332,88 +348,103 @@ class BashValidator:
             return command
         return "".join(pieces)
 
-    def _detect_indirect_execution(self, command: str) -> Optional[BashValidationResult]:
+    def _detect_indirect_execution(
+        self, command: str, is_subagent: bool = False,
+    ) -> Optional[BashValidationResult]:
         """Detect indirect execution wrappers that can bypass regex blocking.
 
         Commands like 'bash -c "az group delete"' hide the real command inside
         a string.  We classify these as T2 (mutative) so they require user
         approval via the nonce workflow, giving the human a chance to inspect
-        what will actually run.
+        what will actually run.  A shell wrapper launched by a subagent is
+        refused with the correct form instead: the user cannot meaningfully
+        answer a dialog for a shape the subagent should not have composed.
 
         Returns BashValidationResult if indirect execution detected, else None.
         """
-        for pattern in INDIRECT_EXEC_PATTERNS:
-            if pattern.search(command):
-                # Also check if the inner payload contains a blocked command.
-                # Extract the string argument after the wrapper.
-                inner = self._extract_inner_command(command)
-                if inner:
-                    blocked = is_blocked_command(inner)
-                    if blocked.is_blocked:
-                        return BashValidationResult(
-                            allowed=False,
-                            tier=SecurityTier.T3_BLOCKED,
-                            reason=(
-                                f"Indirect execution of blocked command detected: "
-                                f"{blocked.category} (via wrapper)"
-                            ),
-                            suggestions=[
-                                blocked.suggestion or "Run the command directly instead of via a shell wrapper.",
-                            ],
-                        )
+        shell_string = shell_command_string(command)
+        if shell_string is None and not any(
+            pattern.search(command) for pattern in INDIRECT_EXEC_PATTERNS
+        ):
+            return None
 
-                # Not blocked but still indirect — route through approval
-                logger.info("Indirect execution detected: %s", command[:80])
-                result = detect_mutative_command(command)
-                if result.is_mutative:
-                    return None  # Already mutative, will be caught by mutative_verbs
-
-                # For interpreters with inline code analysis (python3 -c),
-                # mutative_verbs.py has dedicated pattern scanning that
-                # distinguishes safe code (json.dumps, sys.version) from
-                # dangerous code (os.system, subprocess.run). If it classified
-                # the inline code as safe, trust that analysis and allow it
-                # through without forcing an "ask" dialog.
-                from ..security.mutative_verbs import _INLINE_CODE_CLIS
-                base_cmd = command.strip().split()[0].rsplit("/", 1)[-1].lower()
-                if base_cmd in _INLINE_CODE_CLIS:
-                    logger.info(
-                        "Inline code classified as safe by pattern scanner: %s",
-                        command[:80],
-                    )
-                    return None  # Safe inline code, proceed to normal validation
-
-                # Shell wrappers (bash -c, eval, etc.) hide the real command
-                # in a string — no dedicated scanner exists. Force "ask" so
-                # the user can inspect what will actually run.
-                #
-                # Inspect the inner command to identify the mutative verb so
-                # the user sees a more informative message
-                # (e.g. "inner mutative verb 'mv'"). Falls back to generic
-                # message when inner has no mutative verb.
-                reason_msg = "Indirect execution wrapper detected — requires confirmation"
-                if inner:
-                    inner_result = detect_mutative_command(inner)
-                    if inner_result.is_mutative and inner_result.verb:
-                        reason_msg = (
-                            f"Indirect execution detected: inner mutative verb "
-                            f"'{inner_result.verb}' — requires confirmation"
-                        )
-                dialog_msg = (
-                    "Indirect execution detected. The command uses a shell "
-                    "wrapper (bash -c, eval, etc.) that can bypass "
-                    "security checks. Please confirm you want to run this, "
-                    "or use discrete commands or a script file / python3 "
-                    "<file> instead of bash -c/eval."
-                )
-                hook_block = build_hook_permission_response("ask", dialog_msg)
+        inner = shell_string
+        if inner is None:
+            inner = self._extract_inner_command(command)
+        if inner:
+            blocked = is_blocked_command(inner)
+            if blocked.is_blocked:
                 return BashValidationResult(
                     allowed=False,
-                    tier=SecurityTier.T2_DRY_RUN,
-                    reason=reason_msg,
-                    block_response=hook_block,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=(
+                        f"Indirect execution of blocked command detected: "
+                        f"{blocked.category} (via wrapper)"
+                    ),
+                    suggestions=[
+                        blocked.suggestion or "Run the command directly instead of via a shell wrapper.",
+                    ],
                 )
-        return None
+
+        logger.info("Indirect execution detected: %s", command[:80])
+        result = detect_mutative_command(command)
+
+        # Inline interpreter code (python3 -c) has its own scanner in
+        # mutative_verbs, whose verdict is trusted over this generic dialog.
+        from ..security.mutative_verbs import _INLINE_CODE_CLIS
+        base_cmd = command.strip().split()[0].rsplit("/", 1)[-1].lower()
+        if base_cmd in _INLINE_CODE_CLIS:
+            logger.info(
+                "Inline code classified by pattern scanner: %s",
+                command[:80],
+            )
+            return None
+
+        # A mutative shell wrapper reaches mutative_verbs' T3 gate for the
+        # orchestrator. A subagent never signs a wrapped command: it is
+        # refused below so the inner command runs directly and gets its own
+        # gate.
+        if result.is_mutative and not is_subagent:
+            return None
+
+        reason_msg = "Indirect execution wrapper detected — requires confirmation"
+        if inner:
+            inner_result = detect_mutative_command(inner)
+            if inner_result.is_mutative and inner_result.verb:
+                reason_msg = (
+                    f"Indirect execution detected: inner mutative verb "
+                    f"'{inner_result.verb}' — requires confirmation"
+                )
+        if is_subagent:
+            deny_msg = (
+                "Shell wrapper refused (bash -c, sh -c, eval). Run the "
+                "command directly as one command; the Bash tool reports "
+                "its exit code itself, so do not wrap it in a shell to "
+                "capture it. For multi-step logic, commit a script file "
+                "and invoke that, or use python3 <file>."
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T2_DRY_RUN,
+                reason=deny_msg,
+                block_response=build_hook_permission_response(
+                    "deny", deny_msg,
+                ),
+            )
+        dialog_msg = (
+            "Indirect execution detected. The command uses a shell "
+            "wrapper (bash -c, eval, etc.) that can bypass "
+            "security checks. Please confirm you want to run this, "
+            "or use discrete commands or a script file / python3 "
+            "<file> instead of bash -c/eval."
+        )
+        hook_block = build_hook_permission_response("ask", dialog_msg)
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T2_DRY_RUN,
+            reason=reason_msg,
+            block_response=hook_block,
+        )
 
     def _extract_inner_command(self, command: str) -> Optional[str]:
         """Extract the inner command from an indirect execution wrapper.
@@ -434,8 +465,11 @@ class BashValidator:
         """Quick check if command has operators (before parsing).
 
         Detects pipes, logical operators, semicolons, redirects, and
-        background operators.  This is a fast pre-filter — the full
-        shell parser handles quote-aware splitting downstream.
+        background operators.  This is a fast, quote-blind pre-filter: an
+        operator inside quotes (``bash -c 'a; b'``) also returns True, and the
+        quote-aware shell parser downstream then yields a single component, so
+        the branch that handles that outcome must forward every input the
+        operator-free path gets (``tool_use_id`` above all).
 
         Note: '>' and '&' are included so a command still carrying one of
         these tokens after EARLY NORMALIZATION's sanitization pass (e.g. an
@@ -443,8 +477,6 @@ class BashValidator:
         sanitization strips) is still routed through the compound-parsing
         path below instead of being mis-treated as a simple command.
         """
-        # Fast check for common operators outside quotes
-        # This avoids expensive parsing for 70% of commands
         if not any(op in command for op in ['|', '&&', '||', ';', '\n', '>', '&']):
             return False
         return True
@@ -729,7 +761,7 @@ class BashValidator:
 
         # ================================================================
         # PUBLISH ATTRIBUTION GUARD
-        # Refuse a publishing command (gh/ghx pr|issue|release|api, git
+        # Refuse a publishing command (gh pr|issue|release|api, git
         # commit) whose text still carries Claude attribution after the strip
         # above -- in the command string or in a body file it names. Runs
         # before tier classification so a refused command never mints an
@@ -773,8 +805,8 @@ class BashValidator:
 
         # ================================================================
         # SUBAGENT MEMORY-WRITE GUARD
-        # Reject direct curated-memory mutations (`gaia memory add|edit|
-        # append|reclassify|delete|link`) attempted from a subagent dispatch
+        # Reject direct curated-memory mutations (`gaia memory add|append|
+        # reclassify|delete|link|checkpoint`) attempted from a subagent dispatch
         # context, EXCEPT for the sanctioned writers (gaia-operator). The
         # orchestrator (is_subagent False) is never blocked here. Categorical
         # deny, NOT approvable: the correct subagent path is to PROPOSE via a
@@ -963,7 +995,9 @@ class BashValidator:
                 ),
             )
 
-        indirect_result = self._detect_indirect_execution(command)
+        indirect_result = self._detect_indirect_execution(
+            command, is_subagent=is_subagent,
+        )
         if indirect_result is not None:
             return indirect_result
 
@@ -1111,7 +1145,10 @@ class BashValidator:
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
-        if not has_operators:
+        # An interpreter's heredoc is its program: splitting it into shell
+        # components would validate the body's lines one by one and never
+        # show the classifier the program whose effect decides the tier.
+        if not has_operators or heredoc_program(command) is not None:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
@@ -1120,11 +1157,12 @@ class BashValidator:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=payload_cwd,
+                command=command, tool_use_id=tool_use_id,
             )
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type, cwd=payload_cwd,
+                agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
@@ -1160,10 +1198,11 @@ class BashValidator:
         the header is classified (classifying it would mint a pending approval
         for the body-less string), and a sanitizer rewrite of the header would
         otherwise become updatedInput and drop the body from what runs. The
-        permanent-deny floor keeps reading the body; it is categorical.
+        permanent-deny floor reads the header too: the body is stdin the CLI
+        stores, so a force push it merely names runs nowhere.
         """
         header = data_heredoc_header(command)
-        if header is None or is_blocked_command(command).is_blocked:
+        if header is None or is_blocked_command(header).is_blocked:
             return None
         cwd = (hook_payload or {}).get("cwd") or None
         if detect_mutative_command(header, cwd=cwd).is_mutative:
@@ -1263,7 +1302,9 @@ class BashValidator:
         # When validate() splits "cd /tmp && python3 -c '...'" into parts,
         # the python3 -c component needs the same indirect execution gate
         # that the full command gets in validate().
-        indirect_result = self._detect_indirect_execution(command)
+        indirect_result = self._detect_indirect_execution(
+            command, is_subagent=is_subagent,
+        )
         if indirect_result is not None:
             return indirect_result
 
@@ -1290,7 +1331,9 @@ class BashValidator:
                     )
                     return BashValidationResult(
                         allowed=False, tier=SecurityTier.T3_BLOCKED,
-                        reason="COMMAND_SET denied: adapter lacks stable tool-call correlation",
+                        reason=_uncorrelated_set_denial(
+                            pending_set, session_id=session_id, tool_use_id=tool_use_id,
+                        ),
                     )
             try:
                 from gaia.approvals.core import match_command
@@ -1550,16 +1593,22 @@ class BashValidator:
         session_id: str = "",
         agent_type: str = "",
         cwd: Optional[str] = None,
+        command: str = "",
+        tool_use_id: str = "",
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
         Compound T3 execution is REFUSED here, never grouped. If ANY component
         classifies T3 the whole chain is denied (subagent) or asked (primary):
         "Compound T3 execution is disabled. Create a plan-first request-set and
-        issue each command as a separate Bash call." There is no COMMAND_SET
+        run each command directly as a separate Bash call, with no wrapper
+        (bash -c, sh -c, eval)." There is no COMMAND_SET
         intake on this path -- consent grouping is requested plan-first via
         ``gaia approvals request-set``, and execution stays one command per Bash
         call, so a chain is never the surface on which a set is discovered.
+        The one exception is a pipeline whose exact bytes (``command``) are a
+        live signed set item: request-set seals pipelines as one item, so that
+        item is matched and reserved here instead of denied.
 
         A chain with NO T3 component runs the per-component pass: each component
         is validated by ``_validate_single_command``, a blocked component fails
@@ -1596,10 +1645,19 @@ class BashValidator:
             ):
                 has_t3 = True
                 break
+        if not has_t3:
+            has_t3 = self._has_mutative_substitution_outside_components(command, components, cwd)
         if has_t3:
+            signed = self._match_signed_pipeline(
+                command, components, session_id=session_id, agent_type=agent_type,
+                tool_use_id=tool_use_id, cwd=cwd,
+            )
+            if signed is not None:
+                return signed
             reason = (
                 "Compound T3 execution is disabled. Create a plan-first "
-                "request-set and issue each command as a separate Bash call."
+                "request-set and run each command directly as a separate Bash "
+                "call, with no wrapper (bash -c, sh -c, eval)."
             )
             decision = "deny" if is_subagent else "ask"
             return BashValidationResult(
@@ -1621,6 +1679,8 @@ class BashValidator:
         # explicit `cd` still overrides it via cwd_after_component below.
         running_cwd: Optional[str] = cwd
         for i, component in enumerate(components, 1):
+            # tool_use_id is withheld on purpose: a COMMAND_SET item runs alone
+            # and must never be reserved as one component of a chain.
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, cwd=running_cwd,
@@ -1663,6 +1723,72 @@ class BashValidator:
             tier=highest_tier,
             reason=f"All {len(components)} components validated",
             consumed_approval_id=consumed_approval_id,
+        )
+
+    @staticmethod
+    def _has_mutative_substitution_outside_components(
+        command: str, components: List[str], cwd: Optional[str],
+    ) -> bool:
+        """Whether the whole command runs a mutative substitution no component shows.
+
+        A split cuts a heredoc's body into lines read outside the heredoc, where
+        quotes quote; in the unquoted body they are plain text and
+        ``'$(rm -rf x)'`` runs. Bodies a component already shows were judged
+        there, in that component's folded cwd, and are not judged again here.
+        """
+        bodies, truncated = extract_substitutions_truncated(command, top_level_only=True)
+        if truncated:
+            return True
+        shown = {
+            body for comp in components
+            for body in extract_substitutions(comp, top_level_only=True)
+        }
+        return any(
+            detect_mutative_command(body, cwd=cwd).is_mutative
+            for body in bodies if body not in shown
+        )
+
+    def _match_signed_pipeline(
+        self,
+        command: str,
+        components: List[str],
+        *,
+        session_id: str,
+        agent_type: str,
+        tool_use_id: str,
+        cwd: Optional[str],
+    ) -> Optional[BashValidationResult]:
+        """Reserve a pipeline whose exact bytes are a live signed set item, else None.
+
+        Only a chain whose every separator is a pipe qualifies: the component
+        count must equal the unquoted pipe-stage count ``request-set`` sealed.
+        """
+        if not (command and session_id and tool_use_id):
+            return None
+        from gaia.approvals.command_set import pipe_stages
+        try:
+            if len(pipe_stages(command)) != len(components):
+                return None
+        except ValueError:
+            return None
+        try:
+            from gaia.approvals.core import match_command
+            cs_match = match_command(
+                command, cwd=cwd or os.getcwd(), session_id=session_id,
+                agent_id=agent_type or None, tool_use_id=tool_use_id,
+            )
+        except Exception as exc:
+            return BashValidationResult(
+                allowed=False, tier=SecurityTier.T3_BLOCKED,
+                reason=f"COMMAND_SET persistence failed closed: {exc}",
+            )
+        if cs_match is None:
+            return None
+        return BashValidationResult(
+            allowed=True, tier=SecurityTier.T3_BLOCKED,
+            reason="Ordered COMMAND_SET command reserved",
+            consumed_approval_id=cs_match["approval_id"],
+            command_set_reservation=cs_match,
         )
 
     def _phase4_check_composition(
@@ -2382,6 +2508,19 @@ def decide_t3_outcome(
     # modules.security.fail_open. Recorded before any branch so it holds no
     # matter which outcome this call produces.
     note_mutative_classification(command, verb, category)
+
+    from gaia.redaction import has_clear_secret
+
+    if has_orchestrator_above and has_clear_secret(command):
+        from gaia.approvals.core import CLEAR_SECRET_REFUSAL
+
+        reason = f"T3 {category.lower()} command refused: {CLEAR_SECRET_REFUSAL}."
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T3_BLOCKED,
+            reason=reason,
+            block_response=build_hook_permission_response("deny", reason),
+        )
 
     # A genuine multi-command chain is a set of >= 2 items. Anything else
     # collapses to the singular path so we never mint a COMMAND_SET for one

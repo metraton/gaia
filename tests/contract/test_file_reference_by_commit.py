@@ -58,13 +58,13 @@ _CLI = str(_REPO_ROOT / "bin" / "cli" / "contract.py")
 # Verbatim from the census of the persisted population -- each one is a real
 # bare-path entry that a string-separator form would have started rejecting.
 _REAL_BARE_PATHS_THAT_LOOK_LIKE_REFERENCES = [
-    "/home/jorge/ws/me/node_modules/@jaguilar87/gaia/tools/memory/episodic.py",
-    "/home/jorge/ws/me/gaia/hooks/modules/core/state.py (get_session_id @25)",
+    "/home/user/ws/me/node_modules/@jaguilar87/gaia/tools/memory/episodic.py",
+    "/home/user/ws/me/gaia/hooks/modules/core/state.py (get_session_id @25)",
     "bitbucket-pipelines.yml @ f6e40af (read via Bitbucket REST src endpoint)",
     ".github/workflows/foundation.yml @ century-inc/branchkinect-iac",
     "/tmp/runtime-plan.log (CI runtime plan log, build #3)",
     "Brief bodies: workspace-identity #21, retire-legacy-context-modules #31",
-    "/home/jorge/ws/me/gaia/gaia/evidence/ (package: __init__.py, fs.py, store.py)",
+    "/home/user/ws/me/gaia/gaia/evidence/ (package: __init__.py, fs.py, store.py)",
     "~/.gaia/gaia.db (SQLite substrate)",
 ]
 

@@ -8,7 +8,7 @@ Skills are not shared via inheritance or imports — they are text loaded into t
 
 The assignment matrix below separates declared skills from explicit invocation. Availability is not application: the coding workflows invoke [code-standards](code-standards/SKILL.md) before generation and at done; [code-review](code-review/SKILL.md) is the separate technique for an explicitly requested review, not an automatic extra pass on every change.
 
-## Cuándo se activa
+## When it activates
 
 Skills reach an agent through two distinct routes, and understanding both matters when troubleshooting why a skill is or is not present in a session.
 
@@ -19,7 +19,7 @@ Skills reach an agent through two distinct routes, and understanding both matter
      -> the HOST (Claude Code) reads that frontmatter when it dispatches the subagent
 2. The host preloads each SKILL.md into the subagent's context
      -> the agent holds the process before its first tool call
-3. At SubagentStop, hooks/adapters/claude_code.py::adapt_subagent_stop calls
+3. At SubagentStop, hooks/adapters/subagent_stop_core.py::run_subagent_stop calls
    verify_skill_injection with the frontmatter list
      -> the transcript is searched for that skill's SKILL_FINGERPRINTS, and a
         declared skill that never appeared is reported as an advisory anomaly
@@ -50,11 +50,14 @@ reaches PreToolUse. This route is entirely host-side too.
 Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation. Approval presentation is the same in both hosts: the orchestrator passes `gaia approvals question` output to its question tool, and an approval resumes the same specialist by task id. In neither host is the question opened in the requesting specialist's session.
 
 The preload route above describes Claude Code, not a host-independent guarantee.
-OpenCode's agent prompt reference does not preload a `skills:` list; the agent uses
-the host's available skill-loading tool at the workflow's invocation point. Neither
-preload nor an explicit load alone proves the artifact was checked against the skill.
+OpenCode preloads no `skills:` list. Instead, a dispatched specialist's kernel on
+that host carries a `# Your skills` block naming each skill its definition declares,
+with its description but not its body, and the specialist loads each one with the
+`skill` tool (`build_skills_block` in `hooks/modules/context/kernel_builder.py`).
+Route 2 is the same on both hosts. Neither preload nor an explicit load alone proves
+the artifact was checked against the skill.
 
-## Qué hay aquí
+## What's here
 
 ```
 skills/
@@ -72,9 +75,11 @@ skills/
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
 ├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (thinking method + section/component dialect + authoring modes)
-│   ├── GLOSSARY.md        # canonical dialect terms (section + component types) + status/variant enums
-│   ├── reference.md       # field schema, engine behaviors, authoring modes, build/verify loop
-│   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/verify.mjs, seed data/ (see assets/README.md)
+│   ├── build.md           # for the builder: the build lane (build/model/census/contrast/test), vocabulary, field schema, checks
+│   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/, seed data/ (see assets/README.md)
+├── dispatch/              # Technique (orchestrator): goals that complete the kernel, runnable acceptance, waves by disjoint files, one integration at a time per shared branch
+│   ├── reference.md       # goal tokens, acceptance forms, worktree and integration commands, wave and sizing numbers
+│   └── examples.md        # a two-writer wave onto one pull request, end to end
 ├── execution/             # Post-approval execution discipline
 ├── fast-queries/          # Project Context-first scoped diagnostics
 ├── gaia-compact/          # Preserve transient continuity without duplicating durable state
@@ -99,9 +104,7 @@ skills/
 │   └── reference.md       # per gate (repo root / component folder / shipped template): a filled example + a blank skeleton
 ├── subagent-request-approval/ # Producer: the phrases a signature needs, their limits, and how to group T3 commands
 │   └── reference.md
-├── scheduled-task/        # Headless recurring task: crontab + claude -p, reports via notifications
-│   ├── reference.md
-│   └── scripts/           # run-scheduled-task.sh wrapper + crontab.template
+├── reminders/             # Reminders and routines as notifications that come due when Gaia is next used
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
 ├── session-reflection/    # Recover, reconcile, curate, and hand off session continuity
@@ -116,7 +119,7 @@ skills/
 │   └── scripts/           # screenshot.cjs -- zero-install Playwright capture
 ```
 
-## Convenciones
+## Conventions
 
 **Skill assignment matrix:**
 
@@ -141,6 +144,7 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatte
 - `agent-response` — contract status interpretation and presentation
 - `orchestrator-present-approval` — T3 approval presentation: open the question Gaia builds (up to four signatures) without printing any of it, and resume the requester once the user decides
 - `gaia-compact` — compact transient continuity after durable state is persisted
+- `dispatch` — eight principles for dispatching turns that write, run in parallel or carry acceptance: the goal completes the kernel, acceptance is a command run directly or a named rubric, isolation by checkout and serialization by branch, waves bounded by shared files, verifier and CI as the last gates, the specialist owns its worktree, sizing, steering in flight; loaded by the orchestrator per its Dispatch section
 
 Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 - `code-review` — explicit review with snapshot, coverage, evidence-backed findings and a portable JSON report; Gaia carries the artifact through its usual contract, while standalone readers need no Gaia CLI or database
@@ -152,7 +156,7 @@ Workflow skills (loaded when applicable; some also appear in agent frontmatter):
 - `pending-approvals` — present and resolve pending approval requests
 - `gaia-check` — guided live certification of Gaia by area, first area approvals: blind specialists with ordinary reversible tasks, the orchestrator guides the user and checks with the CLI, in either host
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
-- `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match
+- `reminders` — turns a sentence into one `gaia notifications add` (a reminder or a routine, pointing at a skill, a memory or a project) and says how to act on what comes due: do now, snooze, done. Nothing runs unattended and there is no system scheduler; loaded on demand by description match
 - `gaia-research` — technique for mining one or more bookmarked GitHub repos (or, in the inverse direction, finding who solves a capability the user wants) for ideas Gaia can take: burden of proof set by the claim type, code read instead of README, evidential status marked on every idea. Ends at digested ideas and deliberately produces no brief or plan — `brief-spec` picks up downstream. Loaded on demand by description match, invocable directly via the Skill tool
 - `session-reflection` — session-arc recovery, two-way reconciliation against the live corpus, and memory curation proposal
 - `ticket-writing` — formula for human-readable Stories and Subtasks, tracker-agnostic; invocable directly via the Skill tool
@@ -190,7 +194,7 @@ relevant (see the skill list above), not a machine-read property.
 
 **Line budget and validation:** Follow [skill-creation](skill-creation/SKILL.md) for the loading-mode budget and teaching evaluation. The [prompt regression tests](../tests/layer1_prompt_regression/) check structure and references; those checks do not prove that a reader applies the technique.
 
-## Ver también
+## See also
 
 - [`agents/README.md`](../agents/README.md) — agent frontmatter and skills: field
 - [`hooks/modules/agents/skill_injection_verifier.py`](../hooks/modules/agents/skill_injection_verifier.py) — checks at SubagentStop that expected skills reached the transcript; it verifies, it does not inject

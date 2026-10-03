@@ -4,7 +4,7 @@ import { ShellEnvDelivery } from "../../opencode/shell-env"
 /** Supply host-owned fixture values; this suite tests identity delivery, not approval policy. */
 function fixture() {
   const delivery = new ShellEnvDelivery()
-  const args = { command: "GHX_ACCOUNT=metraton ghx pr list", workdir: "/fixture" }
+  const args = { command: "ghx pr list", workdir: "/fixture" }
   const identity = { sessionID: "child", callID: "call", agent: "gaia-system", attestation: "host-token", cwd: "/fixture" }
   delivery.remember({ ...identity, args })
   return { delivery, args, identity }

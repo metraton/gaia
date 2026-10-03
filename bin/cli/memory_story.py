@@ -34,16 +34,6 @@ import json
 import sys
 
 
-def _resolve_workspace(explicit: str | None) -> str:
-    """Resolve the workspace, delegating to memory.py's shared resolver.
-
-    Imported lazily to avoid a circular import at registration time
-    (memory.py imports this module to wire the subparser).
-    """
-    from cli.memory import _resolve_workspace as _rw
-    return _rw(explicit)
-
-
 def _err(msg: str, as_json: bool) -> int:
     if as_json:
         print(json.dumps({"error": msg}))
@@ -117,8 +107,9 @@ def _render_story(story: dict, workspace: str) -> str:
 def _cmd_story(args) -> int:
     """Handle ``gaia memory story <slug>``."""
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     slug = args.name
+    from cli.memory import _flag_workspace_holding
+    workspace = _flag_workspace_holding(args, slug)
     max_depth = int(getattr(args, "max_depth", None) or 5)
 
     try:

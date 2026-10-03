@@ -13,7 +13,9 @@ import hashlib
 import json
 import logging
 import re
+import shlex
 from dataclasses import asdict
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet
 
 from modules.orchestrator.delegate_mode import ORCHESTRATOR_AGENT_TYPES
@@ -32,16 +34,16 @@ from .types import (
     HookResponse,
     HostCapability,
     HostDistribution,
-    QualityResult,
     ToolResult,
     ValidationRequest,
     ValidationResult,
-    VerificationResult,
     RoleCapabilityContext,
 )
 
 if TYPE_CHECKING:
     from modules.security.host_attestation import Attestation
+
+    from .subagent_stop_core import SubagentStopOutcome
 
 
 # The two contract-closing rules agent-protocol/SKILL.md's principles 2 and 10
@@ -61,19 +63,33 @@ CLOSING_RULES_KERNEL = (
     "mandatory LAST step -- call it only once every other field is set."
 )
 
+
+class _DispatchPolicy(ToolPolicy):
+    """The shared policy, keeping the session-events digest a Task dispatch hands to its host."""
+
+    session_events = ""
+
+    def _deliver_subagent_context(
+        self, session_id: str, agent_type: str, context: str, task_description: str,
+    ) -> None:
+        self.session_events = context
+
+
 _EVENT_TYPES = {
     "tool.execute.before": HookEventType.PRE_TOOL_USE,
     "tool.execute.after": HookEventType.POST_TOOL_USE,
+    "chat.message": HookEventType.SESSION_START,
+    "chat.prompt": HookEventType.USER_PROMPT_SUBMIT,
     "message.part.updated": HookEventType.SUBAGENT_START,
-    "session.idle": HookEventType.STOP,
-    "session.error": HookEventType.POST_TOOL_USE_FAILURE,
+    "session.idle": HookEventType.SUBAGENT_STOP,
+    "session.error": HookEventType.SUBAGENT_STOP,
     "session.deleted": HookEventType.SESSION_END,
     "session.compacted": HookEventType.POST_COMPACT,
     "session.compacting": HookEventType.PRE_COMPACT,
 }
 
 _PATCH_PATH_MARKER = re.compile(
-    r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$"
+    r"^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$"
 )
 
 # Only the OpenCode runtime may issue an identity claim; a claim carrying any
@@ -106,25 +122,53 @@ _IDENTITY_REFUSAL_EVENT = "opencode.identity.refused"
 logger = logging.getLogger(__name__)
 
 
+def _classify_stop_event(stop_event: str | None) -> str:
+    """Map the lifecycle event that ended a child's turn onto a STOP_REASON_* class.
+
+    session.error is the host ending the turn, which the core treats as a
+    truncation to salvage rather than a contract to send back for repair.
+    """
+    from .subagent_stop_core import STOP_REASON_TRUNCATION, STOP_REASON_UNKNOWN
+
+    return STOP_REASON_TRUNCATION if stop_event == "session.error" else STOP_REASON_UNKNOWN
+
+
 def _apply_patch_paths(patch_text: object) -> list[str]:
-    """Return every declared patch path, rejecting ambiguous patch envelopes."""
+    """Return every path a patch adds or updates, rejecting ambiguous envelopes.
+
+    A deletion or a move is refused with the ``rm``/``mv`` command that carries
+    it, because each path here is judged as an Edit, which sees neither effect.
+    """
     if not isinstance(patch_text, str) or not patch_text.strip():
         raise ValueError("apply_patch requires non-empty patchText")
     paths: list[str] = []
-    saw_file_operation = False
     for line in patch_text.splitlines():
         if line.startswith("*** ") and line not in {"*** Begin Patch", "*** End Patch"}:
             match = _PATCH_PATH_MARKER.fullmatch(line)
             if match is None:
                 raise ValueError(f"unsupported apply_patch marker: {line}")
-            saw_file_operation = True
-            path = match.group(1).strip()
+            marker, path = match.group(1), match.group(2).strip()
             if not path or path in {"/", ".", ".."} or "\x00" in path:
                 raise ValueError("apply_patch contains an unsafe or empty path")
+            if marker == "Delete File":
+                raise ValueError(_bash_route_refusal(f"rm -- {shlex.quote(path)}"))
+            if marker == "Move to":
+                if not paths:
+                    raise ValueError("apply_patch Move to must follow Update File")
+                source, destination = shlex.quote(paths[-1]), shlex.quote(path)
+                raise ValueError(_bash_route_refusal(f"mv -- {source} {destination}"))
             paths.append(path)
-    if not saw_file_operation or not paths:
+    if not paths:
         raise ValueError("apply_patch contains no recognized file operation")
     return paths
+
+
+def _bash_route_refusal(command: str) -> str:
+    """Name the Bash command that must carry a deletion or move a patch attempted."""
+    return (
+        f"apply_patch cannot delete or move a file. Run `{command}` through bash: "
+        "it gets the verdict, and the approval when one is needed, of any rm or mv."
+    )
 
 
 def _fail_closed(output: Dict[str, Any], exit_code: int) -> HookResponse:
@@ -338,26 +382,51 @@ class OpenCodeAdapter(HookAdapter):
         )
 
     def adapt_session_start(self, raw: dict) -> BootstrapResult:
+        """Run Claude Code's start maintenance for a main session, then build its birth block.
+
+        The plugin forwards ``chat.message`` once per session it or the host
+        records as parentless, so every call here is a start or a resume. The
+        bridge runs from the session's workspace directory, which is the
+        directory Claude Code's start sweeps too.
+        """
+        from modules.session import session_lifecycle
+        from modules.session.session_lifecycle import SessionStart, start_context
+
+        session_lifecycle.run_start_maintenance(SessionStart(
+            session_id=str(raw.get("session_id") or ""),
+            source="startup",
+            is_headless=False,
+            pinned_build=None,
+            workspace_dir=Path.cwd(),
+        ))
         return BootstrapResult(
-            should_scan=True,
-            should_refresh=True,
             session_type="startup",
+            additional_context=start_context("startup", []),
         )
+
+    def adapt_user_prompt_submit(self, event: HookEvent) -> HookResponse:
+        """Run Claude Code's per-prompt core for one main-session message: heartbeat, then the due-notifications line.
+
+        The plugin forwards ``chat.prompt`` only for a main session's own
+        messages, and the bridge runs from that session's workspace directory,
+        the workspace Claude Code's UserPromptSubmit counts notifications for.
+        """
+        from gaia.project import current
+        from modules.session.session_lifecycle import prompt_context
+
+        try:
+            workspace = current() or None
+        except Exception:
+            workspace = None
+        return HookResponse(output={
+            "action": "allow",
+            "additional_context": prompt_context(event.session_id, workspace),
+        })
 
     def format_bootstrap_response(self, result: BootstrapResult) -> HookResponse:
         return HookResponse(
-            output={
-                "should_scan": result.should_scan,
-                "should_refresh": result.should_refresh,
-                "session_type": result.session_type,
-            }
+            output={"action": "allow", "additional_context": result.additional_context or ""}
         )
-
-    def adapt_stop(self, raw: dict) -> QualityResult:
-        return QualityResult()
-
-    def adapt_task_completed(self, raw: dict) -> VerificationResult:
-        return VerificationResult()
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Bind the callID<->child-session pair this event reports, then
@@ -398,23 +467,6 @@ class OpenCodeAdapter(HookAdapter):
         return ContextResult(
             context_injected=bool(raw.get("additional_context")),
             additional_context=raw.get("additional_context"),
-        )
-
-    def format_quality_response(self, result: QualityResult) -> HookResponse:
-        return HookResponse(
-            output={
-                "quality_sufficient": result.quality_sufficient,
-                "missing_elements": result.missing_elements,
-            }
-        )
-
-    def format_verification_response(self, result: VerificationResult) -> HookResponse:
-        return HookResponse(
-            output={
-                "criteria_met": result.criteria_met,
-                "failed_items": result.failed_items,
-                "block_completion": result.block_completion,
-            }
         )
 
     def _adapt_pre_tool_use_with_shell_env(self, event: HookEvent) -> HookResponse:
@@ -493,7 +545,7 @@ class OpenCodeAdapter(HookAdapter):
                     return checked
             return HookResponse(output={"action": "allow"})
         if original_tool == "task":
-            return self._adapt_task_with_kernel(policy, policy_event)
+            return self._adapt_task_with_kernel(_DispatchPolicy(), policy_event)
         translated = self._format_policy_verdict(policy.pre_tool_verdict(
             policy_event, dispatch_identity_in_env=env_identity is not None,
         ))
@@ -757,41 +809,22 @@ class OpenCodeAdapter(HookAdapter):
         return None
 
     def _adapt_task_with_kernel(
-        self, policy: ToolPolicy, policy_event: HookEvent,
+        self, policy: _DispatchPolicy, policy_event: HookEvent,
     ) -> HookResponse:
-        """Run the Task dispatch through the shared policy path, then --
-        on allow -- replace the host prompt with the just-born row's rendered
-        kernel, in place (plan 65, task 9).
+        """Run the Task dispatch through the shared policy and, on allow, rewrite its prompt.
 
-        Claude Code receives its kernel through a SEPARATE start event
-        (SubagentStart) that fires before the subagent's first turn.
-        OpenCode has no equivalent: its only start-adjacent signal
-        (``message.part.updated``) merely reports the callID<->child-
-        session binding, sometimes after the child has already acted. The
-        one point this host reliably controls before the child's first
-        action is THIS call -- the Task dispatch itself -- so the kernel
-        is embedded directly into the dispatched prompt via ``updated_input``.
-        The kernel's ``goal`` already contains the born row's original Task
-        prompt, so appending that prompt here would duplicate the assignment.
-        The plugin's field-by-field ``applyUpdatedInput`` (T6) changes only
-        ``prompt``; every other Task argument (``description``,
-        ``subagent_type``, ``task_id``, ...) passes through untouched.
-
-        The delegated call already births the row with
-        ``dispatch_tool_use_id=callID`` (``build_policy_payload`` forwards
-        ``event.call_id`` as ``tool_use_id``, and
-        ``_maybe_birth_dispatched_row`` stamps it); this method claims
-        that SAME row by the SAME callID -- layer 0 of
-        ``claim_dispatch_row``'s correlation ladder -- and renders its
-        ``# Your Contract`` block with ``build_dispatch_kernel``. No
-        second birth: claiming is a state transition on the row the
-        delegated call already inserted, never a new insert.
-
-        Degrades to the plain delegated response -- no kernel, prompt
-        unmodified -- whenever the dispatch was denied/asked, or the
-        claim/render step finds nothing (birth skipped, row already
-        claimed, or a rendering error): a subagent dispatch must never be
-        blocked by kernel injection.
+        The new prompt is the session-events digest, the born row's kernel as
+        Claude Code's SubagentStart renders it (contract, CLI, the user's rows),
+        the skills the dispatched agent's definition preloads (OpenCode
+        preloads none; a body arrives only through its ``skill`` tool) and the
+        closing rules. OpenCode has no start event that reliably precedes the child's first
+        action (``message.part.updated`` can arrive after it), so what Claude
+        Code's SubagentStart delivers rides this call's prompt instead, the
+        digest ahead of the kernel as there. The kernel's goal already holds
+        the original prompt, so it is not appended again. The row is claimed by
+        the callID the shared policy birthed it under, never born a second
+        time. Any denial or claim/render miss returns the plain verdict: kernel
+        injection must never block a dispatch.
         """
         translated = self._format_policy_verdict(policy.pre_tool_verdict(policy_event))
         output = translated.output
@@ -800,7 +833,6 @@ class OpenCodeAdapter(HookAdapter):
 
         try:
             from gaia.store.writer import claim_dispatch_row
-            from modules.context.kernel_builder import build_dispatch_kernel
         except Exception:
             return translated
 
@@ -814,15 +846,16 @@ class OpenCodeAdapter(HookAdapter):
             return translated
 
         try:
-            kernel = build_dispatch_kernel(row)
+            tool_input = policy_event.payload.get("tool_input") or {}
+            kernel = self._child_kernel(row, str(tool_input.get("subagent_type") or ""))
         except Exception:
             kernel = None
         if not kernel:
             return translated
 
-        kernel_with_rules = f"{kernel}\n\n{CLOSING_RULES_KERNEL}"
+        sections = (policy.session_events, kernel, CLOSING_RULES_KERNEL)
         updated_input = dict(output.get("updated_input") or {})
-        updated_input["prompt"] = kernel_with_rules
+        updated_input["prompt"] = "\n\n".join(section for section in sections if section)
         output["updated_input"] = updated_input
         return translated
 
@@ -1196,8 +1229,11 @@ class OpenCodeAdapter(HookAdapter):
         while discarding the audit record of what ran. What this path does
         withhold is a structured decision, from both containers it could ride
         in. The call's outcome is read by this adapter's own
-        ``parse_post_tool_use``.
+        ``parse_post_tool_use``. A Task result's contract summary line returns
+        as ``additional_context``, which the plugin appends to the tool output.
         """
+        from modules.agents.task_result_observer import TASK_TOOL_NAMES
+
         payload = self.build_policy_payload(event)
         payload["tool_input"] = self._without_unverified_decision(
             event, payload.get("tool_input", {})
@@ -1205,6 +1241,8 @@ class OpenCodeAdapter(HookAdapter):
         payload["tool_response"] = self._without_unverified_decision(
             event, event.payload.get("tool_response", {})
         )
+        if payload.get("tool_name") in TASK_TOOL_NAMES:
+            payload["tool_response"] = self._as_shared_task_result(payload["tool_response"])
         policy_event = HookEvent(
             event_type=event.event_type,
             session_id=event.session_id,
@@ -1224,73 +1262,211 @@ class OpenCodeAdapter(HookAdapter):
         verdict = ToolPolicy().post_tool_verdict(
             policy_event, self.parse_post_tool_use(payload),
         )
-        return self._format_policy_verdict(verdict)
+        response = self._format_policy_verdict(verdict)
+        if verdict.context and response.output.get("action") == "allow":
+            response.output["additional_context"] = verdict.context
+        return response
+
+    @staticmethod
+    def _as_shared_task_result(tool_response: Any) -> Any:
+        """Translate an OpenCode Task result into the fields the shared Task observer reads.
+
+        OpenCode names the child only as ``metadata.sessionId``, the id its row
+        is bound to, and marks a background launch with ``metadata.background``
+        and no status; without Claude Code's ``async_launched`` the observer
+        would read that launch as a completed turn and record a false cut.
+        """
+        if not isinstance(tool_response, dict):
+            return tool_response
+        metadata = tool_response.get("metadata")
+        if not isinstance(metadata, dict):
+            return tool_response
+        translated = dict(tool_response)
+        child_session = metadata.get("sessionId")
+        if not translated.get("agentId") and isinstance(child_session, str) and child_session:
+            translated["agentId"] = child_session
+        if metadata.get("background") is True and not translated.get("status"):
+            translated["status"] = "async_launched"
+        return translated
 
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
-        """Close the row bound to this session on a real lifecycle signal
-        (session.idle/error/deleted -- ``Stop``/``PostToolUseFailure``/
-        ``SessionEnd`` after mapping, plan 65, T11).
+        """Gate a dispatched child's turn on session.idle or session.error, then close its row; for the main session, beat its heartbeat.
 
-        Replaces the exit-2 stub: OpenCode never awaits this hook's return
-        for these events (they carry no host decision to gate -- see
-        ``LIFECYCLE_EVENT_TYPES`` in ``opencode/plugin.ts``), so this is a
-        best-effort database write, never a permission verdict. ``resolve_close``
-        (``dispatch_lifecycle``) does the actual work: it is keyed on
-        ``event.session_id`` because that IS the harness_agent_id a dispatched
-        child was bound under (``bind_harness_child_session`` stamps the
-        CHILD's own OpenCode session id at ``message.part.updated`` time,
-        before any tool call ever runs) -- so a child with ZERO tool calls is
-        still found and closed here. The PRIMARY/root session's own
-        session.idle resolves no bound row (never stamped by
-        ``bind_harness_child_session``) and is a harmless no-op.
+        OpenCode does not await these events, so a rejection cannot hold the
+        turn open. It returns ``repair_prompt`` for the plugin to send the
+        child as its next turn and leaves the row unclosed for the child's own
+        finalize. ``user_message`` and ``orchestrator_notice`` are appended by
+        the plugin to the parent's Task result, which the orchestrator reads
+        under both the TUI and ``opencode run``.
+
+        The session id is the harness_agent_id ``bind_harness_child_session``
+        stamped at ``message.part.updated``, so a child with no tool call is
+        still found. A session bound to no row is the main one ending a turn:
+        that heartbeat is what keeps its worktrees and pending approvals live,
+        and what lets a killed OpenCode process, which emits no close event, go
+        stale.
         """
-        from modules.agents.dispatch_lifecycle import resolve_close
+        row = self._bound_child_row(event.session_id)
+        outcome = self._gate_child_turn(event, row) if row is not None else None
+        if outcome is not None and outcome.rejected:
+            return HookResponse(output={
+                "contract_valid": False,
+                "repair_prompt": outcome.result.get("contract_rejection_reason", ""),
+                "orchestrator_notice": self._repair_notice(event, outcome.result),
+                "closed": {"status": "repair_requested", "contract_id": row.get("contract_id")},
+            })
+        closed = self._close_bound_row(event)
+        if closed.get("status") == "no_row":
+            from modules.session.session_lifecycle import refresh_heartbeat
 
-        outcome = resolve_close(
-            harness_agent_id=event.session_id, session_id=event.session_id,
+            refresh_heartbeat(event.session_id)
+        output: Dict[str, Any] = {"contract_valid": True, "closed": closed}
+        if outcome is not None:
+            output.update({
+                key: outcome.result[key]
+                for key in ("contract_circuit_open", "contract_rejection_count", "episode_id")
+                if key in outcome.result
+            })
+            if outcome.user_message:
+                output["user_message"] = outcome.user_message
+        return HookResponse(output=output)
+
+    @staticmethod
+    def _gate_child_turn(event: HookEvent, row: dict) -> "SubagentStopOutcome":
+        """Run the host-neutral SubagentStop close for the child session bound to ``row``.
+
+        OpenCode's stop event names only the child session and the agent the
+        plugin bound it to, so the dispatching session comes from the row the
+        dispatch birthed and the child's output is left to the core's row
+        reconstruction.
+        """
+        from . import subagent_stop_core
+
+        parent_session_id = row.get("session_id") or ""
+        agent_type = str(event.payload.get("agent") or "")
+        stop_event = str(event.payload.get("event") or "")
+        hook_data = {
+            "hook_event_name": "SubagentStop",
+            "session_id": parent_session_id,
+            "agent_type": agent_type,
+            "agent_id": event.session_id,
+            "stop_reason": stop_event,
+        }
+        host = subagent_stop_core.SubagentStopHost(
+            agent_roster=subagent_stop_core.gaia_agent_roster,
+            classify_stop_reason=_classify_stop_event,
+            resume_map_dir=None,
         )
+        completion = AgentCompletion(
+            agent_type=agent_type,
+            agent_id=event.session_id,
+            transcript_path="",
+            last_message="",
+            session_id=parent_session_id,
+        )
+        return subagent_stop_core.run_subagent_stop(
+            host, hook_data, completion, event_session_id=parent_session_id or None,
+        )
+
+    @staticmethod
+    def _repair_notice(event: HookEvent, result: dict) -> str:
+        from modules.agents.rejection_circuit import max_rejections
+
+        agent = event.payload.get("agent") or "The specialist"
+        return (
+            f"{agent} ended its turn without a finalized contract, so Gaia returned "
+            f"the turn to it for repair (rejection {result.get('contract_attempts', 1)} "
+            f"of {max_rejections()}). This task result is not a valid close: continue "
+            f"task_id {event.session_id} to collect the repaired one."
+        )
+
+    @staticmethod
+    def _bound_child_row(session_id: str) -> dict | None:
+        from gaia.store.writer import find_dispatch_row_by_harness_agent_id
+
+        try:
+            return find_dispatch_row_by_harness_agent_id(str(session_id)) if session_id else None
+        except Exception:
+            logger.warning("Child row lookup failed for session %s", session_id, exc_info=True)
+            return None
+
+    def adapt_session_end(self, event: HookEvent) -> HookResponse:
+        """On session.deleted, close the dispatched child's row, or unregister the main session.
+
+        Rows a main session dispatched are bound to their children's session
+        ids, so unregistering it leaves them for their own close events.
+        """
+        outcome = self._close_bound_row(event)
+        if outcome.get("status") == "no_row":
+            from modules.session.session_lifecycle import end_session
+
+            end_session(event.session_id)
         return HookResponse(output={"contract_valid": True, "closed": outcome})
 
+    @staticmethod
+    def _close_bound_row(event: HookEvent) -> dict:
+        from modules.agents import dispatch_lifecycle
+
+        return dispatch_lifecycle.resolve_close(
+            harness_agent_id=event.session_id, session_id=event.session_id,
+        ) or {"status": "error"}
+
     def adapt_pre_compact(self, event: HookEvent) -> HookResponse:
-        """Reinject the claimed dispatch row's kernel before OpenCode's real
-        compaction (experimental.session.compacting) discards prior context
-        (plan 65, task 12; AC-7).
+        """Return what OpenCode's compaction must carry forward: a bound child's kernel, or a main session's compaction context.
 
-        OpenCode's compaction summarizes/discards the session's prior messages
-        before the child's next turn -- the same row-bound kernel T9 prepends
-        at dispatch would otherwise fall out of the child's live context with
-        no re-delivery. This session's own id (event.session_id) is the same
-        value bind_harness_child_session stamped as harness_agent_id on the
-        child's row (T10), so find_dispatch_row_by_harness_agent_id resolves
-        the exact row this compaction event belongs to with no correlation
+        Answers the experimental ``experimental.session.compacting`` hook,
+        whose context survives the summary that discards the session's prior
+        messages. A dispatched child gets back the kernel its row was born
+        with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
+        what Claude Code's SessionStart(compact) delivers, from the same
+        ``start_context``.
+
+        Degrades to a plain allow whenever there is nothing to inject or
+        building it fails: a compaction must never be blocked by injection,
+        the rule _adapt_task_with_kernel applies to a Task dispatch.
+        """
+        kernel = self._bound_child_kernel(event.session_id, str(event.payload.get("agent") or ""))
+        if kernel:
+            return HookResponse(
+                output={"action": "allow", "updated_input": {"context": [kernel]}}
+            )
+        if event.payload.get("main") is True:
+            from modules.session.session_lifecycle import start_context
+
+            context = start_context("compact", [])
+            if context:
+                return HookResponse(
+                    output={"action": "allow", "updated_input": {"context": [context]}}
+                )
+        return HookResponse(output={"action": "allow"})
+
+    @staticmethod
+    def _child_kernel(row: dict, agent_name: str) -> str | None:
+        """Claude Code's SubagentStart kernel for *row* plus the skills block, or None without a contract.
+
+        The skills block stands in for the preload OpenCode does not perform.
+        """
+        from modules.context.kernel_builder import build_kernel_context, build_skills_block
+
+        kernel = build_kernel_context(row, agent_name=agent_name)
+        if not kernel:
+            return None
+        return "\n\n".join(block for block in (kernel, build_skills_block(agent_name)) if block)
+
+    @classmethod
+    def _bound_child_kernel(cls, session_id: str, agent_name: str) -> str | None:
+        """The kernel of the claimed dispatch row bound to this child session, or None.
+
+        The session id is the harness_agent_id bind_harness_child_session
+        stamped on the child's row (T10), so the lookup needs no correlation
         ladder.
-
-        Degrades to a plain allow -- no context injected -- whenever nothing
-        is bound to this session, claimed_at is absent, or the kernel render
-        fails: a compaction must never be blocked by kernel injection, the
-        same rule _adapt_task_with_kernel applies to a Task dispatch.
         """
         from gaia.store.writer import find_dispatch_row_by_harness_agent_id
-        from modules.context.kernel_builder import build_dispatch_kernel
-
-        session_id = event.session_id
-        try:
-            row = (
-                find_dispatch_row_by_harness_agent_id(str(session_id))
-                if session_id else None
-            )
-        except Exception:
-            row = None
-        if row is None or not row.get("claimed_at"):
-            return HookResponse(output={"action": "allow"})
 
         try:
-            kernel = build_dispatch_kernel(row)
+            row = find_dispatch_row_by_harness_agent_id(str(session_id)) if session_id else None
+            if row is None or not row.get("claimed_at"):
+                return None
+            return cls._child_kernel(row, agent_name)
         except Exception:
-            kernel = None
-        if not kernel:
-            return HookResponse(output={"action": "allow"})
-
-        return HookResponse(
-            output={"action": "allow", "updated_input": {"context": [kernel]}}
-        )
+            return None

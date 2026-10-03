@@ -1,7 +1,7 @@
 ## Plan
 
 ### Approach
-Build the neutral approval core first, inside the existing neutral pieces (sealed-payload builder, presentation, atomic activation, reserve/settle), then move each host onto it one at a time: Claude Code lifecycle (terminal event per call, no Stop sweep), Claude Code decision surface (Gaia-built question bound by tool_use_id), and OpenCode (own adapter, no borrowed ClaudeCodeAdapter, no regex). Only after both hosts sit on the core do the readers (AC-9) and the seven approval-cycle skills (AC-5) get rewritten, so they describe the final mechanism once. The last task integrates the final PR, installs it in /home/jorge/ws/me and records the live proofs. Every task is its own worktree and squash PR with the full test suite green, so main stays releasable between milestones. All repo reads for this plan were done against origin/main bbc2f09 with git grep/show (the live checkout is 2 commits behind).
+Build the neutral approval core first, inside the existing neutral pieces (sealed-payload builder, presentation, atomic activation, reserve/settle), then move each host onto it one at a time: Claude Code lifecycle (terminal event per call, no Stop sweep), Claude Code decision surface (Gaia-built question bound by tool_use_id), and OpenCode (own adapter, no borrowed ClaudeCodeAdapter, no regex). Only after both hosts sit on the core do the readers (AC-9) and the seven approval-cycle skills (AC-5) get rewritten, so they describe the final mechanism once. The last task integrates the final PR, installs it in /home/user/ws/me and records the live proofs. Every task is its own worktree and squash PR with the full test suite green, so main stays releasable between milestones. All repo reads for this plan were done against origin/main bbc2f09 with git grep/show (the live checkout is 2 commits behind).
 
 ### Decisions
 - PD1: The new states (no result, withdrawn, expired window) are DERIVED or mapped onto existing vocabulary, not added to the approval_events CHECK. No-result means a reserved call with no terminal event when the window closes. Withdraw uses the existing REJECTED (pending) or REVOKED (grant). Expiry stays on the grant status. -- motivated by AC-1, AC-9
@@ -29,7 +29,7 @@ Build the neutral approval core first, inside the existing neutral pieces (seale
   - gaia defects: reads nothing about approvals today (zero matches). The task confirms it still renders and decides whether it should surface no-result calls.
   - OpenCode plugin: calls opencode-present and opencode-decide, keeps its own expected index and derives exit codes from tool metadata.
   - Not named in AC-9 but reading approval data: the handoff persister (maps grant status to a handoff approval decision, treats PENDING as granted and does not know FAILED or no-result), SessionStart cleanup (expired grants, stale pending count), approval_cleanup, the contract crosscheck (APPROVAL_ID_NOT_PENDING), decision_audit lanes, and the writer lapsed-grant predicate used by the expiry sweep.
-- AC-8: CI runs pytest over tests/ with xdist, eslint, manifest build and pre-publish validation. Install into /home/jorge/ws/me is a local step on this side.
+- AC-8: CI runs pytest over tests/ with xdist, eslint, manifest build and pre-publish validation. Install into /home/user/ws/me is a local step on this side.
 
 ### Assumptions
 - The brief decisions win over the design handoff where they differ: rollback stays optional (N4) and the question labels are fixed English Approve / Reject / Details (N7).
@@ -105,10 +105,10 @@ Build the neutral approval core first, inside the existing neutral pieces (seale
 - agent: gaia-system
 - covers: AC-6, AC-7, AC-8
 - depends on: T6
-- blast radius: release/install into /home/jorge/ws/me, live approvals in both hosts
+- blast radius: release/install into /home/user/ws/me, live approvals in both hosts
 - gates: semantic, live event chains. semantic, CI and install
 
-**Context:** Merge the last PR with CI green, install that build in /home/jorge/ws/me, run in Claude Code a 2-command COMMAND_SET signed once while the orchestrator ends its turn, and read gaia approvals show for it. After the user runs the OpenCode proof (checklist), read its chain the same way.
+**Context:** Merge the last PR with CI green, install that build in /home/user/ws/me, run in Claude Code a 2-command COMMAND_SET signed once while the orchestrator ends its turn, and read gaia approvals show for it. After the user runs the OpenCode proof (checklist), read its chain the same way.
 
 ### Execution Order
 T1, then T2, then T3, then T4, then T5, then T6, then T7. Strictly serial.

@@ -51,6 +51,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # + the `bin/` CLI + the runtime support (`gaia/` package, `scripts/`).
 VALID_PLUGINS = ("gaia",)
 
+# Every registered hook command runs its entrypoint through this script.
+HOOK_LAUNCHER = "hooks/launch.sh"
+
 # Directories that "all" resolves to for the unified plugin
 ALL_RESOLUTION = {
     "modules": [
@@ -200,16 +203,17 @@ def generate_hooks_json(manifest: dict) -> dict:
             entry: dict = {}
             if "matcher" in matcher_config:
                 entry["matcher"] = matcher_config["matcher"]
-            # Invoke via `python3` rather than relying on the script's exec bit.
-            # The tarball install path (`npm install <tgz>`) preserves file mode
-            # from the working tree; if a hook ships without 0755 the SessionEnd
-            # event raises "Permission denied" on every invocation. Using
-            # `python3 <path>` removes that dependency entirely -- the kernel
-            # never needs +x on the .py file because exec is on /usr/bin/python3.
+            # `sh <launcher>` needs no exec bit (a tarball install keeps the
+            # working tree's file modes) and no `python3` (the launcher picks
+            # python3, python or `py -3`); both paths are quoted because a
+            # plugin root or workspace can hold a space.
             entry["hooks"] = [
                 {
                     "type": "command",
-                    "command": f"python3 ${{CLAUDE_PLUGIN_ROOT}}/{entry_point}",
+                    "command": (
+                        f'sh "${{CLAUDE_PLUGIN_ROOT}}/{HOOK_LAUNCHER}" '
+                        f'"${{CLAUDE_PLUGIN_ROOT}}/{entry_point}"'
+                    ),
                 }
             ]
             entries.append(entry)
@@ -278,7 +282,6 @@ def generate_plugin_json(manifest: dict) -> dict:
         "description": manifest.get("description", ""),
         "author": {
             "name": "jaguilar87",
-            "email": "jorge.aguilar87@gmail.com",
         },
         "homepage": homepage,
         "repository": "https://github.com/metraton/gaia",

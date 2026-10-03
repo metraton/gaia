@@ -67,13 +67,13 @@ class TestShortValueFlagAbsorption:
     def test_git_dash_c_path_absorbed(self):
         """git -C <path> push ... should have same semantic_tokens as git push ..."""
         base = analyze_command("git push origin main")
-        with_c = analyze_command("git -C /home/jorge/ws/me push origin main")
+        with_c = analyze_command("git -C /home/user/ws/me push origin main")
 
         assert with_c.semantic_tokens == base.semantic_tokens
         assert with_c.base_cmd == "git"
         # The path should be in flag_tokens, not non_flag_tokens
-        assert "/home/jorge/ws/me" in with_c.flag_tokens
-        assert "/home/jorge/ws/me" not in with_c.non_flag_tokens
+        assert "/home/user/ws/me" in with_c.flag_tokens
+        assert "/home/user/ws/me" not in with_c.non_flag_tokens
 
     def test_kubectl_dash_n_namespace_absorbed(self):
         """kubectl -n <ns> delete pod ... should match kubectl delete pod ..."""

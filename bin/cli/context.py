@@ -529,36 +529,24 @@ def _project_match_identity_entry(
     return None, None
 
 
-def _project_pending_footer(con, workspace: str, initiative: str | None) -> str | None:
+def _project_pending_footer(initiative: str | None) -> str | None:
     """The P2-style computed footer line (decision_gaia_el_cli_ensena_en_el_
 
     instante_del_verbo): fires ONLY when the resolved project's initiative
     has other live-pending threads, naming the count and the exact sweep
     command -- mirroring `bin/cli/memory.py`'s `_show_pointer_line2` for
-    `memory show`. Same predicate as `gaia memory get-relevant --initiative`
-    (class='thread', status IN carry_forward/open, superseded rows excluded)
-    so the count printed here is the SAME count that command would return. A
+    `memory show`. Counts `gaia.store.reader.pending_threads_by_project`, the
+    rows `gaia memory get-relevant --initiative` returns, so the count printed
+    here is the SAME count that command would return, from every workspace. A
     project with no initiative, or an initiative with zero live-pending rows,
     returns None -- a condition that always fires is not a condition. Never
-    raises: any DB error is read as "nothing to say", matching the
-    fail-fast-empty convention `_fetch_pending_vivo` already uses.
+    raises: a DB error reads as zero rows, so "nothing to say".
     """
     if not initiative:
         return None
-    try:
-        rows = con.execute(
-            "SELECT COUNT(*) AS n FROM memory "
-            "WHERE workspace = ? AND deleted_at IS NULL AND class = 'thread' "
-            "  AND status IN ('carry_forward', 'open') AND initiative = ? "
-            "  AND name NOT IN ("
-            "    SELECT dst_name FROM memory_links "
-            "    WHERE workspace = ? AND kind = 'supersedes'"
-            "  )",
-            (workspace, initiative, workspace),
-        ).fetchone()
-    except Exception:
-        return None
-    n = rows["n"] if rows else 0
+    from gaia.store.reader import pending_threads_by_project
+
+    n = len(pending_threads_by_project([initiative]))
     if not n:
         return None
     line = (
@@ -828,12 +816,15 @@ def _cmd_project(args) -> int:
         r_workspace = row["workspace"]
         r_name = row["name"]
 
+        from gaia.store.workspace_curation import is_dangling_facet
+
         facets = [
             dict(f) for f in con.execute(
                 "SELECT scope, key, value FROM project_facets "
                 "WHERE workspace = ? AND project = ? ORDER BY scope, key",
                 (r_workspace, r_name),
             ).fetchall()
+            if not is_dangling_facet(f["scope"], f["key"])
         ]
 
         contract_slug = None
@@ -852,19 +843,26 @@ def _cmd_project(args) -> int:
                 payload, row.get("path"), row.get("remote_url"),
             )
 
+        # The project's memory is every row whose canonical project key is the
+        # project's, in any workspace (AC-12): the workspace that registered
+        # the project does not own the notes written about it elsewhere.
+        from gaia.store.writer import canonical_project_key
+
         initiative = _project_derive_initiative(row.get("project_identity"))
-        project_ref = row.get("project_identity")
         memory_rows = [
-            dict(m) for m in con.execute(
-                "SELECT name, type, description FROM memory "
-                "WHERE workspace = ? AND deleted_at IS NULL "
-                "  AND (project_ref = ? OR (initiative IS NOT NULL AND initiative = ?)) "
-                "ORDER BY COALESCE(updated_at, '') DESC",
-                (r_workspace, project_ref, initiative),
+            {"name": m["name"], "type": m["type"], "description": m["description"]}
+            for m in con.execute(
+                "SELECT name, type, description, initiative, project_ref "
+                "FROM memory WHERE deleted_at IS NULL "
+                "  AND (COALESCE(initiative, '') != '' "
+                "       OR COALESCE(project_ref, '') != '') "
+                "ORDER BY COALESCE(updated_at, '') DESC"
             ).fetchall()
+            if initiative
+            and canonical_project_key(m["project_ref"], m["initiative"]) == initiative
         ]
 
-        footer = _project_pending_footer(con, r_workspace, initiative)
+        footer = _project_pending_footer(initiative)
 
         memory_total = len(memory_rows)
         memory_shown = memory_rows[:_PROJECT_MEMORY_INDEX_TOP_N]
@@ -936,6 +934,9 @@ def _cmd_project(args) -> int:
             )
             print(f"{label} -- index only, use `gaia memory show <slug>` "
                   f"for the full body:")
+            if initiative:
+                print(f"  (its anchors whole: `gaia memory get-relevant "
+                      f"--initiative {initiative} --sections anchor`)")
             for m in memory_shown:
                 desc = m.get("description") or ""
                 print(f"  - {m['name']}: {desc}" if desc else f"  - {m['name']}")

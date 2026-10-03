@@ -123,39 +123,12 @@ class TestHarnessCutLandsAsOrchestratorDefect:
 # Read-back fidelity against the machine's own accumulated substrate
 # ---------------------------------------------------------------------------
 #
-# The property here is read-back fidelity on rows this commit did not write:
-# agent.cut rows accumulated over time by whatever task_result_observer was
-# installed when each was recorded must STILL surface through read_defects as
-# origin=orchestrator / severity=warning today. The fixture-seeded test above
-# cannot cover that -- it writes and reads within one commit.
-#
-# The precondition is measured through a channel INDEPENDENT of the code under
-# test: a raw COUNT over harness_events, never read_defects. That independence
-# is the entire design, and it is what stops this from becoming an inert
-# sentinel that can only skip or pass:
-#
-#   raw count == 0 -> nothing of this type is on disk, so there is nothing to
-#                     read back and the precondition is genuinely unmet: skip
-#                     with the reason named. No reader regression can fabricate
-#                     this state, because the count never goes through the
-#                     reader.
-#   raw count > 0  -> cuts ARE on disk, and every one of them must come back as
-#                     an orchestrator-origin warning: assert. A reader that
-#                     surfaces fewer -- a moved severity floor, a broken origin
-#                     mapping, a renamed column -- FAILS here.
-#
-# Do NOT collapse the guard into `if not read_defects(...): skip`. Measuring the
-# precondition with the code under test makes the exact regression this test
-# exists to catch indistinguishable from having nothing to check, and the
-# sentinel silently stops biting. TestTheRealSubstrateSentinelStillBites pins
-# both directions so that collapse cannot land unnoticed.
-#
-# Equally deliberate: a substrate holding thousands of OTHER event types but no
-# agent.cut row skips rather than fails. A machine that never suffered a harness
-# cut is healthy, not defective -- requiring one to exist is the "this machine's
-# history is an invariant of the suite" coupling this test was rewritten to
-# remove.
-_REAL_SUBSTRATE = Path.home() / ".gaia" / "gaia.db"
+# Recorded agent.cut rows must surface through read_defects as
+# origin=orchestrator / severity=warning. The precondition is a raw COUNT over
+# harness_events, never read_defects: measuring it with the code under test
+# would make a reader regression indistinguishable from having nothing to check.
+# The suite never reads the user's real substrate (D107); the synthetic
+# substrates below pin every branch of the guard.
 
 # Read-back cap, and therefore also the ceiling on the expected count: a
 # substrate holding more cuts than this stays comparable instead of failing on
@@ -212,18 +185,10 @@ def _assert_recorded_cuts_read_back_as_orchestrator_warnings(substrate: Path) ->
     assert all(row["severity"] == "warning" for row in rows)
 
 
-class TestRealSubstrateCutRows:
-    """Read-only against the real substrate -- no write touches this path."""
-
-    def test_recorded_cut_rows_read_back_as_orchestrator_origin_and_warning(self):
-        _assert_recorded_cuts_read_back_as_orchestrator_warnings(_REAL_SUBSTRATE)
-
-
 class TestTheRealSubstrateSentinelStillBites:
     """The guard above must tell 'nothing recorded' apart from 'recorded but no
     longer surfaced', rather than skipping its way out of both. These pin each
-    branch on a synthetic substrate, so the distinction stays enforced on any
-    machine -- including one whose real substrate always skips."""
+    branch on a synthetic substrate, so the distinction holds on any machine."""
 
     def test_recorded_cuts_that_stop_surfacing_as_defects_fail(self, tmp_path):
         substrate = tmp_path / "populated.db"

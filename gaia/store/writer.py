@@ -27,10 +27,14 @@ Public API::
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import hashlib
 import json
 import os
+import re
 import sqlite3
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -199,6 +203,268 @@ def _has_application_tables(con: sqlite3.Connection) -> bool:
     return row is not None
 
 
+# EXPECTED_SCHEMA_VERSION is declared once, in bin/cli/doctor.py; the migration
+# engine reads it the same way. An unsealed database is one `gaia migrate`
+# cannot place on the chain, so schema.sql is sealed at the version it builds.
+_DOCTOR_PY = Path(__file__).resolve().parents[2] / "bin" / "cli" / "doctor.py"
+
+
+@functools.lru_cache(maxsize=1)
+def _expected_schema_version() -> int | None:
+    """The schema version this code expects, or None when the build declares none."""
+    try:
+        text = _DOCTOR_PY.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    m = re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", text, re.MULTILINE)
+    return int(m.group(1)) if m else None
+
+
+_MIGRATION_GUARD_PY = Path(__file__).resolve().parents[2] / "scripts" / "migration_guard.py"
+
+
+def _last_breaking_version(version: int) -> int | None:
+    """The minimum code version the shipped migrations imply at ``version``.
+
+    Read through the migration engine's own guard so the writer's seal and
+    `gaia migrate`'s seals derive the minimum from one parser; None when the
+    build ships no migrations.
+    """
+    if not _MIGRATION_GUARD_PY.is_file():
+        return None
+    import importlib.util
+
+    name = "_gaia_migration_guard"
+    guard = sys.modules.get(name)
+    if guard is None:
+        spec = importlib.util.spec_from_file_location(name, _MIGRATION_GUARD_PY)
+        guard = importlib.util.module_from_spec(spec)
+        # dataclasses resolve their module through sys.modules while executing.
+        sys.modules[name] = guard
+        spec.loader.exec_module(guard)
+    return guard.last_breaking_version(_MIGRATION_GUARD_PY.parent / "migrations", version)
+
+
+def _seal_materialized_schema(con: sqlite3.Connection) -> None:
+    """Record the version schema.sql just built, when this build declares one."""
+    expected = _expected_schema_version()
+    if expected is None:
+        return
+    con.execute(
+        "INSERT OR IGNORE INTO schema_version "
+        "(version, applied_at, description, min_code_version) "
+        "VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, ?)",
+        (
+            expected,
+            "sealed by the writer: schema.sql materialized",
+            _last_breaking_version(expected),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schema-direction gate
+# ---------------------------------------------------------------------------
+#
+# A database sealed by a newer Gaia records min_code_version, the oldest code
+# that may still write to it:
+# - code at or above that version writes, warning once per process;
+# - older code, or any code when no minimum is recorded, has every write through
+#   _connect refused while reads keep working;
+# - moving the database down is never the fix: migrations only run forward;
+# - the state is read once per process per path, which is safe because a
+#   process only ever migrates its own database forward.
+
+class SchemaAheadError(sqlite3.DatabaseError):
+    """A write refused because the database is newer than this code allows."""
+
+
+_SCHEMA_VERSION_BY_DB: dict[str, tuple[int | None, int | None]] = {}
+
+_WRITE_ACTIONS = frozenset({
+    sqlite3.SQLITE_INSERT,
+    sqlite3.SQLITE_UPDATE,
+    sqlite3.SQLITE_DELETE,
+    sqlite3.SQLITE_CREATE_TABLE,
+    sqlite3.SQLITE_CREATE_INDEX,
+    sqlite3.SQLITE_CREATE_TRIGGER,
+    sqlite3.SQLITE_CREATE_VIEW,
+    sqlite3.SQLITE_CREATE_VTABLE,
+    sqlite3.SQLITE_DROP_TABLE,
+    sqlite3.SQLITE_DROP_INDEX,
+    sqlite3.SQLITE_DROP_TRIGGER,
+    sqlite3.SQLITE_DROP_VIEW,
+    sqlite3.SQLITE_DROP_VTABLE,
+    sqlite3.SQLITE_ALTER_TABLE,
+    sqlite3.SQLITE_REINDEX,
+})
+
+
+def _read_schema_version(con: sqlite3.Connection) -> int | None:
+    """MAX(schema_version.version), or None for a database with no ledger."""
+    try:
+        row = con.execute("SELECT MAX(version) FROM schema_version").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
+
+
+def _read_min_code_version(con: sqlite3.Connection) -> int | None:
+    """min_code_version of the newest seal, or None without the column or a value."""
+    try:
+        row = con.execute(
+            "SELECT min_code_version FROM schema_version ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return None
+    return row[0] if row else None
+
+
+def writes_refused(live: int | None, expected: int | None, minimum: int | None) -> bool:
+    """Whether code at ``expected`` must not write to a database at ``live``."""
+    if live is None or expected is None or live <= expected:
+        return False
+    return minimum is None or minimum > expected
+
+
+def schema_ahead_message(
+    live: int, expected: int, db_path: Path, minimum: int | None = None
+) -> str:
+    """The refusal a write to a database past this code's window receives."""
+    required = live if minimum is None else minimum
+    reason = (
+        "records no minimum code version it accepts"
+        if minimum is None
+        else f"requires Gaia code at schema v{minimum} or newer since a breaking migration"
+    )
+    return (
+        f"gaia.db at {db_path} is at schema v{live} and {reason}; this Gaia "
+        f"expects v{expected}, so it refuses to write to it; reads keep working. "
+        f"Install a Gaia whose schema version is at least v{required} (`gaia "
+        f"install` or `gaia update` of a newer release in this installation, or "
+        f"`gaia dev` from a newer checkout). Do not downgrade the database."
+    )
+
+
+def schema_compatible_notice(live: int, expected: int, minimum: int, db_path: Path) -> str:
+    """The warning for a newer database that still accepts writes from this code."""
+    return (
+        f"gaia.db at {db_path} is at schema v{live}, newer than the v{expected} "
+        f"this Gaia expects; it accepts code from v{minimum}, so this Gaia keeps "
+        f"reading and writing. Run `gaia install` (or `gaia update`) in this "
+        f"installation to catch up before a breaking migration stops it."
+    )
+
+
+def _schema_ahead(con: sqlite3.Connection, db_path: Path) -> str | None:
+    """The refusal message when ``db_path`` is past this code's window, else None.
+
+    The database state is read once per process per path, and a newer database
+    still inside the window is announced on stderr at that same single read.
+    """
+    expected = _expected_schema_version()
+    if expected is None:
+        return None
+    key = str(db_path.resolve())
+    if key not in _SCHEMA_VERSION_BY_DB:
+        live = _read_schema_version(con)
+        minimum = _read_min_code_version(con)
+        _SCHEMA_VERSION_BY_DB[key] = (live, minimum)
+        if live is not None and live > expected and not writes_refused(live, expected, minimum):
+            print(schema_compatible_notice(live, expected, minimum, db_path), file=sys.stderr)
+    live, minimum = _SCHEMA_VERSION_BY_DB[key]
+    if not writes_refused(live, expected, minimum):
+        return None
+    return schema_ahead_message(live, expected, db_path, minimum)
+
+
+def schema_versions(db_path: Path) -> tuple[int | None, int | None, int | None]:
+    """(database version, version this code expects, database's min_code_version),
+    None where unknown; never writes."""
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        live = _read_schema_version(con)
+        minimum = _read_min_code_version(con)
+    finally:
+        con.close()
+    return live, _expected_schema_version(), minimum
+
+
+def assert_schema_writable(db_path: Path) -> None:
+    """Raise SchemaAheadError when ``db_path`` is past this code's compatibility window.
+
+    For the few writers that open their own connection instead of _connect.
+    """
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        message = _schema_ahead(con, db_path)
+    finally:
+        con.close()
+    if message:
+        raise SchemaAheadError(message)
+
+
+def _refuse_main_writes(action, arg1, arg2, dbname, trigger):
+    """sqlite3 authorizer: deny every change to the main database, allow the rest."""
+    if action == sqlite3.SQLITE_ALTER_TABLE:
+        dbname = arg1
+    if action in _WRITE_ACTIONS and dbname != "temp":
+        return sqlite3.SQLITE_DENY
+    return sqlite3.SQLITE_OK
+
+
+class _Cursor(sqlite3.Cursor):
+    """Cursor whose schema-gate denials carry the refusal message."""
+
+    def execute(self, *args):
+        with _named_refusal(self.connection):
+            return super().execute(*args)
+
+    def executemany(self, *args):
+        with _named_refusal(self.connection):
+            return super().executemany(*args)
+
+    def executescript(self, *args):
+        with _named_refusal(self.connection):
+            return super().executescript(*args)
+
+
+class _Connection(sqlite3.Connection):
+    """Connection whose schema-gate denials carry the refusal message.
+
+    sqlite3 reports an authorizer denial as a bare "not authorized"; this class
+    replaces it with ``schema_ahead`` when the gate is what denied.
+    """
+
+    schema_ahead: str | None = None
+
+    def cursor(self, factory=_Cursor):
+        return super().cursor(factory)
+
+    def execute(self, *args):
+        with _named_refusal(self):
+            return super().execute(*args)
+
+    def executemany(self, *args):
+        with _named_refusal(self):
+            return super().executemany(*args)
+
+    def executescript(self, *args):
+        with _named_refusal(self):
+            return super().executescript(*args)
+
+
+@contextlib.contextmanager
+def _named_refusal(con: sqlite3.Connection):
+    try:
+        yield
+    except sqlite3.DatabaseError as exc:
+        message = getattr(con, "schema_ahead", None)
+        if message and "not authorized" in str(exc):
+            raise SchemaAheadError(message) from exc
+        raise
+
+
 def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
     """Materialize the schema exactly once, safe under concurrent first-write.
 
@@ -256,6 +522,7 @@ def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
             if _has_application_tables(con):
                 return
             con.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+            _seal_materialized_schema(con)
             con.commit()
     finally:
         os.close(fd)
@@ -274,12 +541,14 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
     Returns:
         Open sqlite3.Connection with foreign_keys=ON and a busy_timeout set.
+        When the database is past this code's compatibility window, every
+        write on it raises SchemaAheadError; reads are unaffected.
     """
     if db_path is None:
         db_path = _db_path()
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(db_path))
+    con = sqlite3.connect(str(db_path), factory=_Connection)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     # Wait (bounded) for a contended lock instead of failing instantly -- the
@@ -300,6 +569,9 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     # Materialize the schema based on ACTUAL presence (not file existence),
     # serialized so a concurrent first-write can never observe a missing table.
     _ensure_schema_materialized(con, db_path)
+    con.schema_ahead = _schema_ahead(con, db_path)
+    if con.schema_ahead:
+        con.set_authorizer(_refuse_main_writes)
     return con
 
 
@@ -461,20 +733,18 @@ def set_workspace_last_scan_at(
     ts: str | None = None,
     *,
     db_path: Path | None = None,
-    root_path: str | None = None,
 ) -> None:
     """Record the ISO8601 timestamp of the most recent successful gaia scan.
 
     Called by bin/cli/scan.py after a scan run completes without errors.
     The workspaces row is created (via _ensure_workspace_row) if it does
-    not yet exist; the update is a no-op when the workspace is unknown.
+    not yet exist. The root is never written here: only
+    :func:`declare_workspace` records one.
 
     Args:
         workspace: Workspace name (workspaces.name PK).
         ts:        ISO8601 UTC timestamp string. Defaults to _now_iso().
         db_path:   Optional explicit DB path (used by tests).
-        root_path: Absolute workspace directory the scan resolved; None keeps
-                   the recorded one.
     """
     if ts is None:
         ts = _now_iso()
@@ -486,13 +756,93 @@ def set_workspace_last_scan_at(
         # live: stamp last_scan_at AND reactivate it (status='active',
         # missing_since=NULL). This mirrors project reactivation (v16) at the
         # workspace level (v17 DEMOTE) -- a workspace that was previously
-        # demoted but is installed again on re-scan recovers cleanly.
+        # demoted but is installed again on re-scan recovers cleanly. A retired
+        # workspace stays retired: only `gaia workspace declare` brings it back.
         con.execute(
-            "UPDATE workspaces SET last_scan_at = ?, status = 'active', "
-            "missing_since = NULL, root_path = COALESCE(?, root_path) WHERE name = ?",
-            (ts, root_path, workspace),
+            "UPDATE workspaces SET last_scan_at = ?, "
+            "status = CASE WHEN status = 'retired' THEN status ELSE 'active' END, "
+            "missing_since = NULL WHERE name = ?",
+            (ts, workspace),
         )
         con.commit()
+    finally:
+        con.close()
+
+
+class WorkspaceDeclarationError(ValueError):
+    """A declaration that would rebind a declared name or root."""
+
+
+def declare_workspace(
+    name: str, root: Path, *, dry_run: bool = False, db_path: Path | None = None,
+) -> dict:
+    """Record *name* as a workspace rooted at *root*.
+
+    Returns ``{"outcome", "dropped_alias", "ledger"}``. ``outcome`` is
+    ``"created"``, ``"adopted"`` or ``"noop"``: ``adopted`` gives a root to an
+    existing row that had none, so the history already filed under that name
+    stays with it. A retired row becomes active, and a retire alias of *name*
+    is dropped so *name* means itself again; ``dropped_alias`` names its
+    target and ``ledger`` the undo ledger that records it, which
+    ``gaia workspace retire --undo`` reads back. A name declared at another
+    root, or a root declared under another name, raises
+    :class:`WorkspaceDeclarationError` and writes nothing; so does
+    ``dry_run``, which reports what the declaration would do.
+    """
+    from gaia.store.workspace_retire import alias_target, write_declare_ledger
+
+    root_path = str(root.resolve())
+    db_file = Path(db_path) if db_path is not None else _db_path()
+    con = _connect(db_file)
+    try:
+        holder = con.execute(
+            "SELECT name FROM workspaces WHERE root_path = ? AND name != ?",
+            (root_path, name),
+        ).fetchone()
+        if holder is not None:
+            raise WorkspaceDeclarationError(
+                f"{root_path} is already declared as workspace {holder['name']!r}"
+            )
+        row = con.execute(
+            "SELECT root_path FROM workspaces WHERE name = ?", (name,)
+        ).fetchone()
+        if row is not None and row["root_path"]:
+            if row["root_path"] == root_path:
+                return {"outcome": "noop", "dropped_alias": None, "ledger": None}
+            raise WorkspaceDeclarationError(
+                f"workspace {name!r} is already declared at {row['root_path']}"
+            )
+        report = {
+            "outcome": "adopted" if row is not None else "created",
+            "dropped_alias": alias_target(con, name) if row is not None else None,
+            "ledger": None,
+        }
+        if report["dropped_alias"] == name:
+            report["dropped_alias"] = None
+        if dry_run:
+            return report
+        previous = con.execute(
+            "SELECT status, missing_since FROM workspaces WHERE name = ?", (name,)
+        ).fetchone()
+        alias_row = con.execute(
+            "SELECT alias, target, created_at, ledger FROM workspace_aliases WHERE alias = ?",
+            (name,),
+        ).fetchone()
+        _ensure_workspace_row(con, name, root)
+        con.execute(
+            "UPDATE workspaces SET root_path = ?, status = 'active', missing_since = NULL "
+            "WHERE name = ?",
+            (root_path, name),
+        )
+        if alias_row is not None:
+            con.execute("DELETE FROM workspace_aliases WHERE alias = ?", (name,))
+            report["ledger"] = str(write_declare_ledger(
+                db_file, name, root_path, dict(alias_row),
+                previous["status"] if previous else None,
+                previous["missing_since"] if previous else None,
+            ))
+        con.commit()
+        return report
     finally:
         con.close()
 
@@ -545,8 +895,8 @@ def mark_workspace_demoted(
             if row is None:
                 con.commit()
                 return False
-            if row["status"] == "missing":
-                # Already demoted -> keep original missing_since intact.
+            if row["status"] in ("missing", "retired"):
+                # Already demoted keeps its original missing_since; retired outranks missing.
                 con.commit()
                 return False
             con.execute(
@@ -797,10 +1147,12 @@ def upsert_project(
             previously-missing project (pass status='active' and
             missing_since=None together). When ``project_identity`` is
             non-null and the live schema carries the column (v18+), the
-            UPSERT collapses on that stable identity: the SAME physical repo
-            scanned from different workspaces/roots updates the existing row
-            IN PLACE (preserving its original (workspace, name) PK) instead
-            of inserting a duplicate. ``status`` defaults to 'active' when
+            UPSERT collapses on that stable identity (normalized remote
+            first): the same project reached from another workspace updates
+            the existing row in place, keeping its (workspace, name) PK,
+            instead of inserting a duplicate. Moving the row to its nearest
+            declared workspace is ``move_project``'s job (the scan calls it
+            before upserting). ``status`` defaults to 'active' when
             not provided (or explicitly None).
         agent: Agent name. Must have allow_write=1 for table 'projects' in
             agent_permissions.
@@ -1243,6 +1595,16 @@ def bulk_upsert(
                 rejected += 1
         return {"applied": applied, "rejected": rejected}
 
+    if table == "integrations":
+        evidenced = [
+            r for r in rows_list
+            if r.get("version") is not None or r.get("install_path") is not None
+        ]
+        rejected = len(rows_list) - len(evidenced)
+        rows_list = evidenced
+        if not rows_list:
+            return {"applied": 0, "rejected": rejected}
+
     # Generic path: enforce permission + ON CONFLICT DO UPDATE that ONLY
     # updates the columns the caller provided.
     pk_columns = {
@@ -1270,7 +1632,7 @@ def bulk_upsert(
     con = _connect(db_path)
     try:
         if not _is_authorized(con, table, agent):
-            return {"applied": 0, "rejected": len(rows_list)}
+            return {"applied": 0, "rejected": rejected + len(rows_list)}
         con.execute("BEGIN")
         try:
             _ensure_workspace_row(con, workspace)
@@ -1307,54 +1669,9 @@ def bulk_upsert(
         con.close()
 
 
-# ---------------------------------------------------------------------------
-# Public API: save_integration
-# ---------------------------------------------------------------------------
-
-_INTEGRATION_FIELDS = ("kind", "version", "install_path", "topic_key")
-
-
-def save_integration(
-    workspace: str,
-    name: str,
-    *,
-    kind: str | None = None,
-    version: str | None = None,
-    install_path: str | None = None,
-    topic_key: str | None = None,
-    agent: str = "system",
-    db_path: Path | None = None,
-) -> dict:
-    """Upsert an integrations row, bypassing per-agent permission enforcement.
-    """
-    con = _connect(db_path)
-    try:
-        con.execute("BEGIN")
-        try:
-            _ensure_workspace_row(con, workspace)
-            con.execute(
-                """
-                INSERT INTO integrations (workspace, name, kind, version,
-                                          install_path, topic_key, scanner_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(workspace, name) DO UPDATE SET
-                    kind         = COALESCE(excluded.kind, kind),
-                    version      = COALESCE(excluded.version, version),
-                    install_path = COALESCE(excluded.install_path, install_path),
-                    topic_key    = COALESCE(excluded.topic_key, topic_key),
-                    scanner_ts   = excluded.scanner_ts
-                """,
-                (workspace, name, kind, version, install_path, topic_key, _now_iso()),
-            )
-            con.commit()
-        except Exception:
-            con.rollback()
-            raise
-        return _applied()
-    except Exception as exc:
-        return {"status": "error", "reason": str(exc)}
-    finally:
-        con.close()
+# An integrations row with neither a version nor an install path names a word
+# the retired install capture read in an agent's prose; nothing reads such a row.
+UNEVIDENCED_INTEGRATION_SQL = "(version IS NULL AND install_path IS NULL)"
 
 
 # ---------------------------------------------------------------------------
@@ -1448,15 +1765,10 @@ def write_harness_event(
 
 
 # ---------------------------------------------------------------------------
-# Public API: task_notifications (headless scheduled-task reports)
+# Public API: task_notifications (reports, reminders, routines)
 # ---------------------------------------------------------------------------
 #
-# These mirror the write_harness_event contract: episodic, NOT curated memory,
-# so no agent_permissions gate. The difference is a MUTABLE `unread` flag that
-# `ack` clears -- this table is a lightweight unread inbox, not an append-only
-# audit mirror. Reads live in gaia.store.reader (list/get/count). The `gaia
-# notifications add|ack` CLI is classified T0 (local bookkeeping, reversible)
-# via COMMAND_SUBCOMMAND_TIER_EXCEPTIONS in mutative_verbs.py.
+# Episodic, not curated memory, so no agent_permissions gate.
 
 def add_task_notification(
     *,
@@ -1465,20 +1777,27 @@ def add_task_notification(
     body: str | None = None,
     session_id: str | None = None,
     workspace: str | None = None,
+    kind: str = "report",
+    due_at: str | None = None,
+    recurrence: dict | None = None,
+    pointer: tuple[str, str, str | None] | None = None,
     db_path: Path | None = None,
 ) -> int:
-    """Insert one unread task-notification row and return its id.
+    """Insert one open notification and return its id.
 
-    Called by a headless scheduled task (or the `gaia notifications add` CLI)
-    when it finishes, to leave the user a generic PII-free report plus any
-    accumulated approval_ids. The row starts ``unread=1``; `ack` clears it.
+    A report starts ``unread=1``. A reminder or routine starts ``unread=0`` and
+    open by ``closed_at``, which keeps it out of every read older code makes.
 
     Args:
-        task_name: Name of the scheduled task that produced the report.
+        task_name: Task that produced a report, or the kind for a reminder.
         headline: Short one-line summary (the title).
         body: Full detail message (generic; no PII / proper nouns).
-        session_id: Resumable Claude session id (``claude --resume``).
+        session_id: Host session a report came from.
         workspace: Workspace name, or None for a global notification.
+        kind: ``report``, ``reminder`` or ``routine``.
+        due_at: UTC ISO instant it comes due; None is due at once.
+        recurrence: A routine's calendar|interval spec.
+        pointer: ``(kind, ref, workspace)`` of the skill, memory or project it points at.
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
@@ -1486,15 +1805,22 @@ def add_task_notification(
     """
     if not task_name or not headline:
         raise ValueError("task_name and headline are required")
+    if (kind == "routine") != (recurrence is not None):
+        raise ValueError("a routine, and only a routine, carries a recurrence")
+    pointer_kind, pointer_ref, pointer_workspace = pointer or (None, None, None)
     con = _connect(db_path)
     try:
         cur = con.execute(
             """
             INSERT INTO task_notifications
-                (workspace, task_name, headline, body, session_id, created_at, unread)
-            VALUES (?, ?, ?, ?, ?, ?, 1)
+                (workspace, task_name, headline, body, session_id, created_at, unread,
+                 kind, due_at, recurrence, pointer_kind, pointer_ref, pointer_workspace)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (workspace, task_name, headline, body, session_id, _now_iso()),
+            (workspace, task_name, headline, body, session_id, _now_iso(),
+             1 if kind == "report" else 0, kind, due_at,
+             json.dumps(recurrence) if recurrence is not None else None,
+             pointer_kind, pointer_ref, pointer_workspace),
         )
         con.commit()
         return cur.lastrowid
@@ -1502,32 +1828,109 @@ def add_task_notification(
         con.close()
 
 
+def _open_notification(con: sqlite3.Connection, notification_id: int):
+    """Return the row when it exists and is still open, else None."""
+    row = con.execute(
+        "SELECT * FROM task_notifications WHERE id = ?", (notification_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    is_open = int(row["unread"]) == 1 if row["kind"] == "report" else row["closed_at"] is None
+    return row if is_open else None
+
+
 def ack_task_notification(
     notification_id: int,
     *,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Mark one notification as seen (unread=0). Idempotent.
+    """Acknowledge one notification. Idempotent on a closed row.
 
-    Returns ``{"status": "ok", "id": N, "action": "acked"|"noop"}``. ``noop``
-    when the row was already read; ``{"status": "not_found"}`` when no such id.
+    A report is marked seen and a reminder closed, both for good. A routine
+    stays open with ``due_at`` moved to its first occurrence after now.
+
+    Returns ``{"status": "ok", "id": N, "action": "acked"|"advanced"|"noop"}``,
+    with ``due_at`` for ``advanced``; ``{"status": "not_found"}`` when no such id.
     """
+    from gaia import notifications_time as clock
+
+    now = clock.now_utc()
     con = _connect(db_path)
     try:
-        row = con.execute(
-            "SELECT unread FROM task_notifications WHERE id = ?",
-            (notification_id,),
+        exists = con.execute(
+            "SELECT 1 FROM task_notifications WHERE id = ?", (notification_id,)
         ).fetchone()
-        if row is None:
+        if exists is None:
             return {"status": "not_found", "id": notification_id}
-        if int(row["unread"]) == 0:
+        row = _open_notification(con, notification_id)
+        if row is None:
             return {"status": "ok", "id": notification_id, "action": "noop"}
+        if row["kind"] == "routine":
+            anchor = clock.from_iso(row["due_at"]) if row["due_at"] else None
+            due_at = clock.to_iso(
+                clock.next_occurrence(json.loads(row["recurrence"]), now, anchor)
+            )
+            con.execute(
+                "UPDATE task_notifications SET due_at = ?, acked_at = ? WHERE id = ?",
+                (due_at, clock.to_iso(now), notification_id),
+            )
+            con.commit()
+            return {"status": "ok", "id": notification_id, "action": "advanced", "due_at": due_at}
         con.execute(
-            "UPDATE task_notifications SET unread = 0, acked_at = ? WHERE id = ?",
-            (_now_iso(), notification_id),
+            "UPDATE task_notifications SET unread = 0, acked_at = ?, "
+            "closed_at = CASE WHEN kind = 'report' THEN closed_at ELSE ? END WHERE id = ?",
+            (clock.to_iso(now), clock.to_iso(now), notification_id),
         )
         con.commit()
         return {"status": "ok", "id": notification_id, "action": "acked"}
+    finally:
+        con.close()
+
+
+def snooze_task_notification(
+    notification_id: int,
+    *,
+    until: str,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Hide an open notification until the UTC instant ``until``.
+
+    Returns ``{"status": "ok", "id": N, "due_at": until}``, or ``not_found``
+    when no open row has that id.
+    """
+    con = _connect(db_path)
+    try:
+        if _open_notification(con, notification_id) is None:
+            return {"status": "not_found", "id": notification_id}
+        con.execute(
+            "UPDATE task_notifications SET due_at = ? WHERE id = ?", (until, notification_id)
+        )
+        con.commit()
+        return {"status": "ok", "id": notification_id, "due_at": until}
+    finally:
+        con.close()
+
+
+def cancel_task_notification(
+    notification_id: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Close an open notification without advancing it; a routine does not come back.
+
+    Returns ``{"status": "ok", "id": N}``, or ``not_found`` when no open row has that id.
+    """
+    con = _connect(db_path)
+    try:
+        if _open_notification(con, notification_id) is None:
+            return {"status": "not_found", "id": notification_id}
+        con.execute(
+            "UPDATE task_notifications SET unread = 0, "
+            "closed_at = CASE WHEN kind = 'report' THEN closed_at ELSE ? END WHERE id = ?",
+            (_now_iso(), notification_id),
+        )
+        con.commit()
+        return {"status": "ok", "id": notification_id}
     finally:
         con.close()
 
@@ -1537,355 +1940,24 @@ def ack_all_task_notifications(
     workspace: str | None = None,
     db_path: Path | None = None,
 ) -> int:
-    """Mark every unread notification seen; return the count cleared.
+    """Mark every unread report seen; return the count cleared.
 
-    When ``workspace`` is given, only that workspace's rows are cleared;
-    otherwise ALL unread rows across workspaces are cleared.
+    Reminders and routines are never swept: each is acknowledged by id. When
+    ``workspace`` is given, that workspace's reports and the global ones are
+    cleared; otherwise ALL unread reports across workspaces are cleared.
     """
+    from gaia.store.reader import notification_scope
+
     con = _connect(db_path)
     try:
-        if workspace is None:
-            cur = con.execute(
-                "UPDATE task_notifications SET unread = 0, acked_at = ? WHERE unread = 1",
-                (_now_iso(),),
-            )
-        else:
-            cur = con.execute(
-                "UPDATE task_notifications SET unread = 0, acked_at = ? "
-                "WHERE unread = 1 AND workspace = ?",
-                (_now_iso(), workspace),
-            )
+        scope_sql, scope_params = notification_scope(con, workspace)
+        cur = con.execute(
+            "UPDATE task_notifications SET unread = 0, acked_at = ? "
+            f"WHERE kind = 'report' AND unread = 1{scope_sql}",
+            (_now_iso(), *scope_params),
+        )
         con.commit()
         return cur.rowcount
-    finally:
-        con.close()
-
-
-# ---------------------------------------------------------------------------
-# Public API: scheduled_tasks (OS-agnostic desired state for recurring tasks)
-# ---------------------------------------------------------------------------
-#
-# The desired-state registry (see the scheduled_tasks table and the
-# `scheduled-task` skill). Writing desired state (upsert / enable / disable /
-# suspend / resume) is reversible local bookkeeping -- NOT a machine mutation --
-# so, like briefs / plans / task_notifications, it carries no agent_permissions
-# gate and the `gaia schedule register|list|show|status|enable|disable|suspend|
-# resume` CLI classifies T0 via COMMAND_SUBCOMMAND_TIER_EXCEPTIONS. Only `gaia
-# schedule sync` (materialize into the OS scheduler) and `gaia schedule remove`
-# (irreversible deletion) are T3.
-#
-# Two DISTINCT ways a task is switched off, deliberately not collapsed:
-#   enabled = 0                -- permanent, no deadline (enable/disable).
-#   a schedule_suspensions row -- with a deadline that reactivates on its own,
-#                                 or indefinite (suspend/resume). Expiry is
-#                                 evaluated when read, never by a daemon.
-# Reads live in gaia.store.reader.
-
-def upsert_scheduled_task(
-    *,
-    name: str,
-    schedule_spec: Mapping[str, Any] | str,
-    schedule_hint: str | None = None,
-    prompt_body: str | None = None,
-    prompt_path: str | None = None,
-    project_dir: str | None = None,
-    wrapper_kind: str = "headless-claude",
-    machine_scope: str = "all",
-    machines: Sequence[str] | None = None,
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> int:
-    """Insert or update one desired-state task row; return its id.
-
-    ``schedule_spec`` is the NEUTRAL schedule -- either a dict (serialized to
-    JSON here) or an already-serialized JSON string. Matching is by
-    (workspace, name): an existing row is UPDATED in place (preserving
-    created_at, refreshing updated_at); otherwise a new row is inserted.
-
-    When ``machine_scope == 'named'`` the ``machines`` list replaces the task's
-    scheduled_task_machines rows. This does NOT touch any OS scheduler -- it only
-    records the desired state; `gaia schedule sync` materializes it (T3).
-    """
-    if not name:
-        raise ValueError("name is required")
-    if isinstance(schedule_spec, str):
-        spec_json = schedule_spec
-        # Validate it parses, so a malformed spec fails at write time, not at
-        # sync time on the machine.
-        try:
-            json.loads(spec_json)
-        except Exception as exc:
-            raise ValueError(f"schedule_spec is not valid JSON: {exc}") from exc
-    else:
-        spec_json = json.dumps(schedule_spec, separators=(",", ":"))
-    if machine_scope not in ("all", "named"):
-        raise ValueError("machine_scope must be 'all' or 'named'")
-
-    con = _connect(db_path)
-    try:
-        now = _now_iso()
-        existing = con.execute(
-            "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
-            (name, workspace),
-        ).fetchone()
-        if existing is not None:
-            task_id = int(existing["id"])
-            con.execute(
-                """
-                UPDATE scheduled_tasks
-                   SET schedule_spec = ?, schedule_hint = ?, prompt_body = ?,
-                       prompt_path = ?, project_dir = ?, wrapper_kind = ?,
-                       machine_scope = ?, updated_at = ?
-                 WHERE id = ?
-                """,
-                (spec_json, schedule_hint, prompt_body, prompt_path, project_dir,
-                 wrapper_kind, machine_scope, now, task_id),
-            )
-        else:
-            cur = con.execute(
-                """
-                INSERT INTO scheduled_tasks
-                    (workspace, name, schedule_spec, schedule_hint, prompt_body,
-                     prompt_path, project_dir, wrapper_kind, enabled,
-                     machine_scope, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
-                """,
-                (workspace, name, spec_json, schedule_hint, prompt_body,
-                 prompt_path, project_dir, wrapper_kind, machine_scope, now, now),
-            )
-            task_id = cur.lastrowid
-
-        if machine_scope == "named":
-            con.execute(
-                "DELETE FROM scheduled_task_machines WHERE task_id = ?",
-                (task_id,),
-            )
-            for m in (machines or []):
-                con.execute(
-                    "INSERT OR IGNORE INTO scheduled_task_machines (task_id, machine_name) "
-                    "VALUES (?, ?)",
-                    (task_id, m),
-                )
-        con.commit()
-        return task_id
-    finally:
-        con.close()
-
-
-def set_scheduled_task_enabled(
-    name: str,
-    enabled: bool,
-    *,
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> dict[str, Any]:
-    """Flip a task's enabled flag. Returns {"status": ok|not_found, ...}.
-
-    The reversible counterpart to `remove`: a disabled task stays in the
-    registry (so it can be re-enabled) but is not installed on next sync, and
-    its already-installed entry is removed on next sync.
-    """
-    con = _connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
-            (name, workspace),
-        ).fetchone()
-        if row is None:
-            return {"status": "not_found", "name": name}
-        con.execute(
-            "UPDATE scheduled_tasks SET enabled = ?, updated_at = ? WHERE id = ?",
-            (1 if enabled else 0, _now_iso(), int(row["id"])),
-        )
-        con.commit()
-        return {"status": "ok", "name": name, "enabled": bool(enabled)}
-    finally:
-        con.close()
-
-
-def delete_scheduled_task(
-    name: str,
-    *,
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> dict[str, Any]:
-    """Delete a desired-state task row (T3). Cascades to machines/state/suspension rows.
-
-    Irreversible in the registry -- the reversible path is
-    ``set_scheduled_task_enabled(name, False)``. Does NOT remove the entry from
-    any OS scheduler; a subsequent `gaia schedule sync` reconciles the now-orphan
-    managed entry out of the crontab.
-    """
-    con = _connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
-            (name, workspace),
-        ).fetchone()
-        if row is None:
-            return {"status": "not_found", "name": name}
-        con.execute("DELETE FROM scheduled_tasks WHERE id = ?", (int(row["id"]),))
-        con.commit()
-        return {"status": "ok", "name": name, "id": int(row["id"])}
-    finally:
-        con.close()
-
-
-def suspend_scheduled_tasks(
-    *,
-    name: str | None = None,
-    until: str | None = None,
-    reason: str | None = None,
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> dict[str, Any]:
-    """Suspend one task (``name``) or the whole workspace (``name=None``).
-
-    ``until`` is an ISO8601 UTC instant (build it with
-    ``reader.parse_deadline``); None means INDEFINITE -- suspended with no
-    deadline, which never lapses on its own. A suspension REPLACES any existing
-    one at the same scope, so re-suspending extends or shortens the deadline
-    instead of stacking rows.
-
-    Reversible desired-state bookkeeping (T0), exactly like
-    ``set_scheduled_task_enabled``: it records that the task should not run and
-    touches no OS scheduler. The machine changes only when the user consents to
-    `gaia schedule sync`.
-
-    Returns {"status": ok|not_found, "scope": global|task, ...}.
-    """
-    con = _connect(db_path)
-    try:
-        task_id = None
-        if name is not None:
-            row = con.execute(
-                "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
-                (name, workspace),
-            ).fetchone()
-            if row is None:
-                return {"status": "not_found", "name": name}
-            task_id = int(row["id"])
-
-        if task_id is None:
-            con.execute(
-                "DELETE FROM schedule_suspensions WHERE workspace IS ? AND task_id IS NULL",
-                (workspace,),
-            )
-        else:
-            con.execute(
-                "DELETE FROM schedule_suspensions WHERE task_id = ?", (task_id,)
-            )
-        now = _now_iso()
-        con.execute(
-            "INSERT INTO schedule_suspensions "
-            "(workspace, task_id, suspended_at, until, reason) VALUES (?, ?, ?, ?, ?)",
-            (workspace, task_id, now, until, reason),
-        )
-        con.commit()
-        return {
-            "status": "ok",
-            "scope": "task" if task_id is not None else "global",
-            "name": name,
-            "workspace": workspace,
-            "suspended_at": now,
-            "until": until,
-            "indefinite": until is None,
-            "reason": reason,
-        }
-    finally:
-        con.close()
-
-
-def resume_scheduled_tasks(
-    *,
-    name: str | None = None,
-    workspace: str | None = None,
-    db_path: Path | None = None,
-) -> dict[str, Any]:
-    """Clear the suspension on one task (``name``) or the workspace switch.
-
-    Serves both endings a suspension can have, because the stored effect is the
-    same either way: lifting a LIVE suspension early, and acknowledging a LAPSED
-    one whose deadline already passed (the tasks are running again; this is the
-    user confirming they saw it, which is what stops the SessionStart notice).
-    The returned ``was_expired`` says which of the two happened.
-
-    Returns {"status": ok|not_found|not_suspended, ...}. ``not_suspended``
-    distinguishes "no such suspension to clear" from "no such task".
-    """
-    con = _connect(db_path)
-    try:
-        task_id = None
-        if name is not None:
-            row = con.execute(
-                "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
-                (name, workspace),
-            ).fetchone()
-            if row is None:
-                return {"status": "not_found", "name": name}
-            task_id = int(row["id"])
-
-        if task_id is None:
-            existing = con.execute(
-                "SELECT * FROM schedule_suspensions "
-                "WHERE workspace IS ? AND task_id IS NULL",
-                (workspace,),
-            ).fetchone()
-        else:
-            existing = con.execute(
-                "SELECT * FROM schedule_suspensions WHERE task_id = ?", (task_id,)
-            ).fetchone()
-        if existing is None:
-            return {
-                "status": "not_suspended",
-                "scope": "task" if task_id is not None else "global",
-                "name": name,
-            }
-
-        until = existing["until"]
-        was_expired = bool(until) and until <= _now_iso()
-        con.execute("DELETE FROM schedule_suspensions WHERE id = ?", (int(existing["id"]),))
-        con.commit()
-        return {
-            "status": "ok",
-            "scope": "task" if task_id is not None else "global",
-            "name": name,
-            "workspace": workspace,
-            "until": until,
-            "was_expired": was_expired,
-        }
-    finally:
-        con.close()
-
-
-def mark_scheduled_task_state(
-    task_id: int,
-    machine_name: str,
-    *,
-    backend: str | None = None,
-    installed: bool = True,
-    db_path: Path | None = None,
-) -> None:
-    """Record per-machine materialization state after a sync install/remove.
-
-    Upserts the (task_id, machine_name) row with the backend used and whether
-    the task is currently installed on this machine, stamping last_synced_at.
-    """
-    con = _connect(db_path)
-    try:
-        con.execute(
-            """
-            INSERT INTO scheduled_task_state
-                (task_id, machine_name, backend, installed, last_synced_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(task_id, machine_name) DO UPDATE SET
-                backend = excluded.backend,
-                installed = excluded.installed,
-                last_synced_at = excluded.last_synced_at
-            """,
-            (task_id, machine_name, backend, 1 if installed else 0, _now_iso()),
-        )
-        con.commit()
     finally:
         con.close()
 
@@ -1896,22 +1968,10 @@ def mark_scheduled_task_state(
 
 VALID_MEMORY_TYPES = ("project", "user", "feedback", "atom", "decision", "negative")
 
-# v45: which agent role a curated memory row's content is FOR. Orthogonal to
-# type/class/status/project_ref/initiative -- see the schema.sql comment on
-# memory.audience for the full rationale. 'any' is the default and the value
-# every pre-v45 row keeps; kernel injection (a separate, later change) selects
-# 'executor' rows for a subagent's kernel without leaking 'orchestrator' ones.
 VALID_MEMORY_AUDIENCES = ("orchestrator", "executor", "any")
 
-# Host-scope (2026-08-27 consensus): Gaia's own scope has no per-workspace
-# identity, so it is expressed as a VALUE of the existing workspace axis
-# rather than a new dimension -- a sentinel workspace row, not a new column.
-# HOST_WORKSPACE holds every curated-memory row for an initiative in
-# HOST_SCOPED_INITIATIVES, regardless of which --workspace/env/cwd produced
-# the write. Data migration for rows written before this change (legacy
-# gaia_system rows still sitting under 'me'/'century-inc'/other workspaces)
-# is a separate, deliberately deferred operation -- this constant only governs
-# writes and reads going forward.
+# Gaia's own scope has no per-workspace identity, so it is a sentinel value of
+# the workspace axis rather than a new column.
 HOST_WORKSPACE = "_gaia_host"
 HOST_SCOPED_INITIATIVES = frozenset({"gaia_system"})
 
@@ -1950,6 +2010,96 @@ def apply_host_scope(
             f"is not accepted (host-scoped memory has no per-project anchor)"
         )
     return HOST_WORKSPACE
+
+
+# Who the user is does not depend on the project a session opened in, so every
+# type=user row lives under this workspace-less sentinel.
+USER_WORKSPACE = "_gaia_user"
+
+
+class MemoryUserScopeError(ValueError):
+    """Raised when a user-scoped write or move breaks the sentinel's rule: a
+    name already stored there, a non-user row moved in, or a user row moved
+    out. Carries a stable ``code`` for the CLI, like
+    :class:`MemoryHostScopeError`."""
+
+    def __init__(self, message: str, *, code: str = "user_scope") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class MemoryNameExistsError(ValueError):
+    """Raised when a write names an existing curated row without replace intent."""
+
+    code = "name_exists"
+
+
+def _refuse_existing_name(con, workspace: str, name: str, *, replace: bool) -> bool:
+    """Raise unless ``name`` may be written in ``workspace``; True when a row already holds it.
+
+    Curated memory is append-only: a changed agreement is a new row that
+    supersedes the old one. A deleted name is never restored, and a user-scope
+    name is never overwritten; any other live name is rewritten only with
+    ``replace``, the explicit intent to correct an error.
+    """
+    existing = con.execute(
+        "SELECT deleted_at FROM memory WHERE workspace = ? AND name = ?",
+        (workspace, name),
+    ).fetchone()
+    if existing is None:
+        return False
+    if workspace == USER_WORKSPACE:
+        raise MemoryUserScopeError(
+            f"user memory {name!r} already exists in the user scope "
+            f"({USER_WORKSPACE}); it is never overwritten nor restored. Write "
+            f"the change as a new row and run `gaia memory link <new> {name} "
+            f"--kind=supersedes`, or pick another name.",
+            code="user_name_collision",
+        )
+    if existing["deleted_at"] is not None:
+        raise MemoryNameExistsError(
+            f"memory {name!r} in workspace {workspace!r} is deleted, and a "
+            f"deleted row is never restored, not even by --replace. Write the "
+            f"fact under a new name."
+        )
+    if not replace:
+        raise MemoryNameExistsError(
+            f"memory {name!r} already exists in workspace {workspace!r}. A "
+            f"changed agreement is a new row plus `gaia memory link <new> "
+            f"{name} --kind=supersedes`; to correct an error in this row, "
+            f"repeat the add with --replace."
+        )
+    return True
+
+
+def memory_home(workspace: str, mem_type: str, initiative: str | None) -> str:
+    """Workspace a memory row of this type and initiative lives in; refuses nothing.
+
+    ``type='user'`` resolves to :data:`USER_WORKSPACE` whatever was asked for;
+    it outranks host-scope because it names the person, not a Gaia component.
+    A host-scoped initiative resolves to :data:`HOST_WORKSPACE`.
+    """
+    if mem_type == "user":
+        return USER_WORKSPACE
+    if initiative in HOST_SCOPED_INITIATIVES:
+        return HOST_WORKSPACE
+    return workspace
+
+
+def resolve_memory_workspace(
+    workspace: str,
+    mem_type: str,
+    initiative: str | None,
+    project_ref: str | None,
+) -> str:
+    """Workspace a curated-memory write lands in: :func:`memory_home`, once
+    :func:`apply_host_scope` has refused a project anchor on a host-scoped row.
+
+    A user row keeps any project anchor it carries.
+    """
+    if mem_type != "user":
+        apply_host_scope(workspace, initiative, project_ref)
+    return memory_home(workspace, mem_type, initiative)
 
 
 # ---------------------------------------------------------------------------
@@ -2059,7 +2209,7 @@ def resolve_project_ref(
 ) -> str:
     """Resolve a ``projects.name`` within ``workspace`` to its stable
     ``project_identity`` anchor -- the value ``upsert_memory(project_ref=...)``
-    expects (N3 forward-only anchoring).
+    expects (forward-only anchoring).
 
     Looks up the exact ``(workspace, project_name)`` row -- the same lookup
     documented as the manual convention in ``skills/memory/SKILL.md`` before
@@ -2240,12 +2390,12 @@ def resolve_project_ref_by_cwd(
 
 
 # ---------------------------------------------------------------------------
-# initiative -- the canonical project/initiative grouping key (v32).
+# initiative -- the canonical project/initiative grouping key.
 #
 # `initiative` (memory.initiative) is the clean, vantage-independent key that
 # unifies BOTH git projects and logical (non-repo) initiatives. It is DISTINCT
-# from `project_ref` (the git-common-dir path): project_ref stays the git
-# anchor; initiative is the human-facing grouping key that downstream reads
+# from `project_ref` (the project's `projects.project_identity`): project_ref
+# stays the anchor; initiative is the human-facing grouping key that downstream reads
 # (memory injection / get-relevant) group by. Populated at write time, never
 # guessed -- resolves to None rather than fabricate a key.
 # ---------------------------------------------------------------------------
@@ -2269,15 +2419,13 @@ def normalize_initiative(raw: str | None) -> str | None:
 
 
 def initiative_from_project_ref(project_ref: str | None) -> str | None:
-    """Derive the canonical initiative key from a git ``project_ref``.
+    """Derive the canonical initiative key from a ``project_ref``.
 
-    ``project_ref`` is the git-common-dir path stored on a project-anchored
-    memory row (e.g. ``/home/jorge/ws/me/gaia/.git``). The initiative is the
-    repository basename with the trailing ``.git`` removed and then normalized
-    -- ``/home/jorge/ws/me/gaia/.git`` -> ``"gaia"``. A ref that is not a
-    ``.git`` path (e.g. a bare identity like ``github.com/me/x``) still yields
-    its last path segment normalized (``"x"``). Returns ``None`` for an empty
-    ref.
+    ``project_ref`` is the project identity stored on a project-anchored memory
+    row: a normalized remote (``github.com/metraton/gaia``), or for a repo
+    without one its git-common-dir (``/home/user/code/gaia/.git``). The key is
+    the last path segment, with a trailing ``.git`` removed, normalized -- both
+    examples give ``"gaia"``. Returns ``None`` for an empty ref.
     """
     if not project_ref:
         return None
@@ -2288,6 +2436,26 @@ def initiative_from_project_ref(project_ref: str | None) -> str | None:
         ref = ref[:-len(".git")].rstrip("/")
     base = ref.rsplit("/", 1)[-1]
     return normalize_initiative(base)
+
+
+def canonical_project_key(
+    project_ref: str | None = None,
+    initiative: str | None = None,
+) -> str | None:
+    """Resolve a memory row's project columns to its one canonical project key.
+
+    Rows name a project by ``initiative`` or by a ``project_ref`` that may
+    be a git-common-dir path, a bare name or a remote identity; all resolve
+    to the same key (``/x/gaia/.git``, ``gaia``, ``github.com/metraton/gaia``
+    -> ``"gaia"``). An explicit initiative outranks the anchor, matching the
+    write path. Existing rows are resolved as stored, never rewritten
+    (decision D-a of brief ``una-gaia-cualquier-instalacion``), and writers
+    persist this key in ``initiative``. ``None`` when neither column names a
+    project.
+    """
+    if initiative is not None and str(initiative).strip():
+        return normalize_initiative(initiative)
+    return initiative_from_project_ref(project_ref)
 
 
 def upsert_memory(
@@ -2301,27 +2469,26 @@ def upsert_memory(
     project_ref: str | None = None,
     initiative: str | None = None,
     audience: str | None = None,
+    class_: str | None = None,
+    status: str | None = None,
+    replace: bool = False,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
-    """Upsert a curated-memory row in the ``memory`` table.
+    """Write a curated-memory row; an existing name needs ``replace``.
 
-    Archive-on-upsert (scan-v2 SV3): when this overwrites an existing row, the
-    ``memory_au``... no -- the ``trg_memory_history`` AFTER UPDATE trigger fires
-    on the ON CONFLICT DO UPDATE below and archives the tracked before/after
-    fields (name, body, workspace, type, description, class, status,
-    project_ref, initiative, and deleted_at) into ``memory_history`` before the
-    new value lands. No explicit archival code is needed here because ordinary
-    updates share the SQL-layer trigger; hard deletion and workspace cascade
-    remain outside that recovery guarantee.
+    Without ``replace`` an existing name, live or deleted, raises
+    :class:`MemoryNameExistsError`; a ``type='user'`` name raises
+    ``user_name_collision`` either way (see :func:`_refuse_existing_name`).
+    ``replace`` rewrites a live row in place, never a deleted one, and the
+    ``trg_memory_history`` AFTER UPDATE trigger archives the tracked
+    before/after fields into ``memory_history``; hard deletion and workspace
+    cascade remain outside that recovery guarantee. The whole write, class and
+    status included, is one transaction: a failing step leaves the row as it
+    was.
 
-    Resurrection: re-adding a slug that was soft-deleted clears ``deleted_at``
-    (the row returns to the live set). The clearing is captured by the same
-    history trigger.
-
-    ``project_ref`` -- forward-only remote-stable project anchor (N3, scan-v2
-    SV3 follow-up). The v25/v26 columns/migration exist, but the automatic
-    backfill in ``scripts/migrations/v25_to_v26.sql`` (guarded on "workspace
+    ``project_ref`` -- forward-only remote-stable project anchor. The column
+    exists, but the automatic backfill in ``scripts/migrations/v25_to_v26.sql`` (guarded on "workspace
     hosts exactly one active project") is a one-time, already-applied
     historical statement that populated 0 rows in practice -- the
     memory-row-to-project mapping is ambiguous whenever a workspace hosts more
@@ -2342,34 +2509,37 @@ def upsert_memory(
     (matches the existing ``topic_key`` COALESCE convention -- no precedent in
     this module for an explicit-NULL clear on a coalesced column).
 
-    ``initiative`` -- canonical project/initiative grouping key (v32). Same
+    ``initiative`` -- canonical project/initiative grouping key. Same
     coalesce-or-omit discipline as ``project_ref``. When ``initiative`` is not
     passed but ``project_ref`` is, it is auto-derived via
     :func:`initiative_from_project_ref` so every project-anchored write gets a
     key for free; pass an explicit ``initiative`` (already-normalized or raw --
     it is normalized here) to set a logical-initiative key with no git anchor.
 
-    ``audience`` -- v45, orthogonal to type/class/status. Same coalesce-or-
+    ``audience`` -- orthogonal to type/class/status. Same coalesce-or-
     omit discipline as ``project_ref``/``initiative``: ``None`` (the default)
     never touches an existing row's audience on update, so a plain correction
     upsert cannot silently reset a row that was explicitly tagged
     'executor'/'orchestrator' back to 'any'. On INSERT of a brand-new row,
     ``None`` resolves to the schema's own default ('any') rather than NULL.
     Must be one of :data:`VALID_MEMORY_AUDIENCES` when set.
+
+    A ``type='user'`` row lands in :data:`USER_WORKSPACE`.
+
+    ``class_`` -- the class a brand-new row is born with. ``None`` means
+    ``anchor`` for a ``type='user'`` row, because what the user tells Gaia
+    about himself is standing until a newer row supersedes it, and the
+    schema's ``log`` for every other type. ``class_`` and ``status`` given
+    explicitly are applied with :func:`reclassify_memory`'s rules, so an update
+    changes the class only when the caller names one.
     """
     _assert_dispatch_can_write_memory()
 
-    # initiative: explicit value wins (normalized); otherwise derive from the
-    # git anchor. None when neither is available -- never guessed.
-    if initiative is not None:
-        initiative = normalize_initiative(initiative)
-    elif project_ref is not None:
-        initiative = initiative_from_project_ref(project_ref)
+    initiative = canonical_project_key(project_ref, initiative)
 
-    # Host-scope: gaia_system (and any future HOST_SCOPED_INITIATIVES) always
-    # lands in the sentinel workspace, ignoring whatever --workspace/env/cwd
-    # resolved it, and refuses a project anchor outright.
-    workspace = apply_host_scope(workspace, initiative, project_ref)
+    # User-scope and host-scope: a sentinel workspace overrides whatever
+    # --workspace/env/cwd resolved (see resolve_memory_workspace).
+    workspace = resolve_memory_workspace(workspace, type, initiative, project_ref)
 
     if type not in VALID_MEMORY_TYPES:
         raise ValueError(
@@ -2379,6 +2549,12 @@ def upsert_memory(
         raise ValueError(
             f"invalid memory audience {audience!r}; must be one of "
             f"{list(VALID_MEMORY_AUDIENCES)}"
+        )
+    born_class = class_ or ("anchor" if type == "user" else "log")
+    if born_class not in VALID_MEMORY_CLASSES:
+        raise ValueError(
+            f"invalid class {born_class!r}; must be one of "
+            f"{list(VALID_MEMORY_CLASSES)}"
         )
     if not body or not body.strip():
         raise ValueError("memory body cannot be empty")
@@ -2395,19 +2571,16 @@ def upsert_memory(
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
 
-            existing = con.execute(
-                "SELECT name FROM memory WHERE workspace = ? AND name = ?",
-                (workspace, name),
-            ).fetchone()
-            action = "updated" if existing is not None else "inserted"
+            exists = _refuse_existing_name(con, workspace, name, replace=replace)
+            action = "updated" if exists else "inserted"
 
             now = _now_iso()
             con.execute(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
-                                    updated_at, audience, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?)
+                                    updated_at, audience, created_at, class)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2416,7 +2589,6 @@ def upsert_memory(
                     initiative        = COALESCE(excluded.initiative, initiative),
                     origin_session_id = excluded.origin_session_id,
                     updated_at        = excluded.updated_at,
-                    deleted_at        = NULL,
                     audience          = COALESCE(?, audience)
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
@@ -2436,10 +2608,9 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, audience),
+                 now, born_class, audience),
             )
-            con.commit()
-            return {
+            result = {
                 "status": "applied",
                 "action": action,
                 "name": name,
@@ -2448,6 +2619,12 @@ def upsert_memory(
                 # caller's requested workspace when host-scope forced it.
                 "workspace": workspace,
             }
+            if class_ is not None or status is not None:
+                result["class"], result["memory_status"] = _apply_class_status(
+                    con, workspace, name, class_=class_, status=status, now=now,
+                )
+            con.commit()
+            return result
         except Exception:
             con.rollback()
             raise
@@ -2462,6 +2639,22 @@ def upsert_memory(
 _MEMORY_PATCHABLE_FIELDS = ("description", "body")
 
 
+def _live_memory_row(con, workspace: str, name: str, columns: str) -> sqlite3.Row:
+    """Return ``columns`` of the live row ``(workspace, name)``; ValueError when absent or deleted."""
+    row = con.execute(
+        f"SELECT deleted_at, {columns} FROM memory WHERE workspace = ? AND name = ?",
+        (workspace, name),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"memory '{name}' not found in workspace '{workspace}'")
+    if row["deleted_at"] is not None:
+        raise ValueError(
+            f"memory '{name}' in workspace '{workspace}' is deleted; a deleted "
+            f"row is never written to"
+        )
+    return row
+
+
 def delete_memory(
     workspace: str,
     name: str,
@@ -2473,8 +2666,8 @@ def delete_memory(
 
     By default this is a SOFT delete: the row's ``deleted_at`` column is stamped
     with the current UTC timestamp instead of the row being physically removed.
-    The row and its ``body`` survive (recoverable, and re-addable via
-    :func:`upsert_memory`, which clears the tombstone). The ``trg_memory_history``
+    The row and its ``body`` survive, and no writer restores or rewrites the
+    tombstoned row, :func:`upsert_memory` included. The ``trg_memory_history``
     trigger records the tombstone transition (before_deleted_at NULL -> after
     non-NULL). All read paths filter ``deleted_at IS NULL`` so a tombstoned row
     is invisible to normal queries.
@@ -2522,10 +2715,9 @@ def update_memory_field(
     field: str,
     content: str,
     *,
-    append: bool = False,
     db_path: Path | None = None,
 ) -> dict:
-    """Patch a single column on a curated memory row."""
+    """Append ``content`` to one text column of a live curated memory row, never overwriting it."""
     _assert_dispatch_can_write_memory()
     if field not in _MEMORY_PATCHABLE_FIELDS:
         raise ValueError(
@@ -2537,32 +2729,24 @@ def update_memory_field(
 
     con = _connect(db_path)
     try:
-        row = con.execute(
-            f"SELECT {field}, body FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory '{name}' not found in workspace '{workspace}'"
-            )
-
-        existing = row[field] or ""
-        if append and existing:
-            new_value = f"{existing}\n\n{content}"
-            action = "appended"
-        else:
-            new_value = content
-            action = "overwritten"
+        existing = _live_memory_row(con, workspace, name, field)[field]
+        new_value = f"{existing}\n\n{content}" if existing else content
+        action = "appended"
 
         if field == "body" and not new_value.strip():
             raise ValueError("memory body cannot be empty")
 
         now = _now_iso()
-        con.execute(
+        cur = con.execute(
             f"UPDATE memory SET {field} = ?, updated_at = ? "
-            "WHERE workspace = ? AND name = ?",
+            "WHERE workspace = ? AND name = ? AND deleted_at IS NULL",
             (new_value, now, workspace, name),
         )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"memory '{name}' in workspace '{workspace}' was deleted before "
+                f"the append landed; nothing was written"
+            )
         con.commit()
         return {
             "status": "applied",
@@ -2590,8 +2774,8 @@ def reanchor_memory_project_ref(
     accidentally null it out), which means there is no way to CHANGE an already
     set anchor through the normal write path. This function is the explicit
     re-anchor: it OVERWRITES ``memory.project_ref`` to ``project_ref``
-    unconditionally -- the value the ``gaia memory edit --project`` /
-    ``--project-ref`` CLI path resolves and passes in.
+    unconditionally -- the value ``gaia memory add --replace --project`` /
+    ``--project-ref`` resolves and passes in.
 
     Passing ``project_ref=None`` explicitly CLEARS the anchor (back to the
     forward-only-unattributed state); the CLI never does this (it always
@@ -2609,21 +2793,15 @@ def reanchor_memory_project_ref(
 
     con = _connect(db_path)
     try:
-        row = con.execute(
-            "SELECT project_ref FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory '{name}' not found in workspace '{workspace}'"
-            )
-
-        before = row["project_ref"]
+        before = _live_memory_row(con, workspace, name, "project_ref")["project_ref"]
         now = _now_iso()
+        # initiative is only filled, never replaced: an existing value may be
+        # an explicit logical initiative, which outranks the anchor.
         con.execute(
-            "UPDATE memory SET project_ref = ?, updated_at = ? "
+            "UPDATE memory SET project_ref = ?, "
+            "initiative = COALESCE(initiative, ?), updated_at = ? "
             "WHERE workspace = ? AND name = ?",
-            (project_ref, now, workspace, name),
+            (project_ref, canonical_project_key(project_ref), now, workspace, name),
         )
         con.commit()
         return {
@@ -2644,14 +2822,14 @@ def set_memory_audience(
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """PATCH the ``audience`` column of an existing curated memory row (v45).
+    """PATCH the ``audience`` column of an existing curated memory row.
 
     This is the dedicated correction path for ``audience`` -- mirroring
     :func:`reanchor_memory_project_ref` rather than
     :func:`update_memory_field`: ``audience`` is an enum-constrained
     classification, not free text, so it does not belong in
     ``_MEMORY_PATCHABLE_FIELDS`` (which applies text append/overwrite
-    semantics that make no sense for an enum). ``gaia memory edit
+    semantics that make no sense for an enum). ``gaia memory add --replace
     --audience=<value>`` calls this unconditionally -- unlike
     :func:`upsert_memory`'s coalesce-preserving ``audience`` parameter, this
     function always sets the value the caller passed.
@@ -2681,16 +2859,7 @@ def set_memory_audience(
 
     con = _connect(db_path)
     try:
-        row = con.execute(
-            "SELECT audience FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory '{name}' not found in workspace '{workspace}'"
-            )
-
-        before = row["audience"]
+        before = _live_memory_row(con, workspace, name, "audience")["audience"]
         now = _now_iso()
         con.execute(
             "UPDATE memory SET audience = ?, updated_at = ? "
@@ -2727,11 +2896,12 @@ def set_memory_audience(
 # for callers that need to detect drift (e.g. reclassify pipelines verifying
 # that an edge they expected to be a one-time event did not silently re-fire).
 #
-# Existence enforcement: both src_name and dst_name MUST already exist in the
-# ``memory`` table for the workspace. Links to non-existent slugs would leave
-# dangling edges that the injector cannot resolve -- the writer raises ValueError
-# instead of accepting them. ON DELETE CASCADE on workspace handles the deeper
-# integrity guarantees at the SQLite layer.
+# Existence enforcement: src_name MUST already exist live in the ``memory`` table
+# for the workspace and dst_name for its own workspace (``dst_workspace``, the
+# same one unless the edge crosses owners). Links to non-existent slugs would
+# leave dangling edges that the injector cannot resolve -- the writer raises
+# ValueError instead of accepting them. ON DELETE CASCADE on workspace handles
+# the deeper integrity guarantees at the SQLite layer.
 # ---------------------------------------------------------------------------
 
 VALID_MEMORY_LINK_KINDS = ("relates_to", "supersedes", "derived_from", "graduated_to")
@@ -2743,21 +2913,26 @@ def insert_memory_link(
     dst_name: str,
     kind: str,
     *,
+    dst_workspace: str | None = None,
     if_exists: str = "skip",
     db_path: Path | None = None,
 ) -> dict:
     """Insert a row into ``memory_links``. Idempotent by default.
 
-    Both ``src_name`` and ``dst_name`` must already exist in the ``memory``
-    table for ``workspace`` -- otherwise the writer refuses to create a
-    dangling edge.
+    ``src_name`` must already exist in ``workspace`` and ``dst_name`` in
+    ``dst_workspace`` -- otherwise the writer refuses to create a dangling
+    edge.
 
     Args:
-        workspace:  Workspace name (FK -> workspaces.name).
-        src_name:   Source memory slug (must exist in memory).
-        dst_name:   Destination memory slug (must exist in memory).
+        workspace:  Workspace of the src row (FK -> workspaces.name).
+        src_name:   Source memory slug (must exist in memory). For
+                    ``supersedes`` this is the NEW row.
+        dst_name:   Destination memory slug (must exist in memory). For
+                    ``supersedes`` this is the OLD row it replaces.
         kind:       One of VALID_MEMORY_LINK_KINDS. The schema enforces this
                     via CHECK; the writer validates first for clearer errors.
+        dst_workspace: Workspace of the dst row when it differs from
+                    ``workspace`` (a link across owners); None means the same.
         if_exists:  ``"skip"`` (default) -> idempotent re-insert returns
                     ``action="noop"``. ``"error"`` -> raise ValueError when
                     the (workspace, src, dst, kind) row already exists.
@@ -2766,10 +2941,14 @@ def insert_memory_link(
     Returns:
         {"status": "applied", "action": "inserted"|"noop",
          "workspace": ..., "src_name": ..., "dst_name": ..., "kind": ...,
-         "created_at": ...}
+         "dst_workspace": ..., "created_at": ...,
+         "src_born": ..., "dst_born": ...}
+        ``dst_workspace`` is always the dst row's workspace; ``*_born`` is
+        each row's ``created_at``, or ``updated_at`` for a row older than v50.
 
     Raises:
-        ValueError: invalid kind, missing src/dst, or if_exists="error" on dup.
+        ValueError: invalid kind, missing src/dst, the same edge already
+            pointing at another dst workspace, or if_exists="error" on dup.
         MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
     """
     _assert_dispatch_can_write_memory()
@@ -2787,68 +2966,75 @@ def insert_memory_link(
         raise ValueError("src_name cannot be empty")
     if not dst_name or not dst_name.strip():
         raise ValueError("dst_name cannot be empty")
+    dst_home = dst_workspace or workspace
+    stored_dst_workspace = dst_home if dst_home != workspace else None
 
     con = _connect(db_path)
     try:
         # Validate endpoints exist. Without these checks we silently create
         # edges to slugs that do not (yet) exist -- the injector and graph
         # walkers cannot recover from that.
-        src_row = con.execute(
-            "SELECT name FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, src_name),
-        ).fetchone()
-        if src_row is None:
-            raise ValueError(
-                f"src memory {src_name!r} not found in workspace "
-                f"{workspace!r}"
-            )
-        dst_row = con.execute(
-            "SELECT name FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, dst_name),
-        ).fetchone()
-        if dst_row is None:
-            raise ValueError(
-                f"dst memory {dst_name!r} not found in workspace "
-                f"{workspace!r}"
-            )
+        born = {}
+        for end, end_workspace, end_name in (
+            ("src", workspace, src_name), ("dst", dst_home, dst_name),
+        ):
+            row = con.execute(
+                "SELECT COALESCE(created_at, updated_at) AS born, deleted_at "
+                "FROM memory WHERE workspace = ? AND name = ?",
+                (end_workspace, end_name),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"{end} memory {end_name!r} not found in workspace "
+                    f"{end_workspace!r}"
+                )
+            if row["deleted_at"] is not None:
+                raise ValueError(
+                    f"{end} memory {end_name!r} in workspace {end_workspace!r} "
+                    f"is deleted; a link never points at a deleted row"
+                )
+            born[end] = row["born"]
 
+        result = {
+            "status": "applied",
+            "workspace": workspace,
+            "src_name": src_name,
+            "dst_name": dst_name,
+            "kind": kind,
+            "dst_workspace": dst_home,
+            "src_born": born["src"],
+            "dst_born": born["dst"],
+        }
         existing = con.execute(
-            "SELECT created_at FROM memory_links "
+            "SELECT created_at, COALESCE(dst_workspace, workspace) AS dst_home "
+            "FROM memory_links "
             "WHERE workspace = ? AND src_name = ? AND dst_name = ? AND kind = ?",
             (workspace, src_name, dst_name, kind),
         ).fetchone()
         if existing is not None:
+            if existing["dst_home"] != dst_home:
+                raise ValueError(
+                    f"memory_link ({workspace}, {src_name}, {dst_name}, {kind}) "
+                    f"already points at {dst_name!r} in workspace "
+                    f"{existing['dst_home']!r}; delete it before linking the "
+                    f"row in {dst_home!r}"
+                )
             if if_exists == "error":
                 raise ValueError(
                     f"memory_link already exists: ({workspace}, {src_name}, "
                     f"{dst_name}, {kind}) -- created_at={existing['created_at']}"
                 )
-            return {
-                "status": "applied",
-                "action": "noop",
-                "workspace": workspace,
-                "src_name": src_name,
-                "dst_name": dst_name,
-                "kind": kind,
-                "created_at": existing["created_at"],
-            }
+            return {**result, "action": "noop", "created_at": existing["created_at"]}
 
         now = _now_iso()
         con.execute(
             "INSERT INTO memory_links (workspace, src_name, dst_name, kind, "
-            "                          created_at) VALUES (?, ?, ?, ?, ?)",
-            (workspace, src_name, dst_name, kind, now),
+            "                          created_at, dst_workspace) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (workspace, src_name, dst_name, kind, now, stored_dst_workspace),
         )
         con.commit()
-        return {
-            "status": "applied",
-            "action": "inserted",
-            "workspace": workspace,
-            "src_name": src_name,
-            "dst_name": dst_name,
-            "kind": kind,
-            "created_at": now,
-        }
+        return {**result, "action": "inserted", "created_at": now}
     finally:
         con.close()
 
@@ -3004,17 +3190,41 @@ def reclassify_memory(
     """
     _assert_dispatch_can_write_memory()
 
+    if class_ is None and status is None:
+        raise ValueError(
+            "reclassify_memory requires at least one of class_ or status"
+        )
+
+    con = _connect(db_path)
+    try:
+        now = _now_iso()
+        new_class, new_status = _apply_class_status(
+            con, workspace, name, class_=class_, status=status, now=now,
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "reclassified",
+            "workspace": workspace,
+            "name": name,
+            "class": new_class,
+            "memory_status": new_status,  # avoid colliding with envelope 'status'
+            "updated_at": now,
+        }
+    finally:
+        con.close()
+
+
+def _apply_class_status(
+    con, workspace: str, name: str, *, class_: str | None, status: str | None, now: str,
+) -> tuple[str, str | None]:
+    """Apply :func:`reclassify_memory`'s rules to a live row on ``con``, uncommitted; return (class, status)."""
     # Disambiguate the three input modes for status:
     #   * status is None        -> do not touch the column
     #   * status == ""          -> explicit clear (write NULL)
     #   * status == "<value>"   -> set to value; must be in enum
     status_explicit_clear = (status == "")
     status_touches_column = (status is not None)
-
-    if class_ is None and not status_touches_column:
-        raise ValueError(
-            "reclassify_memory requires at least one of class_ or status"
-        )
 
     if class_ is not None and class_ not in VALID_MEMORY_CLASSES:
         raise ValueError(
@@ -3030,63 +3240,40 @@ def reclassify_memory(
             f"{list(VALID_MEMORY_STATUSES)} (or empty string to clear)"
         )
 
-    con = _connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT class, status FROM memory "
-            "WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"memory {name!r} not found in workspace {workspace!r}"
-            )
+    row = _live_memory_row(con, workspace, name, "class, status")
+    current_class = row["class"]
+    current_status = row["status"]
 
-        current_class = row["class"]
-        current_status = row["status"]
+    new_class = class_ if class_ is not None else current_class
 
-        new_class = class_ if class_ is not None else current_class
+    # Decide the new status value:
+    #   * Caller passed status explicit-clear -> NULL.
+    #   * Caller passed status="<value>"      -> that value (already
+    #                                            enum-checked above).
+    #   * Caller did NOT pass status, AND class moved from thread to
+    #     non-thread -> auto-NULL.
+    #   * Otherwise -> leave current_status untouched.
+    if status_touches_column:
+        new_status = None if status_explicit_clear else status
+    elif (current_class == "thread"
+          and class_ is not None
+          and class_ != "thread"):
+        new_status = None  # auto-clear on demotion / promotion
+    else:
+        new_status = current_status
 
-        # Decide the new status value:
-        #   * Caller passed status explicit-clear -> NULL.
-        #   * Caller passed status="<value>"      -> that value (already
-        #                                            enum-checked above).
-        #   * Caller did NOT pass status, AND class moved from thread to
-        #     non-thread -> auto-NULL.
-        #   * Otherwise -> leave current_status untouched.
-        if status_touches_column:
-            new_status = None if status_explicit_clear else status
-        elif (current_class == "thread"
-              and class_ is not None
-              and class_ != "thread"):
-            new_status = None  # auto-clear on demotion / promotion
-        else:
-            new_status = current_status
-
-        if new_status is not None and new_class != "thread":
-            raise ValueError(
-                "status only applies to class=thread "
-                f"(resulting class={new_class!r}, status={new_status!r})"
-            )
-
-        now = _now_iso()
-        con.execute(
-            "UPDATE memory SET class = ?, status = ?, updated_at = ? "
-            "WHERE workspace = ? AND name = ?",
-            (new_class, new_status, now, workspace, name),
+    if new_status is not None and new_class != "thread":
+        raise ValueError(
+            "status only applies to class=thread "
+            f"(resulting class={new_class!r}, status={new_status!r})"
         )
-        con.commit()
-        return {
-            "status": "applied",
-            "action": "reclassified",
-            "workspace": workspace,
-            "name": name,
-            "class": new_class,
-            "memory_status": new_status,  # avoid colliding with envelope 'status'
-            "updated_at": now,
-        }
-    finally:
-        con.close()
+
+    con.execute(
+        "UPDATE memory SET class = ?, status = ?, updated_at = ? "
+        "WHERE workspace = ? AND name = ?",
+        (new_class, new_status, now, workspace, name),
+    )
+    return new_class, new_status
 
 
 # ---------------------------------------------------------------------------
@@ -3150,7 +3337,7 @@ def _require_payload_keys(obj: Mapping, keys: tuple, where: str) -> None:
             )
 
 
-def _upsert_checkpoint_row(
+def _insert_checkpoint_row(
     con,
     workspace: str,
     *,
@@ -3165,12 +3352,14 @@ def _upsert_checkpoint_row(
     origin_session_id: str | None,
     now: str,
 ) -> dict:
-    """Upsert one memory row on the CALLER's connection (no BEGIN/COMMIT here).
+    """Insert one new memory row on the CALLER's connection (no BEGIN/COMMIT here).
 
     Semantic validation runs first, INSIDE the caller's open transaction, so a
     bad row aborts the whole checkpoint via the caller's rollback. Combines the
     body/type/slug rules of ``upsert_memory`` with the class/status write of
-    ``reclassify_memory`` in a single INSERT ... ON CONFLICT DO UPDATE.
+    ``reclassify_memory`` in one INSERT. A checkpoint never rewrites nor
+    restores a row: an existing name, live or deleted, is refused by
+    :func:`_refuse_existing_name`.
 
     ``initiative`` -- same coalesce-or-omit discipline as ``upsert_memory``:
     an explicit value (already normalized by the caller) wins; ``None``
@@ -3192,41 +3381,22 @@ def _upsert_checkpoint_row(
 
     if initiative is None:
         initiative = initiative_from_project_ref(project_ref)
-    workspace = apply_host_scope(workspace, initiative, project_ref)
+    workspace = resolve_memory_workspace(workspace, mem_type, initiative, project_ref)
 
-    existing = con.execute(
-        "SELECT name FROM memory WHERE workspace = ? AND name = ?",
-        (workspace, name),
-    ).fetchone()
-    action = "updated" if existing is not None else "inserted"
+    _refuse_existing_name(con, workspace, name, replace=False)
     con.execute(
         """
         INSERT INTO memory (workspace, name, type, description, body,
                             project_ref, initiative, origin_session_id,
                             updated_at, class, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(workspace, name) DO UPDATE SET
-            type              = excluded.type,
-            description       = excluded.description,
-            body              = excluded.body,
-            project_ref       = COALESCE(excluded.project_ref, project_ref),
-            initiative        = COALESCE(excluded.initiative, initiative),
-            origin_session_id = excluded.origin_session_id,
-            updated_at        = excluded.updated_at,
-            class             = excluded.class,
-            status            = excluded.status,
-            deleted_at        = NULL
         """,
-        # `created_at` (v50, forward-only): bound for the INSERT branch only,
-        # absent from DO UPDATE SET, same discipline as upsert_memory above --
-        # a brand-new checkpoint row is born with `now`; an existing row's
-        # `created_at` is never touched by this UPDATE branch.
         (workspace, name, mem_type, description, body,
          project_ref, initiative, origin_session_id, now, class_, status, now),
     )
     return {
         "name": name,
-        "action": action,
+        "action": "inserted",
         "class": class_,
         "memory_status": status,
         # The workspace actually written -- may differ from the caller's
@@ -3240,11 +3410,10 @@ def _insert_checkpoint_link(
 ) -> str:
     """Insert one memory_links edge on the CALLER's connection. Idempotent.
 
-    Both endpoints are guaranteed to exist -- the caller inserts the anchor and
-    every thread before any link -- so this skips the endpoint-existence probes
-    ``insert_memory_link`` does and only guards against a duplicate edge (making
-    the whole checkpoint safely re-runnable). Returns ``"inserted"`` or
-    ``"noop"``.
+    The caller guarantees both endpoints exist -- it inserts the anchor and
+    every thread before any link, and checks a ``supersedes`` target -- so this
+    skips the endpoint-existence probes ``insert_memory_link`` does and only
+    guards against a duplicate edge. Returns ``"inserted"`` or ``"noop"``.
     """
     existing = con.execute(
         "SELECT 1 FROM memory_links "
@@ -3289,27 +3458,31 @@ def close_session_memory(
     ``payload`` shape::
 
         {
-          "resumen":   {"name", "type", "description", "body"},
-          "pendientes": [{"name", "description", "body"}, ...]   # may be empty
+          "resumen":   {"name", "type", "description", "body", "supersedes"?},
+          "pendientes": [{"name", "description", "body", "supersedes"?}, ...]
         }
 
     Semantics, all in ONE transaction (rollback to zero rows on any failure):
-      1. ``resumen`` -> upsert as a ``class=anchor`` record row.
-      2. each ``pendientes[i]`` -> upsert as a ``class=thread
+      1. ``resumen`` -> a new ``class=anchor`` record row.
+      2. each ``pendientes[i]`` -> a new ``class=thread
          status=carry_forward`` row (type inherited from ``resumen`` -- the
          payload carries no per-pending type, matching the session-reflection
          convention where record and threads share ``--type``).
       3. a ``derived_from`` edge from each thread back to the anchor.
+      4. for a row carrying ``supersedes``, a ``supersedes`` edge from it to
+         that live row of the same workspace.
+
+    Every name must be new: an existing one, live or deleted, rolls the whole
+    checkpoint back (:func:`_refuse_existing_name`), so a re-run of the same
+    payload is refused. Changed knowledge travels as a new row whose
+    ``supersedes`` names the row it replaces.
 
     ``initiative`` -- one logical initiative for the WHOLE checkpoint (the
     payload carries no per-row initiative, matching the shared ``--type``
     convention above). Normalized here, then host-scope (:func:`apply_host_scope`)
     is applied ONCE up front so ``_ensure_workspace_row`` provisions the
-    workspace the rows will actually land under; ``_upsert_checkpoint_row``
+    workspace the rows will actually land under; ``_insert_checkpoint_row``
     re-applies the same rule per row as the real INSERT-site enforcement.
-
-    Idempotent: re-running the same payload UPSERTs the same rows and re-uses
-    the same edges (the fecha-stamped slug convention avoids collisions).
 
     Returns::
 
@@ -3321,8 +3494,11 @@ def close_session_memory(
             raised before any connection is opened.
         MemoryHostScopeError: a host-scoped initiative was combined with
             ``project_ref`` (``code="host_scope_no_project"``).
+        MemoryNameExistsError / MemoryUserScopeError: a name already exists
+            (``name_exists`` / ``user_name_collision``) -- rolled back.
         ValueError: a row failed semantic validation (invalid type, slug<->type
-            mismatch, empty body) -- the whole checkpoint is rolled back.
+            mismatch, empty body, ``supersedes`` naming no live row) -- the
+            whole checkpoint is rolled back.
         MemoryWriteForbidden: GAIA_DISPATCH_AGENT names a non-curator.
     """
     _assert_dispatch_can_write_memory()
@@ -3346,6 +3522,15 @@ def close_session_memory(
                 f"payload.pendientes[{i}] must be an object with name+body"
             )
         _require_payload_keys(p, ("name", "body"), f"payload.pendientes[{i}]")
+    located = [("payload.resumen", resumen)] + [
+        (f"payload.pendientes[{i}]", p) for i, p in enumerate(pendientes)
+    ]
+    for where, row in located:
+        old = row.get("supersedes")
+        if old is not None and (not isinstance(old, str) or not old.strip()):
+            raise MemorySessionPayloadError(
+                f"{where}.supersedes must be the slug of the row it replaces"
+            )
 
     record_type = resumen["type"]
     record_name = resumen["name"]
@@ -3354,7 +3539,9 @@ def close_session_memory(
 
     if initiative is not None:
         initiative = normalize_initiative(initiative)
-    effective_workspace = apply_host_scope(workspace, initiative, project_ref)
+    effective_workspace = resolve_memory_workspace(
+        workspace, record_type, initiative, project_ref,
+    )
 
     # -- one connection, one BEGIN, one commit/rollback -----------------------
     con = _connect(db_path)
@@ -3364,7 +3551,7 @@ def close_session_memory(
             _ensure_workspace_row(con, effective_workspace)
 
             # (1) record anchor
-            anchor = _upsert_checkpoint_row(
+            anchor = _insert_checkpoint_row(
                 con, effective_workspace,
                 name=record_name, mem_type=record_type,
                 description=resumen.get("description"), body=resumen["body"],
@@ -3378,7 +3565,7 @@ def close_session_memory(
             threads: list[dict] = []
             links: list[dict] = []
             for p in pendientes:
-                threads.append(_upsert_checkpoint_row(
+                threads.append(_insert_checkpoint_row(
                     con, effective_workspace,
                     name=p["name"], mem_type=record_type,
                     description=p.get("description"), body=p["body"],
@@ -3394,6 +3581,29 @@ def close_session_memory(
                     "dst_name": record_name,
                     "kind": "derived_from",
                     "action": link_action,
+                })
+
+            # (4) supersedes edges, once every new row exists
+            for row in (resumen, *pendientes):
+                old = row.get("supersedes")
+                if old is None:
+                    continue
+                if con.execute(
+                    "SELECT 1 FROM memory WHERE workspace = ? AND name = ? "
+                    "AND deleted_at IS NULL",
+                    (effective_workspace, old),
+                ).fetchone() is None:
+                    raise ValueError(
+                        f"{row['name']!r} supersedes {old!r}, which is no live "
+                        f"row of workspace {effective_workspace!r}"
+                    )
+                links.append({
+                    "src_name": row["name"],
+                    "dst_name": old,
+                    "kind": "supersedes",
+                    "action": _insert_checkpoint_link(
+                        con, effective_workspace, row["name"], old, "supersedes", now,
+                    ),
                 })
 
             con.commit()
@@ -3439,26 +3649,31 @@ def search_memory_curated(
     query: str,
     *,
     limit: int = 10,
+    with_user_scope: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table."""
+    """Run FTS5 MATCH against ``memory_fts`` and join with the ``memory`` table.
+    ``with_user_scope`` adds the workspace-less :data:`USER_WORKSPACE` rows."""
     fts_q = _prepare_memory_fts_query(query)
+    workspaces = [workspace]
+    if with_user_scope and workspace != USER_WORKSPACE:
+        workspaces.append(USER_WORKSPACE)
     con = _connect(db_path)
     try:
         rows = con.execute(
-            """
+            f"""
             SELECT m.name, m.type, m.description,
                    snippet(memory_fts, -1, '[', ']', '...', 16) AS snippet,
                    bm25(memory_fts) AS rank
             FROM memory_fts
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
-              AND m.workspace = ?
+              AND m.workspace IN ({', '.join('?' for _ in workspaces)})
               AND m.deleted_at IS NULL
             ORDER BY rank
             LIMIT ?
             """,
-            (fts_q, workspace, limit),
+            (fts_q, *workspaces, limit),
         ).fetchall()
         return [
             {
@@ -3542,14 +3757,16 @@ def list_memory(
     include_deleted: bool = False,
     order_by: str = "name",
     direction: str | None = None,
+    with_user_scope: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
     """List curated memory rows, optionally filtered by ``type``/``audience``/
-    ``class_``/``status``.
+    ``class_``/``status``. ``with_user_scope`` adds the workspace-less
+    :data:`USER_WORKSPACE` rows to the listing of ``workspace``.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
-    (v45) filters to rows tagged with exactly that value -- it must be one of
+    filters to rows tagged with exactly that value -- it must be one of
     :data:`VALID_MEMORY_AUDIENCES` when set; ``None`` (the default) applies no
     audience filter. ``class_``/``status`` (memory.class/memory.status, same
     trailing-underscore convention as ``reclassify_memory``) filter the same
@@ -3586,10 +3803,13 @@ def list_memory(
     order_clause = f"{sort_column} {direction.upper()}"
     if sort_column != "name":
         order_clause += ", name ASC"
+    workspaces = [workspace]
+    if with_user_scope and workspace != USER_WORKSPACE:
+        workspaces.append(USER_WORKSPACE)
     con = _connect(db_path)
     try:
-        where = ["workspace = ?"]
-        params: list = [workspace]
+        where = [f"workspace IN ({', '.join('?' for _ in workspaces)})"]
+        params: list = list(workspaces)
         if type is not None:
             where.append("type = ?")
             params.append(type)
@@ -5412,6 +5632,63 @@ def get_task_by_order(
         con.close()
 
 
+def get_task_by_id(task_id: int, *, db_path: Path | None = None) -> dict | None:
+    """Return the task whose ``tasks.id`` is ``task_id``, or None.
+
+    The row carries the :func:`get_task_by_order` columns plus ``brief`` and
+    ``workspace``, the coordinates every order-addressed verb needs.
+    """
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT t.id, t.plan_id, t.order_num, t.goal, t.status, "
+            "       t.evidence_path, b.name AS brief, b.workspace "
+            "FROM tasks t JOIN plans p ON p.id = t.plan_id "
+            "JOIN briefs b ON b.id = p.brief_id WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        con.close()
+
+
+def list_brief_plan_task_ids(
+    brief_name: str,
+    *,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> list[int]:
+    """Return the ``tasks.id`` of every task in the plan of ``brief_name``.
+
+    Without ``workspace`` the name is looked up in every workspace. Raises
+    ValueError when no such brief exists, or when the name is ambiguous across
+    workspaces.
+    """
+    con = _connect(db_path)
+    try:
+        sql = (
+            "SELECT b.workspace, t.id FROM briefs b "
+            "LEFT JOIN plans p ON p.brief_id = b.id "
+            "LEFT JOIN tasks t ON t.plan_id = p.id WHERE b.name = ?"
+        )
+        params: list[Any] = [brief_name]
+        if workspace is not None:
+            sql += " AND b.workspace = ?"
+            params.append(workspace)
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+    if not rows:
+        raise ValueError(f"brief '{brief_name}' not found")
+    workspaces = sorted({r["workspace"] for r in rows})
+    if len(workspaces) > 1:
+        raise ValueError(
+            f"brief '{brief_name}' exists in workspaces {workspaces}; "
+            "name one with --workspace"
+        )
+    return [r["id"] for r in rows if r["id"] is not None]
+
+
 # ---------------------------------------------------------------------------
 # task_gates: planner-authored typed verification gate slot (v34, harness R1-A)
 #
@@ -6535,14 +6812,17 @@ def prune_empty_workspaces(
     """
     con = _connect(db_path)
     try:
-        ws_names = [
-            r["name"]
-            for r in con.execute("SELECT name FROM workspaces ORDER BY name").fetchall()
-        ]
+        ws_rows = con.execute(
+            "SELECT w.name, w.status, w.root_path, "
+            "EXISTS (SELECT 1 FROM workspace_aliases a WHERE a.alias = w.name) AS aliased "
+            "FROM workspaces w ORDER BY w.name"
+        ).fetchall()
+        ws_names = [r["name"] for r in ws_rows]
 
         prunable: list[str] = []
         held: list[dict] = []
-        for ws in ws_names:
+        for row in ws_rows:
+            ws = row["name"]
             proj = con.execute(
                 "SELECT COUNT(*) FROM projects WHERE workspace = ?", (ws,)
             ).fetchone()[0]
@@ -6560,7 +6840,16 @@ def prune_empty_workspaces(
                 "SELECT COUNT(*) FROM briefs WHERE workspace = ?", (ws,)
             ).fetchone()[0]
 
-            if mem or pcc or briefs:
+            # A declared root, a retire alias and the retired status each mean
+            # the row is meant to stay; deleting it cascades away its history.
+            if row["root_path"] or row["status"] == "retired" or row["aliased"]:
+                kept = "declared" if row["root_path"] else "retired"
+                held.append({
+                    "workspace": ws, "projects": 0, "memory": mem, "pcc": pcc,
+                    "briefs": briefs,
+                    "reason": f"workspace {ws!r} is {kept}; NOT pruned -- its history stays",
+                })
+            elif mem or pcc or briefs:
                 held.append({
                     "workspace": ws,
                     "projects": 0,
@@ -6839,6 +7128,8 @@ def relocate_memory(
             :data:`HOST_WORKSPACE`. Moving a host-scoped row INTO the sentinel
             is always allowed regardless of ``from_workspace`` -- that is the
             migration path for a row written before this rule existed.
+        MemoryUserScopeError: a non-user row targets :data:`USER_WORKSPACE`,
+            or a row is moved OUT of it.
         MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
     """
     _assert_dispatch_can_write_memory()
@@ -6872,12 +7163,23 @@ def relocate_memory(
 
             for name in name_list:
                 src = con.execute(
-                    "SELECT initiative FROM memory WHERE workspace = ? AND name = ?",
+                    "SELECT initiative, type FROM memory "
+                    "WHERE workspace = ? AND name = ?",
                     (from_workspace, name),
                 ).fetchone()
                 if src is None:
                     missing.append(name)
                     continue
+
+                if ((to_workspace == USER_WORKSPACE and src["type"] != "user")
+                        or from_workspace == USER_WORKSPACE):
+                    raise MemoryUserScopeError(
+                        f"relocate_memory: {name!r} (type={src['type']!r}) "
+                        f"cannot move {from_workspace!r} -> {to_workspace!r}; "
+                        f"the user scope {USER_WORKSPACE!r} holds exactly the "
+                        f"type='user' rows and they never leave it",
+                        code="user_scope_move",
+                    )
 
                 if (to_workspace != HOST_WORKSPACE
                         and src["initiative"] in HOST_SCOPED_INITIATIVES):
@@ -7000,11 +7302,13 @@ def relocate_memory(
 #
 # Post-scan, a detected move leaves TWO rows in `projects`:
 #   * the OLD row (the `from` side): now status='missing' (soft-deleted by the
-#     reconcile pass), still carrying the pre-move project_identity (its
-#     git-common-dir at the old location) and any agent-owned `description`.
+#     reconcile pass), still carrying the pre-move project_identity and any
+#     agent-owned `description`.
 #   * the NEW row (the `to` side): freshly upserted, status='active', carrying
-#     a DIFFERENT project_identity (the git-common-dir changed when the repo
-#     physically moved). This is the successor.
+#     a DIFFERENT project_identity. Since v64 a repo with a remote keeps its
+#     identity when it moves, so its row follows it and no candidate arises;
+#     the pair appears for a repo without a remote (its git-common-dir moved)
+#     or for rows written before v64. This is the successor.
 #
 # The 'movido' adjudication links the two WITHOUT ever hard-deleting either:
 #   * When the successor row ALREADY exists (the realistic post-scan state, and
@@ -7501,6 +7805,8 @@ def reserve_plan_command(
 ) -> dict | None:
     """Reserve the exact next command for one correlated Bash tool call.
 
+    An item whose sealed files changed since signing never matches, so the
+    grant stays unconsumed and the command asks for a new signature.
     An item sealed by gaia.approvals.core (it carries ``position``) matches only
     in its sealed ``cwd`` and only for the session and agent the grant is bound
     to; an item sealed before that carries neither and keeps its old reach.
@@ -7521,7 +7827,7 @@ def reserve_plan_command(
     """
     if not session_id or not tool_use_id:
         return None
-    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import command_fingerprint, files_unchanged
 
     con = _connect(db_path)
     now_iso = _now_iso()
@@ -7545,6 +7851,8 @@ def reserve_plan_command(
                 continue
             item = items[index]
             if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
+                continue
+            if not files_unchanged(item):
                 continue
             if "position" in item and not _sealed_item_binds(item, grant, cwd, session_id, agent_id):
                 continue
@@ -7626,9 +7934,10 @@ def find_pending_plan_command(command: str, *, db_path: Path | None = None) -> d
 
     Returns the ``approval_id`` that authorizes the command, the ``index`` it
     would consume and the stored ``fingerprint``; ``None`` when no live grant is
-    waiting for this command at the position it authorizes next.
+    waiting for this command at the position it authorizes next, or when a file
+    its item sealed changed since signing.
     """
-    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import command_fingerprint, files_unchanged
 
     fingerprint = command_fingerprint(command)
     con = _connect(db_path)
@@ -7639,7 +7948,10 @@ def find_pending_plan_command(command: str, *, db_path: Path | None = None) -> d
             if index >= len(items):
                 continue
             item = items[index]
-            if item.get("command") == command and item.get("fingerprint") == fingerprint:
+            if (
+                item.get("command") == command and item.get("fingerprint") == fingerprint
+                and files_unchanged(item)
+            ):
                 return {
                     "approval_id": grant["approval_id"],
                     "index": index,
@@ -7689,7 +8001,11 @@ def settle_plan_command(
     failure_reason: str | None = None,
     db_path: Path | None = None,
 ) -> bool:
-    """Commit or release an exact reservation; a failure leaves the remainder."""
+    """Commit or release an exact reservation; a failure leaves the remainder.
+
+    A grant revoked or expired while its call ran keeps that status: the call's
+    outcome is recorded, but the withdrawal is never undone.
+    """
     if not session_id or not tool_use_id:
         return False
     con = _connect(db_path)
@@ -7706,12 +8022,16 @@ def settle_plan_command(
             con.rollback()
             return False
         index = int(grant["reservation_index"])
+        withdrawn = grant["status"] in ("REVOKED", "EXPIRED")
         if success:
             items = _json.loads(grant["command_set_json"])
             consumed = _json.loads(grant.get("consumed_indexes_json") or "[]")
             consumed.append(index)
             next_index = index + 1
-            status = "CONSUMED" if next_index == len(items) else "PENDING"
+            if withdrawn:
+                status = grant["status"]
+            else:
+                status = "CONSUMED" if next_index == len(items) else "PENDING"
             con.execute(
                 "UPDATE approval_grants SET next_index=?, consumed_indexes_json=?, status=?, "
                 "consumed_at=CASE WHEN ?='CONSUMED' THEN ? ELSE consumed_at END, "
@@ -7721,13 +8041,73 @@ def settle_plan_command(
             )
         else:
             con.execute(
-                "UPDATE approval_grants SET status='FAILED', failed_index=?, failure_reason=?, "
+                "UPDATE approval_grants SET status=?, failed_index=?, failure_reason=?, "
                 "reservation_index=NULL, reservation_session_id=NULL, "
                 "reservation_tool_use_id=NULL, reservation_at=NULL WHERE approval_id=?",
-                (index, failure_reason, approval_id),
+                (grant["status"] if withdrawn else "FAILED", index, failure_reason, approval_id),
             )
         con.commit()
         return True
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def release_plan_command(
+    approval_id: str,
+    *,
+    session_id: str,
+    tool_use_id: str,
+    db_path: Path | None = None,
+) -> bool:
+    """Free an exact reservation whose call never ran, leaving the set where it was.
+
+    Neither advances nor freezes: the index waits for a retry, which must come
+    as a new tool call because ``tool_use_id`` stays in the reserved history.
+    """
+    if not session_id or not tool_use_id:
+        return False
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET reservation_index=NULL, reservation_session_id=NULL, "
+            "reservation_tool_use_id=NULL, reservation_at=NULL "
+            "WHERE approval_id=? AND status='PENDING' "
+            "AND reservation_session_id=? AND reservation_tool_use_id=?",
+            (approval_id, session_id, tool_use_id),
+        ).rowcount
+        con.commit()
+        return changed == 1
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def restore_db_semantic_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Return a SCOPE_SEMANTIC_SIGNATURE grant spent by a call that never ran to PENDING.
+
+    Only a grant still inside its window is restored; an expired one stays spent.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET status='PENDING', consumed_at=NULL "
+            "WHERE approval_id=? AND scope='SCOPE_SEMANTIC_SIGNATURE' "
+            "AND status='CONSUMED' AND expires_at > ?",
+            (approval_id, _now_iso()),
+        ).rowcount
+        con.commit()
+        return changed == 1
     except Exception:
         con.rollback()
         raise
@@ -8911,7 +9291,7 @@ def finalize_agent_contract_handoff(
     if not contract_id:
         raise ValueError(
             "finalize_agent_contract_handoff requires a non-empty contract_id "
-            "-- it is the idempotency key the UNIQUE constraint UPSERTs on."
+            "-- it is the idempotency key of the row's UNIQUE constraint."
         )
 
     # A placeholder session id is NO session id. The UPSERT below merges
@@ -11772,6 +12152,9 @@ def list_agent_contract_handoffs(
     harness_agent_id: str | None = None,
     cut_reason: str | None = None,
     any_cut: bool = False,
+    plan_task_ids: "Sequence[int] | None" = None,
+    since: str | None = None,
+    until: str | None = None,
     limit: int = 100,
     db_path: "Path | None" = None,
 ) -> list[dict]:
@@ -11798,6 +12181,12 @@ def list_agent_contract_handoffs(
             would silently return a handful of rows and read as "almost nothing
             was cut". Served by idx_agent_contract_handoffs_cut, the partial
             index over exactly this population.
+        plan_task_ids: Filter to turns of these ``tasks.id`` values: rows bound
+            to one of them, plus every unbound continuation whose
+            ``continues_handoff_id`` chain reaches such a row -- the same
+            nearest-ancestor binding ``_inherited_plan_task_id`` resolves.
+        since / until: Inclusive ``created_at`` bounds, as ISO-8601 UTC
+            strings. Applied in SQL, so ``limit`` counts only matching rows.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
@@ -11809,8 +12198,11 @@ def list_agent_contract_handoffs(
         clauses: list[str] = []
         params: list[Any] = []
         if workspace is not None:
-            clauses.append("workspace = ?")
-            params.append(workspace)
+            from gaia.store.workspace_retire import workspace_scope
+
+            scope = workspace_scope(con, workspace)
+            clauses.append(f"workspace IN ({','.join('?' * len(scope))})")
+            params.extend(scope)
         if agent_id is not None:
             clauses.append("agent_id = ?")
             params.append(agent_id)
@@ -11836,6 +12228,28 @@ def list_agent_contract_handoffs(
             params.append(cut_reason)
         elif any_cut:
             clauses.append("cut_reason IS NOT NULL")
+        if plan_task_ids is not None:
+            if not plan_task_ids:
+                return []
+            marks = ",".join("?" * len(plan_task_ids))
+            clauses.append(
+                "id IN (WITH RECURSIVE chain(id, depth) AS ("
+                "  SELECT id, 0 FROM agent_contract_handoffs"
+                f"  WHERE plan_task_id IN ({marks})"
+                "  UNION"
+                "  SELECT c.id, chain.depth + 1 FROM agent_contract_handoffs c"
+                "  JOIN chain ON c.continues_handoff_id = chain.id"
+                "  WHERE c.plan_task_id IS NULL AND chain.depth < ?"
+                ") SELECT id FROM chain)"
+            )
+            params.extend(plan_task_ids)
+            params.append(_MAX_CONTINUATION_LINKS)
+        if since is not None:
+            clauses.append("created_at >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("created_at <= ?")
+            params.append(until)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)

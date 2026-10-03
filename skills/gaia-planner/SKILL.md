@@ -110,7 +110,20 @@ it protects.
    carries safely. Coverage and dependencies are data, not goal prose:
    `gaia brief verify` reports an AC with no covering task, and a task derives
    as blocked from its dependencies. Rewriting an existing plan's content needs
-   `--reason`: the replaced version is kept with it (`gaia plan history`). Close
+   `--reason`: the replaced version is kept with it (`gaia plan history`). The
+   rewrite is the same single command with the reason quoted on its line:
+
+   ```bash
+   gaia plan save --brief=<name> --reason='<why>' --content-file=- <<'PLAN'
+   ```
+
+   The body is stdin the CLI stores, so any `>`, `;`, `|`, `&&`, backticks,
+   `$(...)` or quotes in its prose are fine. Write the reason without a `'`: one
+   inside it closes the quotes early and turns the data treatment off. Keep the
+   command line itself to that one `gaia` call: a `$`, backtick or backslash
+   inside a double-quoted `--reason`, a word starting with an unquoted `#`, a
+   redirect, or anything chained before the call or after the terminator makes
+   the hook read the body as shell again. Close
    with `gaia brief verify <name>` clean.
 
 7. **While the plan is `draft`, re-plan directly with the verb that matches the
@@ -136,7 +149,8 @@ it protects.
    ```
 
    After the orchestrator approves, `gaia plan change apply <name> <change_id>
-   --content-file=-` with the new body in the same heredoc saves the new version and marks stale only the tasks
+   --content-file=- <<'PLAN'`, with the new body under the same quoted heredoc
+   and the same one-command rule as step 6, saves the new version and marks stale only the tasks
    you proposed. Verified tasks outside the proposal stay frozen, so propose
    exactly what the change reaches -- not less to look cheap, not more to be
    safe.

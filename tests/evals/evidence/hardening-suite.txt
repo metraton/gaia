@@ -6,7 +6,7 @@ Status: CLOSED — exit 0
 
 Command
 -------
-uv run pytest -q  (from /home/jorge/ws/me/gaia)
+uv run pytest -q  (from /home/user/ws/me/gaia)
 
 Result
 ------

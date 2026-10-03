@@ -149,7 +149,7 @@ def consumer(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     monkeypatch.setattr(dev.subprocess, "run", runner)
 
     def run():
-        return dev.cmd_dev(argparse.Namespace(workspace=str(workspace),
+        return dev.cmd_dev(argparse.Namespace(channel="npm", workspace=str(workspace),
                                              pack_dest=str(tmp_path / "packs"), quiet=True))
     return workspace, state, run
 
@@ -350,7 +350,7 @@ def test_failed_wiring_never_publishes_success_provenance(consumer):
 def test_record_failure_exposes_partial_install_without_success(consumer, monkeypatch, capsys):
     workspace, _, run = consumer
 
-    def denied(*args):
+    def denied(*args, **kwargs):
         """Simulate unavailable state storage after consumer wiring."""
         raise OSError("record storage denied")
 
