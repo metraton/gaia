@@ -1527,7 +1527,7 @@ function checkPage(page) {
           `${Math.round(gridW)}px grid, worst at the ${tier.w}px tier`;
         for (const leaf of (slot.half ? slot.pair : [slot.node])) {
           const compact = g.compactRows;
-          const lt = mergeTokens(g.tok, nodeDelta(leaf, 'component'));
+          const lt = mergeTokens(g.tok, nodeDelta(leaf, leaf.children ? 'section' : 'component'));
           const lines = { titleLines: lt.type.title.lines, descLines: lt.type.desc.lines, cellH: g.cellH };
           const budget = textBudget(leaf, { availPx, fontPx, half: !!slot.half, cell, form, compact, ...lines });
           asserted += budget.asserted;
@@ -2095,6 +2095,14 @@ function main() {
     for (const f of fails) console.log(`    [FAIL] ${f.where}: ${f.detail}`);
     for (const f of quiets) console.log(`    [NOT ASSERTED] ${f.where}: ${f.detail}`);
     for (const f of infos) console.log(`    [INFO] ${f.where}: ${f.detail}`);
+  }
+  // A failure filed under an id outside CHECKS still counts toward the headline,
+  // so it is printed here rather than counted unseen.
+  const listed = new Set(CHECKS.map(([id]) => id));
+  const unlisted = findings.filter(f => f.sev === 'fail' && !listed.has(f.check));
+  if (unlisted.length) {
+    console.log('\n  OTHER  failures filed outside the checks above');
+    for (const f of unlisted) console.log(`    [FAIL] ${f.check} ${f.where}: ${f.detail}`);
   }
 
   const failed = findings.filter(f => f.sev === 'fail').length;

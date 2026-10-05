@@ -1,6 +1,7 @@
 """Synthesize a text file to a 24 kHz WAV with Kokoro-82M, fully offline.
 
-Optionally writes per-word timestamps (English voices only) as JSON.
+Optionally writes per-word timestamps (English voices only) as JSON, and
+writes real silence after each line when --gaps gives one value per line.
 The language is the voice's first letter, as in Kokoro's own voice naming:
 a = American English, b = British English, e = Spanish.
 Run it with the interpreter of the venv where `kokoro` and `soundfile` are
@@ -35,9 +36,14 @@ def main() -> int:
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--model-dir", type=Path, default=MODEL_DIR,
                         help="folder with config.json, kokoro-v1_0.pth and voices/<voice>.pt")
+    parser.add_argument("--gaps", default="",
+                        help="comma-separated seconds of silence written after each line, one per line")
     args = parser.parse_args()
 
-    text = args.text_file.read_text(encoding="utf-8").strip()
+    lines = [line for line in args.text_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    gaps = [float(g) for g in args.gaps.split(",")] if args.gaps else [0.0] * len(lines)
+    if len(gaps) != len(lines):
+        parser.error(f"--gaps has {len(gaps)} values for {len(lines)} lines")
     started = time.perf_counter()
 
     model = KModel(
@@ -51,18 +57,22 @@ def main() -> int:
     chunks, words, offset = [], [], 0.0
     # KPipeline.load_voice splits this on commas and averages the voices it names.
     voice_path = ",".join(str(args.model_dir / "voices" / f"{name.strip()}.pt") for name in args.voice.split(","))
-    for result in pipeline(text, voice=voice_path, speed=args.speed, split_pattern=r"\n+"):
-        audio = result.audio.numpy()
-        for token in result.tokens or []:
-            if token.start_ts is None or token.end_ts is None:
-                continue
-            words.append({
-                "word": token.text,
-                "start": round(offset + token.start_ts, 3),
-                "end": round(offset + token.end_ts, 3),
-            })
-        chunks.append(audio)
-        offset += len(audio) / SAMPLE_RATE
+    for line, gap in zip(lines, gaps):
+        for result in pipeline(line, voice=voice_path, speed=args.speed, split_pattern=r"\n+"):
+            audio = result.audio.numpy()
+            for token in result.tokens or []:
+                if token.start_ts is None or token.end_ts is None:
+                    continue
+                words.append({
+                    "word": token.text,
+                    "start": round(offset + token.start_ts, 3),
+                    "end": round(offset + token.end_ts, 3),
+                })
+            chunks.append(audio)
+            offset += len(audio) / SAMPLE_RATE
+        silence = np.zeros(int(round(gap * SAMPLE_RATE)), dtype=np.float32)
+        chunks.append(silence)
+        offset += len(silence) / SAMPLE_RATE
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     sf.write(args.out, np.concatenate(chunks), SAMPLE_RATE)

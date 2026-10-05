@@ -6,12 +6,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { OUT_DIR, audioPath, readScript, requireDeck, scriptTextPath } from './deck.mjs';
-import { loadTimeline } from './timeline.mjs';
+import { loadTimeline, voicedPages } from './timeline.mjs';
 
 const doc = requireDeck();
 const timeline = loadTimeline(doc, readScript());
 mkdirSync(join(OUT_DIR, 'script'), { recursive: true });
-timeline.pages.forEach((p, i) => {
+voicedPages(timeline).forEach((p, i) => {
   const file = scriptTextPath(p, i);
   writeFileSync(file, p.sentences.join('\n') + '\n');
   console.log(`[video] ${file} -> audio expected at ${audioPath(p)}`);

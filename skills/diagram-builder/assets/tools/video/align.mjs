@@ -2,12 +2,15 @@
 // inside its page's audio. Cues name sentences, never seconds, so this file is
 // the only timing source and can be replaced without touching the script.
 //
-//   npm run video:align
+//   npm run video:align [-- --pages id,id]
 //
 // A page whose voice left word timings (method=words) takes each sentence from
 // its first to its last word. They are used only when the words file is at
 // least as new as the audio, since audio dropped later was not timed by them,
 // and only when its words spell the page's sentences letter for letter.
+// A page whose voice left exact sentence spans instead (method=sentences, e.g.
+// Chatterbox) takes them under the same two conditions; its word cues are then
+// placed by their share of the characters inside each exact span.
 // Otherwise (manual audio, a voice without timings, Kokoro in Spanish) the page
 // falls back to silencedetect: the character estimate spreads the sentences
 // over the speech span in proportion to their length; ffmpeg silencedetect
@@ -17,8 +20,8 @@
 // otherwise the page keeps the estimate (method=chars).
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { audioPath, fail, readScript, requireDeck, wordsPath } from './deck.mjs';
-import { ALIGN_FILE, letters, loadTimeline } from './timeline.mjs';
+import { audioPath, fail, readScript, requireDeck, sentencesPath, wordsPath } from './deck.mjs';
+import { ALIGN_FILE, letters, loadTimeline, readAlign, selectedPages, voicedPages } from './timeline.mjs';
 
 const SILENCE_FILTER = 'silencedetect=noise=-35dB:d=0.15';
 const TOLERANCE_S = 2.0;
@@ -125,12 +128,40 @@ function sentencesFromWords(sentences, words) {
   return k === targets.length ? spans : null;
 }
 
+/** Returns the page's exact sentence spans, or null (saying why) when there are none it can trust. */
+function readSentenceSpans(page, wav) {
+  const file = sentencesPath(page);
+  if (!existsSync(file)) return null;
+  if (statSync(file).mtimeMs < statSync(wav).mtimeMs) {
+    console.log(`[video] ${page.page}: ${file} is older than the audio; not using its sentence spans`);
+    return null;
+  }
+  let spans = null;
+  try { spans = JSON.parse(readFileSync(file, 'utf8')); } catch { spans = null; }
+  const valid = Array.isArray(spans) && spans.length === page.sentences.length &&
+    spans.every((s, k) => typeof s.text === 'string' && letters(s.text) === letters(page.sentences[k]) && s.end >= s.start);
+  if (valid) return spans;
+  console.log(`[video] ${page.page}: ${file} does not hold one {text, start, end} per sentence of the page; not using it`);
+  return null;
+}
+
 function alignPage(page, wav) {
   const duration = durationOf(wav);
   const words = readWords(page, wav);
   const spans = words && sentencesFromWords(page.sentences, words);
   if (words && !spans) console.log(`[video] ${page.page}: its word timings do not spell its sentences; not using them`);
-  if (!spans) return alignBySilence(page, wav, duration);
+  if (!spans) {
+    const exact = readSentenceSpans(page, wav);
+    if (!exact) return alignBySilence(page, wav, duration);
+    return {
+      page: page.page,
+      audio: page.audio,
+      duration: round(duration),
+      method: 'sentences',
+      speech: [round(exact[0].start), round(exact[exact.length - 1].end)],
+      sentences: page.sentences.map((text, k) => ({ text, start: round(exact[k].start), end: round(exact[k].end) })),
+    };
+  }
   return {
     page: page.page,
     audio: page.audio,
@@ -168,15 +199,23 @@ function alignBySilence(page, wav, duration) {
   };
 }
 
+// `--pages id,id` aligns only those pages; every other page keeps the entry
+// align.json already holds, so one page can be re-aligned without the audio of
+// the rest.
 const doc = requireDeck();
 const timeline = loadTimeline(doc, readScript());
-const wavs = timeline.pages.map(p => [p, audioPath(p)]);
+const chosen = selectedPages(timeline);
+const wavs = voicedPages(timeline).filter(p => chosen.includes(p.page)).map(p => [p, audioPath(p)]);
 const missing = wavs.filter(([, wav]) => !existsSync(wav)).map(([p, wav]) => `${p.page} (${wav})`);
 if (missing.length) fail(`no narration audio for ${missing.join(', ')}: voice the exported script (npm run video:voice) to those paths`);
-const pages = wavs.map(([p, wav]) => alignPage(p, wav));
+const fresh = wavs.map(([p, wav]) => alignPage(p, wav));
+const kept = readAlign().pages;
+const pages = voicedPages(timeline)
+  .map(p => fresh.find(a => a.page === p.page) || kept.find(a => a.page === p.page))
+  .filter(Boolean);
 writeFileSync(ALIGN_FILE, JSON.stringify({ pages }, null, 2) + '\n');
-for (const p of pages) {
-  const evidence = p.method === 'words' ? `words=${p.words}` : `pauses=${p.pauses}`;
+for (const p of fresh) {
+  const evidence = p.method === 'words' ? `words=${p.words}` : p.method === 'sentences' ? 'spans=exact' : `pauses=${p.pauses}`;
   console.log(`[video] ${p.page}: method=${p.method} duration=${p.duration}s speech=${p.speech.join('-')}s ` +
     `sentences=${p.sentences.length} ${evidence}`);
 }
