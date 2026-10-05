@@ -57,7 +57,7 @@ def _handoff(db: Path, workspace: str) -> None:
 def _curate(**kw) -> int:
     from bin.cli.workspace import _cmd_curate
 
-    args = {"into": [], "dry_run": False, "yes": True, "json": False, **kw}
+    args = {"into": [], "on_conflict": None, "dry_run": False, "yes": True, "json": False, **kw}
     return _cmd_curate(argparse.Namespace(**args))
 
 
@@ -174,6 +174,42 @@ def test_two_phantoms_folding_the_same_row_into_one_owner_refuse_the_second_in_t
         ("p1", "retired"), ("p2", "active"),
     ]
     assert _sql(db, "SELECT COUNT(*) FROM projects WHERE workspace = 'p2'") == [(1,)]
+
+
+def test_keep_target_folds_a_phantom_whose_sections_collide_and_ledgers_the_losing_section(
+    db, tmp_path, capsys,
+):
+    root = _declared(db, "aaxis", tmp_path / "aaxis")
+    _phantom_under(db, "bildwiz", root, "platform")
+    _sql(db, "INSERT INTO project_context_contracts (workspace, contract_name, payload) VALUES "
+             "('aaxis', 'project_identity', '{\"owner\": \"aaxis\"}'), "
+             "('bildwiz', 'project_identity', '{\"owner\": \"bildwiz\"}'), "
+             "('bildwiz', 'stack', '{\"lang\": \"go\"}')")
+
+    assert _curate(dry_run=True) == 0
+    assert "REFUSED: unresolved collisions: project_context_contracts: project_identity" in (
+        capsys.readouterr().out
+    )
+
+    assert _curate(dry_run=True, on_conflict="keep-target") == 0
+    out = capsys.readouterr().out
+    assert "REFUSED" not in out
+    assert "section project_identity: keeps aaxis's version; bildwiz's goes to the ledger" in out
+    assert _sql(db, "SELECT status FROM workspaces WHERE name = 'bildwiz'") == [("active",)]
+
+    assert _curate(on_conflict="keep-target") == 0
+    out = capsys.readouterr().out
+    assert _sql(db, "SELECT workspace, contract_name, payload FROM project_context_contracts "
+                    "ORDER BY contract_name") == [
+        ("aaxis", "project_identity", '{"owner": "aaxis"}'), ("aaxis", "stack", '{"lang": "go"}'),
+    ]
+    assert _sql(db, "SELECT workspace FROM projects WHERE name = 'platform'") == [("aaxis",)]
+    assert _sql(db, "SELECT status FROM workspaces WHERE name = 'bildwiz'") == [("retired",)]
+    ledger = json.loads(Path(out.split("ledger: ", 1)[1].split()[0]).read_text(encoding="utf-8"))
+    dropped = [d["row"] for d in ledger["dropped"] if d["table"] == "project_context_contracts"]
+    assert [(r["workspace"], r["contract_name"], r["payload"]) for r in dropped] == [
+        ("bildwiz", "project_identity", '{"owner": "bildwiz"}'),
+    ]
 
 
 def test_a_failure_mid_apply_commits_no_retire(db, tmp_path, monkeypatch):

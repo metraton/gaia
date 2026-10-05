@@ -122,6 +122,7 @@ def test_attested_reads_pass_the_existing_allowlist(attested_payload, argline):
     "argline",
     [
         "brief new --headless --title=Useful",
+        "brief set-project demo github.com/o/gaia --workspace=ws --dry-run",
         "plan set-status demo active",
         "task set-status demo 1 done",
         "memory add --content=note",
@@ -151,6 +152,7 @@ def test_attested_management_writes_pass_the_existing_allowlist(
         "plan save demo",
         "plan delete demo",
         "brief delete demo",
+        "brief set-project --clear",
         "task add demo --goal=x",
         "task gate set-status demo 1 3 pass",
         "memory edit --name=foo --field=body --content=x",

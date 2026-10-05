@@ -582,6 +582,28 @@ _LEGAL_TRANSITIONS: dict[str, set[str]] = {
 from gaia.state import VALID_BRIEF_STATUSES as VALID_STATUSES  # noqa: E402
 
 
+def _project_identity(workspace: str, project: str, db_path: Path | None) -> str:
+    """The project_identity of project ``project`` of ``workspace``, else ``project`` if it is one."""
+    from gaia.store.writer import resolve_project_ref
+
+    try:
+        return resolve_project_ref(workspace, project, db_path=db_path)
+    except ValueError:
+        con = _connect(db_path)
+        try:
+            known = con.execute(
+                "SELECT 1 FROM projects WHERE project_identity = ? LIMIT 1", (project,)
+            ).fetchone()
+        finally:
+            con.close()
+    if known is None:
+        raise ValueError(
+            f"project {project!r} is neither a project of workspace {workspace!r} "
+            f"nor a known project identity"
+        )
+    return project
+
+
 def set_brief_project(
     workspace: str,
     name: str,
@@ -591,24 +613,26 @@ def set_brief_project(
     dry_run: bool = False,
     db_path: Path | None = None,
 ) -> dict:
-    """Tag brief ``name`` of ``workspace`` with ``project``, a project of that workspace.
+    """Tag brief ``name`` of ``workspace`` with ``project``.
 
-    The brief then moves with the project (``gaia project move``); ``project``
-    None clears the tag, making it a workspace-level brief again. Returns
-    ``{"mode", "workspace", "brief", "project", "previous"}`` with ``project``
-    the resolved project_identity; a dry-run writes nothing.
+    ``project`` is a project name of ``workspace`` or the project_identity of a
+    project in any workspace, so a brief can be tagged before or after its
+    project moves. A brief tagged with a project of its own workspace moves
+    with it (``gaia project move``); ``project`` None clears the tag, making it
+    a workspace-level brief again. Returns ``{"mode", "workspace", "brief",
+    "project", "previous"}`` with ``project`` the resolved project_identity; a
+    dry-run writes nothing.
 
     Raises:
-        ValueError: the brief or the project does not exist in ``workspace``,
-            or the brief is tagged with another project and ``force`` is off.
+        ContentWriteForbidden: the dispatched agent may not tag briefs.
+        ValueError: the brief does not exist in ``workspace``, ``project``
+            names no project, or the brief is tagged with another project and
+            ``force`` is off.
     """
-    from gaia.state.permissions import _assert_dispatch_can_write_content
-    from gaia.store.writer import resolve_project_ref
+    from gaia.state.permissions import _assert_dispatch_can_tag_brief_project
 
-    _assert_dispatch_can_write_content("briefs")
-    identity = (
-        resolve_project_ref(workspace, project, db_path=db_path) if project is not None else None
-    )
+    _assert_dispatch_can_tag_brief_project()
+    identity = _project_identity(workspace, project, db_path) if project is not None else None
     con = _connect(db_path)
     try:
         row = con.execute(

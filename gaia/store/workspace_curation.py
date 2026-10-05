@@ -28,6 +28,8 @@ from pathlib import Path
 PATH_FACET_SCOPES = ("worktree", "copy")
 RETIRED = "retired"
 _INTEGRATIONS_ON_CONFLICT = {"integrations": "keep-target"}
+_SECTIONS_TABLE = "project_context_contracts"
+SECTION_STRATEGIES = ("keep-target",)
 
 
 def is_dangling_facet(scope: str, key: str) -> bool:
@@ -152,6 +154,17 @@ class WorkspaceCurationError(ValueError):
     """An ``--into`` names no phantom or no declared target; nothing was written."""
 
 
+def _retire_on_conflict(on_conflict: str | None) -> dict[str, str]:
+    """The per-table strategies every retire of the batch runs with."""
+    if on_conflict is None:
+        return _INTEGRATIONS_ON_CONFLICT
+    if on_conflict not in SECTION_STRATEGIES:
+        raise WorkspaceCurationError(
+            f"--on-conflict {on_conflict!r}: expected one of {', '.join(SECTION_STRATEGIES)}"
+        )
+    return {**_INTEGRATIONS_ON_CONFLICT, _SECTIONS_TABLE: on_conflict}
+
+
 def _check_into(into: dict[str, str], phantoms: list[str], declared: set[str]) -> None:
     for name, target in into.items():
         if name not in phantoms:
@@ -162,16 +175,19 @@ def _check_into(into: dict[str, str], phantoms: list[str], declared: set[str]) -
 
 def _curate(
     con: sqlite3.Connection, roots: dict[Path, str], into: dict[str, str], backup: Path,
+    on_conflict: str | None = None,
 ) -> tuple[dict, list[tuple[dict, Path, dict]]]:
     """Write the whole curation inside ``con``'s open transaction.
 
     Each retire is planned against what the writes before it left, so two
     phantoms folding the same project or contract into one owner refuse the
-    second. Returns the report and, per applied retire, its item, ledger path
-    and unsaved ledger, which name ``backup``.
+    second unless ``on_conflict`` resolves the contract. Returns the report and,
+    per applied retire, its item, ledger path and unsaved ledger, which name
+    ``backup``.
     """
     from gaia.store.workspace_retire import WorkspaceRetireError, _safe, retire_in_transaction
 
+    strategies = _retire_on_conflict(on_conflict)
     con.execute("PRAGMA defer_foreign_keys = ON")
     found = find_conditions(con)
     _check_into(into, found["phantoms"], set(roots.values()))
@@ -205,13 +221,18 @@ def _curate(
         )
         try:
             report, ledger = retire_in_transaction(
-                con, item["workspace"], item["into"], on_conflict=_INTEGRATIONS_ON_CONFLICT,
+                con, item["workspace"], item["into"], on_conflict=strategies,
                 ledger_path=ledger_path, backup=backup,
             )
         except WorkspaceRetireError as exc:
             item["refused"] = str(exc)
             report, ledger = exc.report, None
         item["tables"] = {t: c for t, c in (report.get("tables") or {}).items() if any(c.values())}
+        resolved = {} if "refused" in item else report.get("resolved") or {}
+        item["sections"] = [
+            {"section": key, "wins": item["into"], "loses": item["workspace"]}
+            for key in resolved.get(_SECTIONS_TABLE, [])
+        ]
         if ledger is not None:
             ledgers.append((item, ledger_path, ledger))
     # A retire applied before v66 left its source active, and re-running it is
@@ -237,17 +258,23 @@ def _curate(
     return plan, ledgers
 
 
-def plan_curation(*, into: dict[str, str] | None = None, db_path: Path | None = None) -> dict:
+def plan_curation(
+    *, into: dict[str, str] | None = None, on_conflict: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
     """Report, writing nothing, what :func:`apply_curation` would change.
 
     The batch runs in a transaction that is rolled back, so the report is the
     one :func:`apply_curation` commits, each retire planned against the ones
     before it. ``into`` maps a phantom to the declared workspace that owns it
     when the owner cannot be found from its alias, its projects' paths or its name.
+    ``on_conflict='keep-target'`` lets a retire whose context-contract sections
+    collide with its owner's keep the owner's; each retire item lists them under
+    ``sections``, and the dropped source section is recorded whole in its ledger.
 
     Raises:
-        WorkspaceCurationError: an ``into`` key that is not a phantom, or a
-            target that is not declared.
+        WorkspaceCurationError: an ``into`` key that is not a phantom, a
+            target that is not declared, or an unknown ``on_conflict``.
     """
     from gaia.install_root import registered_roots
     from gaia.paths import db_path as _db_path
@@ -260,7 +287,7 @@ def plan_curation(*, into: dict[str, str] | None = None, db_path: Path | None = 
         con.execute("BEGIN")
         try:
             # The ledgers that would name db_file as their backup are never saved.
-            plan, _ = _curate(con, roots, into or {}, backup=db_file)
+            plan, _ = _curate(con, roots, into or {}, backup=db_file, on_conflict=on_conflict)
         finally:
             con.rollback()
     finally:
@@ -268,7 +295,10 @@ def plan_curation(*, into: dict[str, str] | None = None, db_path: Path | None = 
     return plan
 
 
-def apply_curation(*, into: dict[str, str] | None = None, db_path: Path | None = None) -> dict:
+def apply_curation(
+    *, into: dict[str, str] | None = None, on_conflict: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
     """Apply :func:`plan_curation` in one transaction; return its report with the backup path.
 
     The database is backed up first, and every retire's undo ledger names that
@@ -284,7 +314,7 @@ def apply_curation(*, into: dict[str, str] | None = None, db_path: Path | None =
     from gaia.store.writer import _connect
 
     db_file = Path(db_path) if db_path is not None else _db_path()
-    plan = plan_curation(into=into, db_path=db_file)
+    plan = plan_curation(into=into, on_conflict=on_conflict, db_path=db_file)
     if plan["mode"] == "noop":
         return plan
 
@@ -295,7 +325,7 @@ def apply_curation(*, into: dict[str, str] | None = None, db_path: Path | None =
         backup = _backup(con, db_file, "curate")
         con.execute("BEGIN IMMEDIATE")
         try:
-            plan, ledgers = _curate(con, roots, into or {}, backup=backup)
+            plan, ledgers = _curate(con, roots, into or {}, backup=backup, on_conflict=on_conflict)
             for item, path, ledger in ledgers:
                 path.write_text(json.dumps(ledger, indent=2, default=str), encoding="utf-8")
                 saved.append(path)

@@ -325,7 +325,7 @@ def _cmd_set_project(args) -> int:
             workspace, args.name, args.project,
             force=getattr(args, "force", False), dry_run=args.dry_run,
         )
-    except ValueError as exc:
+    except (ValueError, PermissionError) as exc:
         return _err(str(exc), as_json=as_json)
     if as_json:
         print(json.dumps(res, indent=2, default=str))
@@ -919,18 +919,22 @@ def register(subparsers) -> None:
     setproject_p = actions.add_parser(
         "set-project",
         help="Tag a brief with the project it is for",
-        description="Tag an existing brief with a project of its workspace; it then "
-                    "moves with that project (gaia project move). A brief tagged with "
-                    "another project is retagged only with --force; --clear makes it a "
-                    "workspace-level brief again.",
+        description="Tag an existing brief with a project: a project name of its "
+                    "workspace, or the identity of a project in any workspace, so the "
+                    "tag works before or after the project moves. Tagged with a project "
+                    "of its own workspace, the brief moves with it (gaia project move). "
+                    "A brief tagged with another project is retagged only with --force; "
+                    "--clear makes it a workspace-level brief again.",
         epilog="Examples:\n  gaia brief set-project my-feature gaia --workspace=ws --dry-run\n"
+               "  gaia brief set-project my-feature github.com/metraton/gaia --workspace=ws\n"
                "  gaia brief set-project my-feature other-repo --force\n"
                "  gaia brief set-project my-feature --clear\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     setproject_p.add_argument("name", help="Brief slug.")
     setproject_p.add_argument("project", nargs="?", default=None,
-                              help="Project name in the brief's workspace.")
+                              help="Project name in the brief's workspace, or a project "
+                                   "identity in any workspace.")
     setproject_p.add_argument("--clear", action="store_true", default=False,
                               help="Remove the project tag.")
     setproject_p.add_argument("--force", action="store_true", default=False,

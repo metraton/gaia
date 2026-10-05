@@ -82,6 +82,9 @@ def _render_curation(plan: dict) -> None:
         for table, counts in (item.get("tables") or {}).items():
             shown = {k: v for k, v in counts.items() if v}
             print(f"    {table:<28} " + "  ".join(f"{k}={v}" for k, v in shown.items()))
+        for section in item.get("sections") or []:
+            print(f"    section {section['section']}: keeps {section['wins']}'s version; "
+                  f"{section['loses']}'s goes to the ledger")
         if item.get("refused"):
             print(f"    REFUSED: {item['refused']}")
         if item.get("ledger"):
@@ -102,7 +105,7 @@ def _render_curation(plan: dict) -> None:
 
 
 def _cmd_curate(args) -> int:
-    """Handle `gaia workspace curate [--into NAME=TARGET] [--dry-run] [--yes] [--json]`."""
+    """Handle `gaia workspace curate [--into NAME=TARGET] [--on-conflict keep-target] [--dry-run] [--yes] [--json]`."""
     import json
 
     from gaia.store.workspace_curation import (
@@ -117,12 +120,12 @@ def _cmd_curate(args) -> int:
             return 2
         into[name.strip()] = target.strip()
     try:
-        plan = plan_curation(into=into)
+        plan = plan_curation(into=into, on_conflict=args.on_conflict)
         if not (args.dry_run or plan["mode"] == "noop"):
             if not (args.yes or _confirmed("curate the workspace registry")):
                 _render_curation(plan)
                 return 1
-            plan = apply_curation(into=into)
+            plan = apply_curation(into=into, on_conflict=args.on_conflict)
     except WorkspaceCurationError as exc:
         print(f"gaia workspace curate: {exc}; nothing was changed", file=sys.stderr)
         return 2
@@ -445,18 +448,25 @@ def register(subparsers):
             "already leave them out. The batch is applied in one transaction after one "
             "curate backup, which every retire ledger points to. A retire that collides "
             "with the owner or with an earlier retire of the batch is skipped and listed "
-            "as REFUSED; the rest still applies."
+            "as REFUSED; the rest still applies. With --on-conflict keep-target a "
+            "context-contract section the phantom shares with its owner keeps the owner's "
+            "version, and the phantom's is recorded whole in that retire's ledger."
         ),
         epilog=(
             "Examples:\n"
             "  gaia workspace curate --dry-run\n"
             "  gaia workspace curate --into bildwiz=aaxis --yes\n"
+            "  gaia workspace curate --into bildwiz=aaxis --on-conflict keep-target --dry-run\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     curate_p.add_argument(
         "--into", action="append", default=[], metavar="NAME=TARGET",
         help="Retire phantom NAME into declared workspace TARGET. Repeatable.",
+    )
+    curate_p.add_argument(
+        "--on-conflict", dest="on_conflict", choices=("keep-target",), default=None,
+        help="Resolve colliding context-contract sections by keeping the owner's version",
     )
     curate_p.add_argument(
         "--dry-run", dest="dry_run", action="store_true", default=False,

@@ -574,6 +574,7 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "new"),
     ("brief", "edit"),
     ("brief", "set-status"),
+    ("brief", "set-project"),
     ("brief", "ac", "add"),
     ("brief", "ac", "edit"),
     ("brief", "ac", "remove"),
@@ -1236,6 +1237,8 @@ def _validate_orchestrator_write(
         valid = bool(args) and not args[0].startswith("-") and "--headless" in args
     elif phrase == ("brief", "set-status"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _BRIEF_STATUSES
+    elif phrase == ("brief", "set-project"):
+        valid = bool(args) and not args[0].startswith("-")
     elif phrase[:2] == ("brief", "ac"):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args[1:], "--id")
     elif phrase == ("brief", "decision", "add"):
