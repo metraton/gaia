@@ -6,11 +6,12 @@ helper used by BOTH `gaia uninstall` (AC-6) and the SessionStart auto-backup
 Invariants under test:
   * COPY-based: the source DB is never moved/deleted -- only read.
   * Snapshot content matches the source byte-for-byte (through gzip).
-  * Retention keeps exactly the newest N snapshots and prunes the rest.
-  * latest_snapshot_age_seconds reports the freshest snapshot's age.
+  * Retention keeps exactly the newest N snapshots of each prefix.
+  * latest_snapshot_age_seconds reports the age of a prefix's freshest snapshot.
 """
 
 import gzip
+import os
 import time
 import unittest
 from pathlib import Path
@@ -109,14 +110,30 @@ class TestEnforceRetention(unittest.TestCase):
             snap_dir = Path(tmp) / "does-not-exist"
             self.assertEqual(enforce_retention(snap_dir, retain=5), [])
 
+    def test_keeps_newest_n_of_each_prefix(self):
+        with TemporaryDirectory() as tmp:
+            snap_dir = Path(tmp)
+
+            def names(prefix, count):
+                return [f"{prefix}-202601{day:02d}T000000000000.db.gz" for day in range(1, count + 1)]
+
+            session, uninstall, task9 = names("sessionstart", 7), names("uninstall", 7), names("task9", 2)
+            for name in session + uninstall + task9:
+                (snap_dir / name).write_bytes(b"x")
+
+            enforce_retention(snap_dir, retain=5)
+
+            survivors = sorted(p.name for p in snap_dir.glob("*.db.gz"))
+            self.assertEqual(survivors, sorted(session[-5:] + uninstall[-5:] + task9))
+
 
 class TestLatestSnapshotAge(unittest.TestCase):
     def test_none_when_no_snapshots(self):
         with TemporaryDirectory() as tmp:
             snap_dir = Path(tmp) / "snapshots"
-            self.assertIsNone(latest_snapshot_age_seconds(snap_dir))
+            self.assertIsNone(latest_snapshot_age_seconds(snap_dir, "test"))
             snap_dir.mkdir()
-            self.assertIsNone(latest_snapshot_age_seconds(snap_dir))
+            self.assertIsNone(latest_snapshot_age_seconds(snap_dir, "test"))
 
     def test_reports_recent_age_for_fresh_snapshot(self):
         with TemporaryDirectory() as tmp:
@@ -124,7 +141,7 @@ class TestLatestSnapshotAge(unittest.TestCase):
             db.write_bytes(b"data")
             snap_dir = Path(tmp) / "snapshots"
             create_snapshot(db, snap_dir, prefix="test")
-            age = latest_snapshot_age_seconds(snap_dir)
+            age = latest_snapshot_age_seconds(snap_dir, "test")
             self.assertIsNotNone(age)
             self.assertLess(age, 60, "a just-created snapshot must read as seconds old")
 
@@ -135,11 +152,24 @@ class TestLatestSnapshotAge(unittest.TestCase):
             snap_dir = Path(tmp) / "snapshots"
             res = create_snapshot(db, snap_dir, prefix="test")
             snap = Path(res["path"])
-            old = time.time() - (48 * 60 * 60)  # 48h ago
-            import os
+            old = time.time() - (48 * 60 * 60)
             os.utime(snap, (old, old))
-            age = latest_snapshot_age_seconds(snap_dir)
+            age = latest_snapshot_age_seconds(snap_dir, "test")
             self.assertGreater(age, 24 * 60 * 60)
+
+    def test_reads_newest_snapshot_of_its_prefix_only(self):
+        with TemporaryDirectory() as tmp:
+            snap_dir = Path(tmp)
+            fresh = snap_dir / "sessionstart-20260101T000000000000.db.gz"
+            stale = snap_dir / "uninstall-20260105T000000000000.db.gz"
+            for snap in (fresh, stale):
+                snap.write_bytes(b"x")
+            old = time.time() - (48 * 60 * 60)
+            os.utime(stale, (old, old))
+
+            age = latest_snapshot_age_seconds(snap_dir, "sessionstart")
+
+            self.assertLess(age, 60, "an older snapshot of another prefix must not decide the age")
 
 
 if __name__ == "__main__":

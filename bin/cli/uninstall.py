@@ -87,7 +87,7 @@ DEFAULT_RETAIN = 5
 
 def _snapshot_db(db_path: Path, snapshot_dir: Path, dry_run: bool) -> dict:
     """Create a gzip snapshot of the DB and enforce the shared retention
-    policy (keep the newest ``DEFAULT_RETAIN`` snapshots).
+    policy (keep the newest ``DEFAULT_RETAIN`` snapshots of each prefix).
 
     Returns a result dict with shape:
       {"requested": True,
