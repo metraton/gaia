@@ -44,11 +44,11 @@ class TestBuildEnvironmentSection:
         monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: [])
         monkeypatch.setattr(session_manifest, "_recurring_work_line", lambda _ws: "")
 
-    def test_names_the_folder_and_machine_even_with_no_workspace(self):
+    def test_a_folder_outside_every_workspace_says_so(self):
         result = build_environment_section()
 
         assert result.startswith("## Environment")
-        assert f"- Folder: {Path.cwd()}" in result.splitlines()
+        assert f"- Folder: {Path.cwd()} (not inside a declared workspace)" in result.splitlines()
         assert "host (Linux/x86_64)" in result
 
     def test_names_the_workspace_when_there_is_one(self, monkeypatch):
@@ -147,21 +147,62 @@ class TestBuildEnvironmentSection:
 # _scan_live_gaia_installation / _resolve_gaia_cli_path / _scan_available_tools
 # ---------------------------------------------------------------------------
 
+def _declare_workspaces(tmp_path, monkeypatch, roots: dict) -> None:
+    """A data home whose schema'd database records *roots*; a None root is a history-only row."""
+    import sqlite3
+
+    from gaia.store.writer import _connect
+
+    data_home = tmp_path / "gaia-data"
+    data_home.mkdir(exist_ok=True)
+    database = data_home / "gaia.db"
+    _connect(database).close()
+    con = sqlite3.connect(database)
+    con.executemany(
+        "INSERT INTO workspaces (name, root_path) VALUES (?, ?)",
+        [(name, str(root) if root else None) for name, root in roots.items()],
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data_home))
+    monkeypatch.setenv("GAIA_DB", str(database))
+    for key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
+        monkeypatch.delenv(key, raising=False)
+
+
+class TestReadWorkspaceIdentity:
+    """The Folder line names a workspace only when a declared root holds the cwd."""
+
+    def test_outside_every_declared_root_there_is_no_workspace(self, monkeypatch, tmp_path):
+        declared, outside = tmp_path / "declared", tmp_path / "outside"
+        declared.mkdir()
+        outside.mkdir()
+        _declare_workspaces(tmp_path, monkeypatch, {"global": None, "mine": declared})
+        monkeypatch.chdir(outside)
+
+        assert session_manifest._read_workspace_identity() is None
+
+    def test_inside_a_declared_root_the_workspace_is_named(self, monkeypatch, tmp_path):
+        nested = tmp_path / "declared" / "repo"
+        nested.mkdir(parents=True)
+        _declare_workspaces(tmp_path, monkeypatch, {"global": None, "mine": tmp_path / "declared"})
+        monkeypatch.chdir(nested)
+
+        assert session_manifest._read_workspace_identity() == "mine"
+
+
 class TestScanLiveGaiaInstallation:
-    def test_delegates_to_the_pure_scanner_for_this_workspace_root(self, monkeypatch, tmp_path):
+    def test_delegates_to_the_pure_scanner_for_the_declared_install(self, monkeypatch, tmp_path):
         """The live scan calls the real, table-free detector against the
-        resolved workspace root -- never the gaia_installations table."""
+        declared install root -- never the gaia_installations table."""
         captured = {}
 
         def _fake_scan(workspace_root):
             captured["root"] = workspace_root
             return [{"machine": "host", "version": "9.9.9", "install_mode": "npm"}]
 
-        import modules.core.paths as core_paths_mod
-
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_declared_install_root", lambda: tmp_path / "ws")
         import tools.scan.store_populator as store_populator
 
         monkeypatch.setattr(store_populator, "_scan_gaia_installations", _fake_scan)
@@ -171,16 +212,20 @@ class TestScanLiveGaiaInstallation:
         assert captured["root"] == tmp_path / "ws"
 
     def test_returns_none_on_any_failure(self, monkeypatch):
-        import modules.core.paths as core_paths_mod
-
         def _boom():
-            raise RuntimeError("no .claude tree")
+            raise RuntimeError("registry unreadable")
 
-        monkeypatch.setattr(core_paths_mod, "find_claude_dir", _boom)
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_declared_install_root", _boom)
         assert session_manifest._scan_live_gaia_installation() is None
 
 
 class TestResolveGaiaCliPath:
+    @pytest.fixture(autouse=True)
+    def _npm_channel(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_declared_install_root", lambda: tmp_path / "ws")
+
     def _make_npm_layout(self, tmp_path, bin_rel="bin/gaia"):
         gaia_dir = tmp_path / "ws" / "node_modules" / "@jaguilar87" / "gaia"
         gaia_dir.mkdir(parents=True)
@@ -193,23 +238,13 @@ class TestResolveGaiaCliPath:
         return gaia_dir, bin_path
 
     def test_returns_none_when_no_candidate_package_exists(self, monkeypatch, tmp_path):
-        import modules.core.paths as core_paths_mod
-
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
         monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "empty")
         assert session_manifest._resolve_gaia_cli_path() is None
 
     def test_returns_none_when_guard_rejects_the_candidate(self, monkeypatch, tmp_path):
         """A candidate that resolves but fails the real trust guard is
         never published -- the guard is consulted, not merely trusted."""
-        import modules.core.paths as core_paths_mod
-
         self._make_npm_layout(tmp_path)
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
         import modules.security.gaia_cli_only_guard as guard
 
         monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _token: False)
@@ -217,12 +252,7 @@ class TestResolveGaiaCliPath:
         assert session_manifest._resolve_gaia_cli_path() is None
 
     def test_returns_the_candidate_when_the_guard_accepts_it(self, monkeypatch, tmp_path):
-        import modules.core.paths as core_paths_mod
-
         _gaia_dir, bin_path = self._make_npm_layout(tmp_path)
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
         import modules.security.gaia_cli_only_guard as guard
 
         monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _token: True)
@@ -230,11 +260,11 @@ class TestResolveGaiaCliPath:
         assert session_manifest._resolve_gaia_cli_path() == str(bin_path)
 
 
-def _make_gaia_package(root: Path) -> Path:
+def _make_gaia_package(root: Path, version: str = "5.5.0") -> Path:
     """A package the real trust guard accepts: same name as ours, bin.gaia declared."""
     root.mkdir(parents=True)
     (root / "package.json").write_text(
-        json.dumps({"name": "@jaguilar87/gaia", "bin": {"gaia": "bin/gaia"}})
+        json.dumps({"name": "@jaguilar87/gaia", "version": version, "bin": {"gaia": "bin/gaia"}})
     )
     bin_path = root / "bin" / "gaia"
     bin_path.parent.mkdir()
@@ -243,22 +273,35 @@ def _make_gaia_package(root: Path) -> Path:
     return bin_path
 
 
+_ALIAS = Path("node_modules") / "@jaguilar87" / "gaia"
+
+
 class TestResolveGaiaCliPathByInstallLayout:
-    """Each supported layout publishes a path the real guard accepts; PATH is never read."""
+    """Each supported layout publishes a path the real guard accepts; PATH is never read.
+
+    The session opens in ``ws/repo``, a repository inside the declared
+    workspace ``ws`` that carries its own ``.claude`` and a stale nested copy.
+    """
 
     @pytest.fixture
     def layout(self, monkeypatch, tmp_path):
         import modules.core.paths as core_paths_mod
 
         workspace = tmp_path / "ws"
-        (workspace / ".claude").mkdir(parents=True)
-        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: workspace / ".claude")
+        repo = workspace / "repo"
+        (repo / ".claude").mkdir(parents=True)
+        _declare_workspaces(tmp_path, monkeypatch, {"ws": workspace})
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: repo / ".claude")
         monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "no-package")
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
         empty_path_dir = tmp_path / "empty-path"
         empty_path_dir.mkdir()
         monkeypatch.setenv("PATH", str(empty_path_dir))
         return workspace, tmp_path
+
+    def _nested_stale_copy(self, workspace: Path) -> Path:
+        return _make_gaia_package(workspace / "repo" / _ALIAS, version="5.0.0-rc.7")
 
     def _plugin(self, monkeypatch, tmp_path) -> Path:
         plugin_root = tmp_path / "plugins" / "cache" / "gaia-marketplace" / "gaia" / "5.5.0"
@@ -287,30 +330,74 @@ class TestResolveGaiaCliPathByInstallLayout:
 
         assert f"- gaia CLI: {bin_path}" in block.splitlines()
 
+    def test_plugin_channel_publishes_the_plugin_beside_any_workspace_copy(self, layout, monkeypatch):
+        """The guard accepts every genuine copy, so it cannot be what picks the running one."""
+        from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
+
+        workspace, tmp_path = layout
+        bin_path = self._plugin(monkeypatch, tmp_path)
+        stale_bin = self._nested_stale_copy(workspace)
+        _make_gaia_package(workspace / _ALIAS)
+
+        results = {session_manifest._resolve_gaia_cli_path() for _ in range(3)}
+
+        assert results == {str(bin_path)}
+        assert is_trusted_gaia_binary(str(bin_path))
+        assert is_trusted_gaia_binary(str(stale_bin))
+
+    def test_plugin_channel_version_is_the_plugins_not_a_nested_copy(self, layout, monkeypatch):
+        workspace, tmp_path = layout
+        self._plugin(monkeypatch, tmp_path)
+        self._nested_stale_copy(workspace)
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.5.0")
+
+        block = build_environment_section()
+
+        assert "- Gaia: 5.5.0" in block
+        assert "5.0.0-rc.7" not in block
+
     def test_npm_only_publishes_the_workspace_alias(self, layout):
         from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
 
         workspace, _tmp_path = layout
-        alias_bin = _make_gaia_package(workspace / "node_modules" / "@jaguilar87" / "gaia")
+        alias_bin = _make_gaia_package(workspace / _ALIAS)
 
         cli_path = session_manifest._resolve_gaia_cli_path()
 
         assert cli_path == str(alias_bin)
         assert is_trusted_gaia_binary(cli_path)
 
-    def test_alias_wins_over_the_own_package_when_both_exist(self, layout, monkeypatch):
-        workspace, tmp_path = layout
-        self._plugin(monkeypatch, tmp_path)
-        alias_bin = _make_gaia_package(workspace / "node_modules" / "@jaguilar87" / "gaia")
+    def test_npm_publishes_the_declared_install_not_a_nested_copy(self, layout):
+        workspace, _tmp_path = layout
+        alias_bin = _make_gaia_package(workspace / _ALIAS, version="5.6.0")
+        self._nested_stale_copy(workspace)
 
-        results = {session_manifest._resolve_gaia_cli_path() for _ in range(3)}
+        block = build_environment_section()
 
-        assert results == {str(alias_bin)}
+        assert session_manifest._resolve_gaia_cli_path() == str(alias_bin)
+        assert "- Gaia: 5.6.0, npm channel" in block
+        assert "5.0.0-rc.7" not in block
+
+    def test_npm_outside_every_declared_workspace_never_publishes_a_local_copy(
+        self, layout, monkeypatch
+    ):
+        import modules.core.paths as core_paths_mod
+
+        _workspace, tmp_path = layout
+        outside = tmp_path / "outside"
+        (outside / ".claude").mkdir(parents=True)
+        _make_gaia_package(outside / _ALIAS)
+        monkeypatch.chdir(outside)
+        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: outside / ".claude")
+
+        assert session_manifest._resolve_gaia_cli_path() is None
 
     def test_untrusted_alias_falls_through_to_the_own_package(self, layout, monkeypatch):
         workspace, tmp_path = layout
-        bin_path = self._plugin(monkeypatch, tmp_path)
-        impostor = workspace / "node_modules" / "@jaguilar87" / "gaia"
+        own_root = tmp_path / "own"
+        bin_path = _make_gaia_package(own_root)
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: own_root)
+        impostor = workspace / _ALIAS
         _make_gaia_package(impostor)
         (impostor / "package.json").write_text(
             json.dumps({"name": "not-gaia", "bin": {"gaia": "bin/gaia"}})

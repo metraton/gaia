@@ -91,29 +91,27 @@ def _describe_gaia_version(version: str) -> str:
 
 
 def _read_workspace_identity() -> Optional[str]:
-    """Read the workspace name from the project_context_contracts table.
+    """Name of the declared workspace holding the cwd, or None outside every one.
 
-    Resolves the current workspace via ``gaia.project.current()`` then queries
-    ``project_context_contracts`` for the ``project_identity`` contract's
-    ``$.name`` payload field. Falls back to the matching ``workspaces.name``
-    row when the payload lacks a name. Returns None when neither yields a
-    usable identity. Never raises.
+    The name is the ``project_identity`` contract's ``$.name`` when it carries
+    one, else the workspace's own name. Never raises.
     """
     import sqlite3
 
     try:
-        from gaia.project import current
-        from gaia.paths import db_path as _db_path
+        from gaia.project import declared_workspace
 
-        workspace = current()
-        if not workspace:
-            return None
+        workspace = declared_workspace()
+    except Exception as exc:
+        logger.debug("declared workspace unresolved (non-fatal): %s", exc)
+        return None
+    if not workspace:
+        return None
 
-        db_file = _db_path()
-        if not db_file or not db_file.exists():
-            return None
+    try:
+        from gaia.paths import db_path
 
-        con = sqlite3.connect(str(db_file))
+        con = sqlite3.connect(str(db_path()))
         try:
             row = con.execute(
                 """
@@ -123,20 +121,25 @@ def _read_workspace_identity() -> Optional[str]:
                 """,
                 (workspace,),
             ).fetchone()
-            if row and row[0]:
-                return row[0]
-
-            row = con.execute(
-                "SELECT name FROM workspaces WHERE name = ?",
-                (workspace,),
-            ).fetchone()
-            if row and row[0]:
-                return row[0]
         finally:
             con.close()
-    except Exception as exc:
+    except sqlite3.Error as exc:
         logger.debug("workspace identity read failed (non-fatal): %s", exc)
-    return None
+        return workspace
+    return row[0] if row and row[0] else workspace
+
+
+def _on_plugin_channel() -> bool:
+    """Whether Claude Code runs this session from a plugin install."""
+    return bool(os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip())
+
+
+def _declared_install_root() -> Optional[Path]:
+    """Root of the declared workspace holding the cwd, where an npm install keeps
+    ``node_modules``; None outside every declared workspace."""
+    from gaia.install_root import owning_root, registered_roots
+
+    return owning_root(Path.cwd().resolve(), registered_roots())
 
 
 def _scan_live_gaia_installation() -> Optional[dict]:
@@ -144,23 +147,27 @@ def _scan_live_gaia_installation() -> Optional[dict]:
 
     Delegates to ``tools.scan.store_populator._scan_gaia_installations`` --
     the same read-only heuristic ``gaia scan`` persists into the
-    ``gaia_installations`` table -- but calls it directly against the current
-    workspace root instead of reading that table back. The table only
+    ``gaia_installations`` table -- but calls it directly against the declared
+    install root instead of reading that table back. The table only
     refreshes when someone runs `gaia scan`, and it can age silently: a row
     written before a same-day `gaia dev` rebuild keeps reporting the old
     version until the next scan. Returns the one dict for this hostname, or
-    None when no install marker (npm/dev/plugin) is found. Never raises.
+    None under the plugin channel, outside every declared workspace, or when
+    no install marker is found. Never raises.
     """
+    if _on_plugin_channel():
+        return None
     try:
-        from ..core.paths import find_claude_dir
-        workspace_root = find_claude_dir().parent
+        install_root = _declared_install_root()
+        if install_root is None:
+            return None
 
         _pkg_root = str(Path(__file__).resolve().parents[3])
         if _pkg_root not in sys.path:
             sys.path.insert(0, _pkg_root)
         from tools.scan.store_populator import _scan_gaia_installations
 
-        installations = _scan_gaia_installations(workspace_root)
+        installations = _scan_gaia_installations(install_root)
         return installations[0] if installations else None
     except Exception as exc:
         logger.debug("_scan_live_gaia_installation failed (non-fatal): %s", exc)
@@ -194,15 +201,17 @@ def _declared_cli_path(package_root: Path) -> Optional[str]:
 def _resolve_gaia_cli_path() -> Optional[str]:
     """Absolute path to the `gaia` CLI the orchestrator should invoke.
 
-    The first guard-verified candidate wins, and PATH is never consulted:
+    The first guard-verified candidate wins, and PATH is never consulted.
+    The guard accepts every genuine copy of the package, so the candidate
+    order alone decides which install is published:
 
-    1. The workspace alias ``node_modules/@jaguilar87/gaia`` -- published as
-       the symlink path, not its realpath, because `gaia dev`/pnpm repoint it
-       at a fresh store entry on every rebuild and prune the old one while the
-       file stays executable, so a resolved snapshot goes stale silently.
-    2. The package this hook ships in -- the only candidate a Claude Code
-       plugin install has (no node_modules, no `gaia` on PATH), and the same
-       package ``is_trusted_gaia_binary`` anchors its trust to.
+    1. Under the plugin channel, the plugin root Claude Code declares.
+    2. Otherwise, the declared workspace's alias
+       ``node_modules/@jaguilar87/gaia`` -- never one in a nested folder --
+       published as the symlink path, not its realpath, because `gaia
+       dev`/pnpm repoint it at a fresh store entry on every rebuild and prune
+       the old one while the file stays executable.
+    3. The package this hook ships in.
 
     None when no candidate passes the guard.
     """
@@ -213,12 +222,16 @@ def _resolve_gaia_cli_path() -> Optional[str]:
         return None
 
     candidates = []
-    try:
-        from ..core.paths import find_claude_dir
-        workspace_root = find_claude_dir().parent
-        candidates.append(workspace_root / "node_modules" / "@jaguilar87" / "gaia")
-    except Exception as exc:
-        logger.debug("_resolve_gaia_cli_path: no workspace alias: %s", exc)
+    if _on_plugin_channel():
+        candidates.append(_plugin_root())
+    else:
+        try:
+            install_root = _declared_install_root()
+        except Exception as exc:
+            logger.debug("_resolve_gaia_cli_path: declared root unresolved: %s", exc)
+            install_root = None
+        if install_root is not None:
+            candidates.append(install_root / "node_modules" / "@jaguilar87" / "gaia")
     candidates.append(_own_package_root())
 
     for package_root in candidates:
@@ -298,16 +311,17 @@ BIRTH_BUDGET = 9_500
 def _installation_label() -> Optional[str]:
     """``<version>, <channel> channel, at <root>`` for the Gaia this session runs.
 
-    The version comes from a live in-process re-scan (never the
-    gaia_installations table, which only refreshes on `gaia scan`), falling
-    back to the package.json ancestor walk. A declared CLAUDE_PLUGIN_ROOT
-    means the plugin channel; otherwise the scan's install mode names it.
+    The version comes from a live in-process re-scan of the declared install
+    (never the gaia_installations table, which only refreshes on `gaia
+    scan`), falling back to the package.json ancestor walk, which is the only
+    source under the plugin channel. A declared CLAUDE_PLUGIN_ROOT means the
+    plugin channel; otherwise the scan's install mode names it.
     """
     installation = _scan_live_gaia_installation() or {}
     version = installation.get("version") or _read_gaia_version()
     if not version:
         return None
-    if os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip():
+    if _on_plugin_channel():
         channel = "plugin"
     else:
         channel = installation.get("install_mode")
@@ -357,6 +371,7 @@ def build_environment_section() -> str:
     """Render the Environment section: where this session stands, or "" on failure."""
     try:
         from gaia.paths import data_dir, db_path
+        from gaia.project import current
 
         workspace = _read_workspace_identity()
         folder = str(Path.cwd())
@@ -365,7 +380,7 @@ def build_environment_section() -> str:
         if installation:
             lines.append(f"- Gaia: {installation}")
         lines.append(f"- Folder: {folder} (workspace {workspace})" if workspace
-                     else f"- Folder: {folder}")
+                     else f"- Folder: {folder} (not inside a declared workspace)")
         lines.append(_local_zone_line())
         # The orchestrator invokes `gaia` by this absolute path: the trust
         # guard rejects the bare token.
@@ -376,8 +391,10 @@ def build_environment_section() -> str:
         tools = _scan_available_tools()
         if tools:
             lines.append(f"- Tools on PATH: {', '.join(tools)}")
+        # Reminders set outside every workspace are filed under current()'s fallback.
+        notification_scope = workspace or current()
         try:
-            recurring = _recurring_work_line(workspace)
+            recurring = _recurring_work_line(notification_scope)
         except Exception as exc:
             logger.debug("recurring work line failed (non-fatal): %s", exc)
             recurring = ""
