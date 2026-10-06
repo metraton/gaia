@@ -13,10 +13,13 @@ Validates:
    (release:prepare leaves the entry alone; the validator still catches plugin.json drift)
 8. The manifest's declared bin/agents/commands entries exist in the source tree
 9. All version fields match across all manifest files
+10. release:prepare's CHANGELOG bump: a stable folds [Unreleased] and its pre-releases into
+    one section, a pre-release keeps [Unreleased], a re-run changes nothing
 """
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -747,3 +750,98 @@ class TestReleasePrepareLeavesTheMarketplaceEntryAlone:
 
         assert result.returncode != 0
         assert "plugin.json" in result.stdout + result.stderr
+
+
+CHANGELOG_BEFORE = """# Changelog
+
+## [Unreleased]
+
+### Added
+
+- Unreleased feature.
+
+### Fixed
+
+- Unreleased fix.
+
+## [9.9.0-rc.2] - 2026-01-02
+
+### Fixed
+
+- Fix shipped in rc.2.
+
+## [9.9.0-rc.1] - 2026-01-01
+
+## [9.8.0] - 2025-12-01
+
+### Added
+
+- Older stable feature.
+"""
+
+
+def _sections(changelog: str) -> list[str]:
+    """The `## ` sections of a changelog, header line included, after the title."""
+    return re.split(r"(?m)^(?=## )", changelog)[1:]
+
+
+class TestReleasePrepareChangelog:
+    """release:prepare gives a stable release notes that carry every change since the last stable.
+
+    A stable folds [Unreleased] and the bodies of its own pre-release sections
+    into one dated section; a pre-release leaves [Unreleased] whole so the
+    stable still finds it. After either bump the CHANGELOG's top version agrees
+    with package.json, which pre-publish-validate requires.
+    """
+
+    def _prepare(self, repo: Path, version: str) -> str:
+        result = subprocess.run(
+            ["node", "scripts/release-prepare.mjs", version],
+            cwd=repo, capture_output=True, text=True, timeout=300,
+        )
+        assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+        return (repo / "CHANGELOG.md").read_text()
+
+    def _assert_validator_passes(self, repo: Path) -> None:
+        result = subprocess.run(
+            ["node", "bin/pre-publish-validate.js", "--validate-only"],
+            cwd=repo, capture_output=True, text=True, timeout=300,
+        )
+        assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+
+    def test_stable_folds_unreleased_and_its_prereleases(self, repo_copy):
+        """The stable section holds every pending change, each subsection once, under an empty [Unreleased]."""
+        (repo_copy / "CHANGELOG.md").write_text(CHANGELOG_BEFORE)
+
+        sections = _sections(self._prepare(repo_copy, "9.9.0"))
+
+        header, body = sections[1].split("\n", 1)
+        assert sections[0] == "## [Unreleased]\n\n"
+        assert re.fullmatch(r"## \[9\.9\.0\] - \d{4}-\d{2}-\d{2}", header)
+        assert body == (
+            "\n### Added\n\n- Unreleased feature.\n\n"
+            "### Fixed\n\n- Unreleased fix.\n- Fix shipped in rc.2.\n\n"
+        )
+        assert sections[2:] == _sections(CHANGELOG_BEFORE)[3:]
+        self._assert_validator_passes(repo_copy)
+
+    def test_prerelease_keeps_unreleased_for_the_stable(self, repo_copy):
+        """A pre-release adds an empty dated header below [Unreleased] and moves no change."""
+        (repo_copy / "CHANGELOG.md").write_text(CHANGELOG_BEFORE)
+
+        sections = _sections(self._prepare(repo_copy, "9.9.0-rc.3"))
+        before = _sections(CHANGELOG_BEFORE)
+
+        assert sections[0] == before[0]
+        assert re.fullmatch(r"## \[9\.9\.0-rc\.3\] - \d{4}-\d{2}-\d{2}\n\n", sections[1])
+        assert sections[2:] == before[1:]
+        self._assert_validator_passes(repo_copy)
+
+    @pytest.mark.parametrize("version", ["9.9.0", "9.9.0-rc.3"])
+    def test_rerun_on_a_bumped_tree_changes_nothing(self, repo_copy, version):
+        """Running release:prepare again for the same version leaves the CHANGELOG byte-identical."""
+        (repo_copy / "CHANGELOG.md").write_text(CHANGELOG_BEFORE)
+        first = self._prepare(repo_copy, version)
+
+        assert self._prepare(repo_copy, version) == first
+        self._assert_validator_passes(repo_copy)

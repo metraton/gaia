@@ -18,7 +18,9 @@
  *        - package.json
  *        - pyproject.toml         ([project].version)
  *        - .claude-plugin/plugin.json  (the one plugin version Claude Code reads)
- *        - CHANGELOG.md           (top versioned header; inserts a stub if absent)
+ *        - CHANGELOG.md           (a stable folds [Unreleased] and its pre-release
+ *                                  sections into one section; a pre-release adds
+ *                                  its header; see changelog-bump.mjs)
  *      plugin.json is GENERATED (version from package.json via the manifest's
  *      "from:package.json"), and build-plugin.py refuses to overwrite a
  *      generated file whose content changes. Bumping its version here is what
@@ -48,6 +50,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import chalk from 'chalk';
+import { bumpChangelogText } from './changelog-bump.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..');
@@ -124,26 +127,11 @@ function bumpPyproject(rel, version) {
 }
 
 function bumpChangelog(rel, version) {
-  const text = readText(rel);
-  // Find the first real versioned header (skip "## [Unreleased]").
-  const headerRe = /^##\s*\[([^\]]+)\](.*)$/gm;
-  let m;
-  while ((m = headerRe.exec(text)) !== null) {
-    if (m[1].trim().toLowerCase() === 'unreleased') continue;
-    if (m[1].trim() === version) {
-      return `${rel}: top header already [${version}] (no change)`;
-    }
-    // Insert a new dated stub entry above the current top version, right after
-    // the "## [Unreleased]" line if present, else above the first version header.
-    const today = new Date().toISOString().slice(0, 10);
-    const stub = `## [${version}] - ${today}\n\n`;
-    const insertAt = m.index;
-    const updated = text.slice(0, insertAt) + stub + text.slice(insertAt);
-    writeText(rel, updated);
-    return `${rel}: inserted stub [${version}] above [${m[1].trim()}] ` +
-      `(EDIT the body before release)`;
-  }
-  throw new Error(`${rel}: no versioned header found to anchor the new entry`);
+  const before = readText(rel);
+  const today = new Date().toISOString().slice(0, 10);
+  const bumped = bumpChangelogText(before, version, today);
+  if (bumped.text !== before) writeText(rel, bumped.text);
+  return `${rel}: ${bumped.summary}`;
 }
 
 // --- main ------------------------------------------------------------------
