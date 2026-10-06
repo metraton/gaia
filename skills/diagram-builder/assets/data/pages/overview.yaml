@@ -2,7 +2,7 @@
 #
 # id lives here (+ cross-referenced in ../document.yaml); name/order/visible
 # live in the manifest. See the diagram-builder dialect reference (the skill's
-# build.md) for every field.
+# toolbox.md) for every field.
 #
 # THIS PAGE'S JOB — the data the other pages did not need: values that COMBINE
 # on one box or one row, and the borderline cases the engine must keep

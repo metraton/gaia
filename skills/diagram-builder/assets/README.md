@@ -10,7 +10,7 @@ specific lives in `data/`; the engine layer knows only the dialect.
 Two primitives, nothing else. A **section** is a node with a `children` array;
 it renders as a CSS-Grid `columns` wide, and its children auto-flow left→right
 and wrap down. A **component** is a leaf; it renders by its `type` — `box`
-(default) · `separator` · `rail`. Merges run on **two axes**: any child may set
+(default) · `separator` · `rail` · `spacer`. Merges run on **two axes**: any child may set
 `span: M` to merge across M of the parent's columns (`1 < M < columns` is a
 real PARTIAL merge; `span == columns` is a full-width **band** on its own row),
 and a leaf cell may set `rowspan: K` to merge down K rows (height as
@@ -28,7 +28,7 @@ The plane **fills the canvas up to a centered 1280px cap** (`.sec-plane`), and
 the column count **cascades …→2→1** as width tightens (2-column intermediate,
 1-column single-stack endpoint), so nothing scrolls sideways at the stacked
 tiers. Positioning is a known operation: change `columns`/`span`/`rowspan`/
-`order` and the guardrail proves the grid adds up.
+`order` and the `model` check proves the grid adds up.
 
 ## Layout
 
@@ -46,7 +46,7 @@ assets/
 │   └── yaml.cjs          the reader for the YAML dialect — refuses, by line,
 │                         anything outside it
 ├── tools/
-│   ├── check-layout.mjs     the gate, mandatory (`npm run model`) — proves the
+│   ├── check-layout.mjs     the model check, required (`npm run model`) — proves the
 │   │                        grid CLOSES arithmetically over the authored YAML;
 │   │                        NO browser, exit≠0 on any [FAIL]
 │   ├── static-census.cjs    the authored-data reader and the form list (FORMS)
@@ -57,12 +57,14 @@ assets/
 │   ├── test-guards.mjs      the negative-test suite (`npm test`) — fabricates one
 │   │                        broken deck per case in a temp dir and asserts the
 │   │                        guard FAILS as claimed
-│   ├── contrast-audit.cjs   WCAG 2.1 contrast audit of the swappable palettes
+│   ├── contrast-audit.cjs   the WCAG 2.1 contrast check of the swappable palettes
 │   │                        (`npm run contrast`), reading the tokens out of
-│   │                        index.html so a palette edit is audited by construction
+│   │                        index.html so a palette edit is checked by construction
 │   └── video/               the optional narrated video, made from this deck only
-│                            (`npm run video:*`); its own package.json is the one
-│                            place Playwright lives — see ../video.md
+│                            (`npm run video:*`): voices (Chatterbox by default,
+│                            Kokoro for drafts), alignment, capture at 480p to
+│                            2160p; its own package.json is the one place
+│                            Playwright lives — see ../video.md
 ├── package.json          the diagram scripts (build · model · census · test · contrast)
 │                         and the video:* scripts; no dependencies
 ├── .gitignore            keeps tools/video/node_modules and out/ out of git
@@ -70,8 +72,8 @@ assets/
 └── data/                 ── the only part you edit ──
     ├── document.yaml     manifest: title/subtitle/version, tokens, core chips, and
     │                     which pages, in order
-    ├── pages/*.yaml      the seed: one page per principle, a flow page, two
-    │                     feature pages and the edge-case page
+    ├── pages/*.yaml      the seed: a tour in four steps (story, ideas, pieces,
+    │                     data) named in each page's tab
     ├── data.generated.js committed build output (window.__DOC__) — renders with zero tooling
     └── breakpoints.generated.css  committed build output: the three @container
                           collapse tiers, written from tokens.breakpoints
@@ -84,31 +86,18 @@ assets/
 - **Author:** edit the YAML under `data/`, then `npm run build` to regenerate
   `data/data.generated.js` (the build also enforces the strict field schema).
   Nothing to install: the deck has no npm dependencies. Then **`npm run model`
-  — the mandatory gate**: arithmetic over the authored YAML, no browser. Never
-  declare a layout change done until it is green. Whether the page LOOKS right
-  is a human review: open `index.html` and look. `npm run census -- --json`
-  prints what each page resolved to, so it can be checked against the sketch
-  agreed before building without reading the YAML. Its fields, at the
-  presentation viewport:
-  - `width` has ONE normal form: the reduced fraction of the parent's width
-    (`1/1` is the whole row, `1/2` half, `2/3` two thirds), or `content` for a
-    component sitting directly in a flex row. The share comes from
-    `check-layout.mjs` `rowShare`, the rule the model's width chain uses.
-  - `start` is `{row, col}`, 1-based within the parent: the grid cell, or the
-    line and position on it in a flex row. A section's `grid` says which:
-    `tracks` and a root holding a band are grids, `row` is a flex row, `stack`
-    (`columns: 1`) puts one child per row — so two groups side by side share a
-    row, and two stacked groups do not.
-  - `variant_source` is `authored`, `default` (an unset colour is neutral; the
-    engine never inherits one from a section) or `colourless` (separator, spacer).
-  - a chip's `scope` is `members`, `all` (the reserved reset, which declares no
-    members and lights everything) or `none`.
-
-  `npm test` runs the
-  negative-test suite over the guards themselves, and `npm run contrast` audits
-  the palettes against WCAG 2.1.
-- **The dialect** (every field and the `variant`/`treatment` sets) is documented
-  in the diagram-builder skill's `../build.md`.
+  — the required check**: arithmetic over the authored YAML. Never declare a
+  layout change done until it is green. `npm run census -- --json` prints what
+  each page resolved to (sections and nesting, widths as fractions of the
+  parent, start cells, colours and chip members, by authored id), and
+  `npm run contrast` checks the palettes against WCAG 2.1. Those checks are the
+  whole check of the diagram: none of them opens a browser, and nothing renders
+  or screenshots the diagram. Whether the page says what was meant is the
+  person's judgement when they open `index.html`. How the census is read is in
+  the skill's `../build.md`; `npm test` runs the negative-test suite over the
+  checks themselves.
+- **The dialect** (every piece, every field and every value) is documented in
+  the diagram-builder skill's `../toolbox.md`.
 - **`document.yaml`'s optional `version`** renders in the header — bump it on a
   meaningful change. The engine also
   supports click-and-drag panning on the canvas (grab/grabbing cursor) as a

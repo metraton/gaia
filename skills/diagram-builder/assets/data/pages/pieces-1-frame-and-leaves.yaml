@@ -1,12 +1,12 @@
 # PIECES 1 OF 4 — the frame and its leaves.
 #
 # The catalogue for the PERSON: pages pieces-1..4 hold one entry per piece
-# SKILL.md names, and nothing else. An entry is a root section `piece-<slug>`
+# toolbox.md lists in "Seen in the seed", and nothing else. An entry is a root section `piece-<slug>`
 # holding, left, the piece drawn live (`-live`) and, right, three readings: the
 # YAML that draws it (`-yaml`), what it says in one sentence (`-says`) and its
 # neighbour with when to choose it instead (`-neighbour`, kicker
 # `NEIGHBOUR · <piece>`). The CATALOGUE guard in tools/test-guards.mjs reads
-# the vocabulary from SKILL.md and holds these pages to it in both directions.
+# that table and holds these pages to it in both directions.
 
 id: pieces-1-frame-and-leaves
 form: dashboard

@@ -1336,37 +1336,28 @@ function runEngine(search) {
   }
 }
 
-// ── 18. CATALOGUE — what the skill names, the seed shows, and nothing else ──
-// The vocabulary is read from SKILL.md, never restated here: the bold terms of
-// "What the person has", the bold terms of the map's Use and Neighbour columns,
-// and the lowercase fields its Use column names in backticks (`rowspan`,
-// `span`). An entry is a root section `piece-<slug>` on a visible `pieces-*`
-// page, holding its live drawing and the three readings beside it; the
-// neighbour its `NEIGHBOUR · <piece>` kicker names must be a piece too. A
-// scaffolded deck ships without SKILL.md, so there the case is skipped, never
-// passed.
+// ── 18. CATALOGUE — what the toolbox names, the seed shows, and nothing else ──
+// The vocabulary is read from toolbox.md, never restated here: each row of its
+// "Seen in the seed" table names a piece in bold and the seed page that shows
+// it. An entry is a root section `piece-<slug>` on a visible `pieces-*` page,
+// holding its live drawing and the three readings beside it; it must sit on the
+// page the table names, and the neighbour its `NEIGHBOUR · <piece>` kicker
+// names must be a piece too. A scaffolded deck ships without toolbox.md, so
+// there the case is skipped, never passed.
 const PIECE_PARTS = ['live', 'yaml', 'says', 'neighbour'];
+const TOOLBOX_SEED_HEADING = 'Seen in the seed';
 
-function skillSection(md, heading) {
+function toolboxSection(md, heading) {
   const at = md.indexOf(`\n## ${heading}\n`);
-  if (at < 0) throw new Error(`SKILL.md has no "## ${heading}" section`);
+  if (at < 0) throw new Error(`toolbox.md has no "## ${heading}" section`);
   const end = md.indexOf('\n## ', at + 1);
   return md.slice(at, end < 0 ? md.length : end);
 }
-function pieceTerm(raw) {
-  return raw.replace(/`/g, '').split(' = ')[0].replace(/\.$/, '').replace(/^one /, '').trim().toLowerCase();
-}
-function skillVocabulary(md) {
-  const bold = text => [...text.matchAll(/\*\*(.+?)\*\*/g)].map(m => pieceTerm(m[1]));
-  const terms = new Set(bold(skillSection(md, 'What the person has')));
-  const rows = skillSection(md, 'The map: from an idea to a piece').split('\n')
-    .filter(line => line.startsWith('| "'));
-  if (!rows.length) throw new Error('the map in SKILL.md has no rows');
-  for (const row of rows) {
-    const [, , use, , neighbour] = row.split('|');
-    for (const term of [...bold(use), ...bold(neighbour)]) terms.add(term);
-    for (const m of use.matchAll(/`([a-z]+)`/g)) terms.add(m[1]);
-  }
+function toolboxVocabulary(md) {
+  const terms = new Map();
+  for (const m of toolboxSection(md, TOOLBOX_SEED_HEADING).matchAll(/^\| \*\*(.+?)\*\* \| `([^`]+)` \|/gm))
+    terms.set(m[1].trim().toLowerCase(), m[2]);
+  if (!terms.size) throw new Error(`the "${TOOLBOX_SEED_HEADING}" table in toolbox.md has no rows`);
   return terms;
 }
 function catalogueEntries(root) {
@@ -1386,11 +1377,13 @@ function catalogueEntries(root) {
 }
 function catalogueDivergence(vocabulary, entries) {
   const bad = [];
-  const unshown = [...vocabulary].filter(term => !entries.has(term));
+  const unshown = [...vocabulary.keys()].filter(term => !entries.has(term));
   if (unshown.length) bad.push(`named by the skill, no live entry: ${unshown.join(', ')}`);
   const unnamed = [...entries.keys()].filter(term => !vocabulary.has(term));
   if (unnamed.length) bad.push(`shown, not named by the skill: ${unnamed.join(', ')}`);
   for (const [term, { page, node }] of entries) {
+    if (vocabulary.has(term) && vocabulary.get(term) !== page)
+      bad.push(`${page}/${node.id} is listed on ${vocabulary.get(term)} in toolbox.md`);
     const kickers = new Map();
     (function walk(n) { kickers.set(n.id, n.kicker); (n.children || []).forEach(walk); })(node);
     const missing = PIECE_PARTS.filter(part => !kickers.has(`${node.id}-${part}`));
@@ -1403,22 +1396,26 @@ function catalogueDivergence(vocabulary, entries) {
   return bad;
 }
 {
-  const name = 'CATALOGUE: every piece SKILL.md names has a live entry, and no entry shows an unnamed piece';
-  const skillFile = path.join(ROOT, '..', 'SKILL.md');
-  if (!fs.existsSync(skillFile)) {
-    console.log(`[SKIP] ${name} — no SKILL.md beside this deck (a scaffold, not the skill)`);
+  const name = 'CATALOGUE: every piece toolbox.md names has a live entry on its page, and no entry shows an unnamed piece';
+  const toolboxFile = path.join(ROOT, '..', 'toolbox.md');
+  if (!fs.existsSync(toolboxFile)) {
+    console.log(`[SKIP] ${name} — no toolbox.md beside this deck (a scaffold, not the skill)`);
   } else {
     try {
-      const vocabulary = skillVocabulary(fs.readFileSync(skillFile, 'utf8'));
+      const vocabulary = toolboxVocabulary(fs.readFileSync(toolboxFile, 'utf8'));
       const entries = catalogueEntries(ROOT);
       const bad = catalogueDivergence(vocabulary, entries);
       report(name, bad.length === 0, `${vocabulary.size} named, ${entries.size} shown; ${bad.join(' | ')}`);
+      const [firstTerm] = vocabulary.keys();
+      const [movedTerm, moved] = [...entries].find(([term]) => term !== firstTerm);
       const seeded = new Map(entries);
-      seeded.delete([...vocabulary][0]);
+      seeded.delete(firstTerm);
+      seeded.set(movedTerm, { ...moved, page: 'seeded-elsewhere' });
       seeded.set('arrow', { page: 'seeded', node: { id: 'piece-arrow', children: [] } });
       const caught = catalogueDivergence(vocabulary, seeded);
-      report('CATALOGUE/teeth: a missing entry and an unnamed piece are both reported',
-        caught.some(b => b.startsWith('named by the skill')) && caught.some(b => b.startsWith('shown, not named')),
+      report('CATALOGUE/teeth: a missing entry, an unnamed piece and a moved entry are all reported',
+        caught.some(b => b.startsWith('named by the skill')) && caught.some(b => b.startsWith('shown, not named'))
+          && caught.some(b => b.includes('is listed on')),
         caught.join(' | ') || 'the comparator accepted a seeded divergence');
     } catch (e) {
       report(name, false, e.message);

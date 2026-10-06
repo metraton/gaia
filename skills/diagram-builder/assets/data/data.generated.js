@@ -3103,7 +3103,7 @@ window.__DOC__ = {
                   "description": [
                     "picks the rose-pine palette"
                   ],
-                  "detail": "<code>look: brand</code> in <code>data/document.yaml</code> picks the <code>rose-pine</code> palette, and these two boxes are painted by it, like everything on this page. A person usually reaches a palette through that one-line look (<code>projector</code>, <code>report</code>, <code>brand</code>), which picks the palette and the text sizes together; how to choose it is in <code>look.md</code>. Without a look, <code>palette:</code> names one of <code>neutral</code>, <code>rose-pine</code>, <code>rose-pine-moon</code>, <code>contrast</code>; a document carries a look or a palette, never both."
+                  "detail": "<code>look: brand</code> in <code>data/document.yaml</code> picks the <code>rose-pine</code> palette, and these two boxes are painted by it, like everything on this page. A person usually reaches a palette through that one-line look (<code>projector</code>, <code>report</code>, <code>brand</code>), which picks the palette and the text sizes together; how to choose it is in the skill's <code>toolbox.md</code>, under Look. Without a look, <code>palette:</code> names one of <code>neutral</code>, <code>rose-pine</code>, <code>rose-pine-moon</code>, <code>contrast</code>; a document carries a look or a palette, never both."
                 },
                 {
                   "id": "piece-palette-says",

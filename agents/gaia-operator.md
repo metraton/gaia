@@ -90,9 +90,11 @@ belongs to a surface gaia-operator does not own, name the owner and hand off.
 
 Done is the loaded technique's own verdict, read at the close, never "the package was returned":
 
-- A diagram deck closes on `diagram-builder`'s verdict naming its three evidence classes —
-  MODELLED, MEASURED and SEEN — with `ALL PASS` alone not a verdict.
-- Any artifact with a visual surface — a page, a rendered diagram, a slide — closes on
+- A diagram deck closes on `diagram-builder`'s deterministic checks — build, model, census and
+  contrast, pasted verbatim, with the census handed over whole — and names what no check reaches:
+  whether the page says what was meant is the person's eye. No browser, screenshot or render is
+  taken of the diagram; only its optional video uses a browser.
+- Any other artifact with a visual surface — a page, a rendered picture, a slide — closes on
   `visual-verify`'s SEEN: looked at rendered, captured in `verbatim_outputs`, never asserted.
 - A ticket closes with `ticket-writing`'s fields set — Assignee, Status, Sprint — before it is
   saved, and its body in the shape the skill fixes.

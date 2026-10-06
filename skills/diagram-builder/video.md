@@ -1,206 +1,189 @@
-# The video of a deck
+# Diagram Builder — the video
 
-A deck can become a narrated video, as an optional last step once the person has
-closed the deck. The video is made from a deck and nothing else. There is no
-video without a deck. Every step first checks that the deck is there (its
-`index.html`, its engine and its built data) and that its engine exposes the
-`?video` hook. If either is missing, the step stops with an error that names
-what is missing.
+A closed deck can become a narrated video: the deck's own pages, revealed in
+the order a voice explains them. The video is made from the deck and nothing
+else; the script only says when something appears, and the deck says what
+appears and where. You agree the script with the person first, then the tools
+voice it, time it and record it.
 
-## What the video takes from the deck
+## The questions that write the script
 
-- **Pages, in the deck's order.** The video runs through the pages the script
-  names, in the order `document.yaml` gives them. A script that lists pages in
-  another order is refused, and so is a page the deck does not render.
-- **Sections, in the deck's order.** Each sentence may *show* sections or boxes
-  of its page by their id. They appear in the order the deck places them: a
-  section that comes later in the YAML is never shown before an earlier one,
-  and a section is never shown after something it contains. A top-level
-  section that no sentence shows is on screen from the start.
-- **Chips.** A sentence, or a word inside it, may light one of the page's own chips, including the
-  core chips it inherits, or `all` to clear it. When the chip lights, at least
-  one of its members must already be on screen.
-- **The look.** The frame is the rendered deck, with its chip bar and its
-  content, scaled to fit. No layout, colour or text is changed for the video.
+Ask them before writing a sentence; each answer decides something the script
+takes for granted.
 
-The script only says *when*. The deck says *what* appears and *in which order*.
-`npm run video:check` loads the real deck under `?video` and confirms that
-every cue can be rendered. It captures no frames.
+1. Who watches, and what do they already know? The voice starts from their
+   reality, so it has to know where that is.
+2. Where will they watch: in a meeting, on their own, as a clip in a document?
+   That sets the length and whether each page must stand alone.
+3. What should they understand or do when it ends? That is the closing
+   sentence, and every page leads to it.
+4. In which language? Chatterbox speaks English; Kokoro has a few voices in
+   other languages, with weaker timing.
+5. How long, in total and per page? At 140-160 words a minute, a one-minute
+   page holds about 150 words.
+6. Which details behind the clicks should the voice tell? A video cannot open a
+   detail, so what only the detail says is said aloud or lost.
+7. Whose voice? Chatterbox copies the voice of a short reference clip the person
+   provides; Kokoro speaks one of its own stock voices.
 
-## The script
+## Writing the script
 
-The deck's `video/script.json` holds, for each page, what is said and what each
-sentence shows:
+The page already shows its titles; the voice adds what the page cannot show.
 
-```json
-{ "pages": [ { "page": "p10-flow-phases", "audio": "audio/p10-flow-phases.wav",
-  "sentences": [ { "say": "A story that moves is told in phases.", "show": ["p10-lead"] },
-                 { "say": "The chip traces the way the story runs.", "chip": "path" } ] } ] }
-```
+- **The voice explains and never reads the titles.** A title read aloud is
+  heard twice and learned once; the time is better spent on why the box is
+  there.
+- **Start from the viewer's reality**: what they do today, what they see, the
+  problem they already have. A sentence that starts from the system asks them
+  to care before they know why.
+- **Use connectors** (so, because, then, which means). Without them a page
+  becomes a list of facts the viewer has to join alone.
+- **Explain each term in the same sentence that uses it.** A term explained
+  later is not heard in between.
+- **Say what the page cannot say**: the detail behind a click, the reason, the
+  consequence. That is the voice's whole value over the page.
+- **Chips are numbered moments.** Light a chip when the voice reaches that
+  moment, so the viewer's eye goes where the voice is.
+- **End each page with a sentence that hands off to the next**, and open the
+  next page by picking it up. The joins are reviewed together, in a table of
+  last sentence against first sentence, because that is where a story breaks.
+- **Avoid "not X, it is Y", triplets by reflex, and seamless, powerful,
+  crucial.** Each one sounds like a pitch and spends attention on a form
+  instead of a fact.
 
-- `say` is only the words. A voice, a speed or any markup belongs to the voice
-  step, never to the script, so any field other than `say`, `show`, `chip` and
-  `cues` is refused by name.
-- `show` and `chip` fire when the sentence starts. To fire on a word inside
-  the sentence, list it in `cues`, each cue with `at` (a word of `say`, matched
-  by its letters at its first occurrence) and exactly one of `show` or `chip`.
-  List the cues in the order their words are said. A sentence can light
-  several chips this way, each on its own word:
+## Pace
 
-  ```json
-  { "say": "One chip says what comes first, another lights what crosses the sections.",
-    "cues": [ { "at": "first", "chip": "packing" }, { "at": "crosses", "chip": "crosscut" } ] }
-  ```
+- One second of image before the first word, so the viewer sees the page before
+  hearing about it. Each page's slot opens with `MOTION.lead` (0.8 s,
+  `assets/tools/video/timeline.mjs::MOTION`); the rest comes from silence at the
+  start of the audio.
+- A visual appears with the phrase that names it, never before: a box shown
+  early is read instead of heard.
+- Pauses: 0.3 s after a comma or inside a list, 0.7 s at the end of a sentence,
+  1.6 s between moments, 2.0 s before the close. A sentence's `pause` in the
+  script is voiced as that much real silence after it.
+- 140-160 words per minute, pauses counted. Speech alone runs near 180-200,
+  which is normal; the pauses are what bring it down.
 
-  Reveals still follow the deck's order across all cues. A reveal is a fade in
-  place: no rise and no ring.
-- A word cue takes its word's time from the page's word timings
-  (`method=words` in `video/align.json`). A page without them (manual audio
-  aligned by silencedetect, the length estimate, Kokoro in Spanish) places the
-  cue by its word's share of the sentence's characters, marks it
-  `(estimated)` in `video:plan`, and every step prints a warning naming the
-  page. It is not moved to the sentence start, which would fire every chip of
-  the sentence at the same instant, and it is not refused, which would bind
-  the script to one voice.
-- `audio` declares where that page's narration will be. The path is relative
-  to `video/` and must stay inside it. Audio is never read from the deck's root.
+## The voices
 
-`npm run video:script` exports the script per page as plain text, one sentence
-per line, to `out/video/script/NN-<page>.txt`. That text is what any voice
-reads, and it carries no marks from any provider. The voice step writes each
-page's audio to the path the script declares.
+Both are local, need no key and no account, and are offered with their
+trade-off. The script is the same for both; only the voice step changes.
 
-## The voice
+| | Kokoro | Chatterbox |
+|---|--------|------------|
+| Use it for | the draft, to judge rhythm and reveals | the final video |
+| Quality | `--quality 480p` | `--quality 1440p` (2K) |
+| Cost on this CPU | about one minute per page | a three-minute page takes 40-60 minutes (about 50 s per sentence, measured on deck gaia-architecture-overview v8) |
+| Delivery | fixed stock voices, steady | natural, cloned from a reference clip |
+| Timing it leaves | word timings in English (`<audio>.words.json`) | exact sentence spans (`<audio>.sentences.json`) |
 
-`npm run video:voice --prefix <deck> -- --provider kokoro|manual` voices every
-page of the script. Every provider keeps the same contract:
+Chatterbox keeps every voiced sentence in a cache
+(`~/.local/share/gaia-tts/chatterbox/cache`), so changing one sentence revoices
+that sentence only, and a stopped run resumes where it stopped. When a provider
+is missing or fails, the step says so on one line and continues as `manual`,
+which reports where each page's audio goes; that is never an error.
 
-- **In:** the page's exported text, `out/video/script/NN-<page>.txt`. The step
-  refuses to run when that text is missing or no longer matches the script, and
-  asks for `video:script` first.
-- **Out:** the page's audio at the path the script declares and, when the
-  provider can time words, `<audio>.words.json` beside it: a list of
-  `{ "word", "start", "end" }` in seconds inside that audio.
+## The script file
 
-Two providers ship:
+`video/script.json` holds, per page, what is said and what each sentence shows.
+Its keys are closed by `assets/tools/video/deck.mjs::readScript`; any other key
+is refused by name.
 
-- **`kokoro`** (the default) runs the deck's own `tools/video/kokoro_say.py`
-  with the interpreter of a venv the person created, on a model they
-  downloaded, and installs nothing. The venv defaults to
-  `~/.local/share/gaia-tts/kokoro/.venv` (`--kokoro-venv` points elsewhere) and
-  the model to `~/.local/share/gaia-tts/kokoro/model` (`--kokoro-model`). It
-  voices each page with `am_michael`, an American male voice, at speed 1.0,
-  and writes the words file too. `--voice` picks another voice or a blend:
-  a comma-separated list such as `am_michael,af_heart` is averaged 50/50 the
-  way Kokoro's `KPipeline.load_voice` does, and each name must have its
-  `voices/<name>.pt` in the model folder. `--speed 1.1` sets the pace. The
-  narration must sound male, so a blend keeps a male base voice first; its
-  first letter also sets the language. When the install is absent, or Kokoro fails on a page,
-  the step says so on one line and continues as `manual`. That is not an
-  error: the video never depends on a voice being installed.
-- **`manual`** is always there. It prints, per page, the text to voice and the
-  path to leave its audio at, or that the audio is already there. Any voice
-  can be used this way: record it, generate it in a web tool, or run a local
-  model by hand, then leave the WAV at the declared path.
+| Level | Key | What it does |
+|-------|-----|--------------|
+| top | `pages` | The pages, in the deck's order; a page the deck does not render is refused. |
+| top | `placeholder` | The text a prompt box shows until its `ask` fires; required when any `ask` exists. |
+| page | `page` | The page id. |
+| page | `audio` | Where the page's narration goes, relative to `video/` and inside it. |
+| page | `duration` | Seconds of a silent page instead of `audio`. |
+| page | `sentences` | What is said, in order. |
+| sentence | `say` | The words only; a voice, a speed or markup belongs to the voice step. |
+| sentence | `seconds` | A fixed length for the sentence, instead of audio timing. |
+| sentence | `pause` | Seconds of silence after the sentence (≥ 0), voiced as real silence. |
+| sentence | `show` | Box or section ids revealed when the sentence starts. |
+| sentence | `chip` | A chip of the page, or `all`, lit when the sentence starts. |
+| sentence | `type` | A box id whose title is typed one word per 0.25 s. |
+| sentence | `ask` | A box id whose title shows the placeholder, with its description hidden, until it fires. |
+| sentence | `cues` | Word cues: each has `at` (a word of `say`) and exactly one of `show`, `chip`, `type`, `ask`. |
 
-`video:align` prefers the words file. Each sentence then runs from its first
-word to its last (`method=words`) and keeps its words, which time the word
-cues. It uses the file only when it is at least as
-new as the audio and its words spell the page's sentences; audio left later by
-hand was not timed by it. Otherwise the page falls back to silencedetect,
-which matches sentence ends to pauses in the audio (`method=silencedetect`),
-or, when the pauses do not fit, to an estimate by length (`method=chars`).
-Kokoro in Spanish, Qwen3-TTS and most manual audio have no word timings and
-take that fallback without error.
-
-### Which local voice to use
-
-Both run on this machine with no key and no account. The script is the same
-for both; only the voice step changes.
-
-- **Kokoro-82M is the default.** Use it for English. It runs on CPU, a little
-  faster than real time for a page, gives per-word timings in English, and
-  every page uses the same fixed voice. Its Spanish voices exist
-  (`ef_dora`, `em_alex`), but its own model card calls non-English support
-  thin, and in Spanish it gives no word timings. It has fixed voices, with no
-  cloning and no control of tone.
-- **Qwen3-TTS is the alternative.** Use it for a video in Spanish, for a voice
-  cloned from a 3-second sample, or for a tone set by an instruction ("calm",
-  "excited"). It gives no word timings, so `video:align` uses silencedetect.
-  Its examples all run on a CUDA GPU, and its speed on a CPU is not
-  documented. Its output is sampled, so the delivery may change between runs:
-  voice the whole video in one sitting. It has no adapter here: it is used
-  through `manual`.
-
-**Kokoro, once.** Apache-2.0, about 330 MB of weights. The person runs these
-three steps, with their consent; the skill never runs them.
-
-1. `python3 -m venv ~/.local/share/gaia-tts/kokoro/.venv`
-2. `~/.local/share/gaia-tts/kokoro/.venv/bin/pip install "kokoro>=0.9.4" soundfile`
-   (`uv pip install --torch-backend cpu` installs the CPU-only torch and skips CUDA).
-3. `hf download hexgrad/Kokoro-82M config.json kokoro-v1_0.pth voices/am_michael.pt --local-dir ~/.local/share/gaia-tts/kokoro/model`
-
-Then `npm run video:voice --prefix <deck>` uses it. The deck's
-`tools/video/kokoro_say.py` takes `--text-file`, `--voice` (one name or a
-comma-separated blend), `--speed`, `--out`, `--words` and `--model-dir`, reads the model offline, and writes a 24 kHz mono WAV and
-the word list from Kokoro's token timestamps, one segment per line of text. The first letter of the
-voice sets the language: `a` American English, `b` British, `e` Spanish.
-
-**Qwen3-TTS, once.** Apache-2.0, 2.5 GB (0.6B) to 4.5 GB (1.7B) downloaded on
-first use.
-
-1. A fresh Python 3.12 venv, for example `~/.local/share/gaia-tts/qwen3/.venv`.
-2. `<venv>/bin/pip install -U qwen-tts`
-3. In Python, `Qwen3TTSModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", device_map="cuda:0")`
-   and `generate_custom_voice(text, language, speaker)` for a stock voice with
-   an optional `instruct` for tone. Use the `-Base` model with a 3-second sample and its
-   transcript (`ref_text`) to clone a voice. Write the result with
-   `soundfile.write`. The `0.6B` models are lighter, and VoiceDesign exists
-   only in 1.7B.
-4. Voice each `out/video/script/NN-<page>.txt`, save it at the page's declared
-   audio path, and run `npm run video:voice --prefix <deck> -- --provider manual`
-   to confirm every page has its audio.
+A page takes exactly one timing: `audio`, `duration`, or `seconds` on every
+sentence. Reveals follow the script's order; a box shown before the section
+holding it is refused, and a chip lights only once one of its members is on
+screen. Typing into a box before it is revealed is refused by `video:check`.
 
 ## The steps
 
-Every step is `npm run <step> --prefix <deck>`.
+Every step is `npm run <step> --prefix <deck>`, with its flags after `--`.
+`--pages id,id` limits `video:voice`, `video:align`, `video:plan`,
+`video:check`, `video:capture` and `video:split` to those pages; `video:align`
+keeps the other pages' entries.
 
-1. `video:script`: export the text to be voiced.
-2. `video:voice` turns each text into its page's declared audio (see above).
-3. `video:align` measures where each sentence starts and ends in the audio and
-   writes `video/align.json`. It needs `ffmpeg` and `ffprobe`.
-4. `video:plan` prints each page's slot and the second at which every cue
-   fires. It writes nothing. Until a page has audio, its timing is an estimate
-   from the length of the text.
-5. `video:check` validates the whole timeline against the rendered deck.
-6. `video:contact -- --page <id> --at 2.5,14,31.2` takes stills of one page at
-   the chosen seconds and tiles them, in that order, into one contact sheet,
-   `out/video/contact/<id>.png`, beside the stills. Seconds count from the
-   start of the page's slot, the same clock as its clip from `video:split`;
-   without `--at` the stills are the ends of its sentences. It takes a few
-   seconds, so use it to judge framing and reveals without rendering.
-7. `video:capture` renders the video and encodes it with its audio to
-   `out/video/deck.mp4`. It refuses to run on estimated timing.
-8. `video:split` cuts that video into one clip per page, under
-   `out/video/pages/`.
+1. `video:script` exports each page's text to `out/video/script/NN-<page>.txt`,
+   one sentence per line; that is what any voice reads.
+2. `video:voice -- --provider kokoro|chatterbox|manual` voices every page to
+   the path the script declares. Default `chatterbox`. Chatterbox takes
+   `--reference <wav>` (default `~/.local/share/gaia-tts/chatterbox/reference.wav`),
+   `--chatterbox-venv` and `--chatterbox-model`, and runs with exaggeration 0.5,
+   cfg-weight 0.5 and seed 42
+   (`assets/tools/video/voice.mjs::CHATTERBOX_SETTINGS`). Kokoro takes
+   `--voice` (default `am_michael`; a comma list blends voices, and the first
+   letter sets the language), `--speed` (default 1.0), `--kokoro-venv` and
+   `--kokoro-model`.
+3. `video:align` writes `video/align.json`: per sentence, from the word timings
+   (`method=words`), the sentence spans (`method=sentences`), the pauses in
+   the audio (`method=silencedetect`) or an estimate by length
+   (`method=chars`). It needs `ffmpeg` and `ffprobe`.
+4. `video:plan` prints each page's slot and the second every cue fires,
+   `type` and `ask` cues and fixed timing included. It writes nothing.
+5. `video:check` loads the deck under `?video` and confirms every cue can be
+   shown. It captures no frames.
+6. `video:contact -- --page <id> --at 2.5,14` tiles stills of one page at
+   those seconds into `out/video/contact/<id>.png`; without `--at`, at the end
+   of each sentence. It judges framing and reveals in seconds, not minutes.
+7. `video:capture -- --quality <q>` records `out/video/deck.mp4` (`--out` names
+   another file). `--seconds n` records only the first n seconds, to time a
+   quality before the full run. It refuses estimated timing. Narration is
+   brought to -16 LUFS and -1.5 dBTP per page
+   (`assets/tools/video/timeline.mjs::LOUDNESS`), so pages voiced on
+   different runs play at one level.
+8. `video:split -- --quality <q>` cuts the video into one clip per page under
+   `out/video/pages/`, numbered in the deck's order.
 
-`video:capture` only takes a frame where the picture can change. Between cues
-the page holds still, so it captures the fades and the reveals, one frame per
-chip change, and holds the last capture through every still stretch; several
-browsers share the work. Each capture is kept in `out/video/frames/`, named by
-the deck, the browser and what the frame shows. A capture that is stopped
-keeps what it took: run the same command again and it takes only what is
-missing, printing how many frames were already in the cache and how many of
-those it took again, which is always 0. A change to the script or the audio
-reuses every frame whose picture it leaves as it was; a change to
-`index.html`, `engine/`, the built data or the video driver takes every frame
-again. A stopped run may leave `.partial` files there, which are never read.
-The folder only grows: delete it whenever you like, the next run rebuilds it.
-Because it writes that cache, running `video:capture` asks for consent.
+Qualities (`assets/tools/video/timeline.mjs::QUALITIES`): `480p` 854×480 at
+30 fps, `preview` 1280×720 at 30 fps, `default` 1920×1080 at 60 fps, `1440p`
+2560×1440 at 60 fps, `2160p` 3840×2160 at 60 fps. The deck is always laid out
+at 1920×1080, so a quality changes the sharpness and the frame rate, never the
+layout. On a six-page deck (gaia-architecture-overview v8) a full capture took
+about 3 minutes at `preview`, 7 at `default`, 9 at `1440p` and 25 at `2160p`;
+those runs drew every quality at 3840×2160 device pixels, and frames are now
+taken at each quality's own size, so the lower qualities should be faster.
 
-Steps 5, 6 and 7 need a browser. Playwright is listed only in
-`tools/video/package.json`, and it is loaded only from that folder: a
-Playwright found anywhere else is never used. Install it only with the user's
-consent. When it is missing, the three steps stop before doing anything, with
-one line that gives the install command. The deck's own `package.json` keeps
-zero dependencies. `out/` and `tools/video/node_modules/` stay out of git.
+`video:capture` keeps every frame in `out/video/frames/`: a stopped run keeps
+what it took, and a script or audio change reuses every frame whose picture did
+not change. Because it writes that cache, running it asks for consent.
+
+## The browser and the installs
+
+`video:check`, `video:contact` and `video:capture` need a browser; the deck
+itself never does. Playwright is listed only in `tools/video/package.json` and
+loaded only from there. When it is missing, those three steps stop on one line
+that gives the install command. Every install downloads and writes, so the
+person runs it or signs it, never the skill on its own:
+
+- Playwright: `npm install --prefix <deck>/tools/video`, then
+  `npm exec --prefix <deck>/tools/video -- playwright install chromium`.
+- Kokoro: a venv at `~/.local/share/gaia-tts/kokoro/.venv` with
+  `kokoro>=0.9.4` and `soundfile`, and the model from `hexgrad/Kokoro-82M`
+  (`config.json`, `kokoro-v1_0.pth`, `voices/<voice>.pt`) in
+  `~/.local/share/gaia-tts/kokoro/model`.
+- Chatterbox: a venv at `~/.local/share/gaia-tts/chatterbox/.venv` with
+  `chatterbox-tts`, the model files `ve.safetensors`, `t3_cfg.safetensors`,
+  `s3gen.safetensors`, `tokenizer.json` and `conds.pt`
+  (`assets/tools/video/voice.mjs::CHATTERBOX_MODEL_FILES`) in
+  `~/.local/share/gaia-tts/chatterbox/model`, and the person's reference clip
+  at `~/.local/share/gaia-tts/chatterbox/reference.wav`.
+
+`out/` and `tools/video/node_modules/` stay out of git.
+</content>
+</invoke>

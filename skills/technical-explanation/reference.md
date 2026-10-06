@@ -36,13 +36,13 @@ What the crossing loses, and how each loss is carried:
   reused filter `key`, which projects a relation across pages without declaring
   the pages related.
 
-The copyable skeletons live in the deck skill's reference ("Per-form seed
-skeletons"): the flat `flow` skeleton is one section of ordered steps; the
-"flow -- phases as sections" skeleton is the shape this correspondence produces
-when the explanation has phases. The deck's own gate (`npm run gate` inside the
-deck) is the verdict on the result, and it does not judge whether the phases
-were the right sections -- that remains the writer's assertion, exactly as it was
-in the text.
+The deck skill's `toolbox.md` describes each form by the properties that
+produce it ("Forms"): a `flow` with phases is sections in `order`, steps in
+`order` inside them, and one chip across every phase, which is the shape this
+correspondence produces. The deck's own checks (`npm run build`, `model`,
+`census` and `contrast` inside the deck) are the verdict on the result, and
+they do not judge whether the phases were the right sections -- that remains
+the writer's assertion, exactly as it was in the text.
 
 ## Lane 2 -- `artifact-diagramming` (inline SVG in an HTML page)
 

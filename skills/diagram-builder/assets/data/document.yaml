@@ -12,7 +12,7 @@ version: "0.2.0"   # optional — shown in the header; bump it when the deck cha
 #   report     a sober document read up close: the house colours, compact text
 #   brand      a deck that carries an identity: a coloured palette, house sizes
 # Every look keeps the minimum text sizes and the contrast floor.
-# Without `look`, `palette` picks the colours alone (see build.md).
+# Without `look`, `palette` picks the colours alone (see toolbox.md, Look).
 look: brand
 
 # CORE CHIPS — the deck's recurring actors, declared once. Every page inherits
@@ -76,7 +76,7 @@ pages:
     visible: true
     file: pages/p6-relations.yaml
     omit_filters: [gate]
-  # ── PIECES · the catalogue. One entry per piece SKILL.md names, and nothing
+  # ── PIECES · the catalogue. One entry per piece toolbox.md lists, and nothing
   # else: the piece live, its YAML, what it says, and its neighbour.
   - id: pieces-1-frame-and-leaves
     name: "Pieces · frame and leaves"
