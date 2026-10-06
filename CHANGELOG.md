@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.5.0] - 2026-10-06
+
 ### Upgrading from 5.4
 
 What a user of 5.4.0-rc.1 (or of 5.3.0, the last stable) meets after upgrading. Items marked *since 5.5.0-rc.1* already reached the 5.5.0 release candidates; everything else is new in this release.
@@ -78,20 +80,7 @@ What a user of 5.4.0-rc.1 (or of 5.3.0, the last stable) meets after upgrading. 
 - The session banner omits the global workspace and shows the `gaia` CLI that is running.
 - `gaia workspace retire` releases the source root, and a scan keeps a project's declared workflow across promotion.
 - **A stale gate no longer reads as passing, and one task's turns are one query away.** `gaia task gate list` printed only `status=pass` for a gate whose verdict had gone stale, so a task looked green while it could not close; its text now appends `stale since <ts> (<reason>)` and `fail_cause`. `gaia task show` lists the task's gates with that mark, a `VERDICT:` line from `gaia.state.task_closure.derive_gate_verdict` naming each blocking gate (worded as the gate verdict only, since `set-status done` also weighs who closes), and the `gaia contract list --plan-task <id>` pointer; `--json` carries `gates`, `gates_pass` and `blockers`, and `--id <tasks.id>` addresses a task without its brief and order. `gaia contract list` gains `--plan-task` (resumed rows included through their `continues_handoff_id` chain) and `--brief` (resolved through the brief's plan tasks, since `brief_id` is not stamped on dispatch rows), and `--since`/`--until` now take the shared `parse_when` grammar (`24h`, `7d`, dates) and filter in SQL before `--limit`, which previously let `--until` return nothing past the newest 20 rows. The dispatch and agent-response skills now have the pushing specialist return the CI table with the SHA it covers, and the orchestrator compare that SHA with the PR head, instead of running `gh pr checks` itself.
-
-## [5.5.0-rc.5] - 2026-10-06
-
-## [5.5.0-rc.4] - 2026-10-06
-
-## [5.5.0-rc.3] - 2026-09-25
-
-## [5.5.0-rc.2] - 2026-09-25
-
-### Fixed
-
 - **Plugin-prefixed agent names are recognised in every identity check (#40).** Claude Code renames every agent a plugin ships to `<plugin>:<name>`, so under the plugin install of 5.5.0-rc.1 the orchestrator arrived as `gaia:gaia-orchestrator` and was refused its own CLI as if it were a specialist started on its own, the operator was refused curated-memory writes, and the SubagentStop gate skipped the contract check on every Gaia agent. `gaia/agent_identity.py::canonical_agent_name` now strips Gaia's own `gaia:` namespace, and nothing else, at each point a name enters Gaia: hook payloads, dispatches, and the CLI process's dispatch identity. A foreign prefix such as `other:gaia-orchestrator` is left unchanged and refused everywhere.
-
-## [5.5.0-rc.1] - 2026-09-11
 
 ## [5.4.0-rc.1] - 2026-08-18
 
