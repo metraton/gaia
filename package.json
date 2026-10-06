@@ -1,6 +1,6 @@
 {
   "name": "@jaguilar87/gaia",
-  "version": "5.5.0-rc.3",
+  "version": "5.5.0-rc.4",
   "description": "GAIA — Generative AI Interface for Agents. Specialist agents for Claude Code and OpenCode, with a memory that outlives the session and a consent gate on everything that changes state.",
   "main": "index.js",
   "type": "module",
