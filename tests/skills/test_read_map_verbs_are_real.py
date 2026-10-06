@@ -207,7 +207,7 @@ def test_the_map_still_spells_commands_this_test_can_read():
 # ---------------------------------------------------------------------------
 # Forward: nothing the map names is fictional.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("phrase", sorted(_DOCUMENTED))
+@pytest.mark.table("phrase", sorted(_DOCUMENTED))
 def test_every_documented_verb_exists_in_the_cli(phrase):
     assert _resolve(_PARSER, phrase) is not None, (
         f"read-map.md names `gaia {' '.join(phrase)}`, which the real CLI "
@@ -215,7 +215,7 @@ def test_every_documented_verb_exists_in_the_cli(phrase):
     )
 
 
-@pytest.mark.parametrize("phrase", sorted(_DOCUMENTED))
+@pytest.mark.table("phrase", sorted(_DOCUMENTED))
 def test_every_flag_the_map_claims_is_a_real_flag(phrase):
     leaf = _resolve(_PARSER, phrase)
     if leaf is None:
@@ -228,7 +228,7 @@ def test_every_flag_the_map_claims_is_a_real_flag(phrase):
         )
 
 
-@pytest.mark.parametrize("phrase", sorted(_DOCUMENTED))
+@pytest.mark.table("phrase", sorted(_DOCUMENTED))
 def test_every_documented_verb_is_a_read(phrase):
     """The map may only carry verbs the code itself declares read-only.
 
@@ -261,7 +261,7 @@ def test_the_specialist_only_reads_are_still_outside_the_orchestrator_lane():
 # ---------------------------------------------------------------------------
 # Backward: THE property. The map cannot be quietly incomplete.
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("phrase", sorted(_allowed_read_phrases()))
+@pytest.mark.table("phrase", sorted(_allowed_read_phrases()))
 def test_every_read_verb_the_code_allows_is_on_the_map(phrase):
     if phrase in _EXEMPT_FROM_MAP:
         pytest.skip(_EXEMPT_FROM_MAP[phrase])

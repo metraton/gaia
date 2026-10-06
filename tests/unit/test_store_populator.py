@@ -7,7 +7,7 @@ Verifies that _list_repos:
   - excludes plain directories that have no .git (AC-3)
   - respects the skip-dir set (node_modules, .claude, briefs, plans, ...)
   - returns paths whose .parent can be used by T2.2 to infer group_name
-  - is bounded by max_depth to avoid runaway traversal
+  - walks at any depth and never follows a symlinked folder
 """
 
 from __future__ import annotations
@@ -300,30 +300,30 @@ def test_list_repos_nonexistent_root(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Depth bounding
+# Depth: unbounded
 # ---------------------------------------------------------------------------
 
-def test_list_repos_respects_max_depth(tmp_path: Path) -> None:
-    """Repos beyond max_depth are not returned."""
+def test_list_repos_finds_a_repo_at_any_depth(tmp_path: Path) -> None:
     from tools.scan.store_populator import _list_repos
 
-    # Build a chain of 6 levels deep with a repo at the bottom.
-    deep = tmp_path
-    for part in ("a", "b", "c", "d", "e", "f"):
-        deep = deep / part
+    deep = tmp_path.joinpath(*"abcdefghij")
     _make_git_dir(deep)
 
-    # With max_depth=4, the 6-level-deep repo should NOT be found.
-    result = _list_repos(tmp_path, max_depth=4)
-    assert result == []
-
-    # With max_depth=6, it IS found.
-    result = _list_repos(tmp_path, max_depth=6)
-    assert result == [deep]
+    assert _list_repos(tmp_path) == [deep]
 
 
-def test_list_repos_default_max_depth_covers_real_cases(tmp_path: Path) -> None:
-    """Default max_depth=4 covers aaxis/bildwiz/rnd/repo layout (depth 3)."""
+def test_list_repos_does_not_follow_a_symlinked_folder(tmp_path: Path) -> None:
+    from tools.scan.store_populator import _list_repos
+
+    repo = tmp_path / "real" / "repo"
+    _make_git_dir(repo)
+    (tmp_path / "real" / "loop").symlink_to(tmp_path)
+
+    assert _list_repos(tmp_path) == [repo]
+
+
+def test_list_repos_covers_the_aaxis_bildwiz_layout(tmp_path: Path) -> None:
+    """aaxis/bildwiz/rnd/repo (depth 3) is found."""
     from tools.scan.store_populator import _list_repos
 
     # 3-level container: aaxis/bildwiz/rnd/repo (depth 3 from tmp_path)

@@ -303,6 +303,8 @@ def apply_update(
 
     con = None
     try:
+        from gaia.store.writer import assert_schema_writable
+        assert_schema_writable(resolved)
         con = sqlite3.connect(str(resolved), isolation_level=None)
         con.execute("PRAGMA foreign_keys = ON")
         con.execute("BEGIN IMMEDIATE")

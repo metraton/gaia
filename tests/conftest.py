@@ -10,6 +10,10 @@ Provides:
 """
 
 import os
+import shutil
+import site
+import subprocess
+import tempfile
 from collections.abc import MutableMapping
 import pytest
 from pathlib import Path
@@ -73,12 +77,227 @@ def bridge_runtime_env():
     return env
 
 
+# The only programs the suite may take for granted (D111): what CI installs and
+# Gaia itself needs. Anything else a test runs is a fixture it writes in its tmp.
+OWN_TOOLCHAIN = ("python", "python3", "git", "sh", "bash", "node", "npm", "bun", "gaia")
+
+
+def require_tool(name):
+    """Return the path of an own-toolchain program, failing the test loudly when it is absent.
+
+    A skip would let the verdict change from one machine to the next, so a
+    missing link of the chain is reported as a broken environment instead.
+    """
+    if name not in OWN_TOOLCHAIN:
+        raise ValueError(f"{name!r} is not in the own toolchain {OWN_TOOLCHAIN}; write a fixture instead")
+    path = shutil.which(name)
+    if path is None:
+        pytest.fail(f"{name} is not on PATH: the suite requires the own toolchain {OWN_TOOLCHAIN}",
+                    pytrace=False)
+    return path
+
+
+@pytest.fixture
+def bun():
+    """The bun on PATH that drives the real OpenCode plugin."""
+    return require_tool("bun")
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def copy_package_tree(destination):
+    """Copy the working tree's tracked and unignored files into *destination* and return it.
+
+    npm pack runs prepack in the tree it packs -- `npm run clean` deletes every
+    __pycache__ and generate:plugin-root rewrites the manifests -- so a real pack
+    of the repository breaks the xdist workers reading it at the same time.
+    """
+    destination = Path(destination)
+    listed = subprocess.run(
+        [require_tool("git"), "-C", str(PACKAGE_ROOT), "ls-files", "-z", "--cached", "--others",
+         "--exclude-standard"],
+        capture_output=True, text=True, check=True, timeout=60)
+    for name in filter(None, listed.stdout.split("\0")):
+        original = PACKAGE_ROOT / name
+        if os.path.lexists(original):
+            (destination / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(original, destination / name, follow_symlinks=False)
+    return destination
+
+
+@pytest.fixture(scope="session")
+def package_copy(tmp_path_factory):
+    """One copy of the working tree per worker, for tests that run a real npm pack."""
+    return copy_package_tree(tmp_path_factory.mktemp("package-copy"))
+
+
+class _RepositoryPackGuard(subprocess.Popen):
+    """A Popen that refuses an `npm pack` whose prepack would run inside the repository."""
+
+    def __init__(self, args, *pargs, **kwargs):
+        argv = [str(a) for a in args] if isinstance(args, (list, tuple)) else str(args).split()
+        cwd = Path(kwargs.get("cwd") or os.getcwd()).resolve()
+        if (len(argv) > 1 and Path(argv[0]).stem == "npm" and argv[1] == "pack"
+                and "--ignore-scripts" not in argv and cwd.is_relative_to(PACKAGE_ROOT)):
+            raise AssertionError(f"npm pack with cwd={cwd} runs prepack in the repository; "
+                                 "pack copy_package_tree()'s copy instead")
+        super().__init__(args, *pargs, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _no_npm_pack_in_the_repository(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", _RepositoryPackGuard)
+
+
+# ============================================================================
+# LAYER-1 SELECTION
+#
+# The layer-1 suite is everything a bare `pytest` collects from the repo root
+# (testpaths in pyproject.toml) minus the entries below. npm test, CI and
+# `gaia release` must reach it by invoking pytest with no selection of their
+# own, so this tuple is the one place that decides what the suite contains.
+# An entry still runs whenever a command-line argument names it or a path
+# inside it. Why each entry is out:
+#   - layer2_llm_evaluation spends LLM tokens.
+#   - layer3_e2e drives a live Claude Code session.
+#   - the exhaustive opencode alias matrix outruns its bun driver's subprocess
+#     timeout; nightly.yml runs it by node id.
+#   - NIGHTLY_ONLY: the *_mutants.py files pin the branch direction of concrete
+#     cosmic-ray mutants rather than an observable behavior, and the tests/evals
+#     files test the LLM eval harness, not Gaia. nightly.yml imports this tuple
+#     and names every entry, so the mutation score is still measured. The
+#     integration entries drive the real OpenCode plugin, npm's own validator
+#     or the full scan pipeline end to end: worth running, too slow for every
+#     pull request, and each has a faster pull-request test of the same promise.
+# ============================================================================
+
+NIGHTLY_ONLY = (
+    "tests/hooks/modules/security/test_approval_grants_mutants.py",
+    "tests/hooks/modules/security/test_blocked_commands_mutants.py",
+    "tests/hooks/modules/security/test_inline_ast_analyzer_mutants.py",
+    "tests/hooks/modules/security/test_mutative_verbs_mutants.py",
+    "tests/hooks/modules/security/test_tiers_mutants.py",
+    "tests/evals/test_backend_routing.py",
+    "tests/evals/test_baseline.py",
+    "tests/evals/test_catalog.py",
+    "tests/evals/test_evals.py",
+    "tests/evals/test_graders_code.py",
+    "tests/evals/test_graders_decision.py",
+    "tests/evals/test_graders_trace.py",
+    "tests/evals/test_reporter.py",
+    "tests/evals/test_runner.py",
+    "tests/evals/test_skill_injection_consumer.py",
+    "tests/evals/test_skill_injection_dispatch_reality.py",
+    "tests/hooks/modules/security/test_gh_active_account_slot.py::test_account_slot_counterfactual_without_the_anchor",
+    "tests/hooks/modules/security/test_gh_active_account_slot.py::test_free_forms_are_free_without_the_anchors_too",
+    "tests/integration/test_opencode_consent_retry_e2e.py",
+    "tests/integration/test_opencode_early_child_attestation.py",
+    "tests/cli/test_pre_publish_dry_run_representative.py",
+    "tools/scan/tests/test_integration.py",
+)
+
+LAYER1_EXCLUDED = (
+    "tests/layer2_llm_evaluation",
+    "tests/layer3_e2e",
+    "tests/integration/test_opencode_protected_edit_bootstrap.py"
+    "::test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge",
+    "tests/test_notifications_old_install.py",
+    *NIGHTLY_ONLY,
+)
+
+
+def _rootdir_relative(config, path) -> str | None:
+    try:
+        return Path(path).resolve().relative_to(config.rootpath.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def _named_on_command_line(config, entry: str) -> bool:
+    """Whether a command-line argument is ``entry`` or lies inside it."""
+    for arg in config.args:
+        path, sep, node = arg.partition("::")
+        spelled = _rootdir_relative(config, Path(config.invocation_params.dir, path))
+        if spelled is None:
+            continue
+        spelled += sep + node
+        if spelled == entry or spelled.startswith((entry + "/", entry + "::")):
+            return True
+    return False
+
+
+def pytest_ignore_collect(collection_path, config):
+    """Skip excluded directories; None defers to --ignore and every other plugin."""
+    relative = _rootdir_relative(config, collection_path)
+    if relative in LAYER1_EXCLUDED and not _named_on_command_line(config, relative):
+        return True
+    return None
+
+
+def _deselect_outside_layer1(config, items):
+    """Deselect excluded node ids and files, reported as deselected like --deselect.
+
+    pytest_ignore_collect above only runs for paths under tests/, the directory
+    of this conftest, so a file entry under tools/scan/tests is dropped here.
+    """
+    excluded = tuple(
+        entry if "::" in entry else entry + "::"
+        for entry in LAYER1_EXCLUDED
+        if not _named_on_command_line(config, entry)
+    )
+    if not excluded:
+        return
+    dropped = [item for item in items if item.nodeid.startswith(excluded)]
+    if dropped:
+        config.hook.pytest_deselected(items=dropped)
+        items[:] = [item for item in items if item not in dropped]
+
+
+# ============================================================================
+# SESSION ISOLATION
+# ============================================================================
+
+SESSION_ROOT_ENV = "GAIA_TEST_SESSION_ROOT"
+_created_session_root = None
+
+
+def _isolate_session_home_and_tmpdir():
+    """Give the session, its xdist workers and every subprocess a private HOME and TMPDIR.
+
+    The first process of a session creates the root under the invoker's temp
+    directory and exports it; xdist workers and nested pytest runs inherit it
+    and reuse it. PYTHONUSERBASE stays on the invoker's user site, where pytest
+    and xdist may be installed, because Python derives it from HOME.
+    """
+    global _created_session_root
+    root = os.environ.get(SESSION_ROOT_ENV)
+    if not root:
+        os.environ.setdefault("PYTHONUSERBASE", site.getuserbase())
+        root = tempfile.mkdtemp(prefix="gaia-pytest-")
+        os.environ[SESSION_ROOT_ENV] = root
+        _created_session_root = root
+    home, tmp = Path(root, "home"), Path(root, "tmp")
+    home.mkdir(parents=True, exist_ok=True)
+    tmp.mkdir(exist_ok=True)
+    os.environ["HOME"] = str(home)
+    os.environ["TMPDIR"] = str(tmp)
+    tempfile.tempdir = str(tmp)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Drop the root this process created after a passing run; a failing one keeps its tmp_path dirs."""
+    if _created_session_root and exitstatus == 0:
+        shutil.rmtree(_created_session_root, ignore_errors=True)
+
+
 # ============================================================================
 # MARKERS
 # ============================================================================
 
 def pytest_configure(config):
-    """Register custom markers."""
+    """Isolate the session's HOME and TMPDIR, then register custom markers."""
+    _isolate_session_home_and_tmpdir()
     config.addinivalue_line("markers", "llm: LLM evaluation tests (require ANTHROPIC_API_KEY)")
     config.addinivalue_line("markers", "e2e: E2E headless tests (require claude CLI)")
     config.addinivalue_line(
@@ -86,6 +305,101 @@ def pytest_configure(config):
         "ci_subset: small, budget-bounded subset of L2/L3 (LLM) tests that runs in "
         "CI under a controlled token budget (brief #89 AC-6)",
     )
+    config.addinivalue_line(
+        "markers",
+        "table(argnames, argvalues, ids=None): parametrize's signature, collected as "
+        "ONE test that runs every row and fails naming each failing row. Rows share "
+        "the test's fixtures, so only rows that need no fresh per-row state qualify.",
+    )
+
+
+# ============================================================================
+# TABLE TESTS
+#
+# A corpus of hundreds of rows that exercise one code path is one behavior, so
+# it is reported as one test: every row still runs and every row still asserts.
+# ============================================================================
+
+def _table_argnames(mark) -> list[str]:
+    names = mark.args[0]
+    if isinstance(names, str):
+        names = names.split(",")
+    return [name.strip() for name in names]
+
+
+def _table_rows(item) -> list[tuple[str, dict, bool]]:
+    """(row id, arguments, skipped) for the product of the item's table marks."""
+    rows = [("", {}, False)]
+    for mark in item.iter_markers("table"):
+        if mark.kwargs.get("indirect"):
+            raise pytest.UsageError(f"{item.nodeid}: table does not support indirect")
+        names = _table_argnames(mark)
+        ids = mark.kwargs.get("ids")
+        expanded = []
+        for index, raw in enumerate(mark.args[1]):
+            param_id, marks = None, ()
+            if isinstance(raw, type(pytest.param(None))):
+                param_id, marks, raw = raw.id, raw.marks, raw.values
+                raw = raw[0] if len(names) == 1 else raw
+            values = (raw,) if len(names) == 1 else tuple(raw)
+            if param_id is None and isinstance(ids, (list, tuple)):
+                param_id = ids[index]
+            elif param_id is None and callable(ids):
+                param_id = "-".join(str(ids(v)) for v in values)
+            param_id = param_id or "-".join(str(v)[:60] for v in values)
+            skipped = any(
+                m.name in ("skip", "xfail") or (m.name == "skipif" and m.args and m.args[0])
+                for m in marks
+            )
+            expanded.append((param_id, dict(zip(names, values)), skipped))
+        rows = [
+            ("-".join(filter(None, (left_id, right_id))), {**left, **right}, l_skip or r_skip)
+            for left_id, left, l_skip in rows
+            for right_id, right, r_skip in expanded
+        ]
+    return rows
+
+
+def pytest_generate_tests(metafunc):
+    """Bind a table's argument names once, so the test is collected as one item."""
+    names = [n for mark in metafunc.definition.iter_markers("table") for n in _table_argnames(mark)]
+    if names:
+        metafunc.parametrize(names, [tuple(None for _ in names)], ids=["table"])
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    """Run every row of a table test and fail once, listing the failing rows."""
+    if pyfuncitem.get_closest_marker("table") is None:
+        return None
+    import inspect
+
+    rows = _table_rows(pyfuncitem)
+    table_names = set(rows[0][1])
+    fixtures = {
+        name: pyfuncitem.funcargs[name]
+        for name in inspect.signature(pyfuncitem.obj).parameters
+        if name not in table_names
+    }
+    failures, ran = [], 0
+    for row_id, arguments, skipped in rows:
+        if skipped:
+            continue
+        try:
+            pyfuncitem.obj(**fixtures, **arguments)
+            ran += 1
+        except pytest.skip.Exception:
+            continue
+        except (Exception, pytest.fail.Exception) as error:
+            ran += 1
+            failures.append(f"[{row_id}] {type(error).__name__}: {error}")
+    if failures:
+        pytest.fail(
+            f"{len(failures)} of {ran} rows failed:\n" + "\n".join(failures), pytrace=False
+        )
+    if not ran:
+        pytest.skip("every row of the table was skipped")
+    return True
 
 
 @pytest.fixture(autouse=True)
@@ -201,7 +515,8 @@ def _fresh_mutative_classification_cache():
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip llm and e2e tests unless explicitly requested via -m flag."""
+    """Deselect what layer 1 excludes; auto-skip llm and e2e tests unless -m selects them."""
+    _deselect_outside_layer1(config, items)
     # If user explicitly passed -m, respect that
     markexpr = config.getoption("-m", default="")
     if markexpr:
@@ -319,15 +634,13 @@ def temp_gaia_db(tmp_path):
 # ============================================================================
 # FULL-BOOTSTRAP DB TEMPLATE (perf: build once, copy per test)
 #
-# scripts/bootstrap_database.sh materializes the full production schema and
-# seeds it (agent_permissions, schema_version floor, FTS5 backfill) by spawning
-# dozens of individual `sqlite3` CLI subprocesses. Re-running it per test in a
-# fixture cost 10-17s of *setup* per test (see --durations), which serialized
-# the tests/test_writer_*.py tail onto a single xdist worker while the others
-# sat idle.
+# scripts/bootstrap_database.py materializes the full production schema and
+# seeds it (agent_permissions, schema_version floor, FTS5 backfill). Re-running
+# it per test in a fixture serialized the tests/test_writer_*.py tail onto a
+# single xdist worker while the others sat idle.
 #
-# This session-scoped fixture runs that bootstrap EXACTLY ONCE (per xdist
-# worker) into an immutable template .db file. Per-test fixtures then
+# This session-scoped fixture runs that bootstrap EXACTLY ONCE per run (shared
+# by the xdist workers) into an immutable template .db file. Per-test fixtures then
 # `copy_bootstrapped_db(...)` it -- a filesystem copy is milliseconds vs a
 # multi-second subprocess storm. Isolation is preserved exactly: every test
 # still gets its OWN independent .db file that it alone mutates; the template
@@ -339,23 +652,46 @@ def temp_gaia_db(tmp_path):
 def bootstrapped_db_template(tmp_path_factory):
     """Build the full bootstrapped Gaia DB once per session; return its Path.
 
-    Built via the real ``scripts/bootstrap_database.sh`` so the template is
-    byte-for-byte what a live bootstrap produces (schema + agent_permissions +
+    Built via the real ``scripts/bootstrap_database.py`` -- the engine `gaia
+    install` and the lazy bootstrap in `bin/gaia` run -- so the template is
+    what a live bootstrap produces (schema + agent_permissions +
     schema_version floor + FTS5 mirrors). Immutable after creation -- consumers
     copy it, never mutate it.
     """
-    import os
-    import subprocess
-
     repo_root = Path(__file__).resolve().parents[1]
-    bootstrap = repo_root / "scripts" / "bootstrap_database.sh"
-    template_dir = tmp_path_factory.mktemp("gaia_db_template")
+    bootstrap = repo_root / "scripts" / "bootstrap_database.py"
+    # One build serves every xdist worker: the workers share the parent of
+    # their base temp, and the lock makes the first one build while the rest
+    # wait and reuse it. Without fcntl (Windows) each worker builds its own.
+    base = tmp_path_factory.getbasetemp()
+    shared = base.parent if os.environ.get("PYTEST_XDIST_WORKER") else base
+    template_dir = shared / "gaia_db_template"
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+        template_dir = tmp_path_factory.mktemp("gaia_db_template")
+    template_dir.mkdir(exist_ok=True)
     env = IsolatedRuntimeEnv(template_dir)
     template = Path(env["GAIA_DB"])
+    with open(shared / "gaia_db_template.lock", "w") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        if not (template_dir / "built").exists():
+            _build_template(bootstrap, env, template)
+            (template_dir / "built").touch()
+    return template
+
+
+def _build_template(bootstrap: Path, env, template: Path) -> None:
+    """Run the real bootstrap into ``template`` and fail loudly if it did not produce one."""
+    import subprocess
+    import sys
+
     # WORKSPACE only sets the bootstrap's seeded workspaces.identity row; the
     # writer tests insert their own 'me' workspace and never rely on it.
     res = subprocess.run(
-        ["bash", str(bootstrap)],
+        [sys.executable, str(bootstrap)],
         env=env,
         capture_output=True,
         text=True,
@@ -367,7 +703,6 @@ def bootstrapped_db_template(tmp_path_factory):
         f"stderr:\n{res.stderr}"
     )
     assert template.exists(), "bootstrap did not produce a template DB"
-    return template
 
 
 def copy_bootstrapped_db(template: Path, dest: Path) -> Path:

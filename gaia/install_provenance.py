@@ -14,11 +14,19 @@ from gaia.paths import state_dir
 
 _IGNORED = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}
 
+# The package channels share one node_modules copy and so one record; the plugin
+# channel serves Claude Code from its own directory and keeps a second record,
+# because OpenCode on the package can stay installed beside the plugin.
+# `npm+opencode` is kept only to read records written before each channel was installed on its own.
+PACKAGE_CHANNELS = ("npm", "opencode", "npm+opencode")
+PLUGIN_CHANNEL = "plugin"
 
-def provenance_path(workspace: Path) -> Path:
+
+def provenance_path(workspace: Path, channel: str = "npm") -> Path:
     """Locate the machine-local record by canonical consumer path, not its basename."""
     key = hashlib.sha256(os.fsencode(workspace.resolve())).hexdigest()
-    return state_dir() / "dev-installs" / f"{key}.json"
+    suffix = ".plugin" if channel == PLUGIN_CHANNEL else ""
+    return state_dir() / "dev-installs" / f"{key}{suffix}.json"
 
 
 def file_hash(path: Path) -> str:
@@ -86,14 +94,23 @@ def capture_source(source: Path, *, tarball: Path | None = None) -> dict[str, An
             "tarball_path": str(artifact) if artifact else None}
 
 
-def record_install(workspace: Path, captured: dict[str, Any]) -> Path:
-    """Publish observations after successful wiring, without claiming transactional installation."""
+def record_install(workspace: Path, captured: dict[str, Any], *, channel: str = "npm",
+                   destination: Path | None = None) -> Path:
+    """Publish observations after successful wiring, without claiming transactional installation.
+
+    *destination* is the plugin directory on the plugin channel; the package
+    channels always record the workspace's node_modules copy.
+    """
+    if channel not in PACKAGE_CHANNELS + (PLUGIN_CHANNEL,):
+        raise ValueError(f"unknown install channel: {channel}")
     workspace = workspace.resolve()
-    entry = workspace / "node_modules/@jaguilar87/gaia"
+    entry = destination if channel == PLUGIN_CHANNEL else workspace / "node_modules/@jaguilar87/gaia"
+    if entry is None:
+        raise ValueError("the plugin channel needs its plugin directory")
     destination = entry.resolve(strict=True)
-    payload = {**captured, "workspace": str(workspace), "destination": str(destination),
-               "installed_hash": source_snapshot_hash(destination)}
-    path = provenance_path(workspace)
+    payload = {**captured, "channel": channel, "workspace": str(workspace),
+               "destination": str(destination), "installed_hash": source_snapshot_hash(destination)}
+    path = provenance_path(workspace, channel)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise ValueError(f"refusing redirected provenance record: {path}")
@@ -115,10 +132,39 @@ def record_install(workspace: Path, captured: dict[str, Any]) -> Path:
     return path
 
 
-def inspect_install(workspace: Path, dependency_spec: str | None) -> dict[str, Any] | None:
-    """Compare a recorded installation with current source, artifact, spec and destination."""
+def _dependency_spec_drift(workspace: Path, dependency_spec: str | None, expected: Path) -> list[str]:
+    """Diagnostics when the consumer no longer declares the recorded local artifact."""
+    if not dependency_spec or not dependency_spec.startswith(("file:", "link:")):
+        return ["installed dependency spec diverged"]
+    try:
+        if (workspace / dependency_spec.split(":", 1)[1]).resolve() != expected:
+            return ["installed dependency spec diverged"]
+    except (OSError, RuntimeError) as exc:
+        return [f"installed dependency spec unavailable: {exc}"]
+    return []
+
+
+def commits_behind(source: Path, recorded_commit: str | None) -> int | None:
+    """How many commits the source HEAD has gained since *recorded_commit*; None when unknown."""
+    if not recorded_commit:
+        return None
+    count = _git(source, "rev-list", "--count", f"{recorded_commit}..HEAD")
+    return int(count) if count and count.isdigit() else None
+
+
+def inspect_install(workspace: Path, dependency_spec: str | None, *,
+                    channel: str = "npm") -> dict[str, Any] | None:
+    """Compare a recorded installation with current source, artifact, spec and destination.
+
+    *channel* selects the record: ``"plugin"`` reads the plugin channel's, any
+    other value the package channels' shared one. A record without a channel
+    predates the field and is a package-channel record. ``diagnostics`` are
+    drift; ``notes`` are observations that are not drift, such as a source
+    removed after the install.
+    """
     workspace = workspace.resolve()
-    marker = provenance_path(workspace)
+    plugin = channel == PLUGIN_CHANNEL
+    marker = provenance_path(workspace, channel)
     if not marker.exists() and not marker.is_symlink():
         return None
     diagnostics: list[str] = []
@@ -139,6 +185,9 @@ def inspect_install(workspace: Path, dependency_spec: str | None) -> dict[str, A
             raise ValueError("unknown provenance hash kind")
         if data.get("workspace") != str(workspace):
             raise ValueError("provenance belongs to a different consumer")
+        data.setdefault("channel", "npm")
+        if (data["channel"] == PLUGIN_CHANNEL) != plugin or data["channel"] not in PACKAGE_CHANNELS + (PLUGIN_CHANNEL,):
+            raise ValueError(f"unexpected install channel: {data['channel']}")
         if kind == "tarball" and (not isinstance(data.get("tarball_path"), str)
                                   or not Path(data["tarball_path"]).is_absolute()):
             raise ValueError("missing or invalid tarball path")
@@ -146,29 +195,34 @@ def inspect_install(workspace: Path, dependency_spec: str | None) -> dict[str, A
         return {"diagnostics": [f"invalid provenance: {exc}"]}
 
     source = Path(data["source_path"])
+    behind = None
+    notes: list[str] = []
     try:
-        if source.resolve(strict=True) != source:
-            diagnostics.append("source path diverged")
-        current_git = git_metadata(source)
-        for key in ("commit", "branch", "dirty"):
-            if data.get(key) is None or current_git[key] is None:
-                diagnostics.append(f"source {key} unavailable")
-            elif current_git[key] != data[key]:
-                diagnostics.append(f"source {key} diverged")
-        if source_snapshot_hash(source) != data["source_hash"]:
-            diagnostics.append("source content/hash diverged")
-    except (OSError, ValueError, RuntimeError) as exc:
+        source.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        notes.append(f"source removed since install: {source}")
+    except OSError as exc:
         diagnostics.append(f"source unavailable: {exc}")
-
-    expected = Path(data["tarball_path"]) if kind == "tarball" else source
-    if not dependency_spec or not dependency_spec.startswith(("file:", "link:")):
-        diagnostics.append("installed dependency spec diverged")
     else:
         try:
-            if (workspace / dependency_spec.split(":", 1)[1]).resolve() != expected:
-                diagnostics.append("installed dependency spec diverged")
-        except (OSError, RuntimeError) as exc:
-            diagnostics.append(f"installed dependency spec unavailable: {exc}")
+            if source.resolve(strict=True) != source:
+                diagnostics.append("source path diverged")
+            current_git = git_metadata(source)
+            for key in ("commit", "branch", "dirty"):
+                if data.get(key) is None or current_git[key] is None:
+                    diagnostics.append(f"source {key} unavailable")
+                elif current_git[key] != data[key]:
+                    diagnostics.append(f"source {key} diverged")
+            if "source commit diverged" in diagnostics:
+                behind = commits_behind(source, data["commit"])
+            if source_snapshot_hash(source) != data["source_hash"]:
+                diagnostics.append("source content/hash diverged")
+        except (OSError, ValueError, RuntimeError) as exc:
+            diagnostics.append(f"source unavailable: {exc}")
+
+    expected = Path(data["tarball_path"]) if kind == "tarball" else source
+    if not plugin:
+        diagnostics.extend(_dependency_spec_drift(workspace, dependency_spec, expected))
     try:
         actual_hash = file_hash(expected) if kind == "tarball" else source_snapshot_hash(expected)
         if actual_hash != data["tarball_hash"]:
@@ -176,7 +230,7 @@ def inspect_install(workspace: Path, dependency_spec: str | None) -> dict[str, A
     except (OSError, ValueError, RuntimeError) as exc:
         diagnostics.append(f"{kind} unavailable: {exc}")
 
-    entry = workspace / "node_modules/@jaguilar87/gaia"
+    entry = Path(data["destination"]) if plugin else workspace / "node_modules/@jaguilar87/gaia"
     try:
         destination = entry.resolve(strict=True)
         if str(destination) != data["destination"]:
@@ -189,4 +243,4 @@ def inspect_install(workspace: Path, dependency_spec: str | None) -> dict[str, A
             diagnostics.append("installed content/hash diverged")
     except (OSError, ValueError, RuntimeError) as exc:
         diagnostics.append(f"installed destination unavailable: {exc}")
-    return {**data, "diagnostics": diagnostics}
+    return {**data, "behind": behind, "diagnostics": diagnostics, "notes": notes}

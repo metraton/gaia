@@ -25,7 +25,7 @@ Schema columnas (briefs):
 
 CLI args:
   --project   workspace name (default: 'me')
-  --src       directorio de briefs (cada subdir es un brief)
+  --src       briefs directory, one subdirectory per brief (required)
   --out       path al SQL de salida (default: /tmp/migrate_05_briefs.sql)
   --fragment  emite solo INSERTs (sin BEGIN/COMMIT)
 """
@@ -37,7 +37,6 @@ import sys
 from pathlib import Path
 
 DEFAULT_PROJECT = "me"
-DEFAULT_SRC_DIR = Path("/home/jorge/ws/me/briefs")
 DEFAULT_OUT = Path("/tmp/migrate_05_briefs.sql")
 
 # `created_at` y `updated_at` tienen DEFAULT en el schema; los pasamos
@@ -255,7 +254,7 @@ def row_values_sql(row: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate INSERT SQL for briefs table.")
     parser.add_argument("--project", default=DEFAULT_PROJECT)
-    parser.add_argument("--src", default=str(DEFAULT_SRC_DIR), help="briefs/ dir (each subdir is a brief)")
+    parser.add_argument("--src", required=True, help="briefs/ dir (each subdir is a brief)")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--fragment", action="store_true")
     args = parser.parse_args()

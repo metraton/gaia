@@ -13,7 +13,7 @@ Reglas:
 
 CLI args (parametrización cross-workspace):
   --project   workspace name (default: 'me')
-  --src       directorio con .md files (default: ws/me memory)
+  --src       directory holding the memory .md files (required)
   --out       path al SQL de salida (default: /tmp/migrate_02_memory.sql)
   --fragment  emite solo INSERTs (sin BEGIN/COMMIT)
 """
@@ -24,7 +24,6 @@ import sys
 from pathlib import Path
 
 DEFAULT_PROJECT = "me"
-DEFAULT_SRC_DIR = Path("/home/jorge/.claude/projects/-home-jorge-ws-me/memory")
 DEFAULT_OUT = Path("/tmp/migrate_02_memory.sql")
 INDEX_FILE = "MEMORY.md"
 VALID_TYPES = {"project", "user", "feedback"}
@@ -125,7 +124,7 @@ def row_values_sql(row: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate INSERT SQL for memory table.")
     parser.add_argument("--project", default=DEFAULT_PROJECT)
-    parser.add_argument("--src", default=str(DEFAULT_SRC_DIR), help="memory dir with .md files")
+    parser.add_argument("--src", required=True, help="memory dir with .md files")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--fragment", action="store_true")
     args = parser.parse_args()

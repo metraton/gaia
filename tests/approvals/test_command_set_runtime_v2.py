@@ -40,7 +40,7 @@ def _approved_set(db_path):
 @pytest.mark.parametrize(
     "commands, message",
     [
-        (["echo safe", "git push origin main"], "not classified T3"),
+        (["echo safe"], "at least one command classified T3"),
         (["git push origin main && docker push x", "git push origin backup"], "atomic"),
         (["vim file", "git push origin main"], "interactive"),
         (["ssh host", "git push origin main"], "interactive"),
@@ -56,8 +56,8 @@ def test_request_set_rejects_ineligible_commands(commands, message):
 def test_ssh_prefixed_tools_are_not_interactive():
     # `ssh\b` matched `ssh-keygen`, so a batch key generation was refused as an
     # interactive program. Reaching the T3 check proves the interactive gate
-    # stood aside; ssh-keygen is genuinely not T3, which is a separate verdict.
-    with pytest.raises(CommandSetValidationError, match="not classified T3"):
+    # stood aside; ssh-keygen is genuinely not T3, so a set of only it signs nothing.
+    with pytest.raises(CommandSetValidationError, match="at least one command classified T3"):
         validate_request_set(['ssh-keygen -t ed25519 -f /tmp/k -N ""'])
 
 
@@ -81,6 +81,36 @@ def test_exact_order_and_post_success_commit(isolated_db):
     assert writer.reserve_plan_command(
         second, session_id="s", tool_use_id="call-2", db_path=isolated_db
     )["index"] == 1
+
+
+def _revoke(db_path):
+    assert writer.revoke_approval_grant("P-plan", db_path=db_path)["status"] == "applied"
+
+
+def _expire(db_path):
+    with sqlite3.connect(db_path) as con:
+        con.execute("UPDATE approval_grants SET expires_at='2000-01-01T00:00:00Z' WHERE approval_id='P-plan'")
+    assert writer.cleanup_expired_db_grants(db_path=db_path) == 1
+
+
+@pytest.mark.parametrize("withdraw, withdrawn_status", [(_revoke, "REVOKED"), (_expire, "EXPIRED")])
+def test_a_withdrawal_during_a_running_call_survives_its_success(isolated_db, withdraw, withdrawn_status):
+    first, _ = _approved_set(isolated_db)
+    writer.reserve_plan_command(first, session_id="s", tool_use_id="call-1", db_path=isolated_db)
+    withdraw(isolated_db)
+
+    assert writer.settle_plan_command(
+        "P-plan", session_id="s", tool_use_id="call-1", success=True, db_path=isolated_db,
+    ) is True
+
+    con = sqlite3.connect(isolated_db)
+    con.row_factory = sqlite3.Row
+    row = dict(con.execute("SELECT * FROM approval_grants WHERE approval_id='P-plan'").fetchone())
+    con.close()
+    assert row["status"] == withdrawn_status
+    assert row["next_index"] == 1
+    assert json.loads(row["consumed_indexes_json"]) == [0]
+    assert row["reservation_tool_use_id"] is None
 
 
 def test_failure_freezes_grant_and_preserves_checkpoint(isolated_db):

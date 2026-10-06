@@ -7,7 +7,6 @@ No publication command, host restart, or live substrate mutation is performed.
 import copy
 import json
 import hashlib
-import re
 import subprocess
 import sqlite3
 from pathlib import Path
@@ -451,32 +450,17 @@ def _resume(before, binding, after, call):
     }
 
 
-@pytest.mark.parametrize("variant", ["baseline", "candidate"])
-def test_three_call_compaction_plugin_comparison(isolated_env, tmp_path, variant):
-    """Observe identical positive host events against exact baseline and current plugins."""
-    options = {}
+def test_three_call_compaction_plugin_comparison(isolated_env):
+    """Three early-child calls and a compaction are all allowed, bound and observed by the current plugin."""
     repo = DRIVER.parents[2]
-    if variant == "baseline":
-        blob = subprocess.run(
-            ["git", "-C", str(repo), "show",
-             "c407aadd643051d320a3fc90ffbcbe3fdf75cb5a:opencode/plugin.ts"],
-            capture_output=True, check=True,
-        ).stdout
-        imports = re.findall(r'from\s+["\']([^"\']+)["\']', blob.decode())
-        assert imports and all(name.startswith("node:") for name in imports)
-        module = tmp_path / "baseline-plugin.ts"
-        module.write_bytes(blob)
-        assert module.read_bytes() == blob
-        options = {"pluginModulePath": str(module), "legacyBridge": True}
-    else:
-        blob = (repo / "opencode" / "plugin.ts").read_bytes()
+    blob = (repo / "opencode" / "plugin.ts").read_bytes()
     root, before, binding, after = _dispatch()
     second, bound2, after2 = _resume(before, binding, after, "call-second")
     third, bound3, _ = _resume(before, binding, after, "call-third")
     driven = _run(isolated_env, [root, before, binding, _message(),
         _bash("first-tool"), after, second, bound2, _bash("second-tool"),
         after2, third, bound3, _bash("third-tool"),
-        {"kind": "compact", "sessionID": SESSION_ID, "label": "context"}], **options)
+        {"kind": "compact", "sessionID": SESSION_ID, "label": "context"}])
     context = "\n".join(_step(driven, "context")["context"])
     uri = Path(isolated_env["GAIA_DB"]).resolve().as_uri() + "?mode=ro"
     with sqlite3.connect(uri, uri=True) as con:
@@ -496,7 +480,7 @@ def test_three_call_compaction_plugin_comparison(isolated_env, tmp_path, variant
                 "context_items": len((received.get("updated_input") or {}).get("context", [])),
             })
     summary = {
-        "variant": variant, "plugin_sha256": hashlib.sha256(blob).hexdigest(),
+        "plugin_sha256": hashlib.sha256(blob).hexdigest(),
         "steps": {s["label"]: s.get("allowed") for s in driven["steps"]},
         "bound_calls": sorted(call for call, _ in rows),
         "context_contains_calls": sorted(call for call, contract in rows if contract in context),

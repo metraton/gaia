@@ -60,8 +60,16 @@ async function gaiaBridge(event: Record<string, unknown>) {
   return { action: "allow" as const }
 }
 
-// create/promptAsync/prompt/delete only record: under D39 the plugin opens no
-// session and sends no prompt, so any entry here is a regression.
+// create/promptAsync/prompt/delete only record: under D39 the consent path
+// opens no session and sends no prompt, so any entry in controlPrompts is a
+// regression. The one prompt the plugin does send is the SubagentStop gate's
+// repair of a child that ended unfinalized, which these scenarios' children do.
+const repairPrompts: Record<string, unknown>[] = []
+function isContractRepair(request: any): boolean {
+  const parts = request?.body?.parts
+  return Array.isArray(parts) && parts.length === 1 && parts[0]?.synthetic === true
+    && typeof parts[0]?.text === "string" && parts[0].text.startsWith("[CONTRACT REJECTED]")
+}
 const client = {
   session: {
     async messages() {
@@ -72,7 +80,8 @@ const client = {
       return { data: { id: "control-session" } }
     },
     async promptAsync(request: Record<string, unknown>) {
-      controlPrompts.push(request)
+      if (isContractRepair(request)) repairPrompts.push(request)
+      else controlPrompts.push(request)
       return { data: undefined, response: { ok: true, status: 204 } }
     },
     async prompt(request: Record<string, unknown>) {
@@ -169,7 +178,7 @@ if (scenario.ask === true) {
 }
 
 console.log(JSON.stringify({
-  controlPrompts, bridgeEvents, deletedSessions, error, originalInvocationExecuted,
+  controlPrompts, repairPrompts, bridgeEvents, deletedSessions, error, originalInvocationExecuted,
   gaiaSpawnCwds, askError: askError ?? null, askedQuestions: askedQuestions ?? null,
   rootSessionID, requestResultOutput,
 }))

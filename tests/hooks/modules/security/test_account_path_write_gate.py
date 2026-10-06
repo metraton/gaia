@@ -139,7 +139,7 @@ def without_the_account_path_set(monkeypatch):
     _clear_classifier_caches()
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case,command", ACCOUNT_WRITES, ids=[c for c, _ in ACCOUNT_WRITES]
 )
 def test_account_path_write_requires_consent(case, command):
@@ -152,7 +152,7 @@ def test_account_path_write_requires_consent(case, command):
     assert result.tier == T3
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case,command", ACCOUNT_WRITES, ids=[c for c, _ in ACCOUNT_WRITES]
 )
 def test_account_path_write_is_approvable_not_categorical(case, command):
@@ -177,7 +177,7 @@ def test_account_path_write_is_approvable_not_categorical(case, command):
     )
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case,command", ACCOUNT_WRITES, ids=[c for c, _ in ACCOUNT_WRITES]
 )
 def test_account_path_write_counterfactual(
@@ -196,7 +196,7 @@ def test_account_path_write_counterfactual(
     )
 
 
-@pytest.mark.parametrize(
+@pytest.mark.table(
     "case,command", ORDINARY_WRITES, ids=[c for c, _ in ORDINARY_WRITES]
 )
 def test_ordinary_writes_stay_free(case, command):

@@ -10,8 +10,8 @@ kernel_sections) plus the partial unclaimed index on
 * replaying it through the bootstrap runner's ADD COLUMN idempotency guard is
   a no-op, which is what the floor model requires (every migration replays on
   every fresh install);
-* the migration file keeps the one-ALTER-per-line shape both bootstrap layers
-  (pre-schema reconcile, idempotency filter) parse.
+* the migration file keeps one ALTER per line, one plain ADD COLUMN per
+  statement, which is the shape the runner's ADD COLUMN guard matches.
 """
 
 from __future__ import annotations
@@ -128,14 +128,18 @@ class TestMigrationV42ToV43(unittest.TestCase):
                 con.executescript(_V42_SCHEMA)
                 con.executescript(_MIGRATION.read_text())
 
-                filtered = bootstrap._filter_add_column_idempotent(con, _MIGRATION)
                 for column in _NEW_COLUMNS:
-                    self.assertIn(
-                        f"skipped (column agent_contract_handoffs.{column} "
-                        "already present)",
-                        filtered,
+                    self.assertTrue(
+                        bootstrap._column_present(
+                            con,
+                            f"ALTER TABLE agent_contract_handoffs "
+                            f"ADD COLUMN {column} TEXT",
+                        ),
+                        f"guard does not see {column} as already present",
                     )
-                con.executescript(filtered)  # must not raise
+                con.execute("BEGIN")
+                bootstrap._run_script(con, _MIGRATION.read_text())  # must not raise
+                con.execute("COMMIT")
                 self.assertEqual(
                     sum(1 for c in _columns(con) if c in _NEW_COLUMNS),
                     len(_NEW_COLUMNS),
@@ -144,7 +148,7 @@ class TestMigrationV42ToV43(unittest.TestCase):
                 con.close()
 
     def test_one_alter_per_line_shape(self):
-        """Both bootstrap layers parse ALTER statements line-by-line."""
+        """Each ALTER is a plain ADD COLUMN the runner's guard can match."""
         alter_re = re.compile(
             r"^ALTER TABLE agent_contract_handoffs ADD COLUMN \w+ TEXT;$"
         )

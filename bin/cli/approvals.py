@@ -1759,12 +1759,15 @@ def cmd_request_set(args) -> int:
     ``--question``, and one ``--does`` and ``--impact`` per command. Each
     command carries its ``--cwd`` and ``--expect-exit`` declarations, and the
     requester is the explicit ``--session-id``/``--agent-id`` or the dispatch
-    environment.
+    environment. ``steps`` in the output lists every step in order, an
+    unsigned one marked ``"signed": false``; ``command_set`` only the signed.
 
     ``--rollback`` is required too (D38): how to undo the set, or a sentence
-    saying it cannot be undone. ``--verification`` stays optional; omitted,
-    the surface states it was never declared and never invents one. The
-    requester's automatic pendings the set covers are withdrawn and listed.
+    saying it cannot be undone; so are ``--verification``, how the result is
+    checked, and ``--shared-state``, whether the set rewrites state others
+    rely on. Each item seals the content of the files its command runs or
+    reads. The requester's automatic pendings the set covers are withdrawn
+    and listed.
     """
     try:
         from gaia.approvals import core
@@ -1778,6 +1781,7 @@ def cmd_request_set(args) -> int:
             question=getattr(args, "question", None),
             rollback=getattr(args, "rollback", None),
             verification=getattr(args, "verification", None),
+            shared_state=getattr(args, "shared_state", None),
             rationale=args.rationale,
             requested_from=os.getcwd(),
         )
@@ -1787,13 +1791,19 @@ def cmd_request_set(args) -> int:
         _print_error(f"COMMAND_SET request rejected: {exc}", args)
         return 1
     items = sealed["command_set"]
+    steps = sealed["items"]
     result = {
-        "status": "pending", "approval_id": approval_id, "command_set": items, "replaced": replaced,
+        "status": "pending", "approval_id": approval_id, "command_set": items,
+        "steps": steps, "replaced": replaced,
     }
     if args.json:
         print(json.dumps(result))
     else:
-        print(f"Requested {approval_id} for {len(items)} ordered T3 commands")
+        unsigned = len(steps) - len(items)
+        print(
+            f"Requested {approval_id} for {len(items)} ordered T3 commands"
+            + (f" and {unsigned} unsigned steps shown in position" if unsigned else "")
+        )
         _print_replaced(replaced)
     return 0
 
@@ -2538,7 +2548,20 @@ def register(subparsers) -> None:
     p_request_set = sub.add_parser(
         "request-set", help="Create a governed plan-first COMMAND_SET request"
     )
-    p_request_set.add_argument("--command", action="append", required=True)
+    p_request_set.add_argument(
+        "--command", action="append", required=True,
+        help=(
+            "One step of the plan, in order: a single program (an interpreter with a "
+            "script, -c or -e included) or a pipeline, whose highest stage decides its "
+            "tier; never a chain, an interactive program, or an unquoted parenthesis -- "
+            "quote it yourself, the signed bytes are the bytes that run. A T3 step is "
+            "signed and runs only in its turn; any other step (a local git commit, a "
+            "test) is shown in its position as unsigned and is neither asked nor "
+            "reserved. At least one step must be T3. The content of a file a signed "
+            "step runs or reads (a script, --*-file, -f) is sealed too: write the "
+            "file before requesting, and a change before running needs a new signature"
+        ),
+    )
     p_request_set.add_argument(
         "--what",
         help="Required title: what the set does, in one human sentence (120 characters at most)",
@@ -2565,7 +2588,14 @@ def register(subparsers) -> None:
     p_request_set.add_argument("--rationale")
     p_request_set.add_argument(
         "--verification",
-        help="How the resulting state will be confirmed; sealed and shown verbatim",
+        help="Required: how the resulting state will be confirmed; sealed and shown in Details",
+    )
+    p_request_set.add_argument(
+        "--shared-state", dest="shared_state",
+        help=(
+            "Required: whether the set rewrites state others rely on (a shared branch, "
+            "a cluster, a registry) and which, as a human sentence; shown in Details"
+        ),
     )
     p_request_set.add_argument(
         "--rollback",

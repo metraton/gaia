@@ -71,11 +71,15 @@ def _read_episodic_index(project_root: Path):
         con = _store_connect()
         try:
             if ws:
+                from gaia.store.workspace_retire import workspace_scope
+
+                scope = workspace_scope(con, ws)
                 rows = con.execute(
                     "SELECT episode_id, workspace, timestamp, agent, plan_status, "
                     "outcome, exit_code, output_tokens_approx "
-                    "FROM episodes WHERE workspace = ? ORDER BY timestamp ASC",
-                    (ws,),
+                    f"FROM episodes WHERE workspace IN ({','.join('?' * len(scope))}) "
+                    "ORDER BY timestamp ASC",
+                    scope,
                 ).fetchall()
             else:
                 rows = con.execute(
@@ -174,8 +178,16 @@ def _get_memory_v2_stats(project_root: Path) -> dict:
 
 
 def _get_contract_stats(project_root: Path):
-    """Get response contract validation stats from session directories."""
-    contract_dir = project_root / ".claude" / "session" / "active" / "response-contract"
+    """Get response contract validation stats from session directories.
+
+    Reads the data home's session state; a workspace .claude/session left by
+    an earlier layout is read only when the data home has none.
+    """
+    from gaia.paths import session_dir
+
+    contract_dir = session_dir() / "response-contract"
+    if not contract_dir.is_dir():
+        contract_dir = project_root / ".claude" / "session" / "active" / "response-contract"
     if not contract_dir.is_dir():
         return None
 

@@ -6,13 +6,13 @@ Every agent is defined as a Markdown file with YAML frontmatter at the top. That
 
 The orchestrator (`gaia-orchestrator.md`) is special: it has no `permissionMode`; `Read` exists only to triangulate evidence with the user, while `Bash` is a lane for allowlisted coordination commands through the trusted `gaia` binary. `gaia_cli_only_guard.py` rejects every other binary and Gaia surface, so it remains unable to execute a general shell. It has no Edit, Write, Glob, or Grep.
 
-That lane covers coordination state (briefs, plans, tasks, contracts, approvals, notifications, history, metrics, memory), the substrate and installation reads (`doctor`, `status`, `defects`, `query`, `context show`/`get`, `workspace current`/`info`, `evidence show`/`list`, `schedule list`/`show`/`status`), the coordinator-owned writes, and two verbs that read like reads and are not: `scan` — refreshing the workspace substrate is the orchestrator's own job, since that substrate is the context every dispatch carries — and `paths`, which prints the resolved storage locations and creates the `~/.gaia` layout when it is missing. What stays out is surgery on it: `context wipe`, `context prune-workspaces`, the `context move-*` family and `doctor --fix` are dispatched to a specialist. `ALLOWED_READ_PHRASES` / `ALLOWED_WRITE_PHRASES` / `EXPLICITLY_DENIED_PHRASES` in `gaia_cli_only_guard.py` are the source of truth for the exact set.
+That lane covers coordination state (briefs, plans, tasks, contracts, approvals, notifications, history, metrics, memory), the substrate and installation reads (`doctor`, `status`, `defects`, `query`, `context show`/`get`, `workspace current`/`info`, `evidence show`/`list`), the coordinator-owned writes, and two verbs that read like reads and are not: `scan` — refreshing the workspace substrate is the orchestrator's own job, since that substrate is the context every dispatch carries — and `paths`, which prints the resolved storage locations and creates the `~/.gaia` layout when it is missing. What stays out is surgery on it: `context wipe`, `context prune-workspaces`, the `context move-*` family and `doctor --fix` are dispatched to a specialist. `ALLOWED_READ_PHRASES` / `ALLOWED_WRITE_PHRASES` / `EXPLICITLY_DENIED_PHRASES` in `gaia_cli_only_guard.py` are the source of truth for the exact set.
 
 All other agents set `permissionMode: acceptEdits` so file edits inside their domain flow without extra prompts, while hooks enforce security tiers.
 
-Adding a new agent is three steps: write the `.md` file here (including a `routing:` frontmatter block if the agent owns a surface), add it to `build/gaia.manifest.json` under `agents`, and re-run `gaia install` so `tools/scan/seed_surface_routing.py` seeds the agent's surface into the DB-backed `surface_routing` table. The agent becomes available on the next Claude Code restart. Surface routing is no longer a `config/surface-routing.json` file — each agent's `routing:` block is the source of truth.
+Adding a new agent is three steps: write the `.md` file here (including a `routing:` frontmatter block if the agent owns a surface), add it to `build/gaia.manifest.json` under `agents`, and run `gaia update` so `tools/scan/seed_surface_routing.py` seeds the agent's surface into the DB-backed `surface_routing` table. The agent becomes available on the next Claude Code restart. Surface routing is no longer a `config/surface-routing.json` file — each agent's `routing:` block is the source of truth.
 
-## Cuándo se activa
+## When it activates
 
 The flow below describes Claude Code. A `skills:` declaration is not a preload
 guarantee in OpenCode; workflows explicitly invoke the available skill-loading tool.
@@ -54,7 +54,7 @@ Agent executes, closing its agent_contract_handoffs row with
 [subagent_stop.py] fires -> validates contract, records metrics, updates episodic memory
 ```
 
-## Qué hay aquí
+## What's here
 
 ```
 agents/
@@ -69,7 +69,7 @@ agents/
 └── gaia-verifier.md       # Clean-context verifier: consumes task_gates, promotes NEEDS_VERIFICATION to COMPLETE
 ```
 
-## Convenciones
+## Conventions
 
 **Frontmatter fields:**
 
@@ -91,7 +91,7 @@ agents/
 
 **Tool restriction:** Give each agent only the tools it needs. The orchestrator has `Read` for triangulation and guarded `Bash` for the coordination lane described above; it has no Write/Edit/Glob/Grep. Read-only agents should not have Write or Edit.
 
-## Ver también
+## See also
 
 - [`tools/scan/seed_surface_routing.py`](../tools/scan/seed_surface_routing.py) — seeds each agent's `routing:` block into the DB-backed `surface_routing` table (intent-to-agent mapping)
 - [`build/gaia.manifest.json`](../build/gaia.manifest.json) — agent registration

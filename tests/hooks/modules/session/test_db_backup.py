@@ -2,8 +2,8 @@
 """
 Tests for the SessionStart DB auto-backup (AC-7): modules.session.db_backup.
 
-maybe_backup_db() throttles to at most one snapshot per 24h and retains the
-newest 5 snapshots, non-fatally. It shares the create-snapshot-and-rotate
+maybe_backup_db() throttles to at most one sessionstart snapshot per 24h and
+retains the newest 5 snapshots of each prefix, non-fatally. It shares the create-snapshot-and-rotate
 implementation with `gaia uninstall` via gaia.paths.snapshot.
 
 Isolation: GAIA_DATA_DIR is redirected to a tmp path so db_path() and
@@ -11,6 +11,8 @@ snapshot_dir() resolve inside the test sandbox and the real ~/.gaia is never
 touched.
 """
 
+import builtins
+import os
 import sys
 import time
 from pathlib import Path
@@ -59,7 +61,6 @@ class TestMaybeBackupThrottle:
 
     def test_backup_taken_again_after_window_elapses(self, sandbox):
         """When the newest snapshot is older than 24h, a new one is taken."""
-        import os
         _, _, snap_dir = sandbox
         first = maybe_backup_db()
         assert first is not None
@@ -76,6 +77,50 @@ class TestMaybeBackupThrottle:
         assert maybe_backup_db() is not None
         assert maybe_backup_db(force=True) is not None
         assert len(list(snap_dir.glob("*.db.gz"))) == 2
+
+
+@pytest.fixture
+def other_snapshots(sandbox):
+    """Five day-old snapshots of another caller, all sorting after ``sessionstart-``."""
+    _, _, snap_dir = sandbox
+    snap_dir.mkdir()
+    old = time.time() - (THROTTLE_SECONDS + 3600)
+    snaps = [snap_dir / f"uninstall-2026010{i}T000000000000.db.gz" for i in range(1, 6)]
+    for snap in snaps:
+        snap.write_bytes(b"x")
+        os.utime(snap, (old, old))
+    return snaps
+
+
+class TestMaybeBackupAmongOtherSnapshots:
+    def test_snapshot_is_kept_and_throttles_the_next_start(self, sandbox, other_snapshots):
+        _, _, snap_dir = sandbox
+
+        first = maybe_backup_db()
+        second = maybe_backup_db()
+
+        assert first is not None and Path(first).exists(), "the day's snapshot must survive retention"
+        assert second is None, "a kept snapshot younger than 24h must hold the throttle"
+        assert list(snap_dir.glob("sessionstart-*.db.gz")) == [Path(first)]
+        assert all(snap.exists() for snap in other_snapshots)
+
+    def test_throttled_start_does_not_read_the_db(self, sandbox, other_snapshots, monkeypatch):
+        _, db, snap_dir = sandbox
+        fresh = snap_dir / "sessionstart-20260101T000000000000.db.gz"
+        fresh.write_bytes(b"x")
+        opened = []
+        real_open = builtins.open
+
+        def recording_open(file, *args, **kwargs):
+            opened.append(str(file))
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", recording_open)
+        result = maybe_backup_db()
+
+        assert str(db) not in opened, "a throttled start must not open the DB"
+        assert result is None
+        assert list(snap_dir.glob("sessionstart-*.db.gz")) == [fresh]
 
 
 class TestMaybeBackupRetention:

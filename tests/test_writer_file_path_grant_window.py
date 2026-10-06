@@ -24,7 +24,7 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "hooks"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-APPROVED_FILE = "/home/jorge/ws/me/gaia/hooks/modules/security/approval_grants.py"
+APPROVED_FILE = "/home/user/ws/me/gaia/hooks/modules/security/approval_grants.py"
 
 # The measured failure: signed 07:09:36, expired 07:14:36, Edit at 07:15:10.
 # A re-dispatch that grounds itself before writing lands well past that.

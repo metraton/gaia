@@ -17,12 +17,17 @@
  *   1. Bump ALL version sources to <version>:
  *        - package.json
  *        - pyproject.toml         ([project].version)
- *        - .claude-plugin/marketplace.json  (every plugin entry's top-level version)
- *        - CHANGELOG.md           (top versioned header; inserts a stub if absent)
- *      NOTE: .claude-plugin/plugin.json is NOT hand-bumped here -- it is a
- *      GENERATED artifact (metadata only, NO inline hooks; version inherited
- *      from package.json via the manifest's "from:package.json"). Step 2
- *      regenerates it.
+ *        - .claude-plugin/plugin.json  (the one plugin version Claude Code reads)
+ *        - CHANGELOG.md           (a stable folds [Unreleased] and its pre-release
+ *                                  sections into one section; a pre-release adds
+ *                                  its header; see changelog-bump.mjs)
+ *      plugin.json is GENERATED (version from package.json via the manifest's
+ *      "from:package.json"), and build-plugin.py refuses to overwrite a
+ *      generated file whose content changes. Bumping its version here is what
+ *      lets Step 2 regenerate it as a no-op; any other difference still fails.
+ *      .claude-plugin/marketplace.json is never written: its gaia entry has
+ *      source "." and no version, so the ref a user adds the marketplace from
+ *      is the code that installs, at the version plugin.json declares.
  *   2. npm run generate:plugin-root  (regenerates the ROOT .claude-plugin/plugin.json
  *                                     (metadata only) + the canonical hooks/hooks.json
  *                                     from the manifest -- the source:npm plugin
@@ -45,6 +50,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import chalk from 'chalk';
+import { bumpChangelogText } from './changelog-bump.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const REPO_ROOT = path.resolve(path.dirname(__filename), '..');
@@ -76,10 +82,6 @@ function writeText(rel, content) {
   fs.writeFileSync(path.join(REPO_ROOT, rel), content);
 }
 
-function exists(rel) {
-  return fs.existsSync(path.join(REPO_ROOT, rel));
-}
-
 // --- version-source bumpers ------------------------------------------------
 // Each returns a short status string describing what it did, or throws.
 
@@ -92,30 +94,19 @@ function bumpJsonVersionField(rel, version) {
   return `${rel}: ${before} -> ${version}`;
 }
 
-function bumpMarketplace(rel, version) {
-  const data = JSON.parse(readText(rel));
-  const plugins = data.plugins || [];
-  if (plugins.length === 0) throw new Error(`${rel}: no plugins[] to bump`);
-  const befores = plugins.map((p) => `${p.name}=${p.version}`);
-  const tag = `v${version}`;
-  const refUpdates = [];
-  for (const plugin of plugins) {
-    plugin.version = version;
-    // Pin the source to the release tag for git/github sources so
-    // `/plugin install` serves a fixed, reproducible tag instead of tracking
-    // moving default-branch HEAD. Bumped atomically with the version so the
-    // ref can never go stale (the earlier flagged follow-up). Guard: only
-    // git/github object sources carry a ref -- npm/local sources must not.
-    const src = plugin.source;
-    if (src && typeof src === 'object' &&
-        (src.source === 'github' || src.source === 'git')) {
-      src.ref = tag;
-      refUpdates.push(`${plugin.name}.source.ref=${tag}`);
-    }
-  }
-  writeText(rel, JSON.stringify(data, null, 2) + '\n');
-  const refNote = refUpdates.length ? ` (${refUpdates.join(', ')})` : '';
-  return `${rel}: [${befores.join(', ')}] -> all ${version}${refNote}`;
+/**
+ * Rewrite only the top-level version line of a build-plugin.py output, so the
+ * file stays byte-identical to what Step 2 would generate. A JSON round trip
+ * here would not: Python escapes non-ASCII ("—") where JSON.stringify
+ * writes the character, and the generator refuses that difference.
+ */
+function bumpGeneratedVersionLine(rel, version) {
+  const text = readText(rel);
+  const versionLine = /^( {2}"version": )"([^"]+)"/m;
+  const match = text.match(versionLine);
+  if (!match) throw new Error(`${rel}: top-level "version" line not found`);
+  writeText(rel, text.replace(versionLine, `$1"${version}"`));
+  return `${rel}: ${match[2]} -> ${version}`;
 }
 
 function bumpPyproject(rel, version) {
@@ -136,26 +127,11 @@ function bumpPyproject(rel, version) {
 }
 
 function bumpChangelog(rel, version) {
-  const text = readText(rel);
-  // Find the first real versioned header (skip "## [Unreleased]").
-  const headerRe = /^##\s*\[([^\]]+)\](.*)$/gm;
-  let m;
-  while ((m = headerRe.exec(text)) !== null) {
-    if (m[1].trim().toLowerCase() === 'unreleased') continue;
-    if (m[1].trim() === version) {
-      return `${rel}: top header already [${version}] (no change)`;
-    }
-    // Insert a new dated stub entry above the current top version, right after
-    // the "## [Unreleased]" line if present, else above the first version header.
-    const today = new Date().toISOString().slice(0, 10);
-    const stub = `## [${version}] - ${today}\n\n`;
-    const insertAt = m.index;
-    const updated = text.slice(0, insertAt) + stub + text.slice(insertAt);
-    writeText(rel, updated);
-    return `${rel}: inserted stub [${version}] above [${m[1].trim()}] ` +
-      `(EDIT the body before release)`;
-  }
-  throw new Error(`${rel}: no versioned header found to anchor the new entry`);
+  const before = readText(rel);
+  const today = new Date().toISOString().slice(0, 10);
+  const bumped = bumpChangelogText(before, version, today);
+  if (bumped.text !== before) writeText(rel, bumped.text);
+  return `${rel}: ${bumped.summary}`;
 }
 
 // --- main ------------------------------------------------------------------
@@ -185,12 +161,7 @@ function main() {
   try {
     results.push(bumpJsonVersionField('package.json', version));
     results.push(bumpPyproject('pyproject.toml', version));
-    // .claude-plugin/plugin.json is intentionally NOT bumped here -- it is
-    // regenerated in Step 2 (generate:plugin-root), inheriting the version from
-    // package.json via the manifest's "from:package.json".
-    if (exists('.claude-plugin/marketplace.json')) {
-      results.push(bumpMarketplace('.claude-plugin/marketplace.json', version));
-    }
+    results.push(bumpGeneratedVersionLine('.claude-plugin/plugin.json', version));
     results.push(bumpChangelog('CHANGELOG.md', version));
   } catch (err) {
     fail(`Version bump failed (working tree left for inspection): ${err.message}`);

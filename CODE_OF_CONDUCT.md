@@ -6,6 +6,6 @@ Please read the full text at the link above. All contributors, maintainers, and 
 
 ## Reporting
 
-Report unacceptable behavior to jorge.aguilar87@gmail.com.
+Report unacceptable behavior through a GitHub direct message to [@metraton](https://github.com/metraton), or privately through [GitHub private reporting](https://github.com/metraton/gaia/security/advisories).
 
 Reports will be reviewed and investigated promptly and fairly.

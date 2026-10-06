@@ -2,7 +2,11 @@
 gaia cleanup -- Remove Gaia's workspace footprint and apply data retention.
 
 The full-cleanup footprint mirrors what `gaia install` writes, in reverse:
-  - CLAUDE.md and .claude/settings.json (removed outright -- Gaia-owned)
+  - CLAUDE.md and .claude/settings.json (removed only when Gaia authored them:
+    the install manifest, .claude/gaia-manifest.json, records Gaia creating
+    them and they hold nothing of the user's; without a manifest, only a
+    settings.json holding nothing but Gaia hook registrations. A file the user
+    wrote is kept byte for byte.)
   - .claude/ symlinks incl. skills (removed -- Gaia-owned)
   - .claude/.plugin-initialized marker (removed -- Gaia-owned)
   - .claude/plugin-registry.json (surgical: only Gaia's installed[] entry is
@@ -671,31 +675,62 @@ SYMLINKS_TO_REMOVE = [
 ]
 
 
-def _remove_claude_md(root: Path, dry_run: bool) -> dict:
-    path = root / "CLAUDE.md"
+def _gaia_authored(root: Path, rel: str) -> bool:
+    """True when the file at *rel* is Gaia's to remove: Gaia created it and it holds nothing of the user's.
+
+    With a manifest, the file goes only when reverting the manifest leaves it
+    absent -- created by install and not edited since, or a JSON file whose
+    user-added keys revert to nothing. Without one, only a settings.json
+    holding nothing but Gaia hook registrations (``_strip_gaia_hooks``) is
+    claimed; CLAUDE.md is never claimed, as manifest adoption never claims it.
+    """
+    from cli import _manifest  # noqa: PLC0415 -- _manifest imports this module lazily
+
+    manifest = _manifest.load(root)
+    if manifest is not None:
+        target = _manifest.revert_states(_manifest.capture(root), manifest["entries"])
+        return target.get(rel, {}).get("type") == "absent"
+    if rel != ".claude/settings.json":
+        return False
+    data = _read_json_file(root / rel)
+    if not isinstance(data, dict):
+        return False
+    remainder = copy.deepcopy(data)
+    hooks = remainder.get("hooks")
+    if isinstance(hooks, dict):
+        _strip_gaia_hooks(hooks, root)
+        if not hooks:
+            del remainder["hooks"]
+    return remainder == {}
+
+
+def _remove_if_gaia_authored(root: Path, rel: str, dry_run: bool) -> dict:
+    path = root / rel
     if not path.exists():
         return {"found": False}
+    if not _gaia_authored(root, rel):
+        return {"found": True, "removed": False, "preserved": True, "dry_run": dry_run}
     if not dry_run:
         path.unlink()
     return {"found": True, "removed": not dry_run, "dry_run": dry_run}
+
+
+def _remove_claude_md(root: Path, dry_run: bool) -> dict:
+    return _remove_if_gaia_authored(root, "CLAUDE.md", dry_run)
 
 
 def _remove_settings_json(root: Path, dry_run: bool) -> dict:
-    path = root / ".claude" / "settings.json"
-    if not path.exists():
-        return {"found": False}
-    if not dry_run:
-        path.unlink()
-    return {"found": True, "removed": not dry_run, "dry_run": dry_run}
+    return _remove_if_gaia_authored(root, ".claude/settings.json", dry_run)
 
 
 # ---------------------------------------------------------------------------
 # Gaia-owned data-dir markers (.plugin-initialized, plugin-registry.json)
 #
-# Both live in get_plugin_data_dir(), which falls back to .claude/ when
-# CLAUDE_PLUGIN_DATA is unset (the common npm-install case). The marker is a
-# pure Gaia artifact -- removed outright. The registry is shared with Claude
-# Code's plugin system, so only Gaia's own entry is removed surgically.
+# The registry lives in get_plugin_data_dir(), which falls back to .claude/
+# when CLAUDE_PLUGIN_DATA is unset (the common npm-install case); it is shared
+# with Claude Code's plugin system, so only Gaia's own entry is removed
+# surgically. A marker in .claude/ is one an earlier version left there (it now
+# lives in the Gaia data home) -- a pure Gaia artifact, removed outright.
 # ---------------------------------------------------------------------------
 
 # Plugin names Gaia registers in plugin-registry.json. "gaia" is the sole
@@ -704,9 +739,8 @@ _GAIA_PLUGIN_NAMES = {"gaia"}
 
 
 def _remove_plugin_initialized(root: Path, dry_run: bool) -> dict:
-    """Remove the .plugin-initialized first-run marker.
+    """Remove a .plugin-initialized marker an earlier version wrote into .claude/.
 
-    Written by plugin_setup.mark_initialized() into get_plugin_data_dir().
     A pure Gaia artifact (timestamp + mode), safe to delete outright.
     """
     path = root / ".claude" / ".plugin-initialized"
@@ -824,33 +858,36 @@ def _gaia_managed_permission_sets():
         return {"Bash"}, set()
 
 
-def _is_gaia_hook_command(command: object) -> bool:
-    """True when a hook command string was injected by Gaia.
+def _gaia_hook_predicate(workspace: Path):
+    """``plugin_setup.is_gaia_hook_command`` bound to *workspace* -- the one ownership test.
 
-    Both hook writers -- ``merge_local_hooks`` (cli/_install_helpers.py) and
-    ``setup_project_hooks`` (hooks/modules/core/plugin_setup.py) -- bake the
-    ``${CLAUDE_PLUGIN_ROOT}/hooks/`` prefix into the workspace's
-    ``.claude/hooks/`` directory (the stable symlink into the Gaia package).
-    A command Gaia owns therefore resolves through ``.claude/hooks/``. We also
-    match the un-converted ``${CLAUDE_PLUGIN_ROOT}/hooks/`` literal in case a
-    block was written before symlink resolution. Backslashes are normalized so
-    the check holds for Windows-authored paths.
+    When the hooks package cannot be imported nothing is claimed: removing a
+    hook Gaia may not own is the failure this avoids; a leftover Gaia entry is
+    the cheaper one.
     """
-    if not isinstance(command, str):
-        return False
-    norm = command.replace("\\", "/")
-    return ".claude/hooks/" in norm or "${CLAUDE_PLUGIN_ROOT}/hooks/" in norm
+    try:
+        from cli import _install_helpers  # noqa: F401 -- puts hooks/ on sys.path
+        from modules.core.plugin_setup import (  # type: ignore
+            _gaia_hook_entrypoints,
+            is_gaia_hook_command,
+        )
+    except Exception:  # noqa: BLE001
+        return lambda command: False
+    entrypoints = _gaia_hook_entrypoints()
+    return lambda command: is_gaia_hook_command(command, workspace, entrypoints)
 
 
-def _strip_gaia_hooks(hooks: dict) -> bool:
+def _strip_gaia_hooks(hooks: dict, workspace: Path) -> bool:
     """Remove Gaia-owned hook commands from a settings ``hooks`` block, in place.
 
-    Mirrors the writers in reverse: drops individual hook commands that resolve
-    into ``.claude/hooks/``, prunes a hook entry whose command list becomes
-    empty, and drops an event whose entry list becomes empty. User-authored
-    hook entries (and entries with no ``hooks`` list) are preserved untouched.
+    Mirrors the writer in reverse: drops the hook commands
+    :func:`_gaia_hook_predicate` claims for *workspace*, prunes a hook entry
+    whose command list becomes empty, and drops an event whose entry list
+    becomes empty. User-authored hook entries -- including a script of the
+    user's own under ``.claude/hooks/`` -- are preserved untouched.
     Returns True if anything was removed.
     """
+    owned = _gaia_hook_predicate(workspace)
     changed = False
     for event in list(hooks.keys()):
         entries = hooks.get(event)
@@ -862,9 +899,7 @@ def _strip_gaia_hooks(hooks: dict) -> bool:
             if isinstance(inner, list):
                 kept_inner = [
                     h for h in inner
-                    if not _is_gaia_hook_command(
-                        h.get("command") if isinstance(h, dict) else None
-                    )
+                    if not owned(h.get("command") if isinstance(h, dict) else None)
                 ]
                 if len(kept_inner) != len(inner):
                     changed = True
@@ -891,8 +926,8 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
         install set (a user override of the value is preserved).
       - permissions.allow: drops entries whose tool name Gaia manages.
       - permissions.deny: drops Gaia's deny rules.
-      - hooks: drops hook commands Gaia injected (those resolving into
-        ``.claude/hooks/``); the ``hooks`` key is removed when Gaia was its
+      - hooks: drops hook commands Gaia injected, as the single ownership
+        predicate of ``plugin_setup`` decides; the ``hooks`` key is removed when Gaia was its
         sole owner, so no orphan block referencing deleted symlinks survives.
       - Empty containers (env / permissions / allow / deny / hooks) are pruned
         so the file does not retain hollow Gaia scaffolding.
@@ -964,7 +999,7 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
                 del data["permissions"]
 
     # hooks (Gaia-injected event commands resolving into .claude/hooks/).
-    # This is the mirror of merge_local_hooks / setup_project_hooks: removing
+    # This is the mirror of plugin_setup.sync_workspace_hooks: removing
     # them here prevents an orphan `hooks` block (pointing at deleted symlinks)
     # from surviving uninstall and double-registering if the Claude Code plugin
     # is later mounted.
@@ -972,7 +1007,7 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
     if isinstance(hooks, dict):
         # Detect on a copy so dry-run never mutates; apply in place otherwise.
         probe = copy.deepcopy(hooks) if dry_run else hooks
-        if _strip_gaia_hooks(probe):
+        if _strip_gaia_hooks(probe, root):
             removed_fields.append("hooks")
         if not dry_run and not hooks:
             del data["hooks"]
@@ -999,6 +1034,50 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
     except OSError as exc:
         result["error"] = str(exc)
     return result
+
+
+def strip_gaia_local_settings(data: dict, workspace: Path) -> dict:
+    """*data* (a settings.local.json object) without anything a Gaia install writes there.
+
+    The pre-manifest footprint of install, key for key: agent identity, its
+    env value, managed permission entries and deny rules, the permission mode
+    and hidden attribution while they still hold Gaia's values, the worktree
+    isolation override, and the hooks the single ownership predicate claims.
+    Containers left empty are dropped. Mutates and returns *data*.
+    """
+    from cli import _install_helpers as helpers  # noqa: PLC0415
+
+    if data.get("agent") == "gaia-orchestrator":
+        del data["agent"]
+    owned_values = {
+        "env": _GAIA_ENV_KEYS,
+        "attribution": helpers._HIDDEN_ATTRIBUTION,
+        "worktree": {helpers._WORKTREE_BG_ISOLATION_KEY: helpers._WORKTREE_BG_ISOLATION_VALUE},
+        "permissions": {"defaultMode": helpers._DEFAULT_PERMISSION_MODE},
+    }
+    for section, owned in owned_values.items():
+        block = data.get(section)
+        if isinstance(block, dict):
+            for key, value in owned.items():
+                if block.get(key) == value:
+                    del block[key]
+    perms = data.get("permissions")
+    if isinstance(perms, dict):
+        managed_names, gaia_deny = _gaia_managed_permission_sets()
+        if isinstance(perms.get("allow"), list):
+            perms["allow"] = [e for e in perms["allow"] if _perm_tool_name(e) not in managed_names]
+        if isinstance(perms.get("deny"), list):
+            perms["deny"] = [e for e in perms["deny"] if e not in gaia_deny]
+    if isinstance(data.get("hooks"), dict):
+        _strip_gaia_hooks(data["hooks"], workspace)
+    for section in ("permissions", "env", "attribution", "worktree", "hooks"):
+        block = data.get(section)
+        if isinstance(block, dict):
+            for key in [k for k, v in block.items() if v in ([], {})]:
+                del block[key]
+            if not block:
+                del data[section]
+    return data
 
 
 def _perm_tool_name(entry: str) -> str:
@@ -1068,11 +1147,14 @@ def register(subparsers):
     """Register the 'cleanup' subcommand."""
     p = subparsers.add_parser(
         "cleanup",
-        help="Remove CLAUDE.md, settings.json, symlinks and apply data retention policy",
+        help="Remove Gaia's workspace footprint and apply data retention policy",
         description=(
             "Cleanup gaia installation files and apply data retention policy.\n"
             "\n"
-            "Default mode: removes CLAUDE.md, settings.json, symlinks, then runs retention.\n"
+            "Default mode: removes Gaia's symlinks and markers, then runs retention.\n"
+            "CLAUDE.md and .claude/settings.json are removed only when Gaia created\n"
+            "them (per .claude/gaia-manifest.json, or without a manifest a settings.json\n"
+            "holding only Gaia hooks); a file you wrote is kept byte for byte.\n"
             "--prune / --retain: run data retention only (no file/symlink removal).\n"
             "--dry-run: print what would change without modifying anything.\n"
         ),
@@ -1226,12 +1308,12 @@ def cmd_cleanup(args) -> int:
             or retention_actions
         )
 
-        if claude_md.get("found"):
-            verb = "Would remove" if dry_run else "Removed"
-            print(f"  {verb}: CLAUDE.md")
-        if settings.get("found"):
-            verb = "Would remove" if dry_run else "Removed"
-            print(f"  {verb}: .claude/settings.json")
+        for rel, outcome in (("CLAUDE.md", claude_md), (".claude/settings.json", settings)):
+            if outcome.get("preserved"):
+                print(f"  Kept (not created by Gaia): {rel}")
+            elif outcome.get("found"):
+                verb = "Would remove" if dry_run else "Removed"
+                print(f"  {verb}: {rel}")
         if settings_local.get("found"):
             verb = "Would clean" if dry_run else "Cleaned"
             fields = ", ".join(settings_local.get("removed_fields", []))

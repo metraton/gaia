@@ -15,8 +15,8 @@ the principles in `SKILL.md` are what a turn needs to run.
 | `COMPLETE` with a non-empty `pending_steps`, or `next_action` other than `"done"` | `COMPLETE_SHAPE` |
 | `COMPLETE` whose `evidence_report.verification.result` is not `"pass"` | `VERIFICATION_RESULT` |
 | `APPROVAL_REQUEST` without a non-empty `approval_request.exact_content` | `APPROVAL_REQUEST_SHAPE` |
-| `COMPLETE` on a turn whose dispatch binding carries a `plan_task_id`, at both seams | `_blind_verification_required` (`hooks/adapters/claude_code.py`) and `cmd_finalize` (`bin/cli/contract.py`) |
-| A close whose persisted contract is unfinalized, however complete the final message | `_resolve_subagent_stop_gate_full` (`hooks/adapters/claude_code.py`) |
+| `COMPLETE` on a turn whose dispatch binding carries a `plan_task_id`, at both seams | `_blind_verification_required` (`hooks/adapters/subagent_stop_core.py`) and `cmd_finalize` (`bin/cli/contract.py`) |
+| A close whose persisted contract is unfinalized, however complete the final message | `_resolve_subagent_stop_gate_full` (`hooks/adapters/subagent_stop_core.py`) |
 | `finalize` on a draft still declaring `IN_PROGRESS` | `cmd_finalize` (`bin/cli/contract.py`) |
 
 Unqualified names above are `FormErrorCode` members returned by `validate_form`
@@ -38,7 +38,7 @@ Close    declare a state, finalize, degrade honestly
 ```
 
 Two doors open onto that arc. **A fresh dispatch** arrives with a kernel --
-`# Your Contract`, `# Your CLI`, `# What I know about you`. Your contract is
+`# Your Contract`, `# Your CLI`, `# How the user works`. Your contract is
 named there, already open. Start at Ground.
 
 **A resumed turn** arrives as a message from the orchestrator inside a turn that
@@ -149,6 +149,14 @@ Close each piece verified before starting the next: compounding failures grow
 exponentially, and separating two entangled failures costs far more than
 verifying the first one did. Verify by result -- an exit code says the command
 ran, not that the state changed.
+
+The acceptance to verify against is already in hand: the `acceptance` lines of
+`# Your Contract` on a plan-bound turn, the goal's own assertion otherwise. A
+`command` gate is one you can run yourself, so run it before returning and again
+after every fix until it holds; a gate you cannot make pass is declared in
+`open_gaps`, never left for the verifier to discover. A `semantic` gate is a
+rubric: judgment settles it, not a retry, so state what a reader should check
+and let the independent verifier grade it.
 
 On a failure, search before retrying; do not vary the attempt. Which search
 depends on what failed, and the two pull opposite ways:
@@ -291,8 +299,17 @@ and as an on-disk draft -- before you run anything.
 | `goal` | The assignment, whole and bounded. Nothing outside it belongs to this turn. |
 | `role` / `surface` | The turn's relationship to the task, and the surface that owns it. |
 | `project` | The project this turn is about, as `name (/abs/path)`. Dispatch data first (the orchestrator's `project=<name>` token), cwd resolution only as fallback. A name the substrate does not know yet appears bare, with no path suffix. Absent when the dispatch named no project and the cwd matched none. |
+| `workflow` | Indented under `project`: how work lands in that project -- integration, target branch, channel -- as the `workflow` key of its `project_identity` entry declares it (`gaia/identity_shape.py::DECLARED_WORKFLOW_KEY`). A value to obey, not to rediscover. Present only when the entry declares one; a project that declares nothing gets no line and no guessed default. |
 | `can_read` / `can_write` | The menu of project-knowledge sections this turn may pull on demand and cite, and the ones it may propose updates to. Nothing from the menu arrives preloaded. |
-| `plan_task_id` + `acceptance` | Present only on a plan-task-bound turn: the binding and the verifiable floor the increment must clear. Such a turn cannot self-`COMPLETE`; it closes `NEEDS_VERIFICATION`. |
+| `plan_task_id` + `acceptance` | Present only on a plan-task-bound turn: the binding and the verifiable floor the increment must clear -- the assertions principle 7 loops against. Such a turn cannot self-`COMPLETE`; it closes `NEEDS_VERIFICATION`. |
+
+Two blocks follow `# Your Contract`. `# Your CLI` is the index of what the turn
+can look up on its own. `# How the user works` carries the user's standing rows
+with their bodies, minus those whose audience is the orchestrator alone
+(`hooks/modules/context/kernel_builder.py::build_memory_block`); nothing of any
+project's memory arrives, so a decision or thread the turn needs travels as a
+reference in the goal, or is read with `gaia memory get-relevant --initiative
+<k> --sections anchor`.
 
 ### The agent_id floor is measured
 
@@ -345,7 +362,7 @@ do not plan to stay in the turn for the answer. The orchestrator presents it
 and, once the user decides, resumes you to run it (`execution`).
 
 **The gate at the wall.** `_resolve_subagent_stop_gate_full` in
-`hooks/adapters/claude_code.py` resolves this turn's own dispatch row and
+`hooks/adapters/subagent_stop_core.py` resolves this turn's own dispatch row and
 decides in three cases, all of them about the row -- nothing in the agent's
 final-message text is read:
 
@@ -432,7 +449,7 @@ requires fresh read-only investigation and a new request-set for every retry or
 remainder command still needed.
 
 **Blind verification has two seams.** The SubagentStop gate
-(`_blind_verification_required` in `hooks/adapters/claude_code.py`) and the CLI
+(`_blind_verification_required` in `hooks/adapters/subagent_stop_core.py`) and the CLI
 finalize path (`cmd_finalize` in `bin/cli/contract.py`, resolving the binding
 via `dispatched_binding_plan_task_id_by_contract`) apply the same decision, so
 neither is a bypass of the other. The decision is a pure function of

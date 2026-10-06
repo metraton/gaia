@@ -56,9 +56,9 @@ $ uv run pytest tests/system/test_fixture_precondition_audit.py -v
 Transcript
 ----------
 ============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/jorge/ws/me/gaia/.venv/bin/python3
+platform linux -- Python 3.11.15, pytest-8.3.5, pluggy-1.6.0 -- /home/user/ws/me/gaia/.venv/bin/python3
 cachedir: .pytest_cache
-rootdir: /home/jorge/ws/me/gaia
+rootdir: /home/user/ws/me/gaia
 configfile: pyproject.toml
 plugins: cov-7.1.0
 collecting ... collected 2 items

@@ -39,7 +39,7 @@ def _permissions(package: Path = ROOT, existing: object = None) -> dict:
 
 
 @pytest.mark.parametrize("arguments", [
-    "", " --help", " context project gaia",
+    "", " --help", " now", " context project gaia",
     " contract view --draft-id aedfca4e32e396d64.f72cde6e55cc --json",
     " evidence show 1",
 ])

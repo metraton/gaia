@@ -153,6 +153,127 @@ def test_task_show_registered_in_parser():
 
 
 # ---------------------------------------------------------------------------
+# `gaia task show` -- gate block, closure line, --id addressing
+# ---------------------------------------------------------------------------
+
+def _seed_gates(tmp_db: Path, task_id: int, rows: list[tuple[str, str | None]]):
+    """Insert one gate per (status, stale_reason) pair; return their ids."""
+    import sqlite3
+
+    con = sqlite3.connect(str(tmp_db))
+    try:
+        ids = []
+        for status, stale_reason in rows:
+            cur = con.execute(
+                "INSERT INTO task_gates (task_id, verification_type, status, "
+                "stale_at, stale_reason) VALUES (?, 'command', ?, ?, ?)",
+                (task_id, status,
+                 "2026-09-30T12:00:00Z" if stale_reason else None, stale_reason),
+            )
+            ids.append(cur.lastrowid)
+        con.commit()
+        return ids
+    finally:
+        con.close()
+
+
+def test_cmd_show_lists_gates_and_says_why_it_cannot_close(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    from cli.task import _cmd_show
+
+    monkeypatch.chdir(tmp_path)
+    ids_by_order = _seed_two_tasks(tmp_db)
+    stale_id, pending_id = _seed_gates(
+        tmp_db, ids_by_order[1], [("pass", "goal edited"), ("pending", None)],
+    )
+
+    assert _cmd_show(_show_args(1)) == 0
+    out = capsys.readouterr().out
+    gate_lines = [line for line in out.splitlines() if f"#{stale_id}" in line]
+    assert gate_lines and "pass" in gate_lines[0]
+    assert "stale since 2026-09-30" in gate_lines[0]
+    assert "goal edited" in gate_lines[0]
+    assert any(f"#{pending_id}" in line and "pending" in line
+               for line in out.splitlines())
+    verdict = next(line for line in out.splitlines() if line.startswith("VERDICT:"))
+    assert "gates not passing" in verdict
+    assert f"gate {stale_id} stale" in verdict
+    assert f"gate {pending_id} pending" in verdict
+    assert f"gaia contract list --plan-task {ids_by_order[1]}" in out
+
+
+def test_cmd_show_passing_gates_never_promise_the_close(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """set-status done also weighs the closer's standing, which a read cannot
+    know, so an all-pass verdict must not read as "the task closes"."""
+    from cli.task import _cmd_show
+
+    monkeypatch.chdir(tmp_path)
+    ids_by_order = _seed_two_tasks(tmp_db)
+    _seed_gates(tmp_db, ids_by_order[1], [("pass", None), ("pass", None)])
+
+    assert _cmd_show(_show_args(1)) == 0
+    out = capsys.readouterr().out
+    verdict = next(line for line in out.splitlines() if line.startswith("VERDICT:"))
+    assert "gates all pass" in verdict
+    assert "set-status done still checks who closes" in verdict
+    assert "CLOSES" not in out
+
+
+@pytest.mark.parametrize("rows", [
+    [("pass", "goal edited"), ("pending", None)],
+    [("pass", None), ("pass", None)],
+    [],
+])
+def test_cmd_show_json_gates_pass_matches_the_gate_verdict(
+    tmp_db, tmp_path, monkeypatch, capsys, rows,
+):
+    from cli.task import _cmd_show
+    from gaia.state.task_closure import derive_gate_verdict
+    from gaia.store.writer import list_task_gates
+
+    monkeypatch.chdir(tmp_path)
+    ids_by_order = _seed_two_tasks(tmp_db)
+    _seed_gates(tmp_db, ids_by_order[1], rows)
+
+    assert _cmd_show(_show_args(1, json=True)) == 0
+    out = json.loads(capsys.readouterr().out)
+    gates = list_task_gates("me", "show-brief", 1, db_path=tmp_db)
+    assert [g["id"] for g in out["gates"]] == [g["id"] for g in gates]
+    assert out["gates_pass"] is derive_gate_verdict(gates).approving
+    assert "closable" not in out
+
+
+def test_cmd_show_by_task_id_prints_brief_and_order(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    from cli.task import _cmd_show
+
+    monkeypatch.chdir(tmp_path)
+    ids_by_order = _seed_two_tasks(tmp_db)
+
+    args = _show_args(None, brief=None, task_id=ids_by_order[2])
+    assert _cmd_show(args) == 0
+    out = capsys.readouterr().out
+    assert "BRIEF:      show-brief" in out
+    assert "ORDER_NUM:  2" in out
+    assert f"task_id={ids_by_order[2]}" in out
+
+
+def test_task_show_id_flag_registered_in_parser():
+    from cli.task import register
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="subcommand")
+    register(subparsers)
+    args = parser.parse_args(["task", "show", "--id", "824"])
+    assert args.task_id == 824
+    assert args.brief is None
+
+
+# ---------------------------------------------------------------------------
 # `gaia task list` -- TASK_ID column + --json alias
 # ---------------------------------------------------------------------------
 

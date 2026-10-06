@@ -66,7 +66,7 @@ or leave it untouched? Only the last verdict produces no row in the reflection.
 | contradicted by what the session learned | TRANSITION + LINK | close or supersede, with the lineage recorded |
 | untouched | none | stays as it is |
 
-`memory/reference.md` ("Move a note through its lifecycle") holds the exact
+`memory/reference-curation.md` ("Move a note through its lifecycle") holds the exact
 `reclassify` and `link` forms. Both verbs are non-mutative, so the only thing
 that keeps a resolved thread open is failing to propose the row.
 
@@ -111,7 +111,8 @@ the exception boundary in `memory/SKILL.md`. Those two values are what
 make the corpus retrievable in one read —
 `gaia memory get-relevant --initiative=gaia_system` — so a defect carrying the
 project's own initiative, or another type, is absent from that answer. The exact
-slug, CLI flags, and body headings are defined in `memory/reference.md`.
+slug, CLI flags, and body headings are defined in
+`memory/reference-defect-promotion.md`.
 
 ## Milestone test
 

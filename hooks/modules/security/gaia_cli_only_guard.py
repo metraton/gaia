@@ -258,6 +258,7 @@ Public API:
     ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]]
     ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]]
     ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]]
+    ALLOWED_BARE_READ_FLAGS: FrozenSet[str]
     EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]]
     is_orchestrator_role(hook_payload) -> bool
     is_trusted_gaia_binary(token) -> bool
@@ -442,6 +443,11 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "search"),
     ("brief", "verify"),
     ("brief", "decision", "list"),
+    # `brief history` and `usage show` only SELECT (bin/cli/brief.py::_cmd_history,
+    # bin/cli/usage.py::_cmd_show -> gaia.usage.plan_report/session_report).
+    # `usage ingest` writes token_usage and stays out: it belongs to gaia-operator.
+    ("brief", "history"),
+    ("usage", "show"),
     ("plan", "history"),
     ("plan", "change", "list"),
     ("notifications", "list"),
@@ -467,7 +473,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # INSERT/UPDATE/DELETE and no commit() in bin/cli/{doctor,status,defects,
     # query}.py, and the read handlers of the four grouped commands
     # (context._cmd_show/_cmd_get, workspace._cmd_current/_cmd_info,
-    # evidence._cmd_show/_cmd_list, schedule._cmd_list/_cmd_show/_cmd_status)
+    # evidence._cmd_show/_cmd_list)
     # reach the substrate only through gaia.store.reader / gaia.store.provider.
     # Grepping alone is not enough here: `paths` has no mutation marker in its
     # own module and still writes, one call down, which is why it sits in the
@@ -478,6 +484,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # _READ_PHRASE_FORBIDDEN_FLAGS below. Prefix matching cannot express that
     # on its own -- see Design decision 4.
     ("doctor",),
+    ("now",),
     ("status",),
     ("defects",),
     ("query",),
@@ -512,9 +519,6 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("workspace", "info"),
     ("evidence", "show"),
     ("evidence", "list"),
-    ("schedule", "list"),
-    ("schedule", "show"),
-    ("schedule", "status"),
     # `session preview` exists precisely so the orchestrator can render
     # build_session_context()'s output in-process instead of closing and
     # reopening a session to see a manifest edit take effect (see
@@ -570,6 +574,7 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "new"),
     ("brief", "edit"),
     ("brief", "set-status"),
+    ("brief", "set-project"),
     ("brief", "ac", "add"),
     ("brief", "ac", "edit"),
     ("brief", "ac", "remove"),
@@ -587,6 +592,12 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("task", "gate", "reverify"),
     ("task", "set-status"),
     ("notifications", "ack"),
+    # "Remind me tomorrow at 4" is the user's own bookkeeping, recorded where it
+    # is said; each shape is bounded in _validate_orchestrator_write so a report
+    # (a task's voice) or a bulk change cannot ride behind it.
+    ("notifications", "add"),
+    ("notifications", "snooze"),
+    ("notifications", "cancel"),
     ("memory", "add"),
     ("memory", "append"),
     ("memory", "reclassify"),
@@ -601,6 +612,30 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
 
 ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES
 
+# What the orchestrator runs instead of a denied binary, keyed by basename. A
+# forge line routes to a specialist's evidence and never names a forge verb
+# (D115); the clock line never names a relative reminder form (D118).
+_CLOCK_INSTEAD = "read the time with `gaia now` and compute an absolute --at from it."
+_FORGE_INSTEAD = (
+    "PR/CI state is a specialist's evidence: dispatch the owning specialist "
+    "and read its row with `gaia contract view`."
+)
+_INSTEAD_OF_BINARY: Dict[str, str] = {
+    "date": _CLOCK_INSTEAD,
+    "timedatectl": _CLOCK_INSTEAD,
+    "gh": _FORGE_INSTEAD,
+    "glab": _FORGE_INSTEAD,
+    "bb": _FORGE_INSTEAD,
+}
+_INSTEAD_OF_ANY_BINARY = "the orchestrator's verbs are in the lanes of `gaia --help`."
+
+# Top-level flags admitted only as the SOLE argument. `--version` is a read the
+# phrase tables cannot express: _check_stage strips leading flags, leaving no
+# phrase to match. Alone, bin/gaia prints the version and returns before any
+# dispatch; beside a subcommand it would still parse that subcommand's
+# arguments, so it is not admitted there.
+ALLOWED_BARE_READ_FLAGS: FrozenSet[str] = frozenset({"--version"})
+
 # Named on purpose, even though default-deny already rejects anything not in
 # ALLOWED_PHRASES: these are the verbs someone is most likely to add to the
 # allowlist later without re-reading this file's reasoning -- a plausible
@@ -608,7 +643,7 @@ ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRI
 # them enumerated, with the reason attached, is the tripwire that makes that
 # future edit a deliberate decision instead of an accidental widening.
 # Task/gate design, approval mutation, destructive brief/plan operations,
-# memory correction/deletion, and contract authorship belong to specialist or
+# memory deletion, and contract authorship belong to specialist or
 # consent-governed paths. Coordinator-owned brief and lifecycle writes are
 # separately allowlisted and shape-checked below.
 #
@@ -639,7 +674,6 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("approvals", "replay"),
     ("approvals", "reject-all"),
     ("approvals", "clean"),
-    ("memory", "edit"),
     ("memory", "delete"),
     ("contract", "set"),
     ("contract", "add"),
@@ -658,13 +692,8 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("context", "move-memory"),
     ("context", "move-project"),
     ("workspace", "merge"),
+    ("workspace", "retire"),
     ("evidence", "add"),
-    # Schedule's desired state and its materialization into the OS scheduler:
-    # `list`/`show`/`status` read it, these three write it (and `sync` reaches
-    # outside gaia entirely, into crontab).
-    ("schedule", "register"),
-    ("schedule", "remove"),
-    ("schedule", "sync"),
     # `release check` reads as a verification verb and is not one: it runs
     # `npm pack`, installs into a sandbox, runs `claude plugin validate` and
     # `npm test`, and finishes with a convergence write. `release publish`
@@ -911,6 +940,7 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
 
     binary = args[0]
     if not is_trusted_gaia_binary(binary):
+        instead = _INSTEAD_OF_BINARY.get(os.path.basename(binary), _INSTEAD_OF_ANY_BINARY)
         return False, (
             f"GAIA CLI ONLY: '{binary}' is not the trusted gaia CLI "
             f"(expected an absolute path whose realpath is the declared "
@@ -918,7 +948,7 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
             f"package). A bare command name, a relative path, an env-var "
             f"prefix, or a binary no such package declares all fail this "
             f"identity check by design -- see gaia_cli_only_guard.py for "
-            f"why. Denied outright, not approvable."
+            f"why. Denied outright, not approvable. Instead: {instead}"
         )
 
     rest = args[1:]
@@ -935,6 +965,9 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
     # message below, which recommends `gaia --help`, never recommends a
     # command that is itself denied.
     if _is_help_or_bare_stage(rest):
+        return True, None
+
+    if len(rest) == 1 and rest[0] in ALLOWED_BARE_READ_FLAGS:
         return True, None
 
     i = 0
@@ -975,8 +1008,8 @@ def _is_help_token(token: str) -> bool:
     """True iff *token* is, or unambiguously abbreviates, `-h`/`--help`.
 
     Mirrors `_forbidden_flag_hit`'s already-verified-against-argparse
-    abbreviation handling (`allow_abbrev` defaults True and gaia's parsers
-    never disable it) rather than inventing a second one: `--hel`/`--he`
+    abbreviation handling (`allow_abbrev` defaults True, and a parser that
+    turns it off only makes the match stricter) rather than inventing a second one: `--hel`/`--he`
     parse to the help action exactly as `--fi`/`--f` parse to `--fix` there.
     The `=value` split via `_option_name` also means a token like
     `--description=--help` (a VALUE that merely looks like the flag, verified
@@ -1050,8 +1083,9 @@ def _forbidden_flag_hit(token: str, forbidden: FrozenSet[str]) -> Optional[str]:
     """The flag in *forbidden* that *token* would reach, or None.
 
     Matching is by PREFIX of the forbidden flag, not equality, because
-    argparse abbreviates long options (``allow_abbrev`` defaults to True and
-    nothing in gaia's parsers turns it off). Measured, not assumed: for
+    argparse abbreviates long options (``allow_abbrev`` defaults to True, and
+    only a parser that turns it off, like ``gaia memory add``, refuses the
+    short spellings itself). Measured, not assumed: for
     ``gaia doctor`` both ``--fi`` and ``--f`` parse to ``fix=True``, so an
     equality check on ``"--fix"`` would fail OPEN on the two shortest
     spellings of the very flag it exists to stop.
@@ -1126,6 +1160,58 @@ def _has_value(args: Tuple[str, ...], flag: str) -> bool:
     return False
 
 
+_REMINDER_ADD_FLAGS = frozenset({
+    "--kind", "--headline", "--body", "--at", "--cron", "--every",
+    "--skill", "--memory", "--project", "--workspace", "--json",
+})
+_REMINDER_SCHEDULE_FLAGS = {"reminder": {"--at"}, "routine": {"--cron", "--every"}}
+
+
+def _single_valued_flags(args: Tuple[str, ...]) -> Optional[Dict[str, str]]:
+    """Return ``{flag: value}`` when every token is a flag given once, else None.
+
+    A flag takes one value (``--f v`` or ``--f=v``); only ``--json`` takes none.
+    A positional or a repeated flag voids the shape.
+    """
+    flags: Dict[str, str] = {}
+    i = 0
+    while i < len(args):
+        name, eq, value = args[i].partition("=")
+        if not name.startswith("--") or name in flags:
+            return None
+        if name == "--json" and not eq:
+            flags[name] = ""
+            i += 1
+            continue
+        if not eq:
+            if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                return None
+            value = args[i + 1]
+            i += 1
+        flags[name] = value
+        i += 1
+    return flags
+
+
+def _is_bounded_reminder_add(args: Tuple[str, ...]) -> bool:
+    flags = _single_valued_flags(args)
+    if flags is None or not set(flags) <= _REMINDER_ADD_FLAGS or "--headline" not in flags:
+        return False
+    schedule = set(flags) & {"--at", "--cron", "--every"}
+    allowed = _REMINDER_SCHEDULE_FLAGS.get(flags.get("--kind", ""), set())
+    return len(schedule) == 1 and schedule <= allowed
+
+
+def _is_bounded_single_id(args: Tuple[str, ...], allowed: FrozenSet[str],
+                          required: FrozenSet[str] = frozenset()) -> bool:
+    if not args or not args[0].isdigit():
+        return False
+    flags = _single_valued_flags(args[1:])
+    if flags is None or not set(flags) <= allowed | {"--json"}:
+        return False
+    return not required or len(set(flags) & required) == 1
+
+
 def _validate_orchestrator_write(
     candidate: Tuple[str, ...], phrase: Tuple[str, ...]
 ) -> Optional[str]:
@@ -1146,13 +1232,15 @@ def _validate_orchestrator_write(
     )
 
     if phrase == ("brief", "new"):
-        valid = "--headless" in args and any(a.startswith("--title=") for a in args)
+        valid = "--headless" in args and _has_value(args, "--title")
     elif phrase == ("brief", "edit"):
         valid = bool(args) and not args[0].startswith("-") and "--headless" in args
     elif phrase == ("brief", "set-status"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _BRIEF_STATUSES
+    elif phrase == ("brief", "set-project"):
+        valid = bool(args) and not args[0].startswith("-")
     elif phrase[:2] == ("brief", "ac"):
-        valid = bool(args) and not args[0].startswith("-") and any(a.startswith("--id=") for a in args[1:])
+        valid = bool(args) and not args[0].startswith("-") and _has_value(args[1:], "--id")
     elif phrase == ("brief", "decision", "add"):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args, "--text")
     elif phrase == ("plan", "set-status"):
@@ -1220,6 +1308,18 @@ def _validate_orchestrator_write(
         )
     elif phrase == ("notifications", "ack"):
         valid = (len(args) == 1 and (args[0].isdigit() or args[0] == "--all"))
+    elif phrase == ("notifications", "add"):
+        valid = _is_bounded_reminder_add(args)
+    elif phrase == ("notifications", "snooze"):
+        until = frozenset({"--for", "--until"})
+        valid = _is_bounded_single_id(args, until, required=until)
+    elif phrase == ("notifications", "cancel"):
+        valid = _is_bounded_single_id(args, frozenset())
+    elif phrase == ("memory", "add") and "--replace" in args:
+        # Rewriting a row in place is delegated under T3 exactly like
+        # `memory delete`; the add parser disables abbreviation, so only
+        # this spelling reaches it.
+        return _explicitly_denied_reason(("memory", "add", "--replace"))
     else:
         # Memory's curator verbs, the two `scan` spellings and `paths` retain
         # their own mature CLI validation -- there is no coordination-shaped

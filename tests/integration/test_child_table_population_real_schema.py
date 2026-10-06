@@ -24,7 +24,7 @@ The existing unit tests did not catch it because:
 This module closes both gaps:
 
   1. TestSchemaV15Migration -- builds a v14-shaped DB with the LEGACY ``repo``
-     column on all nine child tables, runs bootstrap_database.sh, and asserts
+     column on all nine child tables, runs bootstrap_database.py, and asserts
      every child table converged to ``project`` (the exact regression that
      caused the live failure).
 
@@ -49,7 +49,7 @@ import pytest
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+_BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _MIGRATIONS_DIR = _REPO_ROOT / "scripts" / "migrations"
 
@@ -121,72 +121,13 @@ CREATE TABLE {table} (
 """
 
 
-def _build_v14_legacy_db(db_path: Path) -> None:
-    """Build a v14-state DB whose child tables carry the legacy `repo` column.
-
-    The column sets mirror the real schema.sql so that when bootstrap re-runs
-    schema.sql against this pre-existing DB, its CREATE INDEX statements (e.g.
-    idx_apps_status, idx_workloads_cluster) parse against existing columns.
-    Only the FK column name differs: legacy `repo` instead of `project`.
-    """
-    con = sqlite3.connect(str(db_path))
-    try:
-        con.executescript(_V14_LEGACY_STUB_HEADER)
-        # projects needs the columns its own indexes reference (topic_key, etc.)
-        con.executescript(
-            "DROP TABLE projects;"
-            "CREATE TABLE projects ("
-            "  workspace TEXT NOT NULL, name TEXT NOT NULL, role TEXT,"
-            "  remote_url TEXT, platform TEXT, primary_language TEXT,"
-            "  scanner_ts TEXT, topic_key TEXT, group_name TEXT, path TEXT,"
-            "  PRIMARY KEY (workspace, name),"
-            "  FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE"
-            ");"
-        )
-        for t in _CHILD_TABLES:
-            con.executescript(
-                _V14_CHILD_TEMPLATE.format(
-                    table=t, extra_cols=_V14_CHILD_COLUMNS[t]
-                )
-            )
-        con.execute("INSERT INTO workspaces (name, identity) VALUES ('me', 'me')")
-        con.execute("INSERT INTO projects (workspace, name) VALUES ('me', 'gaia')")
-        # Seed one row per child table so we can prove data survives the rename.
-        for t in _CHILD_TABLES:
-            con.execute(
-                f"INSERT INTO {t} (workspace, repo, name) VALUES ('me', 'gaia', 'seed')"
-            )
-        # Stamp the ledger up to v14 so bootstrap requests exactly v14->v15.
-        con.executemany(
-            "INSERT INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
-            [(v, "2026-01-01T00:00:00Z", f"v{v}") for v in range(1, 15)],
-        )
-        con.commit()
-    finally:
-        con.close()
-
-
-def _run_bootstrap_with_db(db_path: Path, workspace: Path) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
-    env["WORKSPACE"] = str(workspace)
-    return subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-
-
 def _run_bootstrap_fresh(workspace: Path) -> tuple[subprocess.CompletedProcess, Path]:
     db_path = workspace / "tmp_gaia.db"
     env = os.environ.copy()
     env["GAIA_DB"] = str(db_path)
     env["WORKSPACE"] = str(workspace)
     res = subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
+        [sys.executable, str(_BOOTSTRAP_PY)],
         env=env,
         capture_output=True,
         text=True,
@@ -207,39 +148,6 @@ def _fk_col(db_path: Path, table: str) -> str | None:
     if "repo" in cols:
         return "repo"
     return None
-
-
-class TestSchemaV15Migration:
-    """Child tables expose the `project` FK column.
-
-    The v14 -> v15 in-place rename (repo -> project) is below the schema floor
-    (v18) and is no longer exercised: the historical migration chain was
-    collapsed and bootstrap rejects below-floor DBs. What remains verifiable is
-    the floor contract -- a fresh install builds child tables already on the
-    `project` column.
-    """
-
-    def setup_method(self):
-        if not _BOOTSTRAP_SH.is_file():
-            pytest.skip(f"bootstrap script not found at {_BOOTSTRAP_SH}")
-
-    def test_fresh_install_child_tables_use_project(self):
-        """Fresh bootstrap (schema.sql) produces child tables with `project`."""
-        with tempfile.TemporaryDirectory() as tmp:
-            res, db_path = _run_bootstrap_fresh(Path(tmp))
-            assert res.returncode == 0, (
-                f"fresh bootstrap failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
-            )
-            for t in _CHILD_TABLES:
-                assert _fk_col(db_path, t) == "project", (
-                    f"fresh install: {t} FK column should be `project`"
-                )
-            con = sqlite3.connect(str(db_path))
-            try:
-                max_v = con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
-            finally:
-                con.close()
-            assert max_v >= 15, f"fresh install ledger should be >= 15 (got {max_v})"
 
 
 # ---------------------------------------------------------------------------

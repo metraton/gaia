@@ -40,3 +40,51 @@ jobs:
         run: >-
           python -m pytest -n 0 -q --tb=short
           tests/integration/test_opencode_protected_edit_bootstrap.py::test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge
+
+  # The pull-request suite leaves out tests/conftest.py's NIGHTLY_ONLY (mutant
+  # kills and the eval-harness tests); naming each entry here runs it anyway.
+  nightly-only:
+    name: Mutant kills, eval harness and slow integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      # tests/cli/test_pre_publish_dry_run_representative.py runs
+      # bin/pre-publish-validate.js, whose Step 5 compares the source tree with
+      # the package installed in its own node_modules -- a copy `npm ci` never
+      # makes. Without it the test fails naming the missing prerequisite.
+      # --ignore-scripts keeps prepack from rewriting tracked files.
+      - name: Install the package's own packed copy under node_modules
+        run: |
+          npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP"
+          mkdir -p node_modules/@jaguilar87/gaia
+          tar -xzf "$RUNNER_TEMP"/jaguilar87-gaia-*.tgz \
+            -C node_modules/@jaguilar87/gaia --strip-components=1
+
+      - name: Install test dependencies
+        run: pip install pytest==8.3.5 pyyaml pytest-xdist
+
+      - name: Run nightly-only tests
+        run: >-
+          python -m pytest -q -rA --tb=short
+          $(python -c "from tests.conftest import NIGHTLY_ONLY; print(' '.join(NIGHTLY_ONLY))")

@@ -11,10 +11,7 @@
 
 **Do NOT open a public GitHub issue for security vulnerabilities.**
 
-To report a vulnerability, please use one of the following methods:
-
-1. **Email:** Send details to jorge.aguilar87@gmail.com with the subject line `[SECURITY] gaia vulnerability report`.
-2. **GitHub Private Vulnerability Reporting:** Use the [Security Advisories](https://github.com/metraton/gaia/security/advisories) tab to report privately.
+To report a vulnerability, use **GitHub Private Vulnerability Reporting**: the [Security Advisories](https://github.com/metraton/gaia/security/advisories) tab reports it privately to the maintainer.
 
 ### What to include
 

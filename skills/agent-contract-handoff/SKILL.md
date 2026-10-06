@@ -43,8 +43,10 @@ See `agent-protocol` for when in the turn's cycle this first write happens.
 ## Input context
 
 The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
-role/surface, `project`, `can_read`/`can_write`, and -- on a plan-task-bound
-turn -- the acceptance gates), `# Your CLI`, and `# What I know about you`.
+role/surface, `project` with its declared `workflow` line when the project
+declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
+acceptance gates), `# Your CLI`, and `# How the user works` (the user's
+standing rows, minus those addressed to the orchestrator alone).
 Project context is NOT preloaded and no surface routing arrives: pull the
 sections you need on demand, within the `can_read` menu, before querying
 anything wider (`agent-protocol/read-map.md`). Only sections in `can_write`
@@ -180,6 +182,10 @@ minted, `approval_id`, copied verbatim from the request's output.
   never write authority.
 - `update_contracts`: `{contract, payload}` entries, deep-merged only into the
   input write allowlist; lists replace whole and no delete sentinel exists.
+  SubagentStop applies them whatever `agent_state` the turn closes in, into
+  the workspace of the turn's dispatch row; an entry it cannot apply comes
+  back on the close as `update_contracts_refused` and in its user message
+  (`hooks/adapters/subagent_stop_core.py::run_subagent_stop`).
 - `rollback_executed`, `context_consumption`: advisory fields.
 
 ## The evidence clause of `update_contracts`

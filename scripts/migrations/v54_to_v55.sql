@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v54 -> v55: the workspace directory, recorded by the scan.
 --
 -- Worktrees are created under <workspace root>/.project-worktrees, and a

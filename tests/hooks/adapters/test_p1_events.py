@@ -240,9 +240,9 @@ class TestHooksJsonP1Entries:
             return json.load(f)
 
     def test_session_start_entry(self, hooks_config):
-        """hooks.json has a SessionStart entry wired for startup, resume, AND compact.
+        """hooks.json has a SessionStart entry wired for every source.
 
-        The matcher must be "startup|resume|compact": a "startup"-only matcher
+        The matcher must be "startup|resume|clear|compact|fork": a "startup"-only matcher
         never fires on `claude --resume`/`--continue` (Claude Code dispatches
         those with source "resume", a distinct matcher), which left the
         pinned_build marker stale on the common exit -> --resume workflow.
@@ -250,13 +250,14 @@ class TestHooksJsonP1Entries:
         right after a `/compact` -- the only event/shape that can deliver
         additionalContext around compaction (PreCompact/PostCompact cannot;
         see hooks/pre_compact.py and hooks/post_compact.py docstrings).
+        "clear" and "fork" start a new session id that must be attested.
         """
         hooks = hooks_config.get("hooks", {})
         assert "SessionStart" in hooks, "SessionStart not found in hooks.json"
 
         session_start = hooks["SessionStart"]
         assert len(session_start) >= 1
-        assert session_start[0]["matcher"] == "startup|resume|compact"
+        assert session_start[0]["matcher"] == "startup|resume|clear|compact|fork"
         assert "session_start.py" in session_start[0]["hooks"][0]["command"]
 
     def test_user_prompt_submit_in_hooks_json(self, hooks_config):

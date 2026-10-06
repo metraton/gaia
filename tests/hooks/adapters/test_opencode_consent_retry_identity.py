@@ -30,7 +30,7 @@ ROLE = "gaia-operator"
 SESSION_ID = "ses_f53ee3ac2ffeLzO3PSaVXUxFYy"
 ORIGINAL_CALL_ID = "call_fwv2msrC7uZKlZDftj64alRO"
 RETRY_CALL_ID = "call_RPws80NkLnr3VjRiriMk6QSx"
-COMMAND = "cp /dev/null /home/jorge/.gaia/scratch/oc-lote-probe1.txt"
+COMMAND = "cp /dev/null /home/user/.gaia/scratch/oc-lote-probe1.txt"
 FINGERPRINT = hashlib.sha256(COMMAND.encode("utf-8")).hexdigest()
 REQUEST_FINGERPRINT = "request-fingerprint"
 
@@ -184,7 +184,7 @@ def test_typed_singular_and_file_proofs_are_verified_against_the_named_active_gr
         grant_payload = {"command": COMMAND, "scope_signature": {}}
         event = _typed_event("bash", {"command": COMMAND}, proof)
     else:
-        path = "/home/jorge/ws/me/gaia/hooks/example.py"
+        path = "/home/user/ws/me/gaia/hooks/example.py"
         proof.update({
             "canonical_path": path,
             "path_fingerprint": hashlib.sha256(path.encode()).hexdigest(),
@@ -212,7 +212,7 @@ def test_typed_singular_and_file_proofs_are_verified_against_the_named_active_gr
 def test_typed_file_proof_with_a_different_target_fails_closed(monkeypatch):
     import gaia.store.writer as writer
 
-    path = "/home/jorge/ws/me/gaia/hooks/example.py"
+    path = "/home/user/ws/me/gaia/hooks/example.py"
     proof = _common_proof("SCOPE_FILE_PATH")
     proof.update({
         "canonical_path": path,

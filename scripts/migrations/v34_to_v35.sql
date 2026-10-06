@@ -1,3 +1,4 @@
+-- gaia-compat: breaking
 -- Migration v34 -> v35: add NEEDS_VERIFICATION to the plan_status enum on
 -- both persisted columns that mirror it -- episodes.plan_status and
 -- agent_contract_handoffs.task_status (harness R2, brief

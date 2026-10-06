@@ -5,8 +5,9 @@ Section 3c applies every pending migration file it finds in the source tree on
 any invocation that bootstraps. `v49_to_v50.sql` was the first that also touched
 DATA, and the runner did not distinguish -- committing the file was enough for
 the next arbitrary CLI call to capture and erase a counter on 1359 live curated
-rows. These tests hold the property that closes that: structure passes alone,
-data stops, and the real file that caused the incident stops.
+rows. These tests hold the property that closes that: a structure-only chain
+passes alone after a backup, a chain reaching data stops once for the whole
+chain (D68), and the real file that caused the incident stops.
 
 Every case builds its own database under tmp_path. None of them reads or writes
 the user's ~/.gaia/gaia.db.
@@ -93,11 +94,11 @@ def _run_bootstrap(runner: Path, db: Path, consent: str | None = None):
     env = os.environ.copy()
     env["GAIA_DB"] = str(db)
     env["SCHEMA_FILE"] = str(_SCHEMA_SQL)
-    env.pop(migration_guard.ENV_CONSENT, None)
+    argv = [sys.executable, str(runner)]
     if consent is not None:
-        env[migration_guard.ENV_CONSENT] = consent
+        argv += [migration_guard.CONSENT_FLAG, consent]
     return subprocess.run(
-        [sys.executable, str(runner)],
+        argv,
         env=env,
         capture_output=True,
         text=True,
@@ -163,29 +164,33 @@ class TestStatementClassification(unittest.TestCase):
         )
         self.assertEqual((), migration_guard.scan(sql, self.LOADED))
 
-    def test_trigger_body_is_classified_by_what_it_would_run(self):
-        fts_mirror = (
-            "CREATE TRIGGER memory_au AFTER UPDATE ON memory BEGIN "
-            "INSERT INTO memory_fts(rowid, name) VALUES (new.rowid, new.name); END;"
-        )
-        self.assertEqual((), migration_guard.scan(fts_mirror, self.LOADED))
+    def test_creating_a_trigger_is_structural_whatever_its_body_runs(self):
+        """A trigger body runs on future writes, never on rows that exist when
+        the migration applies, so creating one reaches no existing row."""
+        for body in (
+            "INSERT INTO memory_fts(rowid, name) VALUES (new.rowid, new.name);",
+            "DELETE FROM memory WHERE name = new.name;",
+        ):
+            sql = f"CREATE TRIGGER t AFTER INSERT ON memory BEGIN {body} END;"
+            with self.subTest(body=body):
+                self.assertEqual((), migration_guard.scan(sql, self.LOADED))
 
-        deleting = (
-            "CREATE TRIGGER t AFTER INSERT ON memory BEGIN "
-            "DELETE FROM memory WHERE name = new.name; END;"
+    def test_a_statement_after_a_trigger_is_still_classified(self):
+        sql = (
+            "CREATE TRIGGER t AFTER INSERT ON memory BEGIN SELECT 1; END;\n"
+            "UPDATE memory SET body = 'x';\n"
         )
-        self.assertEqual(1, len(migration_guard.scan(deleting, self.LOADED)))
+        self.assertEqual(
+            [("UPDATE", "memory")],
+            [(r.verb, r.table) for r in migration_guard.scan(sql, self.LOADED)],
+        )
 
-    def test_consent_names_one_migration_and_has_no_wildcard(self):
-        env = {migration_guard.ENV_CONSENT: "v49_to_v50"}
-        self.assertTrue(migration_guard.consented("v49_to_v50", env))
-        self.assertFalse(migration_guard.consented("v50_to_v51", env))
-        for blanket in ("all", "*", "1", "yes"):
-            self.assertFalse(
-                migration_guard.consented(
-                    "v49_to_v50", {migration_guard.ENV_CONSENT: blanket}
-                )
-            )
+    def test_the_consent_names_the_chain_span(self):
+        self.assertEqual("v49..v58", migration_guard.chain_label(49, 58))
+        self.assertEqual(
+            "gaia migrate apply --consent-chain v49..v58",
+            migration_guard.consent_command("v49..v58"),
+        )
 
 
 class TestRealCorpusIsClassifiedPrecisely(unittest.TestCase):
@@ -236,16 +241,15 @@ class TestFreshDatabaseIsNeverGated(unittest.TestCase):
 
     def test_empty_census_lets_a_data_reaching_migration_through(self):
         sql = (_MIGRATIONS_DIR / "v49_to_v50.sql").read_text()
-        verdict = migration_guard.assess("v49_to_v50", sql, {}, {})
-        self.assertFalse(verdict.blocked)
+        verdict = migration_guard.assess("v49_to_v50", sql, {})
         self.assertEqual((), verdict.reaches)
 
     def test_a_table_created_during_this_run_is_not_at_risk(self):
         census = {"memory": 1359}
         verdict = migration_guard.assess(
-            "v50_to_v51", "UPDATE brand_new_table SET x = 0;", census, {}
+            "v50_to_v51", "UPDATE brand_new_table SET x = 0;", census
         )
-        self.assertFalse(verdict.blocked)
+        self.assertEqual((), verdict.reaches)
 
     def test_a_real_fresh_install_applies_the_whole_chain_with_no_consent(self):
         """The install path must never stop asking for a consent nobody can give."""
@@ -255,7 +259,6 @@ class TestFreshDatabaseIsNeverGated(unittest.TestCase):
             db = Path(tmp) / "fresh.db"
             env = os.environ.copy()
             env["GAIA_DB"] = str(db)
-            env.pop(migration_guard.ENV_CONSENT, None)
             result = subprocess.run(
                 [sys.executable, str(_BOOTSTRAP_PY)],
                 env=env,
@@ -323,6 +326,13 @@ class TestTheGateBitesEndToEnd(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertNotIn("BLOCKED", result.stderr)
+        backups = list((db.parent / "backups").glob("*.db"))
+        self.assertEqual(1, len(backups), "an existing database is backed up first")
+        with sqlite3.connect(backups[0]) as saved:
+            self.assertEqual(
+                self.expected - 1,
+                saved.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
+            )
 
         con = sqlite3.connect(db)
         self.assertEqual(
@@ -350,7 +360,11 @@ class TestTheGateBitesEndToEnd(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("BLOCKED", result.stderr)
         self.assertIn("1359 row(s) at risk", result.stderr)
-        self.assertIn(migration_guard.ENV_CONSENT, result.stderr)
+        label = migration_guard.chain_label(self.expected - 1, self.expected)
+        self.assertIn(
+            f"gaia migrate apply --consent-chain {label}", result.stderr
+        )
+        self.assertFalse((db.parent / "backups").exists(), "a refusal writes nothing")
 
         con = sqlite3.connect(db)
         self.assertEqual(
@@ -389,9 +403,10 @@ class TestTheGateBitesEndToEnd(unittest.TestCase):
         print(result.stderr)
 
         self.assertEqual(1, result.returncode)
-        self.assertIn("BLOCKED: migration v49_to_v50", result.stderr)
-        self.assertIn("UPDATE on `memory`", result.stderr)
+        self.assertIn("BLOCKED: migration chain v49..v50", result.stderr)
+        self.assertIn("v49_to_v50: UPDATE on `memory`", result.stderr)
         self.assertIn("1359 row(s) at risk", result.stderr)
+        self.assertIn("gaia migrate apply --consent-chain v49..v50", result.stderr)
 
         con = sqlite3.connect(db)
         self.assertEqual(
@@ -403,9 +418,9 @@ class TestTheGateBitesEndToEnd(unittest.TestCase):
         )
         con.close()
 
-    def test_naming_the_migration_is_the_way_through(self):
+    def test_naming_the_chain_is_the_way_through(self):
         runner, db = self._incident_bed()
-        result = _run_bootstrap(runner, db, consent="v49_to_v50")
+        result = _run_bootstrap(runner, db, consent="v49..v50")
 
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         con = sqlite3.connect(db)
@@ -422,12 +437,40 @@ class TestTheGateBitesEndToEnd(unittest.TestCase):
         )
         con.close()
 
-    def test_consent_for_another_migration_does_not_carry(self):
+    def test_consent_for_another_chain_does_not_carry(self):
         runner, db = self._incident_bed()
-        result = _run_bootstrap(runner, db, consent="v48_to_v49")
+        result = _run_bootstrap(runner, db, consent="v48..v50")
 
         self.assertEqual(1, result.returncode)
-        self.assertIn("BLOCKED: migration v49_to_v50", result.stderr)
+        self.assertIn("BLOCKED: migration chain v49..v50", result.stderr)
+
+    def test_a_chain_with_several_data_migrations_asks_once(self):
+        start = self.expected - 2
+        db = _live_db(self.tmp, start, memory_rows=5)
+        self._stage(f"v{start}_to_v{start + 1}.sql", "UPDATE memory SET description = 'a';\n")
+        self._stage(
+            f"v{start + 1}_to_v{self.expected}.sql",
+            "DELETE FROM memory WHERE name = 'fixture_row_0';\n",
+        )
+        label = migration_guard.chain_label(start, self.expected)
+
+        refused = _run_bootstrap(self.runner, db)
+        self.assertEqual(1, refused.returncode)
+        self.assertEqual(1, refused.stderr.count("BLOCKED"))
+        self.assertIn(f"v{start}_to_v{start + 1}: UPDATE", refused.stderr)
+        self.assertIn(f"v{start + 1}_to_v{self.expected}: DELETE", refused.stderr)
+
+        applied = _run_bootstrap(self.runner, db, consent=label)
+        self.assertEqual(0, applied.returncode, applied.stdout + applied.stderr)
+        self.assertNotIn("BLOCKED", applied.stderr)
+        con = sqlite3.connect(db)
+        self.assertEqual(
+            self.expected,
+            con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
+        )
+        self.assertEqual(4, con.execute("SELECT COUNT(*) FROM memory").fetchone()[0])
+        con.close()
+        self.assertEqual(1, len(list((db.parent / "backups").glob("*.db"))))
 
 
 if __name__ == "__main__":

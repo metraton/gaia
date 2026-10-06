@@ -38,7 +38,7 @@ def _gaia_commands(settings: dict) -> list:
         for entries in settings.get("hooks", {}).values()
         for entry in entries
         for h in entry.get("hooks", [])
-        if plugin_setup._is_gaia_hook_command(h.get("command"), entrypoints)
+        if plugin_setup.is_gaia_hook_command(h.get("command"), Path.cwd(), entrypoints)
     ]
 
 
@@ -66,16 +66,16 @@ def _settings(workspace: Path) -> dict:
 
 class TestPluginLaunch:
     def test_first_run_leaves_no_gaia_hook_in_workspace_settings(self, plugin_launch):
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
 
         assert _gaia_commands(_settings(plugin_launch)) == []
 
     def test_two_runs_are_idempotent(self, plugin_launch):
         settings_path = plugin_launch / ".claude" / "settings.local.json"
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
         after_first = settings_path.read_bytes()
-        second_message = plugin_setup.run_first_time_setup(mark_done=True)
+        second_message = plugin_setup.run_first_time_setup()
 
         assert settings_path.read_bytes() == after_first
         assert second_message is None
@@ -83,6 +83,8 @@ class TestPluginLaunch:
 
     def test_entries_merged_by_an_earlier_version_are_stripped(self, plugin_launch):
         ws = plugin_launch
+        (ws / ".claude" / "hooks").mkdir()
+        (ws / ".claude" / "hooks" / "my_guard.py").write_text("")
         user_guard = {"type": "command", "command": f"python3 {ws}/.claude/hooks/my_guard.py"}
         user_echo = {"type": "command", "command": "echo user-hook"}
         (ws / ".claude" / "settings.local.json").write_text(json.dumps({
@@ -100,7 +102,7 @@ class TestPluginLaunch:
             },
         }))
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
         settings = _settings(ws)
 
         assert _gaia_commands(settings) == []
@@ -116,19 +118,20 @@ class TestPluginLaunch:
             "hooks": {"SessionStart": [{"hooks": [_gaia_handler(ws, name) for name in GAIA_ENTRYPOINTS]}]},
         }))
 
-        assert plugin_setup.remove_merged_gaia_hooks() is True
+        assert plugin_setup.sync_workspace_hooks(ws, "plugin") == ("updated", "registered plugin-channel hooks")
         assert "hooks" not in _settings(ws)
-        assert plugin_setup.remove_merged_gaia_hooks() is False
+        assert plugin_setup.sync_workspace_hooks(ws, "plugin")[0] == "noop"
 
 
 class TestNonPluginLaunch:
     def test_npm_copy_still_merges_hooks_into_workspace_settings(self, workspace, monkeypatch):
         monkeypatch.setattr(plugin_setup, "_installed_under_node_modules", lambda: True)
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
         commands = _gaia_commands(_settings(workspace))
 
-        assert f"python3 {workspace}/.claude/hooks/pre_tool_use.py" in commands
+        hooks_dir = f"{workspace}/.claude/hooks"
+        assert f'sh "{hooks_dir}/launch.sh" "{hooks_dir}/pre_tool_use.py"' in commands
         assert "${CLAUDE_PLUGIN_ROOT}" not in json.dumps(_settings(workspace)["hooks"])
 
     def test_workspace_registered_copy_of_a_plugin_install_writes_no_hooks(self, workspace, monkeypatch):
@@ -137,6 +140,6 @@ class TestNonPluginLaunch:
         undo the plugin launch's cleanup on every event."""
         monkeypatch.setattr(plugin_setup, "_installed_under_node_modules", lambda: False)
 
-        plugin_setup.run_first_time_setup(mark_done=True)
+        plugin_setup.run_first_time_setup()
 
         assert "hooks" not in _settings(workspace)

@@ -13,7 +13,7 @@ Reglas:
 
 CLI args (parametrización cross-workspace):
   --project   workspace name (default: 'me')
-  --src       path al project-context.json (default: ws/me)
+  --src       path to project-context.json (required)
   --out       path al SQL de salida (default: /tmp/migrate_03_context_contracts.sql)
   --fragment  emite solo INSERTs (sin BEGIN/COMMIT)
 """
@@ -25,7 +25,6 @@ import sys
 from pathlib import Path
 
 DEFAULT_PROJECT = "me"
-DEFAULT_SRC = Path("/home/jorge/ws/me/.claude/project-context/project-context.json")
 DEFAULT_OUT = Path("/tmp/migrate_03_context_contracts.sql")
 
 COLUMNS = ["project", "section_name", "payload", "metadata", "updated_at"]
@@ -45,7 +44,7 @@ def row_values_sql(row: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate INSERT SQL for context_contracts table.")
     parser.add_argument("--project", default=DEFAULT_PROJECT)
-    parser.add_argument("--src", default=str(DEFAULT_SRC), help="path to project-context.json")
+    parser.add_argument("--src", required=True, help="path to project-context.json")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--fragment", action="store_true")
     args = parser.parse_args()

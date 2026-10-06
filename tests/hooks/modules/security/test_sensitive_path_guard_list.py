@@ -62,25 +62,25 @@ NOT_SENSITIVE = [
 ]
 
 
-@pytest.mark.parametrize("path", SECRET_READS)
+@pytest.mark.table("path", SECRET_READS)
 def test_sensitive_path_guard_list_refuses_reading_where_secrets_live(home, path):
     assert sensitive_paths.sensitive_path_label(path), path
 
 
-@pytest.mark.parametrize("path", WRITE_ONLY)
+@pytest.mark.table("path", WRITE_ONLY)
 def test_sensitive_path_guard_list_reads_account_config_without_secrets(home, path):
     assert sensitive_paths.sensitive_path_label(path) == "", path
     assert sensitive_paths.is_account_path(path), path
 
 
-@pytest.mark.parametrize("path", READ_AND_WRITE)
+@pytest.mark.table("path", READ_AND_WRITE)
 def test_sensitive_path_guard_list_marks_secret_account_paths_for_both_uses(home, path):
     assert sensitive_paths.sensitive_path_label(path), path
     assert sensitive_paths.is_account_path(path), path
     assert mutative_verbs.is_account_sensitive_path(path), path
 
 
-@pytest.mark.parametrize("path", NOT_SENSITIVE)
+@pytest.mark.table("path", NOT_SENSITIVE)
 def test_sensitive_path_guard_list_leaves_ordinary_paths_free(home, path):
     assert sensitive_paths.sensitive_path_label(path) == "", path
     assert not sensitive_paths.is_account_path(path), path
@@ -126,14 +126,14 @@ FREE = [
 ]
 
 
-@pytest.mark.parametrize("command", READS)
+@pytest.mark.table("command", READS)
 def test_sensitive_path_guard_bash_refuses_reading_or_listing(home, command):
     allowed, reason = sensitive_read_guard.check(command)
     assert allowed is False, command
     assert reason.startswith("[SENSITIVE_PATH]")
 
 
-@pytest.mark.parametrize("command", FREE)
+@pytest.mark.table("command", FREE)
 def test_sensitive_path_guard_bash_leaves_ordinary_reads_free(home, command):
     assert sensitive_read_guard.check(command) == (True, None), command
 

@@ -8,8 +8,8 @@ const GAIA_AGENT_ID = "a69d869dc02031f54"
 const ROLE = "gaia-operator"
 const SESSION = "ses_f53ee3ac2ffeLzO3PSaVXUxFYy"
 const COMMANDS = [
-  "cp /dev/null /home/jorge/.gaia/scratch/oc-lote-probe1.txt",
-  "mv /home/jorge/.gaia/scratch/oc-lote-probe1.txt /home/jorge/.gaia/scratch/oc-lote-probe1.moved",
+  "cp /dev/null /home/user/.gaia/scratch/oc-lote-probe1.txt",
+  "mv /home/user/.gaia/scratch/oc-lote-probe1.txt /home/user/.gaia/scratch/oc-lote-probe1.moved",
 ]
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 
@@ -103,7 +103,7 @@ describe("evaluateConsentRetry", () => {
   })
 
   test("a protected file retry binds the exact canonical target and Edit family", () => {
-    const path = "/home/jorge/ws/me/gaia/hooks/example.py"
+    const path = "/home/user/ws/me/gaia/hooks/example.py"
     const fileRetry = retry({
       operation: {
         version: 1,
@@ -128,7 +128,7 @@ describe("evaluateConsentRetry", () => {
   })
 
   test("apply_patch maps to Edit only for one exact granted target", () => {
-    const path = "/home/jorge/ws/me/gaia/hooks/example.py"
+    const path = "/home/user/ws/me/gaia/hooks/example.py"
     const fileRetry = retry({
       operation: {
         version: 1,

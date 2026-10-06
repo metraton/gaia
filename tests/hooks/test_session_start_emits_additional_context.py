@@ -91,8 +91,8 @@ class TestSessionStartManifest:
     is non-empty, and omit it when the manifest is empty."""
 
     def test_manifest_non_empty_emits_additional_context(self, isolated_workspace):
-        """The Where I am block is built unconditionally and always produces
-        at least cwd + machine. Run the hook with a clean home and verify
+        """The Environment section is built unconditionally and always produces
+        at least folder + machine. Run the hook with a clean home and verify
         hookSpecificOutput is present.
         """
         cwd, _ = isolated_workspace
@@ -114,11 +114,11 @@ class TestSessionStartManifest:
             "additionalContext must be a non-empty string when "
             "hookSpecificOutput is emitted."
         )
-        assert "## Where I am" in ctx, (
-            "The Where I am block is the minimum guaranteed content of "
+        assert "## Environment" in ctx, (
+            "The Environment section is the minimum guaranteed content of "
             "the manifest."
         )
-        assert "cwd:" in ctx
+        assert f"- Folder: {cwd}" in ctx
 
     def test_session_registers_using_stdin_session_id_without_env(
         self, isolated_workspace, monkeypatch

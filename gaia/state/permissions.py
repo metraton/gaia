@@ -148,6 +148,22 @@ class ContentWriteForbidden(PermissionError):
     """Raised when a dispatched agent lacks authority to author brief/plan content."""
 
 
+# Tagging a brief with its project rewrites neither its content nor its status;
+# it decides which workspace the brief follows when the project moves, so the
+# agent that curates the workspace registry tags as well as the curators.
+BRIEF_PROJECT_TAGGERS: frozenset[str] = _CURATOR_AGENTS | frozenset({"gaia-system"})
+
+
+def _assert_dispatch_can_tag_brief_project() -> None:
+    """Refuse a brief project tag from a dispatched agent outside ``BRIEF_PROJECT_TAGGERS``."""
+    agent = dispatch_agent_from_env().strip()
+    if agent and agent not in BRIEF_PROJECT_TAGGERS:
+        raise ContentWriteForbidden(
+            f"tagging a brief with its project is restricted (current "
+            f"GAIA_DISPATCH_AGENT={agent!r}); authorized: {sorted(BRIEF_PROJECT_TAGGERS)}"
+        )
+
+
 def _assert_dispatch_can_write_content(table: str) -> None:
     """Block brief/plan CONTENT mutations from unauthorized subagent dispatches.
 
@@ -327,6 +343,8 @@ __all__ = [
     "CONTENT_AUTHOR_PERMISSIONS",
     "ContentWriteForbidden",
     "_assert_dispatch_can_write_content",
+    "BRIEF_PROJECT_TAGGERS",
+    "_assert_dispatch_can_tag_brief_project",
     "handoff_writer_fleet",
     "is_handoff_writer",
     "agent_fleet",

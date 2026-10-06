@@ -24,12 +24,12 @@ from gaia.store import writer
 APPROVAL_ID = "P-" + "a" * 32
 AGENT = "gaia-system"
 SESSION = "ses-requester"
-REPO = "/home/jorge/ws/me"
+REPO = "/home/user/ws/me"
 WORKTREE_GAIA = (
-    "/home/jorge/ws/me/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia"
+    __file__.rsplit("/tests/", 1)[0] + "/bin/gaia"
 )
 D12_COMMAND = (
-    f"python3 {WORKTREE_GAIA} dev --workspace /home/jorge/ws/me --ref bbc2f09 --host all"
+    f"python3 {WORKTREE_GAIA} dev --workspace /home/user/ws/me --ref bbc2f09 --host all"
 )
 D12_TITLE = "Reinstalar Gaia en tu espacio de trabajo y actualizar su base de datos."
 D12_QUESTION = "¿Reinstalo Gaia?"
@@ -39,7 +39,7 @@ D12_ROLLBACK = "volver al código anterior con --ref c1d8b89; la base queda actu
 OPTIONS = [
     {"label": "Approve", "description": "Autoriza exactamente este comando"},
     {"label": "Reject", "description": "Rechaza la firma; no se ejecuta nada"},
-    {"label": "Details", "description": "Qué hace, impacto y cómo deshacerlo"},
+    {"label": "Details", "description": "Qué hace, impacto, verificación y cómo deshacerlo"},
 ]
 
 
@@ -94,7 +94,9 @@ def test_signature_surface_golden_d12_example():
 
     details = (
         f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {D12_COMMAND} ] "
-        f"[ DOES: {D12_DOES} ] [ IMPACT: {D12_IMPACT} ] [ ROLLBACK: {D12_ROLLBACK} ]"
+        f"[ DOES: {D12_DOES} ] [ IMPACT: {D12_IMPACT} ] [ VERIFICATION: no declarada ] "
+        "[ SHARED-STATE: no declarado; no supongas que no toca estado compartido ] "
+        f"[ ROLLBACK: {D12_ROLLBACK} ]"
     )
     assert rendered.questions == (
         {"question": _asks(D12_COMMAND), "header": "Firma 1/1", "options": OPTIONS, "multiSelect": False},
@@ -147,9 +149,13 @@ def test_signature_surface_same_template_for_n_commands():
     assert [q["question"] for q in rendered.details_questions] == [
         f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {first} ] "
         "[ DOES: Sube la rama al remoto. ] [ IMPACT: La rama queda publicada. ] "
+        "[ VERIFICATION: no declarada ] "
+        "[ SHARED-STATE: no declarado; no supongas que no toca estado compartido ] "
         "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]",
         f"[ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: {second} ] "
         "[ DOES: Abre el PR contra main. ] [ IMPACT: Queda un PR abierto. ] "
+        "[ VERIFICATION: no declarada ] "
+        "[ SHARED-STATE: no declarado; no supongas que no toca estado compartido ] "
         "[ ROLLBACK: no declarado; no supongas que se puede deshacer ]",
     ]
     assert [q["header"] for q in rendered.questions] == ["Firma 1/2", "Firma 2/2"]
@@ -350,7 +356,8 @@ def _request_set_args(**overrides):
     values = dict(
         command=[D12_COMMAND], cwd=[REPO], expect_exit=None, what=D12_TITLE,
         question=D12_QUESTION, does=[D12_DOES], impact=[D12_IMPACT],
-        rationale=None, verification=None, rollback=D12_ROLLBACK,
+        verification="gaia doctor", shared_state="No: solo tu espacio de trabajo.",
+        rationale=None, rollback=D12_ROLLBACK,
         agent_id=AGENT, session_id=SESSION, json=True,
     )
     values.update(overrides)
@@ -416,10 +423,11 @@ def test_signature_surface_cli_presents_the_d12_surface(db, tmp_path, monkeypatc
     shown = json.loads(out)
 
     expected = surface.render(_d12_payload(), approval_id)
-    assert shown == {
-        "approval_id": approval_id,
-        "text": expected.text,
-        "questions": list(expected.questions),
-        "details": expected.details,
-        "details_questions": list(expected.details_questions),
-    }
+    assert (shown["approval_id"], shown["text"], shown["questions"]) == (
+        approval_id, expected.text, list(expected.questions),
+    )
+    request = _request_set_args()
+    for details in shown["details_questions"]:
+        assert f"[ VERIFICATION: {request.verification} ]" in details["question"]
+        assert f"[ SHARED-STATE: {request.shared_state} ]" in details["question"]
+        assert f"[ ROLLBACK: {D12_ROLLBACK} ]" in details["question"]

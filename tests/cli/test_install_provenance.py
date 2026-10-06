@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -187,6 +188,45 @@ def test_doctor_json_before_and_after_drift(installation, monkeypatch, capsys):
     print(json.dumps({"before": before, "after": after}, sort_keys=True))
 
 
+def test_package_record_names_its_channel(installation):
+    _, workspace, _, _, marker = installation
+    assert json.loads(marker.read_text())["channel"] == "npm"
+    assert doctor.check_install_provenance(workspace)["provenance"]["channel"] == "npm"
+
+
+def test_plugin_channel_record_shows_in_doctor_json(installation, monkeypatch, capsys):
+    source, workspace, _, tarball, _ = installation
+    plugin_dir = workspace.parent / "dev-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text('{"name":"gaia"}')
+    captured = provenance.capture_source(source, tarball=tarball)
+    marker = provenance.record_install(workspace, captured, channel="plugin", destination=plugin_dir)
+    assert marker != provenance.provenance_path(workspace)
+    assert json.loads(marker.read_text())["channel"] == "plugin"
+
+    monkeypatch.setattr(doctor, "_derive_workspace", lambda **kwargs: workspace)
+    monkeypatch.setattr(doctor, "_CHECKS", [(57, "Install provenance", doctor.check_install_provenance)])
+    assert doctor.cmd_doctor(argparse.Namespace(workspace=str(workspace), json=True, fix=False)) == 0
+    check = json.loads(capsys.readouterr().out)["checks"][0]
+    head = git(source, "rev-parse", "HEAD")
+    plugin = check["provenance_by_channel"]["plugin"]
+    assert plugin["channel"] == "plugin"
+    assert plugin["commit"] == head
+    assert plugin["destination"] == str(plugin_dir.resolve())
+    assert f"plugin channel from {head[:12]}" in check["detail"]
+    assert check["provenance_by_channel"]["npm"]["diagnostics"] == []
+
+
+def test_doctor_reports_commits_behind_the_source(installation):
+    source, workspace, _, _, _ = installation
+    (source / "main.py").write_text("print('ahead')\n")
+    commit(source, "ahead")
+    result = doctor.check_install_provenance(workspace)
+    assert result["provenance"]["behind"] == 1
+    assert "1 commit(s) behind the source HEAD" in result["detail"]
+    assert "source commit diverged" in result["detail"]
+
+
 def test_registry_write_does_not_follow_foreign_marker(installation):
     source, workspace, _, tarball, marker = installation
     foreign = marker.with_name("foreign.json")
@@ -199,14 +239,84 @@ def test_registry_write_does_not_follow_foreign_marker(installation):
     assert doctor.check_install_provenance(workspace)["severity"] == "error"
 
 
-@pytest.mark.parametrize("missing", ["source", "tarball", "destination"])
+@pytest.mark.parametrize("missing", ["tarball", "destination"])
 def test_missing_paths_are_diagnostics_not_healthy(installation, missing):
-    source, workspace, destination, tarball, _ = installation
-    target = {"source": source, "tarball": tarball, "destination": destination}[missing]
+    _, workspace, destination, tarball, _ = installation
+    target = {"tarball": tarball, "destination": destination}[missing]
     target.rename(target.with_name("moved-away"))
     result = doctor.check_install_provenance(workspace)
     assert result["severity"] == "error"
     assert any("unavailable" in item for item in result["provenance"]["diagnostics"])
+
+
+def test_removed_source_is_reported_without_degrading(installation, monkeypatch, capsys):
+    source, workspace, _, tarball, _ = installation
+    plugin_dir = workspace.parent / "dev-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text('{"name":"gaia"}')
+    provenance.record_install(workspace, provenance.capture_source(source, tarball=tarball),
+                              channel="plugin", destination=plugin_dir)
+    head = git(source, "rev-parse", "HEAD")
+    source.rename(source.with_name("removed-worktree"))
+
+    monkeypatch.setattr(doctor, "_derive_workspace", lambda **kwargs: workspace)
+    monkeypatch.setattr(doctor, "_CHECKS", [(57, "Install provenance", doctor.check_install_provenance)])
+    assert doctor.cmd_doctor(argparse.Namespace(workspace=str(workspace), json=True, fix=False)) == 0
+    report = json.loads(capsys.readouterr().out)
+    check = report["checks"][0]
+    assert report["healthy"] is True
+    assert check["severity"] == "info"
+    plugin = check["provenance_by_channel"]["plugin"]
+    assert plugin["diagnostics"] == []
+    assert plugin["notes"] == [f"source removed since install: {source}"]
+    assert plugin["commit"] == head
+    assert f"plugin channel from {head[:12]}: source removed since install" in check["detail"]
+    assert "recorded artifact and destination match" in check["detail"]
+
+
+def test_removed_source_still_fails_on_installed_drift(installation):
+    source, workspace, destination, _, _ = installation
+    source.rename(source.with_name("removed-worktree"))
+    (destination / "main.py").write_text("changed install\n")
+    result = doctor.check_install_provenance(workspace)
+    assert result["severity"] == "error"
+    assert result["provenance"]["diagnostics"] == ["installed content/hash diverged"]
+    assert result["provenance"]["notes"] == [f"source removed since install: {source}"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_unreachable_source_still_fails(installation, tmp_path):
+    source, workspace, _, _, marker = installation
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    hidden = locked / "source"
+    source.rename(hidden)
+    record = json.loads(marker.read_text())
+    marker.write_text(json.dumps({**record, "source_path": str(hidden)}))
+    locked.chmod(0)
+    try:
+        result = doctor.check_install_provenance(workspace)
+    finally:
+        locked.chmod(0o700)
+    assert result["severity"] == "error"
+    assert result["provenance"]["notes"] == []
+    assert any(item.startswith("source unavailable: [Errno 13]")
+               for item in result["provenance"]["diagnostics"])
+
+
+def test_removed_source_of_a_link_install_fails(installation):
+    source, workspace, destination, _, _ = installation
+    destination.rename(destination.with_name("prior-pack"))
+    destination.symlink_to(source, target_is_directory=True)
+    (workspace / "package.json").write_text(json.dumps({
+        "devDependencies": {"@jaguilar87/gaia": f"link:{source}"},
+    }))
+    provenance.record_install(workspace, provenance.capture_source(source))
+    source.rename(source.with_name("removed-worktree"))
+    result = doctor.check_install_provenance(workspace)
+    assert result["severity"] == "error"
+    assert any(item.startswith("installed destination unavailable")
+               for item in result["provenance"]["diagnostics"])
 
 
 def test_record_replace_failure_preserves_previous_observation(installation, monkeypatch):

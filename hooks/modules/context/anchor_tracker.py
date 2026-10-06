@@ -43,7 +43,7 @@ MIN_ANCHOR_LENGTH = 4
 
 # Age-based cleanup for orphaned anchor files (mirrors REMINDER_TTL_SECONDS in
 # artifact_skill_reminder.py -- the established sibling pattern for this class
-# of /tmp temp-file cache). A subagent dispatch is expected to complete well
+# of Gaia tmp-dir cache file). A subagent dispatch is expected to complete well
 # within this window; anything older is either an orphan (SubagentStop never
 # fired) or already-consumed and forgotten.
 ANCHOR_TTL_SECONDS = 6 * 60 * 60
@@ -51,7 +51,9 @@ ANCHOR_TTL_SECONDS = 6 * 60 * 60
 
 def _anchors_dir() -> Path:
     """Return the directory for anchor temp files."""
-    return Path("/tmp/gaia-context-anchors")
+    from gaia.paths import tmp_dir
+
+    return tmp_dir() / "gaia-context-anchors"
 
 
 def extract_anchors(context_payload: Dict[str, Any]) -> Set[str]:

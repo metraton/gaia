@@ -113,7 +113,7 @@ SAFE_CASES = [
 class TestNoFalsePositivesOnArgumentValues:
     """Tokens containing path/selector/KV characters are never subcommands."""
 
-    @pytest.mark.parametrize("command,why", NO_FALSE_POSITIVE_CASES)
+    @pytest.mark.table("command,why", NO_FALSE_POSITIVE_CASES)
     def test_argument_value_not_treated_as_subcommand(self, command, why):
         result = detect_mutative_command(command)
         assert not result.is_mutative, (
@@ -125,7 +125,7 @@ class TestNoFalsePositivesOnArgumentValues:
 class TestTruePositivesStillDetected:
     """Real mutative CLI subcommands continue to be detected after the fix."""
 
-    @pytest.mark.parametrize("command", TRUE_POSITIVE_CASES)
+    @pytest.mark.table("command", TRUE_POSITIVE_CASES)
     def test_mutative_subcommand_still_flagged(self, command):
         result = detect_mutative_command(command)
         assert result.is_mutative, (
@@ -137,7 +137,7 @@ class TestTruePositivesStillDetected:
 class TestSafeCommandsRemainSafe:
     """Commands that were always safe must remain safe."""
 
-    @pytest.mark.parametrize("command", SAFE_CASES)
+    @pytest.mark.table("command", SAFE_CASES)
     def test_safe_command_not_flagged(self, command):
         result = detect_mutative_command(command)
         assert not result.is_mutative, (

@@ -47,6 +47,7 @@ def _request(n: int) -> str:
           "does": f"git push: sube la rama {n}.", "impact": "La rama queda publicada."}],
         what=f"Publicar la rama {n}.", question=f"¿Publico la rama {n}?",
         session_id=SESSION, agent_id=REQUESTER, rollback="Borrar la rama remota.",
+        verification="git ls-remote", shared_state="Sí: la rama remota.",
     )
 
 

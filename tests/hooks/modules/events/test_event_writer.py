@@ -199,22 +199,25 @@ class TestEventWriterDB:
         rows = _read_harness_rows(db_path)
         assert rows[0]["workspace"] == "some-explicit-workspace"
 
-    def test_write_event_derives_workspace_from_cwd_repo(
+    def test_write_event_derives_workspace_from_the_declared_root(
         self, db_path, tmp_path, monkeypatch
     ):
-        """(b) With no env var but a resolvable git repo in cwd, workspace is
-        derived from gaia.project.current() (the repo-root basename)."""
+        """(b) With no env var, workspace is the declared root containing cwd,
+        never the name of the repository the cwd sits in."""
+        from gaia.store.writer import declare_workspace
+
         monkeypatch.delenv("GAIA_WORKSPACE", raising=False)
         monkeypatch.delenv("GAIA_DISPATCH_WORKSPACE", raising=False)
-        repo = tmp_path / "derived-workspace-repo"
-        repo.mkdir()
+        repo = tmp_path / "declared-root" / "derived-workspace-repo"
+        repo.mkdir(parents=True)
         subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
+        declare_workspace("declared_ws", tmp_path / "declared-root", db_path=db_path)
         monkeypatch.chdir(repo)
 
         EventWriter().write_event(SESSION_END, "hook", "", "ended")
 
         rows = _read_harness_rows(db_path)
-        assert rows[0]["workspace"] == "derived-workspace-repo"
+        assert rows[0]["workspace"] == "declared_ws"
 
     def test_write_event_workspace_falls_back_to_global_never_null(
         self, db_path, monkeypatch

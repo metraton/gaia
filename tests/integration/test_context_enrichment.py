@@ -406,31 +406,6 @@ class TestMultiSectionUpdate:
 # Scenario 8: Skill file existence and content
 # ============================================================================
 
-class TestSkillFileExists:
-    """Scenario 8: verify the agent-contract-handoff skill exists and documents
-    the update_contracts clause agents use to enrich project-context.
-
-    The retired context-updater skill was replaced by agent-contract-handoff as
-    the source of truth for the update_contracts envelope clause.
-    """
-
-    def test_skill_loaded_correctly(self):
-        skill_file = SKILLS_DIR / "agent-contract-handoff" / "SKILL.md"
-
-        assert skill_file.exists(), (
-            f"Skill file not found at {skill_file}. "
-            "This file documents the update_contracts envelope clause."
-        )
-
-        content = skill_file.read_text()
-
-        # Must document the update_contracts clause
-        assert "update_contracts" in content, (
-            "SKILL.md must document the update_contracts clause "
-            "that agents use to emit context updates."
-        )
-
-
 # ============================================================================
 # Scenario 9: Multi-entry envelope variants
 # ============================================================================

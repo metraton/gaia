@@ -74,7 +74,7 @@ def lineage(tmp_db):
     )
     upsert_memory("me", "proj_a", type="project", body="start")
     reclassify_memory("me", "proj_a", class_="thread", status="open")
-    update_memory_field("me", "proj_a", "body", "appended text", append=True)
+    update_memory_field("me", "proj_a", "body", "appended text")
     reclassify_memory("me", "proj_a", status="carry_forward")
     upsert_memory("me", "proj_b", type="project", body="anchor body")
     reclassify_memory("me", "proj_b", class_="anchor")

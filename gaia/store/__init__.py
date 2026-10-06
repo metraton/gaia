@@ -22,7 +22,6 @@ from gaia.store.writer import (
     delete_missing_in,
     mark_missing_in,
     mark_workspace_demoted,
-    save_integration,
     upsert_app,
     upsert_project,
     wipe_workspace,
@@ -37,6 +36,5 @@ __all__ = [
     "mark_workspace_demoted",
     "bulk_upsert",
     "wipe_workspace",
-    "save_integration",
     "get_context",
 ]

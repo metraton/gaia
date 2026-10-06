@@ -287,12 +287,12 @@ Baselines for the two newest modules:
 
 ## How to run
 
-All commands assume the repo root is `/home/jorge/ws/me/gaia`.
+All commands assume the repo root is `/path/to/gaia`.
 
 **The whole suite (no LLM tokens, no API key, no opt-in flag):**
 
 ```
-cd /home/jorge/ws/me/gaia
+cd /path/to/gaia
 python3 -m pytest tests/evals/ -q
 ```
 
@@ -313,7 +313,7 @@ alone -- nothing under `tests/evals/` carries it.)
 **Single case, single grader module (fast iteration):**
 
 ```
-cd /home/jorge/ws/me/gaia
+cd /path/to/gaia
 python3 -m pytest tests/evals/test_evals.py -q -k S4
 python3 -m pytest tests/evals/test_graders_decision.py -q
 ```
@@ -325,7 +325,7 @@ regressions.
 **Catalog guards:**
 
 ```
-cd /home/jorge/ws/me/gaia
+cd /path/to/gaia
 python3 -m pytest tests/evals/test_evals.py -q -k "test_cases_run or test_every_case or test_baseline_has_no"
 ```
 
@@ -414,7 +414,7 @@ green after any case deletion: they close the gate from opposite sides.
 6. **Run the guards + the case**:
 
    ```
-   cd /home/jorge/ws/me/gaia
+   cd /path/to/gaia
    python3 -m pytest tests/evals/test_evals.py -q
    python3 -m pytest tests/evals/ -q -k S11
    ```
@@ -481,7 +481,7 @@ print(drift.has_drift, [e for e in drift.entries if e.drift])
 **Promote the candidate**:
 
 ```
-cd /home/jorge/ws/me/gaia
+cd /path/to/gaia
 mv tests/evals/results/baseline.candidate.json tests/evals/results/baseline.json
 ```
 

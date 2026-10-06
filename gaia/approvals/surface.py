@@ -19,7 +19,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
 
-from gaia.approvals.core import SealError, _ensure_hooks_importable
+from gaia.approvals.core import SealError, _ensure_hooks_importable, is_signed
 
 TITLE_MAX = 120
 QUESTION_MAX = 60
@@ -37,7 +37,7 @@ DEFAULT_QUESTION = "¿Apruebo esta solicitud?"
 OPTIONS = (
     ("Approve", "Autoriza exactamente este comando"),
     ("Reject", "Rechaza la firma; no se ejecuta nada"),
-    ("Details", "Qué hace, impacto y cómo deshacerlo"),
+    ("Details", "Qué hace, impacto, verificación y cómo deshacerlo"),
 )
 #: The core decision each option label stands for (``core.DECISION_OPTIONS``).
 OPTION_KEYS = {label: label.lower() for label, _ in OPTIONS}
@@ -52,6 +52,8 @@ _NO_AGENT = "agente sin identificar"
 _NO_DOES = "(sin descripción declarada)"
 _NO_IMPACT = "no declarado"
 _NO_ROLLBACK = "no declarado; no supongas que se puede deshacer"
+_NO_VERIFICATION = "no declarada"
+_NO_SHARED_STATE = "no declarado; no supongas que no toca estado compartido"
 
 
 class SurfaceLimitError(SealError):
@@ -62,8 +64,10 @@ class SurfaceLimitError(SealError):
 class Surface:
     """One signature as both hosts show it: one question per sealed command (D33).
 
-    ``questions[i]`` asks command ``i``; ``details_questions[i]`` is its Details
-    re-ask. ``text`` and ``details`` are those question texts, one per line.
+    ``questions[i]`` asks signed command ``i`` and shows the unsigned steps
+    around it in their order; ``details_questions[i]`` is its Details re-ask.
+    ``text`` shows every step in its position, one per line, an unsigned step
+    included and marked; ``details`` is the Details texts.
     """
 
     approval_id: str
@@ -92,10 +96,11 @@ def check_phrases(
     *, title: str, question: Optional[str], items: Sequence[Mapping[str, Any]]
 ) -> None:
     """Reject a request whose phrases or command count would not fit the surface as written."""
-    if len(items) > BATCH_MAX:
+    asked = [item for item in items if is_signed(item)]
+    if len(asked) > BATCH_MAX:
         raise SurfaceLimitError(
             f"a signature covers at most {BATCH_MAX} commands, one question each, "
-            f"and this request carries {len(items)}; split it into signatures of "
+            f"and this request carries {len(asked)}; split it into signatures of "
             f"up to {BATCH_MAX} commands and request each one"
         )
     _check_line("title (what)", title, TITLE_MAX)
@@ -197,13 +202,39 @@ def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Opti
     return None
 
 
-def _command_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's signature question: who asks and the exact command (D37)."""
-    return f"{_PREFIX} [ AGENT-REQUEST ] [ {_agent(payload)} ] [ COMMAND ] [ {_target(item)} ]"
+def _steps_text(payload: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
+    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37)."""
+    fields = (
+        f"[ {'COMMAND' if is_signed(step) else 'UNSIGNED STEP'} ] [ {_target(step)} ]"
+        for step in steps
+    )
+    return " ".join([f"{_PREFIX} [ AGENT-REQUEST ] [ {_agent(payload)} ]", *fields])
+
+
+def _question_texts(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One question text per signed item, carrying the unsigned steps of the set in their order.
+
+    The unsigned steps before a signed item open its question and those after
+    the last signed item close the last question, so the questions the user
+    answers show every step while asking only the signed ones.
+    """
+    groups: list[list[Mapping[str, Any]]] = []
+    pending: list[Mapping[str, Any]] = []
+    for item in items:
+        pending.append(item)
+        if is_signed(item):
+            groups.append(pending)
+            pending = []
+    groups[-1].extend(pending)
+    return [_steps_text(payload, group) for group in groups]
 
 
 def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
-    """One command's Details question: the command, what it does, impact, rollback, and its folder when it matters (D37)."""
+    """One command's Details question (D37).
+
+    The command, what it does, its impact, how the result is verified, whether
+    it rewrites shared state, the rollback, and its folder when it matters.
+    """
     folder = _details_folder(payload, item)
     fields = [
         "[ DETAILS ]",
@@ -211,6 +242,8 @@ def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
         f"[ COMMAND: {_target(item)} ]",
         f"[ DOES: {_one_line(item.get('does') or _NO_DOES)} ]",
         f"[ IMPACT: {_one_line(item.get('impact') or _NO_IMPACT)} ]",
+        f"[ VERIFICATION: {_one_line(payload.get('verification') or _NO_VERIFICATION)} ]",
+        f"[ SHARED-STATE: {_one_line(payload.get('shared_state') or _NO_SHARED_STATE)} ]",
         f"[ ROLLBACK: {_one_line(payload.get('rollback_hint') or _NO_ROLLBACK)} ]",
         *([f"[ CWD: {_one_line(folder)} ]"] if folder else []),
     ]
@@ -249,8 +282,8 @@ def signature_letter(index: int) -> str:
 
 
 def question_count(payload: Mapping[str, Any]) -> int:
-    """How many questions a sealed request asks: one per command."""
-    return len(_items(payload))
+    """How many questions a sealed request asks: one per signed command."""
+    return len([item for item in _items(payload) if is_signed(item)])
 
 
 def render_at(
@@ -263,18 +296,19 @@ def render_at(
     count only this request's commands, headed by its letter.
     """
     items = _items(payload)
-    if not items:
+    asked = [item for item in items if is_signed(item)]
+    if not asked:
         raise SurfaceLimitError(f"approval {approval_id} seals nothing to present")
-    if len(items) > BATCH_MAX:
+    if len(asked) > BATCH_MAX:
         raise SurfaceLimitError(
-            f"approval {approval_id} seals {len(items)} commands; a signature is "
+            f"approval {approval_id} seals {len(asked)} commands; a signature is "
             f"asked with at most {BATCH_MAX}"
         )
-    texts = [_command_text(payload, item) for item in items]
-    details = [_details_text(payload, item) for item in items]
+    texts = _question_texts(payload, items)
+    details = [_details_text(payload, item) for item in asked]
     return Surface(
         approval_id=approval_id,
-        text="\n".join(texts),
+        text="\n".join(_steps_text(payload, [item]) for item in items),
         details="\n".join(details),
         questions=tuple(
             _question(text, batch_header(start + offset, total, signature=signature))

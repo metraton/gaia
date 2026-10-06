@@ -1,3 +1,4 @@
+-- gaia-compat: backward
 -- Migration v40 -> v41: complete the curated-memory history envelope.
 --
 -- Existing history recorded body, type, description, status, workspace and

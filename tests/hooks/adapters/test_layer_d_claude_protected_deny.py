@@ -90,7 +90,7 @@ def test_file_tool_matcher_names_pre_tool_use_entrypoint():
     assert entry["matcher"] == EXPECTED_MATCHER
     assert len(entry["hooks"]) == 1
     command = entry["hooks"][0]["command"]
-    assert command.endswith("hooks/pre_tool_use.py"), command
+    assert command.endswith('hooks/pre_tool_use.py"'), command
 
     executed = SOURCE_ENTRYPOINT.resolve()
     installed_literal = HARNESS_HOOKS_LITERAL / "pre_tool_use.py"

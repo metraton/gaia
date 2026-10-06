@@ -32,7 +32,6 @@ _FLAGS_WITH_VALUES = frozenset(
         "--server",
         "--token",
         "--user",
-        "-A",
         "-l",
         "-n",
         "-o",
@@ -103,8 +102,10 @@ def _first_positional(tokens: list[str], start: int) -> str | None:
 
 
 def _is_secret_resource(token: str) -> bool:
-    resource = token.split("/", 1)[0].split(".", 1)[0].lower()
-    return resource in _SECRET_RESOURCES
+    return any(
+        part.split("/", 1)[0].split(".", 1)[0].lower() in _SECRET_RESOURCES
+        for part in token.split(",")
+    )
 
 
 def _output_value(tokens: list[str]) -> str | None:

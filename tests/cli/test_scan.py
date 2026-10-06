@@ -1,20 +1,8 @@
 """
 Unit tests for the DETERMINISTIC gaia scan surface.
 
-Covers the new scan (post inference-removal), driven by a single REQUIRED
-``--workspace <name>`` parameter:
-
-  * bin/cli/scan.py -- the thin CLI front-end (register / cmd_scan / rendering).
-  * tools/scan/classify.py -- the deterministic classifier (R1-R6).
-
-The 6 confirmed validation cases (see TestValidationCases) anchor the ruleset:
-
-  1. aaxis/aos/aos-iac  --workspace aaxis        -> (aaxis, aos, aos-iac)
-  2. github-repos/engram --workspace github-repos -> collapse (project = repo)
-  3. me/gaia            --workspace me            -> collapse (project = repo)
-  4. organic: aos itself as the workspace         -> collapse (project = repo)
-  5. no-match: --workspace acme                   -> error-as-text (structured)
-  6. deeper-than-3 nesting                         -> ambiguity returned as data
+Covers bin/cli/scan.py (register / cmd_scan / rendering) and the classifier
+tools/scan/classify.py (R1-R7). Scans that apply declare their workspace first.
 
 Test isolation:
   * Every scan that writes runs against an explicit temp DB (db_path=...); the
@@ -70,6 +58,11 @@ def _mk_repo(base: Path, *segments: str) -> Path:
     repo = base.joinpath(*segments)
     (repo / ".git").mkdir(parents=True, exist_ok=True)
     return repo
+
+
+def _declare(db_path: Path, name: str, root: Path) -> None:
+    from gaia.store.writer import declare_workspace
+    declare_workspace(name, root, db_path=db_path)
 
 
 @pytest.fixture()
@@ -193,11 +186,22 @@ class TestCmdScanGuards:
         """A root with no git repos returns a structured error, not a crash."""
         empty = tmp_path / "empty"
         empty.mkdir()
-        args = _MockArgs(workspace="me", root=str(empty), json=True)
+        args = _MockArgs(workspace="me", root=str(empty), dry_run=True, json=True)
         rc = scan_mod.cmd_scan(args)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
         assert "no git repos" in data["error"]
+
+    def test_applying_an_undeclared_workspace_is_refused(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("GAIA_DB", str(tmp_path / "gaia.db"))
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
+
+        rc = scan_mod.cmd_scan(_MockArgs(workspace="aaxis", root=str(tmp_path / "aaxis"), json=True))
+
+        assert rc == 1
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert "'aaxis' is not declared" in error
+        assert "gaia workspace declare <name> <path>" in error
 
     def test_dry_run_does_not_touch_db(self, tmp_path, monkeypatch):
         """--dry-run must not create or write any DB file."""
@@ -257,83 +261,18 @@ class TestValidationCases:
         that groups sibling repos) is recorded separately in group_name.
         """
         repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
-        c = classify_mod.classify_repo(repo, "aaxis")
-        assert c.matched
-        assert c.workspace == "aaxis"
-        assert c.project == "aos-iac"  # name = repo basename (R1)
-        assert c.container == "aos"    # container -> group_name (R2)
-        assert c.repo == "aos-iac"
-        assert c.ambiguity is None
+        c = classify_mod.classify_repo(repo, "aaxis", tmp_path / "aaxis")
+        assert (c.workspace, c.project, c.container) == ("aaxis", "aos-iac", "aos")
 
-    def test_case2_github_repos_engram_collapse(self, tmp_path):
-        """github-repos/engram --workspace github-repos -> collapse.
-
-        The workspace is the direct parent of the repo, so there is nothing
-        between them: project collapses to the repo name (R4)."""
+    def test_case2_repo_directly_in_the_root_has_no_group(self, tmp_path):
         repo = _mk_repo(tmp_path, "github-repos", "engram")
-        c = classify_mod.classify_repo(repo, "github-repos")
-        assert c.matched
-        assert c.workspace == "github-repos"
-        assert c.project == "engram"  # name = repo basename
-        assert c.container is None     # R4 collapse: no grouping folder
-        assert c.repo == "engram"
-        assert c.ambiguity is None
+        c = classify_mod.classify_repo(repo, "github-repos", tmp_path / "github-repos")
+        assert (c.project, c.container) == ("engram", None)
 
-    def test_case3_me_gaia_collapse(self, tmp_path):
-        """me/gaia --workspace me -> collapse (project = repo = 'gaia')."""
-        repo = _mk_repo(tmp_path, "me", "gaia")
-        c = classify_mod.classify_repo(repo, "me")
-        assert c.matched
-        assert c.workspace == "me"
-        assert c.project == "gaia"
-        assert c.container is None  # R4 collapse: repo directly under workspace
-        assert c.repo == "gaia"
-        assert c.ambiguity is None
-
-    def test_case4_organic_repo_as_workspace(self, tmp_path):
-        """Organic: the repo's own direct parent is named as the workspace.
-
-        e.g. .../aos/<repo>  --workspace aos. The parent IS the workspace, so
-        project collapses to the repo name (R4). This is the 'a project CAN be
-        a workspace' case read from the parent side."""
-        repo = _mk_repo(tmp_path, "aos", "aos-server")
-        c = classify_mod.classify_repo(repo, "aos")
-        assert c.matched
-        assert c.workspace == "aos"
-        assert c.project == "aos-server"  # name = repo basename
-        assert c.container is None         # R4 collapse: parent IS the workspace
-        assert c.repo == "aos-server"
-
-    def test_case5_no_match_error_as_text(self, tmp_path):
-        """no-match: --workspace acme against a tree with no 'acme' segment
-        yields a structured error (error-as-text), never a crash, and no
-        project."""
-        repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
-        c = classify_mod.classify_repo(repo, "acme")
-        assert not c.matched
-        assert c.project is None
-        assert c.error is not None
-        assert c.error["W"] == "acme"
-        assert "acme" in c.error["suggestion"]
-        # The suggestion names the real ancestor segments so the user can pick.
-        assert "aos" in c.error["suggestion"]
-
-    def test_case6_deeper_than_3_ambiguity_as_data(self, tmp_path):
-        """deeper-than-3 nesting -> name = repo basename, container = the
-        segment immediately before the repo, and the levels ABOVE that
-        container are returned as ambiguity DATA (never guessed)."""
-        # W / extra1 / extra2 / container / repo  (2 levels above the container)
+    def test_case6_group_is_the_full_path_at_any_depth(self, tmp_path):
         repo = _mk_repo(tmp_path, "org", "team", "group", "svc", "svc-api")
-        c = classify_mod.classify_repo(repo, "org")
-        assert c.matched
-        assert c.workspace == "org"
-        assert c.project == "svc-api"  # name = repo basename (R1)
-        assert c.container == "svc"    # immediate container -> group_name
-        assert c.repo == "svc-api"
-        assert c.ambiguity is not None
-        assert c.ambiguity["repo"] == "svc-api"
-        # extra_levels are the segments between the workspace and the container.
-        assert c.ambiguity["extra_levels"] == ["team", "group"]
+        c = classify_mod.classify_repo(repo, "org", tmp_path / "org")
+        assert (c.project, c.container) == ("svc-api", "team/group/svc")
 
 
 # ---------------------------------------------------------------------------
@@ -370,15 +309,14 @@ class TestScanReport:
         assert by_container["loose-repo"] is None
         assert report.errors == []
 
-    def test_scan_all_no_match_is_error_report(self, tmp_path):
-        """When no repo matches W, the report carries errors and no projects,
-        and resolved_workspace stays None (non-crashing)."""
+    def test_repo_inside_no_declared_workspace_is_an_error_entry(self, tmp_db, tmp_path):
+        """A walked repo outside every declared root is reported, never owned."""
         _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
-        report = classify_mod.scan(tmp_path / "aaxis", "acme", apply=False)
-        assert report.projects == []
-        assert report.resolved_workspace is None
-        assert len(report.errors) == 1
-        assert report.errors[0]["W"] == "acme"
+        _mk_repo(tmp_path, "aaxis", "loose", "stray")
+        _declare(tmp_db, "aos", tmp_path / "aaxis" / "aos")
+        report = classify_mod.scan(tmp_path / "aaxis", "aos", db_path=tmp_db, apply=False)
+        assert [p["repo"] for p in report.projects] == ["aos-iac"]
+        assert [(e["repo"], e["W"]) for e in report.errors] == [("stray", "aos")]
 
     def test_scan_persists_and_reconciles(self, tmp_db, tmp_path):
         """apply=True writes projects rows, then a second scan with one repo
@@ -392,6 +330,7 @@ class TestScanReport:
         root = tmp_path / "aaxis"
         _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
         _mk_repo(tmp_path, "aaxis", "other", "other-repo")
+        _declare(tmp_db, "aaxis", root)
 
         r1 = classify_mod.scan(root, "aaxis", db_path=tmp_db, apply=True)
         assert r1.error is None
@@ -447,10 +386,9 @@ class TestScanReport:
         shutil.rmtree(repo / ".git")
         subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
 
-        # Scan from the workspace root, then again from a deeper root that still
-        # contains the same repo (project resolves to the repo name there).
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
         classify_mod.scan(tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True)
-        classify_mod.scan(tmp_path / "aaxis" / "aos", "aos", db_path=tmp_db, apply=True)
+        classify_mod.scan(tmp_path / "aaxis" / "aos", "aaxis", db_path=tmp_db, apply=True)
 
         con = sqlite3.connect(str(tmp_db))
         try:
@@ -484,6 +422,7 @@ class TestScanReport:
 
         # Repo whose basename is 'svc' (Y), directly under workspace 'aaxis'.
         repo = _mk_repo(tmp_path, "aaxis", "svc")
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
         identity = resolve_project_identity(repo)  # P -- what the scan resolves
 
         # Seed a row persisted under name X ('svc-legacy') != basename 'svc',
@@ -553,6 +492,7 @@ class TestScanReport:
              "git@github.com:aaxis/svc.git"],
             cwd=str(repo), check=True,
         )
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
 
         rep = classify_mod.scan(tmp_path / "aaxis", "aaxis",
                                 db_path=tmp_db, apply=True)
@@ -613,6 +553,7 @@ class TestBasenameNamingForwardFix:
         _mk_repo(tmp_path, "aaxis", "bildwiz", "bildwiz-iac")
         _mk_repo(tmp_path, "aaxis", "bildwiz", "newco-pitot")
         _mk_repo(tmp_path, "aaxis", "bildwiz", "control-tower-livekit")
+        _declare(tmp_db, "aaxis", tmp_path / "aaxis")
 
         report = classify_mod.scan(
             tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True
@@ -639,6 +580,7 @@ class TestBasenameNamingForwardFix:
         repo like 'gaia' as a direct child) still works: name = basename,
         group_name = None (R4 collapse, unchanged)."""
         _mk_repo(tmp_path, "me", "gaia")
+        _declare(tmp_db, "me", tmp_path / "me")
 
         report = classify_mod.scan(
             tmp_path / "me", "me", db_path=tmp_db, apply=True
@@ -647,27 +589,3 @@ class TestBasenameNamingForwardFix:
 
         persisted = self._persisted(tmp_db, "me")
         assert persisted == {"gaia": None}, persisted
-
-
-# ---------------------------------------------------------------------------
-# match_workspace_index -- the segment matcher (R3)
-# ---------------------------------------------------------------------------
-
-class TestMatchWorkspaceIndex:
-    def test_last_occurrence_wins(self):
-        segs = ["aaxis", "sub", "aaxis", "proj", "repo"]
-        # The deepest 'aaxis' (index 2) is the most specific boundary.
-        assert classify_mod.match_workspace_index(segs, "aaxis") == 2
-
-    def test_repo_itself_never_matches(self):
-        """The repo segment (segs[-1]) is never eligible to be the workspace."""
-        segs = ["a", "b", "repo"]
-        assert classify_mod.match_workspace_index(segs, "repo") is None
-
-    def test_nested_token_split_match(self):
-        segs = ["aaxis", "aos", "proj", "repo"]
-        assert classify_mod.match_workspace_index(segs, "aaxis/aos") == 1
-
-    def test_no_match_returns_none(self):
-        segs = ["a", "b", "repo"]
-        assert classify_mod.match_workspace_index(segs, "zzz") is None

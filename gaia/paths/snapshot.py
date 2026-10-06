@@ -1,27 +1,13 @@
 """
-gaia.paths.snapshot -- shared DB snapshot + retention helper.
+gaia.paths.snapshot -- gzip snapshots of gaia.db with per-prefix retention.
 
-Single implementation of "gzip snapshot of gaia.db, then enforce retention"
-used by BOTH:
-  * ``gaia uninstall`` (backup-by-default, AC-6) -- bin/cli/uninstall.py
-  * the SessionStart hook auto-backup (throttled daily, AC-7) --
-    hooks/modules/session/db_backup.py
+Shared by ``gaia uninstall`` (prefix ``uninstall``) and the SessionStart
+auto-backup (prefix ``sessionstart``) so both keep the same guarantees:
 
-Keeping ONE implementation means the safety guarantees below cannot drift
-between the two call sites:
-
-  * COPY-based, never move/rename the source. The live DB is opened
-    read-only and its bytes are streamed through gzip into a NEW file;
-    there is no code path here that unlinks, renames, or opens
-    ``db_path`` for writing. A concurrent writer to the live DB can at
-    worst produce a snapshot with a torn read (same risk as ``cp``); it
-    can never corrupt or lose the source.
-  * Snapshot filenames are timestamp-sortable (``<prefix>-YYYYmmddTHHMMSSffffff
-    .db.gz``, microsecond precision), so retention can always find the
-    oldest file with a plain lexical sort -- no filename parsing needed.
-  * Retention is enforced immediately after every successful snapshot:
-    only the newest ``retain`` files (across ALL prefixes, in one shared
-    directory) survive.
+  * The source DB is only ever opened for reading; a snapshot is a new file.
+  * Names are ``<prefix>-YYYYmmddTHHMMSSffffff.db.gz``. Within one prefix the
+    fixed-width timestamp makes name order creation order; across prefixes
+    name order means nothing, so retention and age are computed per prefix.
 
 Public API::
 
@@ -41,24 +27,30 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 DEFAULT_RETAIN = 5
 
-# Matches snapshots written by ANY caller (uninstall's "uninstall-*" prefix,
-# SessionStart's "sessionstart-*" prefix, or any future one) -- retention is
-# a single shared pool across the whole snapshot_dir(), not per-prefix.
 SNAPSHOT_GLOB = "*.db.gz"
+_SNAPSHOT_SUFFIX = ".db.gz"
 
 
 def _timestamp() -> str:
-    """Return a sortable, collision-resistant timestamp for a filename.
-
-    Microsecond precision avoids two snapshots requested within the same
-    second (e.g. two rapid SessionStart events in a test) colliding on the
-    same filename and one silently overwriting the other.
-    """
+    """Return a microsecond timestamp, so two snapshots in one second never share a name."""
     return datetime.now().strftime("%Y%m%dT%H%M%S%f")
+
+
+def _prefix_of(snapshot: Path) -> str:
+    """Return the caller prefix of a ``<prefix>-<timestamp>.db.gz`` file."""
+    return snapshot.name[: -len(_SNAPSHOT_SUFFIX)].rpartition("-")[0]
+
+
+def _snapshots_by_prefix(snapshot_dir: Path) -> Dict[str, List[Path]]:
+    """Group the snapshots in ``snapshot_dir`` by prefix, each group oldest first."""
+    groups: Dict[str, List[Path]] = {}
+    for snapshot in sorted(snapshot_dir.glob(SNAPSHOT_GLOB)):
+        groups.setdefault(_prefix_of(snapshot), []).append(snapshot)
+    return groups
 
 
 def create_snapshot(
@@ -69,15 +61,11 @@ def create_snapshot(
     retain: int = DEFAULT_RETAIN,
     prefix: str = "gaia",
 ) -> dict:
-    """Create a gzip snapshot of ``db_path`` inside ``snapshot_dir``, then
-    enforce retention (keep only the newest ``retain`` snapshots).
+    """Write a gzip copy of ``db_path`` as ``<prefix>-<timestamp>.db.gz`` in
+    ``snapshot_dir``, then keep only the newest ``retain`` snapshots of each prefix.
 
-    This function NEVER touches ``db_path`` beyond opening it for reading --
-    no delete, no rename, no write. The only mutations are: (1) writing a
-    new ``.db.gz`` file, and (2) deleting the oldest excess snapshots inside
-    ``snapshot_dir`` when retention trims them.
+    ``db_path`` is only opened for reading. Returns::
 
-    Returns a result dict:
       {"requested": True,
        "source":    "<db path>",
        "path":      "<snapshot path>" (None if the DB does not exist),
@@ -85,17 +73,6 @@ def create_snapshot(
        "dry_run":   True/False,
        "pruned":    ["<path>", ...],   # snapshots deleted by retention
        "error":     "<message>"}       # only present on failure
-
-    Args:
-        db_path: Path to the live SQLite DB to snapshot.
-        snapshot_dir: Directory the gzip snapshot is written into.
-        dry_run: When True, report what would happen without writing or
-            deleting anything.
-        retain: How many snapshots to keep in ``snapshot_dir`` after this
-            call (applies across all prefixes, not just this call's).
-        prefix: Filename prefix identifying the caller (e.g. "uninstall",
-            "sessionstart"). Purely informational -- retention treats every
-            ``*.db.gz`` file in the directory as one shared pool.
     """
     result: dict = {
         "requested": True,
@@ -110,7 +87,7 @@ def create_snapshot(
         result["details"] = "DB does not exist; nothing to snapshot"
         return result
 
-    snapshot_path = snapshot_dir / f"{prefix}-{_timestamp()}.db.gz"
+    snapshot_path = snapshot_dir / f"{prefix}-{_timestamp()}{_SNAPSHOT_SUFFIX}"
     result["path"] = str(snapshot_path)
 
     if dry_run:
@@ -132,48 +109,29 @@ def create_snapshot(
 
 
 def enforce_retention(snapshot_dir: Path, retain: int = DEFAULT_RETAIN) -> List[str]:
-    """Keep only the newest ``retain`` snapshots in ``snapshot_dir``; delete
-    the rest.
-
-    Filenames are timestamp-sortable by construction (see ``_timestamp``),
-    so a plain lexical sort on the filename reliably orders oldest-to-newest
-    without parsing the embedded timestamp.
-
-    Returns the list of deleted paths (empty if nothing was pruned).
-    """
+    """Keep the newest ``retain`` snapshots of each prefix in ``snapshot_dir``,
+    delete the rest, and return the deleted paths."""
     if retain < 0 or not snapshot_dir.exists():
         return []
 
-    files = sorted(snapshot_dir.glob(SNAPSHOT_GLOB), key=lambda p: p.name)
-    excess = files[: max(0, len(files) - retain)]
-
     pruned: List[str] = []
-    for f in excess:
-        try:
-            f.unlink()
-            pruned.append(str(f))
-        except OSError:
-            # Best-effort: a file removed by a racing process, or a
-            # permissions hiccup, is not fatal to the caller.
-            continue
+    for snapshots in _snapshots_by_prefix(snapshot_dir).values():
+        for snapshot in snapshots[: max(0, len(snapshots) - retain)]:
+            try:
+                snapshot.unlink()
+            except OSError:
+                continue
+            pruned.append(str(snapshot))
     return pruned
 
 
-def latest_snapshot_age_seconds(snapshot_dir: Path) -> Optional[float]:
-    """Return the age in seconds of the most recent snapshot in
-    ``snapshot_dir``, or None if the directory does not exist or has no
-    snapshots yet.
-
-    "Most recent" is determined by the timestamp-sortable filename (the
-    max by name), not by filesystem mtime, so this is stable even if the
-    file's mtime were altered by a copy/restore.
-    """
+def latest_snapshot_age_seconds(snapshot_dir: Path, prefix: str) -> Optional[float]:
+    """Return the age in seconds of the newest ``prefix`` snapshot -- chosen by the
+    timestamp in its name, aged by its mtime -- or None when there is none."""
     if not snapshot_dir.exists():
         return None
 
-    files = list(snapshot_dir.glob(SNAPSHOT_GLOB))
-    if not files:
+    snapshots = _snapshots_by_prefix(snapshot_dir).get(prefix)
+    if not snapshots:
         return None
-
-    newest = max(files, key=lambda p: p.name)
-    return time.time() - newest.stat().st_mtime
+    return time.time() - snapshots[-1].stat().st_mtime

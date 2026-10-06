@@ -22,6 +22,7 @@ from modules.security.gaia_cli_only_guard import (  # noqa: E402
     is_trusted_gaia_binary,
 )
 from modules.tools.bash_validator import BashValidator  # noqa: E402
+from tests.conftest import copy_package_tree  # noqa: E402
 
 
 def _install_real_package_through_public_flow(tmp_path: Path) -> dict:
@@ -36,7 +37,7 @@ def _install_real_package_through_public_flow(tmp_path: Path) -> dict:
             "--pack-destination",
             str(artifacts),
         ],
-        cwd=REPO_ROOT,
+        cwd=copy_package_tree(tmp_path / "source"),
         capture_output=True,
         text=True,
         check=False,
@@ -82,6 +83,7 @@ def _install_real_package_through_public_flow(tmp_path: Path) -> dict:
             sys.executable,
             str(declared_target),
             "install",
+            "--path",
             "--workspace",
             str(workspace),
             "--host",

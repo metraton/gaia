@@ -17,7 +17,7 @@ The real, valid delivery mechanism is ``SessionStart`` with
 ``compact`` as one of its accepted `source` values (alongside `startup`,
 `resume`, `clear`, `fork`), and SessionStart's `hookSpecificOutput` DOES
 support `additionalContext`. ``hooks/session_start.py`` is now wired for
-``startup|resume|compact`` and builds the SAME compact-context refresh
+``startup|resume|clear|compact|fork`` and builds the SAME compact-context refresh
 (via ``modules.context.compact_context_builder.build_compact_context``)
 when it fires with ``source == "compact"``. This file stays registered
 for the ``PostCompact`` event as a harmless, schema-valid no-op (parallel

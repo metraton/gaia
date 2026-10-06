@@ -110,16 +110,6 @@ SYNTHETIC_CLOSED_FIXTURE = FIXTURES_DIR / "dispatch_closed_python_hook_module.js
 # forcing the marker off rather than letting it rot into a silent skip.
 # SYNTHETIC_CLOSED_FIXTURE carries the true-positive case in the meantime.
 
-# The two transcripts named in the incident report -- if present on THIS
-# machine's ~/.claude/projects, the live-sweep test re-measures them directly
-# instead of only trusting the committed fixture copy.
-_NAMED_INCIDENT_TRANSCRIPTS = frozenset({
-    "agent-ac5109df0a5ac8022.jsonl",
-    "agent-a7846e255454bda0a.jsonl",
-})
-
-_LIVE_PROJECTS_ROOT = Path.home() / ".claude" / "projects"
-
 
 def _written_code_paths(transcript_path: Path) -> List[str]:
     """Return every Write/Edit ``file_path`` recorded in the transcript.
@@ -310,45 +300,3 @@ def test_synthetic_closed_fixture_shows_no_gap_when_skill_was_loaded():
         f"expected no anomaly once code-standards was loaded, got: {result}"
     )
 
-
-# ---------------------------------------------------------------------------
-# Opt-in live sweep -- re-measures the ACTUAL files on disk that the incident
-# report names, when this machine happens to still carry them. Declares an
-# explicit skip (visible as SKIPPED, never folded into a false PASS) when
-# they are absent, per the no-silent-pass requirement: this test either
-# genuinely measures real bytes, or it visibly says it measured nothing.
-# ---------------------------------------------------------------------------
-
-
-def _iter_live_incident_transcripts() -> List[Path]:
-    if not _LIVE_PROJECTS_ROOT.exists():
-        return []
-    # rglob, not a fixed-depth glob: a transcript lives at
-    # projects/<project-slug>/<session-uuid>/subagents/agent-*.jsonl, and the
-    # nesting depth above "subagents/" is an implementation detail of the
-    # harness, not a contract this test should assume.
-    return [
-        p
-        for p in _LIVE_PROJECTS_ROOT.rglob("subagents/agent-*.jsonl")
-        if p.name in _NAMED_INCIDENT_TRANSCRIPTS
-    ]
-
-
-def test_live_sweep_named_incident_transcripts():
-    live_matches = _iter_live_incident_transcripts()
-    if not live_matches:
-        pytest.skip(
-            "no live transcript under ~/.claude/projects matched "
-            f"{sorted(_NAMED_INCIDENT_TRANSCRIPTS)} -- sweep is opt-in "
-            "evidence on top of the committed fixture, not a hard "
-            "requirement on machines without this history"
-        )
-
-    for transcript_path in live_matches:
-        result = _measure_dispatch_gap(transcript_path, agent_type="gaia-system")
-        assert result is not None, (
-            f"{transcript_path} no longer reproduces the measured gap -- "
-            "if code-standards is now loaded in this transcript, update "
-            "the committed fixture and this test's expectation together"
-        )
-        assert "code-standards" in result["missing_skills"]

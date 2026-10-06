@@ -77,14 +77,14 @@ def test_non_gaia_db_allowed():
 
 
 def test_unrelated_command_allowed():
-    cmd = "ls -la /home/jorge"
+    cmd = "ls -la /home/user"
     allowed, reason = check(cmd)
     assert allowed is True
 
 
 def test_absolute_gaia_db_path_rejected():
     """Absolute path to .gaia DB is also caught."""
-    cmd = 'sqlite3 /home/jorge/.gaia/gaia.db "ALTER TABLE apps ADD COLUMN x TEXT"'
+    cmd = 'sqlite3 /home/user/.gaia/gaia.db "ALTER TABLE apps ADD COLUMN x TEXT"'
     allowed, reason = check(cmd)
     assert allowed is False
 

@@ -5,7 +5,8 @@ has correlated the starting subagent to its born ``agent_contract_handoffs``
 row:
 
   * ``# Your Contract``  -- identity, goal, role/surface, the project the
-    dispatch ran from (v44, ``dispatch_project``), section scope, and
+    dispatch ran from (v44, ``dispatch_project``) with the workflow that
+    project declared in its ``project_identity`` entry, section scope, and
     (for a plan-task-bound turn) the task's acceptance gates. DATA ONLY: the
     block carries no instructions; the pedagogy lives in the agent-protocol
     skill, which documents every field.
@@ -21,16 +22,24 @@ row:
     declaration pattern as ``routing:``) and rendered verbatim when present,
     additive to the base lines. Declaring is NOT permitting: tiers and
     guards still gate every execution.
-  * ``# How the user works`` -- the durable, executor-facing user-preference
-    rows (``memory.type='user' AND memory.audience='executor'``), BODY
-    inline, not slugs: a slug cost a further ``gaia memory show`` call the
-    agent in practice never made. Omitted entirely when the query returns no
-    rows -- never an empty heading.
+  * ``# How the user works`` -- the user's standing rows the session birth
+    block carries, minus those whose ``audience`` is the orchestrator alone,
+    in the same facts/preferences sections
+    (``gaia.store.reader.user_anchor_rows`` rendered by
+    ``modules.context.user_sections``), BODY inline, not slugs: a slug cost a
+    further ``gaia memory show`` call the agent in practice never made.
+    Omitted entirely when no row is selected -- never an empty heading.
+
+``# Your skills`` is a fourth block, rendered only for a host that preloads
+no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
+with its description, so the turn knows at birth which bodies to load. Claude
+Code preloads those bodies itself, so ``build_kernel_context`` never carries it.
 
 Everything renders from the ROW (goal from ``dispatch_prompt``, scope from
-``kernel_sections`` persisted at birth) plus two scoped reads: ``task_gates``
-for the acceptance block and ``memory`` for the executor-facing user rows. No
-project context is rebuilt here.
+``kernel_sections`` persisted at birth) plus three reads: ``task_gates`` for
+the acceptance block, the dispatch project's ``project_identity`` entry for its
+declared workflow, and ``memory`` for the user's rows. No other project context
+is rebuilt here.
 
 Gotchas:
   * ``kernel_sections`` arrives as a JSON string on the row; this module
@@ -54,6 +63,18 @@ logger = logging.getLogger(__name__)
 KERNEL_HEADING = "# Your Contract"
 CLI_HEADING = "# Your CLI"
 MEMORY_HEADING = "# How the user works"
+SKILLS_HEADING = "# Your skills"
+
+# Claude Code caps hook-injected context at 10,000 chars, the budget a kernel is
+# held to on either host; the skills block takes the share USER_ROWS_BUDGET
+# takes. Inlined bodies cannot fit it: security-tiers alone is over 50,000.
+SKILLS_BLOCK_BUDGET = 4_000
+_SKILLS_PREAMBLE = (
+    "Preloaded by your definition. Their bodies are not in this prompt: "
+    "load each one with the `skill` tool before relying on it."
+)
+
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 # Wrap width for the goal text -- readability only, never truncation.
 _GOAL_WRAP_WIDTH = 96
@@ -79,6 +100,7 @@ _CLI_BASE_LINES = (
     "  gaia memory list --type <t>      # t: project|user|feedback|atom|decision|negative",
     "  gaia memory show <slug>          # cuerpo completo de una fila curada",
     "  gaia memory get-relevant --initiative <k>   # pendientes vivos de UN proyecto",
+    "  gaia memory get-relevant --initiative <k> --sections anchor   # one project's standing notes, bodies included",
     "  gaia memory get-relevant --sections <s>      # s: carry_forward|anchor|thread_open",
     "  gaia contract view / list / validate         # tu contrato: lectura",
     "  gaia contract set / add / fill / finalize    # tu contrato: llenado incremental y cierre",
@@ -99,23 +121,6 @@ _CLI_WORKSPACE_LINE = (
     "  gaia context get-contract --section <s> --workspace {workspace}"
     "   # tus secciones legibles: can_read"
 )
-
-# Defensive ceilings for the "How the user works" block. Two different
-# risks, two different guards: an unwatched SET growing (many rows) is
-# bounded by _MEMORY_ROW_LIMIT; a single pathological ROW is bounded by
-# _MEMORY_BODY_HARD_CEILING. The row limit still slices the set (a row over
-# the limit simply never gets read). The body ceiling is deliberately NOT a
-# mid-text cut: a body is injected whole or not at all, never truncated --
-# truncating pays the token cost of the row and still forces a follow-up
-# `gaia memory show` for what got cut, which is strictly worse than either
-# extreme. A body over the ceiling is dropped from the block entirely rather
-# than sliced, because a silent truncation was measured eating INSTRUCTION,
-# not just context, in a row that legitimately needed every character.
-# 3 rows exist today totalling ~2500 chars; the ceiling is sized for a
-# runaway row, not the expected case.
-_MEMORY_ROW_LIMIT = 20
-_MEMORY_BODY_HARD_CEILING = 20_000
-
 
 def _connect(db_path):
     """Open a read connection through the store's own connect helper (same
@@ -190,6 +195,35 @@ def _acceptance_lines(plan_task_id: int, db_path=None) -> list:
     return lines
 
 
+def _declared_workflow(workspace: str, dispatch_project: str, db_path=None) -> str:
+    """The workflow the dispatch's project declared, as one data line, or "" when it declared none.
+
+    A mapping renders its scalar values as ``key=value`` pairs in stored order,
+    a string renders as written; whitespace runs collapse so the value stays one
+    line, and anything else declares nothing renderable.
+    """
+    try:
+        from ..core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from gaia.identity_shape import DECLARED_WORKFLOW_KEY
+        from tools.context.context_provider import dispatch_project_entry
+
+        entry = dispatch_project_entry(workspace, dispatch_project, db_path=db_path)
+    except Exception:
+        logger.debug("declared workflow read failed (non-fatal)", exc_info=True)
+        return ""
+    declared = (entry or {}).get(DECLARED_WORKFLOW_KEY)
+    if isinstance(declared, str):
+        return " ".join(declared.split())
+    if isinstance(declared, dict):
+        return ", ".join(
+            f"{key}={' '.join(str(value).split())}" for key, value in declared.items()
+            if isinstance(value, (str, int, float)) and str(value).strip()
+        )
+    return ""
+
+
 def build_dispatch_kernel(
     row: Mapping[str, Any], *, db_path=None,
 ) -> Optional[str]:
@@ -233,6 +267,11 @@ def build_dispatch_kernel(
     dispatch_project = row.get("dispatch_project")
     if dispatch_project:
         parts.append(f"project: {dispatch_project}")
+        workflow = _declared_workflow(
+            str(row.get("workspace") or ""), dispatch_project, db_path=db_path,
+        )
+        if workflow:
+            parts.append(f"  workflow: {workflow}")
 
     plan_task_id = row.get("plan_task_id")
     if plan_task_id is not None:
@@ -253,6 +292,30 @@ def build_dispatch_kernel(
     return "\n".join(parts)
 
 
+def _frontmatter(path: Path) -> dict:
+    """The Markdown file's frontmatter mapping, or {} when the file or its parse is missing."""
+    if not path.is_file():
+        return {}
+    try:
+        from ..core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from tools.scan.seed_contract_permissions import _parse_frontmatter
+
+        frontmatter = _parse_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.debug("frontmatter parse failed (non-fatal)", exc_info=True)
+        return {}
+    return frontmatter if isinstance(frontmatter, dict) else {}
+
+
+def _agent_frontmatter(agent_name: str, agents_dir: "Path | None") -> dict:
+    """The named agent's frontmatter, or {} for a name that is not a bare file stem."""
+    if not agent_name or Path(agent_name).name != agent_name:
+        return {}
+    return _frontmatter((agents_dir or _PACKAGE_ROOT / "agents") / f"{agent_name}.md")
+
+
 def _agent_cli_extras(agent_name: str, agents_dir: "Path | None") -> list:
     """Per-role CLI lines declared in the agent's frontmatter (``cli:`` key).
 
@@ -260,27 +323,39 @@ def _agent_cli_extras(agent_name: str, agents_dir: "Path | None") -> list:
     is the source of truth. Entries are plain strings rendered verbatim
     (indented). Missing file / key / parser -> no extras.
     """
-    if not agent_name:
-        return []
-    if agents_dir is None:
-        agents_dir = Path(__file__).resolve().parent.parent.parent.parent / "agents"
-    agent_file = agents_dir / f"{agent_name}.md"
-    if not agent_file.is_file():
-        return []
-    try:
-        from ..core.paths import ensure_package_root_importable
-
-        ensure_package_root_importable()
-        from tools.scan.seed_contract_permissions import _parse_frontmatter
-
-        frontmatter = _parse_frontmatter(agent_file.read_text(encoding="utf-8"))
-    except Exception:
-        logger.debug("agent frontmatter parse failed (non-fatal)", exc_info=True)
-        return []
-    extras = frontmatter.get("cli") if isinstance(frontmatter, dict) else None
+    extras = _agent_frontmatter(agent_name, agents_dir).get("cli")
     if not isinstance(extras, list):
         return []
     return [f"  {str(e).strip()}" for e in extras if str(e).strip()]
+
+
+def build_skills_block(
+    agent_name: str, *, agents_dir: "Path | None" = None,
+    skills_dir: "Path | None" = None,
+) -> str:
+    """Render ``# Your skills`` from the agent's ``skills:`` frontmatter, or "" when it names none.
+
+    Each skill is listed with its description; when that would exceed
+    ``SKILLS_BLOCK_BUDGET`` the names alone are listed, so none drops out.
+    """
+    declared = _agent_frontmatter(agent_name, agents_dir).get("skills")
+    if not isinstance(declared, list):
+        return ""
+    names = [str(name).strip() for name in declared if str(name).strip()]
+    if not names:
+        return ""
+    skills_dir = skills_dir or _PACKAGE_ROOT / "skills"
+    head = [SKILLS_HEADING, "", _SKILLS_PREAMBLE, ""]
+    described = []
+    for name in names:
+        description = " ".join(
+            str(_frontmatter(skills_dir / name / "SKILL.md").get("description") or "").split()
+        )
+        described.append(f"- {name}: {description}" if description else f"- {name}")
+    block = "\n".join(head + described)
+    if len(block) <= SKILLS_BLOCK_BUDGET:
+        return block
+    return "\n".join(head + [f"- {name}" for name in names])
 
 
 def build_cli_block(
@@ -302,65 +377,16 @@ def build_cli_block(
     return "\n".join(lines)
 
 
-def _executor_user_bodies(workspace: str, db_path=None) -> list:
-    """Durable executor-facing user-preference rows, freshest first, bounded.
-
-    Selects exactly ``type='user' AND audience='executor'`` for the
-    workspace -- not ``class='anchor'`` (which mixed in anchors from
-    unrelated projects sharing the same workspace). Returns ``name`` plus
-    ``body`` -- the name never renders in the block (that would cost a
-    further ``gaia memory show`` call the agent in practice never made) but
-    is needed so the kernel-axis telemetry in ``build_memory_block`` can
-    bump exactly the rows that make it into the block, never a candidate
-    filtered out below. A body is injected whole; one over
-    ``_MEMORY_BODY_HARD_CEILING`` is dropped entirely instead of sliced --
-    see the ceiling's own comment for why.
-    """
-    if not workspace:
-        return []
-    try:
-        con = _connect(db_path)
-        try:
-            rows = con.execute(
-                "SELECT name, body FROM memory "
-                "WHERE workspace = ? AND type = 'user' AND audience = 'executor' "
-                "AND deleted_at IS NULL "
-                "ORDER BY updated_at DESC LIMIT ?",
-                (workspace, _MEMORY_ROW_LIMIT),
-            ).fetchall()
-        finally:
-            con.close()
-    except Exception:
-        logger.debug("executor-user memory read failed (non-fatal)", exc_info=True)
-        return []
-
-    kept = []
-    for row in rows:
-        body = (row["body"] or "").strip()
-        if not body:
-            continue
-        if len(body) > _MEMORY_BODY_HARD_CEILING:
-            logger.warning(
-                "executor-user memory body exceeds hard ceiling "
-                "(%d > %d chars); dropped from the kernel rather than "
-                "truncated",
-                len(body), _MEMORY_BODY_HARD_CEILING,
-            )
-            continue
-        kept.append({"name": row["name"], "body": body})
-    return kept
-
-
 def _record_kernel_telemetry(
-    workspace: str, names: list, *, db_path=None,
+    rows: list, *, db_path=None,
 ) -> None:
-    """Best-effort kernel-axis bump for rows rendered into the kernel's
-    "How the user works" block. Reuses the same store-layer helper the
+    """Best-effort kernel-axis bump for the ``(workspace, name)`` rows rendered
+    into the kernel's "How the user works" block. Reuses the same store-layer helper the
     get-relevant surfaces use (``gaia.store.writer.record_memory_access``);
     never a second implementation. Bumps the ``"kernel"`` axis
     (``kernel_count``/``last_kernel_at``), NOT ``"injection"``: this block
-    fires on EVERY subagent dispatch over the same fixed rows
-    (``type=user AND audience=executor``), which used to dominate the
+    fires on EVERY subagent dispatch over the same fixed rows (the user's
+    standing rows), which used to dominate the
     injection axis by construction (measured: the kernel's rows led any
     injection ranking, 37/37/26 against 17 or less for everything else).
     Splitting it into its own axis is forward-only -- what it already added
@@ -370,38 +396,43 @@ def _record_kernel_telemetry(
     telemetry defect must never surface as a broken kernel, unlike a single
     CLI invocation.
     """
-    if not names:
+    if not rows:
         return
     try:
         from gaia.store.writer import record_memory_access
     except ImportError:
         return
-    for name in names:
+    for row_workspace, name in rows:
         try:
-            record_memory_access(workspace, name, "kernel", db_path=db_path)
+            record_memory_access(row_workspace, name, "kernel", db_path=db_path)
         except Exception:
             logger.debug(
                 "memory kernel telemetry failed (non-fatal)", exc_info=True,
             )
 
 
-def build_memory_block(workspace: str, *, db_path=None) -> str:
-    """Render ``# How the user works``, or "" when no matching rows exist."""
-    rows = _executor_user_bodies(workspace, db_path=db_path)
-    if not rows:
+def build_memory_block(*, db_path=None) -> str:
+    """Render ``# How the user works`` from the user's standing rows, or "" when there are none.
+
+    Whatever workspace the dispatch ran from: user memory belongs to no
+    workspace. The rows are the session birth block's minus those addressed
+    only to the orchestrator, which a specialist has no use for.
+    """
+    from gaia.store.reader import user_anchor_rows
+
+    from .user_sections import render_user_sections
+
+    rows = [
+        r for r in user_anchor_rows(db_path, audience="executor")
+        if (r.get("body") or "").strip()
+    ]
+    sections = render_user_sections(rows)
+    if not sections:
         return ""
-    lines = [MEMORY_HEADING, ""]
-    for index, row in enumerate(rows):
-        if index:
-            lines.append("")
-        body_lines = row["body"].splitlines() or [""]
-        lines.append(f"- {body_lines[0]}")
-        lines.extend(f"  {line}" if line else "" for line in body_lines[1:])
-    block = "\n".join(lines)
     _record_kernel_telemetry(
-        workspace, [row["name"] for row in rows], db_path=db_path,
+        [(row["workspace"], row["name"]) for row in rows], db_path=db_path,
     )
-    return block
+    return f"{MEMORY_HEADING}\n\n{sections}"
 
 
 def build_kernel_context(
@@ -423,6 +454,6 @@ def build_kernel_context(
     blocks = [
         kernel,
         build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace),
-        build_memory_block(workspace, db_path=db_path),
+        build_memory_block(db_path=db_path),
     ]
     return "\n\n".join(b for b in blocks if b)

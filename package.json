@@ -1,7 +1,7 @@
 {
   "name": "@jaguilar87/gaia",
-  "version": "5.5.0-rc.3",
-  "description": "GAIA — Generative AI Interface for Agents. Multi-agent orchestration system for Claude Code - DevOps automation toolkit",
+  "version": "5.5.0-rc.5",
+  "description": "GAIA — Generative AI Interface for Agents. Specialist agents for Claude Code and OpenCode, with a memory that outlives the session and a consent gate on everything that changes state.",
   "main": "index.js",
   "type": "module",
   "bin": {
@@ -9,16 +9,21 @@
   },
   "keywords": [
     "claude-code",
-    "devops",
-    "gitops",
-    "terraform",
-    "kubernetes",
+    "claude-code-plugin",
+    "opencode",
+    "opencode-plugin",
     "ai-agents",
-    "gaia",
+    "multi-agent",
     "orchestration",
-    "automation"
+    "agent-memory",
+    "human-in-the-loop",
+    "approval",
+    "infrastructure-as-code",
+    "kubernetes",
+    "gitops",
+    "gaia"
   ],
-  "author": "Jorge Aguilar <jorge.aguilar87@gmail.com>",
+  "author": "Jorge Aguilar",
   "license": "MIT",
   "private": false,
   "repository": {
@@ -27,11 +32,11 @@
   },
   "homepage": "https://github.com/metraton/gaia#readme",
   "bugs": {
-    "url": "https://github.com/metraton/gaia/issues",
-    "email": "jorge.aguilar87@gmail.com"
+    "url": "https://github.com/metraton/gaia/issues"
   },
   "files": [
     ".claude-plugin/",
+    "settings.json",
     "bin/",
     "agents/",
     "tools/",
@@ -52,11 +57,11 @@
     "index.js"
   ],
   "scripts": {
-    "test": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e -n auto",
-    "test:layer1": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e -n auto",
+    "test": "python3 -m pytest -v",
+    "test:layer1": "python3 -m pytest -v",
     "test:layer2": "python3 -m pytest tests/layer2_llm_evaluation/ -v -m llm",
     "test:layer3": "python3 -m pytest tests/layer3_e2e/ -v -m e2e -n0",
-    "test:all": "python3 -m pytest tests/ -v -m ''",
+    "test:all": "python3 -m pytest tests/ tests/layer2_llm_evaluation tests/layer3_e2e -v -m ''",
     "test:promptfoo": "npx promptfoo eval --config tests/promptfoo.yaml",
     "lint": "eslint .",
     "release:prepare": "node scripts/release-prepare.mjs",
@@ -74,7 +79,7 @@
     "prepublishOnly": "npm run generate:plugin-root && node bin/pre-publish-validate.js",
     "preuninstall": "python3 bin/gaia uninstall --preuninstall"
   },
-  "_install_note": "No postinstall hook (removed for a clean, non-invasive install that works under npm and pnpm alike). The DB is bootstrapped lazily on first `gaia` CLI use (see bin/gaia:_ensure_db_bootstrapped); workspace .claude/ config is applied on demand via `gaia install` or by the SessionStart hook.",
+  "_install_note": "No postinstall hook (removed for a clean, non-invasive install that works under npm and pnpm alike). The DB is bootstrapped lazily on first `gaia` CLI use (see bin/gaia:_ensure_db_bootstrapped); workspace .claude/ config is applied on demand via `gaia install` (alias `gaia update`) or by the SessionStart hook. `gaia install` records every file and key it writes in .claude/gaia-manifest.json and writes nothing outside the workspace unless `--path` opts in; `gaia uninstall` reverts exactly that manifest on its own, never touching the DB.",
   "dependencies": {},
   "devDependencies": {
     "chalk": "^5.3.0",

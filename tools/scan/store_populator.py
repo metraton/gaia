@@ -11,9 +11,9 @@ The populators NEVER touch agent-owned columns. They only set scanner-owned
 columns; the store API protects agent fields by listing scanner columns
 explicitly in its UPSERT statements.
 
-Identity resolution: for each project path, identity is resolved via
-``gaia.project.current(project_path)`` (B0). This means two clones of the same
-remote on different machines collapse to the same workspace identity row.
+Identity resolution: each project path resolves through
+:func:`resolve_project_identity` (normalized remote first), so every clone of
+one remote names the same ``projects`` row.
 
 Public API::
 
@@ -44,50 +44,33 @@ from tools.scan.role_detector import detect_role
 # ---------------------------------------------------------------------------
 
 def resolve_project_identity(project_path: Path) -> str:
-    """Resolve a STABLE, vantage-independent identity for a physical project.
+    """Resolve the identity that names one project wherever its clones sit.
 
-    Unlike :func:`resolve_identity` (which derives a *workspace* identity from
-    the git remote and is intentionally vantage-independent at the WORKSPACE
-    level), this resolves a *project* identity that pins the SAME physical repo
-    to one value regardless of which root it was scanned from -- so a repo
-    scanned from the workspace root and again from its own subdirectory
-    collapses to a single ``projects`` row instead of duplicating.
+    First non-empty wins:
 
-    Resolution order (first non-empty wins):
+      1. Normalized ``origin`` remote (``host/owner/repo``,
+         :func:`gaia.project._normalize_remote`). It survives moving the
+         folder, and every clone of one remote resolves to it, so a second
+         clone is a copy of the project rather than another project.
+      2. ``git rev-parse --git-common-dir`` (realpath), for a repo with no
+         remote. Identical from the repo root, a subdirectory and a linked
+         worktree, but it changes when the folder moves.
+      3. ``realpath`` of ``project_path``, for a folder with no git metadata.
 
-      1. ``git rev-parse --git-common-dir`` (realpath). The shared ``.git``
-         directory is identical from the repo root, any nested subdir, and any
-         linked worktree -- the strongest vantage-independent fingerprint.
-      2. Normalized git remote (``host/owner/repo``) via
-         :func:`gaia.project._normalize_remote`. Survives fresh clones of the
-         same remote on different machines/paths.
-      3. ``realpath`` of ``project_path``. Last-resort fallback for a repo with
-         no usable git metadata and no remote: the canonical on-disk path is at
-         least stable across symlinked vantages of the same directory.
-
-    The function never raises and never returns an empty string.
-
-    Args:
-        project_path: Absolute path to the project root being populated.
-
-    Returns:
-        A stable identity string. Never empty, never raises.
+    Never raises and never returns an empty string.
     """
     from gaia.project import git_common_dir, _normalize_remote
 
-    # 1. git-common-dir (realpath) -- strongest vantage-independent fingerprint.
-    common = git_common_dir(project_path)
-    if common:
-        return common
-
-    # 2. Normalized remote.
     remote = _git_remote_origin(project_path)
     if remote:
         normalized = _normalize_remote(remote)
         if normalized:
             return normalized
 
-    # 3. Realpath of the project path.
+    common = git_common_dir(project_path)
+    if common:
+        return common
+
     try:
         return str(Path(project_path).resolve())
     except (OSError, RuntimeError):
@@ -116,8 +99,8 @@ def populate_project(
         db_path: Optional explicit DB path (test override).
         project_name: Override for the project basename. When None, uses
             project_path.name.
-        group_name: Container directory name when the repo is nested under a
-            grouping directory (e.g. ``"github-repos"``, ``"bildwiz"``).
+        group_name: The folders between the workspace root and the repo,
+            slash-joined (e.g. ``"github-repos"``, ``"bildwiz/sub"``).
             Pass ``None`` when the repo sits directly at the workspace root.
 
     Returns:
@@ -879,9 +862,8 @@ def scan_workspace_to_store(
       nearest-installed-ancestor guessing. The caller (the scan classifier in
       :mod:`tools.scan.classify`, or the migrator) has already decided which
       workspace this root belongs to.
-    * ``group_name`` = the immediate container directory of the repo when it
-      does not sit directly under ``root``; ``None`` when it does. This records
-      the grouping folder without inferring a separate workspace from it.
+    * ``group_name`` = the folders between ``root`` and the repo, slash-joined
+      (:func:`group_path`); ``None`` when the repo sits directly under ``root``.
 
     Returns:
         Dict mapping ``"<workspace>/<project>"`` keys to per-repo result dicts,
@@ -905,10 +887,7 @@ def scan_workspace_to_store(
         # Deterministic: every repo belongs to the caller-provided workspace.
         target_workspace = workspace
 
-        # group_name = the immediate container of the repo when it is not
-        # directly under root; None when it sits directly at root.
-        container = project_path.parent
-        group_name: str | None = container.name if container != root else None
+        group_name = group_path(project_path, root)
 
         try:
             project_res = populate_project(
@@ -1012,8 +991,8 @@ def is_linked_worktree(project_path: Path) -> bool:
 
     A linked worktree (``git worktree add``) is a second checkout of the SAME
     repository on another branch -- a view, not a project. It must never become
-    a ``projects`` row: its :func:`resolve_project_identity` is the shared
-    git-common-dir, identical to the base repo's, so the writer's
+    a ``projects`` row: its :func:`resolve_project_identity` (the shared remote,
+    or the shared git-common-dir) is the base repo's, so the writer's
     identity-collapse UPDATE would overwrite the base repo's ``path``,
     ``remote_url``, ``primary_language``, ``role`` and ``group_name`` with the
     worktree's.
@@ -1145,6 +1124,30 @@ def worktree_facets(project_path: Path) -> list[dict]:
     return facets
 
 
+def copy_facet(copy_path: Path) -> dict:
+    """The ``copy``-scope facet recording *copy_path* as a second clone of a project.
+
+    A second clone of a project's remote is not a project of its own: like a
+    linked worktree it is recorded on the project's row, ``key`` = the clone's
+    absolute path and ``value`` = the branch it has checked out
+    (``"detached"`` when it holds none).
+    """
+    import shutil
+    import subprocess
+
+    branch = None
+    if shutil.which("git") is not None:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(copy_path), "symbolic-ref", "--short", "-q", "HEAD"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            branch = (result.stdout or "").strip() if result.returncode == 0 else None
+        except (subprocess.TimeoutExpired, OSError):
+            branch = None
+    return {"scope": "copy", "key": str(copy_path), "value": branch or "detached"}
+
+
 def _platform_from_remote(url: str | None) -> str | None:
     if not url:
         return None
@@ -1181,86 +1184,63 @@ def _detect_primary_language(project_path: Path) -> str | None:
     return primary_language_from_sections(compute_stack_sections(project_path))
 
 
-def _list_repos(root: Path, max_depth: int = 4) -> list[Path]:
-    """Return git repositories discovered under root via bounded recursive walk.
+def _list_repos(root: Path) -> list[Path]:
+    """Return every git repository under *root*, sorted.
 
-    A directory is a repo if it contains a ``.git`` entry (directory or file --
-    the file form covers submodules, whose gitfile points at the superproject's
-    ``modules/`` store).  A LINKED GIT WORKTREE is deliberately NOT a repo here:
-    it is a second checkout of a repository already discovered elsewhere, and
-    indexing it would collapse it onto the base repo's row and overwrite that
-    row's path (see :func:`is_linked_worktree`).  Its existence is still
-    recorded, as a ``worktree`` facet on the base repo (:func:`worktree_facets`).
-    Container directories that are not themselves repos are descended into so
-    that layouts like::
-
-        ~/ws/github-repos/        <- container, no .git
-            repo-a/               <- repo, has .git
-            repo-b/               <- repo, has .git
-        ~/ws/aaxis/               <- container, no .git
-            bildwiz/              <- sub-container, no .git
-                platform-repo/    <- repo, has .git
-
-    are handled correctly.  Plain directories without ``.git`` anywhere in
-    their subtree are **not** returned as repos (AC-3: ``briefs/``,
-    ``plans/``, and similar sidecar folders are excluded).
-
-    The walk is bounded at ``max_depth`` levels below ``root`` to avoid
-    runaway traversal on deep trees.  Directories whose basename appears in
-    ``_REPO_WALK_SKIP`` are never descended into.
-
-    The returned paths are sorted for deterministic output.  Their
-    ``.parent`` attribute gives the immediate container directory, which
-    T2.2 can consume to infer ``group_name``.
-
-    Args:
-        root: Workspace root to search from.
-        max_depth: Maximum directory depth to descend (default 4).
-
-    Returns:
-        Sorted list of absolute ``Path`` objects, each pointing to the root
-        of a git repository.
+    A folder holding a ``.git`` entry (a directory, or a submodule's gitfile)
+    is a repo and is never descended into. A linked worktree is not a repo
+    (:func:`is_linked_worktree`); it is recorded as a ``worktree`` facet of
+    its base repo instead. Every other folder is walked at any depth, dot-folders
+    included, except the names in ``_REPO_WALK_SKIP``, symlinked folders and
+    build trees (``_BUILD_TREE_MARKERS``). When *root* is itself a repo it is
+    the only one returned.
     """
     if not root.is_dir():
         return []
-
-    # Root itself is a repo -- return it directly without recursing into it.
-    # The worktree exclusion applies here too: "a linked worktree is never a
-    # projects row" is an invariant of discovery, not of the walk depth.
     if (root / ".git").exists():
         return [] if is_linked_worktree(root) else [root]
 
     repos: list[Path] = []
-    _walk_for_repos(root, root, current_depth=0, max_depth=max_depth, repos=repos)
+    _walk_for_repos(root, repos)
     return sorted(repos)
 
 
-# Directories that are never git repos and that the walk must not descend into.
+def group_path(repo: Path, workspace_root: Path) -> str | None:
+    """The folders between *workspace_root* and *repo*, slash-joined; None when there are none."""
+    if repo == workspace_root:
+        return None
+    return "/".join(repo.parent.relative_to(workspace_root).parts) or None
+
+
+# Tool, environment and cache folders that sit beside repos and hold checkouts
+# nobody declared as projects (`.repo` is the `repo` tool's mirror of every
+# manifest project).
 _REPO_WALK_SKIP: frozenset[str] = frozenset({
-    "node_modules",
-    "__pycache__",
-    "vendor",
-    "dist",
-    "build",
-    ".terraform",
-    ".terragrunt-cache",
-    ".venv",
-    "venv",
-    ".cache",
-    ".npm",
-    ".next",
-    ".nuxt",
-    "target",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".tox",
-    # Gaia sidecar directories -- not projects (AC-3)
     ".git",
     ".claude",
-    "briefs",
-    "plans",
+    ".opencode",
+    ".gaia",
+    ".terraform",
+    ".project-worktrees",
+    ".worktrees",
+    ".codex",
+    ".agents",
+    ".repo",
+    ".venv",
+    ".tox",
+    ".cache",
+    "node_modules",
 })
+
+# A build tree kept outside its source repo is recognised by the file its build
+# system writes at its top, whatever the folder is called: CMake fetches
+# dependencies as git checkouts under `_deps/`, BitBake unpacks recipes as git
+# checkouts under `tmp/work/`.
+_BUILD_TREE_MARKERS: tuple[str, ...] = ("CMakeCache.txt", "conf/bblayers.conf")
+
+
+def _is_build_tree(directory: Path) -> bool:
+    return any((directory / marker).is_file() for marker in _BUILD_TREE_MARKERS)
 
 
 def _is_installed_gaia_workspace(directory: Path) -> bool:
@@ -1300,51 +1280,25 @@ def _is_installed_gaia_workspace(directory: Path) -> bool:
     return "gaia" in names
 
 
-def _walk_for_repos(
-    root: Path,
-    current: Path,
-    current_depth: int,
-    max_depth: int,
-    repos: list[Path],
-) -> None:
-    """Recursive helper for :func:`_list_repos`.
+def _walk_for_repos(current: Path, repos: list[Path]) -> None:
+    """Append to *repos* every repo below *current*, under the rules of :func:`_list_repos`.
 
-    Descends into ``current`` looking for git repos.  Stops at
-    ``max_depth`` levels below ``root``.  Any directory that has a
-    ``.git`` entry is treated as a repo leaf and is NOT descended into
-    (nested repos inside a repo are the repo's own concern).
-
-    Args:
-        root: The original workspace root (used only for depth reference).
-        current: Directory to examine at this recursion level.
-        current_depth: How many levels below ``root`` we are now.
-        max_depth: Maximum depth; when reached, stop descending.
-        repos: Accumulator list of repo paths found so far.
+    A symlinked folder is not descended: without a depth bound, a link back up
+    the tree would never end and a link outward would index another tree.
     """
-    if current_depth > max_depth:
-        return
-
     try:
         entries = sorted(current.iterdir())
     except OSError:
         return
 
     for entry in entries:
-        if not entry.is_dir():
-            continue
-        name = entry.name
-        # Skip hidden dirs and explicitly excluded names.
-        if name.startswith(".") or name in _REPO_WALK_SKIP:
+        if entry.name in _REPO_WALK_SKIP or not entry.is_dir():
             continue
         if (entry / ".git").exists():
-            # This directory is a git checkout -- do not recurse either way.
-            # A linked worktree is skipped entirely: it is a view of a repo
-            # discovered elsewhere, not a project of its own.
             if not is_linked_worktree(entry):
                 repos.append(entry)
-        else:
-            # Container directory: recurse to find repos inside it.
-            _walk_for_repos(root, entry, current_depth + 1, max_depth, repos)
+        elif not entry.is_symlink() and not _is_build_tree(entry):
+            _walk_for_repos(entry, repos)
 
 
 def _scan_tf_modules(project_path: Path) -> list[dict]:

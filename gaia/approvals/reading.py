@@ -104,8 +104,9 @@ def _is_orphaned(
 ) -> bool:
     """No sign of life: the registry does not hold the requester live and the row saw no recent activity.
 
-    The recent-activity half covers the host that does not heartbeat the
-    session registry (OpenCode), whose requests would otherwise all read orphaned.
+    Both hosts register and heartbeat their main sessions; the recent-activity
+    half covers a requester whose session the registry does not hold, such as
+    one started before its host registered sessions.
     """
     if live is not None and approval.get("session_id") in live:
         return False

@@ -150,7 +150,6 @@ def test_help_flag_value_does_not_falsely_trigger_the_carve_out():
         f"{_GAIA} approvals replay P-xyz",
         f"{_GAIA} approvals reject-all",
         f"{_GAIA} approvals clean",
-        f"{_GAIA} memory edit --name=foo --field=body --content=x",
         f"{_GAIA} memory delete foo",
         f"{_GAIA} contract set foo bar",
         f"{_GAIA} contract finalize --draft-id=x",
@@ -165,6 +164,26 @@ def test_every_previously_denied_write_verb_still_denied(command):
     allowed, reason = _check(command)
     assert allowed is False
     assert reason is not None
+
+
+def test_memory_in_place_rewrite_is_excluded_like_delete():
+    """`add --replace` and `delete` are both delegated under T3 (skill
+    memory), so the orchestrator lane refuses both outright."""
+    allowed, reason = _check(
+        f"{_GAIA} memory add --name=foo --type=atom --body=x --workspace=me --replace"
+    )
+    assert allowed is False
+    assert "explicitly excluded" in reason
+    allowed, reason = _check(f"{_GAIA} memory delete foo --yes")
+    assert allowed is False
+    assert "explicitly excluded" in reason
+
+
+def test_memory_add_of_a_new_row_stays_on_the_orchestrator_lane():
+    allowed, reason = _check(
+        f"{_GAIA} memory add --name=foo --type=atom --body=x --workspace=me"
+    )
+    assert allowed is True, reason
 
 
 def test_approval_verbs_stay_categorically_denied_not_approvable():

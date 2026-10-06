@@ -26,10 +26,6 @@ GAIA_DB="${GAIA_DB:-$HOME/.gaia/gaia.db}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 SCHEMA_FILE="${SCHEMA_FILE:-$SCRIPT_DIR/../gaia/store/schema.sql}"
 
-# Workspace cuya identidad se va a registrar en projects. Default: directorio
-# raíz del repo (dos niveles arriba de scripts/). Configurable vía env.
-WORKSPACE="${WORKSPACE:-$SCRIPT_DIR/..}"
-
 # Verificar que sqlite3 está instalado. Sin esto, todo lo demás falla con
 # errores oscuros; preferimos un mensaje claro al inicio.
 if ! command -v sqlite3 > /dev/null 2>&1; then
@@ -49,7 +45,6 @@ mkdir -p "$(dirname "$GAIA_DB")"
 # Banner inicial: deja claro contra qué DB estamos operando antes de tocar nada.
 echo "[bootstrap] Initializing Gaia DB at $GAIA_DB"
 echo "[bootstrap] Using schema:  $SCHEMA_FILE"
-echo "[bootstrap] Using workspace: $WORKSPACE"
 
 # === Section 1.5: Pre-schema ADD COLUMN reconciliation (existing DBs) ===
 #
@@ -71,8 +66,8 @@ echo "[bootstrap] Using workspace: $WORKSPACE"
 # DB the column has to exist BEFORE schema.sql runs.
 #
 # This section closes that gap generically and idempotently: for every
-# `ALTER TABLE <t> ADD COLUMN <c> ...` statement declared in the forward
-# migration files, if table <t> ALREADY exists in the live DB and column <c>
+# `ALTER TABLE <t> ADD COLUMN <c> ...` statement declared in the migrations
+# still pending for this DB, if table <t> ALREADY exists in the live DB and column <c>
 # is absent, add it NOW -- before schema.sql. The migration file stays the
 # single source of the ADD COLUMN (one-file-per-bump); we only change WHEN a
 # pre-existing table receives the column so schema.sql's index build cannot
@@ -89,18 +84,41 @@ echo "[bootstrap] Using workspace: $WORKSPACE"
 #     section is a no-op. Recovery on retry is automatic.
 #
 # Pure bash + sqlite3, no python3 -- consistent with this script's principles.
-# NOTE: the matcher assumes one `ALTER TABLE ... ADD COLUMN ...` per line, the
-# same assumption _filter_add_column_idempotent (Section 3c) already relies on.
+
+# An ADD COLUMN statement starts at the beginning of a line and ends on the first
+# line whose code ends in `;`. Its clauses may span lines (v61_to_v62 puts each
+# CHECK on its own line), so both readers below act on the whole statement.
+_ADD_COLUMN_RE='^[[:space:]]*alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+)'
+_STATEMENT_END_RE=';[[:space:]]*(--.*)?$'
+
+# $1 = first line of an ADD COLUMN statement. Reads the rest of it from the
+# caller's stdin and leaves the whole statement in ADD_COLUMN_STATEMENT.
+_read_add_column_statement() {
+    local line="$1"
+    ADD_COLUMN_STATEMENT="$line"
+    while ! [[ "$line" =~ $_STATEMENT_END_RE ]] && { IFS= read -r line || [ -n "$line" ]; }; do
+        ADD_COLUMN_STATEMENT+=$'\n'"$line"
+    done
+}
 
 _reconcile_pre_schema_add_columns() {
-    local mig_file line lower table col tbl_exists col_exists
+    local mig_file target line lower table col tbl_exists col_exists ledger=0
+    # Only pending migrations count: an applied one may add a column a later
+    # one renamed (task_status became agent_state in v37), which must not return.
+    if [ "$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version';")" -gt 0 ]; then
+        ledger="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
+    fi
     for mig_file in "${SCRIPT_DIR}/migrations"/v*_to_v*.sql; do
         [ -f "$mig_file" ] || continue
+        target="${mig_file##*_to_v}"
+        target="${target%.sql}"
+        [ "$target" -gt "$ledger" ] || continue
         while IFS= read -r line || [ -n "$line" ]; do
             lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
-            if [[ "$lower" =~ alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+) ]]; then
+            if [[ "$lower" =~ $_ADD_COLUMN_RE ]]; then
                 table="${BASH_REMATCH[1]}"
                 col="${BASH_REMATCH[2]}"
+                _read_add_column_statement "$line"
                 # Table must already exist (existing DB). On a fresh DB this is
                 # 0 and we skip -- schema.sql will create the table + column.
                 tbl_exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='${table}';")"
@@ -112,7 +130,7 @@ _reconcile_pre_schema_add_columns() {
                 col_exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM pragma_table_info('${table}') WHERE name='${col}';")"
                 if [ "$col_exists" -eq 0 ]; then
                     echo "[bootstrap] pre-schema reconcile: adding ${table}.${col} (existing DB predates it)"
-                    sqlite3 "$GAIA_DB" "$line"
+                    sqlite3 "$GAIA_DB" "$ADD_COLUMN_STATEMENT"
                 fi
             fi
         done < "$mig_file"
@@ -200,24 +218,6 @@ INSERT OR IGNORE INTO agent_permissions (table_name, agent_name, allow_write) VA
 EOF
 
 echo "[bootstrap] agent_permissions seeded (13 rows, 5 agents, brief B3 M2 mapping)"
-
-# === Section 3a: Cleanup legacy agent_permissions rows ===
-#
-# Section 3 (above) inserts the canonical "gaia-system" name. A previous
-# version of this bootstrap (or the legacy scripts/seed_agent_permissions.py)
-# inserted rows under the old name "gaia-operator" -- see the rename note in
-# Section 3 above (line 83-86). Those legacy rows persist across upgrades
-# because INSERT OR IGNORE never removes anything. Without cleanup, the
-# distinct-agents check below sees 6 agents on upgraded DBs instead of 5,
-# and the strict equality variant of the check (pre-fix) used to fail.
-#
-# DELETE is safe here: the legacy "gaia-operator" rows have no live consumer
-# in the current model -- the gaia-system agent owns its own table_name set
-# (gaia_installations, integrations) which never collided with the legacy
-# row's table_name. We are pruning orphan data, not migrating it.
-sqlite3 "$GAIA_DB" <<'EOF'
-DELETE FROM agent_permissions WHERE agent_name = 'gaia-operator';
-EOF
 
 # === Section 3b: Seed schema_version baseline (floor) ===
 #
@@ -353,28 +353,31 @@ MIG_DIR="${SCRIPT_DIR}/migrations"
 # bare `ALTER TABLE t ADD COLUMN c` aborts with "duplicate column name" when the
 # column already exists from schema.sql. This guard restores idempotency for
 # ADD COLUMN at the RUNNER level (not by putting invalid SQL in the .sql file):
-# for each `ALTER TABLE <t> ADD COLUMN <c> ...` line, if column <c> already
-# exists on table <t> (PRAGMA table_info), the line is neutralised (commented
-# out) before the migration runs. Every other statement passes through verbatim.
+# for each `ALTER TABLE <t> ADD COLUMN <c> ...` statement, if column <c> already
+# exists on table <t> (PRAGMA table_info), every line of the statement is
+# neutralised (commented out) before the migration runs. Every other statement
+# passes through verbatim.
 #
 # Pure bash + sqlite3, no python3 -- consistent with this script's principles.
 _filter_add_column_idempotent() {
     # $1 = path to the migration .sql file. Emits the (possibly filtered) SQL on
-    # stdout. Lines that are `ALTER TABLE t ADD COLUMN c` for an existing column
-    # are replaced by a comment; all other lines are passed through unchanged.
+    # stdout.
     local mig_file="$1"
     local line lower table col exists
     while IFS= read -r line || [ -n "$line" ]; do
-        # Normalise whitespace for matching only (emit the ORIGINAL line).
         lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$lower" =~ alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+) ]]; then
+        if [[ "$lower" =~ $_ADD_COLUMN_RE ]]; then
             table="${BASH_REMATCH[1]}"
             col="${BASH_REMATCH[2]}"
+            _read_add_column_statement "$line"
             exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM pragma_table_info('${table}') WHERE name='${col}';")"
             if [ "$exists" -gt 0 ]; then
-                printf -- '-- [bootstrap] skipped (column %s.%s already present): %s\n' "$table" "$col" "$line"
-                continue
+                printf -- '-- [bootstrap] skipped (column %s.%s already present): %s\n' \
+                    "$table" "$col" "${ADD_COLUMN_STATEMENT//$'\n'/$'\n'-- }"
+            else
+                printf '%s\n' "$ADD_COLUMN_STATEMENT"
             fi
+            continue
         fi
         printf '%s\n' "$line"
     done < "$mig_file"
@@ -431,69 +434,7 @@ else
     echo "[bootstrap] schema_version up-to-date (no migrations pending)"
 fi
 
-# === Section 4: Registrar workspace actual ===
-#
-# El schema v2.0 (commit be9698f) renombró:
-#   - projects (organizational container) -> workspaces
-#   - repos (git-bearing) -> projects
-# El seed aquí inserta una fila inicial en `workspaces` (el contenedor
-# organizacional, no la tabla de repos git). El scanner luego puebla
-# `projects` cuando descubre repos git dentro del workspace.
-
-# Detectamos la identity del workspace via git remote get-url origin, igual que
-# gaia.store.writer._resolve_identity(). La normalización (lowercase, strip
-# protocolo, strip .git, ssh form) la hacemos en SQL/bash puro -- no llamamos
-# a Python.
-#
-# Fallback: si no hay remote, usamos el basename del workspace en lowercase.
-# Si tampoco eso, usamos 'global'.
-
-WORKSPACE_IDENTITY=""
-RAW_REMOTE=""
-
-# Capturamos el remote sin pipes; si git falla, RAW_REMOTE queda vacío.
-if command -v git > /dev/null 2>&1; then
-    RAW_REMOTE="$(git -C "$WORKSPACE" remote get-url origin 2> /dev/null || true)"
-fi
-
-if [ -n "$RAW_REMOTE" ]; then
-    # Normalización mínima: lowercase + strip de prefijos comunes + strip .git.
-    # Equivalente a gaia.project._normalize_remote() en bash puro.
-    s="${RAW_REMOTE,,}"             # lowercase (bash 4+)
-    s="${s#https://}"
-    s="${s#http://}"
-    s="${s#ssh://}"
-    s="${s#git+ssh://}"
-    s="${s#git+https://}"
-    # SSH form: git@host:owner/repo -> host/owner/repo
-    if [[ "$s" == git@* ]]; then
-        s="${s#git@}"
-        s="${s/:/\/}"               # primer ':' -> '/'
-    fi
-    s="${s%.git}"
-    s="${s%/}"
-    WORKSPACE_IDENTITY="$s"
-fi
-
-if [ -z "$WORKSPACE_IDENTITY" ]; then
-    # Fallback nivel 2: basename del workspace en lowercase.
-    base="$(basename "$(cd "$WORKSPACE" && pwd)")"
-    WORKSPACE_IDENTITY="${base,,}"
-fi
-
-if [ -z "$WORKSPACE_IDENTITY" ]; then
-    # Fallback nivel 3: literal 'global'.
-    WORKSPACE_IDENTITY="global"
-fi
-
-# El name (PK) y la identity son el mismo string en este flujo bootstrap.
-# El scanner puede actualizar identity más adelante; aquí sólo garantizamos
-# que existe una fila en `workspaces` para el workspace actual.
-sqlite3 "$GAIA_DB" <<EOF
-INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('${WORKSPACE_IDENTITY}', '${WORKSPACE_IDENTITY}');
-EOF
-
-echo "[bootstrap] Workspace registered (identity=${WORKSPACE_IDENTITY})"
+# The bootstrap never registers a workspace: only `gaia workspace declare` does.
 
 # === Section 5: FTS5 backfill ===
 
@@ -581,8 +522,8 @@ fi
 # gitops-operator, gaia-system, cloud-troubleshooter). Uses -ge for the same
 # reason Checks 1, 3, 5 do: the seed is INSERT OR IGNORE (idempotent), so a
 # DB carrying rows from prior Gaia versions may legitimately have additional
-# distinct agent_name values (e.g. the legacy "gaia-operator" before the
-# rename to "gaia-system" documented in Section 3 above). Strict equality
+# distinct agent_name values (e.g. the live "gaia-operator" agent, whose rows
+# a bootstrap never deletes). Strict equality
 # breaks every install on machines where ~/.gaia/gaia.db survived a Gaia
 # upgrade -- contradicts the "idempotent over many runs" principle declared
 # at line 12 of this script.
@@ -594,16 +535,6 @@ else
     ALL_OK=0
 fi
 
-# Check 3: al menos 1 workspace registrado (el actual). El bootstrap seedea
-# `workspaces`, no `projects`; el scanner es quien crea filas en `projects`
-# cuando descubre repos git dentro del workspace.
-WORKSPACE_COUNT="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM workspaces;")"
-if [ "$WORKSPACE_COUNT" -ge 1 ]; then
-    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- PASS"
-else
-    echo "[bootstrap] check: workspaces rows >= 1 (got ${WORKSPACE_COUNT}) -- FAIL"
-    ALL_OK=0
-fi
 
 # Check 4: los 12 FTS5 triggers existen.
 # 3 por mirror (insert/delete/update) × 3 mirrors antiguos +

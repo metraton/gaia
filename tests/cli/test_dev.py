@@ -69,9 +69,7 @@ def isolated_dev_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     })
 
 
-def _npm_available() -> bool:
-    import shutil
-    return shutil.which("npm") is not None
+from tests.conftest import copy_package_tree, require_tool
 
 
 @pytest.mark.usefixtures("isolated_dev_policy")
@@ -99,7 +97,7 @@ class TestSimpleDevPolicy:
         if kind == "file":
             target.write_text("sentinel")
         with patch.object(dev_mod, "_run_pack_mode") as pack:
-            assert cmd_dev(argparse.Namespace(workspace=str(target))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(target))) == 1
         pack.assert_not_called()
 
     @pytest.mark.parametrize("host", ["claude_code", "opencode"])
@@ -171,7 +169,7 @@ class TestRecoveryPrerequisites:
              patch.object(dev_mod, "install_tarball", return_value={
                  "action": "error", "path": "x", "details": "injected",
              }):
-            assert cmd_dev(argparse.Namespace(workspace=str(workspace), pack_dest=str(custom))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(workspace), pack_dest=str(custom))) == 1
         assert foreign.read_bytes() == b"foreign"
         assert len(list(custom.glob("attempt-*/*.tgz"))) == 1
 
@@ -195,7 +193,7 @@ class TestRecoveryPrerequisites:
         with patch.object(dev_mod._pack_helpers, "pack_tarball") as pack, \
              patch.object(dev_mod, "install_tarball") as install, \
              patch.object(dev_mod, "wire_workspace_via_installed_gaia") as wire:
-            assert cmd_dev(argparse.Namespace(workspace=str(tmp_path))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(tmp_path))) == 1
         pack.assert_not_called()
         install.assert_not_called()
         wire.assert_not_called()
@@ -233,7 +231,7 @@ class TestRecoveryPrerequisites:
              patch.object(dev_mod, "rewrite_workspace_dep_spec", side_effect=result("spec")), \
              patch.object(dev_mod, "wire_workspace_via_installed_gaia", side_effect=result("wire")), \
              patch.object(dev_mod, "record_dev_build") as build:
-            assert cmd_dev(argparse.Namespace(workspace=str(workspace), pack_dest=str(dest))) == 1
+            assert cmd_dev(argparse.Namespace(channel="npm", workspace=str(workspace), pack_dest=str(dest))) == 1
         assert calls == ["install", "spec", "wire"][:["install", "spec", "wire"].index(stage) + 1]
         assert old.read_bytes() == b"rollback package"
         assert foreign.read_bytes() == b"foreign package"
@@ -259,7 +257,8 @@ class TestRegisterSubcommand(unittest.TestCase):
         register(subparsers)
         args = parser.parse_args(["dev"])
         self.assertEqual(args.subcommand, "dev")
-        self.assertEqual(args.host, "all")
+        self.assertIsNone(args.channel)
+        self.assertIsNone(args.host)
 
     def test_invalid_host_rejected_at_parse_time(self):
         parser = argparse.ArgumentParser()
@@ -480,7 +479,7 @@ class TestInstallTarball(unittest.TestCase):
 class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
     def test_errors_when_installed_entrypoint_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            res = wire_workspace_via_installed_gaia(Path(tmp))
+            res = wire_workspace_via_installed_gaia(Path(tmp), host="claude_code")
             self.assertEqual(res["action"], "error")
             self.assertIn("not found", res["details"])
 
@@ -498,7 +497,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0, "Gaia ready.", "")
 
             with patch("cli.dev.subprocess.run", side_effect=fake_run):
-                res = wire_workspace_via_installed_gaia(workspace, quiet=True)
+                res = wire_workspace_via_installed_gaia(workspace, quiet=True, host="claude_code")
 
             self.assertEqual(res["action"], "created")
             self.assertIn(str(entrypoint), captured["cmd"])
@@ -508,7 +507,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
             self.assertIn("--quiet", captured["cmd"])
             self.assertIn("--no-path", captured["cmd"])
             self.assertIn("--strict-wiring", captured["cmd"])
-            self.assertEqual(captured["cmd"][captured["cmd"].index("--host") + 1], "all")
+            self.assertEqual(captured["cmd"][captured["cmd"].index("--host") + 1], "claude_code")
 
     def test_nonzero_exit_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -521,7 +520,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
                 "cli.dev.subprocess.run",
                 return_value=subprocess.CompletedProcess([], 1, "", "boom"),
             ):
-                res = wire_workspace_via_installed_gaia(workspace)
+                res = wire_workspace_via_installed_gaia(workspace, host="claude_code")
 
             self.assertEqual(res["action"], "error")
             self.assertIn("boom", res["details"])
@@ -533,7 +532,7 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
 
 class TestCmdDevRefusesNonSourceCheckout(unittest.TestCase):
     def _make_args(self, workspace) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.workspace = str(workspace)
         ns.mode = "pack"
         ns.quiet = True
@@ -615,7 +614,7 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
         self._data_dir_ctx.cleanup()
 
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.workspace = str(workspace)
         ns.mode = overrides.get("mode", "pack")
         ns.quiet = overrides.get("quiet", True)
@@ -860,8 +859,10 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
 # .claude/ -- nothing here can leak into either.
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_npm_available(), "npm not available in this environment")
 class TestDevPackModeRealEndToEnd(unittest.TestCase):
+    def setUp(self):
+        require_tool("npm")
+
     def test_pack_install_wire_produces_healthy_workspace(self):
         with tempfile.TemporaryDirectory(prefix="gaia-dev-e2e-") as tmp:
             tmp_path = Path(tmp)
@@ -877,6 +878,7 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
             }
 
             args = argparse.Namespace(
+                channel="npm",
                 workspace=str(workspace),
                 quiet=True,
                 verbose=False,
@@ -887,7 +889,8 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
                 no_global_link=True,
             )
 
-            with patch.dict(os.environ, env_patch):
+            source = copy_package_tree(tmp_path / "source")
+            with patch.dict(os.environ, env_patch), patch("cli.dev._PACKAGE_ROOT", source):
                 with redirect_stdout(io.StringIO()) as out:
                     rc = cmd_dev(args)
 
@@ -1156,7 +1159,7 @@ class TestPackModeReportsTheDevIteration(unittest.TestCase):
         self._data_dir_ctx.cleanup()
 
     def _args(self, workspace) -> argparse.Namespace:
-        ns = argparse.Namespace()
+        ns = argparse.Namespace(channel="npm")
         ns.workspace = str(workspace)
         ns.mode = "pack"
         ns.quiet = False
@@ -1233,6 +1236,181 @@ class TestPackModeReportsTheDevIteration(unittest.TestCase):
 
         self.assertEqual(rc, 1)
         self.assertIsNone(read_record("9.9.9"))
+
+
+# ---------------------------------------------------------------------------
+# --channel: npm, plugin, opencode, all; --host kept as its alias
+# ---------------------------------------------------------------------------
+
+_FAKE_CLAUDE = """#!{python}
+import json, os, sys
+from pathlib import Path
+state_path = Path(__file__).with_name("state.json")
+state = json.loads(state_path.read_text())
+args = sys.argv[1:]
+state["calls"].append(args)
+if args[:3] == ["plugin", "marketplace", "list"]:
+    print(json.dumps(state["marketplaces"]))
+elif args[:2] == ["plugin", "list"]:
+    print(json.dumps(state["plugins"]))
+elif args[:3] == ["plugin", "marketplace", "add"]:
+    state["marketplaces"].append({{"name": "gaia-dev", "source": "directory", "installLocation": args[3]}})
+elif args[:2] == ["plugin", "install"]:
+    state["plugins"].append({{"id": args[2], "scope": "local", "projectPath": os.getcwd()}})
+state_path.write_text(json.dumps(state))
+"""
+
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """A `claude` on PATH that records its calls and keeps its registry in a file, never in HOME."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    script = bin_dir / "claude"
+    script.write_text(_FAKE_CLAUDE.format(python=sys.executable))
+    script.chmod(0o755)
+    state = bin_dir / "state.json"
+    state.write_text(json.dumps({"marketplaces": [], "plugins": [], "calls": []}))
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return {"state": state}
+
+
+def _channel_args(workspace, **overrides):
+    values = {"workspace": str(workspace), "channel": None, "host": None, "quiet": True,
+              "verbose": False, "keep_tarball": False, "pack_dest": None,
+              "no_global_link": False, "from_worktree": None, "ref": None}
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def test_channel_plugin_builds_the_directory_claude_code_loads(tmp_path, monkeypatch, fake_claude, package_copy):
+    require_tool("npm")
+    monkeypatch.setattr(dev_mod, "_PACKAGE_ROOT", package_copy)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", str(tmp_path / "plugins"))
+    monkeypatch.setenv("npm_config_cache", str(tmp_path / "npm-cache"))
+    workspace = tmp_path / "ws"
+    (workspace / ".claude").mkdir(parents=True)
+    (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+        "enabledPlugins": {"other@elsewhere": True},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+            {"type": "command", "command": "echo mine"},
+        ]}]},
+    }))
+
+    with redirect_stdout(io.StringIO()) as out:
+        rc = cmd_dev(_channel_args(workspace, channel="plugin", quiet=False))
+    assert rc == 0, out.getvalue()
+
+    directory = dev_mod._dev_plugin.plugin_dir(workspace)
+    assert directory.is_dir() and not directory.is_symlink()
+    assert "/reload-plugins" in out.getvalue() and str(directory) in out.getvalue()
+    marketplace = json.loads((directory / ".claude-plugin" / "marketplace.json").read_text())
+    assert marketplace["name"] == "gaia-dev"
+    assert [(p["name"], p["source"], "version" in p) for p in marketplace["plugins"]] == [("gaia", ".", False)]
+    manifest = json.loads((directory / ".claude-plugin" / "plugin.json").read_text())
+    assert manifest["name"] == "gaia"
+    hooks_text = (directory / "hooks" / "hooks.json").read_text()
+    assert "${CLAUDE_PLUGIN_ROOT}/" in hooks_text
+    assert str(workspace) not in hooks_text and ".claude/hooks" not in hooks_text
+    gaia_bin = directory / "bin" / "gaia"
+    assert os.access(gaia_bin, os.X_OK) and not (directory / "node_modules").exists()
+    version = subprocess.run([str(gaia_bin), "--version"], capture_output=True, text=True, timeout=60)
+    assert version.returncode == 0 and manifest["version"] in version.stdout, version.stderr
+    assert any((directory / "skills").iterdir()) and any((directory / "agents").iterdir())
+
+    local = json.loads((workspace / ".claude" / "settings.local.json").read_text())
+    assert local["enabledPlugins"] == {
+        "other@elsewhere": True, "gaia@gaia-dev": True, "gaia@gaia-marketplace": False}
+    assert [h["command"] for e in local["hooks"]["PreToolUse"] for h in e["hooks"]] == ["echo mine"]
+    calls = json.loads(fake_claude["state"].read_text())["calls"]
+    assert ["plugin", "marketplace", "add", str(directory), "--scope", "local"] in calls
+    assert ["plugin", "install", "gaia@gaia-dev", "--scope", "local"] in calls
+    assert not (home / ".claude").exists()
+    conftest_data_dir = "_gaia_isolated_data"
+    written = {p.name for p in tmp_path.iterdir()} - {conftest_data_dir}
+    assert written <= {"bin", "data", "home", "npm-cache", "ws"}
+
+
+def test_channel_plugin_registration_is_skipped_when_already_local(tmp_path, fake_claude):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    directory = tmp_path / "plugin"
+    directory.mkdir()
+    fake_claude["state"].write_text(json.dumps({
+        "marketplaces": [{"name": "gaia-dev", "installLocation": str(directory)}],
+        "plugins": [{"id": "gaia@gaia-dev", "scope": "local", "projectPath": str(workspace)}],
+        "calls": [],
+    }))
+    result = dev_mod._dev_plugin.register_plugin(workspace, directory)
+    assert result["action"] == "noop"
+    calls = json.loads(fake_claude["state"].read_text())["calls"]
+    assert [c[:3] for c in calls] == [["plugin", "marketplace", "list"], ["plugin", "list", "--json"]]
+
+
+def test_channel_plugin_refuses_a_gaia_dev_marketplace_elsewhere(tmp_path, fake_claude):
+    fake_claude["state"].write_text(json.dumps({
+        "marketplaces": [{"name": "gaia-dev", "installLocation": str(tmp_path / "other")}],
+        "plugins": [], "calls": [],
+    }))
+    result = dev_mod._dev_plugin.register_plugin(tmp_path, tmp_path / "plugin")
+    assert result["action"] == "error" and "already points at" in result["details"]
+    assert all(c[:3] != ["plugin", "marketplace", "add"]
+               for c in json.loads(fake_claude["state"].read_text())["calls"])
+
+
+@pytest.mark.parametrize("alias,channel", [("claude_code", "npm"), ("opencode", "opencode")])
+def test_channel_host_alias_installs_the_same_package(tmp_path, monkeypatch, alias, channel):
+    calls = []
+    monkeypatch.setattr(dev_mod, "_run_pack_mode", lambda ws, **kw: calls.append(("pack", kw["host"])) or 0)
+    monkeypatch.setattr(dev_mod, "_run_plugin_channel", lambda ws, **kw: calls.append(("plugin",)) or 0)
+    assert cmd_dev(_channel_args(tmp_path, host=alias)) == 0
+    assert cmd_dev(_channel_args(tmp_path, channel=channel)) == 0
+    assert calls[0] == calls[1] and len(calls) == 2
+
+
+@pytest.mark.parametrize("channel,expected", [
+    ("npm", [("pack", "claude_code")]),
+    ("opencode", [("pack", "opencode")]),
+    ("plugin", [("plugin",)]),
+])
+def test_channel_selection_serves_exactly_the_named_channel(tmp_path, monkeypatch, channel, expected):
+    calls = []
+    monkeypatch.setattr(dev_mod, "_run_pack_mode", lambda ws, **kw: calls.append(("pack", kw["host"])) or 0)
+    monkeypatch.setattr(dev_mod, "_run_plugin_channel", lambda ws, **kw: calls.append(("plugin",)) or 0)
+    assert cmd_dev(_channel_args(tmp_path, channel=channel)) == 0
+    assert calls == expected
+
+
+@pytest.mark.parametrize("channel", [None, "all"])
+def test_channel_is_required_and_all_is_not_one(tmp_path, monkeypatch, channel, capsys):
+    monkeypatch.setattr(dev_mod, "_run_pack_mode", lambda ws, **kw: pytest.fail("packed without a channel"))
+    monkeypatch.setattr(dev_mod, "_run_plugin_channel", lambda ws, **kw: pytest.fail("served without a channel"))
+    assert cmd_dev(_channel_args(tmp_path, channel=channel)) == 1
+    expected = "name a channel with --channel" if channel is None else "unsupported channel 'all'"
+    assert expected in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["dev", "--channel", "plugin", "--host", "opencode"],
+                                  ["dev", "--channel", "bogus"]])
+def test_channel_parse_rejects_conflicts_and_unknown_values(argv):
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers(dest="command"))
+    with redirect_stderr(io.StringIO()), pytest.raises(SystemExit):
+        parser.parse_args(argv)
+
+
+def test_channel_help_documents_channel_and_host_alias():
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers(dest="command"))
+    with redirect_stdout(io.StringIO()) as out, pytest.raises(SystemExit):
+        parser.parse_args(["dev", "--help"])
+    text = out.getvalue()
+    assert "--channel {npm,plugin,opencode}" in text and "no `all`" in text
+    assert "/reload-plugins" in text and "Alias kept for compatibility" in text
 
 
 if __name__ == "__main__":

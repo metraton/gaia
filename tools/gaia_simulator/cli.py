@@ -38,9 +38,12 @@ def _find_defaults() -> tuple[Path, Path, Path]:
     cli_path = Path(__file__).resolve()
     plugin_root = cli_path.parent.parent.parent
     hooks_dir = plugin_root / "hooks"
-    # Default logs location: two levels up from plugin root in .claude/logs
-    logs_dir = plugin_root.parent / ".claude" / "logs"
-    return hooks_dir, logs_dir, plugin_root
+    # Default logs location: the Gaia data home every channel's hooks write to.
+    if str(plugin_root) not in sys.path:
+        sys.path.insert(0, str(plugin_root))
+    from gaia.paths import logs_dir as data_home_logs_dir
+
+    return hooks_dir, data_home_logs_dir(), plugin_root
 
 
 def _handle_simulate(prompt: str, plugin_root: Path) -> int:

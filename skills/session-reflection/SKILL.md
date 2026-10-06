@@ -37,7 +37,7 @@ Compaction is a separate act, performed only when the user asks for it.
 3. **Classify disjointly.** Separate settled decisions and learnings,
    genuinely open work, and Gaia improvements. When closure is uncertain,
    classify as open; a lost pending costs more than an extra review. For
-   anything about Gaia itself, `memory/SKILL.md`'s one-line test decides the
+   anything about Gaia itself, `memory/SKILL.md`'s ownership test decides the
    initiative — `gaia_system` for an observed failure or friction,
    project-scoped `gaia` for a decision to build or change something.
 4. **Give every item a home, and know what the home does.** The pending

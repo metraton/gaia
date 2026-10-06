@@ -8,25 +8,74 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      # read-only: the workflow no longer commits built dist/ back or force-moves
-      # the tag; it only packs, validates, and publishes to npm.
       contents: read
+      # actions: read lets ci_verdict.py and `gh run list` read ci.yml's runs.
+      actions: read
+      # The OIDC token npm trusted publishing exchanges for a publish
+      # credential; without it `npm publish` has no way to authenticate.
+      id-token: write
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: '18'
-          registry-url: 'https://registry.npmjs.org'
-
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.12'
+
+      # Nothing is published unless ci.yml has passed the tagged tree: a green
+      # "CI verdict" on the tag's commit, or on its parent when the tag only
+      # bumped versions (.github/scripts/ci_verdict.py decides which). The tag
+      # arrives seconds after the push that starts CI, so the verdict is
+      # awaited; a red run, no run, or VERDICT_WAIT_SECONDS elapsing stops the
+      # job here, naming the commit and the run consulted.
+      - name: Require a green CI verdict for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          VERDICT_WAIT_SECONDS: 1200
+          POLL_SECONDS: 30
+        run: |
+          sha=$(git rev-parse "refs/tags/${TAG}^{commit}")
+          deadline=$(( SECONDS + VERDICT_WAIT_SECONDS ))
+          while true; do
+            if python3 .github/scripts/ci_verdict.py "$sha" --repo "$GITHUB_REPOSITORY"; then
+              exit 0
+            fi
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --commit "$sha" --limit 1 \
+                    --json databaseId,status,conclusion,url \
+                    --jq '.[0] | "\(.databaseId) \(.status)/\(.conclusion) \(.url)"') || run="lookup failed"
+            run=${run:-"none (ci.yml has no run for this commit)"}
+            case "$run" in
+              *" completed/failure "*)
+                echo "::error::CI verdict for $sha ($TAG) is red: run $run. Not publishing."
+                exit 1
+                ;;
+            esac
+            if (( SECONDS >= deadline )); then
+              echo "::error::No green CI verdict for $sha ($TAG) after ${VERDICT_WAIT_SECONDS}s; last ci.yml run consulted: $run. Not publishing."
+              exit 1
+            fi
+            echo "Waiting for a green CI verdict on $sha; ci.yml run: $run"
+            sleep "$POLL_SECONDS"
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          # Trusted publishing needs Node >= 22.14.0; '22' resolves to the
+          # newest 22.x release.
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # Node 22 bundles npm 10, and trusted publishing needs npm >= 11.5.1.
+      - name: Install npm for trusted publishing
+        run: |
+          npm install -g 'npm@^11.5.1'
+          node --version
+          npm --version
 
       - name: Install dependencies
         run: npm ci
@@ -34,29 +83,15 @@ jobs:
       - name: Pack tarball
         # Produce the exact artifact that would be published. `npm pack` runs
         # the `prepack` script (clean + generate:plugin-root), which regenerates
-        # the ROOT .claude-plugin/plugin.json (metadata only -- NO inline hooks) +
-        # the canonical hooks/hooks.json from the manifest -- this is what makes
-        # the tarball root a valid
-        # `source: npm` Claude Code plugin. No dist/ bundle is built or committed
-        # back: the package root IS the plugin, so the old "Build plugins" /
-        # "Verify build outputs" / "Commit built plugins" (git add -f dist + tag
-        # -f + push --force) steps are gone, and with them the silent tag/dist
-        # desync. The sandbox harness installs FROM this tarball, so the gate
-        # validates precisely what npm publish would ship — not the working tree.
+        # the root .claude-plugin/plugin.json and hooks/hooks.json from the
+        # manifest, making the tarball root a valid `source: npm` Claude Code
+        # plugin. The sandbox harness installs FROM this tarball, so the gate
+        # validates precisely what npm publish would ship, not the working tree.
         id: pack
         run: |
-          # Use `npm pack --json` and parse the `filename` field (mirrors
-          # bin/cli/_pack_helpers.py's pattern) instead of trusting `npm pack
-          # --silent`'s stdout to be a single clean line. `--silent` only
-          # quiets npm's OWN log lines -- it does not touch the `prepack`
-          # lifecycle script's stdout, which is inherited into this same
-          # stream. Any diagnostic the lifecycle script prints (build-plugin.py
-          # regenerating .claude-plugin/plugin.json + hooks/hooks.json) would
-          # otherwise make TARBALL multi-line and break the single-line
-          # $GITHUB_OUTPUT append ("Invalid format"). With --json, npm always
-          # emits a JSON array as the LAST stdout content, so parsing the
-          # `filename` field from it is robust even if lifecycle noise
-          # precedes it on stdout.
+          # `--silent` does not quiet the prepack script's stdout, which shares
+          # this stream and would make TARBALL multi-line; npm pack --json always
+          # ends stdout with a JSON array, so the filename is parsed from that.
           PACK_JSON=$(npm pack --json)
           TARBALL=$(node -p "JSON.parse(process.argv[1].slice(process.argv[1].indexOf('[')))[0].filename" "$PACK_JSON")
           echo "tarball=${PWD}/${TARBALL}" >> "$GITHUB_OUTPUT"
@@ -93,11 +128,13 @@ jobs:
           bash bin/validate-sandbox.sh --tarball "${{ steps.pack.outputs.tarball }}" --target sandbox
 
       - name: Publish to npm
-        # Runs ONLY if the sandbox harness above exited 0. The same tarball
-        # the harness validated is the one published.
+        # Runs only after the CI verdict and the sandbox harness passed, and
+        # publishes the tarball the harness validated. Authentication is npm
+        # trusted publishing: npm trades this job's OIDC token for a credential
+        # bound to metraton/gaia + publish.yml (the publisher registered on
+        # npmjs.com), which requires package.json repository.url to name that
+        # repository, and attaches provenance itself. No npm token is read.
         run: npm publish "${{ steps.pack.outputs.tarball }}" --access public --tag ${{ steps.npm-tag.outputs.tag }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Clean build artifacts
         run: npm run clean

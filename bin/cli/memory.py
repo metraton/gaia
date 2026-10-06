@@ -17,8 +17,9 @@ on curated memory rows:
 
 Mutating subcommands operate on the curated ``memory`` table in
 ``~/.gaia/gaia.db`` (project / user / feedback / atom / decision / negative
-notes). Memory is AGGREGATED and RECLASSIFIED, not overwritten -- reach for
-these verbs in this order:
+notes). Memory is append-only: a changed agreement is a new row plus
+``link --kind=supersedes``, never an overwrite -- reach for these verbs in
+this order:
 
   append <name> --body="..." | --body-file=<path>
                                           PRIMARY additive verb: grows an
@@ -30,9 +31,14 @@ these verbs in this order:
   add --name=<slug> --type=<project|user|feedback|atom|decision|negative>
       --body="..." [--description=...] [--class=...] [--status=...]
       [--audience=<orchestrator|executor|any>]
-      [--workspace=<ws>] [--project=<name> | --project-ref=<identity>] [--json]
-                                          Creates/UPSERTs a NEW row (distinct
-                                          from append, which grows one).
+      [--workspace=<ws>] [--project=<name> | --project-ref=<identity>]
+      [--replace] [--json]
+                                          Creates a NEW row (distinct from
+                                          append, which grows one). An
+                                          existing name is refused
+                                          (name_exists); --replace rewrites it
+                                          in place to correct an error (T3), and
+                                          a type=user name is never rewritten.
                                           DB-only writer; no filesystem side
                                           effects (no .md under
                                           ~/.claude/projects/.../memory/).
@@ -40,7 +46,7 @@ these verbs in this order:
                                           (--project preferred, or --workspace);
                                           refuses to write with both empty.
                                           --project anchors memory.project_ref
-                                          (N3, forward-only) by resolving a
+                                          (forward-only) by resolving a
                                           project name within --workspace to
                                           its stable project_identity; never
                                           guesses. Unresolvable/mismatched
@@ -48,11 +54,11 @@ these verbs in this order:
                                           {"error","code"}) and writes no row.
                                           --workspace only => project_ref NULL,
                                           exit 0 (explicit degraded lane).
-                                          --audience (v45) sets memory.audience
+                                          --audience sets memory.audience
                                           at insertion time; omitted, a new row
-                                          defaults to 'any' and a correction
-                                          upsert leaves an existing value
-                                          untouched (never silently reset).
+                                          defaults to 'any' and a --replace
+                                          that omits it leaves an existing
+                                          value untouched.
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->
@@ -60,23 +66,17 @@ these verbs in this order:
                                           closed) without touching the body.
                                           Non-mutative (T0).
 
-  edit --name=<slug> --field=<description|body>
-       --content="..." | --body-file=<path> [--append]
-       [--audience=<orchestrator|executor|any>] [--json]
-                                          CORRECTION verb: overwrite/supersede
-                                          a field when existing content is
-                                          WRONG. Non-destructive under the
-                                          hood (memory_history keeps the prior
-                                          value) but changes what reads see,
-                                          so it stays T3 (needs approval).
-                                          Prefer append to add text.
-                                          --audience (v45) PATCHes
-                                          memory.audience on an EXISTING row;
-                                          combinable with --field/--class/
-                                          --status/--project in the same call.
+  edit                                    Retired: memory is append-only. A
+                                          changed agreement is a new row plus
+                                          link --kind=supersedes; an error is
+                                          corrected with add --replace (T3).
 
   link <src> <dst> --kind=<relates_to|supersedes|derived_from|graduated_to>
       [--delete] [--workspace=<ws>]      Create/delete a memory_links edge.
+                                          supersedes: src is the NEW row, dst
+                                          the OLD one it replaces, which then
+                                          leaves every injection:
+                                          link decision_new decision_old.
 
   delete <name> [--hard] [--yes] [--json]
                                           DISCOURAGED BY CONVENTION: prefer
@@ -291,9 +291,13 @@ def _query_episodes_from_db(workspace: str | None = None) -> list[dict]:
         con = _store_connect()
         try:
             if ws:
+                from gaia.store.workspace_retire import workspace_scope
+
+                scope = workspace_scope(con, ws)
                 rows = con.execute(
-                    "SELECT * FROM episodes WHERE workspace = ? ORDER BY timestamp DESC",
-                    (ws,),
+                    f"SELECT * FROM episodes WHERE workspace IN ({','.join('?' * len(scope))}) "
+                    "ORDER BY timestamp DESC",
+                    scope,
                 ).fetchall()
             else:
                 rows = con.execute(
@@ -326,8 +330,12 @@ def _count_episodes_from_db(workspace: str | None = None) -> int:
         con = _store_connect()
         try:
             if ws:
+                from gaia.store.workspace_retire import workspace_scope
+
+                scope = workspace_scope(con, ws)
                 row = con.execute(
-                    "SELECT COUNT(*) FROM episodes WHERE workspace = ?", (ws,)
+                    f"SELECT COUNT(*) FROM episodes WHERE workspace IN ({','.join('?' * len(scope))})",
+                    scope,
                 ).fetchone()
             else:
                 row = con.execute("SELECT COUNT(*) FROM episodes").fetchone()
@@ -414,19 +422,13 @@ def _cmd_stats(args) -> int:
             "Run: gaia doctor"
         )
 
-    # Conflict count (curated memory conflicts -- unrelated to episodes)
-    project_root = _find_project_root()
+    # Candidate contradictions in curated memory, the same set `conflicts` lists.
     conflicts_count = 0
     if detect_conflicts is not None:
         try:
-            mem_dir = project_root / ".claude" / "projects" / "-home-jorge-ws-me" / "memory"
-            if not mem_dir.is_dir():
-                # Try the user memory default
-                mem_dir = Path.home() / ".claude" / "projects" / "-home-jorge-ws-me" / "memory"
-            raw_conflicts = detect_conflicts(memory_dir=mem_dir)
-            conflicts_count = len(raw_conflicts)
-        except Exception:
-            conflicts_count = 0
+            conflicts_count = len(detect_conflicts())
+        except Exception as exc:  # noqa: BLE001 -- stats still reports the rest
+            warnings.append(f"conflict candidates not counted: {exc}")
 
     output = {
         "total_episodes": total_episodes,
@@ -538,48 +540,36 @@ def _cmd_episode_show(args) -> int:
 
 
 def _cmd_conflicts(args) -> int:
-    """Handle `gaia memory conflicts [--threshold F]`."""
+    """Handle `gaia memory conflicts [--threshold F]`: candidate pairs, never verdicts."""
     as_json = getattr(args, "json", False)
-    threshold = getattr(args, "threshold", 0.3)
 
     detect_conflicts = _import_conflict_detector()
-
     if detect_conflicts is None:
         return _err("conflict_detector module not available", as_json)
 
-    project_root = _find_project_root()
-
     try:
-        # Use the default memory dir (same as detect_conflicts default)
-        raw = detect_conflicts(threshold=threshold)
-    except Exception as exc:
-        return _err(f"Conflict detection failed: {exc}", as_json)
-
-    # Normalize: similarity -> score, flatten conflicts list into reason string
-    conflicts_out = []
-    for item in raw:
-        inner = item.get("conflicts", [])
-        reason = "; ".join(c.get("reason", "") for c in inner) if inner else "high similarity"
-        conflicts_out.append({
-            "file_a": item.get("file_a", ""),
-            "file_b": item.get("file_b", ""),
-            "score": item.get("similarity", 0.0),  # similarity -> score
-            "reason": reason,
-        })
-
-    output = {"conflicts": conflicts_out}
+        threshold = getattr(args, "threshold", None)
+        candidates = (detect_conflicts() if threshold is None
+                      else detect_conflicts(threshold=threshold))
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"conflict scan failed: {exc}", as_json)
 
     if as_json:
-        print(json.dumps(output, indent=2))
-    else:
-        if not conflicts_out:
-            print("No conflicts detected.")
-        else:
-            print(f"\n  {len(conflicts_out)} conflict(s) found:\n")
-            for c in conflicts_out:
-                print(f"  [{c['score']:.4f}] {Path(c['file_a']).name} <-> {Path(c['file_b']).name}")
-                print(f"    Reason: {c['reason']}\n")
-
+        print(json.dumps({"candidates": candidates}, indent=2))
+        return 0
+    if not candidates:
+        print("No candidate contradictions.")
+        return 0
+    print(
+        f"\n  {len(candidates)} candidate pair(s). Each shares wording; read both "
+        "bodies and decide whether they disagree and which one stands.\n"
+    )
+    for c in candidates:
+        print(f"  [{c['score']:.2f}] {c['owner']}")
+        for row in (c["a"], c["b"]):
+            print(f"    {row['name']} ({row['workspace']}, {row['class']}, "
+                  f"{row['updated_at']}): {row['description'] or ''}")
+        print()
     return 0
 
 
@@ -588,45 +578,66 @@ def _cmd_conflicts(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _resolve_workspace(explicit: str | None) -> str:
-    """Return the workspace whose curated memory this call should read.
+    """Return the workspace whose curated memory this call should read."""
+    from gaia.project import cli_workspace
+    return cli_workspace(explicit)
 
-    Honours the dispatch env vars ahead of the cwd, mirroring
-    ``gaia.project.resolve_workspace``: a dispatched agent runs from a cwd that
-    is not necessarily its target workspace, and the env var carries the
-    intended attribution. The cwd step asks which workspace CONTAINS the
-    directory rather than what the directory is called -- naming it directly
-    made a read from inside a project resolve to the project, which is how
-    agents working in the gaia repo read an empty corpus.
 
-    Falls back to ``"me"`` rather than ``resolve_workspace``'s ``"global"``:
-    this is the personal-memory surface and "global" holds no curated rows.
+class AmbiguousSlugError(Exception):
+    """A slug held by project rows in several workspaces other than the caller's."""
+
+    def __init__(self, name: str, workspaces: list[str]):
+        super().__init__(
+            f"memory '{name}' is a project row in workspaces "
+            f"{', '.join(workspaces)}; name one with --workspace"
+        )
+        self.workspaces = workspaces
+
+
+def _workspace_holding(workspace: str, name: str, *, explicit: bool,
+                       include_deleted: bool = False) -> str:
+    """Workspace that stores the row ``name`` for a by-name verb.
+
+    Tried in order: the caller's workspace, the ``_gaia_user`` and
+    ``_gaia_host`` sentinels, then -- only when ``explicit`` is False, i.e.
+    the caller gave no --workspace -- any workspace holding ``name`` as a row
+    of a project, since a project's memory follows the project rather than the
+    workspace that wrote it. A workspace the caller named is never swapped for
+    another one. A row with no project is never reached from another
+    workspace. Only live rows count unless ``include_deleted`` (a hard delete
+    reaches a tombstone). Returns ``workspace`` when no row is found (the verb
+    reports its own not-found) or when the store cannot be read.
+
+    Raises AmbiguousSlugError when project rows in more than one other
+    workspace share ``name``: picking one would guess which project was meant.
     """
-    if explicit:
-        return explicit
-    for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
-        value = os.environ.get(env_key)
-        if value:
-            return value
     try:
-        from gaia.project import containing_workspace
-        ws = containing_workspace()
-        if ws:
-            return ws
+        from gaia.store.reader import project_row_workspaces
+        from gaia.store.writer import get_memory, HOST_WORKSPACE, USER_WORKSPACE
+        for candidate in dict.fromkeys((workspace, USER_WORKSPACE, HOST_WORKSPACE)):
+            if get_memory(candidate, name, include_deleted=include_deleted) is not None:
+                return candidate
+        if explicit:
+            return workspace
+        holders = project_row_workspaces(name, include_deleted=include_deleted)
     except Exception:
-        pass
-    return "me"
+        return workspace
+    if len(holders) > 1:
+        raise AmbiguousSlugError(name, holders)
+    return holders[0] if holders else workspace
+
+
+def _flag_workspace_holding(args, name: str, *, include_deleted: bool = False) -> str:
+    """:func:`_workspace_holding` for the verb's own --workspace flag."""
+    flag = getattr(args, "workspace", None)
+    return _workspace_holding(
+        _resolve_workspace(flag), name,
+        explicit=bool(flag), include_deleted=include_deleted,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Subcommand handler: add (DB-only writer)
-# ---------------------------------------------------------------------------
-#
-# T5 note: ``add`` and ``edit`` accept optional ``--class`` and ``--status``
-# flags. After the primary upsert / edit completes, if either flag was
-# supplied, the same ``reclassify_memory`` writer is invoked so the row's
-# semantic role and lifecycle state land in a single CLI call. The CLI is
-# the only surface that translates ``--status=null`` into the empty-string
-# clear-sentinel that ``reclassify_memory`` expects.
 # ---------------------------------------------------------------------------
 
 
@@ -643,6 +654,79 @@ def _normalize_status_flag(raw: str | None) -> tuple[bool, str | None]:
     if raw == "null":
         return True, ""
     return True, raw
+
+
+_DESCRIPTION_WARN_CHARS = 120
+_BODY_WARN_CHARS = 800
+
+_WRITE_POINTER = (
+    "> Writing memory is judgment as well as form: `Skill('memory')` decides "
+    "whether the row deserves to exist, whose it is and whether it replaces "
+    "another."
+)
+
+_PERFECT_GAIA_QUESTION = (
+    "would this preference make sense if Gaia worked perfectly? If not, it is "
+    "a bug: record it with --type=feedback --initiative=gaia_system, and have "
+    "the preference name the bug it covers so it retires with it."
+)
+
+
+def _warning(code: str, message: str) -> dict:
+    return {"code": code, "message": message}
+
+
+def _emit_write_warnings(warnings: list[dict], as_json: bool) -> None:
+    """Print each warning to stderr and close with the pointer to the skill; JSON carries them in its payload instead."""
+    if as_json:
+        return
+    for w in warnings:
+        print(f"warning: {w['message']}", file=sys.stderr)
+    print(_WRITE_POINTER)
+
+
+def _add_warnings(
+    *, mem_type: str, description: str | None, body: str, owned: bool,
+    previous_body: str | None,
+) -> list[dict]:
+    """What a ``memory add`` call should hear about the row it is writing.
+
+    ``owned`` is whether the call named a project or initiative;
+    ``previous_body`` is the body already stored under the same name, or None.
+    """
+    from gaia.store.memory_claims import PREFERENCE_KIND, memory_claim_kind
+
+    warnings = []
+    if description and len(description) > _DESCRIPTION_WARN_CHARS:
+        warnings.append(_warning(
+            "description_long",
+            f"the description has {len(description)} characters (threshold "
+            f"{_DESCRIPTION_WARN_CHARS}); it is all that listings and the birth "
+            f"block show, so it is one sentence.",
+        ))
+    if len(body) > _BODY_WARN_CHARS:
+        warnings.append(_warning(
+            "body_long",
+            f"the body has {len(body)} characters (threshold {_BODY_WARN_CHARS}); "
+            f"it is injected whole or not at all.",
+        ))
+    if mem_type != "user" and not owned:
+        warnings.append(_warning(
+            "no_owner",
+            "--workspace alone names no owner: a container is not an owner. "
+            "Use --project=<name> or --initiative=<key> for a project, or "
+            "--initiative=gaia_system for Gaia.",
+        ))
+    if previous_body is not None and previous_body != body:
+        warnings.append(_warning(
+            "rewrite_in_place",
+            "this rewrites the row in place. A change is a new row plus "
+            "`gaia memory link <new> <old> --kind=supersedes`; add over an "
+            "existing name is for correcting an error.",
+        ))
+    if mem_type == "user" and memory_claim_kind(description) == PREFERENCE_KIND:
+        warnings.append(_warning("preference_or_bug", _PERFECT_GAIA_QUESTION))
+    return warnings
 
 
 def _cmd_add(args) -> int:
@@ -701,23 +785,29 @@ def _cmd_add(args) -> int:
     # "silent NULL by absence" this contract forbids. Scope inference from
     # natural language ("the century project") lives in the ORCHESTRATOR, not
     # in this function; the function only accepts explicit, resolvable scope.
-    if project_flag is None and project_ref_flag is None and workspace_flag is None:
+    # type=user is the exception: it has no workspace (USER_WORKSPACE), so
+    # there is no scope to be missing.
+    if (mem_type != "user" and project_flag is None
+            and project_ref_flag is None and workspace_flag is None):
         return _err_structured(
             "no scope provided: pass at least one of --project (preferred) or "
             "--workspace. Refusing to write with project/workspace both empty "
             "(that would leave project_ref NULL by absence of input, not by "
-            "intent). To anchor to a project use --project=<name>; for a "
-            "workspace-scoped note use --workspace=<ws>.",
+            "intent). Every row has one of three owners: the user "
+            "(--type=user, no scope), a project (--project=<name> or "
+            "--initiative=<key>, with --workspace=<ws>), or Gaia itself "
+            "(--initiative=gaia_system --workspace=<ws>).",
             as_json,
             code="missing_scope",
         )
 
     try:
         from gaia.store.writer import (
-            upsert_memory, reclassify_memory, resolve_project_ref,
+            upsert_memory, resolve_project_ref,
             project_workspaces, VALID_MEMORY_TYPES,
             normalize_initiative, initiative_from_project_ref,
             HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
+            MemoryUserScopeError, MemoryNameExistsError, USER_WORKSPACE,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -728,18 +818,6 @@ def _cmd_add(args) -> int:
             as_json,
         )
 
-    # N3: forward-only project_ref anchor.
-    #   * --project resolves a project NAME within `workspace` to its stable
-    #     projects.project_identity. Must resolve or it is a structured error
-    #     -- never a silent NULL, never a guess.
-    #   * --project-ref passes an already-known identity string directly.
-    #   * --workspace only (no project flag) is the explicit degraded lane:
-    #     a legitimate workspace-scoped note with project_ref = NULL, exit 0.
-    #
-    # When both --project and --workspace are given and the project does not
-    # belong to that workspace, that is a MISMATCH -- reported with its own
-    # structured code so the caller can tell it apart from a project that does
-    # not exist at all.
     project_ref = None
     if project_flag is not None:
         try:
@@ -776,14 +854,6 @@ def _cmd_add(args) -> int:
         project_ref = project_ref_flag
     # else: --workspace-only degraded lane -> project_ref stays None (exit 0).
 
-    # v32: resolve the canonical initiative grouping key.
-    #   * --initiative=<X> (explicit logical initiative) wins, normalized. It
-    #     needs no git project -- this is the surface for initiatives that are
-    #     NOT git repos (branchkinect, buildwiz, axisio, ...), which --project
-    #     deliberately refuses (it never guesses an unknown project name).
-    #   * else, when --project / --project-ref anchored a git project_ref, the
-    #     key is the repo basename of that anchor (gaia, balance).
-    #   * else None (workspace-only note): no initiative, never guessed.
     initiative_flag = getattr(args, "initiative", None)
     if initiative_flag is not None:
         initiative = normalize_initiative(initiative_flag)
@@ -792,6 +862,28 @@ def _cmd_add(args) -> int:
     else:
         initiative = None
 
+    from gaia.store.writer import get_memory, resolve_memory_workspace
+    try:
+        target_workspace = resolve_memory_workspace(
+            workspace, mem_type, initiative, project_ref,
+        )
+    except (MemoryHostScopeError, MemoryUserScopeError) as exc:
+        return _err_structured(str(exc), as_json, code=exc.code)
+    try:
+        stored = get_memory(target_workspace, name)
+    except Exception as exc:  # noqa: BLE001 -- any failure refuses the write
+        return _err_structured(
+            f"could not read memory '{name}' before writing it ({exc}); "
+            f"nothing was written",
+            as_json, code="name_check_failed",
+        )
+    warnings = _add_warnings(
+        mem_type=mem_type, description=description, body=body,
+        owned=project_ref is not None or initiative is not None,
+        previous_body=stored["body"] if stored else None,
+    )
+
+    _, status_for_writer = _normalize_status_flag(status_flag)
     try:
         res = upsert_memory(
             workspace,
@@ -802,46 +894,26 @@ def _cmd_add(args) -> int:
             project_ref=project_ref,
             initiative=initiative,
             audience=audience_flag,
+            class_=class_flag,
+            status=status_for_writer,
+            replace=getattr(args, "replace", False),
         )
-    except MemoryHostScopeError as exc:
+    except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
     except ValueError as exc:
         return _err(str(exc), as_json)
     except PermissionError as exc:
-        # Raised by writer._assert_dispatch_can_write_memory when the CLI is
-        # invoked from a non-curator subagent dispatch. Propagate verbatim
-        # so callers (and AC evidence) see the structural reason.
         return _err(str(exc), as_json)
     except Exception as exc:  # noqa: BLE001
         return _err(f"failed to upsert memory: {exc}", as_json)
 
-    # Host-scope forces the row into HOST_WORKSPACE regardless of the
-    # requested --workspace/env/cwd; `res["workspace"]` is the writer's
-    # authoritative answer, so every downstream use (reclassify, output)
-    # follows it rather than re-deriving the same rule here.
-    host_scoped_notice = initiative in HOST_SCOPED_INITIATIVES
+    # The writer can override the requested workspace (host and user scopes),
+    # so the output reports the workspace it stored rather than re-deriving it.
+    host_scoped_notice = (
+        initiative in HOST_SCOPED_INITIATIVES and mem_type != "user"
+    )
+    user_scoped_notice = mem_type == "user"
     workspace = res.get("workspace", workspace)
-
-    # T5: apply class/status if either flag was supplied. The reclassify
-    # writer handles enum validation, the status-only-on-thread rule, and
-    # the auto-clear-on-demotion semantics. If reclassify fails we surface
-    # the message but the primary upsert has already landed -- not ideal
-    # but acceptable for an interactive CLI surface; tests pin the
-    # behaviour so callers know what to expect.
-    reclassify_result = None
-    status_touches, status_for_writer = _normalize_status_flag(status_flag)
-    if class_flag is not None or status_touches:
-        try:
-            reclassify_result = reclassify_memory(
-                workspace,
-                name,
-                class_=class_flag,
-                status=status_for_writer,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
 
     snippet = body.strip().replace("\n", " ")
     if len(snippet) > 80:
@@ -864,11 +936,15 @@ def _cmd_add(args) -> int:
             out["initiative"] = initiative
         if audience_flag is not None:
             out["audience"] = audience_flag
-        if reclassify_result is not None:
-            out["class"] = reclassify_result["class"]
-            out["memory_status"] = reclassify_result["memory_status"]
+        if "class" in res:
+            out["class"] = res["class"]
+            out["memory_status"] = res["memory_status"]
         if host_scoped_notice:
             out["host_scoped"] = True
+        if user_scoped_notice:
+            out["user_scoped"] = True
+        if warnings:
+            out["warnings"] = warnings
         print(json.dumps(out, indent=2))
     else:
         verb = "Updated" if res.get("action") == "updated" else "Created"
@@ -884,14 +960,20 @@ def _cmd_add(args) -> int:
         print(f"  body: {snippet}")
         if host_scoped_notice:
             print(
-                f"  initiative host-scoped: escrita en {HOST_WORKSPACE}, "
-                f"--workspace ignorado"
+                f"  initiative host-scoped: written to {HOST_WORKSPACE}, "
+                f"--workspace ignored"
             )
-        if reclassify_result is not None:
+        if user_scoped_notice:
             print(
-                f"  class={reclassify_result['class']}, "
-                f"status={reclassify_result['memory_status']}"
+                f"  type user has no workspace: written to {USER_WORKSPACE}, "
+                f"--workspace ignored"
             )
+        if "class" in res:
+            print(
+                f"  class={res['class']}, "
+                f"status={res['memory_status']}"
+            )
+    _emit_write_warnings(warnings, as_json)
     return 0
 
 
@@ -1054,7 +1136,7 @@ def _cmd_checkpoint(args) -> int:
         from gaia.store.writer import (
             close_session_memory, MemorySessionPayloadError,
             HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
-            normalize_initiative,
+            MemoryNameExistsError, MemoryUserScopeError, normalize_initiative,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -1064,7 +1146,7 @@ def _cmd_checkpoint(args) -> int:
             workspace, payload, project_ref=project_ref,
             initiative=initiative_flag,
         )
-    except MemoryHostScopeError as exc:
+    except (MemoryHostScopeError, MemoryNameExistsError, MemoryUserScopeError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
     except MemorySessionPayloadError as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -1081,8 +1163,10 @@ def _cmd_checkpoint(args) -> int:
     # Host-scope forces the whole checkpoint into HOST_WORKSPACE regardless
     # of the requested --workspace/env/cwd; `res["workspace"]` is the
     # writer's authoritative answer.
+    user_scoped_notice = payload["resumen"]["type"] == "user"
     host_scoped_notice = (
         normalize_initiative(initiative_flag) in HOST_SCOPED_INITIATIVES
+        and not user_scoped_notice
     )
     workspace = res.get("workspace", workspace)
 
@@ -1100,6 +1184,8 @@ def _cmd_checkpoint(args) -> int:
             out["project_ref"] = project_ref
         if host_scoped_notice:
             out["host_scoped"] = True
+        if user_scoped_notice:
+            out["user_scoped"] = True
         print(json.dumps(out, indent=2))
     else:
         anchor = res.get("anchor") or {}
@@ -1113,8 +1199,8 @@ def _cmd_checkpoint(args) -> int:
             print(f"  project_ref: {project_ref}")
         if host_scoped_notice:
             print(
-                f"  initiative host-scoped: escrita en {HOST_WORKSPACE}, "
-                f"--workspace ignorado"
+                f"  initiative host-scoped: written to {HOST_WORKSPACE}, "
+                f"--workspace ignored"
             )
         for t in threads:
             print(f"  thread: {t.get('name')} ({t.get('action')})")
@@ -1125,7 +1211,7 @@ def _cmd_checkpoint(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Subcommand handlers: curated memory list / show / delete / edit
+# Subcommand handlers: curated memory list / show / delete
 # ---------------------------------------------------------------------------
 
 def _print_telemetry_caveats() -> None:
@@ -1174,7 +1260,7 @@ def _cmd_list(args) -> int:
         rows = list_memory(
             workspace, type=type_filter, audience=audience_filter,
             class_=class_filter, status=status_filter, order_by=order_by,
-            direction=direction,
+            direction=direction, with_user_scope=True,
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -1269,12 +1355,10 @@ _RELEVANT_PER_CLASS_QUOTA = {
 # pushed user_intent_over_literal_request and user_registro_llano_ademas_del_
 # tecnico -- the rows governing how the user is read and addressed -- out of the
 # orchestrator's block, while the subagent kernel kept receiving them. So this
-# section mirrors the kernel's own selector (kernel_builder._executor_user_bodies):
-# type='user' rather than class='anchor' (which mixed in project anchors from
-# unrelated projects sharing the workspace), whole bodies rather than a capped
-# description, and a row bound high enough that it never adjudicates between two
-# instructions. A body past the ceiling is dropped rather than sliced -- half an
-# instruction reads as a whole one.
+# section selects type='user' AND class='anchor' (never a project's anchors),
+# whole bodies rather than a capped description, and a row bound high enough
+# that it never adjudicates between two instructions. A body past the ceiling is
+# dropped rather than sliced -- half an instruction reads as a whole one.
 _RELEVANT_USER_ANCHOR_ROW_LIMIT = 20
 _RELEVANT_USER_ANCHOR_BODY_CEILING = 20_000
 
@@ -1311,7 +1395,7 @@ def _project_tag(project_ref) -> str:
     """Derive a short project tag from a project_ref for per-bullet display.
 
     project_ref is stored as a filesystem path to the project's git dir
-    (e.g. ``/home/jorge/ws/me/gaia/.git``) or an opaque identity
+    (e.g. ``/home/user/code/gaia/.git``) or an opaque identity
     (e.g. ``id/p1``). Reduce it to the trailing component: ``gaia``, ``p1``.
     Returns "" when there is nothing to tag.
     """
@@ -1379,29 +1463,14 @@ def _print_memory_pointer(as_json: bool) -> None:
 # if all three are empty the whole block is empty.
 _SECTION_HEADERS = {
     "carry_forward": "## Memory — For this session",
-    "anchor":        "## What the user has established",
+    "anchor":        "## The user",
     "thread_open":   "## Memory — Open threads",
 }
 
-# v32 transversal digest (initiative-grouped). The SessionStart injection no
-# longer anchors to cwd: instead it emits a cross-project digest of LIVE
-# PENDING work grouped by the canonical `memory.initiative` key, so the user
-# sees "what is open, everywhere" the moment a session starts -- independent of
-# which directory the session was launched from.
-#
-# "Pending vivo" is DELIBERATELY narrow: class='thread' AND status IN
-# ('carry_forward','open'). Anchors (durable "about you" facts), logs, and
-# resolved/snapshot threads are excluded by design -- the digest is a worklist,
-# not a knowledge dump.
-#
-# No longer auto-injected at SessionStart (its per-project count moved onto
-# the "Projects I can reach" block instead -- see
-# hooks/modules/session/session_manifest.py::build_projects_context_block);
-# this renderer and its header stay reachable through a direct
-# `gaia memory get-relevant` call with no flags.
+# Live pending is deliberately narrow: class='thread' AND status IN
+# ('carry_forward','open'). The digest is a worklist, not a knowledge dump.
 _DIGEST_HEADER = "## Memory — Live pending across every project"
-# Top-K initiatives shown in the cross-project digest; the rest roll up into a
-# single "+N proyectos más" overflow line.
+# Initiatives past the top K roll up into one "+N more projects" line.
 _DIGEST_TOP_K = 10
 # Per-item description cap inside the digest. Much tighter than the section
 # renderer's 150: one short line per initiative keeps ~10 initiatives visible
@@ -1411,8 +1480,7 @@ _DIGEST_DESC_MAX = 60
 # Budget for the digest. The old 800 cap truncated to a SINGLE project once a
 # project carried several pending threads. With one short line per initiative
 # (~90-110 chars) plus header + pointer, ~10 initiatives need ~1500 chars.
-# session_manifest.build_workspace_memory_block passes --max-chars=1500 as the
-# injection authority; this is the fallback when --max-chars is omitted.
+# This is the budget when --max-chars is omitted.
 _DIGEST_DEFAULT_MAX_CHARS = 1500
 # Project mode ("--initiative=X") is deliberately UNBOUNDED -- no top-N cap, no
 # char budget, no per-item description cap -- unlike the digest and section
@@ -1455,17 +1523,18 @@ def _bump_injection_telemetry(workspace: str, names) -> None:
 def _cmd_get_relevant(args) -> int:
     """Emit a compact Workspace Memory block for SessionStart injection.
 
-    v32 dispatch (cwd-INDEPENDENT). The cwd no longer filters or prioritises
-    anything -- "active project" anchoring was removed. Which renderer runs is
+    The cwd does not filter or prioritise anything; which renderer runs is
     decided purely by the flags:
 
       * ``--types=...``  -> legacy per-type flow (unchanged, back-compat).
-      * ``--initiative=X`` -> PROJECT MODE: the WHOLE live-pending corpus of
-        the ONE requested initiative, uncapped and body-bearing.
+      * ``--initiative=X`` or ``--project=X`` -> PROJECT MODE: the WHOLE
+        live-pending corpus of the ONE requested project, from every
+        workspace, uncapped and body-bearing; ``--sections`` picks among its
+        live anchors and its pending threads.
       * ``--sections=...`` -> SECTION renderer: the class/status sections
         (carry_forward / anchor / thread_open). This is the subagent-dispatch
         path (``--sections=anchor`` gives a dispatched subagent the durable
-        "What the user has established" anchors). cwd anchoring is gone here too.
+        "The user" anchors). cwd anchoring is gone here too.
       * (no flag) -> TRANSVERSAL DIGEST: a cross-project worklist grouped by
         the canonical ``memory.initiative`` key. This is the orchestrator's
         SessionStart view -- "what is open, everywhere", independent of the
@@ -1485,10 +1554,13 @@ def _cmd_get_relevant(args) -> int:
         return _cmd_get_relevant_by_type(args, workspace, max_chars)
 
     initiative_arg = getattr(args, "initiative", None)
+    project_arg = getattr(args, "project", None)
     sections_arg = getattr(args, "sections", None)
 
-    if initiative_arg:
-        return _render_project_mode(args, workspace, initiative_arg, as_json)
+    if initiative_arg or project_arg:
+        return _render_project_mode(
+            args, workspace, initiative_arg, as_json, project_arg=project_arg,
+        )
     if sections_arg:
         return _render_sections(args, workspace, as_json)
     return _render_digest(args, workspace, as_json)
@@ -1543,28 +1615,29 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
         "thread_open": [],
     }
     try:
+        from gaia.store.reader import not_superseded
+
         con = _connect()
         try:
-            # NOT IN subquery: exclude rows that are the destination of any
-            # supersedes edge. A row A with an incoming `supersedes` from B
-            # means "B replaces A" -- A drops out of the injection.
+            # A row A with an incoming `supersedes` from B means "B replaces
+            # A" -- A drops out of the injection.
+            # The caller's workspace plus the user sentinel: type=user rows
+            # have no workspace, so they are read from every vantage.
+            section_workspaces = _section_workspaces(workspace)
+            ws_ph = ", ".join("?" for _ in section_workspaces)
             base_select = (
-                "SELECT name, type, description, body, updated_at, class, "
-                "       status, project_ref "
+                "SELECT workspace, name, type, description, body, updated_at, "
+                "       class, status, project_ref "
                 "FROM memory "
-                "WHERE workspace = ? "
-                # scan-v2 SV3: a soft-deleted (tombstoned) row must not be
+                f"WHERE workspace IN ({ws_ph}) "
+                # A soft-deleted (tombstoned) row must not be
                 # injected into the SessionStart memory block.
                 "  AND deleted_at IS NULL "
-                "  AND name NOT IN ("
-                "    SELECT dst_name FROM memory_links "
-                "    WHERE workspace = ? AND kind = 'supersedes'"
-                "  ) "
+                f"  AND {not_superseded()} "
             )
-            base_params: list = [workspace, workspace]
+            base_params: list = list(section_workspaces)
 
-            # v32: cwd anchoring removed. Rows are workspace-scoped only; the
-            # launch directory neither filters nor prioritises them. order_prefix
+            # The launch directory neither filters nor prioritises rows. order_prefix
             # is kept as an empty string so the ORDER BY clauses below stay
             # unchanged in shape.
             order_prefix = ""
@@ -1633,7 +1706,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
     items_flat: list[dict] = []
 
-    # P1 injection telemetry bookkeeping, kept OUT of items_flat/block on
+    # Injection telemetry bookkeeping, kept OUT of items_flat/block on
     # purpose: this renderer SELECTS more rows than it ultimately EMITS (the
     # char-budget trim below removes lines from `lines` after items_flat is
     # already built), and injection must count only what a reader actually
@@ -1693,7 +1766,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 "description": body,
                 "project_ref": r.get("project_ref"),
             })
-            telemetry_names_by_section["anchor"].append(name)
+            telemetry_names_by_section["anchor"].append(
+                (r.get("workspace") or workspace, name)
+            )
         if len(out) <= 2:
             return []
         return out
@@ -1732,7 +1807,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 "description": desc,
                 "project_ref": r.get("project_ref"),
             })
-            telemetry_names_by_section[section_key].append(name)
+            telemetry_names_by_section[section_key].append(
+                (r.get("workspace") or workspace, name)
+            )
         out.append("")  # blank line between sections
         return out
 
@@ -1830,23 +1907,23 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
         # Space was reserved above, so this always fits under max_chars.
         block = block + _overflow_footer(total_dropped)
 
-    # P1 injection telemetry: bump only rows that survived every cap above
+    # Injection telemetry: bump only rows that survived every cap above
     # (the carry_forward sub-cap already excluded, the char-budget trim
     # mirrored into telemetry_names_by_section) -- one bump per row a reader
     # actually saw, never per row merely selected. Fired after the block/
     # payload are fully computed, so a telemetry failure can never affect
     # what this command returns.
-    _bump_injection_telemetry(
-        workspace,
-        [n for sec in ("carry_forward", "anchor", "thread_open")
-         for n in telemetry_names_by_section[sec]],
-    )
+    for row_workspace, row_name in (
+        pair for sec in ("carry_forward", "anchor", "thread_open")
+        for pair in telemetry_names_by_section[sec]
+    ):
+        _bump_injection_telemetry(row_workspace, [row_name])
 
     # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
     # pointer is never the line that gets dropped; its length was reserved from
     # max_chars above, so block + pointer still respects the caller's budget.
     # Suppressed for the SessionStart assembler's anchor-only call, which
-    # passes --no-pointer -- "What the user has established" is not where
+    # passes --no-pointer -- "The user" is not where
     # write/curate verbs (close a thread, graduate, reclassify) belong.
     if not no_pointer:
         block = block + "\n\n" + _MEMORY_POINTER
@@ -1866,10 +1943,10 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
 
 # ---------------------------------------------------------------------------
-# v32: initiative-grouped renderers (transversal digest + project mode)
+# Initiative-grouped renderers (transversal digest + project mode)
 # ---------------------------------------------------------------------------
 
-# "Pending vivo" query: LIVE pending threads only. class='thread' AND status IN
+# Live pending query: LIVE pending threads only. class='thread' AND status IN
 # ('carry_forward','open) -- anchors, logs, and resolved/snapshot threads are
 # excluded BY DESIGN (a worklist, not a knowledge dump). Soft-deleted and
 # supersedes-destination rows are excluded exactly as the section renderer does.
@@ -1878,34 +1955,43 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 # ``_reader_workspaces``) with the SAME query shape used for a single
 # workspace -- ``{ws}`` is filled in with 1 or 2 placeholders at call time.
 _PENDING_VIVO_SELECT = (
-    "SELECT name, type, description, body, updated_at, initiative, "
+    "SELECT workspace, name, type, description, body, updated_at, initiative, "
     "       class, status "
     "FROM memory "
     "WHERE workspace IN ({ws}) "
     "  AND deleted_at IS NULL "
     "  AND class = 'thread' "
     "  AND status IN ('carry_forward', 'open') "
-    "  AND name NOT IN ("
-    "    SELECT dst_name FROM memory_links "
-    "    WHERE workspace IN ({ws}) AND kind = 'supersedes'"
-    "  ) "
+    "  AND {not_superseded} "
 )
+
+
+def _section_workspaces(workspace: str) -> list[str]:
+    """The caller's workspace plus the user sentinel
+    (:data:`gaia.store.writer.USER_WORKSPACE`), so a type=user row is reachable
+    from any vantage. Deduped when the caller's workspace already IS it."""
+    try:
+        from gaia.store.writer import USER_WORKSPACE
+    except ImportError:
+        return [workspace]
+    return [workspace] + [w for w in (USER_WORKSPACE,) if w != workspace]
 
 
 def _reader_workspaces(workspace: str) -> list[str]:
     """Workspaces a canonical read should union: the caller's own workspace
-    plus the host sentinel (:data:`gaia.store.writer.HOST_WORKSPACE`), so a
-    host-scoped row -- forced into the sentinel at write time by
-    ``apply_host_scope`` -- is reachable from any vantage. Deduped when the
-    caller's workspace already IS the sentinel.
+    plus both sentinels, so a host-scoped row (forced into
+    :data:`gaia.store.writer.HOST_WORKSPACE` at write time by
+    ``apply_host_scope``) and a user row (forced into
+    :data:`gaia.store.writer.USER_WORKSPACE`) are reachable from any vantage.
+    Deduped when the caller's workspace already IS a sentinel.
     """
     try:
-        from gaia.store.writer import HOST_WORKSPACE
+        from gaia.store.writer import HOST_WORKSPACE, USER_WORKSPACE
     except ImportError:
         return [workspace]
-    if workspace == HOST_WORKSPACE:
-        return [workspace]
-    return [workspace, HOST_WORKSPACE]
+    return [workspace] + [
+        w for w in (HOST_WORKSPACE, USER_WORKSPACE) if w != workspace
+    ]
 
 
 def _collapse_desc(text: str) -> str:
@@ -1936,12 +2022,13 @@ def _bucket_key(initiative) -> str:
 def _fetch_pending_vivo(workspace: str, extra_where: str = "",
                         extra_params=None) -> list:
     """Return live-pending thread rows for ``workspace`` UNIONED with the host
-    sentinel (see ``_reader_workspaces``), freshest first.
+    and user sentinels (see ``_reader_workspaces``), freshest first.
 
     Never raises: any DB/import error yields an empty list so the SessionStart
     contract stays fail-safe.
     """
     try:
+        from gaia.store.reader import not_superseded
         from gaia.store.writer import _connect
     except ImportError:
         return []
@@ -1950,8 +2037,10 @@ def _fetch_pending_vivo(workspace: str, extra_where: str = "",
         try:
             workspaces = _reader_workspaces(workspace)
             placeholders = ", ".join("?" for _ in workspaces)
-            select_sql = _PENDING_VIVO_SELECT.format(ws=placeholders)
-            params = list(workspaces) + list(workspaces)
+            select_sql = _PENDING_VIVO_SELECT.format(
+                ws=placeholders, not_superseded=not_superseded(),
+            )
+            params = list(workspaces)
             if extra_params:
                 params.extend(extra_params)
             cur = con.execute(
@@ -1967,14 +2056,14 @@ def _fetch_pending_vivo(workspace: str, extra_where: str = "",
 
 
 def _render_digest(args, workspace: str, as_json: bool) -> int:
-    """Transversal cross-project digest of live-pending work (v32 default).
+    """Transversal cross-project digest of live-pending work (the default).
 
     Groups every live-pending thread by its ``initiative`` key, shows the
     freshest pending item per initiative (top-1, title + short desc), orders
     initiatives by the recency of their freshest pending, and shows the top-K
     initiatives. Initiatives beyond K roll up into a single global overflow
     line; an initiative with more than one pending shows a per-initiative
-    "+N más en <initiative>" hint. cwd is irrelevant -- the digest is the same
+    "+N more in <initiative>" hint. cwd is irrelevant -- the digest is the same
     from any launch directory.
     """
     max_chars = int(getattr(args, "max_chars", None) or _DIGEST_DEFAULT_MAX_CHARS)
@@ -2023,12 +2112,12 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
             extra = len(brows) - 1
             if extra > 0:
                 lines.append(
-                    f"  +{extra} más en {key} — pedime que profundice"
+                    f"  +{extra} more in {key} — ask me to expand"
                 )
         if overflow_projects > 0:
             lines.append("")
             lines.append(
-                f"+{overflow_projects} proyectos más — pedime el detalle de alguno"
+                f"+{overflow_projects} more projects — ask me about any of them"
             )
         return "\n".join(lines), items, overflow_projects
 
@@ -2042,12 +2131,9 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
         shown = shown[:-1]
         block, items_flat, overflow_projects = _build(shown)
 
-    # P1 injection telemetry: items_flat is rebuilt on every trim iteration
-    # above, so by the time the loop exits it already names exactly the rows
-    # that made it into the final block -- one bullet per shown initiative's
-    # freshest ("top") pending row. The other rows in a multi-pending
-    # initiative are never individually rendered (only counted in the
-    # "+N más" hint) and are correctly never bumped here.
+    # items_flat names only the rows rendered in the final block; the rest of a
+    # multi-pending initiative is only counted in its "+N more" hint, so it is
+    # not bumped.
     _bump_injection_telemetry(workspace, [i["name"] for i in items_flat])
 
     block = block + "\n\n" + _MEMORY_POINTER
@@ -2064,13 +2150,35 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
     return 0
 
 
-def _render_project_mode(args, workspace: str, initiative_arg: str,
-                         as_json: bool) -> int:
-    """Project mode: the WHOLE live-pending corpus of ONE requested initiative.
+# Project mode's thread sections, each to the one thread status it selects.
+_PROJECT_MODE_THREAD_STATUS = {"carry_forward": "carry_forward", "thread_open": "open"}
 
-    ``--initiative=X`` normalises X the SAME way the write side does
-    (``normalize_initiative``), so the key matches what was stored. The
-    special value "otros" targets the NULL-initiative bucket.
+
+def _project_mode_item(row: dict, label: str, section: str) -> dict:
+    """One project-mode JSON item: the row's identity, classification and whole body."""
+    return {
+        "name": row.get("name") or "",
+        "workspace": row.get("workspace"),
+        "type": row.get("type"),
+        "initiative": label,
+        "class": row.get("class"),
+        "memory_status": row.get("status"),
+        "section": section,
+        "description": row.get("description") or "",
+        "body": row.get("body"),
+    }
+
+
+def _render_project_mode(args, workspace: str, initiative_arg: str | None,
+                         as_json: bool, *, project_arg: str | None = None) -> int:
+    """Project mode: the WHOLE live-pending corpus of ONE requested project.
+
+    ``--initiative=X`` and ``--project=X`` resolve X to the canonical project
+    key (``canonical_project_key``: an initiative, a bare name, a git path or a
+    remote identity), and the rows are every live-pending thread of that
+    project in ANY workspace -- the project, not the caller's workspace,
+    decides the corpus. The special value "otros" targets the NULL-initiative
+    bucket, which has no project and so stays scoped to ``workspace``.
 
     Every matching row is returned -- no top-N cap, no overflow footer, no
     char budget -- with the description verbatim and the ``body`` projected
@@ -2079,49 +2187,68 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
     and applying it to an explicitly requested corpus would silently withhold
     part of the answer. See the note above ``_DIGEST_HEADER``.
 
+    ``--sections`` chooses which of the project's rows come back: ``anchor``
+    its live anchors, whose bodies the text block prints in full because a
+    standing note is read, not swept; ``carry_forward``/``thread_open`` its
+    pending threads of that status. Without it, the live-pending threads alone
+    -- the corpus every pending count is measured against.
+
     Every row returned bumps deliberate-read telemetry in both output shapes:
-    naming the initiative is what identified them, so the text block's
+    naming the project is what identified them, so the text block's
     collapsed rendering is the same request as the JSON payload's.
     """
-    try:
-        from gaia.store.writer import normalize_initiative
-        key = normalize_initiative(initiative_arg)
-    except Exception:
-        key = (initiative_arg or "").strip().lower() or None
+    from gaia.store.reader import anchors_by_project, pending_threads_by_project
+    from gaia.store.writer import canonical_project_key
+
+    if initiative_arg:
+        key = canonical_project_key(initiative=initiative_arg)
+    else:
+        key = canonical_project_key(project_ref=project_arg)
+
+    sections_arg = getattr(args, "sections", None)
+    requested = (
+        {s.strip() for s in str(sections_arg).split(",") if s.strip()}
+        if sections_arg else set(_PROJECT_MODE_THREAD_STATUS)
+    )
+    statuses = {
+        status for section, status in _PROJECT_MODE_THREAD_STATUS.items()
+        if section in requested
+    }
 
     if key == _OTHERS_BUCKET or key is None:
-        # The NULL-initiative bucket.
         rows = _fetch_pending_vivo(workspace, "  AND initiative IS NULL ")
+        anchors: list[dict] = []
         label = _OTHERS_BUCKET
     else:
-        rows = _fetch_pending_vivo(workspace, "  AND initiative = ? ", [key])
+        rows = pending_threads_by_project([key])
+        anchors = anchors_by_project([key]) if "anchor" in requested else []
         label = key
+    rows = [r for r in rows if r.get("status") in statuses]
 
-    if not rows:
+    if not rows and not anchors:
         if as_json:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    header = f"## Memory — Pendientes de {label}"
-    lines = [header, ""]
+    lines: list[str] = []
     items: list[dict] = []
+    if rows:
+        lines.extend([f"## Memory — Pending in {label}", ""])
     for r in rows:
         name = r.get("name") or ""
         description = r.get("description") or ""
         bullet = _collapse_desc(description)
         lines.append(f"- {name}: {bullet}" if bullet else f"- {name}")
-        items.append({
-            "name": name,
-            "type": r.get("type"),
-            "initiative": label,
-            "class": r.get("class"),
-            "memory_status": r.get("status"),
-            "section": "project",
-            "description": description,
-            "body": r.get("body"),
-        })
+        items.append(_project_mode_item(r, label, "project"))
+    if anchors:
+        lines.extend(([""] if lines else []) + [f"## Memory — Anchors of {label}", ""])
+    for r in anchors:
+        lines.append(f"- {r.get('name') or ''}:")
+        lines.extend(f"  {line}" for line in (r.get("body") or "").splitlines())
+        items.append(_project_mode_item(r, label, "anchor"))
 
-    _bump_memory_telemetry(workspace, [i["name"] for i in items], "deliberate")
+    for item in items:
+        _bump_memory_telemetry(item["workspace"], [item["name"]], "deliberate")
 
     block = "\n".join(lines) + "\n\n" + _MEMORY_POINTER
 
@@ -2160,7 +2287,7 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
     grouped: dict[str, list[dict]] = {t: [] for t in types_list}
     for t in types_list:
         try:
-            rows = list_memory(workspace, type=t)
+            rows = list_memory(workspace, type=t, with_user_scope=True)
         except Exception:
             rows = []
         rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
@@ -2219,7 +2346,7 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
             name = r.get("name") or ""
             desc = (r.get("description") or "").strip()
             if not desc:
-                full = get_memory(workspace, name) or {}
+                full = get_memory(_flag_workspace_holding(args, name), name) or {}
                 body = (full.get("body") or "").strip().replace("\n", " ")
                 desc = body[:60] + ("..." if len(body) > 60 else "")
             line = f"- {name}: {desc}" if desc else f"- {name}"
@@ -2260,7 +2387,7 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
             if len(block) + len(footer) <= max_chars:
                 block = block + footer
 
-    # P1 injection telemetry: the char-budget trim above always removes from
+    # Injection telemetry: the char-budget trim above always removes from
     # the TAIL of the remaining "- " lines, in the same order items_flat was
     # appended (one append per bullet, strictly left to right), so the
     # surviving rendered rows are exactly items_flat's first
@@ -2337,20 +2464,23 @@ _SHOW_POINTER_LINE1 = (
 )
 
 
-def _show_pointer_line2(workspace: str, initiative) -> str | None:
+def _show_pointer_line2(row: dict) -> str | None:
     """Second pointer line: computed, and only present when it fires.
 
-    Fires only when the shown row names an ``initiative`` that itself has
-    other live-pending rows -- the technique the 2026-08-17 case measured
-    missing (sweep the initiative's whole live-pending set before writing
-    about it). A row with no initiative, or an initiative with zero
-    live-pending rows, returns ``None``: a condition that always fires is
-    not a condition.
+    Fires only when the shown row belongs to a project (its canonical project
+    key) that itself has live-pending rows in any workspace -- the technique
+    the 2026-08-17 case measured missing (sweep the project's whole
+    live-pending set before writing about it). A row with no project, or a
+    project with zero live-pending rows, returns ``None``: a condition that
+    always fires is not a condition.
     """
+    from gaia.store.reader import pending_threads_by_project
+    from gaia.store.writer import canonical_project_key
+
+    initiative = canonical_project_key(row.get("project_ref"), row.get("initiative"))
     if not initiative:
         return None
-    pending = _fetch_pending_vivo(workspace, "  AND initiative = ? ", [initiative])
-    n = len(pending)
+    n = len(pending_threads_by_project([initiative]))
     if n == 0:
         return None
     return (
@@ -2379,13 +2509,13 @@ def _cmd_curated_show(args) -> int:
     it went looking for this row.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    workspace = _flag_workspace_holding(args, name)
     want_links = getattr(args, "links", False)
     want_history = getattr(args, "history", False)
 
     try:
-        from gaia.store.writer import get_memory, record_memory_access, HOST_WORKSPACE
+        from gaia.store.writer import get_memory, record_memory_access
         from gaia.store.reader import (
             get_memory_class_status, memory_links_for, memory_history_for,
         )
@@ -2393,17 +2523,6 @@ def _cmd_curated_show(args) -> int:
         return _err(f"gaia.store not importable: {exc}", as_json)
 
     row = get_memory(workspace, name)
-    # (workspace, name) is the PK -- a slug is not resolved by name alone. A
-    # host-scoped row now lives under HOST_WORKSPACE regardless of the caller's
-    # own vantage, so a miss under the resolved workspace falls back to the
-    # sentinel ONCE before reporting not-found. This is the minimal change:
-    # no initiative lookup, no ambiguity resolution -- one extra PK probe,
-    # tried only on a miss, so an unrelated slug that happens to collide
-    # between two workspaces still resolves to the caller's own row first.
-    if row is None and workspace != HOST_WORKSPACE:
-        row = get_memory(HOST_WORKSPACE, name)
-        if row is not None:
-            workspace = HOST_WORKSPACE
     if row is None:
         return _err(
             f"memory '{name}' not found in workspace '{workspace}'",
@@ -2486,7 +2605,7 @@ def _cmd_curated_show(args) -> int:
 
     print()
     print(_SHOW_POINTER_LINE1)
-    line2 = _show_pointer_line2(workspace, row.get("initiative"))
+    line2 = _show_pointer_line2(row)
     if line2:
         print(line2)
     return 0
@@ -2507,10 +2626,24 @@ def _cmd_delete(args) -> int:
     recoverability, the direction that needs consent.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
     skip_confirm = getattr(args, "yes", False)
     hard = getattr(args, "hard", False)
+    requested = _resolve_workspace(getattr(args, "workspace", None))
+    # The signed command is the consent, so a delete never follows a slug into
+    # another workspace's project row; one found there is refused and named.
+    workspace = _workspace_holding(requested, name, explicit=True,
+                                   include_deleted=hard)
+    holder = _workspace_holding(requested, name, explicit=False,
+                                include_deleted=hard)
+    if holder != workspace:
+        return _err_structured(
+            f"memory '{name}' is stored in workspace '{holder}', not "
+            f"'{workspace}'; a delete never follows a slug into another "
+            f"workspace: repeat it with --workspace {holder}",
+            as_json, code="workspace_not_named", workspace=workspace,
+            found_in=holder,
+        )
 
     try:
         from gaia.store.writer import get_memory, delete_memory
@@ -2567,199 +2700,24 @@ def _cmd_delete(args) -> int:
     return 0
 
 
-def _cmd_edit(args) -> int:
-    """CORRECT a single column of a curated memory row (supersede-with-history).
+_EDIT_RETIRED = (
+    "`gaia memory edit` is retired: memory is append-only. Write the changed "
+    "agreement as a new row and run `gaia memory link <new> <old> "
+    "--kind=supersedes`; to correct an error in a row, repeat its "
+    "`gaia memory add --name=<slug> ...` with --replace (T3, the prior value "
+    "stays in memory_history)."
+)
 
-    ``edit`` is the CORRECTION verb: it overwrites a field to fix or reframe
-    content that is already wrong. It is non-destructive under the hood -- the
-    prior value is captured in ``memory_history`` by ``trg_memory_history`` --
-    but the read surface then shows only the corrected value, which is why it
-    is classified T3 (it changes what future reads see). To ADD text WITHOUT
-    replacing the existing body, use ``gaia memory append`` instead: that is
-    the primary additive verb and is non-mutative (T0). The ``--append`` flag
-    here is retained for backward compatibility and delegates to the same
-    writer path as ``append``.
 
-    T5: also accepts ``--class`` and ``--status`` flags. When --field/--content
-    are omitted but a class/status flag is supplied, the call functions as a
-    pure reclassify -- useful for "I want to graduate this thread" style edits
-    without re-typing the body.
-
-    Also accepts ``--project`` / ``--project-ref`` to RE-ANCHOR an existing
-    row's ``memory.project_ref`` without rewriting the body. This closes the
-    gap where ``gaia memory add --project`` could only anchor at WRITE time:
-    a row written with a NULL or wrong ``project_ref`` (e.g. because the cwd
-    was a multi-project workspace root) can now be corrected in place. The
-    resolution contract matches ``add`` -- ``--project`` resolves a name to a
-    stable identity, ``--project-ref`` passes one directly, and an unknown
-    project is a structured error, never a silent NULL.
-    """
-    as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
-    name = getattr(args, "name", None)
-    field = getattr(args, "field", None)
-    content = getattr(args, "content", None)
-    body_file = getattr(args, "body_file", None)
-    append = getattr(args, "append", False)
-    class_flag = getattr(args, "class_", None)
-    status_flag = getattr(args, "status", None)
-    project_flag = getattr(args, "project", None)
-    project_ref_flag = getattr(args, "project_ref", None)
-    audience_flag = getattr(args, "audience", None)
-
-    if not name:
-        return _err("--name is required", as_json)
-
-    if body_file is not None:
-        try:
-            content = _read_body_file(body_file)
-        except FileNotFoundError:
-            return _err(f"--body-file: file not found: {body_file}", as_json)
-        except OSError as exc:
-            return _err(f"--body-file: cannot read '{body_file}': {exc}", as_json)
-
-    # Defensive gate: body edits with rich markdown require a prior description
-    # to exist (or to be set via --field=description in the same call). Since
-    # edit patches one field at a time, we only block when field=body + the
-    # resolved content is rich. Callers that set --field=description first are
-    # unaffected.
-    if field == "body" and content and _is_rich_body(content):
-        # Look up the existing row to check whether a description is already set.
-        try:
-            from gaia.store.writer import get_memory as _gm_check
-            existing = _gm_check(_resolve_workspace(getattr(args, "workspace", None)), name)
-            if existing and not (existing.get("description") or "").strip():
-                return _err(
-                    "body contains markdown structure (code blocks/headers/multi-paragraph).\n"
-                    "--description is required for rich bodies -- it's what gets injected at SessionStart.\n"
-                    "Bodies without description fall back to body[:60] which destroys code-block semantics.",
-                    as_json,
-                )
-        except Exception:
-            pass  # import failure -> skip gate rather than block the edit
-
-    # On edit, --field/--content remain optional only when at least one
-    # class/status flag is provided. The classic "patch a column" path still
-    # requires both.
-    status_touches, status_for_writer = _normalize_status_flag(status_flag)
-    has_field_patch = field is not None and content not in (None, "")
-    has_reclassify = class_flag is not None or status_touches
-    has_reanchor = project_flag is not None or project_ref_flag is not None
-    has_audience = audience_flag is not None
-
-    if not has_field_patch and not has_reclassify and not has_reanchor and not has_audience:
-        return _err(
-            "--field/--content, --class/--status, --project/--project-ref, "
-            "or --audience is required", as_json,
-        )
-
-    try:
-        from gaia.store.writer import update_memory_field, reclassify_memory
-    except ImportError as exc:
-        return _err(f"gaia.store.writer not importable: {exc}", as_json)
-
-    # Re-anchor project_ref of an existing row. Resolve the project scope with
-    # the SAME contract `gaia memory add` uses (`_resolve_scope_contract`),
-    # scoped to the already-resolved workspace: --project resolves a name to
-    # its stable identity, --project-ref passes an identity directly, and an
-    # unresolvable project is a structured error (never a silent NULL).
-    reanchor_result = None
-    if has_reanchor:
-        project_ref, scope_err = _resolve_scope_contract(
-            workspace=workspace,
-            workspace_flag=None,
-            project_flag=project_flag,
-            project_ref_flag=project_ref_flag,
-            as_json=as_json,
-        )
-        if scope_err is not None:
-            return scope_err
-        try:
-            from gaia.store.writer import reanchor_memory_project_ref
-            reanchor_result = reanchor_memory_project_ref(
-                workspace, name, project_ref,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    field_result = None
-    if has_field_patch:
-        try:
-            field_result = update_memory_field(
-                workspace, name, field, content, append=append,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    reclassify_result = None
-    if has_reclassify:
-        try:
-            reclassify_result = reclassify_memory(
-                workspace,
-                name,
-                class_=class_flag,
-                status=status_for_writer,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    audience_result = None
-    if has_audience:
-        try:
-            from gaia.store.writer import set_memory_audience
-            audience_result = set_memory_audience(
-                workspace, name, audience_flag,
-            )
-        except ValueError as exc:
-            return _err(str(exc), as_json)
-        except PermissionError as exc:
-            return _err(str(exc), as_json)
-
-    if as_json:
-        payload = {
-            "name": name,
-            "workspace": workspace,
-            "field_update": field_result,
-            "reclassify": reclassify_result,
-            "reanchor": reanchor_result,
-            "audience": audience_result,
-        }
-        print(json.dumps(payload, indent=2, default=str))
-    else:
-        if field_result is not None:
-            print(
-                f"Updated memory '{name}' field={field} "
-                f"action={field_result['action']}"
-            )
-        if reclassify_result is not None:
-            print(
-                f"Reclassified '{name}': class={reclassify_result['class']}, "
-                f"status={reclassify_result['memory_status']}"
-            )
-        if audience_result is not None:
-            print(
-                f"Audience '{name}': "
-                f"{audience_result['before_audience']!r} -> "
-                f"{audience_result['after_audience']!r}"
-            )
-        if reanchor_result is not None:
-            print(
-                f"Re-anchored '{name}': project_ref "
-                f"{reanchor_result['before_project_ref']!r} -> "
-                f"{reanchor_result['after_project_ref']!r}"
-            )
-    return 0
+def _cmd_edit_retired(args) -> int:
+    """Refuse the retired ``edit`` verb, naming what replaces it."""
+    as_json = getattr(args, "json", False) or "--json" in args.retired_args
+    return _err_structured(_EDIT_RETIRED, as_json, code="verb_retired")
 
 
 # ---------------------------------------------------------------------------
-# Subcommand handler: append (curated memory body growth -- the primary
-# "add something" verb)
+# Subcommand handler: append (curated memory body growth -- the verb for a
+# log or a live thread; changed knowledge is a new row that supersedes)
 # ---------------------------------------------------------------------------
 #
 # Vocabulary decision (Option C): memory is AGGREGATED and RECLASSIFIED, not
@@ -2777,7 +2735,7 @@ def _cmd_edit(args) -> int:
 #   record only ADDS capability/recoverability; per the security-tiers
 #   direction principle, that never needs consent. No change to the classifier
 #   was required -- the property falls out of the verb taxonomy. Contrast with
-#   ``edit`` / ``delete``, which ARE in MUTATIVE_VERBS and stay T3.
+#   ``delete`` and ``add --replace``, which stay T3.
 # ---------------------------------------------------------------------------
 
 def _cmd_append(args) -> int:
@@ -2786,16 +2744,15 @@ def _cmd_append(args) -> int:
     Additive and non-destructive: the new text is concatenated to the current
     body (separator ``\\n\\n``); the prior body survives in ``memory_history``
     via the ``trg_memory_history`` trigger. This is the primary verb for
-    "sum something" to a carry-forward note or running thread. It routes
-    through the SAME writer path as ``edit --append`` (update_memory_field with
-    ``append=True``), so history preservation is identical.
+    "sum something" to a carry-forward note or running thread, written by
+    ``update_memory_field``, which refuses a deleted row.
 
     Classified NON-mutative (T0): ``append`` is not in MUTATIVE_VERBS, so it
     needs no T3 approval -- appending only grows the record.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    workspace = _flag_workspace_holding(args, name)
     body = getattr(args, "body", None)
     body_file = getattr(args, "body_file", None)
 
@@ -2818,9 +2775,7 @@ def _cmd_append(args) -> int:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
     try:
-        result = update_memory_field(
-            workspace, name, "body", body, append=True,
-        )
+        result = update_memory_field(workspace, name, "body", body)
     except ValueError as exc:
         return _err(str(exc), as_json)
     except PermissionError as exc:
@@ -2840,6 +2795,7 @@ def _cmd_append(args) -> int:
             f"Appended to memory '{name}' body "
             f"(action={result['action']}, workspace={workspace})"
         )
+    _emit_write_warnings([], as_json)
     return 0
 
 
@@ -2861,8 +2817,8 @@ def _cmd_reclassify(args) -> int:
         non-NULL, the call fails with a structural-reason message.
     """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    workspace = _flag_workspace_holding(args, name)
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
 
@@ -2899,6 +2855,7 @@ def _cmd_reclassify(args) -> int:
             f"Reclassified {name}: class={res['class']}, "
             f"status={res['memory_status']} in workspace {workspace}"
         )
+    _emit_write_warnings([], as_json)
     return 0
 
 
@@ -2916,11 +2873,17 @@ def _cmd_reclassify(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _cmd_link(args) -> int:
-    """Handle ``gaia memory link <src> <dst> --kind=<k> [--delete]``."""
+    """Handle ``gaia memory link <src> <dst> --kind=<k> [--delete]``.
+
+    Each end is looked up from the caller's workspace and the two sentinels,
+    so a user row in ``_gaia_user`` can supersede its predecessor still under
+    a project workspace.
+    """
     as_json = getattr(args, "json", False)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
     src_name = args.src_name
+    workspace = _flag_workspace_holding(args, src_name)
     dst_name = args.dst_name
+    dst_workspace = _flag_workspace_holding(args, dst_name)
     kind = args.kind
     do_delete = getattr(args, "delete", False)
 
@@ -2943,7 +2906,9 @@ def _cmd_link(args) -> int:
             res = delete_memory_link(workspace, src_name, dst_name, kind)
             verb = "Deleted" if res["action"] == "deleted" else "Skipped"
         else:
-            res = insert_memory_link(workspace, src_name, dst_name, kind)
+            res = insert_memory_link(
+                workspace, src_name, dst_name, kind, dst_workspace=dst_workspace,
+            )
             verb = "Created" if res["action"] == "inserted" else "Skipped"
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -2951,17 +2916,34 @@ def _cmd_link(args) -> int:
         # MemoryWriteForbidden -- structural enforcement layer (T3).
         return _err(str(exc), as_json)
 
+    warnings = []
+    # ISO-8601 stamps order as strings. A corrected old row can legitimately
+    # be the newer one, which is why this warns instead of refusing.
+    if (kind == "supersedes" and not do_delete and res["src_born"] and res["dst_born"]
+            and res["dst_born"] > res["src_born"]):
+        warnings.append(_warning(
+            "supersedes_reversed",
+            f"{dst_name} is newer than {src_name}: supersedes points from the "
+            f"new row to the old one, and {dst_name} has just left every "
+            f"injection. If the arrow is reversed: `gaia memory link {src_name} "
+            f"{dst_name} --kind=supersedes --delete` and "
+            f"`gaia memory link {dst_name} {src_name} --kind=supersedes`.",
+        ))
+
     if as_json:
-        print(json.dumps(res, indent=2, default=str))
+        print(json.dumps({**res, **({"warnings": warnings} if warnings else {})},
+                         indent=2, default=str))
     else:
         # Arrow uses ASCII-friendly form; no unicode dependence.
         action_label = (
             "link" if res["action"] in ("inserted", "deleted") else "link (no-op)"
         )
-        print(
-            f"{verb} {action_label} {src_name} -[{kind}]-> {dst_name} "
-            f"in workspace {workspace}"
-        )
+        ends = (f"in workspace {workspace}" if dst_workspace == workspace
+                else f"from workspace {workspace} to {dst_workspace}")
+        print(f"{verb} {action_label} {src_name} -[{kind}]-> {dst_name} {ends}")
+        if kind == "supersedes" and res["action"] == "inserted":
+            print(f"  {src_name} reemplaza a {dst_name}")
+        _emit_write_warnings(warnings, as_json)
     return 0
 
 
@@ -3032,7 +3014,9 @@ def _cmd_search_scoped(args) -> int:
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
-    curated = search_memory_curated(workspace, query, limit=limit)
+    curated = search_memory_curated(
+        workspace, query, limit=limit, with_user_scope=True,
+    )
 
     if scope == "memory":
         if as_json:
@@ -3091,7 +3075,13 @@ def cmd_memory(args) -> int:
         else:
             print("Usage: gaia memory <search|stats|show|conflicts>", file=sys.stderr)
         return 0
-    return func(args) or 0
+    try:
+        return func(args) or 0
+    except AmbiguousSlugError as exc:
+        return _err_structured(
+            str(exc), getattr(args, "json", False),
+            code="ambiguous_slug", workspaces=exc.workspaces,
+        )
 
 
 def register(subparsers):
@@ -3242,7 +3232,7 @@ def register(subparsers):
     list_p.add_argument(
         "--audience", default=None,
         choices=("orchestrator", "executor", "any"),
-        help="v45: filter by memory.audience (which agent role the row is FOR).",
+        help="Filter by memory.audience (which agent role the row is FOR).",
     )
     list_p.add_argument(
         "--class", dest="cls", default=None,
@@ -3324,104 +3314,14 @@ def register(subparsers):
     )
     delete_p.set_defaults(func=_cmd_delete)
 
-    # -- edit ---------------------------------------------------------------
-    edit_p = actions.add_parser(
-        "edit",
-        help="CORRECT a curated memory field (overwrite/supersede, with history)",
-        description=(
-            "Correction verb: overwrite a single column to fix or reframe what "
-            "is already there. The prior value is preserved in memory_history "
-            "(supersede-with-history, not a destructive mutation), but the read "
-            "surface shows only the new value. To ADD text without replacing "
-            "it, prefer `gaia memory append` -- that is the primary additive "
-            "verb. Use `edit` when the existing content is WRONG and must be "
-            "corrected. (T3: correction changes what reads see, so it needs "
-            "approval; append does not.)"
-        ),
-        formatter_class=_argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n"
-               "  gaia memory edit --name=foo --field=body "
-               "--append --content='...'\n"
-               "  gaia memory edit --name=foo --field=body "
-               "--body-file=~/.gaia/scratch/new_body.md\n"
-               "  cat new_body.md | gaia memory edit --name=foo --field=body "
-               "--body-file=-\n",
-    )
-    edit_p.add_argument("--name", required=True, help="Curated memory slug.")
-    # --field / --content are no longer required: T5 lets edit operate as a
-    # pure reclassify when only --class/--status are supplied. The handler
-    # surfaces a clear error if neither pair is provided.
-    edit_p.add_argument(
-        "--field", default=None,
-        choices=("description", "body"),
-        help="Column to patch (optional; required only when --content or --body-file given).",
-    )
-    _edit_content_group = edit_p.add_mutually_exclusive_group()
-    _edit_content_group.add_argument(
-        "--content", default=None,
-        help="New value for --field.",
-    )
-    _edit_content_group.add_argument(
-        "--body-file", dest="body_file", default=None, metavar="PATH",
-        help=(
-            "Read new value for --field from PATH. Use '-' to read from stdin "
-            "until EOF. Useful for bodies with angle brackets, shell variables, "
-            "nested quotes, or markdown code blocks."
-        ),
-    )
-    edit_p.add_argument("--append", action="store_true", default=False,
-                        help="Append (separator '\\n\\n'). bool. Default: false.")
-    edit_p.add_argument(
-        "--class", dest="class_", default=None,
-        choices=("anchor", "thread", "log"),
-        help="T5: set memory.class. Writer-side enum.",
-    )
-    edit_p.add_argument(
-        "--status", dest="status", default=None,
-        help=(
-            "T5: set memory.status (open|carry_forward|graduated|closed); "
-            "use 'null' to clear. Only valid for class=thread."
-        ),
-    )
-    edit_p.add_argument("--workspace", default=None, metavar="W",
-                        help="Workspace identity.")
-    _edit_anchor_group = edit_p.add_mutually_exclusive_group()
-    _edit_anchor_group.add_argument(
-        "--project", default=None, metavar="NAME",
-        help=(
-            "RE-ANCHOR: change memory.project_ref of an EXISTING row. Resolves "
-            "a project NAME within --workspace to its stable project_identity "
-            "(same resolution as `gaia memory add --project`). Use this to fix "
-            "a row that was written with project_ref NULL or anchored to the "
-            "wrong project. Mutually exclusive with --project-ref."
-        ),
-    )
-    _edit_anchor_group.add_argument(
-        "--project-ref", dest="project_ref", default=None, metavar="IDENTITY",
-        help=(
-            "RE-ANCHOR: set memory.project_ref of an EXISTING row directly to a "
-            "known project_identity string (no name resolution). Mutually "
-            "exclusive with --project."
-        ),
-    )
-    edit_p.add_argument(
-        "--audience", default=None,
-        choices=("orchestrator", "executor", "any"),
-        help=(
-            "v45: PATCH memory.audience of an EXISTING row -- which agent "
-            "role this row is FOR (orchestrator|executor|any). Can be "
-            "combined with --field/--class/--status/--project in the same "
-            "call."
-        ),
-    )
-    edit_p.add_argument("--json", action="store_true", default=False,
-                        help="Emit JSON. bool.")
-    edit_p.set_defaults(func=_cmd_edit)
+    # Retired, and kept only so a call names its replacement; unlisted in help.
+    # No prefix character can match, so every old flag lands in retired_args
+    # instead of failing the parse as unrecognized.
+    edit_p = actions.add_parser("edit", prefix_chars="\x00", add_help=False)
+    edit_p.add_argument("retired_args", nargs="*")
+    edit_p.set_defaults(func=_cmd_edit_retired)
 
     # -- append -------------------------------------------------------------
-    # Primary "add text to an existing note" verb. Additive, history-preserving,
-    # and NON-mutative (T0): 'append' is not in MUTATIVE_VERBS, so it needs no
-    # T3 approval. Routes through the same writer path as `edit --append`.
     append_p = actions.add_parser(
         "append",
         help="Append text to an existing curated memory body (additive, T0)",
@@ -3430,8 +3330,9 @@ def register(subparsers):
             "new text (separator '\\n\\n'). Additive and non-destructive -- the "
             "prior body is preserved in memory_history. This is the primary "
             "verb for 'add something' to a carry-forward note or running "
-            "thread. Non-mutative (needs no approval). To CORRECT or replace "
-            "existing text, use `gaia memory edit` instead."
+            "thread. Non-mutative (needs no approval). A changed agreement is "
+            "a new row that supersedes this one; to correct an error, use "
+            "`gaia memory add --replace`."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -3507,24 +3408,37 @@ def register(subparsers):
     reclass_p.set_defaults(func=_cmd_reclassify)
 
     # -- link ---------------------------------------------------------------
+    # No abbreviations: the signature matches the literal --delete.
     link_p = actions.add_parser(
         "link",
+        allow_abbrev=False,
         help="Create or delete a graph edge between two curated memory rows",
         description=(
             "Create (default) or --delete a row in memory_links. Both src and "
-            "dst must exist as curated memory rows. Idempotent: re-running the "
-            "same link is a no-op."
+            "dst must exist as curated memory rows; each is found in --workspace "
+            "or in the user/host scopes, so the two may have different owners. "
+            "Idempotent: re-running the same link is a no-op.\n\n"
+            "supersedes has one direction: src is the NEW row, dst the OLD one "
+            "it replaces, which then leaves every injection. A changed fact is "
+            "a new row plus this link, not a rewrite of the old row."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia memory link atom_node_20 anchor_routing --kind=relates_to\n"
-            "  gaia memory link decision_old decision_new --kind=supersedes\n"
-            "  gaia memory link a b --kind=relates_to --delete\n"
+            "  gaia memory link decision_new decision_old --kind=supersedes\n"
+            "  gaia memory link a b --kind=relates_to --delete\n\n"
+            "Writing memory is judgment as well as form: load Skill('memory').\n"
         ),
     )
-    link_p.add_argument("src_name", help="Source memory slug. Must exist.")
-    link_p.add_argument("dst_name", help="Destination memory slug. Must exist.")
+    link_p.add_argument(
+        "src_name",
+        help="Source memory slug. Must exist. For supersedes: the NEW row, what holds now.",
+    )
+    link_p.add_argument(
+        "dst_name",
+        help="Destination memory slug. Must exist. For supersedes: the OLD row it replaces.",
+    )
     link_p.add_argument(
         "--kind", required=True,
         choices=("relates_to", "supersedes", "derived_from", "graduated_to"),
@@ -3536,7 +3450,7 @@ def register(subparsers):
     )
     link_p.add_argument(
         "--delete", action="store_true", default=False,
-        help="Delete the link instead of creating it. bool.",
+        help="Delete the link instead of creating it; signed (T3) like delete. bool.",
     )
     link_p.add_argument(
         "--json", action="store_true", default=False,
@@ -3545,31 +3459,73 @@ def register(subparsers):
     link_p.set_defaults(func=_cmd_link)
 
     # -- add ----------------------------------------------------------------
+    from gaia.store.memory_claims import MEMORY_CLAIM_KINDS
+
+    # No abbreviations: the signature and the orchestrator lane both match the
+    # literal --replace, and an abbreviation argparse expanded would bypass both.
     add_p = actions.add_parser(
         "add",
-        help="Upsert a curated memory row (DB-only)",
-        description="Insert or update by (project, name).",
+        allow_abbrev=False,
+        help="Write a new curated memory row (DB-only)",
+        description=(
+            "Insert by (workspace, name); an existing name is refused unless "
+            "--replace.\n\n"
+            "One thing per row. Every row has one of three owners:\n"
+            "  the user    --type=user (true of him in any project; no scope)\n"
+            "  a project   --project=<name> or --initiative=<key>\n"
+            "  Gaia itself --initiative=gaia_system\n"
+            "--workspace alone is a container, not an owner.\n\n"
+            "The description is one sentence whose first word names the kind "
+            "of claim:\n  "
+            + "  ".join(f"{kind}:" for kind in MEMORY_CLAIM_KINDS)
+            + "\n\n"
+            "A changed fact is a new row plus `gaia memory link <new> <old> "
+            "--kind=supersedes`; --replace rewrites an existing name in place, "
+            "only to correct an error, and needs a signature (T3). The prior "
+            "value stays in memory_history. Only a log or a thread grows by "
+            "append.\n"
+            "The CLI warns on length, a missing owner, an in-place rewrite and "
+            "a user preference; the row is still written."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
+               "  gaia memory add --name=user_pref_x --type=user "
+               "--description='Preference: ...' --body='...'\n"
                "  gaia memory add --name=feedback_x --type=feedback "
-               "--body='...'\n"
-               "  gaia memory add --name=atom_x --type=atom "
-               "--body-file=~/.gaia/scratch/body.md\n"
+               "--initiative=gaia_system --workspace=me --body='...'\n"
+               "  gaia memory add --name=atom_x --type=atom --project=gaia "
+               "--workspace=me --body-file=~/.gaia/scratch/body.md\n"
                "  cat body.md | gaia memory add --name=atom_x --type=atom "
-               "--body-file=-\n",
+               "--project=gaia --workspace=me --body-file=-\n\n"
+               "Writing memory is judgment as well as form: load "
+               "Skill('memory') to decide whether the row deserves to exist, "
+               "whose it is and what it replaces.\n",
     )
     add_p.add_argument("--name", required=True,
                        help="Slug. PK with project.")
     add_p.add_argument(
+        "--replace", action="store_true", default=False,
+        help="Rewrite an existing row of this name in place to correct an "
+             "error (T3). bool. Default: false.",
+    )
+    add_p.add_argument(
         "--type", required=True,
         choices=("project", "user", "feedback", "atom", "decision", "negative"),
         help="Memory type. Curated taxonomy (atom/decision/negative) "
-             "requires slug prefix matching the type, e.g. 'atom_node_20'.",
+             "requires slug prefix matching the type, e.g. 'atom_node_20'. "
+             "'user' has no workspace: it needs no scope flag, is written to "
+             "the _gaia_user scope from any workspace, and a name already "
+             "there is reported, not overwritten.",
     )
     _add_body_group = add_p.add_mutually_exclusive_group(required=True)
     _add_body_group.add_argument(
         "--body", default=None,
-        help="Markdown body as a string.",
+        help=(
+            "Markdown body as a string: the content, why it holds, where it "
+            "came from and when; a measured fact says when and how it was "
+            f"measured. Warns over {_BODY_WARN_CHARS} chars: a body is "
+            "injected whole or dropped."
+        ),
     )
     _add_body_group.add_argument(
         "--body-file", dest="body_file", default=None, metavar="PATH",
@@ -3579,13 +3535,19 @@ def register(subparsers):
             "nested quotes, or markdown code blocks."
         ),
     )
-    add_p.add_argument("--description", default=None,
-                       help="Short summary. Shown in list.")
+    add_p.add_argument(
+        "--description", default=None,
+        help=(
+            "One sentence that starts with its kind of claim (listed above), "
+            "because listings and the birth block show this line and read the "
+            f"body only on demand. Warns over {_DESCRIPTION_WARN_CHARS} chars."
+        ),
+    )
     _add_project_group = add_p.add_mutually_exclusive_group()
     _add_project_group.add_argument(
         "--project", default=None,
         help=(
-            "N3: anchor this memory to a project by NAME (resolved within "
+            "Anchor this memory to a project by NAME (resolved within "
             "--workspace to its stable projects.project_identity, persisted "
             "as memory.project_ref). Forward-only: errors clearly if the "
             "project does not exist or has no project_identity yet -- never "
@@ -3595,7 +3557,7 @@ def register(subparsers):
     _add_project_group.add_argument(
         "--project-ref", dest="project_ref", default=None,
         help=(
-            "N3: anchor this memory directly to a known stable "
+            "Anchor this memory directly to a known stable "
             "project_identity string, bypassing name resolution. Use "
             "--project instead unless you already hold the identity value."
         ),
@@ -3603,7 +3565,7 @@ def register(subparsers):
     add_p.add_argument(
         "--initiative", default=None, metavar="KEY",
         help=(
-            "v32: canonical project/initiative grouping key (memory.initiative). "
+            "Canonical project/initiative grouping key (memory.initiative). "
             "Use for a LOGICAL initiative that is NOT a git repo (branchkinect, "
             "buildwiz, axisio, ...) -- normalized to lowercase_snake. When "
             "--project / --project-ref anchors a git project, initiative is "
@@ -3614,12 +3576,16 @@ def register(subparsers):
     add_p.add_argument(
         "--class", dest="class_", default=None,
         choices=("anchor", "thread", "log"),
-        help="T5: set memory.class at insertion time. Writer-side enum.",
+        help=(
+            "Set memory.class at insertion time. Default: anchor for "
+            "--type=user (it reaches every session and dispatch), log for "
+            "every other type."
+        ),
     )
     add_p.add_argument(
         "--status", dest="status", default=None,
         help=(
-            "T5: set memory.status (open|carry_forward|graduated|closed); "
+            "Set memory.status (open|carry_forward|graduated|closed); "
             "use 'null' to clear. Only valid for class=thread."
         ),
     )
@@ -3627,12 +3593,12 @@ def register(subparsers):
         "--audience", default=None,
         choices=("orchestrator", "executor", "any"),
         help=(
-            "v45: which agent role this row is FOR -- 'orchestrator' "
+            "Which agent role this row is FOR -- 'orchestrator' "
             "(routing/model-choice/report-style instructions), 'executor' "
             "(preferences for any dispatched specialist), or 'any' (the "
-            "schema default; unclassified/applies regardless). Omit to "
-            "leave the row at 'any' on insert, or unchanged on a correction "
-            "upsert (never silently reset)."
+            "schema default; unclassified/applies regardless). Omitted, a new "
+            "row gets 'any' and --replace keeps the stored value (never "
+            "silently reset)."
         ),
     )
     add_p.add_argument("--workspace", default=None, metavar="W",
@@ -3649,15 +3615,17 @@ def register(subparsers):
             "Write one session-close reflection in a single transaction: the "
             "record anchor, one carry-forward thread per pending, and a "
             "derived_from edge from each thread back to the record. All-or-"
-            "nothing -- a malformed or invalid payload writes zero rows. "
-            "Replaces the N+1 add/link sequence session-reflection Step 6 used "
-            "to prescribe."
+            "nothing -- a malformed or invalid payload, or any name that "
+            "already exists, writes zero rows. Changed knowledge goes as a new "
+            "row whose \"supersedes\" names the row it replaces."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Payload (JSON):\n"
                "  {\n"
-               "    \"resumen\":   {\"name\",\"type\",\"description\",\"body\"},\n"
-               "    \"pendientes\": [{\"name\",\"description\",\"body\"}, ...]\n"
+               "    \"resumen\":   {\"name\",\"type\",\"description\",\"body\","
+               "\"supersedes\"?},\n"
+               "    \"pendientes\": [{\"name\",\"description\",\"body\","
+               "\"supersedes\"?}, ...]\n"
                "  }\n"
                "Examples:\n"
                "  gaia memory checkpoint --file payload.json --project=gaia\n"
@@ -3685,7 +3653,7 @@ def register(subparsers):
     checkpoint_p.add_argument(
         "--initiative", default=None, metavar="KEY",
         help=(
-            "v32: canonical project/initiative grouping key (memory.initiative), "
+            "Canonical project/initiative grouping key (memory.initiative), "
             "applied to the record AND every pending in this checkpoint -- the "
             "payload carries no per-row initiative, matching the shared --type "
             "convention. Same semantics as 'gaia memory add --initiative'."
@@ -3707,14 +3675,17 @@ def register(subparsers):
             "mode has a DIFFERENT failure/budget contract, not a shared one: "
             "with no flag, the cross-project DIGEST is emitted -- capped by "
             "--max-chars, top-K initiatives, one freshest item each, excess "
-            "rolled into an overflow line. With --initiative=<key>, PROJECT "
-            "MODE returns EVERY live-pending row of that ONE initiative "
-            "instead -- --max-chars is accepted but IGNORED, since capping "
+            "rolled into an overflow line. With --initiative=<key> or "
+            "--project=<name>, PROJECT MODE returns EVERY live-pending row of "
+            "that ONE project from every workspace instead -- the cwd does not "
+            "narrow it -- and --max-chars is accepted but IGNORED, since capping "
             "an explicitly named corpus would silently withhold part of the "
             "answer; an initiative with zero live-pending rows and a "
             "made-up initiative key produce the SAME empty, exit-0 result "
-            "-- there is no initiative registry to tell them apart. With "
-            "--sections=..., the class/status SECTION renderer runs instead "
+            "-- there is no initiative registry to tell them apart; with "
+            "--sections=anchor it returns that project's live anchors instead, "
+            "bodies whole, from every workspace. With --sections=... alone, "
+            "the class/status SECTION renderer runs instead "
             "(the subagent-dispatch path). Composes with 'gaia memory show "
             "<slug>' for one row's full body -- get-relevant is the sweep, "
             "show is the deep read."
@@ -3722,7 +3693,8 @@ def register(subparsers):
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory get-relevant --workspace=qxo\n"
-               "  gaia memory get-relevant --types=atom,decision --limit=6\n",
+               "  gaia memory get-relevant --types=atom,decision --limit=6\n"
+               "  gaia memory get-relevant --initiative=gaia --sections=anchor\n",
     )
     rel_p.add_argument(
         "--workspace", default=None, metavar="W",
@@ -3747,18 +3719,29 @@ def register(subparsers):
         help="Comma-separated subset of curated sections to render "
              "(carry_forward,anchor,thread_open). When set, uses the class/"
              "status section renderer -- the subagent-dispatch path passes "
-             "--sections=anchor to inject only 'What the user has established'. "
+             "--sections=anchor to inject only 'The user'. "
+             "With --initiative/--project it selects that project's rows "
+             "instead: anchor for its live anchors with their bodies, "
+             "carry_forward/thread_open for its pending threads (the default). "
              "When omitted (and no --initiative/--types), the transversal "
              "initiative digest is emitted instead.",
     )
-    rel_p.add_argument(
+    rel_project = rel_p.add_mutually_exclusive_group()
+    rel_project.add_argument(
         "--initiative", default=None, metavar="KEY",
-        help="Project mode (v32): return EVERY live-pending row of the ONE "
-             "named initiative (normalised like the write side), uncapped -- "
-             "not just the top ones, and --max-chars is ignored here. The "
-             "value 'otros' targets the NULL-initiative bucket. When "
-             "omitted, the cross-project transversal digest is emitted "
-             "instead.",
+        help="Project mode: return EVERY live-pending row of the ONE "
+             "named initiative (normalised like the write side) from every "
+             "workspace, uncapped -- not just the top ones, and --max-chars "
+             "is ignored here; with --sections=anchor, its live anchors with "
+             "their bodies. The value 'otros' targets the NULL-initiative "
+             "bucket of the resolved workspace. When omitted, the "
+             "cross-project transversal digest is emitted instead.",
+    )
+    rel_project.add_argument(
+        "--project", default=None, metavar="NAME",
+        help="Project mode by project: a name, git path or remote identity "
+             "(github.com/owner/repo) resolved to the same canonical key as "
+             "--initiative; same output.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,
@@ -3779,14 +3762,24 @@ def register(subparsers):
     # -- conflicts ----------------------------------------------------------
     conflicts_p = actions.add_parser(
         "conflicts",
-        help="Contradiction scan across memory files",
-        description="Pairwise jaccard similarity scan.",
+        help="Candidate contradictions in curated memory",
+        description=(
+            "List pairs of live curated rows of one owner -- the user's rows, "
+            "or the rows of one project -- whose wording overlaps enough to be "
+            "about the same subject. Rows a supersedes link retired are left "
+            "out. A pair is a candidate, not a verdict: read both bodies, and "
+            "if they disagree, write the row that stands and link it "
+            "--kind=supersedes to the one it replaces."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  gaia memory conflicts --threshold=0.5\n",
+        epilog="Examples:\n  gaia memory conflicts\n  gaia memory conflicts --threshold=0.2 --json\n",
     )
     conflicts_p.add_argument(
-        "--threshold", type=float, default=0.3, metavar="F",
-        help="Jaccard threshold. float. Default: 0.3.",
+        "--threshold", type=float, default=None, metavar="F",
+        help=(
+            "Minimum Jaccard overlap of word stems (name, description, body) "
+            "for a pair to be listed. float. Default: 0.3."
+        ),
     )
     conflicts_p.add_argument(
         "--json", action="store_true", default=False,

@@ -34,15 +34,17 @@ Storage format:
     Legacy entries with ``pid`` / ``pid_create_time`` fields are tolerated on
     read: they have no ``last_heartbeat``, so the freshness check treats them
     as dead immediately. That is the correct outcome — a registry written by
-    the old code is by definition stale.
+    the old code is by definition stale. An ``identity`` field left by an
+    earlier build is ignored.
 
     ``pinned_build`` is likewise OPTIONAL on read: entries written before this
     field existed simply lack it. Consumers (``gaia doctor``'s "Hooks active &
     fresh" check) MUST treat an absent ``pinned_build`` as UNKNOWN, never as a
     match/pass — the marker is rewritten by a fresh session (source
     "startup"), a ``--continue``/``--resume`` of an existing session id
-    (source "resume"), AND a ``/compact`` (source "compact"): SessionStart's
-    matcher is ``startup|resume|compact``, so Claude Code re-reads settings
+    (source "resume"), a ``/compact`` (source "compact"), AND the new session
+    id of a ``/clear`` or a fork: SessionStart's matcher is
+    ``startup|resume|clear|compact|fork``, so Claude Code re-reads settings
     and re-fires this hook on resume and on compact too, and this hook does
     not branch on ``source`` for registration/pinning -- it always
     re-registers and re-pins regardless (only the *content* of
@@ -58,7 +60,7 @@ Concurrency:
     set.
 
 Public API:
-    register_session(session_id, started_at=None, is_headless=False) -> None
+    register_session(session_id, started_at=None, is_headless=False, pinned_build=None) -> None
     unregister_session(session_id) -> None
     is_session_alive(session_id) -> bool
     touch_session(session_id) -> None
@@ -208,7 +210,7 @@ def register_session(
             marker (doctor reports UNKNOWN). This self-heals on the next
             SessionStart fire for this session id -- which includes a plain
             ``--continue``/``--resume`` or a ``/compact``, since the
-            SessionStart matcher is ``startup|resume|compact`` and this hook
+            SessionStart matcher is ``startup|resume|clear|compact|fork`` and this hook
             re-pins on every fire regardless of ``source``.
 
     Raises:

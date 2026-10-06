@@ -217,10 +217,10 @@ until they make it.
   cross the phase-sections; a **disclosure level** becomes a **page**. Arrows
   do not survive the crossing: the engine draws no edges, so every arrow of the
   inline picture becomes chip membership plus `order`, and a relation that only
-  an arrowhead could express is stated in a component's text instead. The
-  flow-doctrine passage of that skill's semantic doctrine and its "flow --
-  phases as sections" skeleton carry the field-level form; the field names and
-  what the engine rejects are in `reference.md` here.
+  an arrowhead could express is stated in a component's text instead. That
+  skill's `toolbox.md` carries every property and the forms a page declares,
+  `flow` among them; the correspondence and what the engine rejects are in
+  `reference.md` here.
 - **`artifact-diagramming`** -- inline SVG inside an HTML page, for a single
   rendered picture rather than a deck. It is a host-provided skill, not a Gaia
   one; the drawing rules of Step 4 hold there unchanged (mechanism over name,

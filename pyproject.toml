@@ -1,11 +1,11 @@
 [project]
 name = "gaia"
-version = "5.5.0-rc.3"
+version = "5.5.0-rc.5"
 description = "Multi-agent orchestration system for Claude Code - DevOps automation toolkit"
 requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
-    {name = "Jorge Aguilar", email = "jorge.aguilar87@gmail.com"},
+    {name = "Jorge Aguilar"},
 ]
 readme = "README.md"
 
@@ -14,6 +14,7 @@ dev = [
     "pytest==8.3.5",
     "pytest-cov>=5.0.0",
     "pytest-xdist>=3.6.0",
+    "pytest-split>=0.11.0",
     "ruff>=0.4.0",
     "pyyaml>=6.0",
 ]
@@ -32,6 +33,10 @@ quote-style = "double"
 include = ["gaia*"]
 
 [tool.pytest.ini_options]
+# testpaths is where the layer-1 suite starts; what it leaves out is
+# LAYER1_EXCLUDED in tests/conftest.py. npm test, CI and the nightly run bare
+# `pytest` from the repo root so all of them get this one selection.
+# tools/scan/tests covers the shipped workspace scanners under tools/scan.
 testpaths = ["tests", "tools/scan/tests"]
 # -n auto: package.json's `test`/`test:layer1` scripts and CI already run
 # under pytest-xdist; this makes that the default for a bare `pytest tests/`
@@ -47,6 +52,7 @@ tmp_path_retention_count = "1"
 markers = [
     "parity: JS-Python CLI parity comparison tests",
     "ci_subset: budget-bounded subset of L2/L3 (LLM) tests run in CI under a controlled token budget (brief #89 AC-6)",
+    "old_install: runs a tagged older Gaia against a database written by this code; local only, needs the release tags",
 ]
 
 # Branch coverage (brief #89 AC-4): coverage is a DIAGNOSTIC to locate unexercised

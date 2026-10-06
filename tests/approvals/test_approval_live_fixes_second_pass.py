@@ -75,7 +75,8 @@ def _request_set(command=COMMAND, cwd=None):
         command=[command], cwd=[cwd] if cwd else None, expect_exit=None,
         what="Publicar la rama.", question=SHORT_QUESTION,
         does=["Sube la rama al remoto."], impact=["La rama queda publicada."],
-        rationale=None, verification=None, rollback="Borrar la rama remota.",
+        rationale=None, verification="git ls-remote", rollback="Borrar la rama remota.",
+        shared_state="Sí: la rama remota.",
         agent_id=AGENT, session_id=SESSION, json=True,
     )
     out = io.StringIO()
@@ -129,7 +130,8 @@ def _request_line(kind, target):
         "--rollback", "Borrar la rama remota.",
     ]
     if kind == "request-set":
-        return ["approvals", "request-set", "--command", target, *phrases]
+        owed = ["--verification", "git ls-remote", "--shared-state", "Sí: la rama remota."]
+        return ["approvals", "request-set", "--command", target, *phrases, *owed]
     return ["approvals", "request-file-write", "--path", target, *phrases]
 
 
@@ -242,7 +244,7 @@ def test_approval_live_fixes_signature_omits_the_folder_the_requester_runs_in(ho
 # The command of the Claude Code live test (P-8a94e99b...), whose Gaia-made
 # breaks and the host's own wrap together broke it apart; one line keeps it whole.
 # The folder keeps the live one's length off Gaia's scratch, where cp is not T3.
-LIVE_SCRATCH = "/home/jorge/ws/me/pruebas/a1fc9164405433383.b2455ec1105e"
+LIVE_SCRATCH = "/home/user/ws/me/pruebas/a1fc9164405433383.b2455ec1105e"
 LIVE_CP = (
     "cp --verbose --no-dereference --preserve=mode,timestamps "
     f"{LIVE_SCRATCH}/movido.txt {LIVE_SCRATCH}/copia-de-prueba.txt"

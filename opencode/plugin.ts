@@ -14,6 +14,11 @@ type BridgeResponse = {
   attestation?: string
   shell_env?: { session_id: string; call_id: string; agent_type: string }
   sections_provided?: string[]
+  additional_context?: string
+  contract_valid?: boolean
+  repair_prompt?: string
+  orchestrator_notice?: string
+  user_message?: string
 }
 
 type PendingApproval = {
@@ -371,6 +376,16 @@ const LIFECYCLE_EVENT_TYPES = new Set([
 ])
 
 /**
+ * Whether a lifecycle event still reaches Gaia after the session's open
+ * approval controls are released. Deletion always does: it is the only event
+ * that unregisters a main session, which an open control must not hold
+ * registered until its heartbeat goes stale.
+ */
+export function forwardsPastOpenControls(type: string): boolean {
+  return type === "session.deleted"
+}
+
+/**
  * The bridge event that records a host permission request matching no Gaia
  * verdict. Must stay equal to bridge.py's UNCORRELATED_PERMISSION_EVENT: the
  * two halves of this adapter exchange the name by value, and a rename on one
@@ -429,6 +444,14 @@ const ORCHESTRATOR_ASK = /^(P-[0-9a-f]{32})( details)?$/
 
 /** The host's limit on questions in one call, and so on commands asked at once (D33). */
 const SIGNATURE_BATCH_MAX = 4
+
+/** approval_grants statuses gaia/store/writer.py never returns to PENDING.
+ *
+ * REVOKED and EXPIRED hold even when a call reserved before the withdrawal
+ * settles. CONSUMED is left out: a call that never ran gets its grant back as
+ * PENDING while the window is open, so only a past window makes CONSUMED final.
+ */
+const TERMINAL_GRANT_STATUSES = new Set(["REVOKED", "FAILED", "EXPIRED"])
 
 export type OrchestratorAsk = { approvalID: string; mode: SignatureMode }
 
@@ -493,6 +516,23 @@ const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
 const gaiaBinDirectory = dirname(gaiaPath)
 
+let python: string[] | undefined
+
+/**
+ * The first working Python 3 among python3, python and `py -3`, probed once.
+ * Same order and probe as hooks/launch.sh: the python.org Windows installer
+ * ships no python3, and Windows' App Execution Alias answers to it anyway.
+ */
+function pythonCommand(): string[] {
+  if (python) return python
+  for (const candidate of [["python3"], ["python"], ["py", "-3"]]) {
+    if (!Bun.which(candidate[0])) continue
+    const probe = Bun.spawnSync([...candidate, "-c", "import sys; sys.exit(sys.version_info[0] != 3)"])
+    if (probe.exitCode === 0) return (python = candidate)
+  }
+  throw new Error("Gaia needs Python 3 on PATH (tried python3, python, py -3)")
+}
+
 /**
  * Create and return a dispatched child's own TMPDIR, or undefined when it
  * cannot exist. Mirrors gaia/paths/resolver.py::dispatch_tmp_dir, which owns
@@ -543,8 +583,8 @@ function traceableBridgeRequest(event: Record<string, unknown>): Record<string, 
 /** The directory Gaia's own processes run from, so their writes are attributed
  * to the session's workspace: `resolve_workspace` derives the workspace from
  * the cwd, and `opencode serve` may run from a directory that is not the
- * project (measured: events from a /home/jorge serve landed in workspace
- * 'jorge' instead of 'me'). Undefined when the host handed no absolute
+ * project (measured: events from a serve started in the home directory
+ * landed in a workspace named after it instead of the project's). Undefined when the host handed no absolute
  * directory, which leaves the spawn inheriting this process's cwd. */
 function gaiaDirectory(input: any): string | undefined {
   const directory = input?.directory
@@ -555,7 +595,7 @@ async function bridge(event: Record<string, unknown>, cwd: string | undefined): 
   if (process.env.GAIA_DEBUG) {
     console.error(`[gaia-opencode-bridge:request] ${JSON.stringify(traceableBridgeRequest(event))}`)
   }
-  const child = Bun.spawn(["python3", bridgePath, "--shell-env-v1"], {
+  const child = Bun.spawn([...pythonCommand(), bridgePath, "--shell-env-v1"], {
     cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
@@ -585,7 +625,7 @@ async function gaiaCapture(
   args: string[],
   cwd: string | undefined,
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const child = Bun.spawn(["python3", gaiaPath, ...args], {
+  const child = Bun.spawn([...pythonCommand(), gaiaPath, ...args], {
     cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdout: "pipe",
@@ -1177,6 +1217,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // The host's last answer about a later session's parent, read back by the
   // refusal trace so an unadmitted session says why.
   const hostParentBySession = new Map<string, HostParentRecord>()
+  // Whether session.created announced a session as main; a session absent here
+  // opened before this plugin loaded, and the host's record decides it.
+  const createdAsMain = new Map<string, boolean>()
+  // Main sessions whose birth block was asked for, so each asks once however
+  // many messages chat.message reports for it.
+  const birthSettled = new Set<string>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
   // One issuance per session even when two edges reach it at once. Without it a
@@ -1186,6 +1232,32 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // The backend ledger is read-modify-write: serialize all issuers in this plugin instance.
   let issuanceTail: Promise<void> = Promise.resolve()
   const decisions = new PermissionDecisionRouter()
+  // A child's session.idle is published before its parent's task call returns,
+  // so tool.execute.after awaits the close still in flight and appends what it
+  // left for the parent: the task result is the one channel the orchestrator
+  // reads under both the TUI and `opencode run` (a toast reports success with
+  // no TUI attached).
+  const childCloses = new Map<string, Promise<void>>()
+  const parentNotices = new Map<string, string[]>()
+
+  /** Act on the SubagentStop gate's verdict for a child's ended turn.
+   *
+   * A bus event cannot hold the turn, so a rejection becomes the child's next
+   * turn. The part is synthetic, which is also what keeps chat.message from
+   * answering it; the gate's rejection circuit bounds how often this repeats.
+   */
+  async function settleChildTurn(sessionID: string, response: BridgeResponse): Promise<void> {
+    const notices = [response.orchestrator_notice, response.user_message]
+      .filter((notice): notice is string => typeof notice === "string" && notice.length > 0)
+    if (notices.length > 0) parentNotices.set(sessionID, notices)
+    if (response.contract_valid !== false || !response.repair_prompt) return
+    const sent = await input.client?.session?.promptAsync?.({
+      path: { id: sessionID },
+      body: { parts: [{ type: "text", text: response.repair_prompt, synthetic: true }] },
+    })
+    const refused = sent === undefined ? "client has no session.promptAsync" : hostRejection(sent)
+    if (refused) console.error(`[gaia-opencode:subagent-stop] repair prompt not delivered to ${sessionID}: ${refused}`)
+  }
 
   /** The dispatch handle Gaia reads as agent_id, or undefined for the primary.
    *
@@ -1221,6 +1293,27 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       return typeof record.parentID === "string" && record.parentID ? "present" : "none"
     } catch {
       return "unavailable"
+    }
+  }
+
+  /** Whether session.created announced the session parentless, else whether the host's record does; undefined while the host cannot say. */
+  async function hostRecordsMain(sessionID: string): Promise<boolean | undefined> {
+    const announced = createdAsMain.get(sessionID)
+    if (announced !== undefined) return announced
+    const parent = await hostParentRecord(sessionID)
+    if (parent === "unavailable") return undefined
+    createdAsMain.set(sessionID, parent === "none")
+    return parent === "none"
+  }
+
+  /** The context Gaia returns for one main-session message event, or "" when it returns none or fails. */
+  async function mainMessageContext(event: "chat.message" | "chat.prompt", sessionID: string): Promise<string> {
+    try {
+      const response = await send({ event, sessionID })
+      return response.action === "allow" && response.additional_context ? response.additional_context : ""
+    } catch (error) {
+      console.error(`[gaia-opencode:${event}] session ${sessionID} message went without its context: ${error}`)
+      return ""
     }
   }
 
@@ -1485,6 +1578,30 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return { ok: false, cause }
   }
 
+  /** Whether Gaia shows this approval's grant can no longer execute.
+   *
+   * Only a grant row naming the approval counts as evidence: `show` prints a
+   * null or absent grant when its read fails, so absence keeps the binding.
+   * A PENDING or CONSUMED grant ends only once its window closes: PENDING
+   * stays until a sweep marks it EXPIRED, and CONSUMED can still be restored.
+   */
+  async function grantHasEnded(approvalID: string): Promise<boolean> {
+    const shown = await gaia(["approvals", "show", approvalID, "--json"])
+    if (!shown.ok) return false
+    let parsed: { approval?: { id?: unknown }; grant?: { approval_id?: unknown; status?: unknown; expires_at?: unknown } | null }
+    try {
+      parsed = JSON.parse(shown.stdout)
+    } catch {
+      return false
+    }
+    const grant = parsed?.grant
+    if (parsed?.approval?.id !== approvalID || !grant || grant.approval_id !== approvalID) return false
+    if (TERMINAL_GRANT_STATUSES.has(String(grant.status))) return true
+    if (grant.status !== "PENDING" && grant.status !== "CONSUMED") return false
+    if (typeof grant.expires_at !== "string") return false
+    return Date.parse(grant.expires_at) <= Date.now()
+  }
+
   /** Release a control and leave the reason where a reader can find it.
    *
    * Every exit is logged AND traced through the bridge: a control that closes
@@ -1592,8 +1709,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<boolean> {
     const existing = retryBySession.get(control.approval.sessionID)
     if (reply === "once" && existing && existing.correlationID !== control.retry.correlationID) {
-      await clearControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
-      return false
+      if (!await grantHasEnded(existing.approvalID)) {
+        await clearControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
+        return false
+      }
+      if (retryBySession.get(control.approval.sessionID) === existing) {
+        retryBySession.delete(control.approval.sessionID)
+      }
     }
     const admission = decisions.admit(control.request.correlationID, lane)
     if (!admission.accepted) {
@@ -1922,6 +2044,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       retryBySession.clear()
     },
     event: async ({ event }) => {
+      if (event.type === "session.created") {
+        const info = event.properties?.info
+        if (typeof info?.id === "string") createdAsMain.set(info.id, !info.parentID)
+        return
+      }
       if (event.type === "question.asked") {
         const sessionID = event.properties?.sessionID
         const requestID = event.properties?.id
@@ -2025,23 +2152,58 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
         const sessionID = event.properties?.sessionID
         if (typeof sessionID === "string") {
+          const agent = agentBySession.get(sessionID)
           if (event.type === "session.idle") {
-            const control = activeControl(sessionID)
-            if (control) await clearControl(control, "session_ended", event.type)
-            shellIdentities.clearSession(sessionID)
-            await send({ event: event.type, sessionID })
+            const closing = (async () => {
+              const control = activeControl(sessionID)
+              if (control) await clearControl(control, "session_ended", event.type)
+              shellIdentities.clearSession(sessionID)
+              await settleChildTurn(sessionID, await send({ event: event.type, sessionID, agent }))
+            })()
+            childCloses.set(sessionID, closing)
+            try {
+              await closing
+            } finally {
+              if (childCloses.get(sessionID) === closing) childCloses.delete(sessionID)
+            }
             return
           }
           const controls = [...(controlsBySession.get(sessionID) ?? [])]
           if (controls.length > 0) {
             for (const control of controls) await clearControl(control, "session_ended", event.type)
-            return
+            if (!forwardsPastOpenControls(event.type)) return
           }
           shellIdentities.clearSession(sessionID)
-          await send({ event: event.type, sessionID })
+          await settleChildTurn(sessionID, await send({ event: event.type, sessionID, agent }))
         }
         return
       }
+    },
+    // Stable hook (session/prompt.ts at 1.18.32), handed the user's message
+    // parts before they are stored. Synthetic keeps Gaia's blocks out of the
+    // transcript the user reads.
+    "chat.message": async (message: any, output: any) => {
+      const sessionID = message?.sessionID
+      if (typeof sessionID !== "string" || !message.agent) return
+      const parts = Array.isArray(output?.parts) ? output.parts : undefined
+      if (!parts?.some((part: any) => part?.type === "text" && !part.synthetic)) return
+      if (await hostRecordsMain(sessionID) !== true) return
+      const contexts: string[] = []
+      if (!birthSettled.has(sessionID)) {
+        birthSettled.add(sessionID)
+        contexts.push(await mainMessageContext("chat.message", sessionID))
+      }
+      contexts.push(await mainMessageContext("chat.prompt", sessionID))
+      const context = contexts.filter(Boolean).join("\n\n")
+      if (!context) return
+      parts.push({
+        id: `prt_${Date.now().toString(16)}${crypto.randomUUID().replaceAll("-", "").slice(0, 14)}`,
+        sessionID,
+        messageID: output.message?.id,
+        type: "text",
+        text: context,
+        synthetic: true,
+      })
     },
     // No "permission.ask" hook: the installed OpenCode (1.18.32) never
     // triggers one -- its bundle calls no plugin hook named permission, so a
@@ -2189,7 +2351,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         const answers = questionAnswers(output)
         if (answers) result.answers = answers
       }
-      await send({
+      const response = await send({
         event: "tool.execute.after",
         sessionID: call.sessionID,
         callID: call.callID,
@@ -2200,6 +2362,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         args: call.args,
         result,
       })
+      if (response.action === "allow" && response.additional_context && typeof output.output === "string") {
+        output.output = `${output.output.trimEnd()}\n${response.additional_context}\n`
+      }
+      const childSessionID = call.tool === "task" ? output.metadata?.sessionId : undefined
+      if (typeof childSessionID === "string") {
+        await childCloses.get(childSessionID)
+        const notices = parentNotices.get(childSessionID)
+        parentNotices.delete(childSessionID)
+        if (notices && typeof output.output === "string") {
+          output.output = `${output.output.trimEnd()}\n${notices.join("\n")}\n`
+        }
+      }
       const retryKey = `${call.sessionID}:${call.callID}`
       const retried = retryByCall.get(retryKey)
       if (retried) {
@@ -2241,18 +2415,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       const tmpdir = dispatchTmpDir(call.sessionID)
       if (tmpdir) output.env.TMPDIR = tmpdir
     },
-    // The installed OpenCode host fires this hook mid-compaction, before the
-    // summary completes, with a mutable {context, prompt} output -- unlike
-    // "session.compacted" (forwarded above, LIFECYCLE_EVENT_TYPES), which
-    // fires only after and cannot inject anything. This is the one point
-    // that can put a dispatched child's contract kernel back into context
-    // before OpenCode's own compaction discards the messages it lived in.
+    // Experimental hook, the only compaction point that can inject: the host
+    // fires it before the summary completes, with a mutable {context, prompt}
+    // output whose context survives into the summary (measured on 1.18.32,
+    // evidence 896), while "session.compacted" fires after and cannot inject.
     "experimental.session.compacting": async (compacting: any, output: any) => {
       const sessionID = compacting?.sessionID
       if (typeof sessionID !== "string") return
       const response = await send({
         event: "session.compacting",
         sessionID,
+        main: await hostRecordsMain(sessionID) === true,
         agentID: dispatchHandle(sessionID),
         agent: agentBySession.get(sessionID),
         roleContext: roleContext(sessionID),

@@ -1,40 +1,23 @@
-# Starter page. id lives here (+ cross-referenced in ../document.yaml);
-# name/order/visible live in the manifest. This file is pure page content:
-# layout, columns, filters, sections. See the diagram-builder dialect
-# reference (../GLOSSARY.md, ../reference.md) for every field.
+# DATA 7 OF 7 — values that combine on one box. The tour's last page.
 #
-# LAYOUT MODEL — a filled grid of uniform-height cells:
-#   • every leaf component is one cell: cells are equal `fr` and fill their row;
-#     columns collapse before a cell degrades — no horizontal scroll.
-#   • a node WITH `children` is a SECTION (a grid); WITHOUT it, a COMPONENT (leaf).
-#   • `columns: N` = how many columns THIS section's grid has (default 2).
-#   • `span: M` = an Excel-style MERGE: a child occupies M columns of its parent.
-#     `span == columns` is a full-width BAND that takes its own row (place a band
-#     LAST to pin it as a base layer); `1 < span < columns` is a PARTIAL merge
-#     that occupies exactly M of the N tracks (see Section E below).
-#   • `rowspan: K` = a VERTICAL merge: a leaf cell occupies K rows (K× the cell
-#     height) — the base for a bar chart where a cell's HEIGHT is its magnitude
-#     (see Section D below).
-#   • children flow in `order` (then list order), packing side by side until a
-#     band forces a new full row.
-#   • the page root is itself a section: `columns` below is the root column count
-#     and `sections` is the root's children.
-#   • a component (leaf) chooses its `type`: box (default) | separator | rail.
+# id lives here (+ cross-referenced in ../document.yaml); name/order/visible
+# live in the manifest. See the diagram-builder dialect reference (the skill's
+# toolbox.md) for every field.
 #
-# THIS PAGE'S JOB — COMPOSITIONS AND EDGE CASES. The principle pages (p1–p9)
-# each carry exactly ONE idea, in its cleanest form. This page carries what none
-# of them needs but the engine must keep supporting: the compositions and the
-# borderline cases. Five of them live ONLY here, and three are the only live
+# THIS PAGE'S JOB — the data the other pages did not need: values that COMBINE
+# on one box or one row, and the borderline cases the engine must keep
+# supporting. Every box's text says which value it carries and what that value
+# does to the look. Five cases live ONLY here, and three are the only live
 # subjects the G and X invariants have —
 #   • a RESERVED chip with no members (the `all` reset, in `filters` below);
 #   • TWO TREATMENTS composed on one leaf (Section J);
 #   • a LONE BOX sibling of sections inside a row of zones (Section I);
 #   • a VERTICAL rail and separator sitting DIRECTLY in a row of zones (Section F);
 #   • a SIX-COLUMN band whose collapse cascade generalises to any N (Section H).
-# Section A indexes all five, so the page states its own remit.
+# Section A indexes all five, so the page states its own remit. Retiring this
+# page leaves invariant G with nothing to assert.
 
 id: overview
-layout: grid
 # Root: a 2-column canvas. Section A and Section B are span 1 (inline), so they
 # sit side by side on row 1; Sections C/D/E are span 2 (== columns), so each is a
 # full-width band on its own row beneath them.
@@ -48,24 +31,33 @@ filters:
   - key: all
     label: "All"
   - key: flow
-    label: "Example flow"
+    label: "What does a chip light?"
     steps:
-      - "Chips are flows: click one to spotlight every component that declares it and dim the rest."
-      - "A component joins a flow by listing the filter key in its own <code>filters</code>."
-      - "Here the flow traces Why this page → Item 3 → Item 7."
+      - "Click it to light every box that lists this chip, and dim the rest."
+      - "A box joins by writing the chip's key in its own <code>filters</code>: membership is data you write."
+      - "Here it lights Why this page → Item 3 → Item 7."
 
 sections:
+
+  - id: overview-lead
+    order: 0
+    span: 2
+    lead: true
+    kicker: "DATA · 7 OF 7"
+    title: "Values combine on one box"
+    description:
+      - "two treatments on one leaf, a reserved chip, a lone box among groups"
+    detail: "The last data page: values you write can combine, and the look follows every one of them at once. A leaf can carry a colour and two treatments together, a chip can be the reset with no members, and a box can sit alone beside groups. Each case below is data the tour's other pages did not need."
 
   # ── ROW 1, LEFT · THE PAGE'S REMIT — one cell per case that lives only here ──
   # This section is ALSO the fix for the void this row used to carry: a 1-row leaf
   # grid (130px) beside Section B's 3-deep nested stack (488px) was stretched by
   # the row and left ~358px of trailing space nobody authored. The content is now
-  # balanced instead — 6 cells over 3 rows (406px) against Section B's 464px, the
-  # same ~58px of stretch the deck already carries in the Tall block row. The
+  # balanced instead — 6 cells over 3 rows (406px) against Section B's 464px. The
   # cells were not invented to fill space: each names one case this page holds.
   - id: section-a
-    title: "Compositions and edge cases"
-    subtitle: "what the principle pages do not need — and the engine must keep supporting"
+    title: "Values that combine"
+    subtitle: "the data the other pages did not need — and the look each combination gets"
     variant: neutral
     order: 1
     span: 1
@@ -76,9 +68,9 @@ sections:
         kicker: REMIT
         title: "Why this page"
         description:
-          - "p1–p9 carry one idea each"
-          - "the compositions live here"
-        detail: "Each principle page states ONE idea in its cleanest form. The cases that are compositions of several tools, or that sit on the edge of what the model allows, would muddy those pages — but they still have to be rendered, and a regression in them still has to be caught. That is this page's whole job: it is the deck's edge-case fixture, and the five cells beside this one are its inventory."
+          - "each data page shows one value"
+          - "the combinations live here"
+        detail: "Each data page before this one shows ONE kind of value in its cleanest form. The cases where several values meet on one box or one row, or sit at the edge of what is allowed, would muddy those pages, but they are still data you may write. This page holds them, and the five boxes beside this one are its list."
         variant: accent
         filters: [flow]
       - id: item-2
@@ -86,45 +78,45 @@ sections:
         kicker: CASE 1
         title: "Reserved chip"
         description:
-          - "a filter with zero members"
-          - "the reset, not an orphan"
-        detail: "A chip that no component references is an orphan and a hard CHIP failure — except <code>all</code>, the reserved reset key, which declares no members BY DESIGN. This page carries the only instance of it, so the exemption is exercised rather than merely written down."
+          - "a chip with no members"
+          - "the reset, not a mistake"
+        detail: "A chip no box lists is a mistake and <code>npm run model</code> fails it, except <code>all</code>: you write it with no members and it shows as the reset that lights everything again. This page is the only one that writes it."
         variant: neutral
       - id: case-two-treatments
         order: 3
         kicker: CASE 2
         title: "Two treatments"
         description:
-          - "one leaf composing two"
-          - "structural modifiers at once"
-        detail: "Section J's cells carry <code>[centered, outside]</code> and <code>[half, centered]</code> — a colour role AND two structural treatments on the SAME leaf. Composition is the point of making <code>treatment</code> a list, and this is the only page that composes two of them, so it is the only place the composition can regress and be seen."
+          - "one box, two treatments"
+          - "and a colour, all at once"
+        detail: "Section J's boxes write <code>[centered, outside]</code> and <code>[half, centered]</code>: a colour AND two treatments on the SAME box, and the look follows all three. That is why <code>treatment</code> is a list."
         variant: neutral
       - id: case-lone-box
         order: 4
         kicker: CASE 3
         title: "A lone box"
         description:
-          - "a leaf sibling of sections"
-          - "inside a row of zones"
-        detail: "Section I's <code>Card</code> is a plain box standing among nested sections in a compound row. It is one of the only two live subjects invariant G has: G fails the moment that box balloons to an equal flex slice instead of staying card-sized. Retire this page and G asserts nothing."
+          - "a box written beside groups"
+          - "in one row"
+        detail: "Section I writes a plain box, <code>Card</code>, beside two groups in one row. It keeps the size of a box instead of stretching to a group's share; the model checks that it never grows."
         variant: neutral
       - id: case-vertical-in-row
         order: 5
         kicker: CASE 4
         title: "Vertical in a row"
         description:
-          - "a rail and a separator"
-          - "directly among zones"
-        detail: "Section F puts a <code>vertical</code> rail and a <code>vertical</code> separator DIRECTLY into a compound row beside two sub-sections. They must stay content-sized (<code>flex: 0 0 auto</code>) instead of taking an equal share — the second subject of invariant G, and the geometry invariant X reads for sibling collision."
+          - "a rail and a line written"
+          - "directly between groups"
+        detail: "Section F writes a <code>vertical</code> rail and a <code>vertical</code> separator directly between two groups. They stay as narrow as their text instead of taking an equal share of the row, and the groups beside them never overlap."
         variant: neutral
       - id: case-cascade
         order: 6
         kicker: CASE 5
         title: "Six columns"
         description:
-          - "the collapse cascade at any N"
-          - "not an enumerated per-N rule"
-        detail: "Section H is a six-column band. The cascade used to be enumerated per column count, which left a 6+-column grid uncollapsed between ~640 and 1000px where it could overflow. The general …→2→1 rule is asserted here and nowhere else, because no principle page needs more than four columns."
+          - "columns: 6 folds to 2, then 1"
+          - "as the screen narrows"
+        detail: "Section H writes <code>columns: 6</code>. On a narrower screen the six boxes fold to two columns, then to one, and never spill off the page. No other page asks for more than four columns, so this is the only place that case is shown."
         variant: neutral
 
   # ── ROW 1, RIGHT · an inline NESTED section (span 1): a grid of grids ──
@@ -133,8 +125,8 @@ sections:
   # colour claim (`variant: neutral`) yet still changes how its frame is drawn —
   # the two axes are independent.
   - id: section-b
-    title: "Section B"
-    subtitle: "a section can nest other sections — a grid of grids"
+    title: "Groups inside a group"
+    subtitle: "a group's children can be groups — each value applies at its own level"
     variant: neutral
     treatment: [envelope]
     order: 2
@@ -151,15 +143,13 @@ sections:
             title: "Item 3"
             description:
               - "one level of nesting deep"
-            detail: "A nested section is drawn as its own framed zone inside the parent. Its <code>variant</code> (here <code>good</code>) tints the whole group."
+            detail: "A group written inside another shows as its own frame inside the parent. The <code>variant</code> written on it (here <code>good</code>) tints the whole group."
             variant: good
             filters: [flow]
       # `treatment: [plain]` = a bare structural wrapper: no frame, no background,
-      # no min-height. It stacks its children with nothing drawn around them —
-      # compare Group 1's framed `safe` zone beside it. It also carries NO
-      # title/subtitle, which is what "nothing drawn around them" actually means:
-      # the engine only emits a section header when one is authored, so a plain
-      # wrapper with a header would contradict its own treatment.
+      # no min-height. It also carries NO title/subtitle, which is what "nothing
+      # drawn around them" means: a plain wrapper with a header would contradict
+      # its own treatment.
       - id: group-2
         variant: neutral
         treatment: [plain]
@@ -170,22 +160,22 @@ sections:
             title: "Item 4"
             description:
               - "another nested group"
-            detail: "Sections nest as deep as the idea needs — a recursive grid of grids down to the boxes at the leaves."
+            detail: "This group writes <code>treatment: [plain]</code>, so nothing is drawn around it: no frame, no fill. Groups nest as deep as the story needs."
             variant: neutral
           - id: item-5
             kicker: INTERNAL
             title: "Item 5"
             description:
               - "stacks below Item 4 (columns: 1)"
-            detail: "This group is <code>columns: 1</code>, so its two boxes stack. The <code>muted</code> variant gives a box its own secondary fill."
+            detail: "This group writes <code>columns: 1</code>, so its two boxes stack. The <code>muted</code> written on this box gives it a quieter fill."
             variant: muted
 
   # ── ROW 2 · a full-width BASE BAND (span 2 == root columns) ──
   # A columns:3 leaf grid: a labeled separator spans the whole band (its own
   # row), then a rail swimlane label leads a row of uniform step cells.
   - id: section-c
-    title: "Section C"
-    subtitle: "span == columns makes this a full-width band on its own row"
+    title: "A band with a line and a label"
+    subtitle: "span equal to columns: a full-width band on its own row"
     variant: neutral
     order: 3
     span: 2
@@ -206,13 +196,13 @@ sections:
         kicker: UNCHANGED
         title: "Item 6"
         description: ["the rail labels this row"]
-        detail: "A rail is a swimlane-style label banner; a separator is a thin divider line. Both are structural leaf types, not data-carrying boxes."
+        detail: "Write <code>type: rail</code> and you get a label for the row; write <code>type: separator</code> with a <code>text</code> and you get the dotted line above. Neither carries a detail: they label and divide."
       - id: item-7
         order: 4
         kicker: NEW
         title: "Item 7"
         description: ["the last step in the example flow"]
-        detail: "Click the <b>Example flow</b> chip above to trace Item 1 → Item 3 → Item 7 end to end."
+        detail: "Click the <b>What does a chip light?</b> chip above to light Why this page → Item 3 → Item 7 end to end."
         variant: accent
         filters: [flow]
 
@@ -220,8 +210,8 @@ sections:
   # A columns:3 leaf grid: three cells with rowspan 1, 2, 3 side by side, so the
   # HEIGHT of each cell encodes its magnitude (a bar chart made of grid cells).
   - id: section-d
-    title: "Section D"
-    subtitle: "a mini bar chart — rowspan 1, 2, 3: a cell's HEIGHT encodes its magnitude"
+    title: "Height written as rowspan"
+    subtitle: "rowspan 1, 2, 3 — the value you write is the bar's height"
     variant: neutral
     order: 4
     span: 2
@@ -231,33 +221,31 @@ sections:
         order: 1
         rowspan: 1
         title: "1"
-        description: ["rowspan: 1", "height = 1 cell"]
+        description: ["rowspan: 1", "height = 1 slot"]
         variant: neutral
       - id: bar-2
         order: 2
         rowspan: 2
         title: "2"
-        description: ["rowspan: 2", "height = 2 cells"]
+        description: ["rowspan: 2", "height = 2 slots"]
         variant: good
       - id: bar-3
         order: 3
         rowspan: 3
         title: "3"
-        description: ["rowspan: 3", "height = 3 cells"]
+        description: ["rowspan: 3", "height = 3 slots"]
         variant: accent
 
   # ── ROW 4 · a full-width BAND — a PARTIAL horizontal merge (2 of 4) ──
-  # A columns:4 leaf grid whose merge is REAL: `span: 2` is only a partial merge
-  # if the grid actually HAS four tracks, and the grow-with-content clamp gives a
-  # grid only as many tracks as its single cells can fill (max(singleCells,
-  # maxSpan), never above the authored count). With two single cells the clamp cut
-  # this grid to 2 tracks, so `span: 2` rendered as a FULL-WIDTH BAND while the
-  # title still promised a 2-of-4 merge. The six single cells below are what earn
-  # the four tracks: row 1 is A + B + the 2-track merge, row 2 is four singles, so
-  # the rectangle closes exactly (6×1 + 1×2 = 8 = 4 tracks × 2 rows).
+  # `span: 2` is only a partial merge if the grid actually HAS four tracks, and
+  # the grow-with-content clamp gives a grid only as many tracks as its single
+  # cells can fill (max(singleCells, maxSpan), never above the authored count).
+  # The six single cells below are what earn the four tracks: row 1 is A + B +
+  # the 2-track merge, row 2 is four singles, so the rectangle closes exactly
+  # (6×1 + 1×2 = 8 = 4 tracks × 2 rows).
   - id: section-e
-    title: "Section E"
-    subtitle: "a partial merge — Item C spans 2 of 4 real tracks, earned by the six single cells around it"
+    title: "A wider box, earned"
+    subtitle: "Item C writes span: 2 of 4 — and the six plain boxes around it make the four columns real"
     variant: neutral
     order: 5
     span: 2
@@ -268,61 +256,60 @@ sections:
         span: 1
         kicker: UNCHANGED
         title: "Item A"
-        description: ["one cell of four"]
+        description: ["one box of four"]
       - id: item-b
         order: 2
         span: 1
         kicker: UNCHANGED
         title: "Item B"
-        description: ["one cell of four"]
+        description: ["one box of four"]
       - id: item-c
         order: 3
         span: 2
         kicker: NEW
         title: "Item C — span 2"
-        description: ["occupies exactly 2 of the 4 tracks"]
-        detail: "A partial merge (1 &lt; span &lt; columns) occupies exactly that many tracks and keeps its proportion as the grid collapses; only a span == columns child becomes a full-width band. It is partial only while the grid has more tracks than the span — which is why the row below it is authored."
+        description: ["takes exactly 2 of the 4 columns"]
+        detail: "Write <code>span: 2</code> in a four-column group and the box takes exactly two columns, keeping that share as the screen narrows; write <code>span: 4</code> and it becomes a full-width band. It stays two of four only while the group really has four columns, which is why the row below is written."
         variant: accent
       - id: item-d
         order: 4
         span: 1
-        kicker: TRACK 1
+        kicker: COLUMN 1
         title: "Item D"
-        description: ["the second row proves", "the grid has four tracks"]
-        detail: "The grow-with-content clamp counts SINGLE cells: four of them are the minimum that lets a columns:4 grid keep four tracks. Without this row the clamp would fold the grid to 2 tracks and Item C's <code>span: 2</code> would silently become a full-width band."
+        description: ["the second row proves", "the group has four columns"]
+        detail: "A group keeps only as many columns as its plain boxes can fill. Four plain boxes here keep all four; without this row the group would shrink to two columns and Item C's <code>span: 2</code> would fill the whole row."
       - id: item-e
         order: 5
         span: 1
-        kicker: TRACK 2
+        kicker: COLUMN 2
         title: "Item E"
-        description: ["a single cell — the unit", "the clamp counts"]
+        description: ["a plain box, the unit", "the columns are counted in"]
       - id: item-f
         order: 6
         span: 1
-        kicker: TRACK 3
+        kicker: COLUMN 3
         title: "Item F"
-        description: ["one cell of four again"]
+        description: ["one box of four again"]
       - id: item-g
         order: 7
         span: 1
-        kicker: TRACK 4
+        kicker: COLUMN 4
         title: "Item G"
         description: ["and the rectangle closes", "6×1 + 1×2 = 4 × 2"]
 
   # ── ROW 5 · two INLINE sub-decks side by side — the guardrail's fix-1/fix-2 cases ──
-  # These two span:1 sections sit side by side on their own root row (like A + B),
-  # so they are NOT full-width bands (the Y band-fill invariant does not apply to
-  # them). Their job is to give the guardrail geometry to assert against:
+  # These two span:1 sections sit side by side on their own root row, so they
+  # are NOT full-width bands. Their job is to give the model geometry to assert:
   #   • fix-1 — "Tall block" is a COMPOUND row (its children are sub-sections):
   #     a rail label + a vertical separator sit DIRECTLY in that flex row and must
   #     stay CONTENT-sized (flex:0 0 auto), not balloon to an equal flex share.
   #   • fix-2 — "Short stack" is a columns:1 stack of sub-sections that is SHORTER
-  #     than "Tall block"; the row's align-items:stretch stretches it, and the
-  #     .sec-c1 > * reset keeps its children at content height so the taller one
-  #     never OVERFLOWS onto the next (the sibling collision the X invariant guards).
+  #     than "Tall block"; the row stretches it, and the .sec-c1 > * reset keeps
+  #     its children at content height so the taller one never OVERFLOWS onto the
+  #     next (the sibling collision the X invariant guards).
   - id: section-f
     title: "Tall block"
-    subtitle: "a compound row — rail + vertical separator dividing two sub-sections"
+    subtitle: "a rail and a vertical line written between two groups"
     variant: neutral
     order: 6
     span: 1
@@ -342,19 +329,19 @@ sections:
           - id: l-1
             kicker: STEP
             title: "Step 1"
-            description: ["tall sub-section"]
+            description: ["the taller group"]
           - id: l-2
             kicker: STEP
             title: "Step 2"
-            description: ["four stacked cells"]
+            description: ["four stacked boxes"]
           - id: l-3
             kicker: STEP
             title: "Step 3"
-            description: ["makes this block tall"]
+            description: ["make this block tall"]
           - id: l-4
             kicker: STEP
             title: "Step 4"
-            description: ["the taller sibling"]
+            description: ["the taller neighbour"]
       - id: sep-f
         type: separator
         treatment: [vertical]
@@ -368,14 +355,14 @@ sections:
           - id: r-1
             kicker: NOTE
             title: "Note A"
-            description: ["a shorter sub-section"]
+            description: ["a shorter group"]
           - id: r-2
             kicker: NOTE
             title: "Note B"
-            description: ["beside the separator"]
+            description: ["beside the line"]
   - id: section-g
     title: "Short stack"
-    subtitle: "columns:1 stack — shorter, so the row stretches it"
+    subtitle: "columns: 1 — shorter, so the row stretches it"
     variant: neutral
     treatment: [envelope]
     order: 7
@@ -390,17 +377,17 @@ sections:
           - id: gg-1-box-1
             kicker: INTERNAL
             title: "One item"
-            description: ["a stacked sub-section"]
+            description: ["a stacked group"]
           - id: gg-1-box-2
             kicker: INTERNAL
             title: "Two item"
-            description: ["with a second cell"]
+            description: ["with a second box"]
           - id: gg-1-box-3
             kicker: INTERNAL
             title: "Three item"
-            description: ["a third stacked cell — makes Group A the content-heavy",
-              "sub-section, so if the columns:1 reset regressed it would be the",
-              "one starved by a divided height and overflow onto Group B"]
+            description: ["a third stacked box, the one with the most written in it,",
+              "so Group A carries more text than Group B beside it, and",
+              "each group still keeps its own height"]
       - id: gg-2
         title: "Group B"
         variant: neutral
@@ -409,17 +396,16 @@ sections:
           - id: gg-2-box
             kicker: INTERNAL
             title: "Another item"
-            description: ["stretched taller than its content"]
+            description: ["stretched taller than its text"]
 
   # ── ROW 6 · a SIX-COLUMN BAND — the collapse cascade generalises to ANY N ──
-  # A columns:6 leaf grid proves the …→2→1 cascade is no longer enumerated per
-  # column count (the old sec-c3/c4/c5 rules left a 6+-column grid uncollapsed
-  # between ~640 and 1000px, where it could overflow — invariant O). Here it is
-  # 6 cells wide above 1000px, folds to the 2-col "two-table" step at medium, and
-  # to 1 column at the narrow endpoint — all asserted green by F and O.
+  # A columns:6 leaf grid proves the …→2→1 cascade is not enumerated per column
+  # count (the old per-N rules left a 6+-column grid uncollapsed between ~640 and
+  # 1000px — invariant O). Here it is 6 cells wide above 1000px, folds to 2
+  # columns at medium, and to 1 column at the narrow endpoint.
   - id: section-h
-    title: "Section H"
-    subtitle: "a six-column band — the collapse cascade now generalises to any N (6 → 2 → 1)"
+    title: "Six columns written"
+    subtitle: "columns: 6 — six across, then two, then one as the screen narrows"
     variant: neutral
     order: 8
     span: 2
@@ -428,38 +414,37 @@ sections:
       - id: h-1
         kicker: STEP
         title: "One"
-        description: ["cell 1 of 6"]
+        description: ["box 1 of 6"]
       - id: h-2
         kicker: STEP
         title: "Two"
-        description: ["cell 2 of 6"]
+        description: ["box 2 of 6"]
       - id: h-3
         kicker: STEP
         title: "Three"
-        description: ["cell 3 of 6"]
+        description: ["box 3 of 6"]
       - id: h-4
         kicker: STEP
         title: "Four"
-        description: ["cell 4 of 6"]
+        description: ["box 4 of 6"]
       - id: h-5
         kicker: STEP
         title: "Five"
-        description: ["cell 5 of 6"]
+        description: ["box 5 of 6"]
       - id: h-6
         kicker: STEP
         title: "Six"
-        description: ["cell 6 of 6"]
+        description: ["box 6 of 6"]
 
   # ── ROW 7 · a MIXED COMPOUND band — span-weighted sections + a lone box ──
-  # A compound grid (its children include sections) whose section widths FOLLOW
-  # CONTENT WEIGHT: "Heavy" carries span:2 so it grows twice as wide as the span:1
-  # "Light", instead of the two splitting the row 50/50 (the branchkinect GCP-vs-
-  # Cloud SQL residual). The lone "Card" box is a LEAF sibling of the sections: it
-  # sizes to CONTENT (a fixed-height card), never ballooning to an equal flex
-  # slice. Both behaviours are hard-guarded by invariant G.
+  # A compound grid whose section widths FOLLOW the authored weight: "Heavy"
+  # carries span:2 so it grows twice as wide as the span:1 "Light", instead of
+  # the two splitting the row 50/50. The lone "Card" box is a LEAF sibling of the
+  # sections: it sizes to CONTENT, never ballooning to an equal flex slice. Both
+  # behaviours are hard-guarded by invariant G.
   - id: section-i
-    title: "Section I"
-    subtitle: "a mixed compound — Heavy (span:2) is wider than Light (span:1); the lone Card box stays card-sized"
+    title: "Weights and a lone box"
+    subtitle: "Heavy writes span: 2 and Light span: 1; the Card beside them stays a box"
     variant: neutral
     order: 9
     span: 2
@@ -467,7 +452,7 @@ sections:
     children:
       - id: heavy
         title: "Heavy"
-        subtitle: "span:2 — grows twice as wide"
+        subtitle: "span: 2 — twice as wide"
         variant: neutral
         order: 1
         span: 2
@@ -476,7 +461,7 @@ sections:
           - id: heavy-1
             kicker: NEW
             title: "Alpha"
-            description: ["content-heavy section"]
+            description: ["the group with more to say"]
           - id: heavy-2
             kicker: NEW
             title: "Beta"
@@ -484,21 +469,21 @@ sections:
           - id: heavy-3
             kicker: NEW
             title: "Gamma"
-            description: ["so it earns the width"]
+            description: ["so it is given the width"]
           - id: heavy-4
             kicker: NEW
             title: "Delta"
-            description: ["span:2 → flex-grow 2"]
+            description: ["span: 2 against span: 1"]
       - id: card
         type: box
         order: 2
         kicker: NOTE
         title: "Card"
-        description: ["a lone box beside sections", "sizes to content, never balloons"]
-        detail: "This box is a LEAF sibling of the two sections in a compound grid. Because ANY section child makes the grid compound, a naive rule would give this box an equal flex slice and balloon it. Instead it sizes to its content and keeps the uniform cell height — invariant G fails if it ever grows."
+        description: ["a lone box beside groups", "keeps the size of a box"]
+        detail: "This box is written directly beside two groups in one row. It does not take a group's share of the width: it keeps the size of a box, and the model fails the page if it ever grows."
       - id: light
         title: "Light"
-        subtitle: "span:1 — grows half as wide"
+        subtitle: "span: 1 — half as wide"
         variant: neutral
         order: 3
         span: 1
@@ -507,26 +492,22 @@ sections:
           - id: light-1
             kicker: UNCHANGED
             title: "Solo"
-            description: ["a lighter section"]
+            description: ["the lighter group"]
 
   # ── ROW 8 · a full-width BAND — the STRUCTURAL TREATMENT axis ──
-  # `variant` (colour) and `treatment` (structure) are ORTHOGONAL, which a single
-  # closed enum could never express. This section makes NO colour claim
-  # (`variant: neutral`) yet still restyles its frame (`treatment: [envelope]`), and
-  # its cells compose a colour role with structural modifiers freely:
+  # `variant` (colour) and `treatment` (structure) are ORTHOGONAL. This section
+  # makes NO colour claim (`variant: neutral`) yet still restyles its frame
+  # (`treatment: [envelope]`), and its cells compose a colour role with
+  # structural modifiers freely:
   #   • `vertical` — the title runs DOWN the block axis (a rotated lane label).
-  #     Same switch the old `orientation: vertical` spelled on a rail/separator,
-  #     now one value on one axis, available to any leaf.
   #   • `half` — DIVIDES a slot instead of shrinking a cell: two halves stack
-  #     inside ONE full-height cell, so the rectangle stays FULL and no hole
-  #     appears. Halves pair by ADJACENCY and must come in twos (an odd one is a
-  #     build error). --cell-h is untouched at 130px; each half gets 63px, which is
-  #     why `half` is TITLE-ONLY — a description on one is a build error.
-  #   • `centered` / `ext` — centre the text block / draw a dashed frame. Both
-  #     compose with a colour role, and here with each other and with `half`.
+  #     inside ONE full-height cell, so the rectangle stays FULL. Halves pair by
+  #     ADJACENCY and must come in twos, and `half` is TITLE-ONLY.
+  #   • `centered` / `outside` — centre the text block / draw a dashed frame.
+  #     Both compose with a colour role, and here with each other and with `half`.
   - id: section-j
-    title: "Section J"
-    subtitle: "the treatment axis — a vertical label, two half-slot pairs, composed treatments"
+    title: "Treatments that combine"
+    subtitle: "a vertical label, two half-slot pairs, and two treatments on one box"
     variant: neutral
     treatment: [envelope]
     order: 10
@@ -538,38 +519,38 @@ sections:
         kicker: LANE
         title: "Lane"
         treatment: [vertical]
-        detail: "A <code>vertical</code> treatment rotates the text onto the block axis, the same reading direction as a <code>rail</code>. Because the title no longer flows horizontally, the word-fit invariant (N) does not apply to it — its applicability clause exempts vertical leaves."
+        detail: "Write <code>treatment: [vertical]</code> and the title turns on its side, reading like a <code>rail</code>. The long-word rule does not apply to it, because a rotated title is limited by the box's height."
       - id: j-h1
         order: 2
         kicker: TOP
         title: "Half A"
         treatment: [half]
-        detail: "Two <code>half</code> components share ONE grid slot: this is the top half. The slot keeps the full 130px cell height, so the grid's rows, tracks and fill are unchanged — a half pair reads as one full cell from the outside."
+        detail: "Two boxes that write <code>half</code> share ONE slot: this is the top half. From outside, the pair reads as one full box, so nothing around it moves."
       - id: j-h2
         order: 3
         kicker: BOTTOM
         title: "Half B"
         treatment: [half]
-        detail: "The bottom half of the same slot. Invariant U now asserts the height of the SLOT rather than of the component, which is what lets a half legitimately be a fraction of the cell without leaving a hole."
+        detail: "The bottom half of the same slot. The pair fills the slot completely, so no gap appears."
       - id: j-center
         order: 4
         kicker: NEW
         title: "Centered"
-        description: ["colour and structure compose"]
+        description: ["colour and treatments combine"]
         variant: good
         treatment: [centered, outside]
-        detail: "This cell carries a colour role (<code>good</code>) AND two structural treatments (<code>centered</code>, <code>outside</code>) at once — the composition a single closed <code>variant</code> enum made impossible, and the reason <code>centered</code> once had to be smuggled in through <code>variant_extra</code>."
+        detail: "This box writes a colour (<code>good</code>) AND two treatments (<code>centered</code>, <code>outside</code>) at once, and the look follows all three: green, centred text, a dashed frame."
       - id: j-h3
         order: 5
         kicker: TOP
         title: "Half C"
         variant: muted
         treatment: [half, centered]
-        detail: "A second half pair, this one composing a colour role (<code>muted</code> — a fill, so it stays a variant) with TWO treatments."
+        detail: "A second half pair, this one writing a colour (<code>muted</code>) together with TWO treatments."
       - id: j-h4
         order: 6
         kicker: BOTTOM
         title: "Half D"
         variant: muted
         treatment: [half, centered]
-        detail: "The bottom half of the second pair. Both members of a pair must declare the same <code>span</code>, since they share one slot."
+        detail: "The bottom half of the second pair. Both halves of a pair must write the same <code>span</code>, since they share one slot."

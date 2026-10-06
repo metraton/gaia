@@ -58,9 +58,9 @@ Do not generate drafts proactively outside triage context. If the user opens a c
 
 ## Autonomous Action Boundary
 
-This is the security rule that decides which email operations may run **without asking** and which must always be proposed. It governs every `gmail-triage` mode, and above all the headless run where no user is present to approve. It lives here, in the policy layer, precisely because a process must not be the only home of the rule it obeys.
+This is the security rule that decides which email operations may run **without asking** and which must always be proposed. It governs every `gmail-triage` mode. Gmail operations never run unattended: triage always happens in a session with the user present, and a routine only reminds the user to start one (see "Making It a Routine" in `gmail-triage`). It lives here, in the policy layer, precisely because a process must not be the only home of the rule it obeys.
 
-**Permitted automatically** (no approval, safe unattended) -- moves that are **mechanical AND reversible**, where nothing is lost and the state can be flipped back:
+**Permitted automatically** (no per-item approval) -- moves that are **mechanical AND reversible**, where nothing is lost and the state can be flipped back:
 - Classifying a new email into `_gaia/action` or `_gaia/waiting` on a clear signal (`addLabelIds`).
 - The reversible state swaps: `action -> waiting` when the user replies, `waiting -> action` when a third party replies. Relabeling (`removeLabelIds` of the old state + `addLabelIds` of the new) is a swap, not a destruction.
 - Staging unprocessed mail into `_gaia/pending`.
@@ -69,9 +69,9 @@ This is the security rule that decides which email operations may run **without 
 - Moving to `_gaia/trash`, marking spam, unsubscribing, deleting.
 - Deferring to `_gaia/someday` -- a judgment call, not a mechanical classification.
 - Clearing a label to mark a thread done (here `removeLabelIds` *destroys* state).
-- Sending a message, or creating any draft in an unattended/headless run. (Proactive drafts *for review* are allowed in interactive triage under the grant above; that grant is interactive-only and does not reach a headless run.)
+- Sending a message. (Proactive drafts *for review* are allowed in triage under the grant above.)
 
-In a headless run these prohibited operations are **listed in the report** for an interactive session to approve -- never executed. And the proactive-draft grant above is an **interactive-session grant only**: it does not carry into a headless/unattended run.
+Unattended runs do not exist, so there is no report-instead-of-execute path: a prohibited operation is proposed to the user in the live session and runs only on their approval.
 
 ## Sending: When Draft and When Direct
 

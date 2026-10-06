@@ -10,12 +10,21 @@ one place that vocabulary is written down; everywhere else points here.
 
 ## Two rules that decide whether any of it resolves
 
-**A read is scoped to a WORKSPACE, and the workspace comes from the current directory.** The same
-verb answers differently from two directories: run from a repo nested inside a workspace,
-`gaia memory show <slug>` returns `not found in workspace '<repo>'`; run from the workspace root, or
-with `--workspace <name>`, it returns the row. `gaia workspace current` prints which one you are in.
-When a coordinate does not resolve, check the workspace before concluding the row is gone -- almost
-every verb below takes `--workspace`.
+**A read by slug starts from a WORKSPACE, and the workspace comes from the current directory.** A
+memory slug verb (`show`, `story`, `append`, `reclassify`, `delete`, `link`) looks in your
+workspace, then in the user and host scopes, then in whichever workspace holds the slug as a row of
+a project (`bin/cli/memory.py::_workspace_holding`): a project's memory follows the project, so a
+slug `get-relevant --initiative` printed opens from any directory. An explicit `--workspace X` is
+only where the search starts: when X lacks the slug, the same fallback still finds the project row
+stored in another workspace. A row with no project never
+crosses: from another workspace it is `not found in workspace '<ws>'`, and `--workspace <name>`
+reaches it. A slug held by project rows in two other workspaces is refused with code
+`ambiguous_slug` naming both, answered with `--workspace`. `gaia workspace current` prints which one
+you are in. A brief named to the coordination verbs (brief, plan, task, ac, evidence, milestone)
+without `--workspace` is likewise looked up in the other workspaces when yours lacks it -- a name
+two of them hold is an error naming both. `gaia memory search` stays scoped to your workspace and
+the two sentinels. When a coordinate does not resolve, check the workspace before concluding the
+row is gone -- almost every verb below takes `--workspace`.
 
 **Absent and empty are different answers, and the verbs keep them apart.** A path that exists prints
 its value even when that value is `[]`; a path that does not exist is an error with a non-zero exit.
@@ -51,7 +60,7 @@ persisting. It belongs to the write cycle, not to a coordinate; that cycle is in
 | `gaia memory search '<term>'` | `--workspace` | FTS5 across curated rows and episodes, scored. The handle to use when you have a topic and not a name. |
 | `gaia memory list` | `--type project\|user\|feedback\|atom\|decision\|negative`, `--json` | Name, type and one-line description per row -- the index, not the bodies. |
 | `gaia memory story <slug>` | `--workspace` | The row's lineage as one fused timeline: related/derivative/graduated nodes with depth, then events in order. |
-| `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` | The compact block SessionStart injects, on demand. |
+| `gaia memory get-relevant` | `--sections carry_forward\|anchor\|thread_open`, `--initiative <k>` or `--project <name>` | The compact block SessionStart injects, on demand; with a project, its whole live-pending set from every workspace; `--initiative <k> --sections anchor` returns that project's live standing notes with their bodies, from every workspace, a superseded one excluded. |
 | `gaia memory stats` / `gaia memory conflicts` | -- | Counts and FTS coverage; contradiction scan across rows. |
 | `gaia memory episode-show <episode_id>` | -- | One episode with score, age, tags and retrieval count. Episode ids come from `gaia query --surface episodes`. |
 
@@ -78,6 +87,7 @@ is pulled with exactly one verb.
 |---|---|---|
 | `gaia brief show\|list\|search\|deps\|verify` | brief slug (`search` takes a term) | The brief as markdown with its ACs; the index; FTS hits; the dependency graph; invariant violations one per line (`--json` for the structured report). |
 | `gaia brief decision list <brief>` | `--json` | The brief's current decisions, apart from the ones they superseded. |
+| `gaia brief history <brief>` | `--json` | The brief's change history, oldest first: AC added, edited or removed (with before/after in `--json`), decisions, replaced plan versions. Rows marked reconstructed predate v58. |
 | `gaia plan show\|list` | brief slug | The plan attached to that brief, with plan_id, status, version and pause reason; or every plan in the workspace. |
 | `gaia plan history <brief>` | `--content` | Every replaced version of the plan with the reason it was replaced. |
 | `gaia plan change list <brief>` | `--json` | The plan's managed changes: justification, status, and the proposed tasks with their reasons. |
@@ -97,6 +107,8 @@ is pulled with exactly one verb.
 | `gaia history` | `--today`, `--blocked`, `--agent`, `--limit` | Recent agent sessions: time, agent, truncated task, end status, approximate tokens. |
 | `gaia defects` | `--origin`, `--type`, `--severity`, `--agent`, `--since`, `--count` | Failures one row at a time, never aggregated -- subagent anomalies plus hook-log failures above `info`. |
 | `gaia metrics` | `--range`, `--since`/`--until`, `--agent` | The aggregate dashboard behind those rows: tier usage, commands, per-agent totals, anomalies. |
+| `gaia usage show --plan <id>` / `--session <id>` | `--since`/`--until`, `--json` | Tokens per session and agent, one row per API message from the transcripts; for a plan, split into bound, unbound and main (main is an upper bound). |
+| `gaia now` | `--json` | The machine's local time, UTC offset and zone name; `--json` adds the UTC instant. Opens no database. The clock to read before fixing a reminder's absolute time. |
 | `gaia status` | `--json` | What Gaia has wired into this workspace: last agent, pending context updates, contract success rate. |
 | `gaia doctor` | `--workspace <path>`, `--json` | Health checks, read-only. `--fix` MUTATES and is a different verb in every sense that matters. |
 
@@ -109,8 +121,8 @@ is pulled with exactly one verb.
 | `gaia approvals question <P-id> [<P-id> ...]` | The exact question-tool input for 1 to 4 pending commands, one `[ GAIA-SECURITY ]` line per command (`--details`: each command's Details line); it records which signature it handed out at which position, and the hook accepts only that object asked unchanged. Run it again at any time for the approvals still pending. |
 | `gaia approvals history [<P-id>]` | The N most recent approvals, or one approval's full event chain. |
 | `gaia approvals stats` | Totals by outcome and the pending verb breakdown. |
-| `gaia notifications list` / `gaia notifications show <id>` | The headless-task inbox: what a scheduled or detached run reported back. |
-| `gaia schedule list` / `gaia schedule show <name>` / `gaia schedule status` | Registered recurring tasks, their native translation, and desired-state-vs-scheduler reconciliation. |
+| `gaia notifications show <id>` | One report, reminder or routine in full. |
+| `gaia notifications list` | Reports, reminders and routines: what is due now, and with `--upcoming` what is coming. |
 | `gaia session preview` | The SessionStart injection manifest — what the orchestrator receives at session start, built read-only with no side effects. |
 | `gaia workspace current` / `gaia workspace info` | Which workspace a read will resolve against, and where its storage actually is. |
 

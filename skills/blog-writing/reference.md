@@ -2,11 +2,11 @@
 
 ## Blog Repository
 
-- **Repo path:** `/home/jorge/ws/me/metraton.github.io/`
+- **Repo path:** `<workspace>/metraton.github.io/`
 - **Site:** https://metraton.github.io/
 - **Engine:** Jekyll static site, GitHub Pages hosted
 - **Posts directory:** `_posts/`
-- **Draft workspace:** `/home/jorge/ws/me/<slug>.md`
+- **Draft workspace:** `<workspace>/<slug>.md`
 
 ## Front Matter Template
 
@@ -83,9 +83,9 @@ The file is named `YYYY-MM-DD-slug.html` and placed in `_posts/`.
 
 | Resource | Location |
 |----------|----------|
-| Blog repo | `/home/jorge/ws/me/metraton.github.io/` |
-| Jekyll server | `cd /home/jorge/ws/me/metraton.github.io && bash jekyll-loop.sh` (port 4000) |
-| Playwright | `~/.cache/ms-playwright/`, requires `NODE_PATH=/home/jorge/ws/aaxis/rnd/node_modules` |
+| Blog repo | `<workspace>/metraton.github.io/` |
+| Jekyll server | `cd <workspace>/metraton.github.io && bash jekyll-loop.sh` (port 4000) |
+| Playwright | `~/.cache/ms-playwright/`, requires `NODE_PATH=<node-modules-with-playwright>` |
 | Git branch | `master` (not main) |
 | GitHub Pages | `https://metraton.github.io/` |
 
@@ -109,7 +109,7 @@ All CSS lives inline in `_layouts/default.html` -- no external stylesheets.
 ## Publication
 
 ```bash
-cd /home/jorge/ws/me/metraton.github.io
+cd <workspace>/metraton.github.io
 git add _posts/YYYY-MM-DD-slug.html
 git commit -m "Add: article title"
 git push origin master

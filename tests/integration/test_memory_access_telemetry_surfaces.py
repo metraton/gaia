@@ -10,7 +10,7 @@ the DB looks like afterwards.
 v50 (usar-la-telemetria-de-memoria-edad-sesgo-y-pesaje, task 4) splits a third
 axis, ``kernel``, off ``injection``: the dispatch kernel's own "How the user
 works" block (rendered by ``build_memory_block``, fired on EVERY subagent
-dispatch over a fixed ``type=user AND audience=executor`` row set) used to
+dispatch over the user's fixed set of anchor rows) used to
 share ``injection``'s columns and dominated that axis by construction. It has
 its own recipe (``test_kernel_memory_block_counts_the_rows_it_renders``) and
 its own dedicated cross-axis proof
@@ -58,6 +58,10 @@ for _path in (str(_REPO_ROOT), str(_BIN_DIR)):
         sys.path.insert(0, _path)
 
 WORKSPACE = "me"
+# type=user rows have no workspace: the writer lands them here, so every
+# per-row measurement below spans both workspaces.
+USER_WORKSPACE = "_gaia_user"
+_IN_CORPUS = f"workspace IN ('{WORKSPACE}', '{USER_WORKSPACE}')"
 _GAIA = _REPO_ROOT / "bin" / "gaia"
 
 INJECTION = "injection"
@@ -101,8 +105,10 @@ SEEDS: tuple[Seed, ...] = (
     # type=user: the anchor section carries the user's instructions, so a
     # type=project anchor sharing the workspace no longer reaches it.
     Seed("a_anchor", "user", class_="anchor"),
-    Seed("u_exec", "user", audience="executor"),
-    # class=anchor (not the default "log") so get-relevant's anchor section
+    # A user row is born anchor; this one is explicitly a log row, the one no
+    # kernel or birth block renders.
+    Seed("u_exec", "user", class_="log", audience="executor"),
+    # class=anchor so get-relevant's anchor section
     # -- which pins type=user rows to the top -- can select it too: the row
     # both the kernel block AND a session-context digest can reach, used by
     # test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row.
@@ -173,7 +179,7 @@ SURFACES: tuple[Surface, ...] = (
     _read("stats", ["memory", "stats", "--json"],
           None, action="stats", contains=("{",)),
     _read("conflicts", ["memory", "conflicts", "--json", "--threshold", "0.9"],
-          None, action="conflicts", contains=("conflicts",)),
+          None, action="conflicts", contains=("candidates",)),
     _read("episode-show", ["memory", "episode-show", EPISODE_ID, "--json"],
           None, action="episode-show", contains=(EPISODE_ID,)),
 
@@ -227,6 +233,10 @@ SURFACES: tuple[Surface, ...] = (
           ["memory", "get-relevant", "--workspace", WORKSPACE,
            "--initiative", "alpha", "--json"],
           DELIBERATE, ["t_alpha"], action="get-relevant", contains=("t_alpha",)),
+    _read("get-relevant-project-json",
+          ["memory", "get-relevant", "--workspace", WORKSPACE,
+           "--project", "alpha", "--json"],
+          DELIBERATE, ["t_alpha"], action="get-relevant", contains=("t_alpha",)),
 
     # -- gaia query: the substrate's event reader ---------------------------
     #
@@ -275,10 +285,15 @@ SURFACES: tuple[Surface, ...] = (
            "--workspace", WORKSPACE, "--initiative", "alpha",
            "--class", "log", "--json"],
           None, action="add", contains=("w_added",)),
+    _read("add-replace",
+          ["memory", "add", "--name", "w_edit", "--type", "project",
+           "--body", "corrected body", "--description", "corrected",
+           "--workspace", WORKSPACE, "--initiative", "alpha",
+           "--replace", "--json"],
+          None, action="add", contains=("w_edit",)),
     _read("edit",
-          ["memory", "edit", "--name", "w_edit", "--field", "description",
-           "--content", "edited", "--workspace", WORKSPACE, "--json"],
-          None, action="edit", contains=("w_edit",)),
+          ["memory", "edit", "--name", "w_edit", "--json"],
+          None, action="edit", rc=1, contains=("verb_retired",)),
     _read("append",
           ["memory", "append", "w_append", "--body", "appended",
            "--workspace", WORKSPACE, "--json"],
@@ -310,8 +325,6 @@ NON_CLASSIFYING_FLAGS: dict[str, frozenset[str]] = {
     "episode-show": frozenset(),
     "list": frozenset({"--workspace"}),
     "delete": frozenset({"--workspace", "--hard"}),
-    "edit": frozenset({"--workspace", "--append", "--audience", "--body-file",
-                       "--class", "--project", "--project-ref", "--status"}),
     "append": frozenset({"--workspace", "--body-file"}),
     "reclassify": frozenset({"--workspace"}),
     "link": frozenset({"--workspace", "--delete"}),
@@ -333,6 +346,7 @@ BUMP_CALL_SITES: dict[str, tuple[str, ...]] = {
     ),
     "bin/cli/memory_story.py": ("story-text",),
     "hooks/modules/context/kernel_builder.py": ("kernel-memory-block",),
+    "hooks/modules/session/session_manifest.py": ("birth-block",),
 }
 
 
@@ -378,8 +392,10 @@ def seeded(tmp_path_factory) -> dict:
                 db_path=db,
             )
             if seed.class_ or seed.status:
-                reclassify_memory(WORKSPACE, seed.name, class_=seed.class_,
-                                  status=seed.status, db_path=db)
+                reclassify_memory(
+                    USER_WORKSPACE if seed.type == "user" else WORKSPACE,
+                    seed.name, class_=seed.class_, status=seed.status,
+                    db_path=db)
         _seed_episode(db)
         payload = data_dir / "checkpoint.json"
         payload.write_text(json.dumps({
@@ -425,7 +441,7 @@ def _counters(db: Path) -> dict[str, tuple[int, int, int]]:
             name: (injection, deliberate, kernel)
             for name, injection, deliberate, kernel in con.execute(
                 "SELECT name, injection_count, deliberate_count, kernel_count "
-                "FROM memory WHERE workspace = ?", (WORKSPACE,)
+                f"FROM memory WHERE {_IN_CORPUS}"
             )
         }
     finally:
@@ -461,7 +477,7 @@ def _run(argv, seeded) -> subprocess.CompletedProcess:
 # The census
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("surface", SURFACES, ids=lambda s: s.surface_id)
+@pytest.mark.table("surface", SURFACES, ids=lambda s: s.surface_id)
 def test_surface_moves_exactly_the_counter_its_verdict_declares(surface, seeded):
     before = _counters(seeded["db"])
     result = _run(surface.argv, seeded)
@@ -495,30 +511,48 @@ def test_surface_moves_exactly_the_counter_its_verdict_declares(surface, seeded)
 
 
 def test_kernel_memory_block_counts_the_rows_it_renders(seeded):
-    """Context assembly's one memory renderer: kernel axis, body-less name
-    and all -- never injection, the axis it shared before this split. Every
-    type=user/audience=executor row in the corpus renders together, so both
-    seeded rows of that shape move -- not only ``u_exec``."""
+    """The dispatch kernel's memory renderer: kernel axis, never injection,
+    the axis it shared before this split. Every user anchor renders together,
+    so both seeded anchors move; ``u_exec`` is a log row, is not rendered,
+    and so is never counted as shown."""
     from hooks.modules.context.kernel_builder import build_memory_block
 
     before = _counters(seeded["db"])
-    block = build_memory_block(WORKSPACE, db_path=seeded["db"])
+    block = build_memory_block(db_path=seeded["db"])
     after = _counters(seeded["db"])
 
-    assert "body of u_exec" in block
+    assert "body of a_anchor" in block
+    assert "body of u_exec" not in block
     assert _moved(before, after) == {
-        "u_exec": (0, 0, 1),
+        "a_anchor": (0, 0, 1),
         "u_kernel_and_digest": (0, 0, 1),
+    }
+
+
+def test_birth_block_counts_the_user_rows_it_carries_only_when_asked(seeded):
+    """The session birth block is an injection surface for the user's anchors:
+    the hook records it, and a preview (the default) moves nothing."""
+    from hooks.modules.session.session_manifest import build_session_context
+
+    before = _counters(seeded["db"])
+    build_session_context()
+    assert _moved(before, _counters(seeded["db"])) == {}
+
+    block = build_session_context(record_injection=True)
+
+    assert "body of a_anchor" in block
+    assert _moved(before, _counters(seeded["db"])) == {
+        "a_anchor": (1, 0, 0),
+        "u_kernel_and_digest": (1, 0, 0),
     }
 
 
 def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
     seeded,
 ):
-    """Gate 791 / AC-2, on ONE row both surfaces can reach: type=user AND
-    audience=executor (the kernel block's own query) with class=anchor so
-    get-relevant's anchor section -- which pins type=user rows to the top --
-    selects it too. A simulated subagent dispatch (the kernel's own memory
+    """Gate 791 / AC-2, on ONE row both surfaces can reach: a type=user
+    class=anchor row, which the kernel block and get-relevant's anchor section
+    -- which pins type=user rows to the top -- both select. A simulated subagent dispatch (the kernel's own memory
     block, the exact function SubagentStart renders) must move kernel_count
     ONLY. A session-context surface (get-relevant --sections anchor) over the
     SAME row must move injection_count ONLY. deliberate_count must move in
@@ -531,8 +565,8 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
         con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
         try:
             return con.execute(
-                "SELECT updated_at FROM memory WHERE workspace = ? AND name = ?",
-                (WORKSPACE, row_name),
+                f"SELECT updated_at FROM memory WHERE {_IN_CORPUS} AND name = ?",
+                (row_name,),
             ).fetchone()[0]
         finally:
             con.close()
@@ -541,8 +575,7 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
         con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
         try:
             return con.execute(
-                "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
-                (WORKSPACE,),
+                f"SELECT COUNT(*) FROM memory_history WHERE {_IN_CORPUS}",
             ).fetchone()[0]
         finally:
             con.close()
@@ -550,17 +583,17 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
     updated_at_before = _row_updated_at()
     history_before = _history_count()
 
-    # 1) Simulate a subagent dispatch: the kernel block. Every
-    # type=user/audience=executor row renders together, so `u_exec` (the
-    # OTHER seeded row of that shape) moves alongside `row_name` -- both on
-    # the kernel axis, neither on injection or deliberate.
+    # 1) Simulate a subagent dispatch: the kernel block. Every user anchor
+    # renders together, so `a_anchor` (the OTHER seeded anchor) moves
+    # alongside `row_name` -- both on the kernel axis, neither on injection
+    # or deliberate.
     before_dispatch = _counters(seeded["db"])
-    block = build_memory_block(WORKSPACE, db_path=seeded["db"])
+    block = build_memory_block(db_path=seeded["db"])
     after_dispatch = _counters(seeded["db"])
     assert f"body of {row_name}" in block
     assert _moved(before_dispatch, after_dispatch) == {
         row_name: (0, 0, 1),
-        "u_exec": (0, 0, 1),
+        "a_anchor": (0, 0, 1),
     }
 
     # 2) A real session-context surface, over the SAME row. The other seeded
@@ -592,11 +625,10 @@ def test_telemetry_never_touches_the_audited_columns(seeded):
     con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
     try:
         before_updated = dict(con.execute(
-            "SELECT name, updated_at FROM memory WHERE workspace = ?",
-            (WORKSPACE,)))
+            f"SELECT name, updated_at FROM memory WHERE {_IN_CORPUS}"))
         before_history = con.execute(
-            "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
-            (WORKSPACE,)).fetchone()[0]
+            f"SELECT COUNT(*) FROM memory_history WHERE {_IN_CORPUS}",
+        ).fetchone()[0]
     finally:
         con.close()
 
@@ -611,11 +643,10 @@ def test_telemetry_never_touches_the_audited_columns(seeded):
     con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
     try:
         after_updated = dict(con.execute(
-            "SELECT name, updated_at FROM memory WHERE workspace = ?",
-            (WORKSPACE,)))
+            f"SELECT name, updated_at FROM memory WHERE {_IN_CORPUS}"))
         after_history = con.execute(
-            "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
-            (WORKSPACE,)).fetchone()[0]
+            f"SELECT COUNT(*) FROM memory_history WHERE {_IN_CORPUS}",
+        ).fetchone()[0]
     finally:
         con.close()
 
@@ -752,6 +783,6 @@ def test_every_bump_call_site_belongs_to_a_classified_surface():
 def test_declared_surfaces_cover_every_seeded_row_once():
     """Every seeded row is reached by some surface, so none is dead weight."""
     reached = {row for surface in SURFACES for row in surface.rows}
-    reached.add("u_exec")  # test_kernel_memory_block_counts_the_rows_it_renders
+    reached.add("u_exec")  # the log row test_kernel_memory_block_counts_the_rows_it_renders shows is never counted
     reached.update(s.name for s in SEEDS if s.name.startswith("w_"))
     assert {s.name for s in SEEDS} == reached

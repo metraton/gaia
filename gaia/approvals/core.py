@@ -40,7 +40,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from gaia.redaction import has_clear_secret, redact_text
 from gaia.store.writer import APPROVAL_WINDOW_MINUTES as WINDOW_MINUTES
+
+# A sealed request stores its command verbatim, because the grant is bound to
+# those bytes; a credential written into the command would be stored in clear.
+CLEAR_SECRET_REFUSAL = (
+    "the command carries a credential in clear, which the approval record would store; "
+    "pass it through an environment variable or a file and request that command instead"
+)
 
 DECISION_OPTIONS = frozenset({"approve", "reject", "details"})
 _COMMAND_KINDS = frozenset({"command", "command_set"})
@@ -52,6 +60,9 @@ _MAX_EXIT_CODE = 255
 REPLACED_REASON = "reemplazada"
 #: The flag a requester owes on every request: how to undo it, or that it cannot be undone (D38).
 ROLLBACK_FLAG = "--rollback"
+#: The flags a COMMAND_SET owes besides the rollback: how its result is checked,
+#: and whether it rewrites state other people rely on.
+SET_OWED_FLAGS = ("--verification", "--shared-state")
 
 
 class SealError(ValueError):
@@ -131,6 +142,11 @@ def resolve_requester(session_id: object, agent_id: object) -> dict:
     return {"session_id": session, "agent_id": agent}
 
 
+def is_signed(item: Mapping[str, Any]) -> bool:
+    """Whether a sealed item asks a signature; an unsigned step is only shown in its position."""
+    return item.get("signed", True) is not False
+
+
 def _expected_exits(raw: object, position: int) -> list[int]:
     codes = list(raw or [])
     for code in codes:
@@ -155,9 +171,15 @@ def _seal_items(kind: str, items: Iterable[Mapping[str, Any]]) -> list[dict]:
             target = raw.get("command")
             if not isinstance(target, str) or not target or target != target.strip():
                 raise SealError(f"item {position}: command must be a non-empty exact string")
+            if has_clear_secret(target):
+                raise SealError(f"item {position}: {CLEAR_SECRET_REFUSAL}")
             cwd = raw.get("cwd")
             expect_exit = _expected_exits(raw.get("expect_exit"), position)
             item = {"command": target, "rationale": raw.get("rationale") or ""}
+            if raw.get("signed") is False:
+                item["signed"] = False
+            if raw.get("files"):
+                item["files"] = list(raw["files"])
         for phrase in ("does", "impact"):
             if _optional_text(raw.get(phrase)):
                 item[phrase] = raw[phrase].strip()
@@ -189,6 +211,7 @@ def seal_request(
     verification: Optional[str] = None,
     impact: Optional[str] = None,
     rationale: Optional[str] = None,
+    shared_state: Optional[str] = None,
     operation: Optional[str] = None,
     risk_level: str = "medium",
     requested_from: Optional[str] = None,
@@ -230,6 +253,7 @@ def seal_request(
         "exact_content": "\n".join(targets) if kind == "command_set" else targets[0],
         "rollback_hint": _optional_text(rollback),
         "verification": _optional_text(verification),
+        "shared_state": _optional_text(shared_state),
         "impact": _optional_text(impact),
         "rationale": _optional_text(rationale) or what_text,
         "risk_level": risk_level,
@@ -239,11 +263,14 @@ def seal_request(
             raise SealError("requested_from must be an absolute directory")
         payload["requested_from"] = requested_from
     if kind == "command_set":
+        # Unsigned steps stay in ``items``, shown in their position; the grant
+        # is built from ``command_set`` alone, so only signed steps are reserved.
+        signed = [item for item in sealed if is_signed(item)]
         payload.update(
             request_type="COMMAND_SET",
             operation="Execute an ordered T3 command set",
-            command_set=sealed,
-            request_fingerprint=request_key,
+            command_set=signed,
+            request_fingerprint=request_fingerprint([item["command"] for item in signed]),
             scope="COMMAND_SET",
             risk_level="high",
         )
@@ -335,20 +362,28 @@ def request_line(payload: Mapping[str, Any]) -> str:
             "--impact", shlex.quote(f"<impact of item {position}, 100 max>"),
         ]
     words += [ROLLBACK_FLAG, shlex.quote("<how to undo it, or that it cannot be undone>")]
+    if payload.get("operation") != _FILE_OPERATION:
+        words += [
+            "--verification", shlex.quote("<how the result will be checked>"),
+            "--shared-state", shlex.quote("<whether it rewrites shared state, and which>"),
+        ]
     return " ".join(words)
 
 
 def _require_phrases(
     what: object, question: object, items: list[Mapping[str, Any]], rollback: object,
+    owed: Optional[Mapping[str, object]] = None,
 ) -> None:
     """Refuse a new request lacking a phrase, its rollback sentence included (D38).
 
-    The rollback is owed only when a request is made, not when one is shown,
-    so a signature sealed before D38 stays presentable.
+    ``owed`` maps each further flag the request kind owes to its value. The
+    rollback and these are owed only when a request is made, not when one is
+    shown, so a signature sealed before they were owed stays presentable.
     """
     missing = _missing(what, question, items)
     if _optional_text(rollback) is None:
         missing.append(ROLLBACK_FLAG)
+    missing.extend(flag for flag, value in (owed or {}).items() if _optional_text(value) is None)
     if missing:
         raise NotPresentableError(missing)
 
@@ -453,27 +488,40 @@ def request_command_set(
     question: Optional[str] = None,
     rollback: Optional[str] = None,
     verification: Optional[str] = None,
+    shared_state: Optional[str] = None,
     rationale: Optional[str] = None,
     requested_from: Optional[str] = None,
 ) -> str:
     """Validate a plan-first set, seal it and persist the pending request; return its approval_id.
 
-    Every phrase is required (:class:`NotPresentableError` names each one
-    missing), and the requester's phraseless reactive requests the set covers
-    are replaced. ``requested_from`` is the requester's shell folder.
+    A step that does not classify T3 is sealed as an unsigned step: shown in
+    its position, never asked, never reserved. Every phrase is required
+    (:class:`NotPresentableError` names each one missing), ``verification``
+    and ``shared_state`` included, and the requester's phraseless reactive
+    requests the set covers are replaced. Each signed step is sealed with the
+    content of the files its command runs or reads. ``requested_from`` is the
+    requester's shell folder.
     """
     from gaia.approvals.command_set import CommandSetValidationError, validate_request_set
 
     commands = [item.get("command") for item in items]
     try:
-        validate_request_set(commands)
+        cwds = [item.get("cwd") for item in items]
+        validated = validate_request_set(commands, cwds=cwds if all(cwds) else None)
     except CommandSetValidationError as exc:
         raise SealError(str(exc)) from exc
-    _require_phrases(what, question, items, rollback)
+    sealed_items = [
+        {**item, "signed": checked["signed"], "files": checked.get("files")}
+        for item, checked in zip(items, validated)
+    ]
+    _require_phrases(
+        what, question, sealed_items, rollback,
+        owed=dict(zip(SET_OWED_FLAGS, (verification, shared_state))),
+    )
     payload = seal_request(
-        "command_set", items, what=what, session_id=session_id, agent_id=agent_id,
+        "command_set", sealed_items, what=what, session_id=session_id, agent_id=agent_id,
         question=question, rollback=rollback, verification=verification, rationale=rationale,
-        requested_from=requested_from,
+        shared_state=shared_state, requested_from=requested_from,
     )
     return _persist_replacing(payload)
 
@@ -1041,12 +1089,12 @@ def close_call(
     else:
         outcome = "executed" if exit_code == 0 else "failed"
     payload = {
-        "command": command,
+        "command": redact_text(command),
         "exit_code": exit_code,
         "outcome": "success" if outcome == "executed" else "failure",
     }
     if error:
-        payload["error"] = error
+        payload["error"] = redact_text(error)
     store.record_event(
         approval_id, "EXECUTED" if outcome == "executed" else "FAILED",
         session_id=session_id or None,
@@ -1056,6 +1104,44 @@ def close_call(
         ),
     )
     return outcome
+
+
+#: ``reason_code`` of the NOOP event recording a signed call its host refused before it ran.
+HOST_DENIED_REASON = "host_denied_before_execution"
+
+
+def release_call(
+    approval_id: str,
+    *,
+    command: str,
+    session_id: str,
+    tool_use_id: str,
+    reserved: bool,
+    host: str,
+    detail: str = "",
+) -> bool:
+    """Undo the consumption of an authorized call its host refused before it ran; return whether it was undone.
+
+    Only the call's own terminal event, reporting that the host never ran it,
+    may call this. A ``reserved`` set item gives back its index without
+    advancing or freezing the set; a single-command grant returns to PENDING
+    while its window lasts. Either way the retry is the same signed bytes under
+    the same signature, and the refusal is recorded as a NOOP on the chain.
+    """
+    from gaia.approvals import store
+    from gaia.approvals.command_set import command_fingerprint
+    from gaia.store.writer import release_plan_command, restore_db_semantic_grant
+
+    if reserved:
+        released = release_plan_command(approval_id, session_id=session_id, tool_use_id=tool_use_id)
+    else:
+        released = restore_db_semantic_grant(approval_id)
+    store.record_execution_denial(
+        approval_id, HOST_DENIED_REASON, host=host, session_id=session_id or None,
+        call_id=tool_use_id or None, command_fingerprint=command_fingerprint(command),
+        detail=detail or None,
+    )
+    return released
 
 
 def grant_lookup_filter(*, cwd: str, session_id: object, agent_id: object) -> dict:

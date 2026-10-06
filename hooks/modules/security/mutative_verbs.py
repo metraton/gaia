@@ -23,6 +23,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
+from .cli_aliases import as_wrapped_cli
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
     CommandSemantics,
@@ -33,6 +34,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .program_heredoc import heredoc_program
 from .shell_substitution import extract_substitutions_truncated
 
 try:
@@ -276,7 +278,32 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "reset",       # local-only: modifies local refs/staging, never touches remote
     "revert",      # local-only: creates a new commit undoing changes, no remote side effects
     "cherry-pick", # local-only: applies commits from another branch, no remote side effects
+    "grep",        # read-only search: its pattern is data, never a verb to run
+                   # (except -O, see git_grep_opens_pager)
 })
+
+
+def git_grep_opens_pager(tokens: Tuple[str, ...]) -> bool:
+    """Return True when a ``git grep`` hands its matches to a command (``-O<cmd>``).
+
+    ``--open-files-in-pager`` runs the named program over every matching file,
+    the one spelling of the search that executes something. A short bundle
+    carrying ``O`` counts, erring toward gating a search rather than freeing a run.
+    """
+    return any(
+        token.startswith("--open-files-in-pager")
+        or (token.startswith("-") and not token.startswith("--") and "O" in token)
+        for token in tokens
+    )
+
+# Flags that turn a local-safe branch switch into a reset of an EXISTING branch:
+# `-B`/`-C` create the branch, or repoint it when it already exists, so the
+# commits only it reached become unreachable. The lowercase `-b`/`-c` refuse an
+# existing name and stay free. Checked before GIT_LOCAL_SAFE_SUBCOMMANDS.
+_GIT_BRANCH_RESET_FLAGS: Dict[str, FrozenSet[str]] = {
+    "checkout": frozenset({"-B"}),
+    "switch": frozenset({"-C", "--force-create"}),
+}
 
 
 # ============================================================================
@@ -437,13 +464,8 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # deletion) stays T3 via the per-group deny-verbs guard in
     # COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS below.
     ("gaia", "task"): CATEGORY_READ_ONLY,
-    # `gaia notifications <verb>` (add/list/show/ack): the headless scheduled-task
-    # inbox in gaia.db — episodic, reversible, purely local bookkeeping (ack only
-    # flips an `unread` flag; add appends a report row). A headless task MUST be
-    # able to `notifications add` its final report without stalling on a T3 gate
-    # (it cannot ask the user anything), so the whole group is T0 like brief/ac/
-    # plan/task. There is no destructive verb here (no delete/purge), so the
-    # global deny-verb guard leaves every notifications verb exempt.
+    # `gaia notifications`: reversible local rows that start no process, and the
+    # group has no delete/purge verb, so the deny-verb guard exempts all of it.
     ("gaia", "notifications"): CATEGORY_READ_ONLY,
     # `gaia contract <verb>` (init/set/add/fill/finalize/view/validate): the
     # by-value agent_contract_handoff draft store under
@@ -460,42 +482,17 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # never destroyed), so the global deny-verb guard leaves every contract
     # verb exempt.
     ("gaia", "contract"): CATEGORY_READ_ONLY,
-    # `gaia schedule <verb>` -- the scheduled-task DESIRED-STATE registry in
-    # gaia.db (see the `scheduled-task` skill and the scheduled_tasks table).
-    # register/add/list/show/status/enable/disable/suspend/resume are reversible
-    # local bookkeeping on the desired state -- they never touch the machine
-    # scheduler, so they are T0 like brief/plan/task/notifications. WITHOUT this
-    # exception `register`, `enable`, `disable`, `suspend` and `resume` would trip
-    # the generic MUTATIVE_VERBS scan (all five are in MUTATIVE_VERBS) and gate on
-    # every desired-state edit.
-    #
-    # `suspend` and `resume` sit at T0 for the same reason `disable` and `enable`
-    # do, and the pairing is the justification. `suspend` only switches something
-    # OFF: it reduces what runs, which is the direction that never needs consent.
-    # `resume` does restore capability -- but only in gaia.db, and nothing runs
-    # because a row says it should: the task reaches this machine's scheduler
-    # exclusively through `sync`, which is T3. So the consent boundary stays where
-    # the design put it, at MATERIALIZATION, and is not duplicated onto every
-    # bookkeeping edit. Gating `resume` while leaving `enable` free would also be
-    # incoherent, since `enable` restores strictly more (it has no deadline).
-    # The TWO verbs that reach outside the DB stay T3 via the per-group deny set
-    # below: `sync` MATERIALIZES desired state into the OS scheduler (writes the
-    # crontab -- a real machine mutation that must be shown verbatim and
-    # consented) and `remove` is irreversible row deletion (like `gaia task
-    # remove`). Writing desired state is cheap; imprinting it on the machine
-    # requires consent -- that asymmetry is the whole design.
-    ("gaia", "schedule"): CATEGORY_READ_ONLY,
-    # `gaia memory <verb>` (add/edit/append/reclassify/link/checkpoint/search/
+    # `gaia memory <verb>` (add/append/reclassify/link/checkpoint/search/
     # show/list/stats/conflicts): curated-memory bookkeeping in gaia.db --
     # reversible, local-only, no external effects, exactly like brief/ac/plan.
-    # Two false positives motivated this, both measured: `edit` is a generic
-    # MUTATIVE_VERB, so EVERY `gaia memory edit <id>` demanded T3 to correct a
-    # note; and the verb scan reads the ATOM'S OWN TEXT, so a payload that is
-    # itself a mutative word (`--body apply`) gated the write on the content
+    # The verb scan reads the ATOM'S OWN TEXT, so without this a payload that
+    # is itself a mutative word (`--body apply`) gated the write on the content
     # of the note. An atom body is data -- no verb spelled inside it executes.
-    # `gaia memory delete` stays T3 through the global deny-verb guard
-    # (tombstoning a curated atom is the one destructive verb in this group),
-    # and the orthogonal subagent_memory_write_guard still denies memory
+    # Three forms stay T3: `delete`, through the global deny-verb guard, and
+    # the in-place rewrite `add --replace` and the edge removal
+    # `link --delete`, anchored in COMMAND_PATH_MUTATIVE_UPGRADES, which is
+    # consulted before this table.
+    # The orthogonal subagent_memory_write_guard still denies memory
     # WRITES from a dispatched subagent regardless of tier -- this exception
     # changes the tier, never who is allowed to write.
     ("gaia", "memory"): CATEGORY_READ_ONLY,
@@ -523,7 +520,7 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # -- and stays unforced otherwise; `--force` never overrides anything
     # this module has not itself just verified is safe. Both `create` and
     # `release` are therefore reversible-by-design, exactly like the brief/ac/plan/
-    # task/notifications/contract/schedule/memory groups above, and there is
+    # task/notifications/contract/memory groups above, and there is
     # no destructive verb in this group for the global deny-verb guard to
     # re-gate (`create`/`list`/`show`/`release` all miss
     # COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS).
@@ -548,16 +545,6 @@ COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str], FrozenSet[str]] = {
     # `gaia task remove` is an irreversible row deletion (no un-delete in the
     # tasks store), unlike `gaia ac remove` (AC rows can be re-added).
     ("gaia", "task"): frozenset({"remove"}),
-    # `gaia schedule` is exempted to T0 for desired-state bookkeeping (above),
-    # but two verbs must stay gated within that exception:
-    #   - `sync`   MATERIALIZES desired state into the OS scheduler (writes the
-    #              user's crontab via `crontab -`). That is a real machine
-    #              mutation, so it must be shown verbatim and consented (T3).
-    #   - `remove` is irreversible desired-state row deletion (the reversible
-    #              path is `disable`), like `gaia task remove`.
-    # Both are already generic MUTATIVE_VERBS, so without re-gating them here the
-    # group exception would silently downgrade them to T0.
-    ("gaia", "schedule"): frozenset({"sync", "remove"}),
 }
 
 # Per-group deny verbs that live one level DEEPER than
@@ -643,9 +630,9 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 # disturb it, one replacement for both.
 _GH_ACCOUNT_GUIDANCE = (
     "The active gh account is global state shared with every other session on "
-    "this machine -- name the account on the invocation instead of switching "
-    'it: GH_TOKEN="$(gh auth token --user <account>)" gh ... , or the `ghx` '
-    "wrapper, which resolves the account from the repository's remote. "
+    "this machine -- choose the account per process instead of switching it: "
+    "run gh through a wrapper that sets GH_TOKEN for its own process only, "
+    "e.g. `ghx pr list` (ghx maps the origin owner to an account). "
     "`gh auth status` lists the accounts; `gh auth login` adds a missing one."
 )
 
@@ -808,6 +795,29 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # Anchored at the leaf like `context prune-workspaces` because `release
         # publish` is already MUTATIVE by verb.
         MutativeAnchor(path=("release", "check")),
+        # `gaia workspace retire` re-keys a workspace's rows in gaia.db into
+        # another and records an alias; `--undo` reverses it. `workspace` and
+        # `retire` carry no verb in MUTATIVE_VERBS, so both would run free;
+        # `--dry-run` stays free as a SIMULATION_FLAG resolved above.
+        MutativeAnchor(path=("workspace", "retire")),
+        # `gaia workspace curate` retires phantom workspaces (re-keying their
+        # rows like retire does), drops stale aliases and deletes facets whose
+        # folder is gone; `--dry-run` stays free as a SIMULATION_FLAG.
+        MutativeAnchor(path=("workspace", "curate")),
+        # Curated memory is append-only; `add --replace` is the one in-place
+        # rewrite left, and it changes what every later read sees.
+        MutativeAnchor(
+            path=("memory", "add"),
+            flags=frozenset({"--replace"}),
+            guidance=(
+                "A changed agreement needs no signature: write a new row and "
+                "run `gaia memory link <new> <old> --kind=supersedes`."
+            ),
+        ),
+        # memory_links keeps no history, so removing an edge -- a supersedes
+        # one returns the old row to every injection -- is as unrecoverable
+        # as `delete`.
+        MutativeAnchor(path=("memory", "link"), flags=frozenset({"--delete"})),
     ),
     "gcloud": (
         # `set-password` sits three tokens below the gcloud root, beyond the
@@ -883,6 +893,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("workflow", "run")),
         MutativeAnchor(path=("run", "rerun")),
         MutativeAnchor(path=("run", "cancel")),
+        # Merges or rebases the base branch into the PR's REMOTE head: a push
+        # to someone's branch, and a CI trigger besides. Today the verb scan
+        # reaches it only by splitting `update-branch`; the anchor names it.
+        MutativeAnchor(path=("pr", "update-branch")),
         # `gh` keeps ONE active account per host, so switching or logging out
         # rewrites a slot every concurrent session and agent on the machine
         # reads -- a mutation whose blast radius is other people's work, not
@@ -1241,33 +1255,151 @@ _PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
 # unwrapped form -- including the Python AST lane's dangerous-call table, which
 # is invoked through the existing lane rather than duplicated here.
 #
-# Each entry maps the runner to the subcommand token that must follow it
-# (``uv run``, ``poetry run``, ``pipx run``) or ``None`` when the runner takes
-# the wrapped command directly (``npx <pkg> <args>``).  ``value_flags`` are the
-# runner's OWN options that consume the following token as their value; without
-# them the value would be mistaken for the wrapped command.  This table is
-# inherently OPEN: a runner nobody listed still bypasses the lane (see the
-# fallback rationale in ``_check_prefix_runner``).
-_PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[str]"] = {
-    "uv": "run",
+# Each entry maps the runner to the subcommand tokens one of which must follow it
+# (``uv run``, ``npm exec``, ``bun x``, ``pnpm dlx``) or ``None`` when the
+# runner takes the wrapped command directly (``npx <pkg> <args>``).
+# ``value_flags`` are the runner's OWN options that consume the following token
+# as their value; without them the value would be mistaken for the wrapped
+# command.  This table is inherently OPEN: a runner nobody listed still bypasses
+# the lane (see the fallback rationale in ``_check_prefix_runner``).
+_PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[FrozenSet[str]]"] = {
+    "uv": frozenset({"run"}),
     "uvx": None,
-    "poetry": "run",
-    "pipx": "run",
+    "poetry": frozenset({"run"}),
+    "pipx": frozenset({"run"}),
     "npx": None,
+    "bunx": None,
+    "pnpx": None,
+    "npm": frozenset({"x", "exec", "exe"}),
+    "bun": frozenset({"x", "exec"}),
+    "pnpm": frozenset({"dlx", "exec"}),
+    "yarn": frozenset({"dlx"}),
 }
+
+# Where each runner's code comes from, by ``(runner, subcommand)``: "installed"
+# runs the project's node_modules/.bin copy when there is one and otherwise
+# fetches or fails; "registry" always fetches into a throwaway environment, so
+# a dependency the project declares does not make it the project's code;
+# "project" runs inside the project environment, and only the packages its
+# ``--with`` adds are fetched.  ``poetry run`` is absent: it fetches nothing.
+_RUNNER_CODE_ORIGIN: Dict[Tuple[str, "Optional[str]"], str] = {
+    ("npx", None): "installed",
+    ("bunx", None): "installed",
+    ("npm", "x"): "installed",
+    ("npm", "exec"): "installed",
+    ("npm", "exe"): "installed",
+    ("bun", "x"): "installed",
+    ("bun", "exec"): "installed",
+    ("pnpm", "exec"): "installed",
+    ("pnpm", "dlx"): "registry",
+    ("pnpx", None): "registry",
+    ("yarn", "dlx"): "registry",
+    ("pipx", "run"): "registry",
+    ("uvx", None): "registry",
+    ("uv", "run"): "project",
+}
+
+# Per ecosystem: the options naming the package to fetch in place of the wrapped
+# command (``npx -p cowsay say``), and the options adding packages beside it.
+# ``-p`` is a package only for node runners; ``uvx -p`` selects a Python.
+_RUNNER_PACKAGE_FLAGS: Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]] = {
+    "node": (frozenset({"--package", "-p"}), frozenset()),
+    "python": (frozenset({"--spec", "--from"}), frozenset({"--with"})),
+}
+
+# The only options ``uv run`` may carry and stay unsigned; none adds code beyond
+# the project's lockfile, and ``--with``/``-w`` only with local paths.  The
+# value-taking ones are part of the resolver's uv value table, so the command it
+# finds is the one this shape was checked up to.
+_UV_RUN_WITH_FLAGS: FrozenSet[str] = frozenset({"--with", "-w"})
+_UV_RUN_SAFE_VALUE_FLAGS: FrozenSet[str] = frozenset({
+    "--extra", "--no-extra", "--group", "--no-group", "--only-group", "--package",
+    "--color",
+})
+_UV_RUN_SAFE_FLAGS: FrozenSet[str] = frozenset({
+    "--all-extras", "--no-dev", "--only-dev", "--no-default-groups", "--all-groups",
+    "--no-editable", "--exact", "--no-env-file", "--isolated", "--active",
+    "--no-sync", "--locked", "--frozen", "--all-packages", "--no-project", "-m",
+    "--module", "-q", "--quiet", "-v", "--verbose", "--offline", "--no-progress",
+    "--native-tls", "--no-cache", "-n", "--no-config", "--no-python-downloads",
+})
 
 _PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
     "uv": frozenset({
-        "--with", "--with-editable", "--with-requirements", "--python", "-p",
-        "--directory", "--project", "--extra", "--index", "--index-url",
-        "--refresh-package", "--isolated-package",
-    }),
+        "--with-editable", "--with-requirements", "--python", "-p",
+        "--directory", "--project", "--index", "--index-url",
+        "--refresh-package", "--isolated-package", "--env-file",
+    }) | _UV_RUN_WITH_FLAGS | _UV_RUN_SAFE_VALUE_FLAGS,
     "uvx": frozenset({
         "--with", "--from", "--python", "-p", "--index", "--index-url",
     }),
     "poetry": frozenset({"--directory", "-C", "--project", "-P"}),
     "pipx": frozenset({"--spec", "--python", "--pip-args", "--index-url"}),
-    "npx": frozenset({"--package", "-p", "--node-options", "--userconfig"}),
+    "npx": frozenset({
+        "--package", "-p", "--node-options", "--userconfig", "--globalconfig",
+        "--cache", "--registry", "--prefix",
+    }),
+    "npm": frozenset({
+        "--package", "-p", "--node-options", "--userconfig", "--globalconfig",
+        "--cache", "--registry", "--prefix", "-C", "--workspace", "-w",
+    }),
+    "bunx": frozenset({"--package", "-p"}),
+    "bun": frozenset({"--package", "-p", "--cwd"}),
+    "pnpm": frozenset({"--package", "--dir", "-C", "--filter", "-F"}),
+    "pnpx": frozenset({"--package"}),
+    "yarn": frozenset({"--package", "-p", "--cwd"}),
+}
+
+# Runner options known to take NO value.  For a "registry" runner, an option
+# before the package that is in neither this table nor
+# ``_PREFIX_RUNNER_VALUE_FLAGS`` may have consumed the next token, so the
+# package cannot be identified and the invocation is signed.
+_PREFIX_RUNNER_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npx": frozenset({
+        "-y", "--yes", "--no", "--no-install", "--ignore-existing", "-q",
+        "--quiet", "-s", "--silent", "--verbose", "--prefer-offline",
+        "--prefer-online", "--offline", "--legacy-peer-deps",
+    }),
+    "npm": frozenset({
+        "-y", "--yes", "--no", "-q", "--quiet", "-s", "--silent", "--verbose",
+        "--prefer-offline", "--prefer-online", "--offline", "--legacy-peer-deps",
+        "--workspaces", "--ws", "--include-workspace-root", "--if-present",
+    }),
+    "bunx": frozenset({"--bun", "--silent", "--verbose", "--no-install"}),
+    "bun": frozenset({"--bun", "-b", "--silent", "--verbose", "--no-install"}),
+    "pnpm": frozenset({
+        "-s", "--silent", "--shell-mode", "-r", "--recursive", "-w",
+        "--workspace-root", "--parallel", "--if-present", "--reverse",
+        "--stream", "--no-bail", "--use-stderr",
+    }),
+    "yarn": frozenset({"-q", "--quiet", "--silent", "--verbose"}),
+    "uvx": frozenset({
+        "--isolated", "--no-cache", "-n", "--offline", "-q", "--quiet", "-v",
+        "--verbose", "--no-config", "--refresh", "--native-tls", "--no-progress",
+        "--preview",
+    }),
+    "pipx": frozenset({
+        "-q", "--quiet", "--verbose", "--no-cache", "--pypackages",
+        "--system-site-packages",
+    }),
+}
+
+# The only options an "installed" runner may carry and stay unsigned, besides its
+# directory option: they take no value and cannot change which copy runs.  Not
+# ``_PREFIX_RUNNER_BOOLEAN_FLAGS``: ``--ignore-existing`` takes no value and
+# still skips the local copy.
+_INSTALLED_RUNNER_SAFE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npx": frozenset({
+        "-y", "--yes", "--no", "--no-install", "-q", "--quiet", "-s", "--silent",
+        "--verbose", "--offline", "--prefer-offline",
+    }),
+    "npm": frozenset({
+        "-y", "--yes", "--no", "-q", "--quiet", "-s", "--silent", "--verbose",
+        "--offline", "--prefer-offline",
+    }),
+    "bunx": frozenset({"--bun", "--silent", "--verbose", "--no-install"}),
+    "bun": frozenset({"--bun", "-b", "--silent", "--verbose", "--no-install"}),
+    "pnpm": frozenset({"-s", "--silent", "--use-stderr"}),
 }
 
 # ``npx`` runs an arbitrary SHELL command when given ``--call``/``-c``, so the
@@ -1429,7 +1561,7 @@ def _is_ps_encoded_flag(flag: str) -> bool:
 # when base_cmd is an interpreter, so it never sees these.  This lane inverts the
 # default to conservative DEFAULT-DENY *scoped to recognized Windows tokens*: an
 # unknown verb / cmdlet / subcommand in a Windows context -> T3, mirroring the
-# `_check_script_file` (unreadable -> T3) and `_check_npm_script_runner`
+# `_check_script_file` (unreadable -> T3) and `_check_package_manager`
 # (unresolvable -> T3) fallbacks.  It is deliberately NOT applied to arbitrary
 # bash tokens: an unrecognized base_cmd returns None so POSIX classification is
 # untouched.
@@ -2628,6 +2760,36 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
     return True
 
 
+def _check_git_worktree_unlock(
+    targets: "Tuple[str, ...]", family: str,
+) -> "Optional[MutativeResult]":
+    """Gate unlocking a worktree Gaia retains; stand aside for any other worktree.
+
+    Gaia locks each worktree it creates so retention can tell owned work from
+    abandoned work; the unlock is what exposes it to `git worktree prune` and
+    the reclaimer. A relative target resolves against `git -C`'s repository,
+    not the hook's cwd, so it cannot be ruled out and is gated.
+    """
+    import os
+
+    for target in targets:
+        expanded = os.path.expanduser(target)
+        if os.path.isabs(expanded) and _gaia_worktrees_root(os.path.realpath(expanded)) is None:
+            continue
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="worktree unlock",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                "git worktree unlock releases the retention lock Gaia holds on "
+                "a worktree it manages, leaving uncaptured work open to prune"
+            ),
+        )
+    return None
+
+
 def _check_git_worktree(
     semantics: CommandSemantics,
     tokens: tuple,
@@ -2643,6 +2805,8 @@ def _check_git_worktree(
         return None
 
     subcommand = non_flag[1]
+    if subcommand == "unlock":
+        return _check_git_worktree_unlock(non_flag[2:], family)
     if subcommand not in GIT_WORKTREE_MUTATIVE_SUBCOMMANDS:
         return None
 
@@ -2815,6 +2979,7 @@ HELP_IDEMPOTENT_FAMILIES: FrozenSet[str] = frozenset({
 # Explicit base_cmd whitelist (not covered by CLI_FAMILY_LOOKUP).
 HELP_IDEMPOTENT_BASE_CMDS: FrozenSet[str] = frozenset({
     "gaia",      # project CLI, not in CLI_FAMILY_LOOKUP
+    "claude",    # Claude Code CLI: `claude plugin uninstall --help` only prints usage
 })
 
 # These CLIs parse help as a global, non-executing request even when the
@@ -3455,7 +3620,7 @@ def _classify_leading_shell_assignments(
     A pure assignment is transient shell bookkeeping. A ``$(...)`` or
     backtick inside its value, however, executes a command and must be judged
     by that command's real effect before the env-prefix peeler discards it.
-    An ``env [opts]`` wrapper ahead of the assignments is skipped so
+    Wrappers ahead of the assignments (``env``, ``sudo``...) are skipped so
     ``env NAME=$(...) cmd`` is examined exactly like the bare form -- the
     peeler would otherwise discard the substitution unseen.
     Returns ``None`` when a real command follows the assignments so ordinary
@@ -3463,7 +3628,7 @@ def _classify_leading_shell_assignments(
     """
     n = len(command)
     saw_assignment = False
-    cursor = _skip_env_wrapper(command, 0)
+    cursor = _skip_command_wrappers(command, 0)
     while cursor < n:
         while cursor < n and command[cursor].isspace():
             cursor += 1
@@ -3589,6 +3754,118 @@ def _resolve_executor_payload(
             return " ".join(payload).strip() or None
         return None
 
+    grammar = _COMMAND_EXECUTORS.get(base_cmd)
+    if grammar is not None:
+        return _executor_grammar_payload(tokens[1:], grammar)
+
+    return None
+
+
+@dataclass(frozen=True)
+class _ExecutorGrammar:
+    """Where an executor carries the command it runs.
+
+    ``command_option``: a ``-c``/``--command`` value is the payload.
+    ``trailing``: the words after the executor's own flags and ``positionals``
+    are the payload -- ``"argv"`` when they are exec'd as an argument vector,
+    ``"shell"`` when they are joined with spaces and handed to a shell.
+    """
+
+    value_flags: FrozenSet[str] = frozenset()
+    positionals: int = 0
+    command_option: bool = False
+    trailing: "Optional[str]" = None
+
+
+# Executors that take the command to run as a quoted string or trailing words.
+# `ssh` runs the payload on another host; the effect is the same mutation.
+_COMMAND_EXECUTORS: Dict[str, _ExecutorGrammar] = {
+    "xargs": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s",
+            "--arg-file", "--delimiter", "--max-lines", "--max-args",
+            "--max-procs", "--max-chars", "--process-slot-var",
+        }),
+        trailing="argv",
+    ),
+    "watch": _ExecutorGrammar(
+        value_flags=frozenset({"-n", "-q", "--interval", "--equexit"}),
+        trailing="shell",
+    ),
+    "ssh": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l",
+            "-m", "-O", "-o", "-p", "-Q", "-R", "-S", "-W", "-w", "-B",
+        }),
+        positionals=1,
+        trailing="shell",
+    ),
+    "flock": _ExecutorGrammar(
+        value_flags=frozenset({"-w", "-E", "--timeout", "--conflict-exit-code"}),
+        positionals=1,
+        command_option=True,
+        trailing="argv",
+    ),
+    "su": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group",
+            "--whitelist-environment",
+        }),
+        command_option=True,
+    ),
+    "script": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-E", "-I", "-O", "-B", "-T", "--echo", "--log-in", "--log-out",
+            "--log-io", "--log-timing", "--logging-format",
+        }),
+        command_option=True,
+    ),
+}
+
+
+def _executor_grammar_payload(
+    args: "List[str]", grammar: _ExecutorGrammar,
+) -> "Optional[str]":
+    """Return the command an executor described by *grammar* runs, or None."""
+    if grammar.command_option:
+        payload = _command_option_payload(args)
+        if payload is not None:
+            return payload
+    if grammar.trailing is None:
+        return None
+
+    index = 0
+    positionals = grammar.positionals
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            index += 1
+            break
+        if token.startswith("-") and len(token) > 1:
+            index += 2 if token in grammar.value_flags else 1
+            continue
+        if positionals:
+            positionals -= 1
+            index += 1
+            continue
+        break
+    words = args[index:]
+    if not words:
+        return None
+    return shlex.join(words) if grammar.trailing == "argv" else " ".join(words)
+
+
+def _command_option_payload(args: "List[str]") -> "Optional[str]":
+    """Return the value of a ``-c``/``--command`` option (``-qc CMD`` included), or None."""
+    for index, token in enumerate(args):
+        if token.startswith("--command="):
+            return token.split("=", 1)[1].strip() or None
+        is_short_c = (
+            token.startswith("-") and not token.startswith("--")
+            and token[1:].isalpha() and token.endswith("c")
+        )
+        if (token == "--command" or is_short_c) and index + 1 < len(args):
+            return args[index + 1].strip() or None
     return None
 
 
@@ -3821,10 +4098,26 @@ def detect_mutative_command(
     The floor is deliberately not symmetric: it never LOWERS a verdict.  The
     old reading is the corrupted one, and it is consulted only as a source of
     escalation.
+
+    A wrapper declared in ``GAIA_CLI_ALIASES`` gets the same one-way floor:
+    it is also read as the CLI it wraps, so it is never classified more
+    leniently than that CLI.  The lookup stays outside the cached function so
+    the cache remains keyed on the command text alone.
     """
     result = _detect_mutative_command(command, from_source_code, cwd, _depth)
     if result.is_mutative:
         return result
+
+    wrapped = as_wrapped_cli(command)
+    if wrapped is not None:
+        # One hop through the cached classifier: a declared cycle
+        # (a=b,b=a) must not recurse.
+        wrapped_result = _detect_mutative_command(wrapped, from_source_code, cwd, _depth)
+        if wrapped_result.is_mutative:
+            return replace(
+                wrapped_result,
+                reason=f"{wrapped_result.reason} (declared in GAIA_CLI_ALIASES as a wrapper of this CLI)",
+            )
 
     absorbing = _absorbing_form(command)
     if absorbing is None or absorbing == command:
@@ -3914,18 +4207,17 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             _depth=_depth,
         )
 
-    # --- Honor a leading env-var assignment / `env` wrapper prefix ---
-    # A shell command may be prefixed with one or more ``NAME=value`` assignments
-    # (``GITHUB_TOKEN=$(gh auth token) terragrunt apply``) or wrapped in ``env``
-    # (``env FOO=bar terragrunt apply``).  In both forms the REAL command -- and
-    # its mutative verb -- follows the prefix, but ``analyze_command`` keys off
-    # ``tokens[0]``, which lands on the assignment token (``github_token=$(gh``)
-    # or on ``env`` (a read-only base command), so the mutative verb was never
-    # scanned and the operation slipped the T3 gate.  Peel the prefix and
-    # re-classify the underlying command -- SAME command minus an inert prefix,
-    # so ``_depth`` is carried through unchanged (mirrors the ``cd`` peel above).
-    env_remainder, env_peeled = _peel_leading_env_prefix(command)
+    # --- Honor leading assignments and transparent wrappers ---
+    # ``GITHUB_TOKEN=$(gh auth token) terragrunt apply``, ``env FOO=bar ...``,
+    # ``sudo``/``timeout 30``/``nice -n 5`` ...: the REAL command and its verb
+    # follow the prefix, but ``analyze_command`` keys off ``tokens[0]``. Peel and
+    # re-classify -- SAME command minus an inert prefix, so ``_depth`` is carried
+    # through unchanged (mirrors the ``cd`` peel above).
+    env_remainder, env_peeled = _peel_leading_command_wrappers(command)
     if env_peeled and env_remainder and env_remainder != command.strip():
+        config_result = _check_package_config_environment(command, env_remainder)
+        if config_result is not None:
+            return config_result
         return detect_mutative_command(
             env_remainder, from_source_code=from_source_code, cwd=cwd,
             _depth=_depth,
@@ -4216,18 +4508,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if script_result is not None:
         return script_result
 
-    # --- Step 1e: npm script-runner resolution (AC-3) ---
-    # `npm run <script>` classifies by the SCRIPT NAME under the verb scanner,
-    # but the name is arbitrary: `npm run db-migrate` / `npm ci` bypass consent
-    # as SAFE while `npm run start` false-positives.  Resolve `npm run <script>`
-    # to its real package.json body and classify THAT (mirroring the script-file
-    # lane); `npm ci` is unconditionally mutative; unresolvable -> conservative
-    # T3.  Returns None for other npm forms so ordinary detection continues.
-    npm_result = _check_npm_script_runner(
+    # --- Step 1e: package managers (npm, bun, pnpm, yarn) ---
+    # A script name is arbitrary, so `<manager> run <script>` classifies by the
+    # script's package.json body (unresolvable -> conservative T3); adding a
+    # dependency is T3; a lockfile-frozen install is classified by the project's
+    # install lifecycle scripts.  Returns None for other forms.
+    package_result = _check_package_manager(
         base_cmd, family, semantics, cwd=cwd, _depth=_depth,
     )
-    if npm_result is not None:
-        return npm_result
+    if package_result is not None:
+        return package_result
 
     # --- Step 2: Single-token command (no verb to extract) ---
     if len(tokens) == 1:
@@ -4359,12 +4649,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # contains a heredoc ('<<'), the heredoc body is script source --
     # not shell subcommands.  Route through inline code analysis.
     # The length heuristic is suppressed: multi-line heredocs are normal
-    # and must not be flagged on size alone.
-    if (
-        base_cmd in _INLINE_CODE_CLIS
-        and "<<" in command
-        and semantics.non_flag_tokens
-        and semantics.non_flag_tokens[0] == "-"
+    # and must not be flagged on size alone. A shell's heredoc program is a
+    # script, so it is read line by line as ``bash script.sh`` would be.
+    program = heredoc_program(command)
+    if program is not None and program.interpreter == base_cmd and program.is_shell:
+        return _classify_script_content_by_regex(
+            program.body, "<heredoc>", family, cwd=cwd, _depth=_depth + 1,
+        )
+    if base_cmd in _INLINE_CODE_CLIS and "<<" in command and (
+        program is not None
+        or (semantics.non_flag_tokens and semantics.non_flag_tokens[0] == "-")
     ):
         return _check_inline_code(command, base_cmd, family, skip_length_check=True)
 
@@ -4410,6 +4704,31 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             return config_result
 
         git_subcmd = semantics.non_flag_tokens[0]
+        reset_flags = tuple(sorted(
+            _GIT_BRANCH_RESET_FLAGS.get(git_subcmd, frozenset()).intersection(tokens)
+        ))
+        if reset_flags:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=git_subcmd,
+                dangerous_flags=reset_flags,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"'git {git_subcmd} {reset_flags[0]}' resets the branch if it "
+                    f"already exists, discarding the commits only it pointed at"
+                ),
+            )
+        if git_subcmd == "grep" and git_grep_opens_pager(tuple(tokens)):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=git_subcmd,
+                cli_family=family,
+                confidence="high",
+                reason="'git grep -O' runs a command over every matching file",
+            )
         if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
             if dangerous_flags:
@@ -5077,8 +5396,9 @@ def _check_python_module_runner(
 
 def _resolve_prefix_runner_payload(
     base_cmd: str, semantics: "CommandSemantics",
-) -> "Optional[Tuple[str, Tuple[str, ...]]]":
-    """Return ``(wrapped_command_token, remaining_args)`` for a prefix runner.
+) -> "Optional[Tuple[Optional[str], str, Tuple[str, ...], Tuple[str, ...], Tuple[str, ...], bool]]":
+    """Return ``(subcommand, wrapped_command_token, remaining_args, packages,
+    extra_packages, unknown_option)``.
 
     Walks the runner's own options -- skipping boolean flags, consuming the
     value of a ``value_flags`` option, and accepting the self-contained
@@ -5088,44 +5408,219 @@ def _resolve_prefix_runner_payload(
     this is a DIFFERENT operation of the same CLI (``uv pip install``, ``poetry
     add``) that ordinary verb detection already owns.
 
+    ``packages`` are the package specs the runner has to find or fetch: the
+    values of its package options, or else the wrapped command itself;
+    ``extra_packages`` are the subset added beside it (``--with``).
+    ``unknown_option`` is True when an option outside both runner flag tables
+    came first; a positional after it that is not the subcommand is skipped as
+    its possible value.
+
     Returns ``None`` whenever the command is not a runner invocation with a
     resolvable payload, so the caller leaves classification unchanged.
     """
     if base_cmd not in _PREFIX_RUNNER_SUBCOMMANDS:
         return None
 
-    required_subcommand = _PREFIX_RUNNER_SUBCOMMANDS[base_cmd]
+    required_subcommands = _PREFIX_RUNNER_SUBCOMMANDS[base_cmd]
     value_flags = _PREFIX_RUNNER_VALUE_FLAGS.get(base_cmd, frozenset())
     raw_tokens = semantics.tokens
+    ecosystem = "python" if base_cmd in ("uv", "uvx", "pipx", "poetry") else "node"
+    source_flags, extra_flags = _RUNNER_PACKAGE_FLAGS[ecosystem]
+    boolean_flags = _PREFIX_RUNNER_BOOLEAN_FLAGS.get(base_cmd, frozenset()) | _NPX_SHELL_CALL_FLAGS
+    subcommand: "Optional[str]" = None
+    unknown_option = False
+    sources: List[str] = []
+    extras: List[str] = []
 
-    subcommand_seen = required_subcommand is None
+    def option_value(index: int) -> "Optional[str]":
+        _, sep, inline = raw_tokens[index].partition("=")
+        if sep:
+            return inline
+        return raw_tokens[index + 1] if index + 1 < len(raw_tokens) else None
+
+    subcommand_seen = required_subcommands is None
     i = 1
     while i < len(raw_tokens):
         token = raw_tokens[i]
         if token == "--":
             i += 1
             continue
-        if token.startswith("-"):
-            if base_cmd == "npx" and token in _NPX_SHELL_CALL_FLAGS:
+        if token.startswith("-") and token != "-":
+            flag = token.split("=", 1)[0]
+            if subcommand_seen and flag in source_flags | extra_flags:
+                value = option_value(i)
+                if value is not None:
+                    (sources if flag in source_flags else extras).append(value)
+            if subcommand_seen and base_cmd in ("npx", "npm") and token in _NPX_SHELL_CALL_FLAGS:
                 # ``npx --call "<shell command>"``: the value is a command
                 # string, not a package -- hand it back as the payload with no
                 # remaining args so the caller re-classifies it as a command.
                 if i + 1 < len(raw_tokens):
-                    return (raw_tokens[i + 1], ())
+                    return (
+                        subcommand, raw_tokens[i + 1], (), tuple(sources + extras),
+                        tuple(extras), unknown_option,
+                    )
                 return None
+            if flag not in value_flags and flag not in boolean_flags:
+                unknown_option = True
             if token in value_flags:
                 i += 2
                 continue
             i += 1
             continue
         if not subcommand_seen:
-            if token.lower() != required_subcommand:
+            if token.lower() in required_subcommands:
+                subcommand = token.lower()
+                subcommand_seen = True
+            elif not unknown_option:
                 return None
-            subcommand_seen = True
+            # Otherwise the token may be an unknown option's value: keep looking.
             i += 1
             continue
-        return (token, tuple(raw_tokens[i + 1:]))
+        packages = tuple((sources or [token]) + extras)
+        return (
+            subcommand, token, tuple(raw_tokens[i + 1:]), packages, tuple(extras),
+            unknown_option,
+        )
 
+    return None
+
+
+def _is_bare_node_package(spec: str) -> bool:
+    """False when *spec* pins a version, range or URL -- what then runs is not
+    provably the local copy."""
+    pattern = r"(@[a-z0-9][\w.-]*/)?[a-z0-9][\w.-]*"
+    return _re.fullmatch(pattern, spec, _re.IGNORECASE) is not None
+
+
+def _runner_package_is_local(origin: str, spec: str, project_dir: str) -> bool:
+    """True when *spec* is a local path, or -- for an "installed" runner -- a
+    bare name installed in the project's node_modules (as a bin or a package).
+
+    Only an explicit path prefix is local: npm reads ``user/repo`` as a GitHub
+    fetch."""
+    import os
+
+    if spec.startswith(("./", "../", "/", "~/", "file:")):
+        return True
+    if origin != "installed" or not _is_bare_node_package(spec):
+        return False
+    modules = os.path.join(project_dir, "node_modules")
+    return os.path.isfile(os.path.join(modules, ".bin", spec)) or os.path.isdir(
+        os.path.join(modules, spec)
+    )
+
+
+def _installed_runner_fetch_reason(
+    base_cmd: str, tokens: "Tuple[str, ...]", payload_index: int,
+    cwd: "Optional[str]",
+) -> "Optional[str]":
+    """Why an "installed" runner may run code that is not the project's copy, or
+    ``None`` when the invocation fits the one shape that provably runs it.
+
+    That shape: every runner option is in ``_INSTALLED_RUNNER_SAFE_FLAGS`` or is
+    the runner's directory option (the last value wins, as npm reads it), and
+    the payload is a path or installed under that directory.  ``npm exec``/``x``
+    read their options up to ``--`` even after the package (npm-exec(1)); the
+    other runners hand everything after the package to the command.
+    """
+    import os
+
+    end = len(tokens) if base_cmd == "npm" else payload_index
+    if "--" in tokens[1:end]:
+        end = tokens.index("--", 1)
+    runner_tokens = tokens[1:end]
+    dir_flags = (
+        frozenset({"--prefix"}) if base_cmd == "npx"
+        else _PACKAGE_MANAGER_DIR_FLAGS.get(base_cmd, frozenset())
+    )
+    safe_flags = _INSTALLED_RUNNER_SAFE_FLAGS.get(base_cmd, frozenset())
+    shell_call = False
+    takes_value = False
+    for token in runner_tokens:
+        if takes_value or not token.startswith("-"):
+            takes_value = False
+            continue
+        flag, sep, _ = token.partition("=")
+        if base_cmd in ("npx", "npm") and flag in _NPX_SHELL_CALL_FLAGS:
+            shell_call = True
+            takes_value = not sep
+        elif flag in dir_flags:
+            takes_value = not sep
+        elif sep or flag not in safe_flags:
+            return f"option '{flag}' is outside the shape known to run the project's copy"
+
+    project_dir = cwd if cwd is not None else os.getcwd()
+    if any(t.partition("=")[0] in dir_flags for t in runner_tokens):
+        override = _extract_dir_override(runner_tokens, dir_flags)
+        if override is None:
+            return "its directory option has no value"
+        project_dir = _resolve_dir_against_cwd(project_dir, override)
+    payload = tokens[payload_index]
+    if shell_call or _runner_package_is_local("installed", payload, project_dir):
+        return None
+    return f"it would fetch {payload}: not a local path or installed under {project_dir}"
+
+
+def _uv_run_fetch_reason(tokens: "Tuple[str, ...]", payload_index: int) -> "Optional[str]":
+    """Why ``uv run`` may add code beyond the project's lockfile, or ``None`` when
+    every option before the command is in ``_UV_RUN_SAFE_FLAGS`` or
+    ``_UV_RUN_SAFE_VALUE_FLAGS`` and every comma-separated ``--with`` item is a
+    local path."""
+    i = 1
+    while i < payload_index:
+        token = tokens[i]
+        if token == "--" or not token.startswith("-"):
+            i += 1
+            continue
+        flag, sep, inline = token.partition("=")
+        if flag in _UV_RUN_WITH_FLAGS or flag in _UV_RUN_SAFE_VALUE_FLAGS:
+            value = inline if sep else (tokens[i + 1] if i + 1 < len(tokens) else "")
+            i += 1 if sep else 2
+            if flag in _UV_RUN_WITH_FLAGS:
+                fetched = [
+                    item for item in value.split(",")
+                    if not _runner_package_is_local("project", item, "")
+                ]
+                if fetched:
+                    return f"--with would fetch {', '.join(fetched)} from a registry"
+            continue
+        if sep or flag not in _UV_RUN_SAFE_FLAGS:
+            return f"option '{flag}' is outside the shape known to add no code"
+        i += 1
+    return None
+
+
+_PEP723_SCRIPT_BLOCK_RE = _re.compile(r"^# /// script[ \t]*$(.*?)^# ///[ \t]*$", _re.M | _re.S)
+
+
+_PEP723_DEPENDENCIES_RE = _re.compile(r"""^#\s*(["']?)dependencies\1\s*=""", _re.M)
+
+
+def _script_declares_inline_dependencies(path: str, cwd: "Optional[str]") -> bool:
+    """True when the script at *path* carries a PEP 723 ``# /// script`` block
+    with ``dependencies``, which ``uv run`` fetches, or when the read stopped at
+    its size cap before a complete block; False when it has none or cannot be
+    read."""
+    content = _read_script_content(path, cwd)
+    if content is None:
+        return False
+    block = _PEP723_SCRIPT_BLOCK_RE.search(content)
+    if block is None:
+        return len(content) >= _MAX_SCRIPT_READ_BYTES
+    return _PEP723_DEPENDENCIES_RE.search(block.group(1)) is not None
+
+
+def _uv_tool_run_as_uvx(tokens: "Tuple[str, ...]") -> "Optional[str]":
+    """``uv tool run ...`` rewritten as the ``uvx ...`` it is an alias of, or
+    ``None``.  ``tool run`` is matched wherever it appears: the rewrite can only
+    sign, since ``uvx`` signs every package that is not a path."""
+    import shlex
+
+    for i in range(1, len(tokens) - 1):
+        if tokens[i] == "tool" and tokens[i + 1] == "run":
+            uvx_tokens = ("uvx", *tokens[1:i], *tokens[i + 2:])
+            return " ".join(shlex.quote(t) for t in uvx_tokens)
     return None
 
 
@@ -5133,7 +5628,7 @@ def _check_prefix_runner(
     base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> "Optional[MutativeResult]":
-    """Re-dispatch ``uv run`` / ``poetry run`` / ``pipx run`` / ``npx`` payloads.
+    """Classify a prefix runner by its payload and by where its package comes from.
 
     A prefix runner's base token is not an interpreter, so the script-file lane
     never opens the wrapped script and the invocation classifies by the runner's
@@ -5147,6 +5642,14 @@ def _check_prefix_runner(
     When the payload is a script PATH its canonical interpreter is prepended
     (``_SCRIPT_EXT_INTERPRETERS``); otherwise the payload is itself a command
     and is re-classified as written.
+
+    A runner listed in ``_RUNNER_CODE_ORIGIN`` whose payload is not itself
+    mutative is unsigned only when the whole command fits the shape that
+    provably runs the project's code (``_installed_runner_fetch_reason``,
+    ``_uv_run_fetch_reason``); anything outside that shape is signed, rather
+    than signed only when a known danger is found.  A "registry" runner is
+    signed whenever a package it needs is not a path.  A spec that pins a
+    version cannot be shown to be the local copy, so it counts as fetched.
 
     Fallback choice, stated explicitly because the reachable behavior and the
     documented one disagree: an UNRECOGNIZED runner still falls to T0, and this
@@ -5162,13 +5665,17 @@ def _check_prefix_runner(
     positive that breaks legitimate work on every surface and trains blind
     approval, and it contradicts the module's stated model -- safe by
     elimination, never by an allow-list.  So T0 remains the fallback for an
-    unrecognized runner, and the honest scope of this lane is: the four named
-    shapes are inspected; a fifth runner, a project-local wrapper script, or an
+    unrecognized runner, and the honest scope of this lane is: the named
+    shapes are inspected; an unlisted runner, a project-local wrapper script, or an
     interpreter reached by a path whose basename is not a known interpreter name
     still passes as T0.
 
     Returns ``None`` when the command is not a resolvable runner invocation.
     """
+    uvx_command = _uv_tool_run_as_uvx(semantics.tokens) if base_cmd == "uv" else None
+    if uvx_command is not None:
+        return detect_mutative_command(uvx_command, cwd=cwd, _depth=_depth + 1)
+
     resolved = _resolve_prefix_runner_payload(base_cmd, semantics)
     if resolved is None:
         return None
@@ -5181,11 +5688,12 @@ def _check_prefix_runner(
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("runner payload")
 
-    payload, rest = resolved
+    subcommand, payload, rest, packages, _, unknown_option = resolved
 
     import shlex
 
-    interpreter = None
+    # ``uv run -`` reads a Python program from stdin.
+    interpreter = "python3" if base_cmd == "uv" and payload == "-" else None
     lowered = payload.lower()
     for ext, ext_interpreter in _SCRIPT_EXT_INTERPRETERS.items():
         if lowered.endswith(ext):
@@ -5196,6 +5704,33 @@ def _check_prefix_runner(
     rewritten = " ".join(shlex.quote(t) for t in tokens)
 
     inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
+    origin = _RUNNER_CODE_ORIGIN.get((base_cmd, subcommand))
+    if not inner.is_mutative and origin is not None:
+        payload_index = len(semantics.tokens) - len(rest) - 1
+        if origin == "installed":
+            fetch_reason = _installed_runner_fetch_reason(
+                base_cmd, semantics.tokens, payload_index, cwd,
+            )
+        elif origin == "project":
+            fetch_reason = _uv_run_fetch_reason(semantics.tokens, payload_index)
+            if fetch_reason is None and lowered.endswith(".py") and (
+                _script_declares_inline_dependencies(payload, cwd)
+            ):
+                fetch_reason = f"{payload} declares inline dependencies (PEP 723)"
+        elif unknown_option:
+            fetch_reason = "an option outside its known tables hides which package it fetches"
+        else:
+            fetched = [s for s in packages if not _runner_package_is_local(origin, s, "")]
+            fetch_reason = f"it would fetch {', '.join(fetched)}" if fetched else None
+        if fetch_reason is not None:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="registry-fetch",
+                cli_family=family,
+                confidence="medium",
+                reason=f"Runner '{base_cmd}' is signed: {fetch_reason}",
+            )
     return MutativeResult(
         is_mutative=inner.is_mutative,
         category=inner.category,
@@ -5396,17 +5931,52 @@ def cwd_after_component(command: str, base_cwd: "Optional[str]") -> "Optional[st
 # after a fully-consumed prior assignment / peeled `env` token.
 _ENV_ASSIGN_PREFIX_RE = _re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
-# `env`-wrapper option flags.  Boolean flags carry no value; value flags consume
-# the following token (short form) as their argument.  Long `--opt=value` forms
-# are self-contained and handled inline.
-_ENV_WRAPPER_BOOL_FLAGS = frozenset({
-    "-i", "--ignore-environment", "-0", "--null", "-v", "--debug", "-",
-})
-_ENV_WRAPPER_VALUE_FLAGS = frozenset({"-u", "-C", "-S"})
-_ENV_WRAPPER_VALUE_LONG_FLAGS = frozenset({
-    "--unset", "--chdir", "--split-string",
-    "--block-signal", "--default-signal", "--ignore-signal",
-})
+@dataclass(frozen=True)
+class _WrapperGrammar:
+    """How a transparent wrapper's own arguments end and the wrapped command begins.
+
+    ``value_flags`` consume the following word as their argument; any other
+    flag -- boolean, clustered (``-oL``, ``-c3``) or ``--long=value`` -- is one
+    word. ``positionals`` counts the wrapper's own operands before the wrapped
+    command (``timeout``'s duration).
+    """
+
+    value_flags: FrozenSet[str] = frozenset()
+    positionals: int = 0
+
+
+# Wrappers that run the command after them with the same effect it has alone.
+# ONE table feeds both the permanent-block floor and the T3 detector (through
+# _peel_leading_command_wrappers), so a wrapper recognised by one and not the
+# other cannot reopen a floor command the other still blocks.
+_COMMAND_WRAPPERS: Dict[str, _WrapperGrammar] = {
+    "env": _WrapperGrammar(value_flags=frozenset({
+        "-u", "-C", "-S", "--unset", "--chdir", "--split-string",
+        "--block-signal", "--default-signal", "--ignore-signal",
+    })),
+    "sudo": _WrapperGrammar(value_flags=frozenset({
+        "-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "-R",
+        "--user", "--group", "--host", "--prompt", "--close-from",
+        "--chdir", "--role", "--type", "--other-user", "--command-timeout",
+        "--chroot",
+    })),
+    "doas": _WrapperGrammar(value_flags=frozenset({"-u", "-C"})),
+    "timeout": _WrapperGrammar(
+        value_flags=frozenset({"-s", "-k", "--signal", "--kill-after"}),
+        positionals=1,
+    ),
+    "nice": _WrapperGrammar(value_flags=frozenset({"-n", "--adjustment"})),
+    "ionice": _WrapperGrammar(value_flags=frozenset({
+        "-c", "-n", "--class", "--classdata",
+    })),
+    "nohup": _WrapperGrammar(),
+    "stdbuf": _WrapperGrammar(value_flags=frozenset({
+        "-i", "-o", "-e", "--input", "--output", "--error",
+    })),
+    "time": _WrapperGrammar(value_flags=frozenset({
+        "-f", "-o", "--format", "--output",
+    })),
+}
 
 
 def _consume_shell_word(s: str, i: int) -> int:
@@ -5471,97 +6041,135 @@ def _consume_shell_word(s: str, i: int) -> int:
     return i
 
 
-def _skip_env_wrapper(s: str, i: int) -> int:
-    """Return the index just past a leading ``env [opts]`` wrapper at ``s[i]``.
+def _short_bundle_ends_in_value_flag(tok: str, value_flags: FrozenSet[str]) -> bool:
+    """True when the bundled short flags in *tok* end in one that takes the next
+    word as its value (``-iu HOME``).  A value flag earlier in the bundle takes
+    the rest of the bundle instead (``-iuHOME``)."""
+    if tok.startswith("--") or len(tok) < 3:
+        return False
+    for k in range(1, len(tok)):
+        if f"-{tok[k]}" in value_flags:
+            return k == len(tok) - 1
+    return False
 
-    Skips leading whitespace, the bare ``env`` token, and its option flags,
-    stopping at the first assignment or wrapped-command token.  Returns ``i``
-    unchanged (modulo leading whitespace) when no wrapper is present.  Shared
-    by the env-prefix peeler and the assignment-substitution guard so both see
-    the same prefix boundary -- if only the peeler skipped the wrapper, an
-    ``env NAME=$(mutative) cmd`` form would have its substitution discarded
-    without ever being classified.
-    """
+
+def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
+    """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
-    while i < n and s[i].isspace():
-        i += 1
-    # Only a bare `env` TOKEN (followed by whitespace or end) is the wrapper;
-    # `env=x` is an assignment named `env`, handled by the assignment loop.
-    if not (s[i : i + 3] == "env" and (i + 3 >= n or s[i + 3].isspace())):
-        return i
-    i += 3
+    positionals = grammar.positionals
     while i < n:
         while i < n and s[i].isspace():
             i += 1
         if i >= n:
             break
-        # An assignment ends the env-flag scan; the assignment loop takes over.
-        if _ENV_ASSIGN_PREFIX_RE.match(s, i):
-            break
         tok_end = _consume_shell_word(s, i)
         tok = s[i:tok_end]
         if tok == "--":
+            return tok_end
+        if tok.startswith("-"):
             i = tok_end
-            break
-        if tok in _ENV_WRAPPER_BOOL_FLAGS:
+            if tok in grammar.value_flags or _short_bundle_ends_in_value_flag(
+                tok, grammar.value_flags,
+            ):
+                while i < n and s[i].isspace():
+                    i += 1
+                i = _consume_shell_word(s, i)
+            continue
+        if positionals and not _ENV_ASSIGN_PREFIX_RE.match(tok):
+            positionals -= 1
             i = tok_end
             continue
-        if tok in _ENV_WRAPPER_VALUE_FLAGS:
-            # Short value flag consumes the following token as its argument.
-            i = tok_end
-            while i < n and s[i].isspace():
-                i += 1
-            i = _consume_shell_word(s, i)
-            continue
-        if tok.startswith("--") and "=" in tok:
-            # Self-contained long option (--chdir=/x, --unset=FOO).
-            i = tok_end
-            continue
-        if tok in _ENV_WRAPPER_VALUE_LONG_FLAGS:
-            i = tok_end
-            while i < n and s[i].isspace():
-                i += 1
-            i = _consume_shell_word(s, i)
-            continue
-        # Any other token is the wrapped command -- stop peeling here.
         break
     return i
 
 
-def _peel_leading_env_prefix(command: str) -> "Tuple[str, bool]":
-    """Peel a leading env-var assignment / ``env`` wrapper prefix off *command*.
+def _skip_command_wrappers(s: str, i: int) -> int:
+    """Return the index just past every leading transparent wrapper at ``s[i]``.
 
-    Returns ``(remainder, peeled)`` where ``remainder`` is the underlying command
-    with any leading ``NAME=value`` assignments and/or a leading ``env [opts]``
-    wrapper removed, and ``peeled`` reports whether anything was stripped.  The
-    real (possibly mutative) command follows such a prefix, but the token-0 base
-    command scan lands on the assignment token or on ``env`` (a read-only base
-    command) and never sees the verb -- this restores it (T3 gate-evasion fix).
-
-    Careful NOT to over-strip: the assignment regex is anchored at the scan
-    cursor, which only ever sits at the command start or immediately after a
-    fully-consumed prior assignment / peeled ``env`` token.  A ``=`` inside a
-    later argument (``echo A=B terragrunt apply``) is therefore never mistaken
-    for a leading assignment -- the cursor is past ``echo`` (a real command) by
-    then and the loop has already stopped.
+    Stops at the first assignment or wrapped-command token. Shared by the
+    wrapper peeler and the assignment-substitution guard so both see the same
+    prefix boundary -- if only the peeler skipped a wrapper, an
+    ``env NAME=$(mutative) cmd`` form would have its substitution discarded
+    without ever being classified.
     """
-    s = command.strip() if command else ""
     n = len(s)
-    i = _skip_env_wrapper(s, 0)
-    peeled = i > 0
-
-    # --- Leading NAME=value assignments (one or more) ---
     while True:
         while i < n and s[i].isspace():
             i += 1
-        m = _ENV_ASSIGN_PREFIX_RE.match(s, i)
-        if not m:
-            break
-        i = _consume_shell_word(s, m.end())
-        peeled = True
+        word_end = _consume_shell_word(s, i)
+        grammar = _COMMAND_WRAPPERS.get(s[i:word_end].rsplit("/", 1)[-1])
+        if grammar is None:
+            return i
+        i = _skip_wrapper_arguments(s, word_end, grammar)
 
-    remainder = s[i:].strip()
-    return remainder, peeled
+
+def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
+    """Peel leading wrappers (``_COMMAND_WRAPPERS``) and ``NAME=value`` assignments off *command*.
+
+    Returns ``(remainder, peeled)``. The wrapped command runs with the effect
+    it has alone, but the token-0 scans land on the wrapper or the assignment
+    and never see its verb. The block floor and the T3 detector both call this
+    one function (DP1), so ``sudo``/``timeout``/``nice`` in front of a floor
+    command cannot leave it at consent, nor a T3 command free.
+
+    The assignment regex is anchored at the scan cursor, which only ever sits
+    at the command start or just past a consumed wrapper or assignment, so a
+    ``=`` inside a later argument (``echo A=B terragrunt apply``) is never
+    taken for a leading assignment.
+    """
+    s = command.strip() if command else ""
+    n = len(s)
+    i = 0
+    while True:
+        start = i
+        i = _skip_command_wrappers(s, i)
+        while True:
+            while i < n and s[i].isspace():
+                i += 1
+            m = _ENV_ASSIGN_PREFIX_RE.match(s, i)
+            if not m:
+                break
+            i = _consume_shell_word(s, m.end())
+        if i == start:
+            break
+
+    return s[i:].strip(), i > 0
+
+
+_PACKAGE_CONFIG_ENV_RE = _re.compile(
+    r"(?<!\S)(?:(?i:npm_config_)|UV_|PIP_|PNPM_|YARN_|BUN_)[A-Za-z0-9_]*="
+)
+_PACKAGE_TOOL_COMMANDS: FrozenSet[str] = frozenset({
+    "npm", "npx", "pnpm", "pnpx", "yarn", "bun", "bunx", "uv", "uvx", "pip",
+    "pip3", "pipx",
+})
+
+
+def _check_package_config_environment(
+    command: str, remainder: str,
+) -> "Optional[MutativeResult]":
+    """Sign a package tool run under a package-manager configuration variable.
+
+    Such a variable can name the package to run, the folder it is looked up
+    in or the registry it comes from, none of which the command line shows, so
+    the rest of the command cannot prove the code is the project's.  *remainder*
+    is *command* with its leading wrappers and assignments peeled.
+    """
+    import os
+
+    stripped = command.strip()
+    prefix = stripped[: len(stripped) - len(remainder)]
+    base = os.path.basename(remainder.split(None, 1)[0])
+    if base not in _PACKAGE_TOOL_COMMANDS or not _PACKAGE_CONFIG_ENV_RE.search(prefix):
+        return None
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="package-config-environment",
+        cli_family=CLI_FAMILY_LOOKUP.get(base, "package"),
+        confidence="medium",
+        reason=f"'{base}' runs under a package-manager configuration variable",
+    )
 
 
 def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
@@ -5920,7 +6528,7 @@ def _check_windows_native_command(
 
     An unknown verb / cmdlet / subcommand in a recognized Windows context ->
     T3 (default-deny), mirroring ``_check_script_file`` (unreadable -> T3) and
-    ``_check_npm_script_runner`` (unresolvable -> T3).
+    ``_check_package_manager`` (unresolvable -> T3).
     """
     tokens = list(semantics.tokens)
     non_flags = semantics.non_flag_tokens
@@ -6188,8 +6796,12 @@ def _check_script_file(
     DEPTH`` the script body is NOT opened and the invocation is retained rather
     than released -- see the constant, which owns that rationale.
 
-    Returns ``None`` when the command is not a script-file invocation.
+    Returns ``None`` when the command is not a script-file invocation, which
+    includes a heredoc program: its body is inspected by Step 3c, and the
+    opener token is not a path.
     """
+    if heredoc_program(command) is not None:
+        return None
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
@@ -6569,16 +7181,17 @@ def _classify_script_content_by_regex(
 
 
 # ---------------------------------------------------------------------------
-# npm run <script> body resolution (Brief gaia-system-security-lifecycle, AC-3)
+# Package-manager commands: npm, bun, pnpm, yarn (Step 1e)
 # ---------------------------------------------------------------------------
-# The verb scanner matches the npm SCRIPT NAME against the taxonomy, but the
-# name is arbitrary: ``npm run db-migrate`` / ``npm ci`` slip through as SAFE
-# (a consent bypass) while ``npm run start`` / ``copy-assets`` false-positive.
-# The fix mirrors the script-file lane: resolve ``npm run <script>`` to its real
-# command body from ``package.json`` (``scripts.<script>``) and classify THAT
-# body with the existing engine.  When the body cannot be resolved -- no
-# package.json, unparseable JSON, or the script entry is absent -- fall back to
-# the same conservative T3 default the unreadable-script-file case uses.
+# The verb scanner matches the SCRIPT NAME against the taxonomy, but the name is
+# arbitrary: ``npm run db-migrate`` slips through as SAFE while ``npm run
+# deploy`` whose body is ``vite build`` false-positives.  The signature follows
+# where the code comes from instead: a project script is resolved to its body in
+# ``package.json`` (``scripts.<script>``) and that body is classified with the
+# existing engine -- unresolvable falls back to the conservative T3 default of
+# the unreadable-script-file case; adding a dependency brings registry code and
+# is T3; a frozen install brings only what the lockfile already pins, so it is
+# classified by the project's own install lifecycle scripts.
 
 # Splits a script body into the individual commands the shell would run so a
 # mutation in ANY clause is seen, not just the first.  Long operators (``&&``,
@@ -6600,21 +7213,9 @@ def _resolve_npm_script_body(
     ``cd /repo && npm run build`` reads ``/repo/package.json``.
     """
     import os
-    import json
 
-    base = cwd if cwd is not None else os.getcwd()
-    path = os.path.join(base, "package.json")
-    try:
-        if not os.path.isfile(path):
-            return None
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            data = json.load(fh)
-    except (OSError, ValueError):
-        return None
-
-    if not isinstance(data, dict):
-        return None
-    scripts = data.get("scripts")
+    data = _read_package_json(cwd if cwd is not None else os.getcwd())
+    scripts = data.get("scripts") if data is not None else None
     if not isinstance(scripts, dict):
         return None
     body = scripts.get(script_name)
@@ -6623,119 +7224,190 @@ def _resolve_npm_script_body(
     return body
 
 
-def _extract_npm_prefix_override(tokens: "Tuple[str, ...]") -> "Optional[str]":
-    """Return the directory value of npm's global ``--prefix``/``-C`` option.
+def _read_package_json(project_dir: str) -> "Optional[dict]":
+    """Return the ``package.json`` object in *project_dir*, or ``None`` when it
+    is missing, unreadable, or not a JSON object."""
+    import os
+    import json
 
-    npm's ``--prefix <dir>`` (or its short alias ``-C <dir>``) tells npm to
-    resolve ``package.json`` from *dir* instead of the invoking cwd -- this is
-    exactly how a wrapped dev loop runs a workspace's scripts from an
-    arbitrary launch directory (``npm run build --prefix /path/to/repo``).
-    Without this, ``--prefix`` is invisible to the classifier: package.json
-    resolution silently falls back to ``os.getcwd()`` (the hook's own cwd,
-    typically the monorepo root), so the script body is read from the WRONG
-    package.json (or none at all) and the invocation falls to the
-    conservative ``npm-run-unresolved`` T3 regardless of the real script.
+    try:
+        with open(os.path.join(project_dir, "package.json"), "r",
+                  encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _extract_dir_override(
+    tokens: "Tuple[str, ...]", flags: FrozenSet[str],
+) -> "Optional[str]":
+    """Return the directory value of a package manager's own cwd option.
+
+    npm's ``--prefix <dir>`` (or ``-C <dir>``), pnpm's ``--dir``/``-C`` and
+    bun's and yarn's ``--cwd`` make the manager read ``package.json`` from
+    *dir* instead of the invoking cwd -- exactly how a wrapped dev loop runs a
+    workspace's scripts from an arbitrary launch directory (``npm run build
+    --prefix /path/to/repo``).  Without this, the option is invisible to the
+    classifier: package.json resolution silently falls back to ``os.getcwd()``
+    (the hook's own cwd, typically the monorepo root), so the script body is
+    read from the WRONG package.json (or none at all).
 
     Recognizes both the space form (``--prefix /dir``) and the inline
     ``--prefix=/dir`` form, and either flag position -- before or after the
-    subcommand -- since npm accepts both. Scanning the raw ``tokens`` (not
-    ``non_flag_tokens``) preserves the directory's original case, which
-    matters on case-sensitive filesystems. Returns ``None`` when neither flag
-    is present or the flag has no value.
+    subcommand. When the option repeats, the last value wins, as the managers
+    read it; after ``--`` the options belong to the script. Scanning the raw
+    ``tokens`` (not ``non_flag_tokens``) preserves the directory's original
+    case, which matters on case-sensitive filesystems. Returns ``None`` when no
+    flag is present or its last occurrence has no value.
     """
-    n = len(tokens)
+    override: "Optional[str]" = None
     for i, tok in enumerate(tokens):
-        if tok.startswith("--prefix="):
-            value = tok.split("=", 1)[1]
-            return value or None
-        if tok in ("--prefix", "-C") and i + 1 < n:
-            return tokens[i + 1]
-    return None
+        if tok == "--":
+            break
+        flag, sep, value = tok.partition("=")
+        if flag not in flags:
+            continue
+        if sep:
+            override = value or None
+        else:
+            override = tokens[i + 1] if i + 1 < len(tokens) else None
+    return override
 
 
-def _check_npm_script_runner(
-    base_cmd: str, family: str, semantics: "CommandSemantics",
-    cwd: "Optional[str]" = None, _depth: int = 0,
-) -> "Optional[MutativeResult]":
-    """Classify ``npm run <script>`` / ``npm ci`` by real effect, not by name.
+_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({"npm", "bun", "pnpm", "yarn"})
 
-    * ``npm ci`` performs a clean install that rewrites ``node_modules`` -- it
-      is unconditionally mutative (T3), regardless of the verb taxonomy.
-    * ``npm run <script>`` is resolved to its ``package.json`` body and that
-      body is classified by the shell/regex engine (``_classify_script_content_
-      by_regex``), the same standard the script-file lane meets.  An
-      unresolvable script (missing/unparseable package.json or absent entry)
-      falls back to conservative T3.
-    * A ``--prefix <dir>`` / ``-C <dir>`` global option OVERRIDES *cwd* for
-      this resolution (see ``_extract_npm_prefix_override``), so
-      ``npm run build --prefix /repo`` resolves ``/repo/package.json``
-      instead of falling back to the process cwd.  This mirrors how ``cd
-      /repo && npm run build`` is already honored -- ``--prefix`` is simply
-      npm's OWN cwd-fixing flag, so it is folded the same way.
+# Options that consume the next token, so it is not read as the subcommand or
+# the script name, and the subset naming the directory that holds package.json.
+_PACKAGE_MANAGER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npm": frozenset({"--prefix", "-C", "--workspace", "-w"}),
+    "bun": frozenset({"--cwd", "--filter", "-F"}),
+    "pnpm": frozenset({"--dir", "-C", "--filter", "-F"}),
+    "yarn": frozenset({"--cwd"}),
+}
+_PACKAGE_MANAGER_DIR_FLAGS: Dict[str, FrozenSet[str]] = {
+    "npm": frozenset({"--prefix", "-C"}),
+    "bun": frozenset({"--cwd"}),
+    "pnpm": frozenset({"--dir", "-C"}),
+    "yarn": frozenset({"--cwd"}),
+}
 
-    Returns ``None`` for any other npm invocation so ordinary detection
-    continues unchanged (``npm run`` with no script lists scripts -- read-only;
-    ``npm install`` and friends keep their existing classification).
-    """
-    if base_cmd != "npm":
-        return None
+# Commands that fetch a ``create-<x>`` package from the registry and run it;
+# ``npm init`` does so only when given an initializer.
+_INITIALIZER_SUBCOMMANDS: Dict[str, FrozenSet[str]] = {
+    "npm": frozenset({"init", "innit", "create"}),
+    "bun": frozenset({"create", "c"}),
+    "pnpm": frozenset({"create"}),
+    "yarn": frozenset({"create"}),
+}
 
-    non_flag = semantics.non_flag_tokens
-    if not non_flag:
-        return None
-    sub = non_flag[0]
+# Other spellings of ``install``: npm's typo aliases, ``add``, and ``it``/
+# ``install-test`` (an install followed by the test script); bare ``yarn``
+# (``None``) is ``yarn install``.
+_INSTALL_ALIASES: Dict[str, FrozenSet[Optional[str]]] = {
+    "npm": frozenset({
+        "i", "in", "ins", "inst", "insta", "instal",
+        "isnt", "isnta", "isntal", "isntall", "add", "it", "install-test",
+    }),
+    "bun": frozenset({"i", "add", "a"}),
+    "pnpm": frozenset({"i", "add"}),
+    "yarn": frozenset({None, "add"}),
+}
 
-    prefix_override = _extract_npm_prefix_override(semantics.tokens)
-    if prefix_override:
-        cwd = _resolve_dir_against_cwd(cwd, prefix_override)
+# ``npm ci`` followed by the test script.
+_NPM_CI_TEST_COMMANDS: FrozenSet[str] = frozenset({
+    "cit", "install-ci-test", "clean-install-test", "sit",
+})
 
-    # `npm ci` -- clean install, always mutates node_modules.
-    if sub == "ci":
-        return MutativeResult(
-            is_mutative=True,
-            category=CATEGORY_MUTATIVE,
-            verb="ci",
-            cli_family=family,
-            confidence="high",
-            reason=(
-                "`npm ci` performs a clean install that rewrites node_modules "
-                "-- state-mutating, requires consent"
-            ),
-        )
+# Subcommands that install exactly what the lockfile pins, and the flags of
+# which one must be present for them to refuse to rewrite it.
+_FROZEN_INSTALL_FORMS: Dict[str, Tuple[FrozenSet[Optional[str]], FrozenSet[str]]] = {
+    "npm": (
+        frozenset({"ci", "clean-install", "ic", "install-clean", "isntall-clean"})
+        | _NPM_CI_TEST_COMMANDS,
+        frozenset(),
+    ),
+    "bun": (frozenset({"install", "i"}), frozenset({"--frozen-lockfile"})),
+    "pnpm": (frozenset({"install", "i"}), frozenset({"--frozen-lockfile"})),
+    "yarn": (frozenset({None, "install"}), frozenset({"--immutable", "--frozen-lockfile"})),
+}
 
-    if sub not in ("run", "run-script"):
-        return None  # not a script-runner form -- ordinary detection handles it
+_INSTALL_LIFECYCLE_SCRIPTS: Tuple[str, ...] = (
+    "preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare",
+)
 
-    # `npm run` with no script name lists available scripts -- read-only.
-    if len(non_flag) < 2:
-        return None
+# The npm commands that run the script of a fixed name; any other script needs
+# ``npm run``.
+_NPM_SCRIPT_COMMANDS: Dict[str, str] = {
+    "test": "test", "t": "test", "tst": "test",
+    "start": "start", "stop": "stop", "restart": "restart",
+}
 
-    script_name = non_flag[1]
+# Built-in commands of the managers whose ``<manager> <name>`` runs the script
+# of that name.  A builtin wins over a script that shares its name, so the
+# shorthand applies only outside this set.  pnpm's and yarn's ``test``/
+# ``start``/``stop``/``restart`` run scripts and are deliberately absent;
+# ``bun test`` is bun's own test runner.
+_SCRIPT_SHORTHAND_BUILTINS: Dict[str, FrozenSet[str]] = {
+    "bun": frozenset({
+        "a", "add", "audit", "build", "c", "create", "exec", "i", "info",
+        "init", "install", "link", "outdated", "patch", "patch-commit", "pm",
+        "publish", "remove", "repl", "rm", "run", "test", "unlink", "update",
+        "upgrade", "why", "x",
+    }),
+    "pnpm": frozenset({
+        "access", "add", "adduser", "approve-builds", "audit", "bin", "bugs",
+        "c", "cache", "cat-file", "cat-index", "ci", "completion", "config",
+        "create", "dedupe", "deploy", "deprecate", "dist-tag", "dlx", "docs",
+        "doctor", "edit", "env", "exec", "fetch", "find-hash", "get", "help",
+        "i", "ignored-builds", "import", "info", "init", "install",
+        "install-test", "it", "licenses", "link", "list", "ll", "ln", "login",
+        "logout", "ls", "m", "multi", "outdated", "owner", "pack", "patch",
+        "patch-commit", "patch-remove", "ping", "pkg", "prefix", "profile",
+        "prune", "publish", "rb", "rebuild", "recursive", "remove", "repo",
+        "rm", "root", "run", "run-script", "s", "se", "search", "self-update",
+        "server", "set", "set-script", "setup", "star", "stars", "store",
+        "team", "token", "un", "uninstall", "unlink", "unpublish", "unstar",
+        "up", "update", "upgrade", "version", "view", "whoami", "why",
+    }),
+    "yarn": frozenset({
+        "add", "audit", "autoclean", "bin", "cache", "check", "config",
+        "constraints", "create", "dedupe", "dlx", "exec", "explain",
+        "generate-lock-entry", "global", "help", "import", "info", "init",
+        "install", "licenses", "link", "list", "login", "logout", "node",
+        "npm", "outdated", "owner", "pack", "patch", "patch-commit", "plugin",
+        "policies", "publish", "rebuild", "remove", "run", "search", "set",
+        "stage", "tag", "team", "unlink", "unplug", "up", "upgrade",
+        "upgrade-interactive", "version", "versions", "why", "workspace",
+        "workspaces",
+    }),
+}
 
-    # Budget exhausted: stop descending AND retain -- see the constant. Already
-    # past the shape checks above, so only a real `npm run <script>` reaches it.
-    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
-        return _budget_exhausted_result("npm script body")
 
-    body = _resolve_npm_script_body(script_name, cwd=cwd)
-    if body is None:
-        # Conservative default: the script body cannot be resolved, so we
-        # cannot prove it is safe -- mirror the unreadable-script-file case.
-        return MutativeResult(
-            is_mutative=True,
-            category=CATEGORY_MUTATIVE,
-            verb="npm-run-unresolved",
-            cli_family=family,
-            confidence="medium",
-            reason=(
-                f"`npm run {script_name}` could not be resolved to a "
-                f"package.json script body -- cannot verify the payload, "
-                f"requiring approval (conservative default)"
-            ),
-        )
+def _package_manager_positionals(
+    manager: str, tokens: "Tuple[str, ...]",
+) -> "List[Tuple[int, str]]":
+    """``(index, token)`` of each positional before ``--``, skipping options
+    and the values of ``_PACKAGE_MANAGER_VALUE_FLAGS``."""
+    value_flags = _PACKAGE_MANAGER_VALUE_FLAGS[manager]
+    positionals: "List[Tuple[int, str]]" = []
+    i = 1
+    while i < len(tokens) and tokens[i] != "--":
+        if tokens[i].startswith("-"):
+            i += 2 if tokens[i] in value_flags else 1
+            continue
+        positionals.append((i, tokens[i]))
+        i += 1
+    return positionals
 
-    # Classify the resolved body: split into per-clause commands (a mutation may
-    # live in any clause of `tsc && rm -rf dist`) and feed the existing engine.
+
+def _classify_package_script_body(
+    manager: str, script_name: str, body: str, family: str,
+    cwd: "Optional[str]", _depth: int,
+) -> MutativeResult:
+    """Classify a ``package.json`` script body with the shell/regex engine."""
+    # Split into per-clause commands (a mutation may live in any clause of
+    # `tsc && rm -rf dist`) and feed the existing engine.
     segments = "\n".join(
         seg for seg in _SHELL_SEGMENT_SPLIT_RE.split(body) if seg.strip()
     )
@@ -6751,9 +7423,185 @@ def _check_npm_script_runner(
         cli_family=family,
         confidence=inner.confidence,
         reason=(
-            f"`npm run {script_name}` resolved to body {body!r}: {inner.reason}"
+            f"`{manager}` script {script_name!r} resolved to body {body!r}: "
+            f"{inner.reason}"
         ),
     )
+
+
+def _classify_package_script(
+    manager: str, script_name: str, family: str,
+    cwd: "Optional[str]", _depth: int,
+) -> MutativeResult:
+    """Classify ``<manager> run <script>`` by its body and by the ``pre<script>``
+    and ``post<script>`` bodies run around it; an unresolvable script is T3."""
+    # Budget exhausted: stop descending AND retain -- see the constant.
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result(f"{manager} script body")
+
+    body = _resolve_npm_script_body(script_name, cwd=cwd)
+    if body is not None:
+        for hook in (f"pre{script_name}", f"post{script_name}"):
+            hook_body = _resolve_npm_script_body(hook, cwd=cwd)
+            if hook_body is None:
+                continue
+            result = _classify_package_script_body(manager, hook, hook_body, family, cwd, _depth)
+            if result.is_mutative:
+                return result
+    if body is None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=f"{manager}-run-unresolved",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"`{manager} run {script_name}` could not be resolved to a "
+                f"package.json script body -- cannot verify the payload, "
+                f"requiring approval (conservative default)"
+            ),
+        )
+    return _classify_package_script_body(
+        manager, script_name, body, family, cwd, _depth,
+    )
+
+
+def _classify_frozen_install(
+    manager: str, family: str, cwd: "Optional[str]", _depth: int,
+) -> MutativeResult:
+    """Classify a lockfile-frozen install by the project's install lifecycle
+    scripts; with no readable package.json it is T3."""
+    import os
+
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result(f"{manager} lifecycle script body")
+
+    manifest = _read_package_json(cwd if cwd is not None else os.getcwd())
+    if manifest is None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="frozen-install-unresolved",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"`{manager}` frozen install found no readable package.json -- "
+                f"cannot verify the lifecycle scripts it runs (conservative default)"
+            ),
+        )
+    scripts = manifest.get("scripts")
+    scripts = scripts if isinstance(scripts, dict) else {}
+    for name in _INSTALL_LIFECYCLE_SCRIPTS:
+        body = scripts.get(name)
+        if not isinstance(body, str) or not body.strip():
+            continue
+        result = _classify_package_script_body(manager, name, body, family, cwd, _depth)
+        if result.is_mutative:
+            return result
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_UNKNOWN,
+        verb="frozen-install",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"`{manager}` frozen install fetches only what the lockfile pins, and "
+            f"no install lifecycle script of the project mutates"
+        ),
+    )
+
+
+def _check_package_manager(
+    base_cmd: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Classify npm/bun/pnpm/yarn by where the code they run comes from.
+
+    * ``run <script>``, npm's ``test``/``start``/``stop``/``restart``, and the
+      bun, pnpm and yarn ``<script>`` shorthand outside their builtins classify
+      by the script's ``package.json`` body.
+    * An option written ``--flag=false`` (or ``=0``/``=no``) counts as absent.
+    * A frozen install (``_FROZEN_INSTALL_FORMS``) classifies by the project's
+      install lifecycle scripts.
+    * Any other spelling of ``install`` (``_INSTALL_ALIASES``) is re-classified
+      as ``<manager> install ...`` so it answers exactly like that form.
+    * The manager's own directory option (``--prefix``, ``--dir``, ``--cwd``)
+      overrides *cwd* for package.json resolution, as a leading ``cd`` does.
+
+    Returns ``None`` for any other form so ordinary detection continues.
+    """
+    if base_cmd not in _PACKAGE_MANAGERS:
+        return None
+
+    tokens = semantics.tokens
+    positionals = _package_manager_positionals(base_cmd, tokens)
+    flags = set()
+    for token in tokens[1:]:
+        name, sep, value = token.partition("=")
+        if token.startswith("-") and not (sep and value.lower() in ("false", "0", "no")):
+            flags.add(name)
+    sub_index, sub = positionals[0] if positionals else (None, None)
+    args = [token for _, token in positionals[1:]]
+
+    if sub in _INITIALIZER_SUBCOMMANDS[base_cmd] and (args or sub not in ("init", "innit")):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="registry-fetch",
+            cli_family=family,
+            confidence="medium",
+            reason=f"'{base_cmd} {sub}' fetches and runs an initializer package",
+        )
+
+    override = _extract_dir_override(tokens, _PACKAGE_MANAGER_DIR_FLAGS[base_cmd])
+    if override:
+        cwd = _resolve_dir_against_cwd(cwd, override)
+
+    frozen_subs, frozen_flags = _FROZEN_INSTALL_FORMS[base_cmd]
+    if (
+        sub in frozen_subs and not args and not flags & {"-g", "--global"}
+        and (not frozen_flags or flags & frozen_flags)
+    ):
+        frozen = _classify_frozen_install(base_cmd, family, cwd, _depth)
+        if (
+            not frozen.is_mutative and base_cmd == "npm" and sub in _NPM_CI_TEST_COMMANDS
+            and _resolve_npm_script_body("test", cwd=cwd) is not None
+        ):
+            return _classify_package_script(base_cmd, "test", family, cwd, _depth)
+        return frozen
+
+    if sub in _INSTALL_ALIASES[base_cmd]:
+        import shlex
+        from dataclasses import replace
+
+        canonical = list(tokens)
+        if sub_index is None:
+            canonical.insert(1, "install")
+        else:
+            canonical[sub_index] = "install"
+        rewritten = " ".join(shlex.quote(t) for t in canonical)
+        inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
+        return replace(inner, reason=f"'{sub or base_cmd}' is '{rewritten}': {inner.reason}")
+
+    if sub in ("run", "run-script"):
+        # `<manager> run` with no script name lists the scripts -- read-only.
+        if not args:
+            return None
+        return _classify_package_script(base_cmd, args[0], family, cwd, _depth)
+
+    # Without the script npm falls back to its own default (`node server.js`
+    # for start), which ordinary detection keeps judging as before.
+    npm_script = _NPM_SCRIPT_COMMANDS.get(sub) if base_cmd == "npm" else None
+    if npm_script is not None and _resolve_npm_script_body(npm_script, cwd=cwd) is not None:
+        return _classify_package_script(base_cmd, npm_script, family, cwd, _depth)
+
+    builtins = _SCRIPT_SHORTHAND_BUILTINS.get(base_cmd)
+    if (
+        builtins is not None and sub is not None and sub not in builtins
+        and _resolve_npm_script_body(sub, cwd=cwd) is not None
+    ):
+        return _classify_package_script(base_cmd, sub, family, cwd, _depth)
+    return None
 
 
 def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_check: bool = False) -> MutativeResult:

@@ -202,6 +202,7 @@ def test_degraded_allow_still_passes_a_non_mutating_command(tmp_path):
     """
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_DATA"] = str(tmp_path)
+    env["GAIA_DATA_DIR"] = str(tmp_path)
     env["GAIA_HOST"] = "no-such-host-adapter"
     env.pop("GAIA_DEBUG", None)
 

@@ -50,7 +50,9 @@ class SessionSimulator:
         self._events: List[Dict[str, Any]] = []
 
         # Clean any stale context cache files from previous test runs
-        cache_dir = Path("/tmp/gaia-context-cache")
+        from adapters.claude_code import ClaudeCodeAdapter
+
+        cache_dir = ClaudeCodeAdapter.CONTEXT_CACHE_DIR
         if cache_dir.exists():
             for f in cache_dir.glob("*.json"):
                 try:

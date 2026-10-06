@@ -73,9 +73,11 @@ def db_path() -> Path:
     3. ``~/.gaia/gaia.db``.
 
     ``GAIA_DB`` outranks ``GAIA_DATA_DIR`` because it is the more specific of the
-    two, and because every other database-path resolver in the tree already
-    ranks it that way -- ``scripts/bootstrap_database.py`` (where the variable
-    originated), ``bin/cli/doctor.py``, ``bin/cli/_converge.py::default_db_path``,
+    two, and because every other database-path resolver in the tree ranks it
+    first -- ``scripts/bootstrap_database.py`` (where the variable originated,
+    and which reads ``GAIA_DB`` alone, so a caller honouring ``GAIA_DATA_DIR``
+    must pass it this resolver's result, as ``bin/cli/install.py::_install_db_path``
+    does), ``bin/cli/doctor.py``, ``bin/cli/_converge.py::default_db_path``,
     ``bin/gaia::_resolve_db_path``, ``bin/validate-sandbox.sh`` and the CI
     workflow, which sets ``GAIA_DB`` alone. This resolver was the sole holdout,
     and the disagreement was silent in the worst possible way: ``bin/gaia``
@@ -183,6 +185,15 @@ def logs_dir() -> Path:
         ``data_dir() / "logs"``
     """
     return data_dir() / "logs"
+
+
+def session_dir() -> Path:
+    """Return the active session directory every channel shares.
+
+    Returns:
+        ``data_dir() / "session" / "active"``
+    """
+    return data_dir() / "session" / "active"
 
 
 def events_dir() -> Path:

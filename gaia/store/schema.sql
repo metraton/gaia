@@ -30,12 +30,29 @@ CREATE TABLE IF NOT EXISTS workspaces (
     identity      TEXT,                       -- identity: for git-bearing workspace = git remote URL normalized lowercase; for organizational workspace = name; scanner-owned
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),  -- scanner-owned
     last_scan_at  TEXT,                       -- ISO8601 timestamp of last successful `gaia scan` run; NULL = never scanned; v7
-    status        TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete). 'missing' = the Gaia install footprint disappeared (workspace demoted); v17
+    status        TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing' | 'retired'. 'missing' = the Gaia install footprint disappeared (workspace demoted; scanner-owned, v17). 'retired' = hidden from listings, rows kept; set by `gaia workspace retire` and `gaia workspace curate`, cleared only by `gaia workspace declare`; v66
     missing_since TEXT,                        -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned; v17
-    root_path     TEXT                         -- absolute workspace directory resolved by `gaia scan`; NULL until the next scan; anchors <root_path>/.project-worktrees; scanner-owned; v55
+    root_path     TEXT                         -- absolute workspace root, set only by `gaia workspace declare` (`gaia workspace retire` releases it, `retire --undo` restores it); non-NULL marks a declared workspace; anchors <root_path>/.project-worktrees; v55
 );
 
 CREATE INDEX IF NOT EXISTS idx_workspaces_identity ON workspaces(identity);
+CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
+
+-- ---------------------------------------------------------------------------
+-- workspace_aliases: a retired workspace name and the workspace it now means
+-- (v60). Written only by `gaia workspace retire`, which re-keys what the alias
+-- owned and leaves its history rows keyed to it; readers of `target` also read
+-- rows keyed to `alias`. `ledger` is the undo ledger of that retire. Declaring
+-- the alias name again (`gaia workspace declare`) drops its row.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS workspace_aliases (
+    alias      TEXT NOT NULL PRIMARY KEY,
+    target     TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    ledger     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_aliases_target ON workspace_aliases(target);
 
 -- ---------------------------------------------------------------------------
 -- projects: git-bearing source projects within a workspace (formerly `repos`).
@@ -54,7 +71,7 @@ CREATE TABLE IF NOT EXISTS projects (
     path             TEXT,           -- absolute path on disk to the project root; scanner-owned (findability: project -> path + workspace)
     status           TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete)
     missing_since    TEXT,           -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned
-    project_identity TEXT,           -- stable, vantage-independent project identity (git-common-dir realpath > normalized remote > realpath path); scanner-owned. NULL allowed for legacy/uninitialized rows. The partial unique index idx_projects_identity collapses the SAME physical repo scanned from different workspaces/roots into ONE row. See workspace-identity brief M1-T2.
+    project_identity TEXT,           -- the project's identity (normalized remote host/owner/repo > git-common-dir realpath > realpath path, v64); a second clone of the remote is a 'copy' facet of this row, not a row; scanner-owned. NULL allowed for legacy/uninitialized rows. The partial unique index idx_projects_identity collapses the SAME physical repo scanned from different workspaces/roots into ONE row. See workspace-identity brief M1-T2.
     description      TEXT,           -- human-authored summary/purpose of the project; agent-owned. Never written by the scan path (gaia.store.writer._PROJECTS_AGENT_OWNED); survives any number of scanner rescans unchanged. Added v23 (workspace-identity brief M3-T9).
     superseded_by    TEXT,           -- points to the successor project_identity after a 'movido' adjudication; NULL until then. Column added v25 (scan-v2 SV1); populated in SV4.
     PRIMARY KEY (workspace, name),
@@ -454,6 +471,7 @@ CREATE TABLE IF NOT EXISTS briefs (
     topic_key    TEXT,                 -- optional dimension key
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    project      TEXT,                 -- project_identity of the project the brief was created for; moves with it (`gaia project move`); NULL = workspace-level brief; v65
     UNIQUE (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -659,6 +677,134 @@ CREATE INDEX IF NOT EXISTS idx_brief_decisions_brief ON brief_decisions(brief_id
 CREATE UNIQUE INDEX IF NOT EXISTS idx_brief_decisions_supersedes
     ON brief_decisions(supersedes_id) WHERE supersedes_id IS NOT NULL;
 
+-- v58: the change history of a brief. Triggers write it, so every path that
+-- edits an AC, adds a decision or replaces a plan version is recorded without
+-- each writer having to remember to. source='reconstructed' marks rows the
+-- v58 migration inferred from rows that already existed; AC edits made before
+-- v58 left no trace in the database and are not reconstructed.
+CREATE TABLE IF NOT EXISTS brief_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    brief_id    INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    subject     TEXT,
+    before      TEXT,
+    after       TEXT,
+    source      TEXT NOT NULL DEFAULT 'recorded'
+                CHECK (source IN ('recorded', 'reconstructed')),
+    occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (brief_id) REFERENCES briefs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_brief_events_brief ON brief_events(brief_id, occurred_at);
+
+CREATE TRIGGER IF NOT EXISTS brief_events_brief_created
+AFTER INSERT ON briefs
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    VALUES (NEW.id, 'brief_created', NEW.name,
+            json_object('title', NEW.title, 'status', NEW.status));
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_brief_edited
+AFTER UPDATE OF title, objective, context, approach, out_of_scope, status ON briefs
+WHEN OLD.title IS NOT NEW.title OR OLD.objective IS NOT NEW.objective
+  OR OLD.context IS NOT NEW.context OR OLD.approach IS NOT NEW.approach
+  OR OLD.out_of_scope IS NOT NEW.out_of_scope OR OLD.status IS NOT NEW.status
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, before, after)
+    VALUES (NEW.id, 'brief_edited', NEW.name,
+            json_object('title', OLD.title, 'objective', OLD.objective, 'context', OLD.context,
+                        'approach', OLD.approach, 'out_of_scope', OLD.out_of_scope, 'status', OLD.status),
+            json_object('title', NEW.title, 'objective', NEW.objective, 'context', NEW.context,
+                        'approach', NEW.approach, 'out_of_scope', NEW.out_of_scope, 'status', NEW.status));
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_ac_added
+AFTER INSERT ON acceptance_criteria
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    VALUES (NEW.brief_id, 'ac_added', NEW.ac_id,
+            json_object('description', NEW.description, 'evidence_type', NEW.evidence_type,
+                        'evidence_shape', NEW.evidence_shape, 'status', NEW.status));
+    UPDATE briefs SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.brief_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_ac_edited
+AFTER UPDATE ON acceptance_criteria
+WHEN OLD.description IS NOT NEW.description OR OLD.evidence_type IS NOT NEW.evidence_type
+  OR OLD.evidence_shape IS NOT NEW.evidence_shape OR OLD.artifact_path IS NOT NEW.artifact_path
+  OR OLD.status IS NOT NEW.status OR OLD.ac_id IS NOT NEW.ac_id
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, before, after)
+    VALUES (NEW.brief_id, 'ac_edited', NEW.ac_id,
+            json_object('description', OLD.description, 'evidence_type', OLD.evidence_type,
+                        'evidence_shape', OLD.evidence_shape, 'artifact_path', OLD.artifact_path,
+                        'status', OLD.status),
+            json_object('description', NEW.description, 'evidence_type', NEW.evidence_type,
+                        'evidence_shape', NEW.evidence_shape, 'artifact_path', NEW.artifact_path,
+                        'status', NEW.status));
+    UPDATE briefs SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = NEW.brief_id;
+END;
+
+-- The WHEN guard skips the cascade from deleting the brief itself: by then the
+-- brief row is gone and the event would violate its own foreign key.
+CREATE TRIGGER IF NOT EXISTS brief_events_ac_removed
+AFTER DELETE ON acceptance_criteria
+WHEN EXISTS (SELECT 1 FROM briefs WHERE id = OLD.brief_id)
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, before)
+    VALUES (OLD.brief_id, 'ac_removed', OLD.ac_id,
+            json_object('description', OLD.description, 'status', OLD.status));
+    UPDATE briefs SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = OLD.brief_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_decision_added
+AFTER INSERT ON brief_decisions
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    VALUES (NEW.brief_id, 'decision_added', 'D' || NEW.id,
+            json_object('decision', NEW.decision, 'rationale', NEW.rationale,
+                        'supersedes_id', NEW.supersedes_id));
+END;
+
+CREATE TRIGGER IF NOT EXISTS brief_events_plan_version_replaced
+AFTER INSERT ON plan_versions
+BEGIN
+    INSERT INTO brief_events (brief_id, kind, subject, after)
+    SELECT p.brief_id, 'plan_version_replaced', 'plan ' || NEW.plan_id || ' v' || NEW.version,
+           json_object('reason', NEW.reason, 'status', NEW.status, 'change_id', NEW.change_id,
+                       'chars', length(NEW.content))
+    FROM plans p WHERE p.id = NEW.plan_id;
+END;
+
+-- v58: token usage at the grain Claude Code bills it -- one row per API
+-- message, keyed by (session_id, message_id). A transcript repeats a message's
+-- usage on every content-block line and a resumed subagent's transcript is
+-- re-read whole, so any per-line or per-stop sum double counts; the key makes
+-- re-ingesting a transcript a no-op. Plan/brief/workspace binding is NOT
+-- stamped here: it is resolved at read time through
+-- agent_contract_handoffs.harness_agent_id, so a mis-stamped handoff row can
+-- be corrected once instead of in every usage row. The main (orchestrator)
+-- thread has harness_agent_id NULL and agent_type 'main'; a subagent's
+-- agent_type is the agentType of its *.meta.json.
+CREATE TABLE IF NOT EXISTS token_usage (
+    session_id            TEXT NOT NULL,
+    message_id            TEXT NOT NULL,
+    harness_agent_id      TEXT,
+    agent_type            TEXT NOT NULL,
+    model                TEXT,
+    timestamp             TEXT NOT NULL,
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
+    transcript_path       TEXT NOT NULL,
+    PRIMARY KEY (session_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(harness_agent_id) WHERE harness_agent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage(timestamp);
+
 -- ---------------------------------------------------------------------------
 -- evidence (three-tier storage model)
 -- ---------------------------------------------------------------------------
@@ -857,7 +1003,7 @@ CREATE TABLE IF NOT EXISTS memory (
     status            TEXT,  -- v4: lifecycle for class=thread (open|carry_forward|graduated|closed)
     project_ref       TEXT,  -- remote-stable project anchor for project-scoped memory (projects.project_identity); NULL until populated. Column added v25 (scan-v2 SV1); populated/used in SV3.
     deleted_at        TEXT,  -- tombstone marker (scan-v2 SV3). NULL = live row; non-NULL ISO8601 = soft-deleted. delete_memory() sets this instead of DELETE so the row + body survive; hard DELETE is reserved for explicit human curation (delete_memory(hard=True)). All read paths filter `deleted_at IS NULL`. Column added v26.
-    initiative        TEXT,  -- canonical project/initiative grouping key (clean, vantage-independent). Distinct from project_ref (the git-common-dir path): initiative is the human-facing key that unifies git projects (basename of project_ref sans .git -> 'gaia', 'balance') AND logical initiatives that are NOT git repos ('branchkinect', 'buildwiz', 'axisio', ...). NULL when no initiative can be resolved without guessing. Populated at write time (upsert_memory / gaia memory add: --project -> basename(project_ref); --initiative -> normalized key). Column added v32; existing rows backfilled by scripts/migrations/v31_to_v32.sql.
+    initiative        TEXT,  -- canonical project/initiative grouping key (clean, vantage-independent). Distinct from project_ref (the projects.project_identity anchor): initiative is the human-facing key that unifies git projects (basename of project_ref sans .git -> 'gaia', 'balance') AND logical initiatives that are NOT git repos ('branchkinect', 'buildwiz', 'axisio', ...). NULL when no initiative can be resolved without guessing. Populated at write time (upsert_memory / gaia memory add: --project -> basename(project_ref); --initiative -> normalized key). Column added v32; existing rows backfilled by scripts/migrations/v31_to_v32.sql.
     audience          TEXT CHECK (audience IN ('orchestrator', 'executor', 'any')) DEFAULT 'any',  -- v45: which agent role the row is for (see note above). Column added v45; existing rows default/backfill to 'any' (no behavior change on migration).
     injection_count    INTEGER NOT NULL DEFAULT 0,  -- v48: times this row was rendered inside an automatic context-injection block (get-relevant digest/sections/types, subagent kernel). Written by a narrow, dedicated UPDATE -- never the upsert path, never updated_at (see note on trg_memory_history below: telemetry columns are deliberately outside its WHEN clause). Column added v48; existing rows default/backfill to 0, never NULL. CAVEAT FOR ANY CONSUMER: the prefix accumulated BEFORE v50 is suspect, not signal -- until the v50 split the dispatch kernel bumped this column on every subagent dispatch, mixing a fixed dispatch frequency into the same total as real context injection. The split was forward-only: nothing was subtracted, and no row marks where the mixed prefix ends.
     deliberate_count   INTEGER NOT NULL DEFAULT 0,  -- v48: times a caller that IDENTIFIED this row read it -- by slug (show, story) or by naming the initiative holding it (get-relevant --initiative). A filtered window over the table identifies nothing it returns and never counts, however much of each row it renders. Kept SEPARATE from injection_count on purpose: mixing the two would let a row already selected for injection reinforce itself every time it is shown, freezing the ranking. Column added v48; existing rows default/backfill to 0, never NULL. CAVEAT FOR ANY CONSUMER: v49_to_v50.sql zeroed this axis across the whole corpus and v50_to_v51.sql dropped the capture table that held the prior values, so no pre-v50 deliberate figure survives anywhere in this database. Counts start at that reset, which makes this axis span a shorter window than injection_count -- the two are not comparable as totals.
@@ -924,23 +1070,30 @@ END;
 -- memory_links (v4): graph primitives between curated memory rows.
 -- kind enum enforced via CHECK because it is a fresh table -- no rebuild risk.
 --   relates_to     -- general association
---   supersedes     -- src replaces dst; injector excludes rows that are
---                     dst of an active supersedes edge
+--   supersedes     -- src (the new row) replaces dst (the old row);
+--                     injector excludes rows that are dst of an active
+--                     supersedes edge
 --   derived_from   -- src is a refinement / instance of dst
 --   graduated_to   -- thread row graduated into an anchor row
+-- `workspace` is the src row's; `dst_workspace` (v61) names the dst row's
+-- when the edge crosses owners -- a user row in _gaia_user replacing one still
+-- under a project workspace -- and is NULL when both ends share `workspace`.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS memory_links (
-    workspace  TEXT NOT NULL,  -- FK -> workspaces.name
-    src_name   TEXT NOT NULL,
-    dst_name   TEXT NOT NULL,
-    kind       TEXT NOT NULL CHECK (kind IN ('relates_to', 'supersedes', 'derived_from', 'graduated_to')),
-    created_at TEXT,
+    workspace     TEXT NOT NULL,  -- FK -> workspaces.name
+    src_name      TEXT NOT NULL,
+    dst_name      TEXT NOT NULL,
+    kind          TEXT NOT NULL CHECK (kind IN ('relates_to', 'supersedes', 'derived_from', 'graduated_to')),
+    created_at    TEXT,
+    dst_workspace TEXT,
     PRIMARY KEY (workspace, src_name, dst_name, kind),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS memory_links_src ON memory_links(workspace, src_name);
 CREATE INDEX IF NOT EXISTS idx_memory_links_dst_kind ON memory_links(workspace, dst_name, kind);
+CREATE INDEX IF NOT EXISTS idx_memory_links_dst_workspace
+    ON memory_links(dst_workspace, dst_name, kind) WHERE dst_workspace IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- memory_history: provenance / version audit trail for `memory` rows
@@ -1129,52 +1282,58 @@ CREATE INDEX IF NOT EXISTS idx_harness_events_workspace_ts ON harness_events(wor
 CREATE INDEX IF NOT EXISTS idx_harness_events_type ON harness_events(type);
 
 -- ---------------------------------------------------------------------------
--- task_notifications: reports a headless scheduled task leaves for the user.
+-- task_notifications: what Gaia has to tell the user -- a report, a reminder or a routine.
 -- ---------------------------------------------------------------------------
--- A headless scheduled task (see the scheduled-task skill) runs unattended and
--- cannot ask the user anything mid-run. When it finishes it writes ONE row here
--- with a generic, PII-free summary of what it did plus any approval_ids it had
--- to accumulate. The row carries the resumable Claude session_id so the user
--- can `claude --resume <session_id>` on demand to grant the pending T3s.
+-- A report is what a task or agent left behind; it is open while `unread` = 1.
+-- A reminder (once) or a routine (recurring) is open while `closed_at` IS NULL
+-- and always keeps `unread` = 0, so code older than v62, which knows this table
+-- only as an unread inbox, never counts, lists as unread or acknowledges one.
 --
--- Distinct from harness_events (append-only audit mirror, no mutable state):
--- these rows carry a MUTABLE `unread` flag that `gaia notifications ack` clears,
--- because the whole point is a lightweight unread inbox surfaced at SessionStart
--- and as a per-prompt counter. Not curated memory, so -- like harness_events --
--- it is written without an agent_permissions gate.
+-- A row is DUE when it is open and `due_at` is NULL or not after now. That is
+-- evaluated at read time, never by a waking process: reading writes nothing,
+-- and `gaia notifications ack|snooze|cancel` are the only transitions. `ack`
+-- closes a reminder for good and moves a routine's `due_at` to its first
+-- occurrence after now, so missed occurrences collapse into one.
+--
+-- A NULL `workspace` is global: every workspace's scoped read includes it.
+-- `due_at` is a UTC instant; `recurrence` is a routine's JSON calendar|interval
+-- spec; `pointer_workspace` locates a memory or project pointer. The body is
+-- generic, never PII. Not curated memory, so -- like harness_events -- it is
+-- written without an agent_permissions gate.
 CREATE TABLE IF NOT EXISTS task_notifications (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    workspace  TEXT,                      -- workspace name; NULL for global
-    task_name  TEXT NOT NULL,             -- name of the scheduled task that reported
-    headline   TEXT NOT NULL,             -- short one-line summary (the title)
-    body       TEXT,                      -- full detail message (generic, no PII)
-    session_id TEXT,                      -- resumable Claude session id (claude --resume)
+    workspace  TEXT,
+    task_name  TEXT NOT NULL,
+    headline   TEXT NOT NULL,
+    body       TEXT,
+    session_id TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    unread     INTEGER NOT NULL DEFAULT 1, -- 1 = not yet acknowledged (BOOLEAN)
-    acked_at   TEXT                       -- ISO8601 when marked seen; NULL while unread
+    unread     INTEGER NOT NULL DEFAULT 1,
+    acked_at   TEXT,
+    kind       TEXT NOT NULL DEFAULT 'report'
+               CHECK (kind IN ('report', 'reminder', 'routine')),
+    due_at     TEXT,
+    recurrence TEXT,
+    pointer_kind TEXT CHECK (pointer_kind IN ('skill', 'memory', 'project')),
+    pointer_ref  TEXT,
+    pointer_workspace TEXT,
+    closed_at  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_notifications_unread ON task_notifications(unread, created_at DESC);
 
 -- ---------------------------------------------------------------------------
--- scheduled_tasks: OS-agnostic DESIRED STATE for recurring headless tasks.
+-- RETIRED (v63): scheduled_tasks, scheduled_task_machines, scheduled_task_state
+-- and schedule_suspensions.
 -- ---------------------------------------------------------------------------
--- The desired-state registry that lets a scheduled task stop living only in one
--- machine's crontab and instead live in gaia.db, so any machine sharing the DB
--- can materialize it. The SCHEDULE is stored NEUTRAL as a JSON `schedule_spec`
--- (a tagged union: {"kind":"calendar", minute/hour/day_of_month/month/
--- day_of_week} or {"kind":"interval","every_seconds":N}) -- NOT a raw cron
--- string -- so a per-platform backend (cron today; launchd/schtasks later) can
--- translate it to its native form. `schedule_hint` is a human-readable render
--- (e.g. "07:30 L-V"), derived, never authoritative.
---
--- `prompt_body` is the CANONICAL prompt content (portable across machines on a
--- shared DB); `prompt_path` is the machine-local file a sync materializes it to.
--- `project_dir` is machine-local (a path that may differ per machine). Writing
--- desired state (register/enable/disable) is reversible local bookkeeping (T0,
--- like briefs/plans/task_notifications); only MATERIALIZING it into the machine
--- scheduler (`gaia schedule sync`) is a consented mutation (T3). The hook only
--- DETECTS drift at SessionStart; it never writes the scheduler in silence.
+-- `gaia schedule` and the scheduler that started the host unattended no longer
+-- exist; recurring work is a routine notification (see task_notifications).
+-- Nothing reads or writes these four tables any more. They stay, with their
+-- rows, so the retirement loses nothing and older code keeps working against
+-- them; a later breaking migration drops them. Migration v62 -> v63 turned each
+-- enabled scheduled task into one routine. `schedule_spec` is the neutral JSON
+-- {"kind":"calendar", minute/hour/day_of_month/month/day_of_week} or
+-- {"kind":"interval","every_seconds":N} that v63 read.
 CREATE TABLE IF NOT EXISTS scheduled_tasks (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace     TEXT,                      -- workspace name; NULL for global
@@ -1219,35 +1378,9 @@ CREATE TABLE IF NOT EXISTS scheduled_task_state (
 );
 
 -- ---------------------------------------------------------------------------
--- schedule_suspensions: a TIME-BOUNDED pause laid over desired state.
+-- schedule_suspensions: retired with the rest of the scheduler tables above.
 -- ---------------------------------------------------------------------------
--- `scheduled_tasks.enabled = 0` is a PERMANENT decision with no deadline: it
--- stays off until someone turns it back on. A SUSPENSION is the other shape --
--- "off, but not forever" -- and it needs a deadline, so it cannot be expressed
--- by the same boolean without losing the very thing that distinguishes it. Two
--- separate states, two separate columns: `enabled` says disabled, a row here
--- says suspended, and `list`/`status` label them differently on purpose.
---
--- SCOPE lives in `task_id`: NULL is the WORKSPACE-WIDE switch (suspends every
--- task in that workspace at once), a non-NULL id is one task. One table for
--- both scopes so a single expiry evaluator covers them; the two partial UNIQUE
--- indexes below keep at most one live suspension per scope.
---
--- EXPIRY IS EVALUATED AT READ TIME, never by a waking process -- managing
--- scheduled tasks must not itself require a scheduled task. `until` is an
--- ISO8601 UTC instant; a read compares it against now and reports the
--- suspension as live or LAPSED. NULL `until` means indefinite (never lapses).
--- A lapsed row is deliberately NOT deleted on read: the row IS the record that
--- something came back to life, which is what the SessionStart block announces
--- (prominently -- a lapse means tasks are running again). It is cleared by an
--- explicit `gaia schedule resume`, mirroring how task_notifications waits for
--- `gaia notifications ack` instead of self-clearing.
---
--- Like the rest of the registry this is DESIRED STATE, not a scheduler
--- mutation: suspending survives a reboot, is readable without asking the system
--- scheduler, and only takes effect on the machine when the user consents to
--- `gaia schedule sync` (T3). Writing it (`suspend`/`resume`) is reversible local
--- bookkeeping (T0), exactly like `enable`/`disable`.
+-- A NULL `task_id` was the workspace-wide switch, a non-NULL one a single task.
 CREATE TABLE IF NOT EXISTS schedule_suspensions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace    TEXT,                      -- workspace the suspension covers; NULL for global
@@ -1732,11 +1865,13 @@ END;
 -- One row per applied schema migration; the highest version is the current
 -- live schema. `gaia doctor` reads MAX(version) and compares against the
 -- EXPECTED_SCHEMA_VERSION constant baked into the CLI for the running build.
--- Bootstrap inserts row (1, ..., 'initial schema') -- future schema bumps
--- must add their own INSERT OR IGNORE in bootstrap_database.sh.
+-- min_code_version is the oldest code version that may still write to the
+-- database: each seal carries the previous value and only a migration marked
+-- `-- gaia-compat: breaking` raises it (scripts/migrations/README.md).
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS schema_version (
-    version     INTEGER PRIMARY KEY,
-    applied_at  TEXT NOT NULL,
-    description TEXT
+    version          INTEGER PRIMARY KEY,
+    applied_at       TEXT NOT NULL,
+    description      TEXT,
+    min_code_version INTEGER
 );

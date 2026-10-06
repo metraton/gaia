@@ -103,7 +103,9 @@ def upsert_brief(
         fields: dict matching the parse_brief_markdown shape; recognized keys:
             ``status``, ``surface_type``, ``topic_key``, ``title``,
             ``objective``, ``context``, ``approach``, ``out_of_scope``,
-            ``acceptance_criteria``, ``milestones``, ``dependencies``.
+            ``acceptance_criteria``, ``milestones``, ``dependencies``, and
+            ``project`` -- the project_identity a new brief is created for,
+            written on insert only; an existing brief keeps its project.
         db_path: optional explicit DB path (tests).
 
     An AC/milestone `status` set via `gaia ac set-status` / `gaia milestone
@@ -149,14 +151,15 @@ def upsert_brief(
                     """
                     INSERT INTO briefs (workspace, name, status, surface_type, title,
                                         objective, context, approach, out_of_scope,
-                                        topic_key, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                        topic_key, project, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         workspace, name,
                         data["status"], data["surface_type"], data["title"],
                         data["objective"], data["context"], data["approach"],
-                        data["out_of_scope"], data["topic_key"], now, now,
+                        data["out_of_scope"], data["topic_key"],
+                        fields.get("project"), now, now,
                     ),
                 )
                 brief_id = con.execute(
@@ -425,6 +428,42 @@ def find_brief_workspaces(
         con.close()
 
 
+class AmbiguousBriefName(LookupError):
+    """A brief name missing from the resolved workspace is held by several."""
+
+    def __init__(self, name: str, workspace: str, holders: list[str]):
+        self.name = name
+        self.workspace = workspace
+        self.holders = holders
+        named = ", ".join(repr(w) for w in holders)
+        super().__init__(
+            f"brief '{name}' is not in workspace '{workspace}' and exists in "
+            f"several: {named} -- pass --workspace=<workspace> to choose one"
+        )
+
+
+def brief_home(
+    workspace: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> str:
+    """Return the workspace that holds brief ``name`` as seen from ``workspace``.
+
+    ``workspace`` itself when it holds the brief or when no workspace does (the
+    caller then reports its own not-found or creates there); otherwise the one
+    workspace that holds it. Raises :class:`AmbiguousBriefName` when several
+    do, never picking one silently (decision D-d of brief
+    ``una-gaia-cualquier-instalacion``).
+    """
+    holders = find_brief_workspaces(name, db_path=db_path)
+    if not holders or workspace in holders:
+        return workspace
+    if len(holders) == 1:
+        return holders[0]
+    raise AmbiguousBriefName(name, workspace, holders)
+
+
 def get_brief(
     workspace: str,
     name: str,
@@ -541,6 +580,87 @@ _LEGAL_TRANSITIONS: dict[str, set[str]] = {
 # for backward compatibility; callers that import ``VALID_STATUSES`` from this
 # module continue to work without changes.
 from gaia.state import VALID_BRIEF_STATUSES as VALID_STATUSES  # noqa: E402
+
+
+def _project_identity(workspace: str, project: str, db_path: Path | None) -> str:
+    """The project_identity of project ``project`` of ``workspace``, else ``project`` if it is one."""
+    from gaia.store.writer import resolve_project_ref
+
+    try:
+        return resolve_project_ref(workspace, project, db_path=db_path)
+    except ValueError:
+        con = _connect(db_path)
+        try:
+            known = con.execute(
+                "SELECT 1 FROM projects WHERE project_identity = ? LIMIT 1", (project,)
+            ).fetchone()
+        finally:
+            con.close()
+    if known is None:
+        raise ValueError(
+            f"project {project!r} is neither a project of workspace {workspace!r} "
+            f"nor a known project identity"
+        )
+    return project
+
+
+def set_brief_project(
+    workspace: str,
+    name: str,
+    project: str | None,
+    *,
+    force: bool = False,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Tag brief ``name`` of ``workspace`` with ``project``.
+
+    ``project`` is a project name of ``workspace`` or the project_identity of a
+    project in any workspace, so a brief can be tagged before or after its
+    project moves. A brief tagged with a project of its own workspace moves
+    with it (``gaia project move``); ``project`` None clears the tag, making it
+    a workspace-level brief again. Returns ``{"mode", "workspace", "brief",
+    "project", "previous"}`` with ``project`` the resolved project_identity; a
+    dry-run writes nothing.
+
+    Raises:
+        ContentWriteForbidden: the dispatched agent may not tag briefs.
+        ValueError: the brief does not exist in ``workspace``, ``project``
+            names no project, or the brief is tagged with another project and
+            ``force`` is off.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_tag_brief_project
+
+    _assert_dispatch_can_tag_brief_project()
+    identity = _project_identity(workspace, project, db_path) if project is not None else None
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id, project FROM briefs WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"brief '{name}' not found in workspace '{workspace}'")
+        if identity is not None and row["project"] not in (None, identity) and not force:
+            raise ValueError(
+                f"brief '{name}' already belongs to project {row['project']!r}; "
+                f"pass --force to retag it"
+            )
+        if not dry_run and row["project"] != identity:
+            con.execute(
+                "UPDATE briefs SET project = ?, updated_at = ? WHERE id = ?",
+                (identity, _now_iso(), row["id"]),
+            )
+            con.commit()
+    finally:
+        con.close()
+    return {
+        "mode": "dry-run" if dry_run else "applied",
+        "workspace": workspace,
+        "brief": name,
+        "project": identity,
+        "previous": row["project"],
+    }
 
 
 def set_status_brief(

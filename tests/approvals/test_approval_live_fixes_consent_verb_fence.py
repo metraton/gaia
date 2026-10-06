@@ -133,8 +133,8 @@ def test_approval_live_fixes_the_cli_alone_lets_a_requester_approve_itself(db_en
     assert _approval_status(db_path, approval_id) == "approved"
 
 
-@pytest.mark.parametrize("command", MODEL_SPELLINGS)
-@pytest.mark.parametrize(
+@pytest.mark.table("command", MODEL_SPELLINGS)
+@pytest.mark.table(
     "payload", [CLAUDE_CODE_SUBAGENT, CLAUDE_CODE_ORCHESTRATOR], ids=["subagent", "orchestrator"],
 )
 def test_approval_live_fixes_claude_code_refuses_the_host_consent_verbs(db_env, command, payload):
@@ -150,7 +150,7 @@ def test_approval_live_fixes_claude_code_refuses_the_host_consent_verbs(db_env, 
     assert verdict.block_response is None, "a categorical refusal carries no approval to sign"
 
 
-@pytest.mark.parametrize("command", PLAIN_READS)
+@pytest.mark.table("command", PLAIN_READS)
 def test_approval_live_fixes_claude_code_leaves_reads_of_the_verbs_alone(db_env, command):
     verdict = _claude_code_verdict(command, CLAUDE_CODE_SUBAGENT)
 
@@ -177,12 +177,18 @@ def test_approval_live_fixes_the_fence_reads_as_deep_as_the_validator(db_env):
     assert hidden.reason == REJECTION_MESSAGE, hidden.reason
 
 
-@pytest.mark.parametrize(
+# One obfuscated spelling proves the plugin reaches the shared guard; the guard's
+# reading of every spelling is the Claude Code table above, in process.
+@pytest.mark.table(
     ("session_id", "command"),
-    [(ROOT_SESSION_ID, PRESENT), (ROOT_SESSION_ID, DECIDE), (SESSION_ID, PRESENT), (SESSION_ID, DECIDE)]
-    + [(SESSION_ID, spelling) for spelling in SHELL_SPELLINGS.values()],
-    ids=["orchestrator-present", "orchestrator-decide", "specialist-present", "specialist-decide"]
-    + [f"specialist-{name}" for name in SHELL_SPELLINGS],
+    [
+        (ROOT_SESSION_ID, PRESENT), (ROOT_SESSION_ID, DECIDE), (SESSION_ID, PRESENT),
+        (SESSION_ID, DECIDE), (SESSION_ID, SHELL_SPELLINGS["empty-quotes"]),
+    ],
+    ids=[
+        "orchestrator-present", "orchestrator-decide", "specialist-present",
+        "specialist-decide", "specialist-empty-quotes",
+    ],
 )
 def test_approval_live_fixes_opencode_refuses_the_host_consent_verbs(db_env, session_id, command):
     env, db_path = db_env

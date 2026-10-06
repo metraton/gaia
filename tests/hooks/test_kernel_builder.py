@@ -9,11 +9,10 @@ The kernel is the data-only context a claimed turn starts with. Pinned here:
     ``acceptance:`` block read from ``task_gates``;
   * ``# Your CLI`` carries the base lines plus per-role frontmatter extras
     (``cli:`` key) when the agent declares them;
-  * ``# How the user works`` inlines the BODY of every
-    ``type='user' AND audience='executor'`` memory row for the workspace,
-    complete and never truncated -- the row COUNT stays bounded, and a
-    pathologically long body is dropped whole rather than sliced; omitted
-    entirely when none match;
+  * ``# How the user works`` inlines the BODY of the user's standing rows,
+    complete and never truncated, from any workspace the dispatch was born
+    in (the selection itself is pinned against the birth block by
+    test_user_selection_parity.py); omitted entirely when there are none;
   * ``build_kernel_context`` joins the blocks and returns None without an
     identity (the CLI/memory blocks never ship without the contract).
 """
@@ -243,7 +242,7 @@ def test_cli_block_renders_frontmatter_extras(tmp_path):
 
 def test_cli_block_without_extras_is_just_the_base(tmp_path):
     block = build_cli_block("no-such-agent", agents_dir=tmp_path)
-    assert len(block.splitlines()) == 12  # heading + blank + 10 base lines
+    assert len(block.splitlines()) == 13  # heading + blank + 11 base lines
 
 
 def test_cli_block_workspace_line_points_at_get_contract_not_get():
@@ -256,20 +255,21 @@ def test_cli_block_workspace_line_points_at_get_contract_not_get():
 
 
 def _seed_memory_row(con, *, name, type_="user", audience="executor",
-                      body="b", class_="anchor", updated_at="2026-01-01T00:00:00Z"):
+                      body="b", class_="anchor", updated_at="2026-01-01T00:00:00Z",
+                      workspace=WORKSPACE):
     con.execute(
         "INSERT INTO workspaces (name, identity) VALUES (?, ?) "
         "ON CONFLICT(name) DO NOTHING",
-        (WORKSPACE, WORKSPACE),
+        (workspace, workspace),
     )
     con.execute(
         "INSERT INTO memory (workspace, name, type, body, class, "
         "updated_at, audience) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (WORKSPACE, name, type_, body, class_, updated_at, audience),
+        (workspace, name, type_, body, class_, updated_at, audience),
     )
 
 
-def test_memory_block_selects_executor_user_rows_and_inlines_the_body(tmp_path):
+def test_memory_block_inlines_the_users_live_anchors_whole_and_only_those(tmp_path):
     db = tmp_path / "gaia.db"
     from gaia.store.writer import _connect
 
@@ -279,18 +279,18 @@ def test_memory_block_selects_executor_user_rows_and_inlines_the_body(tmp_path):
             con, name="user_prefers_live_verification",
             body="Live state and code outrank memory when they disagree.",
         )
-        # Same type, wrong audience -- must NOT appear (the exact defect
-        # being fixed: the old query had no audience filter at all).
         _seed_memory_row(
-            con, name="orchestrator_only_note", audience="orchestrator",
-            body="Orchestrator-facing routing note.",
+            con, name="user_orchestrator_audience_anchor", audience="orchestrator",
+            body="Anchor addressed to the orchestrator alone.",
         )
-        # Right audience, wrong type -- must NOT appear.
         _seed_memory_row(
             con, name="atom_not_a_user_row", type_="atom", class_="log",
-            body="An atom, not a user-preference row.",
+            body="An atom, not a user row.",
         )
-        # Right type and audience, but soft-deleted -- must NOT appear.
+        _seed_memory_row(
+            con, name="user_a_log_entry", class_="log",
+            body="A user log entry, not a standing rule.",
+        )
         _seed_memory_row(
             con, name="user_prefers_plain_reports",
             body="Prefers plain-language reports over structured blocks.",
@@ -304,77 +304,100 @@ def test_memory_block_selects_executor_user_rows_and_inlines_the_body(tmp_path):
     finally:
         con.close()
 
-    block = build_memory_block(WORKSPACE, db_path=db)
+    block = build_memory_block(db_path=db)
     assert block.splitlines()[0] == "# How the user works"
     assert "Live state and code outrank memory when they disagree." in block
-    assert "orchestrator_only_note" not in block
-    assert "Orchestrator-facing routing note." not in block
-    assert "An atom, not a user-preference row." not in block
+    assert "Anchor addressed to the orchestrator alone." not in block
+    assert "An atom, not a user row." not in block
+    assert "A user log entry, not a standing rule." not in block
     assert "Prefers plain-language reports" not in block  # soft-deleted
     # No slug is injected -- only the body.
     assert "user_prefers_live_verification" not in block
 
 
 def test_memory_block_injects_a_long_body_complete_never_truncated(tmp_path):
-    """A body far past the old 600-char cut is injected whole: no truncation
-    mark, and the full 5000-char payload is present verbatim."""
+    """No ceiling cuts or drops a body: the whole payload arrives, even far
+    past what the block is sized for."""
     db = tmp_path / "gaia.db"
     from gaia.store.writer import _connect
 
     con = _connect(db)
     try:
         _seed_memory_row(
-            con, name="user_overlong_preference", body="x" * 5000,
+            con, name="user_overlong_preference", body="x" * 25_000,
         )
         con.commit()
     finally:
         con.close()
 
-    block = build_memory_block(WORKSPACE, db_path=db)
+    block = build_memory_block(db_path=db)
     assert "[truncated]" not in block
-    assert "x" * 5000 in block
+    assert "x" * 25_000 in block
 
 
-def test_memory_block_drops_a_body_past_the_hard_ceiling_whole(tmp_path):
-    """A pathologically long body (over the hard ceiling) is dropped from the
-    block entirely -- never sliced mid-text."""
-    db = tmp_path / "gaia.db"
-    from gaia.store.writer import _connect
-    from modules.context.kernel_builder import _MEMORY_BODY_HARD_CEILING
-
-    con = _connect(db)
-    try:
-        _seed_memory_row(
-            con, name="user_pathological_preference",
-            body="y" * (_MEMORY_BODY_HARD_CEILING + 1),
-        )
-        con.commit()
-    finally:
-        con.close()
-
-    block = build_memory_block(WORKSPACE, db_path=db)
-    assert block == ""
-    assert "y" not in block
+def test_memory_block_empty_without_rows_and_never_an_empty_heading(tmp_path):
+    assert build_memory_block(db_path=tmp_path / "gaia.db") == ""
 
 
-def test_memory_block_empty_without_matching_rows(tmp_path):
-    assert build_memory_block(WORKSPACE, db_path=tmp_path / "gaia.db") == ""
+# ---------------------------------------------------------------------------
+# User memory has no workspace (brief una-gaia-cualquier-instalacion, AC-11):
+# the user's anchors reach the kernel of a born row in ANY workspace, whether
+# they sit in the workspace-less sentinel or still in a legacy workspace.
+# ---------------------------------------------------------------------------
+
+USER_SENTINEL = "_gaia_user"
 
 
-def test_memory_block_empty_when_only_non_matching_rows_exist(tmp_path):
+def test_memory_block_reaches_a_dispatch_born_in_any_workspace(tmp_path):
     db = tmp_path / "gaia.db"
     from gaia.store.writer import _connect
 
     con = _connect(db)
     try:
         _seed_memory_row(
-            con, name="orchestrator_only", audience="orchestrator", body="b",
+            con, name="user_sentinel_pref", workspace=USER_SENTINEL,
+            body="Sentinel preference for every executor.",
+        )
+        _seed_memory_row(
+            con, name="user_legacy_me_pref", workspace="me",
+            body="Legacy row still under me.",
         )
         con.commit()
     finally:
         con.close()
 
-    assert build_memory_block(WORKSPACE, db_path=db) == ""
+    kernel = build_kernel_context(_base_row(workspace="other"), db_path=db)
+
+    assert "Sentinel preference for every executor." in kernel
+    assert "Legacy row still under me." in kernel
+
+
+def test_memory_block_bumps_kernel_telemetry_on_each_same_named_row(tmp_path):
+    db = tmp_path / "gaia.db"
+    from gaia.store.writer import _connect
+
+    con = _connect(db)
+    try:
+        _seed_memory_row(
+            con, name="user_sentinel_executor_pref", workspace=USER_SENTINEL,
+            body="Sentinel preference.",
+        )
+        _seed_memory_row(
+            con, name="user_sentinel_executor_pref", workspace="other",
+            body="Same slug in another workspace.",
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    build_memory_block(db_path=db)
+
+    assert _telemetry_row(
+        db, "user_sentinel_executor_pref", USER_SENTINEL,
+    )["kernel_count"] == 1
+    assert _telemetry_row(
+        db, "user_sentinel_executor_pref", "other",
+    )["kernel_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +453,7 @@ class TestMemoryBlockKernelTelemetry:
         before = _telemetry_row(db, "user_prefers_live_verification")
         before_history = _history_count(db)
 
-        block = build_memory_block(WORKSPACE, db_path=db)
+        block = build_memory_block(db_path=db)
 
         after = _telemetry_row(db, "user_prefers_live_verification")
         after_history = _history_count(db)
@@ -443,53 +466,23 @@ class TestMemoryBlockKernelTelemetry:
         assert after["updated_at"] == before["updated_at"]
         assert after_history == before_history
 
-    def test_row_dropped_for_wrong_audience_never_bumps(self, tmp_path):
-        """A row the query candidate-selected out entirely (wrong audience)
-        is not the object under test -- this pins that the telemetry loop
-        only ever iterates rows that made it into ``rows``/the block, never
-        a row the SQL WHERE clause already excluded."""
+    def test_a_row_the_block_does_not_carry_never_bumps(self, tmp_path):
+        """Selected is not emitted: a log row never reaches the block, so it
+        is never counted as shown."""
         db = tmp_path / "gaia.db"
         from gaia.store.writer import _connect
 
         con = _connect(db)
         try:
-            _seed_memory_row(
-                con, name="orchestrator_only", audience="orchestrator", body="b",
-            )
+            _seed_memory_row(con, name="user_a_log_entry", class_="log", body="b")
             con.commit()
         finally:
             con.close()
 
-        before = _telemetry_row(db, "orchestrator_only")
-        build_memory_block(WORKSPACE, db_path=db)
-        after = _telemetry_row(db, "orchestrator_only")
+        before = _telemetry_row(db, "user_a_log_entry")
+        build_memory_block(db_path=db)
+        after = _telemetry_row(db, "user_a_log_entry")
 
-        assert after == before
-
-    def test_body_over_hard_ceiling_is_dropped_and_never_bumped(self, tmp_path):
-        """A candidate SELECTed by the query but then dropped by this
-        builder (body over the hard ceiling) must not bump kernel --
-        selected is not emitted, the same property the get-relevant
-        renderers are held to."""
-        db = tmp_path / "gaia.db"
-        from gaia.store.writer import _connect
-        from modules.context.kernel_builder import _MEMORY_BODY_HARD_CEILING
-
-        con = _connect(db)
-        try:
-            _seed_memory_row(
-                con, name="user_pathological_preference",
-                body="y" * (_MEMORY_BODY_HARD_CEILING + 1),
-            )
-            con.commit()
-        finally:
-            con.close()
-
-        before = _telemetry_row(db, "user_pathological_preference")
-        block = build_memory_block(WORKSPACE, db_path=db)
-        after = _telemetry_row(db, "user_pathological_preference")
-
-        assert block == ""
         assert after == before
 
     def test_second_call_renders_byte_identical_block(self, tmp_path):
@@ -506,8 +499,8 @@ class TestMemoryBlockKernelTelemetry:
         finally:
             con.close()
 
-        first = build_memory_block(WORKSPACE, db_path=db)
-        second = build_memory_block(WORKSPACE, db_path=db)
+        first = build_memory_block(db_path=db)
+        second = build_memory_block(db_path=db)
         assert first == second
 
     def test_degrades_when_telemetry_raises(self, tmp_path):
@@ -531,7 +524,7 @@ class TestMemoryBlockKernelTelemetry:
             "gaia.store.writer.record_memory_access",
             side_effect=RuntimeError("boom"),
         ):
-            block = build_memory_block(WORKSPACE, db_path=db)
+            block = build_memory_block(db_path=db)
 
         assert "Live state and code outrank memory" in block
 

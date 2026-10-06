@@ -18,7 +18,9 @@ WHOLE row (expensive) and nothing (free), and free wins every time; the narrow `
 makes reading the row cheaper than skipping it. `contract list --state DISPATCHED` lists turns still
 open; `contract list --cut` lists every turn that did not close cleanly, naming the specialist and the
 lane; `contract view --harness-id <agentId>`, with the id the dispatch returned, gives that turn's own
-partial evidence.
+partial evidence. Before re-dispatching or judging where a plan's spend went, `usage show --plan <id>`
+gives its tokens per session and per agent, split into bound, unbound and main (main is an upper bound);
+`brief history <slug>` shows how the brief's ACs, decisions and plan versions changed.
 
 ## Reading order
 
@@ -63,6 +65,12 @@ contents: a `key_outputs` line saying the file now reads X is the agent's readin
 relaying that as the file's text skips the one step that could have caught a misreading. Relay it
 only after the `verbatim_outputs` excerpt that shows it, or after opening the artifact yourself; if
 neither happened, say it as the row's claim rather than as the artifact's content.
+
+External state — a PR's CI, a deploy, a reconcile — reaches you as a snapshot in the row: the
+literal table in `verbatim_outputs`, the commit SHA it covers, and the time it was seen. Before
+calling a PR green, compare that SHA with the PR head you are about to report. A mismatch means the
+evidence is stale: it describes a commit that is no longer the head. Answer it with a re-dispatch of
+the owning specialist, never with a reading of the forge of your own.
 
 **Phase 4 — handoff.** Pass the COORDINATE, not the narrative.
 

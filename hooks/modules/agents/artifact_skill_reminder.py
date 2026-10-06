@@ -34,7 +34,7 @@ Two constraints shape the design:
 
 Persistence mirrors the existing PreToolUse -> SubagentStart bridges in
 ``hooks/adapters/claude_code.py`` (``_cache_context_for_subagent`` /
-``_cache_resume_mapping``): a TTL-bounded file under ``/tmp``, not the
+``_cache_resume_mapping``): a TTL-bounded file under ``gaia.paths.tmp_dir()``, not the
 project's own ``.claude/`` state directory, because this marker carries no
 audit value once the turn ends -- it exists only to suppress a repeat
 reminder within one subagent's lifetime.
@@ -53,7 +53,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-REMINDER_CACHE_DIR = Path("/tmp/gaia-artifact-skill-reminders")
+from gaia.paths import tmp_dir
+
+REMINDER_CACHE_DIR = tmp_dir() / "gaia-artifact-skill-reminders"
 
 # Generous relative to any single subagent turn -- long enough that a slow
 # turn never sees the marker expire mid-turn and re-remind, short enough that
@@ -99,7 +101,7 @@ def should_remind(session_id: str, agent_id: str, skill: str) -> bool:
     False and the reminder is not repeated. Missing ``session_id``,
     ``agent_id``, or ``skill`` never reminds (nothing stable to key on).
 
-    A persistence failure (unwritable /tmp) degrades to "always remind" --
+    A persistence failure (unwritable tmp dir) degrades to "always remind" --
     at worst a noisier but still advisory reminder, never a block, and never
     an exception raised into the caller.
     """

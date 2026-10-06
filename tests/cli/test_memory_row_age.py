@@ -142,7 +142,7 @@ class TestRowAgeForwardOnly:
         rc = _run(parser, [
             "add", "--name=atom_preexisting_one", "--type=atom",
             "--body=edited body, this is a correction not a birth",
-            f"--workspace={_WORKSPACE}",
+            f"--workspace={_WORKSPACE}", "--replace",
         ])
         assert rc in (0, None)
 

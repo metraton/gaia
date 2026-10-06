@@ -16,7 +16,7 @@ wiring (argv, cwd, exit-code interpretation) genuinely works end to end.
 
 The Phase 3 `publish` tests never spawn a real `git`, `gh`, `npm test`, or
 `node scripts/release-prepare.mjs` -- every one of those is mocked at the
-`subprocess.run` boundary (or the `step_*`/`gate_npm_test` boundary for the
+`subprocess.run` boundary (or the `step_*`/`gate_tests` boundary for the
 orchestration tests). Nothing in this suite pushes to a remote, creates a
 GitHub Release, or writes to the real repo's git state.
 """
@@ -30,9 +30,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,8 +68,9 @@ from cli.release import (  # noqa: E402
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _node_available() -> bool:
-    return shutil.which("node") is not None
+from tests.conftest import require_tool  # noqa: E402
+
+require_tool("node")
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +254,6 @@ class TestGatePrePublishValidateMocked(unittest.TestCase):
         self.assertIn("node not found", res["detail"])
 
 
-@unittest.skipUnless(_node_available(), "node not available in this environment")
 class TestGatePrePublishValidateReal(unittest.TestCase):
     """Real, read-only invocation against the actual source tree.
 
@@ -273,14 +274,20 @@ class TestGatePrePublishValidateReal(unittest.TestCase):
 # gate_npm_sandbox -- gate 2 (mocked pack_tarball + subprocess)
 # ---------------------------------------------------------------------------
 
+_CREATED_PACK = {
+    "action": "created", "path": "/tmp/pkg.tgz", "details": "ok",
+    "tarball": Path("/tmp/pkg.tgz"), "name": "@jaguilar87/gaia", "version": "9.9.9",
+}
+_NODE_DEPS_PASS = {"name": "node deps", "status": "PASS", "detail": "installed", "duration_ms": 1}
+
+
 class TestGateNpmSandbox(unittest.TestCase):
     def test_pack_failure_short_circuits_without_running_script(self):
         calls = []
-        with patch(
-            "cli.release._pack_helpers.pack_tarball",
-            return_value={"action": "error", "path": "", "details": "npm pack failed"},
-        ), patch("cli.release.subprocess.run", side_effect=lambda *a, **k: calls.append(1)):
-            res = gate_npm_sandbox(_REPO_ROOT)
+        with patch("cli.release.subprocess.run", side_effect=lambda *a, **k: calls.append(1)):
+            res = gate_npm_sandbox(
+                _REPO_ROOT, {"action": "error", "path": "", "details": "npm pack failed"}
+            )
 
         self.assertEqual(res["name"], "gaia:verify-install:local")
         self.assertEqual(res["status"], "FAIL")
@@ -290,48 +297,96 @@ class TestGateNpmSandbox(unittest.TestCase):
     def test_pass_invokes_validate_sandbox_with_tarball_and_target_sandbox(self):
         captured = {}
 
-        def fake_pack(source_root, dest_dir=None, **kwargs):
-            tb = Path(dest_dir) / "pkg.tgz"
-            tb.write_bytes(b"x")
-            return {
-                "action": "created", "path": str(tb), "details": "ok",
-                "tarball": tb, "name": "@jaguilar87/gaia", "version": "9.9.9",
-            }
-
         def fake_run(cmd, **kwargs):
             captured["cmd"] = cmd
             captured["cwd"] = kwargs.get("cwd")
             return subprocess.CompletedProcess(cmd, 0, "RESULT: PASS", "")
 
-        with patch("cli.release._pack_helpers.pack_tarball", side_effect=fake_pack), \
-             patch("cli.release.subprocess.run", side_effect=fake_run):
-            res = gate_npm_sandbox(_REPO_ROOT)
+        with patch("cli.release.subprocess.run", side_effect=fake_run):
+            res = gate_npm_sandbox(_REPO_ROOT, _CREATED_PACK)
 
         self.assertEqual(res["status"], "PASS")
         self.assertEqual(captured["cmd"][0], "bash")
         self.assertIn("validate-sandbox.sh", captured["cmd"][1])
-        self.assertIn("--tarball", captured["cmd"])
+        self.assertEqual(captured["cmd"][captured["cmd"].index("--tarball") + 1], "/tmp/pkg.tgz")
         self.assertIn("--target", captured["cmd"])
         self.assertIn("sandbox", captured["cmd"])
         self.assertEqual(captured["cwd"], str(_REPO_ROOT))
 
     def test_nonzero_exit_returns_fail(self):
-        def fake_pack(source_root, dest_dir=None, **kwargs):
-            tb = Path(dest_dir) / "pkg.tgz"
-            tb.write_bytes(b"x")
-            return {
-                "action": "created", "path": str(tb), "details": "ok",
-                "tarball": tb, "name": "@jaguilar87/gaia", "version": "9.9.9",
-            }
-
-        with patch("cli.release._pack_helpers.pack_tarball", side_effect=fake_pack), \
-             patch(
-                 "cli.release.subprocess.run",
-                 return_value=subprocess.CompletedProcess([], 1, "", "RESULT: FAIL"),
-             ):
-            res = gate_npm_sandbox(_REPO_ROOT)
+        with patch(
+            "cli.release.subprocess.run",
+            return_value=subprocess.CompletedProcess([], 1, "", "RESULT: FAIL"),
+        ):
+            res = gate_npm_sandbox(_REPO_ROOT, _CREATED_PACK)
 
         self.assertEqual(res["status"], "FAIL")
+
+
+# ---------------------------------------------------------------------------
+# gate_opencode_surface -- gate 6, on fixture packages built from this repo
+# ---------------------------------------------------------------------------
+
+def _opencode_package_fixture(tmp: Path) -> Path:
+    """Stage this repo's OpenCode-facing slice as an npm package root."""
+    package = tmp / "package"
+    for rel in ("opencode", "agents", "skills"):
+        shutil.copytree(_REPO_ROOT / rel, package / rel)
+    (package / "bin").mkdir()
+    shutil.copy2(_REPO_ROOT / "bin" / "gaia", package / "bin" / "gaia")
+    return package
+
+
+def _pack_fixture(package: Path) -> dict:
+    tarball = package.parent / "gaia-fixture.tgz"
+    with tarfile.open(tarball, "w:gz") as archive:
+        archive.add(package, arcname="package")
+    return {"action": "created", "path": str(tarball), "details": "ok", "tarball": tarball}
+
+
+class TestGateOpenCodeSurface(unittest.TestCase):
+    def _gate(self, mutate=lambda package: None):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = _opencode_package_fixture(Path(tmp))
+            mutate(package)
+            return release_mod.gate_opencode_surface(_pack_fixture(package))
+
+    def test_opencode_complete_package_passes(self):
+        res = self._gate()
+        self.assertEqual(res["name"], "opencode:surface")
+        self.assertEqual(res["status"], "PASS", res["detail"])
+
+    def test_opencode_missing_plugin_ts_fails_naming_it(self):
+        res = self._gate(lambda package: (package / "opencode" / "plugin.ts").unlink())
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("opencode/plugin.ts", res["detail"])
+
+    def test_opencode_missing_agent_file_fails_naming_it(self):
+        res = self._gate(lambda package: (package / "agents" / "developer.md").unlink())
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("agents/developer.md", res["detail"])
+
+    def test_opencode_missing_bin_gaia_fails_naming_it(self):
+        res = self._gate(lambda package: (package / "bin" / "gaia").unlink())
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("../bin/gaia", res["detail"])
+
+    def test_opencode_missing_bridge_fails_naming_it(self):
+        res = self._gate(lambda package: (package / "opencode" / "bridge.py").unlink())
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("./bridge.py", res["detail"])
+
+    def test_opencode_pack_failure_fails(self):
+        res = release_mod.gate_opencode_surface({"action": "error", "path": "", "details": "npm pack failed"})
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("npm pack failed", res["detail"])
+
+    def test_opencode_check_help_names_the_gate(self):
+        parser = argparse.ArgumentParser()
+        register(parser.add_subparsers(dest="command"))
+        with redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            parser.parse_args(["release", "check", "--help"])
+        self.assertIn("opencode:surface", out.getvalue())
 
 
 # ---------------------------------------------------------------------------
@@ -537,68 +592,61 @@ class TestGateConvergence(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestRunReleaseCheckOrchestration(unittest.TestCase):
-    def test_runs_all_five_gates_in_order(self):
-        call_order = []
+    _GATES = (
+        "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
+        "gate_tests", "gate_convergence", "gate_opencode_surface",
+    )
 
+    def _run_check(self, gates, **kwargs):
+        """Run the orchestration with every gate and the shared pack replaced."""
+        with ExitStack() as stack:
+            stack.enter_context(patch("cli.release._pack_helpers.pack_tarball", return_value=_CREATED_PACK))
+            stack.enter_context(patch("cli.release.step_node_deps", return_value=_NODE_DEPS_PASS))
+            for name in self._GATES:
+                stack.enter_context(patch(f"cli.release.{name}", side_effect=gates[name]))
+            return run_release_check(_REPO_ROOT, **kwargs)[1:]
+
+    def _recording_gates(self, call_order, status_of=lambda name: "PASS"):
         def make_gate(name):
             def _gate(*a, **k):
-                call_order.append(name)
-                return {"name": name, "status": "PASS", "detail": "ok", "duration_ms": 1}
+                call_order.append((name, a, k))
+                return {"name": name, "status": status_of(name), "detail": "ok", "duration_ms": 1}
             return _gate
+        return {name: make_gate(name) for name in self._GATES}
 
-        with patch("cli.release.gate_pre_publish_validate", side_effect=make_gate("g1")), \
-             patch("cli.release.gate_npm_sandbox", side_effect=make_gate("g2")), \
-             patch("cli.release.gate_plugin_dryrun", side_effect=make_gate("g3")), \
-             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")), \
-             patch("cli.release.gate_convergence", side_effect=make_gate("g5")):
-            results = run_release_check(_REPO_ROOT)
+    def test_runs_all_six_gates_in_order(self):
+        call_order = []
+        results = self._run_check(self._recording_gates(call_order))
 
-        self.assertEqual(call_order, ["g1", "g2", "g3", "g4", "g5"])
-        self.assertEqual(len(results), 5)
+        self.assertEqual([name for name, _, _ in call_order], list(self._GATES))
+        self.assertEqual(len(results), 6)
+
+    def test_release_check_runs_the_opencode_gate_on_the_shared_pack(self):
+        call_order = []
+        results = self._run_check(self._recording_gates(call_order))
+
+        calls = {name: (a, k) for name, a, k in call_order}
+        self.assertEqual(calls["gate_npm_sandbox"][0][1], _CREATED_PACK)
+        self.assertEqual(calls["gate_opencode_surface"][0][0], _CREATED_PACK)
+        self.assertEqual(results[5]["name"], "gate_opencode_surface")
 
     def test_does_not_short_circuit_on_early_failure(self):
-        """All 5 gates run even when gate 1 fails -- full picture, per AC-2."""
+        """All 6 gates run even when gate 1 fails -- full picture, per AC-2."""
         call_order = []
+        gates = self._recording_gates(
+            call_order, status_of=lambda name: "FAIL" if name == "gate_pre_publish_validate" else "PASS"
+        )
+        results = self._run_check(gates)
 
-        def failing_gate1(*a, **k):
-            call_order.append("g1")
-            return {"name": "g1", "status": "FAIL", "detail": "boom", "duration_ms": 1}
-
-        def make_gate(name):
-            def _gate(*a, **k):
-                call_order.append(name)
-                return {"name": name, "status": "PASS", "detail": "ok", "duration_ms": 1}
-            return _gate
-
-        with patch("cli.release.gate_pre_publish_validate", side_effect=failing_gate1), \
-             patch("cli.release.gate_npm_sandbox", side_effect=make_gate("g2")), \
-             patch("cli.release.gate_plugin_dryrun", side_effect=make_gate("g3")), \
-             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")), \
-             patch("cli.release.gate_convergence", side_effect=make_gate("g5")):
-            results = run_release_check(_REPO_ROOT)
-
-        self.assertEqual(call_order, ["g1", "g2", "g3", "g4", "g5"])
+        self.assertEqual([name for name, _, _ in call_order], list(self._GATES))
         self.assertEqual(results[0]["status"], "FAIL")
 
     def test_functional_flag_forwarded_to_plugin_dryrun_gate(self):
-        captured = {}
+        call_order = []
+        self._run_check(self._recording_gates(call_order), functional=True)
 
-        def fake_gate3(repo_root, *, functional=False, **kwargs):
-            captured["functional"] = functional
-            return {"name": "gaia:plugin-dryrun", "status": "SKIP", "detail": "n/a", "duration_ms": 1}
-
-        with patch("cli.release.gate_pre_publish_validate",
-                   return_value={"name": "g1", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
-             patch("cli.release.gate_npm_sandbox",
-                   return_value={"name": "g2", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
-             patch("cli.release.gate_plugin_dryrun", side_effect=fake_gate3), \
-             patch("cli.release.gate_npm_test",
-                   return_value={"name": "g4", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
-             patch("cli.release.gate_convergence",
-                   return_value={"name": "g5", "status": "PASS", "detail": "ok", "duration_ms": 1}):
-            run_release_check(_REPO_ROOT, functional=True)
-
-        self.assertTrue(captured["functional"])
+        calls = {name: k for name, _, k in call_order}
+        self.assertTrue(calls["gate_plugin_dryrun"]["functional"])
 
 
 class TestCmdReleaseCheck(unittest.TestCase):
@@ -831,12 +879,13 @@ class TestResolveSourceRoot(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestBuildPublishPlan(unittest.TestCase):
-    def test_plan_lists_all_six_steps_in_order(self):
+    def test_plan_lists_all_eight_steps_in_order(self):
         plan = build_publish_plan("5.0.5")
         names = [s["name"] for s in plan]
         self.assertEqual(
             names,
-            ["release:prepare", "npm test", "git commit", "git tag", "git push", "gh release create"],
+            ["node deps", "release:prepare", "sandbox install", "CI verdict or local suite", "git commit",
+             "git tag", "git push", "gh release create"],
         )
 
     def test_plan_marks_push_and_gh_release_as_t3(self):
@@ -1008,7 +1057,7 @@ class TestStepGitTag(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestStepGitPush(unittest.TestCase):
-    def test_uses_follow_tags_single_push(self):
+    def test_pushes_head_and_tag_to_the_named_origin_branch_in_one_atomic_push(self):
         captured = {}
 
         def fake_run(cmd, **kwargs):
@@ -1016,17 +1065,20 @@ class TestStepGitPush(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         with patch("cli.release.subprocess.run", side_effect=fake_run):
-            res = step_git_push(_REPO_ROOT)
+            res = step_git_push(_REPO_ROOT, "5.0.5", "feat/x")
 
         self.assertEqual(res["status"], "PASS")
-        self.assertEqual(captured["cmd"], ["git", "push", "--follow-tags"])
+        self.assertEqual(
+            captured["cmd"],
+            ["git", "push", "--atomic", "origin", "HEAD:refs/heads/feat/x", "refs/tags/v5.0.5"],
+        )
 
     def test_nonzero_exit_fails(self):
         with patch(
             "cli.release.subprocess.run",
             return_value=subprocess.CompletedProcess([], 1, "", "rejected"),
         ):
-            res = step_git_push(_REPO_ROOT)
+            res = step_git_push(_REPO_ROOT, "5.0.5", "feat/x")
         self.assertEqual(res["status"], "FAIL")
 
 
@@ -1072,7 +1124,7 @@ class TestStepGhReleaseCreate(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestRunReleasePublishOrchestration(unittest.TestCase):
-    def test_runs_all_six_steps_in_order_when_all_pass(self):
+    def test_runs_all_eight_steps_in_order_when_all_pass(self):
         call_order = []
 
         def make_step(name):
@@ -1083,8 +1135,10 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
 
         with patch("cli.release.preflight_publish",
                    return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
+             patch("cli.release.step_node_deps", side_effect=make_step("node deps")), \
              patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
-             patch("cli.release.gate_npm_test", side_effect=make_step("npm test")), \
+             patch("cli.release.step_sandbox_install", side_effect=make_step("sandbox install")), \
+             patch("cli.release.gate_tests", side_effect=make_step("npm test")), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")), \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")), \
              patch("cli.release.step_git_push", side_effect=make_step("git push")), \
@@ -1093,9 +1147,10 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
 
         self.assertEqual(
             call_order,
-            ["release:prepare", "npm test", "git commit", "git tag", "git push", "gh release create"],
+            ["node deps", "release:prepare", "sandbox install", "npm test", "git commit", "git tag", "git push",
+             "gh release create"],
         )
-        self.assertEqual(len(results), 6)
+        self.assertEqual(len(results), 8)
 
     def test_stops_at_first_failure_unlike_release_check(self):
         """Contrasts run_release_check's always-run-all-4 design: publish's
@@ -1115,16 +1170,18 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
 
         with patch("cli.release.preflight_publish",
                    return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
+             patch("cli.release.step_node_deps", side_effect=make_step("node deps")), \
              patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
-             patch("cli.release.gate_npm_test", side_effect=failing_step), \
+             patch("cli.release.step_sandbox_install", side_effect=make_step("sandbox install")), \
+             patch("cli.release.gate_tests", side_effect=failing_step), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")) as mock_commit, \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")) as mock_tag, \
              patch("cli.release.step_git_push", side_effect=make_step("git push")) as mock_push, \
              patch("cli.release.step_gh_release_create", side_effect=make_step("gh release create")) as mock_gh:
             results = run_release_publish(_REPO_ROOT, "5.0.5")
 
-        self.assertEqual(call_order, ["release:prepare", "npm test"])
-        self.assertEqual(len(results), 2)
+        self.assertEqual(call_order, ["node deps", "release:prepare", "sandbox install", "npm test"])
+        self.assertEqual(len(results), 4)
         self.assertEqual(results[-1]["status"], "FAIL")
         mock_commit.assert_not_called()
         mock_tag.assert_not_called()
@@ -1198,7 +1255,7 @@ class TestCmdReleasePublish(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # AC-3 CRITICAL: this module must never invoke npm's own registry-publish
 # command directly -- that stays in CI (.github/workflows/publish.yml),
-# gated behind NODE_AUTH_TOKEN.
+# which publishes through npm trusted publishing (OIDC).
 # ---------------------------------------------------------------------------
 
 _NPM_PUBLISH_INVOCATION_RE = re.compile(r"""(['"])npm\1\s*,\s*(['"])publish\2""")
@@ -1227,7 +1284,7 @@ class TestNeverInvokesNpmPublishDirectly(unittest.TestCase):
         the ones closest to the real release trigger.
         """
         for step, args in (
-            (step_git_push, (_REPO_ROOT,)),
+            (step_git_push, (_REPO_ROOT, "5.0.5", "main")),
             (step_gh_release_create, (_REPO_ROOT, "5.0.5")),
         ):
             captured = {}
@@ -1264,7 +1321,7 @@ class TestNeverInvokesNpmPublishDirectly(unittest.TestCase):
 
 class TestGaiaEntrypointVersionDestCollision(unittest.TestCase):
     def test_release_publish_dry_run_reaches_the_publish_plan(self):
-        """`gaia release publish 5.1.0-rc.1 --dry-run` must print the six-step
+        """`gaia release publish 5.1.0-rc.1 --dry-run` must print the eight-step
         trigger sequence, not just the bare version string."""
         bin_gaia = _BIN_DIR / "gaia"
         with tempfile.TemporaryDirectory() as tmp:

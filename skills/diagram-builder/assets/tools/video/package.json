@@ -1,0 +1,9 @@
+{
+  "name": "diagram-deck-video",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The narrated video of a diagram deck. Its only dependency is Playwright, installed here with the user's consent and only for the video; the deck's own package.json keeps zero dependencies.",
+  "dependencies": {
+    "playwright": "1.61.1"
+  }
+}

@@ -501,6 +501,44 @@ def test_flat_multi_conversion_preserves_workspace_metadata(tmp_db):
     assert meta["_source"] == "hand-authored"
 
 
+def test_entry_holding_only_a_declared_workflow_is_the_scanned_project(tmp_db):
+    from tools.scan.promote import promote_workspace
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    ws = "declared-first"
+    _write_contract(tmp_db, ws, {"gaia": {"workflow": "pull request into feat/x"}})
+    _seed_project(tmp_db, ws, "gaia", path="/abs/gaia", identity="/abs/gaia/.git")
+    _seed_project(tmp_db, ws, "other", path="/abs/other", identity="/abs/other/.git")
+
+    promote_workspace(ws, db_path=tmp_db, apply=True)
+    payload = _read_contract(tmp_db, ws)
+
+    assert payload["gaia"]["workflow"] == "pull request into feat/x"
+    assert payload["gaia"]["local_path"] == "/abs/gaia"
+    assert payload["gaia"]["name"] == "gaia"
+    assert sorted(payload) == ["gaia", "other"]
+    assert WORKSPACE_META_KEY not in payload
+
+
+def test_rescan_reclaims_a_project_entry_parked_under_the_workspace_key(tmp_db):
+    from tools.scan.promote import promote_workspace
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    ws = "parked"
+    _write_contract(tmp_db, ws, {
+        WORKSPACE_META_KEY: {"gaia": {"workflow": "pull request into feat/x"}},
+        "gaia": {"name": "gaia", "local_path": "/abs/gaia"},
+    })
+    _seed_project(tmp_db, ws, "gaia", path="/abs/gaia", identity="/abs/gaia/.git")
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    payload = _read_contract(tmp_db, ws)
+
+    assert rep["outcome"] == "applied"
+    assert (rep["added_entries"], rep["refreshed_entries"], rep["reclaimed_entries"]) == (0, 0, 1)
+    assert list(payload) == ["gaia"]
+    assert payload["gaia"]["workflow"] == "pull request into feat/x"
+    assert payload["gaia"]["local_path"] == "/abs/gaia"
+
+
 def test_scanner_shape_single_project_not_flat_refreshed(tmp_db):
     """A scanner (workspace_repos) shape must never go through _merge_flat,
     which would inject top-level scan-owned keys and corrupt it. It is
@@ -871,6 +909,13 @@ class _MockArgs:
         self.__dict__.update(defaults)
 
 
+def _declare(name: str, root) -> None:
+    from gaia.store.writer import declare_workspace
+
+    root.mkdir(parents=True, exist_ok=True)
+    declare_workspace(name, root)
+
+
 def test_cli_scan_apply_promotes_into_contract(tmp_path, monkeypatch, capsys):
     """`gaia scan` (apply) writes projects AND promotes them into the
     project_identity contract via the wired stage 3."""
@@ -882,6 +927,7 @@ def test_cli_scan_apply_promotes_into_contract(tmp_path, monkeypatch, capsys):
 
     # aaxis/aos/aos-iac tree: workspace=aaxis, project=aos, repo=aos-iac.
     (tmp_path / "aaxis" / "aos" / "aos-iac" / ".git").mkdir(parents=True)
+    _declare("aaxis", tmp_path / "aaxis")
 
     args = _MockArgs(workspace="aaxis", root=str(tmp_path / "aaxis"), json=True)
     rc = scan_mod.cmd_scan(args)
@@ -902,11 +948,11 @@ def test_cli_scan_apply_promotes_into_contract(tmp_path, monkeypatch, capsys):
     assert entry.get("local_path", "").endswith("aos-iac")
 
 
-def test_cli_scan_prints_promotion_collision_warning(tmp_path, monkeypatch, capsys):
-    """AC-2 -- end-to-end: `gaia scan` (human, non-JSON output) over a fixture
-    of two real clones of the same remote prints the visible WARNING block,
-    analogous to the repo-collision block classify.py already emits for the
-    rows layer (bin/cli/scan.py ~L93-99)."""
+def test_cli_scan_prints_the_copy_warning_for_a_second_clone(tmp_path, monkeypatch, capsys):
+    """End-to-end: `gaia scan` (human output) over two real clones of one remote
+    promotes one project and prints the second clone as a copy of it; the
+    promotion-collision block above stays reachable only for rows that already
+    exist as two projects."""
     import subprocess
     import cli.scan as scan_mod
 
@@ -921,14 +967,40 @@ def test_cli_scan_prints_promotion_collision_warning(tmp_path, monkeypatch, caps
         repo.mkdir(parents=True)
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "remote", "add", "origin", remote], cwd=repo, check=True)
+    _declare("ws-dup-clones", ws_root)
 
     args = _MockArgs(workspace="ws-dup-clones", root=str(ws_root))
     rc = scan_mod.cmd_scan(args)
     assert rc == 0
 
     out = capsys.readouterr().out
-    assert "WARNING -- promotion collisions" in out
-    assert "matched_slug=clone_one -> assigned_slug=clone_two" in out
+    assert "WARNING -- second clones recorded as copies, not projects:" in out
+    assert f"repo=clone-two path={ws_root / 'clone-two'} copy_of=ws-dup-clones/clone-one" in out
+    assert "WARNING -- promotion collisions" not in out
+
+
+def test_cli_scan_reports_a_reclaimed_entry(tmp_path, monkeypatch, capsys):
+    import subprocess
+    import cli.scan as scan_mod
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    from gaia.paths import db_path
+
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+    ws_root = tmp_path / "ws-parked"
+    repo = ws_root / "gaia"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    _write_contract(db_path(), "ws-parked", {
+        WORKSPACE_META_KEY: {"gaia": {"workflow": "pull request into feat/x"}},
+        "gaia": {"name": "gaia", "local_path": str(repo)},
+    })
+    _declare("ws-parked", ws_root)
+
+    rc = scan_mod.cmd_scan(_MockArgs(workspace="ws-parked", root=str(ws_root)))
+
+    assert rc == 0
+    assert "reclaimed=1" in capsys.readouterr().out
+    assert _read_contract(db_path(), "ws-parked")["gaia"]["workflow"] == "pull request into feat/x"
 
 
 def test_cli_scan_dry_run_previews_promotion_without_db(tmp_path, monkeypatch, capsys):

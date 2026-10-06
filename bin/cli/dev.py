@@ -3,9 +3,11 @@ gaia dev -- Fast local dev loop: pack + install + wire in one command.
 
 Collapses today's manual 3-step loop (`npm pack` -> `npm`/`pnpm add
 <tarball>` -> `gaia install --workspace <target>`) into a single non-atomic
-`gaia dev [--workspace <path>] [--host <host>]` invocation, so testing a source change in a
-real consumer workspace is one command: edit source, run `gaia dev`,
-restart Claude Code, test.
+`gaia dev [--workspace <path>] --channel npm|plugin|opencode` invocation
+(`--host` stays as the older alias), so testing a source change in a real
+consumer workspace is one command: edit source, run `gaia dev`, restart Claude
+Code (or /reload-plugins on the plugin channel, see `cli._dev_plugin`), test.
+The steps below are the package channels, npm and opencode.
 
 One mode, always pack -- there is no source-linking mode. `gaia dev` never
 leaves a consumer workspace, its `.claude/`, or any global alias pointing at
@@ -35,7 +37,8 @@ tarball.
     machinery a real `npm install` consumer would exercise.
 
 This terminates in `cli.install.cmd_install`, so the wiring logic
-(settings.json, permissions, hooks, symlinks, plugin-registry, DB bootstrap)
+(settings.json, permissions, hooks, symlinks, plugin-registry, and the DB
+through `gaia migrate apply`)
 is never duplicated between this and a plain `gaia install`.
 """
 
@@ -59,6 +62,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from cli import _converge  # type: ignore  # noqa: E402
+from cli import _dev_plugin  # type: ignore  # noqa: E402
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 from cli import install as install_mod  # type: ignore  # noqa: E402
 from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
@@ -67,31 +71,23 @@ from gaia import install_provenance
 
 _NPM_PACKAGE_NAME = "@jaguilar87/gaia"
 
+CHANNEL_CHOICES = ("npm", "plugin", "opencode")
 
-def _restart_warning(host: str = install_mod.ALL_HOSTS) -> str:
-    """The mandatory post-`gaia dev` restart notice for the configured hosts.
+
+def _restart_warning(host: str) -> str:
+    """The mandatory post-`gaia dev` restart notice for the configured host.
 
     The Claude Code harness pins each hook's command at SESSION START and does
     not hot-reload it, so a session that is already open keeps running the OLD
     hooks until it is restarted -- a freshly installed fix is inert until then.
-    Emitted verbatim on every run so the notice is identical and testable.
-
-    Accumulative over hosts: `--host all` warns about every host it configured,
-    since dropping one host's notice leaves that host silently running the old
-    code. Takes the raw `--host` value and expands it here, so a caller cannot
-    pass `all` through and get one host's notice.
     """
-    notices = [
-        "  Restart OpenCode to activate the Gaia plugin and agent configuration."
-        if h == "opencode"
-        else (
-            "  ⚠  Restart your Claude Code session to activate the new hooks.\n"
-            "     The harness pins hook commands at session start (no hot-reload),\n"
-            "     so until you restart, this session keeps running the OLD hooks."
-        )
-        for h in install_mod.resolve_hosts(host)
-    ]
-    return "\n".join(notices)
+    if host == "opencode":
+        return "  Restart OpenCode to activate the Gaia plugin and agent configuration."
+    return (
+        "  ⚠  Restart your Claude Code session to activate the new hooks.\n"
+        "     The harness pins hook commands at session start (no hot-reload),\n"
+        "     so until you restart, this session keeps running the OLD hooks."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +305,7 @@ def wire_workspace_via_installed_gaia(
     *,
     quiet: bool = True,
     timeout: int = 120,
-    host: str = install_mod.ALL_HOSTS,
+    host: str,
 ) -> dict[str, Any]:
     """Run the FRESHLY INSTALLED copy's own `gaia install --workspace`.
 
@@ -318,7 +314,7 @@ def wire_workspace_via_installed_gaia(
     -- see the module docstring for why plugin_root must resolve to the
     installed copy, not this dev source tree.
     """
-    install_mod.resolve_hosts(host)
+    install_mod.require_supported_host(host)
     installed_gaia = (
         workspace / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "gaia"
     )
@@ -402,10 +398,13 @@ def default_pack_dest(workspace: Path) -> Path:
     return cache_dir() / "dev-pack" / workspace_id(cwd=workspace)
 
 
-def _record_install_provenance(workspace: Path, captured: dict) -> bool:
-    """Fail visibly if successful wiring cannot be recorded; never imply rollback."""
+def _record_install_provenance(workspace: Path, captured: dict, **where: Any) -> bool:
+    """Fail visibly if successful wiring cannot be recorded; never imply rollback.
+
+    *where* is the channel and, on the plugin channel, the plugin directory.
+    """
     try:
-        install_provenance.record_install(workspace, captured)
+        install_provenance.record_install(workspace, captured, **where)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"gaia dev: provenance failed after wiring: {exc}; consumer may have changed, no rollback performed", file=sys.stderr)
         return False
@@ -584,7 +583,7 @@ def _run_pack_mode(
     keep_tarball: bool,
     pack_dest: str | None,
     no_global_link: bool = False,
-    host: str = install_mod.ALL_HOSTS,
+    host: str,
 ) -> int:
     """Install through the consumer package manager; report failures without fake rollback."""
     # keep_tarball is retained for CLI compatibility only: now that the
@@ -592,7 +591,7 @@ def _run_pack_mode(
     # cleaned up on exit), there is nothing left to delete, so the flag is
     # a no-op.
     del keep_tarball, no_global_link
-    install_mod.resolve_hosts(host)
+    install_mod.require_supported_host(host)
 
     ownership_error = existing_package_error(workspace, allow_source_links=True, legacy_source_root=_PACKAGE_ROOT)
     if ownership_error:
@@ -662,7 +661,7 @@ def _run_pack_mode(
         print("gaia dev: wiring failed after installation; package and host state may be partially changed; no rollback performed", file=sys.stderr)
         return 1
 
-    if not _record_install_provenance(workspace, captured):
+    if not _record_install_provenance(workspace, captured, channel=install_mod.HOST_ALIASES[host]):
         write_recovery_evidence(recovery_path, workspace, before, "provenance", failed=True)
         return 1
     write_recovery_evidence(recovery_path, workspace, before, "complete", failed=False)
@@ -686,6 +685,63 @@ def _run_pack_mode(
     return 0
 
 
+def _plugin_channel_hooks(workspace: Path) -> dict[str, Any]:
+    """Drop the npm channel's hook entries: the enabled plugin now registers Gaia's hooks."""
+    from cli._install_helpers import sync_workspace_hooks  # noqa: PLC0415
+
+    if sync_workspace_hooks is None:
+        return {"action": "error", "path": str(workspace), "details": "hook writer unavailable"}
+    action, details = sync_workspace_hooks(workspace, "plugin")
+    return {"action": action, "path": str(workspace / ".claude"), "details": details}
+
+
+def _run_plugin_channel(workspace: Path, *, quiet: bool, verbose: bool, pack_dest: str | None) -> int:
+    """Pack, extract to the stable plugin directory, register gaia@gaia-dev locally and select it."""
+    pack_parent = Path(pack_dest).expanduser().resolve() if pack_dest else default_pack_dest(workspace)
+    try:
+        pack_parent.mkdir(parents=True, exist_ok=True)
+        dest_dir = Path(tempfile.mkdtemp(prefix="attempt-", dir=pack_parent))
+    except OSError as exc:
+        print(f"gaia dev: cannot prepare retained pack directory: {exc}", file=sys.stderr)
+        return 1
+
+    pack_res = _pack_helpers.pack_tarball(_PACKAGE_ROOT, dest_dir=dest_dir)
+    _report_step(name="npm pack", result=pack_res, quiet=quiet, verbose=verbose)
+    if pack_res["action"] not in ("created", "updated", "noop"):
+        return 1
+    tarball = content_address_tarball(Path(pack_res["tarball"]))
+    try:
+        captured = install_provenance.capture_source(_PACKAGE_ROOT, tarball=tarball)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"gaia dev: cannot capture source provenance: {exc}", file=sys.stderr)
+        return 1
+
+    directory = _dev_plugin.plugin_dir(workspace)
+    steps = (
+        ("plugin directory", lambda: _dev_plugin.extract_plugin(tarball, directory)),
+        ("register gaia-dev", lambda: _dev_plugin.register_plugin(workspace, directory)),
+        ("select gaia@gaia-dev", lambda: _dev_plugin.select_dev_plugin(workspace)),
+        ("plugin-channel hooks", lambda: _plugin_channel_hooks(workspace)),
+    )
+    for name, run in steps:
+        result = run()
+        _report_step(name=name, result=result, quiet=quiet, verbose=verbose)
+        if result["action"] not in ("created", "updated", "noop"):
+            print(f"gaia dev: plugin channel stopped at '{name}'; earlier steps stay applied, "
+                  "no rollback performed", file=sys.stderr)
+            return 1
+    if not _record_install_provenance(workspace, captured, channel="plugin", destination=directory):
+        return 1
+
+    build_label = record_dev_build(pack_res.get("version")) or pack_res.get("version")
+    if not quiet:
+        print(f"\n  gaia dev: served {pack_res.get('name')}@{build_label} to {workspace} "
+              f"as {_dev_plugin.PLUGIN_ID}.\n")
+        print(_dev_plugin.reload_notice(workspace, directory))
+        print()
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Plugin interface
 # ---------------------------------------------------------------------------
@@ -701,8 +757,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "  npm pack this source tree into a stable, persistent per-workspace\n"
             "  path (default_pack_dest, override with --pack-dest), install into\n"
             "  the actual consumer with npm/pnpm, update its Gaia dependency spec,\n"
-            "  then wire hosts + bootstrap DB via the freshly installed copy's own\n"
-            "  `gaia install`. Each pack attempt is retained separately. Repeated\n"
+            "  then wire hosts + migrate the DB via the freshly installed copy's own\n"
+            "  `gaia install`, which runs `gaia migrate apply` (backup, one\n"
+            "  transaction, one consent for a chain that reaches existing rows).\n"
+            "  Each pack attempt is retained separately. Repeated\n"
             "  normal installations require matching consumer metadata and\n"
             "  package-manager resolution. A legacy link to this exact source\n"
             "  checkout can be saved as a normal local dependency; any other\n"
@@ -713,10 +771,18 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "`.claude/`, and every global alias only ever depend on a packed\n"
             "tarball, never on this source checkout directly.\n"
             "\n"
-            "Use --host=opencode to configure OpenCode, or --host=all to configure\n"
-            "every supported host in one run (the default). No global npm link\n"
-            "or PATH launcher is changed by dev. Global install steps run once\n"
-            "regardless of how many hosts are wired.\n"
+            "Channels (--channel): `npm` installs the package and wires Claude\n"
+            "Code through it; `opencode` installs the package and wires OpenCode;\n"
+            "`plugin` extracts the tarball into a stable per-workspace directory\n"
+            "that is a local marketplace `gaia-dev`, installs gaia@gaia-dev at\n"
+            "local scope in the workspace, disables gaia@gaia-marketplace there\n"
+            "and applies with /reload-plugins, no restart. A channel is required;\n"
+            "there is no default and no `all`. npm and plugin exclude each other:\n"
+            "either refuses while the other is present in the workspace and names\n"
+            "how to remove it. opencode joins either. --host is kept as an alias:\n"
+            "claude_code is --channel npm, opencode is --channel opencode.\n"
+            "No global npm link, PATH launcher or user-scope setting is changed\n"
+            "by dev.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -727,15 +793,18 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=None,
         help="Target workspace (default: INIT_CWD, then cwd)",
     )
-    p.add_argument(
+    selection = p.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--channel",
+        choices=CHANNEL_CHOICES,
+        default=None,
+        help="Channel to serve the build through, required: npm, plugin or opencode",
+    )
+    selection.add_argument(
         "--host",
-        choices=install_mod.HOST_CHOICES,
-        default=install_mod.ALL_HOSTS,
-        help=(
-            "Host to configure, or `all` for every supported host in one run "
-            "(default: all). Forwarded to `gaia install`, which runs "
-            "the global steps once and repeats only the per-host wiring."
-        ),
+        choices=install_mod.SUPPORTED_HOSTS,
+        default=None,
+        help="Alias kept for compatibility: claude_code = --channel npm, opencode = --channel opencode",
     )
     p.add_argument("--from-worktree", help="Use this resolved Gaia checkout instead of the running copy")
     p.add_argument("--ref", help="Require HEAD to equal this full commit SHA; dirty changes remain included")
@@ -803,9 +872,9 @@ def cmd_dev(args: argparse.Namespace) -> int:
     pack_dest = getattr(args, "pack_dest", None)
     no_global_link = bool(getattr(args, "no_global_link", False))
     workspace_arg = getattr(args, "workspace", None)
-    host = getattr(args, "host", install_mod.ALL_HOSTS)
     try:
-        install_mod.resolve_hosts(host)
+        channel = install_mod.resolve_channel(getattr(args, "channel", None), getattr(args, "host", None),
+                                              CHANNEL_CHOICES)
     except ValueError as exc:
         print(f"gaia dev: {exc}", file=sys.stderr)
         return 1
@@ -818,6 +887,10 @@ def cmd_dev(args: argparse.Namespace) -> int:
 
     if not workspace.is_dir():
         print(f"gaia dev: workspace {workspace} is not an existing directory", file=sys.stderr)
+        return 1
+    conflict = install_mod.channel_conflict(workspace, channel)
+    if conflict:
+        print(f"gaia dev: {conflict}", file=sys.stderr)
         return 1
 
     selected = getattr(args, "from_worktree", None)
@@ -837,7 +910,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
         if source != _PACKAGE_ROOT:
             command = [sys.executable, str(source / "bin/gaia"), "dev",
                        "--workspace", str(workspace), "--ref", commit,
-                       "--host", host]
+                       "--channel", channel]
             if quiet:
                 command.append("--quiet")
             if verbose:
@@ -853,8 +926,11 @@ def cmd_dev(args: argparse.Namespace) -> int:
     if not quiet:
         print("\n  gaia dev (pack mode)")
         print(f"  source:    {_PACKAGE_ROOT}")
-        print(f"  workspace: {workspace}\n")
+        print(f"  workspace: {workspace}")
+        print(f"  channel:   {channel}\n")
 
+    if channel == "plugin":
+        return _run_plugin_channel(workspace, quiet=quiet, verbose=verbose, pack_dest=pack_dest)
     return _run_pack_mode(
         workspace,
         quiet=quiet,
@@ -862,7 +938,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
         keep_tarball=keep_tarball,
         pack_dest=pack_dest,
         no_global_link=no_global_link,
-        host=host,
+        host=install_mod.PACKAGE_CHANNELS[channel],
     )
 
 

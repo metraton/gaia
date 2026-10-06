@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Tests for session_manifest -- SessionStart additionalContext (Phase 4).
+"""Tests for session_manifest -- the SessionStart birth block.
 
-Builders are fail-safe and side-effect-free; the assembler concatenates the
-non-empty blocks. These tests use heavy patching to keep each unit isolated
-from disk, processes, and external state.
+The builders are fail-safe and the assembler joins the non-empty parts. The
+whole-block behaviour (four sections, budget, user rows whole, data home) is
+pinned by tests/hooks/test_session_birth_block.py; this file keeps what a
+user feels in the parts: the version and CLI path the Environment names, the
+project roster's names and de-duplication, and that a failure degrades
+instead of stopping the session.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -18,144 +22,66 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.session import session_manifest
 from modules.session.session_manifest import (
-    build_capabilities_block,
+    build_environment_section,
     build_session_context,
-    build_where_i_am_block,
-    build_workspace_memory_block,
 )
 
 
 # ---------------------------------------------------------------------------
-# build_where_i_am_block
+# build_environment_section
 # ---------------------------------------------------------------------------
 
-class TestBuildWhereIAmBlock:
-    def test_block_includes_cwd_and_machine_minimum(self, monkeypatch):
-        """Even with no workspace identity, the block must carry the basics."""
-        # No project-context.json so workspace is None.
-        monkeypatch.setattr(
-            session_manifest, "_read_workspace_identity", lambda: None
-        )
-        # Deterministic machine label.
-        monkeypatch.setattr(
-            session_manifest, "_machine_label", lambda: "host (Linux/x86_64)"
-        )
+class TestBuildEnvironmentSection:
+    @pytest.fixture(autouse=True)
+    def _quiet(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host (Linux/x86_64)")
+        monkeypatch.setattr(session_manifest, "_scan_live_gaia_installation", lambda: None)
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
+        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
+        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: [])
+        monkeypatch.setattr(session_manifest, "_recurring_work_line", lambda _ws: "")
 
-        result = build_where_i_am_block()
-        assert "## Where I am" in result
-        assert "cwd:" in result
+    def test_a_folder_outside_every_workspace_says_so(self):
+        result = build_environment_section()
+
+        assert result.startswith("## Environment")
+        assert f"- Folder: {Path.cwd()} (not inside a declared workspace)" in result.splitlines()
         assert "host (Linux/x86_64)" in result
 
-    def test_block_includes_workspace_when_available(self, monkeypatch):
-        monkeypatch.setattr(
-            session_manifest, "_read_workspace_identity", lambda: "my-workspace"
-        )
-        monkeypatch.setattr(
-            session_manifest, "_machine_label", lambda: "host (Linux/x86_64)"
-        )
+    def test_names_the_workspace_when_there_is_one(self, monkeypatch):
+        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: "my-workspace")
 
-        result = build_where_i_am_block()
-        assert "Gaia workspace (memory/db scope): my-workspace" in result
+        assert "(workspace my-workspace)" in build_environment_section()
 
-    def test_block_prefers_the_live_scan_over_the_package_json_fallback(self, monkeypatch):
-        """Version comes from the live install scan first -- never a table,
-        and never the ancestor-walk fallback while the scan has an answer."""
-        monkeypatch.setattr(
-            session_manifest, "_read_workspace_identity", lambda: None
-        )
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+    def test_version_comes_from_the_live_scan_not_the_package_json(self, monkeypatch):
         monkeypatch.setattr(
             session_manifest,
             "_scan_live_gaia_installation",
             lambda: {"version": "5.5.0-rc.1", "install_mode": "npm"},
         )
-        monkeypatch.setattr(
-            session_manifest, "_read_gaia_version", lambda: "5.0.0-rc.3"
-        )
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.0.0-rc.3")
 
-        result = build_where_i_am_block()
-        assert "Gaia: 5.5.0-rc.1" in result
+        result = build_environment_section()
+
+        assert "- Gaia: 5.5.0-rc.1, npm channel" in result
         assert "5.0.0-rc.3" not in result
 
-    def test_block_falls_back_to_package_json_when_scan_finds_nothing(self, monkeypatch):
-        """No install marker found (e.g. a bare checkout) -> the old
-        ancestor-walk source still renders a version."""
-        monkeypatch.setattr(
-            session_manifest, "_read_workspace_identity", lambda: None
-        )
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
-        monkeypatch.setattr(
-            session_manifest, "_scan_live_gaia_installation", lambda: None
-        )
-        monkeypatch.setattr(
-            session_manifest, "_read_gaia_version", lambda: "5.0.0-rc.3"
-        )
+    def test_version_falls_back_to_the_package_json_when_the_scan_finds_nothing(self):
+        assert "- Gaia: 5.3.0" in build_environment_section()
 
-        result = build_where_i_am_block()
-        assert "Gaia: 5.0.0-rc.3" in result
-
-    def test_block_failsafe_when_workspace_helper_raises(self, monkeypatch):
-        """A subcomponent raising must not propagate -- builder returns
-        either a partial block or ''. Test enforces the no-raise contract."""
-        def _boom():
-            raise RuntimeError("simulated context-file error")
-
-        monkeypatch.setattr(
-            session_manifest, "_read_workspace_identity", _boom
-        )
-
-        # Should not raise; result is allowed to be either "" or a
-        # partial block built without the workspace line.
-        result = build_where_i_am_block()
-        assert isinstance(result, str)
-        # The catch is at the function boundary; we tolerate either branch
-        # but must not see a Workspace line for the failing helper.
-        assert "Workspace:" not in result
-
-    def test_version_line_carries_the_local_dev_build_count(self, monkeypatch, tmp_path):
-        """A `gaia dev` build ships the base semver, so the count is what
-        distinguishes the pristine release from the Nth local iteration."""
-        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
-        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
-        monkeypatch.setattr(
-            session_manifest, "_scan_live_gaia_installation", lambda: None
-        )
-        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
-
+    def test_version_carries_the_local_dev_build_count(self):
+        """A `gaia dev` build ships the base semver; the count tells it from the release."""
         from gaia.dev_builds import record_build
+
         record_build("5.3.0", "fb27693c")
 
-        assert "Gaia: 5.3.0 (dev.1, build fb27693c)" in build_where_i_am_block()
+        assert "- Gaia: 5.3.0 (dev.1, build fb27693c)" in build_environment_section()
 
-    def test_version_line_is_bare_when_no_dev_build_was_recorded(self, monkeypatch, tmp_path):
-        """A pristine npm install has no sidecar, and must render as it always did."""
-        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
-        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
-        monkeypatch.setattr(
-            session_manifest, "_scan_live_gaia_installation", lambda: None
-        )
-        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
-
-        result = build_where_i_am_block()
-        assert "Gaia: 5.3.0" in result
-        assert "dev." not in result
-
-    def test_version_line_degrades_when_the_counter_raises(self, monkeypatch):
-        """SessionStart must not be breakable by the counter.
-
-        Same discipline as the memory block: any failure yields the display
-        that existed before the counter did, never an exception and never a
-        dropped Where I am block.
-        """
-        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
-        monkeypatch.setattr(
-            session_manifest, "_scan_live_gaia_installation", lambda: None
-        )
-        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
-
+    def test_version_degrades_to_bare_when_the_counter_raises(self, monkeypatch):
+        """SessionStart must not be breakable by the dev-build counter."""
         import gaia.dev_builds as dev_builds
 
         def _boom(_version):
@@ -163,42 +89,120 @@ class TestBuildWhereIAmBlock:
 
         monkeypatch.setattr(dev_builds, "describe_version", _boom)
 
-        result = build_where_i_am_block()
-        assert "Gaia: 5.3.0" in result
+        result = build_environment_section()
+
+        assert "- Gaia: 5.3.0" in result
         assert "dev." not in result
 
-    def test_version_line_degrades_when_the_counter_module_is_absent(self, monkeypatch):
-        """A partial install without gaia.dev_builds still renders the version."""
-        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
-        monkeypatch.setattr(
-            session_manifest, "_scan_live_gaia_installation", lambda: None
-        )
-        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
-        monkeypatch.setitem(sys.modules, "gaia.dev_builds", None)
+    def test_gaia_root_is_the_declared_plugin_root(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
 
-        assert "Gaia: 5.3.0" in build_where_i_am_block()
+        result = build_environment_section()
+
+        assert f"plugin channel, at {tmp_path / 'plugin'}" in result
+
+    def test_gaia_root_falls_back_to_the_own_package_not_the_cwd(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "pkg")
+
+        assert f"at {tmp_path / 'pkg'}" in build_environment_section()
+
+    def test_tools_on_path_are_one_line_so_a_missing_tool_can_be_refused(self, monkeypatch):
+        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: ["git", "acli"])
+
+        assert "- Tools on PATH: git, acli" in build_environment_section().splitlines()
+
+    def test_no_tools_line_when_none_resolves(self):
+        assert "Tools on PATH" not in build_environment_section()
+
+    def test_recurring_work_is_one_line_only_when_something_is_pending(self, monkeypatch):
+        assert "Recurring work" not in build_environment_section()
+
+        monkeypatch.setattr(
+            session_manifest, "_recurring_work_line", lambda _ws: "- Recurring work pending: 1 suspended"
+        )
+
+        assert "- Recurring work pending: 1 suspended" in build_environment_section().splitlines()
+
+    def test_names_the_local_zone_and_gaia_now_but_never_a_time(self, monkeypatch):
+        monkeypatch.setenv("TZ", "America/Santiago")
+
+        result = build_environment_section()
+
+        zone_lines = [line for line in result.splitlines() if "America/Santiago" in line]
+        assert len(zone_lines) == 1, result
+        assert "gaia now" in zone_lines[0]
+        assert not re.search(r"\d{1,2}:\d{2}", zone_lines[0]), zone_lines[0]
+        assert len(session_manifest.build_session_context()) <= session_manifest.BIRTH_BUDGET
+
+    def test_a_failing_recurring_line_does_not_drop_the_section(self, monkeypatch):
+        def _boom(_ws):
+            raise RuntimeError("simulated scheduler failure")
+
+        monkeypatch.setattr(session_manifest, "_recurring_work_line", _boom)
+
+        assert build_environment_section().startswith("## Environment")
 
 
 # ---------------------------------------------------------------------------
 # _scan_live_gaia_installation / _resolve_gaia_cli_path / _scan_available_tools
 # ---------------------------------------------------------------------------
 
+def _declare_workspaces(tmp_path, monkeypatch, roots: dict) -> None:
+    """A data home whose schema'd database records *roots*; a None root is a history-only row."""
+    import sqlite3
+
+    from gaia.store.writer import _connect
+
+    data_home = tmp_path / "gaia-data"
+    data_home.mkdir(exist_ok=True)
+    database = data_home / "gaia.db"
+    _connect(database).close()
+    con = sqlite3.connect(database)
+    con.executemany(
+        "INSERT INTO workspaces (name, root_path) VALUES (?, ?)",
+        [(name, str(root) if root else None) for name, root in roots.items()],
+    )
+    con.commit()
+    con.close()
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data_home))
+    monkeypatch.setenv("GAIA_DB", str(database))
+    for key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
+        monkeypatch.delenv(key, raising=False)
+
+
+class TestReadWorkspaceIdentity:
+    """The Folder line names a workspace only when a declared root holds the cwd."""
+
+    def test_outside_every_declared_root_there_is_no_workspace(self, monkeypatch, tmp_path):
+        declared, outside = tmp_path / "declared", tmp_path / "outside"
+        declared.mkdir()
+        outside.mkdir()
+        _declare_workspaces(tmp_path, monkeypatch, {"global": None, "mine": declared})
+        monkeypatch.chdir(outside)
+
+        assert session_manifest._read_workspace_identity() is None
+
+    def test_inside_a_declared_root_the_workspace_is_named(self, monkeypatch, tmp_path):
+        nested = tmp_path / "declared" / "repo"
+        nested.mkdir(parents=True)
+        _declare_workspaces(tmp_path, monkeypatch, {"global": None, "mine": tmp_path / "declared"})
+        monkeypatch.chdir(nested)
+
+        assert session_manifest._read_workspace_identity() == "mine"
+
+
 class TestScanLiveGaiaInstallation:
-    def test_delegates_to_the_pure_scanner_for_this_workspace_root(self, monkeypatch, tmp_path):
+    def test_delegates_to_the_pure_scanner_for_the_declared_install(self, monkeypatch, tmp_path):
         """The live scan calls the real, table-free detector against the
-        resolved workspace root -- never the gaia_installations table."""
+        declared install root -- never the gaia_installations table."""
         captured = {}
 
         def _fake_scan(workspace_root):
             captured["root"] = workspace_root
             return [{"machine": "host", "version": "9.9.9", "install_mode": "npm"}]
 
-        import modules.core.paths as core_paths_mod
-
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_declared_install_root", lambda: tmp_path / "ws")
         import tools.scan.store_populator as store_populator
 
         monkeypatch.setattr(store_populator, "_scan_gaia_installations", _fake_scan)
@@ -208,16 +212,20 @@ class TestScanLiveGaiaInstallation:
         assert captured["root"] == tmp_path / "ws"
 
     def test_returns_none_on_any_failure(self, monkeypatch):
-        import modules.core.paths as core_paths_mod
-
         def _boom():
-            raise RuntimeError("no .claude tree")
+            raise RuntimeError("registry unreadable")
 
-        monkeypatch.setattr(core_paths_mod, "find_claude_dir", _boom)
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_declared_install_root", _boom)
         assert session_manifest._scan_live_gaia_installation() is None
 
 
 class TestResolveGaiaCliPath:
+    @pytest.fixture(autouse=True)
+    def _npm_channel(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+        monkeypatch.setattr(session_manifest, "_declared_install_root", lambda: tmp_path / "ws")
+
     def _make_npm_layout(self, tmp_path, bin_rel="bin/gaia"):
         gaia_dir = tmp_path / "ws" / "node_modules" / "@jaguilar87" / "gaia"
         gaia_dir.mkdir(parents=True)
@@ -230,23 +238,13 @@ class TestResolveGaiaCliPath:
         return gaia_dir, bin_path
 
     def test_returns_none_when_no_candidate_package_exists(self, monkeypatch, tmp_path):
-        import modules.core.paths as core_paths_mod
-
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
         monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "empty")
         assert session_manifest._resolve_gaia_cli_path() is None
 
     def test_returns_none_when_guard_rejects_the_candidate(self, monkeypatch, tmp_path):
         """A candidate that resolves but fails the real trust guard is
         never published -- the guard is consulted, not merely trusted."""
-        import modules.core.paths as core_paths_mod
-
         self._make_npm_layout(tmp_path)
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
         import modules.security.gaia_cli_only_guard as guard
 
         monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _token: False)
@@ -254,12 +252,7 @@ class TestResolveGaiaCliPath:
         assert session_manifest._resolve_gaia_cli_path() is None
 
     def test_returns_the_candidate_when_the_guard_accepts_it(self, monkeypatch, tmp_path):
-        import modules.core.paths as core_paths_mod
-
         _gaia_dir, bin_path = self._make_npm_layout(tmp_path)
-        monkeypatch.setattr(
-            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
-        )
         import modules.security.gaia_cli_only_guard as guard
 
         monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _token: True)
@@ -267,11 +260,11 @@ class TestResolveGaiaCliPath:
         assert session_manifest._resolve_gaia_cli_path() == str(bin_path)
 
 
-def _make_gaia_package(root: Path) -> Path:
+def _make_gaia_package(root: Path, version: str = "5.5.0") -> Path:
     """A package the real trust guard accepts: same name as ours, bin.gaia declared."""
     root.mkdir(parents=True)
     (root / "package.json").write_text(
-        json.dumps({"name": "@jaguilar87/gaia", "bin": {"gaia": "bin/gaia"}})
+        json.dumps({"name": "@jaguilar87/gaia", "version": version, "bin": {"gaia": "bin/gaia"}})
     )
     bin_path = root / "bin" / "gaia"
     bin_path.parent.mkdir()
@@ -280,22 +273,35 @@ def _make_gaia_package(root: Path) -> Path:
     return bin_path
 
 
+_ALIAS = Path("node_modules") / "@jaguilar87" / "gaia"
+
+
 class TestResolveGaiaCliPathByInstallLayout:
-    """Each supported layout publishes a path the real guard accepts; PATH is never read."""
+    """Each supported layout publishes a path the real guard accepts; PATH is never read.
+
+    The session opens in ``ws/repo``, a repository inside the declared
+    workspace ``ws`` that carries its own ``.claude`` and a stale nested copy.
+    """
 
     @pytest.fixture
     def layout(self, monkeypatch, tmp_path):
         import modules.core.paths as core_paths_mod
 
         workspace = tmp_path / "ws"
-        (workspace / ".claude").mkdir(parents=True)
-        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: workspace / ".claude")
+        repo = workspace / "repo"
+        (repo / ".claude").mkdir(parents=True)
+        _declare_workspaces(tmp_path, monkeypatch, {"ws": workspace})
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: repo / ".claude")
         monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "no-package")
         monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
         empty_path_dir = tmp_path / "empty-path"
         empty_path_dir.mkdir()
         monkeypatch.setenv("PATH", str(empty_path_dir))
         return workspace, tmp_path
+
+    def _nested_stale_copy(self, workspace: Path) -> Path:
+        return _make_gaia_package(workspace / "repo" / _ALIAS, version="5.0.0-rc.7")
 
     def _plugin(self, monkeypatch, tmp_path) -> Path:
         plugin_root = tmp_path / "plugins" / "cache" / "gaia-marketplace" / "gaia" / "5.5.0"
@@ -316,39 +322,82 @@ class TestResolveGaiaCliPathByInstallLayout:
         assert cli_path == str(bin_path)
         assert is_trusted_gaia_binary(cli_path)
 
-    def test_plugin_only_capabilities_block_carries_the_cli_line(self, layout, monkeypatch):
+    def test_plugin_only_environment_carries_the_cli_line(self, layout, monkeypatch):
         _workspace, tmp_path = layout
         bin_path = self._plugin(monkeypatch, tmp_path)
 
-        block = build_capabilities_block()
-        print("\n--- rendered capabilities block (plugin-only fixture) ---\n" + block)
+        block = build_environment_section()
 
         assert f"- gaia CLI: {bin_path}" in block.splitlines()
+
+    def test_plugin_channel_publishes_the_plugin_beside_any_workspace_copy(self, layout, monkeypatch):
+        """The guard accepts every genuine copy, so it cannot be what picks the running one."""
+        from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
+
+        workspace, tmp_path = layout
+        bin_path = self._plugin(monkeypatch, tmp_path)
+        stale_bin = self._nested_stale_copy(workspace)
+        _make_gaia_package(workspace / _ALIAS)
+
+        results = {session_manifest._resolve_gaia_cli_path() for _ in range(3)}
+
+        assert results == {str(bin_path)}
+        assert is_trusted_gaia_binary(str(bin_path))
+        assert is_trusted_gaia_binary(str(stale_bin))
+
+    def test_plugin_channel_version_is_the_plugins_not_a_nested_copy(self, layout, monkeypatch):
+        workspace, tmp_path = layout
+        self._plugin(monkeypatch, tmp_path)
+        self._nested_stale_copy(workspace)
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.5.0")
+
+        block = build_environment_section()
+
+        assert "- Gaia: 5.5.0" in block
+        assert "5.0.0-rc.7" not in block
 
     def test_npm_only_publishes_the_workspace_alias(self, layout):
         from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
 
         workspace, _tmp_path = layout
-        alias_bin = _make_gaia_package(workspace / "node_modules" / "@jaguilar87" / "gaia")
+        alias_bin = _make_gaia_package(workspace / _ALIAS)
 
         cli_path = session_manifest._resolve_gaia_cli_path()
 
         assert cli_path == str(alias_bin)
         assert is_trusted_gaia_binary(cli_path)
 
-    def test_alias_wins_over_the_own_package_when_both_exist(self, layout, monkeypatch):
-        workspace, tmp_path = layout
-        self._plugin(monkeypatch, tmp_path)
-        alias_bin = _make_gaia_package(workspace / "node_modules" / "@jaguilar87" / "gaia")
+    def test_npm_publishes_the_declared_install_not_a_nested_copy(self, layout):
+        workspace, _tmp_path = layout
+        alias_bin = _make_gaia_package(workspace / _ALIAS, version="5.6.0")
+        self._nested_stale_copy(workspace)
 
-        results = {session_manifest._resolve_gaia_cli_path() for _ in range(3)}
+        block = build_environment_section()
 
-        assert results == {str(alias_bin)}
+        assert session_manifest._resolve_gaia_cli_path() == str(alias_bin)
+        assert "- Gaia: 5.6.0, npm channel" in block
+        assert "5.0.0-rc.7" not in block
+
+    def test_npm_outside_every_declared_workspace_never_publishes_a_local_copy(
+        self, layout, monkeypatch
+    ):
+        import modules.core.paths as core_paths_mod
+
+        _workspace, tmp_path = layout
+        outside = tmp_path / "outside"
+        (outside / ".claude").mkdir(parents=True)
+        _make_gaia_package(outside / _ALIAS)
+        monkeypatch.chdir(outside)
+        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: outside / ".claude")
+
+        assert session_manifest._resolve_gaia_cli_path() is None
 
     def test_untrusted_alias_falls_through_to_the_own_package(self, layout, monkeypatch):
         workspace, tmp_path = layout
-        bin_path = self._plugin(monkeypatch, tmp_path)
-        impostor = workspace / "node_modules" / "@jaguilar87" / "gaia"
+        own_root = tmp_path / "own"
+        bin_path = _make_gaia_package(own_root)
+        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: own_root)
+        impostor = workspace / _ALIAS
         _make_gaia_package(impostor)
         (impostor / "package.json").write_text(
             json.dumps({"name": "not-gaia", "bin": {"gaia": "bin/gaia"}})
@@ -362,33 +411,6 @@ class TestResolveGaiaCliPathByInstallLayout:
         monkeypatch.setenv("PATH", str(on_path.parent))
 
         assert session_manifest._resolve_gaia_cli_path() is None
-
-
-class TestWhereIAmPluginRoot:
-    @pytest.fixture(autouse=True)
-    def _quiet(self, monkeypatch):
-        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
-        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
-        monkeypatch.setattr(session_manifest, "_scan_live_gaia_installation", lambda: None)
-
-    def test_plugin_root_is_the_declared_plugin_root(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path / "plugin"))
-
-        lines = build_where_i_am_block().splitlines()
-
-        assert f"- Plugin root: {tmp_path / 'plugin'}" in lines
-
-    def test_plugin_root_falls_back_to_the_own_package_not_the_cwd(self, monkeypatch, tmp_path):
-        import modules.core.paths as core_paths_mod
-
-        monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
-        monkeypatch.setattr(session_manifest, "_own_package_root", lambda: tmp_path / "pkg")
-        monkeypatch.setattr(core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude")
-
-        lines = build_where_i_am_block().splitlines()
-
-        assert f"- Plugin root: {tmp_path / 'pkg'}" in lines
-        assert f"- Workspace .claude dir: {tmp_path / 'ws' / '.claude'}" in lines
 
 
 class TestScanAvailableTools:
@@ -412,304 +434,49 @@ class TestScanAvailableTools:
 
 
 # ---------------------------------------------------------------------------
-# build_capabilities_block
-# ---------------------------------------------------------------------------
-
-class TestBuildCapabilitiesBlock:
-    def test_renders_both_lines_when_both_resolve(self, monkeypatch):
-        monkeypatch.setattr(
-            session_manifest, "_resolve_gaia_cli_path", lambda: "/abs/bin/gaia"
-        )
-        monkeypatch.setattr(
-            session_manifest, "_scan_available_tools", lambda: ["git", "acli"]
-        )
-        result = build_capabilities_block()
-        assert "## What I can run here" in result
-        assert "- gaia CLI: /abs/bin/gaia" in result
-        assert "- Tools on PATH: git, acli" in result
-
-    def test_empty_when_neither_resolves(self, monkeypatch):
-        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
-        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: [])
-        assert build_capabilities_block() == ""
-
-    def test_failsafe_when_a_subcomponent_raises(self, monkeypatch):
-        def _boom():
-            raise RuntimeError("simulated guard failure")
-
-        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", _boom)
-        result = build_capabilities_block()
-        assert isinstance(result, str)
-
-
-# ---------------------------------------------------------------------------
 # build_session_context (assembler)
 # ---------------------------------------------------------------------------
 
 class TestBuildSessionContext:
-    """Pending approvals are no longer surfaced (M2): the assembler concatenates
-    Where I am, What I can run here, Projects I can reach, Recurring work and
-    what it left me, and the durable memory anchors -- there is no
-    pending-approvals block, no Contract Index, and no separate digest call
-    in the join.
-    """
+    @pytest.fixture(autouse=True)
+    def _no_user_rows_or_schema_notice(self, monkeypatch):
+        import gaia.store.reader as reader
 
-    def test_retired_loop_builder_is_gone(self):
-        """The agentic-loop capability was removed whole; a surviving builder
-        would let the block be resurrected by a single call site."""
-        assert not hasattr(session_manifest, "build_agentic_loop_block")
+        monkeypatch.setattr(reader, "user_anchor_rows", lambda *a, **kw: [])
+        monkeypatch.setattr(session_manifest, "build_schema_direction_block", lambda: "")
 
-    def test_retired_contract_index_builder_is_gone(self):
-        """The per-surface Contract Index was retired outright: it echoed
-        agent_contract_permissions.can_read without gating anything a
-        dispatched agent could request, and enabled no orchestrator decision."""
-        assert not hasattr(session_manifest, "build_contracts_index_block")
-        assert not hasattr(session_manifest, "_load_surface_routing")
+    def test_alarms_lead_and_empty_sections_leave_no_gap(self, monkeypatch):
+        monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "")
+        monkeypatch.setattr(session_manifest, "build_environment_section", lambda: "ENV")
 
-    def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
-        monkeypatch.setattr(
-            session_manifest, "build_where_i_am_block", lambda: "ENV BLOCK"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_capabilities_block", lambda: "CAPS BLOCK"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_projects_context_block", lambda: "PROJ BLOCK"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_recurring_work_block", lambda: "RECURRING BLOCK"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block",
-            lambda *a, **kw: "ANCHOR BLOCK",
-        )
+        result = build_session_context(alarms=["ALARM"])
 
-        result = build_session_context()
-        assert result == (
-            "ENV BLOCK\n\nCAPS BLOCK\n\nPROJ BLOCK\n\nRECURRING BLOCK\n\n"
-            "ANCHOR BLOCK"
-        ), (
-            "Blocks must be joined with exactly one blank line separator -- "
-            "markdown convention; agents render this as paragraph breaks. "
-            "What I can run here sits right after Where I am (same "
-            "operational-setup pair, different freshness), then Projects, "
-            "then Recurring work, then the durable memory anchors. Pending "
-            "approvals and the Contract Index are no longer part of the "
-            "manifest."
-        )
-        assert "[ACTIONABLE]" not in result
+        assert result == "ALARM\n\nENV"
+        assert "\n\n\n" not in result
 
-    def test_workspace_memory_called_once_with_anchor_sections(self, monkeypatch):
-        """The transversal digest call was retired (its per-project count
-        moved onto the Projects block); only the anchor-sections call
-        remains."""
-        monkeypatch.setattr(session_manifest, "build_where_i_am_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_capabilities_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_projects_context_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_recurring_work_block", lambda: "")
-
-        calls = []
-
-        def _fake_memory(*args, **kwargs):
-            calls.append(kwargs.get("sections"))
-            return "ANCHORS"
-
-        monkeypatch.setattr(session_manifest, "build_workspace_memory_block", _fake_memory)
-
-        result = build_session_context()
-        assert calls == [["anchor"]], (
-            "Expected exactly one call, anchor-only (sections=['anchor'])."
-        )
-        assert result == "ANCHORS"
-
-    def test_skips_empty_blocks_in_join(self, monkeypatch):
-        """Empty blocks must not leave dangling blank lines in the output."""
-        monkeypatch.setattr(
-            session_manifest, "build_where_i_am_block", lambda: "ENV BLOCK"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_capabilities_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_projects_context_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_recurring_work_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest,
-            "build_workspace_memory_block",
-            lambda *a, **kw: "ANCHOR BLOCK",
-        )
-
-        result = build_session_context()
-        assert result == "ENV BLOCK\n\nANCHOR BLOCK"
-        assert "\n\n\n" not in result, (
-            "Triple-newline indicates an empty block sneaked into the join."
-        )
-
-    def test_returns_empty_when_all_blocks_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            session_manifest, "build_where_i_am_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_capabilities_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_projects_context_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_recurring_work_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda *a, **kw: ""
-        )
-
-        assert build_session_context() == ""
-
-    def test_failsafe_when_a_builder_raises(self, monkeypatch):
-        """An exception in a builder must not break the assembler."""
+    def test_alarms_still_ship_when_assembling_the_rest_fails(self, monkeypatch):
         def _boom():
             raise RuntimeError("simulated builder failure")
 
-        monkeypatch.setattr(
-            session_manifest, "build_where_i_am_block", _boom
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda *a, **kw: ""
-        )
+        monkeypatch.setattr(session_manifest, "build_environment_section", _boom)
 
-        # Either the assembler swallows the exception entirely (returning "")
-        # or it catches around the whole pipeline and returns "". Both are
-        # acceptable; what is not acceptable is propagating the exception.
-        result = build_session_context()
-        assert isinstance(result, str)
+        assert build_session_context(alarms=["ALARM"]) == "ALARM"
+
+    def test_returns_empty_when_there_is_nothing_to_say(self, monkeypatch):
+        monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "")
+        monkeypatch.setattr(session_manifest, "build_environment_section", lambda: "")
+
+        assert build_session_context() == ""
 
 
 # ---------------------------------------------------------------------------
-# build_workspace_memory_block
-# ---------------------------------------------------------------------------
-
-class TestBuildWorkspaceMemoryBlock:
-    """The block shells out to `gaia memory get-relevant`. Tests stub the
-    subprocess result to keep the unit isolated from the substrate DB."""
-
-    def test_returns_block_when_cli_emits_content(self, monkeypatch):
-        """CLI succeeds with text -> builder returns it verbatim (stripped)."""
-        import subprocess
-
-        sentinel = "## Workspace Memory (qxo)\n\nAtoms:\n- atom_x: y"
-
-        def _fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args[0] if args else [],
-                returncode=0,
-                stdout=sentinel + "\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        # Pin the workspace so the helper doesn't try to read project-context.
-        result = build_workspace_memory_block(workspace="qxo")
-        assert result == sentinel
-
-    def test_returns_empty_when_no_workspace(self, monkeypatch):
-        """No workspace identity -> empty block, no subprocess call."""
-        monkeypatch.setattr(
-            session_manifest, "_read_workspace_identity", lambda: None
-        )
-        # If subprocess is touched, the test should still not raise.
-        result = build_workspace_memory_block()
-        assert result == ""
-
-    def test_returns_empty_when_cli_nonzero_exit(self, monkeypatch):
-        """CLI exits non-zero -> empty block (fail-safe)."""
-        import subprocess
-
-        def _fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args[0] if args else [],
-                returncode=2,
-                stdout="",
-                stderr="oops",
-            )
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        result = build_workspace_memory_block(workspace="qxo")
-        assert result == ""
-
-    def test_returns_empty_when_cli_raises(self, monkeypatch):
-        """Subprocess raises (timeout, FileNotFoundError) -> empty block."""
-        import subprocess
-
-        def _fake_run(*args, **kwargs):
-            raise subprocess.TimeoutExpired(cmd="gaia", timeout=5)
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        result = build_workspace_memory_block(workspace="qxo")
-        assert result == ""
-
-    def test_returns_empty_when_cli_emits_only_whitespace(self, monkeypatch):
-        """CLI exits 0 but with empty stdout -> empty block."""
-        import subprocess
-
-        def _fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(
-                args=args[0] if args else [],
-                returncode=0,
-                stdout="   \n  \n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        result = build_workspace_memory_block(workspace="qxo")
-        assert result == ""
-
-    def test_sections_forwarded_as_cli_flag(self, monkeypatch):
-        """sections=['anchor'] -> argv carries --sections anchor (subagent cut)."""
-        import subprocess
-
-        captured = {}
-
-        def _fake_run(*args, **kwargs):
-            captured["argv"] = args[0] if args else []
-            return subprocess.CompletedProcess(
-                args=captured["argv"], returncode=0, stdout="BLOCK", stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        result = build_workspace_memory_block(workspace="qxo", sections=["anchor"])
-        assert result == "BLOCK"
-        argv = captured["argv"]
-        assert "--sections" in argv
-        assert argv[argv.index("--sections") + 1] == "anchor"
-
-    def test_no_sections_omits_cli_flag(self, monkeypatch):
-        """Orchestrator path (no sections) -> argv has no --sections flag."""
-        import subprocess
-
-        captured = {}
-
-        def _fake_run(*args, **kwargs):
-            captured["argv"] = args[0] if args else []
-            return subprocess.CompletedProcess(
-                args=captured["argv"], returncode=0, stdout="BLOCK", stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-        result = build_workspace_memory_block(workspace="qxo")
-        assert result == "BLOCK"
-        assert "--sections" not in captured["argv"]
-
-
-# ---------------------------------------------------------------------------
-# _extract_projects_from_identity -- type + description carried (CAMBIO 2)
+# _extract_projects_from_identity -- type + description carried
 # ---------------------------------------------------------------------------
 
 class TestExtractProjectsCarriesTypeAndDescription:
     """The extractor returns (name, path, type, description, missing_since)
-    5-tuples so the Projects block can label each entry with its type, a short
-    description, and the vanished mark when the repo left the disk."""
+    5-tuples so the roster can carry a short description and skip a repo that
+    left the disk."""
 
     _LOOKUP = {"by_name": {}, "by_ws": {}}
 
@@ -749,8 +516,7 @@ class TestExtractProjectsCarriesTypeAndDescription:
         assert out == [("p", "/p", "", "", "")]
 
     def test_vanished_entry_is_returned_with_its_mark_not_filtered(self):
-        """A repo gone from disk stays in the index, carrying its mark: the
-        block shows it rather than hiding it."""
+        """The extractor keeps the mark; the roster is what leaves the entry out."""
         payload = {
             "ghost": {
                 "name": "ghost",
@@ -765,7 +531,7 @@ class TestExtractProjectsCarriesTypeAndDescription:
 
 
 def _patch_connect(monkeypatch, identity_rows, proj_rows=()):
-    """Point build_projects_context_block at fixed contract + projects rows."""
+    """Point the projects roster at fixed contract + projects rows."""
     import gaia.store.writer as _writer
 
     class _FakeCursor:
@@ -787,18 +553,19 @@ def _patch_connect(monkeypatch, identity_rows, proj_rows=()):
     monkeypatch.setattr(_writer, "_connect", lambda: _FakeCon())
 
 
-class TestBuildProjectsBlockIsAnIndexWithCuratedDescriptions:
-    """The rendered Projects block is a compact per-workspace name index: a
-    comma-separated list, no types, no per-project paths. Only a project with
-    a hand-curated ``description`` keeps a below-list line, keyed by the
-    displayed (resolvable) name."""
+_ROOMY = 10_000
 
-    def _run_with_rows(self, monkeypatch, payload):
+
+class TestProjectsSectionIsARosterWithCuratedDescriptions:
+    """One line per project: its name, its pending count and its curated
+    description, keyed by the name the user calls it (the directory basename)."""
+
+    def _run_with_rows(self, monkeypatch, payload, max_chars=_ROOMY):
         _patch_connect(
             monkeypatch,
             [{"workspace": "me", "payload": json.dumps(payload)}],
         )
-        return session_manifest.build_projects_context_block()
+        return session_manifest.build_projects_section(max_chars)
 
     def test_curated_description_kept_type_dropped(self, monkeypatch):
         payload = {
@@ -811,18 +578,23 @@ class TestBuildProjectsBlockIsAnIndexWithCuratedDescriptions:
         }
         block = self._run_with_rows(monkeypatch, payload)
         assert "### me — /home/x" in block
-        assert "aos-iac" in block
         assert "- aos-iac: Terraform IaC for AOS GCP infra" in block
-        # Type is index metadata the redesign deliberately drops.
         assert "(terraform)" not in block
+
+    def test_a_long_description_is_cut_to_one_short_line(self, monkeypatch):
+        payload = {"p": {"name": "p", "local_path": "/p", "description": "word " * 100}}
+
+        block = self._run_with_rows(monkeypatch, payload)
+
+        line = next(l for l in block.splitlines() if l.startswith("- p"))
+        assert len(line) < 130 and line.endswith("…")
 
     def test_basename_shown_when_it_differs_from_the_stored_name(self, monkeypatch):
         payload = {"p": {"name": "plainproj", "local_path": "/p"}}
         block = self._run_with_rows(monkeypatch, payload)
         # The user calls the project by its real directory name; the legacy
         # stored slot name is not what `gaia context project` should be handed.
-        names_line = block.splitlines()[3]
-        assert names_line == "p"
+        assert "- p" in block.splitlines()
         assert "plainproj" not in block
 
     def test_pointer_footer_names_the_ficha_verb(self, monkeypatch):
@@ -850,11 +622,7 @@ class TestBuildProjectsBlockIsAnIndexWithCuratedDescriptions:
         )
 
     def test_vanished_entry_is_not_injected_at_all(self, monkeypatch):
-        """A removed project is asked for, not announced every session.
-
-        `gaia context get` still holds the whole record; nothing here deletes
-        it. It just stops spending context on a question almost nobody asks.
-        """
+        """A removed project is asked for, not announced every session."""
         payload = {
             "ghost": {
                 "name": "ghost",
@@ -866,12 +634,9 @@ class TestBuildProjectsBlockIsAnIndexWithCuratedDescriptions:
         }
         block = self._run_with_rows(monkeypatch, payload)
         assert "ghost" not in block
-        assert "missing" not in block
         assert "curated blurb" not in block
 
-    def test_a_workspace_of_only_vanished_entries_renders_no_group(
-        self, monkeypatch,
-    ):
+    def test_a_workspace_of_only_vanished_entries_renders_no_group(self, monkeypatch):
         payload = {
             "ghost": {
                 "name": "ghost",
@@ -879,11 +644,10 @@ class TestBuildProjectsBlockIsAnIndexWithCuratedDescriptions:
                 "missing_since": "2026-07-01T00:00:00+00:00",
             },
         }
-        block = self._run_with_rows(monkeypatch, payload)
-        assert "###" not in block
+        assert "###" not in self._run_with_rows(monkeypatch, payload)
 
 
-class TestProjectsBlockDeduplicatesAtTheSource:
+class TestProjectsSectionDeduplicatesAtTheSource:
     """The same repo reached through two contract generations must render once.
 
     The current scan-promoted map names a repo by its uniquified SLUG; a legacy
@@ -920,12 +684,9 @@ class TestProjectsBlockDeduplicatesAtTheSource:
             ],
             self._PROJ_ROWS,
         )
-        block = session_manifest.build_projects_context_block()
+        block = session_manifest.build_projects_section(_ROOMY)
 
-        # No description on either side, so the name index (the comma list)
-        # is the only place the project can appear -- it must appear exactly
-        # once, keyed on the resolved basename, never the legacy slug.
-        assert block.count("bildwiz-iac") == 1, block
+        assert [l for l in block.splitlines() if l.startswith("- ")] == ["- bildwiz-iac"]
         assert "bildwiz-2" not in block
         # It lands under the workspace that owns the projects row, not under the
         # legacy contract's own workspace key.
@@ -933,8 +694,6 @@ class TestProjectsBlockDeduplicatesAtTheSource:
         assert "### bildwiz" not in block
 
     def test_merge_keeps_metadata_carried_by_only_one_side(self, monkeypatch):
-        """The promoted side has the type (dropped by the index redesign); the
-        legacy side has the description, which must survive the collapse."""
         promoted = {
             "bildwiz_2": {
                 "name": "bildwiz-2",
@@ -960,9 +719,8 @@ class TestProjectsBlockDeduplicatesAtTheSource:
             ],
             self._PROJ_ROWS,
         )
-        block = session_manifest.build_projects_context_block()
-        assert "(application)" not in block
-        assert "only the legacy row has this" in block
+        block = session_manifest.build_projects_section(_ROOMY)
+        assert "- bildwiz-iac: only the legacy row has this" in block
 
     def test_ambiguous_basename_is_not_guessed(self, monkeypatch):
         """Two repos sharing a directory name make the basename useless as a
@@ -979,7 +737,7 @@ class TestProjectsBlockDeduplicatesAtTheSource:
                 {"workspace": "b", "name": "b1", "path": "/ws/b/terraform"},
             ),
         )
-        block = session_manifest.build_projects_context_block()
+        block = session_manifest.build_projects_section(_ROOMY)
         assert "unresolved (1): terraform" in block
 
     def test_workspace_identity_row_is_not_listed_as_a_project(self, monkeypatch):
@@ -1001,73 +759,41 @@ class TestProjectsBlockDeduplicatesAtTheSource:
             ],
             ({"workspace": "aaxis", "name": "nfi", "path": "/ws/aaxis/nfi/nfi-oro-com"},),
         )
-        block = session_manifest.build_projects_context_block()
+        block = session_manifest.build_projects_section(_ROOMY)
         assert block.count("nfi-oro-com") == 1, block
         assert "unresolved" not in block
         assert "### nfi" not in block
 
 
-# ---------------------------------------------------------------------------
-# build_projects_context_block -- no silent drop (FIX a) + footer (FIX b)
-# ---------------------------------------------------------------------------
+class TestProjectsSectionNeverOutgrowsItsShare:
+    """The roster gets what the budget leaves; it degrades but always lands the pointer."""
 
-class TestBuildProjectsBlockNoSilentDrop:
-    """The projects index is a routing surface -- entries must never vanish
-    silently. FIX (a): the default cap fits the full realistic set including
-    type+description tails. FIX (b): any forced overflow always ends in a
-    footer stating the dropped count.
-    """
-
-    def _patch_rows(self, monkeypatch, payload):
-        _patch_connect(
-            monkeypatch,
-            [{"workspace": "me", "payload": json.dumps(payload)}],
-        )
-
-    def _payload_17(self):
-        # 17 projects, each with a type and a realistic description tail --
-        # mirrors the field shape that pushed the block past the old 1400 cap.
-        return {
+    def _ten_projects(self, monkeypatch):
+        payload = {
             f"proj_{i}": {
                 "name": f"project-name-number-{i}",
-                "local_path": f"/home/jorge/ws/aaxis/group/project-name-number-{i}",
-                "type": "terraform" if i % 2 else "application",
-                "description": (
-                    f"Project {i}: a reasonably descriptive summary line that "
-                    f"explains what this repository is responsible for in prose"
-                ),
+                "local_path": f"/home/user/ws/aaxis/group/project-name-number-{i}",
+                "description": f"Project {i}: a reasonably descriptive summary line for the roster",
             }
-            for i in range(17)
+            for i in range(10)
         }
+        _patch_connect(monkeypatch, [{"workspace": "me", "payload": json.dumps(payload)}])
 
-    def test_all_17_projects_land_at_default_cap(self, monkeypatch):
-        self._patch_rows(monkeypatch, self._payload_17())
-        block = session_manifest.build_projects_context_block()
-        entries = [l for l in block.splitlines() if l.startswith("- ")]
-        assert len(entries) == 17, f"expected 17 entries, got {len(entries)}"
-        # The tail entries (the ones the old 1400 cap dropped) must be present.
-        assert any("project-name-number-16" in l for l in entries)
-        assert any("project-name-number-15" in l for l in entries)
-        assert "... (" not in block  # no truncation footer -- full set landed
-
-    def test_overflow_always_ends_in_footer(self, monkeypatch):
-        # Pin the fallback: this exercises the fixed-width footer/pointer
-        # budget math at small caps, which must not depend on how long an
-        # ambient machine's resolved CLI path happens to be.
+    def test_every_cap_is_honoured_and_the_pointer_still_lands(self, monkeypatch):
+        # Pinned: the fixed pointer width must not depend on the ambient CLI path.
         monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
-        self._patch_rows(monkeypatch, self._payload_17())
-        for cap in (150, 300, 600, 1000):
-            block = session_manifest.build_projects_context_block(max_chars=cap)
-            assert block, f"cap={cap} produced empty block"
-            assert "more, use 'gaia context get')" in block, (
-                f"cap={cap}: overflow dropped projects WITHOUT a footer"
-            )
-            assert len(block) <= cap, f"cap={cap}: block exceeded cap"
-            # Footer count must equal the number actually omitted.
-            kept = len([l for l in block.splitlines() if l.startswith("- ")])
-            import re
-            m = re.search(r"\.\.\. \((\d+) more", block)
-            assert m, f"cap={cap}: footer count missing"
-            assert int(m.group(1)) == 17 - kept, (
-                f"cap={cap}: footer says {m.group(1)} more but {17 - kept} were dropped"
-            )
+        self._ten_projects(monkeypatch)
+
+        for cap in (150, 300, 600, 1000, _ROOMY):
+            block = session_manifest.build_projects_section(cap)
+
+            assert block, f"cap={cap} produced an empty section"
+            assert len(block) <= cap, f"cap={cap}: section is {len(block)} chars"
+            assert block.rstrip().endswith("context project <nombre>"), f"cap={cap}"
+
+    def test_the_whole_roster_lands_when_there_is_room(self, monkeypatch):
+        self._ten_projects(monkeypatch)
+
+        block = session_manifest.build_projects_section(_ROOMY)
+
+        assert len(re.findall(r"^- project-name-number-\d", block, re.M)) == 10

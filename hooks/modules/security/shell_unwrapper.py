@@ -10,22 +10,24 @@ The wrapped inner command is what matters for classification, not the
 wrapper itself.  ShellUnwrapper recursively peels wrapper shells until
 it reaches the actual payload.
 
-Handles:
-- bash -c, sh -c, zsh -c, dash -c
-- /bin/bash -c, /usr/bin/env bash -c
-- exec bash -c
-- env bash -c (with optional env vars like VAR=val)
-- Nested wrappers: bash -c "sh -c 'inner'"
-- Single-quoted, double-quoted, and unquoted payloads
-
-Dependencies: Python stdlib only.
+A command is a wrapper when, after leading ``NAME=value`` assignments and
+transparent wrappers (``env``, ``sudo``, ``timeout``, ``exec``, ...), an
+sh-family shell carries ``c`` in a short-flag cluster (``-c``, ``-lc``,
+``-e -c``) or fish's ``--command``; the payload is its first operand.
 """
 
 from __future__ import annotations
 
-import re
+import shlex
 from dataclasses import dataclass
 from typing import Optional
+
+from .mutative_verbs import (
+    _WrapperGrammar,
+    _consume_shell_word,
+    _peel_leading_command_wrappers,
+    _skip_wrapper_arguments,
+)
 
 
 @dataclass
@@ -43,59 +45,105 @@ class UnwrapResult:
         return self.inner
 
 
-# ---------------------------------------------------------------------------
-# Wrapper detection patterns
-# ---------------------------------------------------------------------------
-# Optional path prefix: /bin/, /usr/bin/, /usr/local/bin/
-_OPT_PATH = r"(?:/(?:usr/(?:local/)?)?s?bin/)?"
+# Launchers that run a shell unchanged but are absent from the shared
+# _COMMAND_WRAPPERS table; kept here so recognising them widens wrapper
+# detection without widening every other consumer of that table.
+_SHELL_LAUNCHERS = {
+    "exec": _WrapperGrammar(value_flags=frozenset({"-a"})),
+    "setsid": _WrapperGrammar(),
+    "strace": _WrapperGrammar(value_flags=frozenset({"-e", "-o", "-p", "-s", "-u", "-E"})),
+    "ltrace": _WrapperGrammar(value_flags=frozenset({"-e", "-o", "-p", "-s", "-u"})),
+}
 
-# Optional prefix commands that can precede the shell: env, exec, nohup,
-# sudo, nice, etc.  env can carry VAR=val assignments before the shell.
-_PREFIX = (
-    r"(?:(?:exec|nohup|sudo|nice|ionice|setsid|time)\s+)*"
-    r"(?:(?:" + _OPT_PATH + r")?env\s+(?:[A-Za-z_][A-Za-z_0-9]*=[^\s]*\s+)*)?"
-)
+_SHELLS = frozenset({
+    "sh", "bash", "dash", "ash", "ksh", "mksh", "zsh", "csh", "tcsh", "fish",
+})
 
-# Shell interpreters that accept -c.
-_SHELLS = r"(?:bash|sh|zsh|dash|ksh)"
-
-# Combined regex: optional_prefix + optional_path + shell + -c + payload
-# Three capture groups after -c for the three quoting styles:
-#   group 1: double-quoted payload
-#   group 2: single-quoted payload
-#   group 3: unquoted payload (rest of string)
-_WRAPPER_RE = re.compile(
-    r"^\s*"
-    + _PREFIX
-    + _OPT_PATH
-    + _SHELLS
-    + r"""\s+-c\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S.*))""",
-    re.DOTALL,
-)
+_LONG_VALUE_OPTIONS = frozenset({"--rcfile", "--init-file", "--init-command"})
 
 # Maximum recursion depth to prevent infinite loops on pathological input.
 _MAX_DEPTH = 10
 
 
+def _peel_launchers(command: str) -> str:
+    """Return *command* without its leading assignments, wrappers and launchers."""
+    s = command.strip()
+    while True:
+        s, _ = _peel_leading_command_wrappers(s)
+        word_end = _consume_shell_word(s, 0)
+        grammar = _SHELL_LAUNCHERS.get(s[:word_end].rsplit("/", 1)[-1])
+        if grammar is None:
+            return s
+        s = s[_skip_wrapper_arguments(s, word_end, grammar):]
+
+
+def _next_word_end(s: str, i: int) -> int:
+    """Return the index just past the shell word following ``s[i]``'s whitespace."""
+    while i < len(s) and s[i].isspace():
+        i += 1
+    return _consume_shell_word(s, i)
+
+
+def _unquote_payload(word: str, rest: str) -> str:
+    """Return the quoted *word* unquoted, or the unquoted *rest* of the line."""
+    if word[:1] in ("'", '"'):
+        try:
+            parts = shlex.split(word)
+        except ValueError:
+            parts = []
+        if len(parts) == 1:
+            return parts[0].strip()
+    return rest.strip()
+
+
+def shell_command_string(command: str) -> Optional[str]:
+    """Return the string *command* hands a shell to run as its program, else None.
+
+    Options are read the way a shell reads them: ``-o``/``-O`` clusters and
+    the long value options consume the next word, and ``-``/``--`` end them.
+    """
+    s = _peel_launchers(command)
+    word_end = _consume_shell_word(s, 0)
+    if s[:word_end].rsplit("/", 1)[-1] not in _SHELLS:
+        return None
+
+    runs_string = False
+    options_open = True
+    i = word_end
+    while True:
+        while i < len(s) and s[i].isspace():
+            i += 1
+        if i >= len(s):
+            return None
+        start = i
+        i = _consume_shell_word(s, i)
+        word = s[start:i]
+        if not options_open or word[:1] not in ("-", "+"):
+            break
+        if word in ("-", "--"):
+            options_open = False
+        elif word.startswith("--"):
+            name, has_value, value = word.partition("=")
+            if name == "--command":
+                if has_value:
+                    return _unquote_payload(value, value)
+                runs_string = True
+            elif name in _LONG_VALUE_OPTIONS and not has_value:
+                i = _next_word_end(s, i)
+        else:
+            letters = word[1:]
+            if word[0] == "-" and "c" in letters:
+                runs_string = True
+            if "o" in letters or "O" in letters:
+                i = _next_word_end(s, i)
+
+    if not runs_string:
+        return None
+    return _unquote_payload(word, s[start:])
+
+
 class ShellUnwrapper:
-    """
-    Detect and recursively strip shell wrapper invocations.
-
-    Zero external dependencies -- Python stdlib only.
-
-    Usage::
-
-        unwrapper = ShellUnwrapper()
-        result = unwrapper.unwrap('bash -c "ls -la"')
-        # result.inner      == "ls -la"
-        # result.depth      == 1
-        # result.was_wrapped == True
-
-        result = unwrapper.unwrap("ls -la")
-        # result.inner      == "ls -la"
-        # result.depth      == 0
-        # result.was_wrapped == False
-    """
+    """Detect and recursively strip shell wrapper invocations."""
 
     def unwrap(self, command: str) -> UnwrapResult:
         """
@@ -115,7 +163,7 @@ class ShellUnwrapper:
         depth = 0
 
         while depth < _MAX_DEPTH:
-            inner = self._try_unwrap_once(current)
+            inner = shell_command_string(current)
             if inner is None:
                 break
             current = inner.strip()
@@ -131,35 +179,4 @@ class ShellUnwrapper:
         """Return True if *command* has a shell wrapper layer."""
         if not command or not command.strip():
             return False
-        return self._try_unwrap_once(command.strip()) is not None
-
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
-    def _try_unwrap_once(self, command: str) -> Optional[str]:
-        """
-        Attempt to strip one wrapper layer.
-
-        Returns the inner payload string, or None if no wrapper detected.
-        """
-        m = _WRAPPER_RE.match(command)
-        if m is None:
-            return None
-
-        # Exactly one of the three groups will be non-None.
-        payload = m.group(1)  # double-quoted
-        if payload is not None:
-            # Unescape \" and \\ inside double-quoted payload
-            payload = payload.replace('\\"', '"').replace("\\\\", "\\")
-            return payload.strip()
-
-        payload = m.group(2)  # single-quoted
-        if payload is not None:
-            return payload.strip()
-
-        payload = m.group(3)  # unquoted
-        if payload is not None:
-            return payload.strip()
-
-        return None
+        return shell_command_string(command.strip()) is not None

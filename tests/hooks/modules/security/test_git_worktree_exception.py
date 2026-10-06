@@ -320,9 +320,9 @@ def test_force_signal_detection(worktrees):
 # ---------------------------------------------------------------------------
 
 def test_positionals_preserve_case():
-    tokens = ("git", "worktree", "remove", "/home/Jorge/WS/Wt-A")
+    tokens = ("git", "worktree", "remove", "/home/User/WS/Wt-A")
     assert _git_worktree_positionals(tokens) == [
-        "worktree", "remove", "/home/Jorge/WS/Wt-A",
+        "worktree", "remove", "/home/User/WS/Wt-A",
     ]
 
 
@@ -346,14 +346,16 @@ def test_uppercase_path_inside_root_still_qualifies(worktrees, tmp_path):
 
 def test_unmodelled_worktree_subcommands_are_untouched(worktrees):
     """The lane stands aside for anything it does not model, so those keep
-    whatever the pre-existing engine said."""
+    whatever the pre-existing engine said. Unlocking a retained (managed)
+    worktree is modelled -- see test_classify_by_effect -- so only an unlock
+    outside the managed roots belongs here."""
     from modules.security.mutative_verbs import _check_git_worktree
     from modules.security.command_semantics import analyze_command
     for cmd in (
         "git worktree list",
         "git worktree prune",
         f"git worktree lock {worktrees['wt']}",
-        f"git worktree unlock {worktrees['wt']}",
+        "git worktree unlock /srv/checkouts/not-managed-wt",
         "git worktree repair",
         "git worktree futureverb",
     ):

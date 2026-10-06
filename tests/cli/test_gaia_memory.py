@@ -564,8 +564,7 @@ class TestCmdShow:
 class TestCmdConflicts:
     """_cmd_conflicts via cmd_memory dispatch."""
 
-    def test_conflicts_no_conflicts_returns_empty_list(self, monkeypatch, capsys):
-        """No conflicts detected → {"conflicts": []}."""
+    def test_conflicts_no_candidates_returns_empty_list(self, monkeypatch, capsys):
         _make_fake_modules(monkeypatch, conflicts=[])
 
         args = SimpleNamespace(
@@ -577,60 +576,21 @@ class TestCmdConflicts:
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data == {"conflicts": []}
+        assert data == {"candidates": []}
 
-    def test_conflicts_with_conflicts_normalizes_similarity_to_score(self, monkeypatch, capsys):
-        """Conflicts list must expose 'score' (not 'similarity') in each entry."""
-        raw_conflicts = [
-            {
-                "file_a": "/path/to/file_a.md",
-                "file_b": "/path/to/file_b.md",
-                "similarity": 0.75,
-                "conflicts": [{"reason": "overlapping concepts"}],
-            }
-        ]
-        _make_fake_modules(monkeypatch, conflicts=raw_conflicts)
-
-        args = SimpleNamespace(
-            json=True,
-            threshold=0.3,
-            func=memory_mod._cmd_conflicts,
-        )
-        rc = memory_mod.cmd_memory(args)
-
-        assert rc == 0
-        data = json.loads(capsys.readouterr().out)
-        assert "conflicts" in data
-        assert len(data["conflicts"]) == 1
-
-        entry = data["conflicts"][0]
-        assert "score" in entry, "similarity must be normalized to 'score'"
-        assert "similarity" not in entry, "'similarity' key must not appear in output"
-        assert entry["score"] == 0.75
-        assert entry["file_a"] == "/path/to/file_a.md"
-        assert entry["file_b"] == "/path/to/file_b.md"
-        assert "reason" in entry
-
-    def test_conflicts_structure_has_required_keys(self, monkeypatch, capsys):
-        """Each conflict entry must have file_a, file_b, score, reason."""
-        raw_conflicts = [
-            {
-                "file_a": "/a.md",
-                "file_b": "/b.md",
-                "similarity": 0.5,
-                "conflicts": [{"reason": "duplicate info"}],
-            }
-        ]
-        _make_fake_modules(monkeypatch, conflicts=raw_conflicts)
+    def test_conflicts_passes_the_candidates_through_unjudged(self, monkeypatch, capsys):
+        """The CLI adds no verdict of its own to what the detector found."""
+        row = {"workspace": "_gaia_user", "class": "anchor", "description": "d",
+               "updated_at": "2026-09-30T00:00:00Z"}
+        candidates = [{"owner": "user", "score": 0.5,
+                       "a": {**row, "name": "user_a"}, "b": {**row, "name": "user_b"}}]
+        _make_fake_modules(monkeypatch, conflicts=candidates)
 
         args = SimpleNamespace(json=True, threshold=0.3, func=memory_mod._cmd_conflicts)
         rc = memory_mod.cmd_memory(args)
 
         assert rc == 0
-        data = json.loads(capsys.readouterr().out)
-        entry = data["conflicts"][0]
-        for key in ("file_a", "file_b", "score", "reason"):
-            assert key in entry, f"Missing key: {key}"
+        assert json.loads(capsys.readouterr().out) == {"candidates": candidates}
 
     def test_conflicts_without_detector_module_returns_error(self, monkeypatch, capsys):
         """When conflict_detector is unavailable, exit 1 with error."""
@@ -648,15 +608,14 @@ class TestCmdConflicts:
         assert "error" in data
 
     def test_conflicts_human_output_no_crash(self, monkeypatch, capsys):
-        """Human mode with no conflicts should print a message."""
+        """Human mode with no candidates still says so instead of printing nothing."""
         _make_fake_modules(monkeypatch, conflicts=[])
 
         args = SimpleNamespace(json=False, threshold=0.3, func=memory_mod._cmd_conflicts)
         rc = memory_mod.cmd_memory(args)
 
         assert rc == 0
-        out = capsys.readouterr().out
-        assert "No conflicts" in out
+        assert capsys.readouterr().out.strip()
 
 
 # ---------------------------------------------------------------------------

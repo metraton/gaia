@@ -18,6 +18,7 @@ Subcommands:
                                           verify_brief and prints inconsistencies;
                                           does NOT change AC/milestone/plan status)
     gaia brief set-status <name> <status> Validated state-machine transition
+    gaia brief set-project <name> <project> Tag a brief so it moves with its project
                                           (DB-only)
     gaia brief deps <name> [--json]       Print dependency graph
     gaia brief search <query> [--limit N] FTS5 search over objective/context/approach
@@ -82,16 +83,8 @@ def _resolve_field(inline_val, file_val, field_name):
 # ---------------------------------------------------------------------------
 
 def _resolve_workspace(explicit: str | None) -> str:
-    if explicit:
-        return explicit
-    try:
-        from gaia.project import current as _project_current
-        ws = _project_current()
-        if ws:
-            return ws
-    except Exception:
-        pass
-    return "me"
+    from gaia.project import cli_workspace
+    return cli_workspace(explicit)
 
 
 # ---------------------------------------------------------------------------
@@ -176,25 +169,28 @@ def _cmd_new(args) -> int:
     )
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
-    # FIX (workspace-create footgun): the read-time cross-workspace hint
-    # (FIX 2 in _cmd_show, shipped 5.0.10) only warns when a brief LOOKUP
-    # misses locally but exists elsewhere -- it says nothing at CREATE time.
-    # Creating from the cwd of a sub-repo (e.g. ~/ws/aaxis/aos/aos) silently
-    # attributes the new brief to that repo's inferred workspace instead of
-    # the user's personal one, and the mistake surfaces only in a later
-    # session when the brief is "missing" from 'me'. Advisory only (stderr,
-    # non-blocking) so headless/agent flows are never gated -- mirrors the
-    # non-blocking "Warning: [...]" pattern in _cmd_close.
-    if not getattr(args, "workspace", None) and workspace != "me":
+    # A brief created without --workspace lands in the resolved workspace,
+    # which from inside a sub-repo may not be the one intended. Advisory only
+    # (stderr, non-blocking) so headless/agent flows are never gated; it names
+    # no particular workspace because none is universal.
+    if not getattr(args, "workspace", None):
         print(
             f"Warning: creating brief in workspace '{workspace}' "
-            f"(inferred from cwd), not your personal workspace 'me'. "
-            f"Pass --workspace=me if that was not intended.",
+            f"(no --workspace given). Pass --workspace=<name> if that was not "
+            f"intended.",
             file=sys.stderr,
         )
 
     headless = getattr(args, "headless", False)
     as_json = getattr(args, "json", False)
+
+    project_identity = None
+    if getattr(args, "project", None):
+        from gaia.store.writer import resolve_project_ref
+        try:
+            project_identity = resolve_project_ref(workspace, args.project)
+        except ValueError as exc:
+            return _err(str(exc), as_json=as_json)
 
     if headless:
         # DB-only flow: no $EDITOR, no filesystem, slug derived from --title.
@@ -248,6 +244,7 @@ def _cmd_new(args) -> int:
             "context": context_val,
             "approach": approach,
             "out_of_scope": out_of_scope,
+            "project": project_identity,
         }
         # Strip None values so DEFAULTs in upsert_brief / NULL columns stay clean.
         fields = {k: v for k, v in fields.items() if v is not None}
@@ -284,6 +281,8 @@ def _cmd_new(args) -> int:
     except Exception as exc:
         return _err(f"failed to parse brief: {exc}", as_json=as_json)
 
+    if project_identity:
+        parsed["project"] = project_identity
     res = upsert_brief(workspace, name, parsed)
     print(f"Created brief '{name}' (id={res['brief_id']}, "
           f"acs={res['acs']}, milestones={res['milestones']})")
@@ -310,6 +309,33 @@ def _cmd_set_status(args) -> int:
             print(f"Brief '{name}' already at status '{new_status}' (noop)")
         else:
             print(f"Brief '{name}': {res['old_status']} -> {res['new_status']}")
+    return 0
+
+
+def _cmd_set_project(args) -> int:
+    """Tag an existing brief with the project it is for, so it moves with that project."""
+    from gaia.briefs import set_brief_project
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    clear = getattr(args, "clear", False)
+    if clear == (args.project is not None):
+        return _err("give a PROJECT or --clear, not both", as_json=as_json)
+    try:
+        res = set_brief_project(
+            workspace, args.name, args.project,
+            force=getattr(args, "force", False), dry_run=args.dry_run,
+        )
+    except (ValueError, PermissionError) as exc:
+        return _err(str(exc), as_json=as_json)
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    elif clear:
+        verb = "would be" if args.dry_run else "is"
+        print(f"Brief '{args.name}' in '{workspace}' {verb} a workspace-level brief "
+              f"(was {res['previous']})")
+    else:
+        verb = "would belong" if args.dry_run else "belongs"
+        print(f"Brief '{args.name}' in '{workspace}' {verb} to project {res['project']}")
     return 0
 
 
@@ -724,7 +750,7 @@ def register(subparsers) -> None:
     )
     brief_parser.add_argument(
         "--workspace", metavar="W", default=None,
-        help="Workspace identity. Default: gaia.project.current() or 'me'.",
+        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global'); a brief named here is looked up in the other workspaces when the resolved one lacks it.",
     )
 
     actions = brief_parser.add_subparsers(dest="brief_action", metavar="<action>")
@@ -743,6 +769,9 @@ def register(subparsers) -> None:
                        help="Brief slug. Optional with --headless.")
     new_p.add_argument("--workspace", default=None,
                        help="Workspace identity.")
+    new_p.add_argument("--project", default=None, metavar="NAME",
+                       help="Project of the workspace the brief is for; it moves "
+                            "with the project. Default: a workspace-level brief.")
     new_p.add_argument("--headless", action="store_true", default=False,
                        help="Build from flags. bool. Default: false.")
     new_p.add_argument("--title", default=None,
@@ -886,6 +915,36 @@ def register(subparsers) -> None:
     close_p.add_argument("--workspace", default=None,
                          help="Workspace identity.")
 
+    # -- set-project --------------------------------------------------------
+    setproject_p = actions.add_parser(
+        "set-project",
+        help="Tag a brief with the project it is for",
+        description="Tag an existing brief with a project: a project name of its "
+                    "workspace, or the identity of a project in any workspace, so the "
+                    "tag works before or after the project moves. Tagged with a project "
+                    "of its own workspace, the brief moves with it (gaia project move). "
+                    "A brief tagged with another project is retagged only with --force; "
+                    "--clear makes it a workspace-level brief again.",
+        epilog="Examples:\n  gaia brief set-project my-feature gaia --workspace=ws --dry-run\n"
+               "  gaia brief set-project my-feature github.com/metraton/gaia --workspace=ws\n"
+               "  gaia brief set-project my-feature other-repo --force\n"
+               "  gaia brief set-project my-feature --clear\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    setproject_p.add_argument("name", help="Brief slug.")
+    setproject_p.add_argument("project", nargs="?", default=None,
+                              help="Project name in the brief's workspace, or a project "
+                                   "identity in any workspace.")
+    setproject_p.add_argument("--clear", action="store_true", default=False,
+                              help="Remove the project tag.")
+    setproject_p.add_argument("--force", action="store_true", default=False,
+                              help="Retag a brief already tagged with another project.")
+    setproject_p.add_argument("--workspace", default=None, help="Workspace identity.")
+    setproject_p.add_argument("--dry-run", dest="dry_run", action="store_true", default=False,
+                              help="Report the project the brief would get, writing nothing.")
+    setproject_p.add_argument("--json", action="store_true", default=False,
+                              help="Emit JSON. bool.")
+
     # -- set-status ---------------------------------------------------------
     setstatus_p = actions.add_parser(
         "set-status",
@@ -1002,6 +1061,24 @@ def register(subparsers) -> None:
                       help="Workspace identity.")
     m_rm.add_argument("--json", action="store_true", default=False,
                       help="Emit JSON.")
+
+    history_p = actions.add_parser(
+        "history",
+        help="Change history of a brief: AC edits, decisions, plan versions (read-only)",
+        description=(
+            "Lists brief_events oldest first: brief created/edited, AC added/edited/"
+            "removed (with before/after in --json), decisions added, plan versions "
+            "replaced. Recorded by database triggers since schema v58; rows marked "
+            "(reconstructed) were inferred by the v58 migration from rows that "
+            "already existed. NOT covered: AC edits made before v58 -- they left no "
+            "trace in the database."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia brief history my-brief --workspace=century-inc --json\n",
+    )
+    history_p.add_argument("name", help="Brief slug.")
+    history_p.add_argument("--workspace", default=None, metavar="W", help="Workspace identity.")
+    history_p.add_argument("--json", action="store_true", default=False, help="Emit JSON.")
 
     # -- decision <add|list> ----------------------------------------------------
     decision_p = actions.add_parser(
@@ -1308,16 +1385,53 @@ def _cmd_ac(args) -> int:
     return 0
 
 
+def _cmd_history(args) -> int:
+    from gaia.briefs import get_brief
+    from gaia.store.writer import _connect
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+    brief = get_brief(workspace, args.name)
+    if brief is None:
+        return _err(f"brief '{args.name}' not found in workspace '{workspace}'", as_json=as_json)
+    con = _connect()
+    try:
+        cur = con.execute(
+            "SELECT occurred_at, kind, subject, source, before, after FROM brief_events "
+            "WHERE brief_id = ? ORDER BY occurred_at, id",
+            (brief["id"],),
+        )
+        events = [dict(zip([d[0] for d in cur.description], r)) for r in cur.fetchall()]
+    finally:
+        con.close()
+    if as_json:
+        for event in events:
+            for field in ("before", "after"):
+                event[field] = json.loads(event[field]) if event[field] else None
+        print(json.dumps({"brief": args.name, "workspace": workspace, "events": events},
+                         indent=2, default=str))
+        return 0
+    if not events:
+        print(f"no history recorded for brief '{args.name}'")
+        return 0
+    for event in events:
+        mark = " (reconstructed)" if event["source"] == "reconstructed" else ""
+        print(f"{event['occurred_at']}  {event['kind']:<22} {event['subject'] or ''}{mark}")
+    return 0
+
+
 def cmd_brief(args) -> int:
     """Dispatch handler for `gaia brief`."""
     action = getattr(args, "brief_action", None)
     handlers = {
+        "history": _cmd_history,
         "new": _cmd_new,
         "edit": _cmd_edit,
         "show": _cmd_show,
         "list": _cmd_list,
         "close": _cmd_close,
         "set-status": _cmd_set_status,
+        "set-project": _cmd_set_project,
         "deps": _cmd_deps,
         "search": _cmd_search,
         "delete": _cmd_delete,
@@ -1327,11 +1441,18 @@ def cmd_brief(args) -> int:
         "ac": _cmd_ac,
     }
     if action in handlers:
+        if action != "new":
+            from cli._brief_scope import follow_brief
+
+            named = getattr(args, "brief", None) or getattr(args, "name", None)
+            ambiguity = follow_brief(args, named)
+            if ambiguity:
+                return _err(ambiguity, as_json=getattr(args, "json", False))
         return handlers[action](args)
 
     print(
         "Usage: gaia brief "
-        "<new|edit|show|list|close|set-status|deps|search|delete|verify|"
+        "<new|edit|show|list|close|set-status|set-project|deps|search|delete|verify|"
         "milestone|decision|ac>",
         file=sys.stderr,
     )
