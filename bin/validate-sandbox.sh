@@ -820,6 +820,23 @@ else
   record "settings preservation" "SKIP" "local mode (no pre-snapshot)" "0"
 fi
 
+# 9. Install seeders: `gaia install` reports a seeder error and carries on, as a
+# user install must, so the gate reads the tables the seeders fill instead.
+if [[ "${TARGET}" == "sandbox" ]]; then
+  t0="$(now_ms)"
+  routing_rows="$(sqlite3 "${GAIA_DB}" 'SELECT COUNT(*) FROM surface_routing;' 2>/dev/null || echo 0)"
+  permission_rows="$(sqlite3 "${GAIA_DB}" 'SELECT COUNT(*) FROM agent_contract_permissions;' 2>/dev/null || echo 0)"
+  ms=$(( $(now_ms) - t0 ))
+  seeded="surface_routing=${routing_rows:-0} agent_contract_permissions=${permission_rows:-0}"
+  if [[ "${routing_rows:-0}" -gt 0 && "${permission_rows:-0}" -gt 0 ]]; then
+    record "install seeders" "PASS" "${seeded}" "${ms}"
+  else
+    record "install seeders" "FAIL" "${seeded} (seeder error in gaia install)" "${ms}"
+  fi
+else
+  record "install seeders" "SKIP" "local mode (user database)" "0"
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

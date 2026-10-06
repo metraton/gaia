@@ -105,6 +105,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
 from cli import _install_helpers  # type: ignore  # noqa: E402
 from cli import migrate  # type: ignore  # noqa: E402
 from cli import _manifest  # type: ignore  # noqa: E402
+from gaia.paths import db_path as _resolved_db_path  # noqa: E402
 
 _BOOTSTRAP_SCRIPT = migrate.ENGINE
 
@@ -879,6 +880,16 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
     return {"rc": result.returncode, "detail": detail}
 
 
+def _install_db_path(db_path: str | None) -> str:
+    """The database install bootstraps and seeds: ``--db-path`` when given, else the one every gaia call resolves.
+
+    Resolved here and handed to bootstrap explicitly, since
+    scripts/bootstrap_database.py reads GAIA_DB alone and would otherwise
+    ignore GAIA_DATA_DIR.
+    """
+    return str(Path(db_path).expanduser().resolve() if db_path else _resolved_db_path())
+
+
 def _seed_contract_permissions(db_path: str | None, quiet: bool) -> dict:
     """Invoke seed_contract_permissions to populate agent_contract_permissions.
 
@@ -893,12 +904,7 @@ def _seed_contract_permissions(db_path: str | None, quiet: bool) -> dict:
         }
 
     env = os.environ.copy()
-    resolved_db = (
-        str(Path(db_path).expanduser().resolve())
-        if db_path
-        else str(Path("~/.gaia/gaia.db").expanduser().resolve())
-    )
-    cmd = [sys.executable, str(_SEED_CONTRACT_PERMS), "--db-path", resolved_db]
+    cmd = [sys.executable, str(_SEED_CONTRACT_PERMS), "--db-path", _install_db_path(db_path)]
 
     try:
         result = subprocess.run(
@@ -939,12 +945,7 @@ def _seed_surface_routing(db_path: str | None, quiet: bool) -> dict:
         }
 
     env = os.environ.copy()
-    resolved_db = (
-        str(Path(db_path).expanduser().resolve())
-        if db_path
-        else str(Path("~/.gaia/gaia.db").expanduser().resolve())
-    )
-    cmd = [sys.executable, str(_SEED_SURFACE_ROUTING), "--db-path", resolved_db]
+    cmd = [sys.executable, str(_SEED_SURFACE_ROUTING), "--db-path", _install_db_path(db_path)]
 
     try:
         result = subprocess.run(
@@ -1361,7 +1362,7 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
     postinstall = bool(getattr(args, "postinstall", False))
     quiet = bool(getattr(args, "quiet", False))
     verbose = bool(getattr(args, "verbose", False))
-    db_path = getattr(args, "db_path", None)
+    db_path = _install_db_path(getattr(args, "db_path", None))
     skip_workspace = bool(getattr(args, "skip_workspace", False))
     opt_path = bool(getattr(args, "path", False))
     strict_wiring = bool(getattr(args, "strict_wiring", False))
