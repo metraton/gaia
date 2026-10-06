@@ -2,8 +2,9 @@
 
 Three properties: the gh program is configurable and reaches only the
 release's own gh calls; the rc push lands on the origin branch the release
-was cut from whatever the local branch is called; and the publish command the
-gaia-release skill documents passes the approval request-set validator.
+was cut from whatever the local branch is called; and every release command
+line the gaia-release skill documents passes the approval request-set
+validator, so a retired form such as a token substitution cannot be taught.
 Git runs for real against a local bare origin; gh is a fake program, so no
 network is touched.
 """
@@ -273,27 +274,40 @@ def test_stable_requires_the_push_target_to_be_main():
 # ---------------------------------------------------------------------------
 
 _SKILL_DIR = _REPO_ROOT / "skills" / "gaia-release"
+_RELEASE_COMMAND_LINE = re.compile(
+    r'^(?:\w+=(?:"[^"]*"|\S+) +)*(?:python3 \S+/bin/)?gaia release (?:publish|check)\b[^\n#`]*', re.M
+)
 
 
-def _documented_publish_commands():
-    text = (_SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
-    found = re.findall(r"^(?:python3 \S+/bin/)?gaia release publish [^\n#`]*--gh [^\n#`]*?$", text, re.M)
+def _release_commands_in(text):
+    found = _RELEASE_COMMAND_LINE.findall(text)
     return [cmd.strip().replace("<version>", "5.5.0-rc.4").replace("<worktree>", str(_REPO_ROOT)) for cmd in found]
 
 
-def test_documented_publish_command_passes_validate_request_set():
-    commands = _documented_publish_commands()
-    assert commands, "SKILL.md documents no `gaia release publish ... --gh` line"
+def _documented_release_commands():
+    names = ("SKILL.md", "reference.md")
+    return [cmd for name in names for cmd in _release_commands_in((_SKILL_DIR / name).read_text(encoding="utf-8"))]
+
+
+def test_every_documented_release_command_passes_validate_request_set():
+    commands = _documented_release_commands()
+    publish = [cmd for cmd in commands if "gaia release publish" in cmd]
+    assert any("--gh" in cmd.split() for cmd in publish), "no documented `gaia release publish ... --gh` line"
     for command in commands:
+        # A dry-run mutates nothing, so it must clear every atomicity check and fail only for lacking a T3 command.
+        if "--dry-run" in command.split():
+            with pytest.raises(CommandSetValidationError, match="at least one command classified T3"):
+                validate_request_set([command])
+            continue
         [item] = validate_request_set([command])
-        assert item["signed"] is True
+        assert item["signed"] is True, command
 
 
-def test_the_retired_substitution_form_is_still_refused():
+def test_the_retired_substitution_form_is_extracted_and_refused():
+    [retired] = _release_commands_in('GH_TOKEN="$(gh auth token --user metraton)" gaia release publish <version>\n')
     with pytest.raises(CommandSetValidationError, match="not a chain"):
-        validate_request_set(['GH_TOKEN="$(gh auth token --user metraton)" gaia release publish 5.5.0-rc.4'])
+        validate_request_set([retired])
 
 
-def test_no_release_surface_teaches_the_substitution_form():
-    for path in (_SKILL_DIR / "SKILL.md", _SKILL_DIR / "reference.md", _BIN_DIR / "cli" / "release.py"):
-        assert "$(gh auth token" not in path.read_text(encoding="utf-8"), path
+def test_release_cli_does_not_teach_the_substitution_form():
+    assert "$(gh auth token" not in (_BIN_DIR / "cli" / "release.py").read_text(encoding="utf-8")
