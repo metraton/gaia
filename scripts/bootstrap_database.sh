@@ -66,8 +66,8 @@ echo "[bootstrap] Using schema:  $SCHEMA_FILE"
 # DB the column has to exist BEFORE schema.sql runs.
 #
 # This section closes that gap generically and idempotently: for every
-# `ALTER TABLE <t> ADD COLUMN <c> ...` statement declared in the forward
-# migration files, if table <t> ALREADY exists in the live DB and column <c>
+# `ALTER TABLE <t> ADD COLUMN <c> ...` statement declared in the migrations
+# still pending for this DB, if table <t> ALREADY exists in the live DB and column <c>
 # is absent, add it NOW -- before schema.sql. The migration file stays the
 # single source of the ADD COLUMN (one-file-per-bump); we only change WHEN a
 # pre-existing table receives the column so schema.sql's index build cannot
@@ -84,18 +84,41 @@ echo "[bootstrap] Using schema:  $SCHEMA_FILE"
 #     section is a no-op. Recovery on retry is automatic.
 #
 # Pure bash + sqlite3, no python3 -- consistent with this script's principles.
-# NOTE: the matcher assumes one `ALTER TABLE ... ADD COLUMN ...` per line, the
-# same assumption _filter_add_column_idempotent (Section 3c) already relies on.
+
+# An ADD COLUMN statement starts at the beginning of a line and ends on the first
+# line whose code ends in `;`. Its clauses may span lines (v61_to_v62 puts each
+# CHECK on its own line), so both readers below act on the whole statement.
+_ADD_COLUMN_RE='^[[:space:]]*alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+)'
+_STATEMENT_END_RE=';[[:space:]]*(--.*)?$'
+
+# $1 = first line of an ADD COLUMN statement. Reads the rest of it from the
+# caller's stdin and leaves the whole statement in ADD_COLUMN_STATEMENT.
+_read_add_column_statement() {
+    local line="$1"
+    ADD_COLUMN_STATEMENT="$line"
+    while ! [[ "$line" =~ $_STATEMENT_END_RE ]] && { IFS= read -r line || [ -n "$line" ]; }; do
+        ADD_COLUMN_STATEMENT+=$'\n'"$line"
+    done
+}
 
 _reconcile_pre_schema_add_columns() {
-    local mig_file line lower table col tbl_exists col_exists
+    local mig_file target line lower table col tbl_exists col_exists ledger=0
+    # Only pending migrations count: an applied one may add a column a later
+    # one renamed (task_status became agent_state in v37), which must not return.
+    if [ "$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version';")" -gt 0 ]; then
+        ledger="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
+    fi
     for mig_file in "${SCRIPT_DIR}/migrations"/v*_to_v*.sql; do
         [ -f "$mig_file" ] || continue
+        target="${mig_file##*_to_v}"
+        target="${target%.sql}"
+        [ "$target" -gt "$ledger" ] || continue
         while IFS= read -r line || [ -n "$line" ]; do
             lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
-            if [[ "$lower" =~ alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+) ]]; then
+            if [[ "$lower" =~ $_ADD_COLUMN_RE ]]; then
                 table="${BASH_REMATCH[1]}"
                 col="${BASH_REMATCH[2]}"
+                _read_add_column_statement "$line"
                 # Table must already exist (existing DB). On a fresh DB this is
                 # 0 and we skip -- schema.sql will create the table + column.
                 tbl_exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='${table}';")"
@@ -107,7 +130,7 @@ _reconcile_pre_schema_add_columns() {
                 col_exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM pragma_table_info('${table}') WHERE name='${col}';")"
                 if [ "$col_exists" -eq 0 ]; then
                     echo "[bootstrap] pre-schema reconcile: adding ${table}.${col} (existing DB predates it)"
-                    sqlite3 "$GAIA_DB" "$line"
+                    sqlite3 "$GAIA_DB" "$ADD_COLUMN_STATEMENT"
                 fi
             fi
         done < "$mig_file"
@@ -330,28 +353,31 @@ MIG_DIR="${SCRIPT_DIR}/migrations"
 # bare `ALTER TABLE t ADD COLUMN c` aborts with "duplicate column name" when the
 # column already exists from schema.sql. This guard restores idempotency for
 # ADD COLUMN at the RUNNER level (not by putting invalid SQL in the .sql file):
-# for each `ALTER TABLE <t> ADD COLUMN <c> ...` line, if column <c> already
-# exists on table <t> (PRAGMA table_info), the line is neutralised (commented
-# out) before the migration runs. Every other statement passes through verbatim.
+# for each `ALTER TABLE <t> ADD COLUMN <c> ...` statement, if column <c> already
+# exists on table <t> (PRAGMA table_info), every line of the statement is
+# neutralised (commented out) before the migration runs. Every other statement
+# passes through verbatim.
 #
 # Pure bash + sqlite3, no python3 -- consistent with this script's principles.
 _filter_add_column_idempotent() {
     # $1 = path to the migration .sql file. Emits the (possibly filtered) SQL on
-    # stdout. Lines that are `ALTER TABLE t ADD COLUMN c` for an existing column
-    # are replaced by a comment; all other lines are passed through unchanged.
+    # stdout.
     local mig_file="$1"
     local line lower table col exists
     while IFS= read -r line || [ -n "$line" ]; do
-        # Normalise whitespace for matching only (emit the ORIGINAL line).
         lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$lower" =~ alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+) ]]; then
+        if [[ "$lower" =~ $_ADD_COLUMN_RE ]]; then
             table="${BASH_REMATCH[1]}"
             col="${BASH_REMATCH[2]}"
+            _read_add_column_statement "$line"
             exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM pragma_table_info('${table}') WHERE name='${col}';")"
             if [ "$exists" -gt 0 ]; then
-                printf -- '-- [bootstrap] skipped (column %s.%s already present): %s\n' "$table" "$col" "$line"
-                continue
+                printf -- '-- [bootstrap] skipped (column %s.%s already present): %s\n' \
+                    "$table" "$col" "${ADD_COLUMN_STATEMENT//$'\n'/$'\n'-- }"
+            else
+                printf '%s\n' "$ADD_COLUMN_STATEMENT"
             fi
+            continue
         fi
         printf '%s\n' "$line"
     done < "$mig_file"
