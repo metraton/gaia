@@ -79,7 +79,7 @@ No registry; the only network use is gate 4's read-only GitHub API lookup of the
 gaia release check                # add --functional for the opt-in live plugin probe
 gaia release check --quiet        # suppress per-gate progress, only print the summary
 ```
-`gaia release check` (`bin/cli/release.py`) runs, in order, every gate below and reports a complete PASS/FAIL/SKIP picture -- it never stops at the first red light, so a single run tells you exactly which one broke. Gates 1-4 are each a subprocess call to the existing script (never reimplemented); gate 5 is an in-process read-only inspection via the shared `cli/_converge` inspector, and gate 6 (`opencode:surface`) an in-process inspection of gate 2's tarball. The raw forms below are what gates 1-4 wrap, useful when diagnosing which one failed.
+`gaia release check` (`bin/cli/release.py`) first runs publish's node-deps step (see "Node deps" under the Layer 3 runbook); a failure there is the only result. Then it runs, in order, every gate below and reports a complete PASS/FAIL/SKIP picture -- it never stops at the first red light, so a single run tells you exactly which one broke. Gates 1-4 are each a subprocess call to the existing script (never reimplemented); gate 5 is an in-process read-only inspection via the shared `cli/_converge` inspector, and gate 6 (`opencode:surface`) an in-process inspection of gate 2's tarball. The raw forms below are what gates 1-4 wrap, useful when diagnosing which one failed.
 
 **1 -- version-drift gate (reproduces `validate-manifests`):**
 ```

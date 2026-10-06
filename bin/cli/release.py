@@ -4,9 +4,11 @@ Phase 3 adds `gaia release publish`.
 
 `gaia release check [--functional]` collapses today's manual gaia-release
 Layer 2 runbook (npm scripts run by hand, in the right order, remembered
-correctly) into ONE local/offline command. It runs, in order, the gates the
-`gaia-release` skill documents as Layer 2 -- "prove a clean install works on
-BOTH surfaces, reproducing CI" -- plus the shared drift-free convergence gate:
+correctly) into ONE local/offline command. It first installs the locked Node
+dependencies when one is missing (`step_node_deps`, publish's step 1), then
+runs, in order, the gates the `gaia-release` skill documents as Layer 2 --
+"prove a clean install works on BOTH surfaces, reproducing CI" -- plus the
+shared drift-free convergence gate:
 
   1. pre-publish:validate  -- the version-drift / manifest gate
      (`bin/pre-publish-validate.js --validate-only`).
@@ -774,8 +776,9 @@ def _git_commit_paths(repo_root: Path) -> list[str]:
 
 
 def step_node_deps(repo_root: Path, *, timeout: int = 600) -> dict[str, Any]:
-    """Step 1: install the locked Node dependencies unless every one declared
-    in package.json is already in node_modules.
+    """Step 1 of publish, and check's first step: install the locked Node
+    dependencies unless every one declared in package.json is already in
+    node_modules.
 
     `npm ci` installs exactly package-lock.json and refuses one out of sync
     with package.json. `--ignore-scripts` is safe because the root declares
@@ -1363,7 +1366,11 @@ def build_publish_plan(
 def run_release_check(
     repo_root: Path, *, functional: bool = False, local_suite: bool = False, gh: str = _DEFAULT_GH
 ) -> list[dict[str, Any]]:
-    """Run the full Layer-2 pre-release gate in order and return all 6 results.
+    """Install the locked Node dependencies, then run the full Layer-2
+    pre-release gate in order and return the install result plus all 6 gates.
+
+    A failed install is returned alone: the pack and every gate need those
+    dependencies, and six failures sharing one cause would bury it.
 
     Every gate runs regardless of earlier gate outcomes -- the summary must
     report a complete pass/fail/skip picture per gate (AC-2), not stop at
@@ -1373,7 +1380,10 @@ def run_release_check(
     Gates 2 and 6 inspect ONE `npm pack` of the tree, packed after gate 1, so
     the npm and OpenCode surfaces are judged on the same artifact.
     """
-    results = [gate_pre_publish_validate(repo_root)]
+    node_deps = step_node_deps(repo_root)
+    if node_deps["status"] == "FAIL":
+        return [node_deps]
+    results = [node_deps, gate_pre_publish_validate(repo_root)]
     with tempfile.TemporaryDirectory(prefix="gaia-release-check-pack-") as tmp:
         pack = _pack_helpers.pack_tarball(repo_root, dest_dir=Path(tmp))
         results += [
@@ -1468,6 +1478,9 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Run the full local/offline pre-release gate (gaia-release Layer 2)",
         description=(
             "Runs, in order, as ONE local/offline command:\n"
+            "  0. node deps                  -- npm ci --ignore-scripts from\n"
+            "                                    package-lock.json when a declared\n"
+            "                                    dependency is missing; a failure stops here\n"
             "  1. pre-publish:validate       -- drift/manifest gate\n"
             "                                    (bin/pre-publish-validate.js --validate-only)\n"
             "  2. gaia:verify-install:local  -- npm-surface sandbox install\n"

@@ -278,6 +278,7 @@ _CREATED_PACK = {
     "action": "created", "path": "/tmp/pkg.tgz", "details": "ok",
     "tarball": Path("/tmp/pkg.tgz"), "name": "@jaguilar87/gaia", "version": "9.9.9",
 }
+_NODE_DEPS_PASS = {"name": "node deps", "status": "PASS", "detail": "installed", "duration_ms": 1}
 
 
 class TestGateNpmSandbox(unittest.TestCase):
@@ -600,9 +601,10 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
         """Run the orchestration with every gate and the shared pack replaced."""
         with ExitStack() as stack:
             stack.enter_context(patch("cli.release._pack_helpers.pack_tarball", return_value=_CREATED_PACK))
+            stack.enter_context(patch("cli.release.step_node_deps", return_value=_NODE_DEPS_PASS))
             for name in self._GATES:
                 stack.enter_context(patch(f"cli.release.{name}", side_effect=gates[name]))
-            return run_release_check(_REPO_ROOT, **kwargs)
+            return run_release_check(_REPO_ROOT, **kwargs)[1:]
 
     def _recording_gates(self, call_order, status_of=lambda name: "PASS"):
         def make_gate(name):

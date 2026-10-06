@@ -328,6 +328,7 @@ class TestReleaseCheckReusesCiVerdict(unittest.TestCase):
         local_suite = fake_kwargs.pop("local_suite", False)
         with ExitStack() as stack:
             stack.enter_context(patch("cli.release._pack_helpers.pack_tarball", return_value={"action": "error"}))
+            stack.enter_context(patch("cli.release.step_node_deps", return_value=_PASS))
             for gate in (
                 "gate_pre_publish_validate", "gate_npm_sandbox", "gate_plugin_dryrun",
                 "gate_convergence", "gate_opencode_surface",
@@ -336,7 +337,7 @@ class TestReleaseCheckReusesCiVerdict(unittest.TestCase):
             npm_test = stack.enter_context(patch("cli.release.gate_npm_test", return_value=_SUITE_PASS))
             stack.enter_context(patch("cli.release._run", side_effect=_fake_run(calls=calls, **fake_kwargs)))
             results = run_release_check(_REPO_ROOT, local_suite=local_suite)
-        return results[3], npm_test, calls
+        return results[4], npm_test, calls
 
     def test_green_verdict_on_head_passes_citing_the_run_without_the_suite(self):
         result, npm_test, calls = self._check()
