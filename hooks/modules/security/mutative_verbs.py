@@ -630,8 +630,9 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 # disturb it, one replacement for both.
 _GH_ACCOUNT_GUIDANCE = (
     "The active gh account is global state shared with every other session on "
-    "this machine -- name the account on the invocation instead of switching "
-    'it: GH_TOKEN="$(gh auth token --user <account>)" gh ... . '
+    "this machine -- choose the account per process instead of switching it: "
+    "run gh through a wrapper that sets GH_TOKEN for its own process only, "
+    "e.g. `ghx pr list` (ghx maps the origin owner to an account). "
     "`gh auth status` lists the accounts; `gh auth login` adds a missing one."
 )
 

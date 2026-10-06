@@ -42,9 +42,9 @@ class Verdict:
     reason: str
 
 
-def gh_api(path):
-    """Return the decoded JSON body of `gh api <path>`, raising ApiError on failure."""
-    result = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+def gh_api(path, gh="gh"):
+    """Return the decoded JSON body of `<gh> api <path>`, raising ApiError on failure."""
+    result = subprocess.run([gh, "api", path], capture_output=True, text=True)
     if result.returncode != 0:
         raise ApiError(f"gh api {path} failed: {result.stderr.strip()}")
     try:
@@ -122,6 +122,12 @@ def main(argv=None):
     )
     parser.add_argument("--workflow", default="ci.yml", help="workflow file whose runs count")
     parser.add_argument(
+        "--gh",
+        default="gh",
+        metavar="PROGRAM",
+        help="gh-compatible program the API calls run through (default: gh)",
+    )
+    parser.add_argument(
         "--github-output",
         metavar="PATH",
         help="also append reusable/source_run/source_url/reason as step outputs",
@@ -131,7 +137,7 @@ def main(argv=None):
         parser.error("--repo is required outside GitHub Actions")
 
     try:
-        verdict = find_reusable_verdict(args.repo, args.sha, args.workflow, api=gh_api)
+        verdict = find_reusable_verdict(args.repo, args.sha, args.workflow, api=lambda path: gh_api(path, args.gh))
     except (ApiError, KeyError) as exc:
         print(f"No CI verdict lookup for {args.sha}: {exc}. The suite runs.", file=sys.stderr)
         verdict, status = None, 2

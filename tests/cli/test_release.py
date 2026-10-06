@@ -1055,7 +1055,7 @@ class TestStepGitTag(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestStepGitPush(unittest.TestCase):
-    def test_uses_follow_tags_single_push(self):
+    def test_pushes_head_and_tag_to_the_named_origin_branch_in_one_atomic_push(self):
         captured = {}
 
         def fake_run(cmd, **kwargs):
@@ -1063,17 +1063,20 @@ class TestStepGitPush(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         with patch("cli.release.subprocess.run", side_effect=fake_run):
-            res = step_git_push(_REPO_ROOT)
+            res = step_git_push(_REPO_ROOT, "5.0.5", "feat/x")
 
         self.assertEqual(res["status"], "PASS")
-        self.assertEqual(captured["cmd"], ["git", "push", "--follow-tags"])
+        self.assertEqual(
+            captured["cmd"],
+            ["git", "push", "--atomic", "origin", "HEAD:refs/heads/feat/x", "refs/tags/v5.0.5"],
+        )
 
     def test_nonzero_exit_fails(self):
         with patch(
             "cli.release.subprocess.run",
             return_value=subprocess.CompletedProcess([], 1, "", "rejected"),
         ):
-            res = step_git_push(_REPO_ROOT)
+            res = step_git_push(_REPO_ROOT, "5.0.5", "feat/x")
         self.assertEqual(res["status"], "FAIL")
 
 
@@ -1274,7 +1277,7 @@ class TestNeverInvokesNpmPublishDirectly(unittest.TestCase):
         the ones closest to the real release trigger.
         """
         for step, args in (
-            (step_git_push, (_REPO_ROOT,)),
+            (step_git_push, (_REPO_ROOT, "5.0.5", "main")),
             (step_gh_release_create, (_REPO_ROOT, "5.0.5")),
         ):
             captured = {}

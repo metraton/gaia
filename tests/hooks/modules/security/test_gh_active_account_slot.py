@@ -164,20 +164,10 @@ def test_free_forms_are_free_without_the_anchors_too(
 
 
 def _suggested_commands(guidance: str) -> list[str]:
-    """The runnable commands a guidance names, with placeholders made concrete.
-
-    Backticked spans are commands as written; the per-process form carries an
-    ``<account>`` slot and a trailing ``gh ...`` that stand for "your account"
-    and "your gh command".
-    """
+    """The runnable commands a guidance names: its backticked spans, one of
+    which must be the per-process wrapper form."""
     commands = re.findall(r"`([^`]+)`", guidance)
-    per_process = re.search(r'GH_TOKEN="\$\([^)]*\)" gh \.\.\.', guidance)
-    assert per_process, f"guidance names no per-process form: {guidance!r}"
-    commands.append(
-        per_process.group(0)
-        .replace("<account>", "someone")
-        .replace("gh ...", "gh pr list")
-    )
+    assert any(c.startswith("ghx ") for c in commands), f"guidance names no per-process form: {guidance!r}"
     return commands
 
 

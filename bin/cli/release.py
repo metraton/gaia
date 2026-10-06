@@ -64,10 +64,12 @@ registry cache.
 is the separate Layer-3 trigger sequence -- it TRIGGERS a release, it does
 not run the local confidence gate. Before step 1 it runs a read-only (T0)
 preconditions gate (`preflight_publish`) that fails EARLY, loud, and
-actionably rather than mid-sequence: it verifies the active `gh` account has
-push/admin on metraton/gaia, that tag `v<version>` does not already exist
-(local or remote), and that pytest-xdist is importable (`npm test` uses
-`-n auto`). If any precondition fails, NO step runs. Then it runs, strictly
+actionably rather than mid-sequence: it verifies the account the `--gh`
+program runs as has push/admin on metraton/gaia, that tag `v<version>` does
+not already exist (local or remote), that pytest-xdist is importable (`npm
+test` uses `-n auto`), and that the origin branch the push targets can be
+fast-forwarded to HEAD -- `main` for a stable. If any precondition fails, NO
+step runs. Then it runs, strictly
 in order and stopping at the first failure (these steps are causally
 dependent, unlike `check`'s always-run-all-gates design):
 
@@ -80,9 +82,17 @@ dependent, unlike `check`'s always-run-all-gates design):
   3. `git add` + `git commit` -- LOCAL-SAFE (see `GIT_LOCAL_SAFE_SUBCOMMANDS`
      in `hooks/modules/security/mutative_verbs.py`), not Tier 3.
   4. `git tag -a v<version>` -- a NEW, force-free tag; never moves one.
-  5. `git push --follow-tags` -- Tier 3, mutates the remote.
-  6. `gh release create v<version>` -- Tier 3, triggers
+  5. `git push --atomic origin HEAD:refs/heads/<branch> refs/tags/v<version>`
+     -- Tier 3, mutates the remote; never forced, so a non-fast-forward is
+     refused by git itself.
+  6. `<gh> release create v<version>` -- Tier 3, triggers
      `.github/workflows/publish.yml` in CI.
+
+Every gh call (the push-permission check, the CI-verdict lookup, the release)
+runs through the `--gh` program with the repository as cwd. That is how the
+GitHub account is chosen per process: a wrapper such as `ghx` resolves it from
+the origin owner and sets GH_TOKEN for its own process only, so the command
+stays one signable program and gh's active account is never switched.
 
 Steps 5-6 are the only Tier-3 operations and are deliberately last and
 separable: the hook layer will block them and require the user's approval
@@ -93,9 +103,10 @@ registry-publish command itself: that command runs only inside
 `tests/cli/test_release.py` for the invocation-shape assertion that
 guarantees this module never constructs that argv.
 
-`--dry-run` prints the six-step sequence (with the resolved version and the
-Tier-3 steps called out) without executing anything -- no subprocess is
-spawned, so nothing to approve.
+`--dry-run` prints the six-step sequence (with the resolved version, push
+target and gh account, and the Tier-3 steps called out) without mutating
+anything: it runs only the read-only lookups that name the target and the
+account, so nothing to approve.
 """
 
 from __future__ import annotations
@@ -160,8 +171,28 @@ _NPM_TEST_TIMEOUT_ENV = "GAIA_RELEASE_NPM_TEST_TIMEOUT"
 _DEFAULT_NPM_TEST_TIMEOUT = 1800
 
 # P0: the GitHub repo a Layer-3 publish targets -- the preconditions gate
-# verifies the active `gh` account has push/admin here before any step runs.
+# verifies the `--gh` program's account has push/admin here before any step runs.
 _PUBLISH_REPO = "metraton/gaia"
+_PUSH_REMOTE = "origin"
+_DEFAULT_GH = "gh"
+
+_GH_ACCOUNT_FIX = (
+    "Pass `--gh <program>` naming a gh wrapper that sets GH_TOKEN for the right "
+    "account in its own process only (for example `--gh ghx`, which maps the "
+    "origin owner to an account); `gh auth status` lists the accounts and "
+    "`gh auth login` adds a missing one. Do NOT `gh auth switch` -- the active "
+    "account is global state shared with every other session on this machine."
+)
+
+_GH_OPTION_HELP = (
+    "gh-compatible program every gh call runs through, with the repository as "
+    "cwd (default: gh). Name a wrapper that picks the account per process, "
+    "e.g. ghx, to keep gh's active account out of the release"
+)
+
+# A gh failure carrying one of these is the network, not the account: the
+# permission check reports it as unverified instead of blocking the release.
+_GH_TRANSPORT_MARKERS = ("could not resolve host", "timeout", "timed out", "connection", "network", "tls", "eof")
 
 # The files `release:prepare` rewrites. Keep this set inside ci_verdict.py's
 # VERSION_FILES/VERSION_DIRS: CI lets the bump commit reuse its parent's
@@ -440,7 +471,9 @@ def _changed_paths(repo_root: Path) -> list[str] | None:
     return paths
 
 
-def find_ci_verdict(repo_root: Path, *, allowed_changes: tuple[str, ...] = ()) -> tuple[bool, str]:
+def find_ci_verdict(
+    repo_root: Path, *, allowed_changes: tuple[str, ...] = (), gh: str = _DEFAULT_GH
+) -> tuple[bool, str]:
     """Ask `.github/scripts/ci_verdict.py` whether CI already passed HEAD's tree.
 
     Returns (True, citation of the CI run) when a green "CI verdict" covers
@@ -464,7 +497,7 @@ def find_ci_verdict(repo_root: Path, *, allowed_changes: tuple[str, ...] = ()) -
         return False, f"git rev-parse HEAD failed: {err.strip()}"
 
     rc, out, err = _run(
-        [sys.executable, str(helper), head.strip(), "--repo", _PUBLISH_REPO],
+        [sys.executable, str(helper), head.strip(), "--repo", _PUBLISH_REPO, "--gh", gh],
         cwd=repo_root,
         timeout=_CI_VERDICT_TIMEOUT,
     )
@@ -479,6 +512,7 @@ def gate_tests(
     *,
     local_suite: bool = False,
     allowed_changes: tuple[str, ...] = (),
+    gh: str = _DEFAULT_GH,
 ) -> dict[str, Any]:
     """Check's gate 4 and publish's step 2: PASS on a green CI verdict for the
     tree about to ship, citing the run; otherwise, or with *local_suite*, the
@@ -487,7 +521,7 @@ def gate_tests(
     if local_suite:
         return gate_npm_test(repo_root)
 
-    reused, message = find_ci_verdict(repo_root, allowed_changes=allowed_changes)
+    reused, message = find_ci_verdict(repo_root, allowed_changes=allowed_changes, gh=gh)
     if reused:
         return {
             "name": "CI verdict",
@@ -833,25 +867,33 @@ def step_git_tag(repo_root: Path, version: str, *, timeout: int = 30) -> dict[st
     }
 
 
-def step_git_push(repo_root: Path, *, timeout: int = 180) -> dict[str, Any]:
-    """Step 5: `git push --follow-tags`. TIER 3 -- mutates the remote.
+def _push_command(version: str, branch: str) -> list[str]:
+    return [
+        "git", "push", "--atomic", _PUSH_REMOTE,
+        f"HEAD:refs/heads/{branch}", f"refs/tags/v{version}",
+    ]
 
-    `--follow-tags` pushes the commit on the current branch AND the
-    annotated tag created in step 4 in one push, so this is the single
-    `git push` the Layer 3 sequence performs (see the `gaia-release` skill,
-    Layer 3 step (f)). The hook layer classifies this as Tier 3 and blocks
-    it for approval at runtime -- expected, not retried.
+
+def step_git_push(repo_root: Path, version: str, branch: str, *, timeout: int = 180) -> dict[str, Any]:
+    """Step 5: push the release commit to origin's *branch* and tag
+    ``v<version>`` with it, both or neither. TIER 3 -- mutates the remote.
+
+    The refspec names the remote branch, so the local branch may be called
+    anything (a Gaia worktree always sits on its own). It carries no `+` and no
+    `--force`: git refuses a non-fast-forward.
     """
     t0 = _now_ms()
     name = "git push"
-    rc, out, err = _run(["git", "push", "--follow-tags"], cwd=repo_root, timeout=timeout)
+    rc, out, err = _run(_push_command(version, branch), cwd=repo_root, timeout=timeout)
     duration = _now_ms() - t0
     detail = (out + err).strip()[-_DETAIL_TAIL:]
     return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or "ok", "duration_ms": duration}
 
 
-def step_gh_release_create(repo_root: Path, version: str, *, timeout: int = 180) -> dict[str, Any]:
-    """Step 6: `gh release create v<version>`. TIER 3 -- creates the GitHub
+def step_gh_release_create(
+    repo_root: Path, version: str, *, gh: str = _DEFAULT_GH, timeout: int = 180
+) -> dict[str, Any]:
+    """Step 6: `<gh> release create v<version>`. TIER 3 -- creates the GitHub
     Release that triggers `.github/workflows/publish.yml` in CI.
 
     This is the ONLY step that reaches the registry-publish pipeline --
@@ -864,7 +906,7 @@ def step_gh_release_create(repo_root: Path, version: str, *, timeout: int = 180)
     name = "gh release create"
     tag = f"v{version}"
     prerelease = _is_prerelease(version)
-    cmd = ["gh", "release", "create", tag, "--title", tag, "--generate-notes"]
+    cmd = [gh, "release", "create", tag, "--title", tag, "--generate-notes"]
     if prerelease:
         cmd.append("--prerelease")
 
@@ -882,52 +924,108 @@ def step_gh_release_create(repo_root: Path, version: str, *, timeout: int = 180)
 # that only failed because pytest-xdist was missing). Nothing here mutates.
 # ---------------------------------------------------------------------------
 
-def _check_gh_push_permission(repo_root: Path, *, repo: str = _PUBLISH_REPO, timeout: int = 30) -> str | None:
-    """Return an actionable error when the ACTIVE gh account definitively lacks
-    push/admin on *repo*; return None when push is confirmed OR when it could
-    not be verified (gh missing, no network, timeout, unexpected output).
+def _check_gh_push_permission(
+    repo_root: Path, *, gh: str = _DEFAULT_GH, repo: str = _PUBLISH_REPO, timeout: int = 30
+) -> str | None:
+    """Return an actionable error when the account *gh* runs as definitively
+    lacks push/admin on *repo*, or cannot be resolved at all; None when push is
+    confirmed or the check could not reach GitHub.
 
-    The distinction is deliberate: a release must not abort on a transient or
-    ambiguous failure -- that would make the gate itself flaky -- only on a
-    definite "no". A confirmed `push:false` and a "no authenticated account"
-    are the two definite-no cases; everything else is "could not verify".
+    The release must not abort on a transient network failure -- that would
+    make the gate itself flaky -- but every other failure is one step 6
+    (`<gh> release create`) would hit after the tag is pushed, so it blocks
+    here: a missing program, an account the program cannot resolve or has no
+    token for, an unauthenticated gh, and a confirmed `push:false`.
     """
-    if shutil.which("gh") is None:
-        return None  # cannot verify -> do not block
+    if shutil.which(gh) is None:
+        return f"gh program {gh!r} was not found. {_GH_ACCOUNT_FIX}"
     rc, out, err = _run(
-        ["gh", "api", f"repos/{repo}", "-q", ".permissions.push"],
+        [gh, "api", f"repos/{repo}", "-q", ".permissions.push"],
         cwd=repo_root,
         timeout=timeout,
     )
     if rc is None:
-        return None  # invocation error / timeout -> ambiguous, do not block
-    text = (out or "").strip().lower()
+        return None
     if rc == 0:
-        if text == "true":
-            return None  # confirmed push/admin
-        if text == "false":
-            return (
-                f"the active gh account does NOT have push access to {repo}. Re-run "
-                f"the release with an account that does, resolved per process: "
-                f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...`. '
-                f"`gh auth status` lists the accounts you "
-                f"have. Do NOT `gh auth switch` -- the active account is global "
-                f"state shared with every other session on this machine."
-            )
-        return None  # unexpected/empty output -> could not verify, do not block
-    # rc != 0: distinguish "not authenticated" (a definite no, actionable) from a
-    # network / 5xx / DNS failure (ambiguous -> do not block).
-    combined = ((out or "") + (err or "")).lower()
-    if any(marker in combined for marker in ("not logged in", "no accounts", "gh auth login", "authentication")):
-        return (
-            f"no authenticated gh account with push access to {repo}. If an "
-            f"account in `gh auth status` has push/admin, resolve it per process: "
-            f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...`. '
-            f"If none does, `gh auth login` adds one. Do NOT "
-            f"`gh auth switch` -- the active account is global state shared with "
-            f"every other session on this machine."
-        )
-    return None  # network / transient -> could not verify, do not block
+        if out.strip().lower() == "false":
+            return f"the account `{gh}` runs as does NOT have push access to {repo}. {_GH_ACCOUNT_FIX}"
+        return None
+    combined = (out + err).strip()
+    if any(marker in combined.lower() for marker in _GH_TRANSPORT_MARKERS):
+        return None
+    reason = combined.splitlines()[-1] if combined else f"exit {rc}"
+    return f"`{gh}` could not act on {repo} for this repository: {reason}. {_GH_ACCOUNT_FIX}"
+
+
+def _gh_login(repo_root: Path, gh: str, *, timeout: int = 30) -> str:
+    """Name the account *gh* runs as in *repo_root*, or why it cannot be named."""
+    if shutil.which(gh) is None:
+        return f"unresolved: gh program {gh!r} not found"
+    rc, out, err = _run([gh, "api", "user", "-q", ".login"], cwd=repo_root, timeout=timeout)
+    if rc == 0 and out.strip():
+        login = out.strip()
+        if gh == _DEFAULT_GH:
+            return f"{login} (gh's active account, global state; pass --gh <wrapper> to choose it per process)"
+        return f"{login} (resolved by {gh} for this repository)"
+    combined = (out + err).strip()
+    return f"unresolved: {combined.splitlines()[-1] if combined else f'{gh} exited {rc}'}"
+
+
+def _git_out(repo_root: Path, args: list[str], *, timeout: int) -> str | None:
+    rc, out, _ = _run(["git", *args], cwd=repo_root, timeout=timeout)
+    return out.strip() if rc == 0 else None
+
+
+def resolve_push_branch(
+    repo_root: Path, explicit: str | None = None, *, timeout: int = 30
+) -> tuple[str | None, str | None]:
+    """Name the origin branch the release pushes to: *explicit*, else the
+    current branch's origin upstream, else the single origin branch whose tip
+    is HEAD (a Gaia worktree is cut there on a branch of its own). Returns
+    (branch, None) or (None, why it cannot be named)."""
+    if explicit:
+        return explicit, None
+    upstream = _git_out(
+        repo_root, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], timeout=timeout
+    )
+    if upstream and upstream.startswith(f"{_PUSH_REMOTE}/"):
+        return upstream[len(_PUSH_REMOTE) + 1:], None
+    head = _git_out(repo_root, ["rev-parse", "HEAD"], timeout=timeout)
+    heads = _git_out(repo_root, ["ls-remote", _PUSH_REMOTE, "refs/heads/*"], timeout=timeout)
+    if head is None or heads is None:
+        return None, f"could not read HEAD or the branches on {_PUSH_REMOTE}; pass --branch <name>"
+    at_head = sorted(
+        ref.removeprefix("refs/heads/")
+        for sha, _, ref in (line.partition("\t") for line in heads.splitlines())
+        if sha == head
+    )
+    if len(at_head) == 1:
+        return at_head[0], None
+    found = ", ".join(at_head) if at_head else "none"
+    return None, (
+        f"cannot tell which {_PUSH_REMOTE} branch this release pushes to: the current "
+        f"branch has no {_PUSH_REMOTE} upstream and the {_PUSH_REMOTE} branches at HEAD "
+        f"are {found}. Pass --branch <name>."
+    )
+
+
+def _check_push_fast_forward(repo_root: Path, branch: str, *, timeout: int = 30) -> str | None:
+    """Return an actionable error unless origin's *branch* exists and HEAD
+    descends from its tip, so the never-forced push of step 5 is a fast-forward."""
+    remote = _git_out(repo_root, ["ls-remote", _PUSH_REMOTE, f"refs/heads/{branch}"], timeout=timeout)
+    if remote is None:
+        return f"could not read {_PUSH_REMOTE}/{branch} (git ls-remote failed)"
+    tip = remote.split("\t", 1)[0]
+    if not tip:
+        return f"branch {branch} does not exist on {_PUSH_REMOTE}; pass --branch <name> of an existing one"
+    rc, _, _ = _run(["git", "merge-base", "--is-ancestor", tip, "HEAD"], cwd=repo_root, timeout=timeout)
+    if rc == 0:
+        return None
+    return (
+        f"pushing HEAD to {_PUSH_REMOTE}/{branch} is not a fast-forward: its tip "
+        f"{tip[:12]} is not in HEAD's history. Fetch it and merge it into this "
+        f"branch (merge, not rebase), then re-run."
+    )
 
 
 def _check_tag_absent(repo_root: Path, version: str, *, remote: str = "origin", timeout: int = 30) -> str | None:
@@ -964,28 +1062,23 @@ def _is_prerelease(version: str) -> bool:
     return any(marker in version for marker in ("-rc.", "-beta.", "-alpha."))
 
 
-def _check_stable_from_main(repo_root: Path, version: str, *, timeout: int = 30) -> str | None:
-    """Return an actionable error when a STABLE *version* is published from a
-    branch other than ``main``; None for a pre-release on any branch or a
-    stable on ``main``.
+def _check_stable_from_main(version: str, push_branch: str | None) -> str | None:
+    """Return an actionable error when a STABLE *version* would be pushed to an
+    origin branch other than ``main``; None for a pre-release to any branch or
+    a stable to ``main``.
 
     A stable release reaches `latest` for every channel, so it ships only what
-    main holds; an rc ships from the accumulating branch, where
-    `git push --follow-tags` lands its bump. There is no escape flag: a branch
-    that cannot be named (detached HEAD, git failure) is not main.
+    main holds. The check reads the push target, not the local branch name:
+    step 5 fast-forwards exactly that branch, so a stable passes only when what
+    it pushes lands on main. There is no escape flag.
     """
-    if _is_prerelease(version):
+    if _is_prerelease(version) or push_branch == "main":
         return None
-    rc, out, _ = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, timeout=timeout)
-    branch = out.strip() if rc == 0 else ""
-    if branch == "main":
-        return None
-    shown = branch if branch and branch != "HEAD" else "a detached or unknown HEAD"
+    shown = push_branch or "an origin branch that could not be resolved"
     return (
-        f"stable version {version} can only be published from main, but this "
-        f"checkout is on {shown}. Merge to main and publish from there, or "
-        f"publish a pre-release from this branch instead "
-        f"(`gaia release publish {version}-rc.N`)."
+        f"stable version {version} can only be published to main, but this "
+        f"release would push to {shown}. Merge to main and publish from there, "
+        f"or publish a pre-release instead (`gaia release publish {version}-rc.N`)."
     )
 
 
@@ -1008,43 +1101,65 @@ def _check_xdist_importable() -> str | None:
     )
 
 
-def preflight_publish(repo_root: Path, version: str, *, timeout: int = 30) -> dict[str, Any]:
+def preflight_publish(
+    repo_root: Path,
+    version: str,
+    *,
+    gh: str = _DEFAULT_GH,
+    branch: str | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
     """T0 read-only preconditions gate, run BEFORE step 1 of the publish
     sequence. Aggregates every definite blocker into ONE actionable FAIL so a
     release stops early -- before any mutation -- rather than mid-sequence.
-    Never mutates anything.
+    Never mutates anything. The result carries ``push_branch``, the origin
+    branch step 5 pushes to.
 
     Checks:
-      1. the active gh account has push/admin on ``metraton/gaia``;
+      1. the account *gh* runs as has push/admin on ``metraton/gaia``;
       2. tag ``v<version>`` does not already exist (local or remote);
       3. pytest-xdist is importable (`npm test` uses `-n auto`);
-      4. a stable version runs from ``main`` (a pre-release from any branch).
+      4. the push target resolves and HEAD fast-forwards it;
+      5. a stable version pushes to ``main`` (a pre-release to any branch).
     """
     t0 = _now_ms()
     name = "preconditions"
+    push_branch, branch_error = resolve_push_branch(repo_root, branch, timeout=timeout)
     problems = [
         p
         for p in (
-            _check_gh_push_permission(repo_root, timeout=timeout),
+            _check_gh_push_permission(repo_root, gh=gh, timeout=timeout),
             _check_tag_absent(repo_root, version, timeout=timeout),
             _check_xdist_importable(),
-            _check_stable_from_main(repo_root, version, timeout=timeout),
+            branch_error or _check_push_fast_forward(repo_root, push_branch, timeout=timeout),
+            _check_stable_from_main(version, push_branch),
         )
         if p
     ]
     duration = _now_ms() - t0
     if problems:
         detail = "release preconditions not met -- fix and re-run:\n" + "\n".join(f"  - {p}" for p in problems)
-        return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": duration}
+        return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": duration, "push_branch": push_branch}
     return {
         "name": name,
         "status": "PASS",
-        "detail": "gh push access, tag availability, pytest-xdist, and release branch all confirmed",
+        "detail": (
+            f"gh push access via {gh}, tag availability, pytest-xdist, and a "
+            f"fast-forward push to {_PUSH_REMOTE}/{push_branch} all confirmed"
+        ),
         "duration_ms": duration,
+        "push_branch": push_branch,
     }
 
 
-def run_release_publish(repo_root: Path, version: str, *, local_suite: bool = False) -> list[dict[str, Any]]:
+def run_release_publish(
+    repo_root: Path,
+    version: str,
+    *,
+    local_suite: bool = False,
+    gh: str = _DEFAULT_GH,
+    branch: str | None = None,
+) -> list[dict[str, Any]]:
     """Run the Layer-3 publish trigger sequence in order, STOPPING at the
     first failure.
 
@@ -1059,17 +1174,18 @@ def run_release_publish(repo_root: Path, version: str, *, local_suite: bool = Fa
     is check's `gate_tests`, with the bumped version sources allowed to
     differ from HEAD.
     """
-    preflight = preflight_publish(repo_root, version)
+    preflight = preflight_publish(repo_root, version, gh=gh, branch=branch)
     if preflight["status"] != "PASS":
         return [preflight]
+    push_branch = preflight.get("push_branch")
 
     steps = (
         lambda: step_release_prepare(repo_root, version),
-        lambda: gate_tests(repo_root, local_suite=local_suite, allowed_changes=_VERSION_SOURCES),
+        lambda: gate_tests(repo_root, local_suite=local_suite, allowed_changes=_VERSION_SOURCES, gh=gh),
         lambda: step_git_commit(repo_root, version),
         lambda: step_git_tag(repo_root, version),
-        lambda: step_git_push(repo_root),
-        lambda: step_gh_release_create(repo_root, version),
+        lambda: step_git_push(repo_root, version, push_branch),
+        lambda: step_gh_release_create(repo_root, version, gh=gh),
     )
     results: list[dict[str, Any]] = []
     for step in steps:
@@ -1080,10 +1196,16 @@ def run_release_publish(repo_root: Path, version: str, *, local_suite: bool = Fa
     return results
 
 
-def build_publish_plan(version: str, *, local_suite: bool = False) -> list[dict[str, str]]:
+def build_publish_plan(
+    version: str,
+    *,
+    local_suite: bool = False,
+    gh: str = _DEFAULT_GH,
+    push_branch: str | None = None,
+) -> list[dict[str, str]]:
     """Describe the Layer-3 trigger sequence WITHOUT executing anything --
-    the `--dry-run` preview. No subprocess is spawned building this, so
-    there is nothing to approve.
+    the `--dry-run` preview. Builds no subprocess, so nothing to approve; an
+    unresolved *push_branch* shows as ``<branch>``.
     """
     tag = f"v{version}"
     if local_suite:
@@ -1091,9 +1213,12 @@ def build_publish_plan(version: str, *, local_suite: bool = False) -> list[dict[
     else:
         tests = {
             "name": "CI verdict or local suite",
-            "cmd": f"green CI verdict for HEAD ({_CI_VERDICT_HELPER}), else npm test",
+            "cmd": f"green CI verdict for HEAD ({_CI_VERDICT_HELPER} --gh {gh}), else npm test",
             "tier": "read-only, else local",
         }
+    release_cmd = [gh, "release", "create", tag, "--title", tag, "--generate-notes"]
+    if _is_prerelease(version):
+        release_cmd.append("--prerelease")
     return [
         {
             "name": "release:prepare",
@@ -1103,16 +1228,12 @@ def build_publish_plan(version: str, *, local_suite: bool = False) -> list[dict[
         tests,
         {
             "name": "git commit",
-            "cmd": f"git add <version sources> && git commit -m 'chore(release): {tag}'",
+            "cmd": f"git commit -m 'chore(release): {tag}', after git add of the version sources",
             "tier": "local-safe",
         },
         {"name": "git tag", "cmd": f"git tag -a {tag} -m 'Release {tag}'", "tier": "local-safe"},
-        {"name": "git push", "cmd": "git push --follow-tags", "tier": "T3"},
-        {
-            "name": "gh release create",
-            "cmd": f"gh release create {tag} --title {tag} --generate-notes",
-            "tier": "T3",
-        },
+        {"name": "git push", "cmd": " ".join(_push_command(version, push_branch or "<branch>")), "tier": "T3"},
+        {"name": "gh release create", "cmd": " ".join(release_cmd), "tier": "T3"},
     ]
 
 
@@ -1121,7 +1242,7 @@ def build_publish_plan(version: str, *, local_suite: bool = False) -> list[dict[
 # ---------------------------------------------------------------------------
 
 def run_release_check(
-    repo_root: Path, *, functional: bool = False, local_suite: bool = False
+    repo_root: Path, *, functional: bool = False, local_suite: bool = False, gh: str = _DEFAULT_GH
 ) -> list[dict[str, Any]]:
     """Run the full Layer-2 pre-release gate in order and return all 6 results.
 
@@ -1139,7 +1260,7 @@ def run_release_check(
         results += [
             gate_npm_sandbox(repo_root, pack),
             gate_plugin_dryrun(repo_root, functional=functional),
-            gate_tests(repo_root, local_suite=local_suite),
+            gate_tests(repo_root, local_suite=local_suite, gh=gh),
             gate_convergence(repo_root),
             gate_opencode_surface(pack),
         ]
@@ -1180,15 +1301,21 @@ def _report(
     print(f"\n  RESULT: {'FAIL' if failed else 'PASS'}\n")
 
 
-def _report_publish_plan(version: str, plan: list[dict[str, str]], *, quiet: bool = False) -> None:
-    """Print the `--dry-run` preview of the Layer-3 trigger sequence.
-
-    No subprocess is run to build this -- it is a static description of
-    `build_publish_plan()`'s output.
-    """
+def _report_publish_plan(
+    version: str,
+    plan: list[dict[str, str]],
+    *,
+    push_target: str,
+    account: str,
+    quiet: bool = False,
+) -> None:
+    """Print the `--dry-run` preview of the Layer-3 trigger sequence, headed
+    by the origin branch step 5 pushes to and the account the gh calls run as."""
     if quiet:
         return
     print(f"\n  gaia release publish -- Layer 3 trigger sequence (DRY RUN, v{version})\n")
+    print(f"  push target: {push_target}")
+    print(f"  gh account:  {account}\n")
     for i, step in enumerate(plan, start=1):
         marker = " [T3 -- requires approval]" if step["tier"] == "T3" else ""
         print(f"  {i}. {step['name']:<26} {step['cmd']}{marker}")
@@ -1265,6 +1392,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=False,
         help="Run npm test in gate 4 even when a green CI verdict covers HEAD",
     )
+    p_check.add_argument("--gh", default=_DEFAULT_GH, metavar="PROGRAM", help=_GH_OPTION_HELP)
     p_check.add_argument(
         "--quiet",
         action="store_true",
@@ -1279,10 +1407,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         description=(
             "Runs, in order, the gaia-release Layer 3 trigger sequence -- STOPS at the\n"
             "first failure (unlike `check`'s always-run-all-gates design). A read-only\n"
-            "preconditions gate runs first: gh push access, tag v<version> absent,\n"
-            "pytest-xdist importable, and the release branch -- a stable version (no\n"
-            "-rc/-beta/-alpha) publishes only from main; a pre-release publishes from\n"
-            "any branch, and step 5 pushes its bump to that branch:\n"
+            "preconditions gate runs first: push access for the --gh account, tag\n"
+            "v<version> absent, pytest-xdist importable, and a fast-forward push to\n"
+            "the origin branch (--branch) -- a stable version (no -rc/-beta/-alpha)\n"
+            "publishes only to main; a pre-release to any branch:\n"
             "  1. release:prepare <version>  -- atomic multi-source version bump +\n"
             "                                    manifest regen + validate\n"
             "                                    (scripts/release-prepare.mjs)\n"
@@ -1292,8 +1420,9 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "                                    test (--local-suite forces it)\n"
             "  3. git commit                 -- local-safe; the bumped version sources\n"
             "  4. git tag                    -- a NEW, force-free v<version> tag\n"
-            "  5. git push --follow-tags     -- Tier 3, mutates the remote\n"
-            "  6. gh release create          -- Tier 3, triggers\n"
+            "  5. git push --atomic origin   -- Tier 3; HEAD to <branch> plus the tag,\n"
+            "                                    never forced\n"
+            "  6. <gh> release create        -- Tier 3, triggers\n"
             "                                    .github/workflows/publish.yml\n"
             "\n"
             "This command never runs npm's own registry-publish step directly -- that\n"
@@ -1327,6 +1456,16 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=False,
         help="Run npm test in step 2 even when a green CI verdict covers HEAD",
     )
+    p_publish.add_argument("--gh", default=_DEFAULT_GH, metavar="PROGRAM", help=_GH_OPTION_HELP)
+    p_publish.add_argument(
+        "--branch",
+        default=None,
+        metavar="NAME",
+        help=(
+            "origin branch step 5 fast-forwards (default: the current branch's origin "
+            "upstream, else the one origin branch whose tip is HEAD)"
+        ),
+    )
     p_publish.add_argument(
         "--quiet",
         action="store_true",
@@ -1349,7 +1488,8 @@ def cmd_release_check(args: argparse.Namespace) -> int:
         print(f"gaia release check: {err}", file=sys.stderr)
         return 1
 
-    results = run_release_check(root, functional=functional, local_suite=local_suite)
+    gh = getattr(args, "gh", None) or _DEFAULT_GH
+    results = run_release_check(root, functional=functional, local_suite=local_suite, gh=gh)
     _report(results, quiet=quiet)
 
     return 1 if any(r["status"] == "FAIL" for r in results) else 0
@@ -1368,6 +1508,8 @@ def cmd_release_publish(args: argparse.Namespace) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     local_suite = bool(getattr(args, "local_suite", False))
     quiet = bool(getattr(args, "quiet", False))
+    gh = getattr(args, "gh", None) or _DEFAULT_GH
+    branch = getattr(args, "branch", None)
 
     root, src_err = resolve_source_root()
     if src_err:
@@ -1380,10 +1522,13 @@ def cmd_release_publish(args: argparse.Namespace) -> int:
         return 1
 
     if dry_run:
-        _report_publish_plan(version, build_publish_plan(version, local_suite=local_suite), quiet=quiet)
+        push_branch, branch_error = resolve_push_branch(root, branch)
+        push_target = f"{_PUSH_REMOTE}/{push_branch}" if push_branch else f"unresolved: {branch_error}"
+        plan = build_publish_plan(version, local_suite=local_suite, gh=gh, push_branch=push_branch)
+        _report_publish_plan(version, plan, push_target=push_target, account=_gh_login(root, gh), quiet=quiet)
         return 0
 
-    results = run_release_publish(root, version, local_suite=local_suite)
+    results = run_release_publish(root, version, local_suite=local_suite, gh=gh, branch=branch)
     _report(results, quiet=quiet, title=f"gaia release publish -- Layer 3 trigger sequence (v{version})")
 
     return 1 if any(r["status"] == "FAIL" for r in results) else 0
@@ -1406,8 +1551,9 @@ def _release_default(args: argparse.Namespace) -> int:
     """Default handler when no sub-subcommand is given."""
     print("Usage: gaia release SUBCOMMAND [options]")
     print("")
-    print("  check [--functional] [--local-suite]           -- run the full pre-release gate")
-    print("  publish [version] [--dry-run] [--local-suite]  -- trigger the Layer 3 release pipeline")
+    print("  check [--functional] [--local-suite] [--gh PROGRAM]  -- run the full pre-release gate")
+    print("  publish [version] [--dry-run] [--local-suite] [--gh PROGRAM] [--branch NAME]")
+    print("                                                       -- trigger the Layer 3 release pipeline")
     print("")
     print("Run 'gaia release --help' for more information.")
     return 0

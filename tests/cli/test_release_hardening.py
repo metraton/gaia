@@ -57,7 +57,7 @@ class TestCheckGhPushPermission(unittest.TestCase):
             err = _check_gh_push_permission(_REPO_ROOT)
         self.assertIsNotNone(err)
         self.assertIn("does NOT have push access", err)
-        self.assertIn("gh auth token --user", err)
+        self.assertIn("--gh <program>", err)
         # `switch` may only appear as the thing NOT to do, never as the remedy.
         self.assertNotIn("gh auth switch -u", err)
         self.assertIn("Do NOT `gh auth switch`", err)
@@ -68,15 +68,17 @@ class TestCheckGhPushPermission(unittest.TestCase):
             err = _check_gh_push_permission(_REPO_ROOT)
         self.assertIsNotNone(err)
         self.assertIn("gh auth login", err)
-        self.assertIn("gh auth token --user", err)
+        self.assertIn("--gh <program>", err)
         # `switch` may only appear as the thing NOT to do, never as the remedy.
         self.assertNotIn("gh auth switch -u", err)
         self.assertIn("Do NOT `gh auth switch`", err)
 
-    def test_gh_missing_is_could_not_verify_not_a_block(self):
-        # gh not on PATH -> cannot verify -> DO NOT block (transient/ambiguous).
+    def test_missing_gh_program_blocks_because_step_6_needs_it(self):
         with patch("cli.release.shutil.which", return_value=None):
-            self.assertIsNone(_check_gh_push_permission(_REPO_ROOT))
+            err = _check_gh_push_permission(_REPO_ROOT)
+        self.assertIsNotNone(err)
+        self.assertIn("not found", err)
+        self.assertIn("--gh <program>", err)
 
     def test_network_failure_is_could_not_verify_not_a_block(self):
         # rc != 0 with a network-shaped error (not an auth error) is ambiguous.
@@ -139,6 +141,15 @@ class TestCheckXdistImportable(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestPreflightPublish(unittest.TestCase):
+    def setUp(self):
+        for target, value in (
+            ("cli.release.resolve_push_branch", ("feat/x", None)),
+            ("cli.release._check_push_fast_forward", None),
+        ):
+            patcher = patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_all_clear_is_pass(self):
         with patch("cli.release._check_gh_push_permission", return_value=None), \
              patch("cli.release._check_tag_absent", return_value=None), \
@@ -189,17 +200,19 @@ class TestPreflightPublish(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# P0 gate: a stable version is published only from main; a pre-release from
-# any branch. The branch comes from `git rev-parse --abbrev-ref HEAD` through
-# `_run`, the only subprocess boundary the preflight crosses for it.
+# P0 gate: a stable version is pushed only to main; a pre-release to any
+# branch. The push target comes from `resolve_push_branch`, so the local branch
+# name never decides it.
 # ---------------------------------------------------------------------------
 
 class TestPreflightStableOnlyFromMain(unittest.TestCase):
     def _preflight_on_branch(self, branch, version):
+        resolved = (branch, None) if branch else (None, "cannot tell which origin branch; pass --branch <name>")
         with patch("cli.release._check_gh_push_permission", return_value=None), \
              patch("cli.release._check_tag_absent", return_value=None), \
              patch("cli.release._check_xdist_importable", return_value=None), \
-             patch("cli.release._run", return_value=(0, f"{branch}\n", "")):
+             patch("cli.release.resolve_push_branch", return_value=resolved), \
+             patch("cli.release._check_push_fast_forward", return_value=None):
             return preflight_publish(_REPO_ROOT, version)
 
     def test_stable_version_off_main_fails_naming_main(self):
@@ -209,10 +222,11 @@ class TestPreflightStableOnlyFromMain(unittest.TestCase):
         self.assertIn("feat/token-usage-ledger", res["detail"])
         self.assertIn("-rc.", res["detail"])
 
-    def test_detached_head_is_not_main(self):
-        res = self._preflight_on_branch("HEAD", "5.5.0")
+    def test_unresolved_push_target_is_not_main(self):
+        res = self._preflight_on_branch(None, "5.5.0")
         self.assertEqual(res["status"], "FAIL")
         self.assertIn("main", res["detail"])
+        self.assertIn("--branch", res["detail"])
 
     def test_rc_version_off_main_passes(self):
         res = self._preflight_on_branch("feat/token-usage-ledger", "5.5.0-rc.4")

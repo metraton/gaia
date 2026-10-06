@@ -65,7 +65,7 @@ class FakeApi:
             verdict = (jobs or {}).get(run["id"], "success")
             self.routes[f"repos/{REPO}/actions/runs/{run['id']}/jobs?per_page=100"] = _jobs(verdict)
 
-    def __call__(self, path):
+    def __call__(self, path, gh="gh"):
         if path not in self.routes:
             raise AssertionError(f"unexpected API path: {path}")
         return self.routes[path]
@@ -208,7 +208,7 @@ def test_cli_exits_one_when_nothing_is_reusable(monkeypatch, tmp_path):
 
 
 def test_cli_exits_two_and_runs_everything_when_the_api_fails(monkeypatch, tmp_path):
-    def broken(path):
+    def broken(path, gh="gh"):
         raise ci_verdict.ApiError("gh api failed: HTTP 403")
 
     monkeypatch.setattr(ci_verdict, "gh_api", broken)
