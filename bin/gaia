@@ -332,9 +332,11 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
 WRITE a specialist owns -- DELEGATE; do not run it here.
   gaia-operator  context wipe|prune-workspaces|move-contracts|move-memory|
                  move-project (destructive surgery on the substrate) |
-                 workspace merge|retire |
+                 workspace declare|curate|merge|retire |
+                 project move |
                  usage ingest (load transcripts into token_usage)
-  gaia-system    install | update | uninstall | cleanup | dev | release
+  gaia-system    install | update | uninstall | cleanup | dev | release |
+                 migrate plan|apply (install, update and dev run apply)
   consent flow   approvals approve|reject-all|clean|replay|request-set --
                  consent is granted by the user, not by a CLI call
   owning agent   ac | milestone | evidence add | plan save|delete |

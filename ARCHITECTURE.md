@@ -164,21 +164,30 @@ context_provider.py <agent_name> <user_task>
 
 ## Approval Flow
 
-Nonce-based T3 approval lifecycle:
+T3 approval lifecycle, the same on Claude Code and OpenCode:
 
 ```
-1. Agent attempts dangerous command (e.g., terraform apply)
-2. mutative_verbs.py detects MUTATIVE verb
-3. BashValidator generates 128-bit nonce via generate_nonce()
-4. write_pending_approval() saves pending-{nonce}.json to .claude/cache/approvals/
-5. Hook returns corrective deny (exit 0) with NONCE:{hex} in message
-6. Agent includes NONCE:{hex} in APPROVAL_REQUEST status to orchestrator
-7. Orchestrator presents plan to user, asks for approval
-8. User approves -> orchestrator resumes agent with "APPROVE:{nonce}"
-9. pre_tool_use.py detects APPROVE: prefix, calls activate_pending_approval()
-10. Pending grant converted to active grant (TTL 10 min, verb-matched)
-11. Agent retries command -> check_approval_grant() finds active grant -> allowed
+1. A specialist's T3 command is blocked by the Bash gate with an approval_id,
+   or the specialist requests it plan-first with `gaia approvals request-set`,
+   sealing its phrases (what it does, impact, rollback, verification, shared
+   state) and the sha256 of every file the command runs or reads.
+2. The specialist ends its turn APPROVAL_REQUEST with the approval_id; it asks
+   the user nothing.
+3. The orchestrator runs `gaia approvals question <approval_id> ...` and opens
+   its output unchanged: AskUserQuestion on Claude Code, `question` on
+   OpenCode. Each command is one one-line question opened by
+   [ GAIA-SECURITY ], at most four per signature (gaia/approvals/surface.py);
+   `--details` re-asks with what it does, impact, verification and rollback.
+4. Gaia checks the call before it opens -- the PreToolUse hook on Claude Code,
+   the plugin on OpenCode, where only the orchestrator may open it -- and ties
+   each answer to its signature. Approve on every question approves; Reject on
+   any one rejects the whole signature.
+5. The orchestrator resumes the same specialist, which retries the
+   byte-identical command; the grant is single-use and consumed at match, and
+   a sealed file that changed asks for a new signature.
 ```
+
+Pending approvals and grants are rows in `~/.gaia/gaia.db` (`gaia/approvals/store.py`), read with `gaia approvals pending|show`.
 
 ## Response Contract Validation
 

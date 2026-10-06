@@ -31,7 +31,7 @@ With `--path`, a bare `gaia` works from any terminal afterwards; the examples be
 **There is no `postinstall` hook.** The install is deliberately non-invasive (npm and pnpm both handle it identically — pnpm ignores lifecycle scripts by default, so relying on `postinstall` would have been fragile). Two things bootstrap on demand instead:
 
 - The database `~/.gaia/gaia.db` is created **lazily on the first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`). You do not have to run anything special — the first `gaia` command you run seeds it.
-- The install folder's `.claude/` structure (symlinks + `settings.local.json` + registry) is written by running `gaia install` explicitly, or by the SessionStart hook.
+- The install folder's `.claude/` structure (symlinks + `settings.local.json` + registry + `gaia-manifest.json`) is written by `gaia install`. Once Gaia's hooks run in a folder, SessionStart also writes there on every session (`run_first_time_setup` in `hooks/modules/core/plugin_setup.py`): it creates `plugin-registry.json` if missing, in the plugin data dir (`CLAUDE_PLUGIN_DATA`, else `.claude/`), merges Gaia's permissions and attribution into `.claude/settings.local.json`, and syncs the npm channel's hook entries into that same file. The only link it creates or repairs is `.claude/hooks` (`ensure_workspace_hooks_link` in `hooks/modules/core/workspace_bootstrap.py`).
 
 After install, `npx gaia doctor` verifies the result. If a bootstrap or wire-up step fails, `~/.gaia/last-install-error.json` is written with the diagnostic.
 
@@ -64,7 +64,7 @@ For a pre-release dry-run of the plugin surface without publishing, pack the exa
 npm run gaia:plugin-dryrun   # pack -> temp extract -> structural asserts + `claude plugin validate`
 ```
 
-On the plugin surface, Claude Code reads hooks from the package root's inline `.claude-plugin/plugin.json` / `hooks/hooks.json` (generated from `build/gaia.manifest.json` at pack time) — **not** from `settings.local.json`.
+On the plugin surface, Claude Code reads hooks from the package root's `hooks/hooks.json`; `.claude-plugin/plugin.json` carries the plugin's identity and version, not the hooks. Both are generated from `build/gaia.manifest.json` at pack time, and neither is read from `settings.local.json`.
 
 ### Surface 3: OpenCode
 
@@ -108,7 +108,7 @@ User runs: npm install @jaguilar87/gaia   (or: pnpm add @jaguilar87/gaia)
         ↓
 (no postinstall — nothing runs automatically)
         ↓
-User runs: npx gaia install --channel npm    (or the SessionStart hook wires the folder)
+User runs: npx gaia install --channel npm    (nothing else wires the folder)
         ↓
 [Bootstrap] first `gaia` use runs scripts/bootstrap_database.py (lazy)
    - Seeds ~/.gaia/gaia.db with current schema
@@ -200,18 +200,20 @@ your-project/
 │   ├── config/ (symlink)          → Configuration (contracts, rules)
 │   ├── opencode/ (symlink)        → OpenCode plugin
 │   ├── CHANGELOG.md (file link)    → Package changelog
-│   ├── logs/                      ← Audit logs
-│   ├── approvals/                 ← Pending T3 approval files
+│   ├── gaia-manifest.json         ← Every file, link and key install wrote (uninstall reverts it)
 │   ├── plugin-registry.json       ← installed[].name = "gaia"
 │   └── settings.local.json        ← Merged hooks + permissions + env
 └── node_modules/
     └── @jaguilar87/gaia/          ← npm package (single unified plugin)
 
-~/.gaia/
-└── gaia.db                        ← Canonical context + memory store (SQLite)
+~/.gaia/                           ← The data home (GAIA_DATA_DIR relocates it; `gaia paths` prints it)
+├── gaia.db                        ← Canonical context, memory, approvals and contracts (SQLite)
+├── backups/                       ← Copies `gaia migrate apply` takes before a migration
+├── snapshots/                     ← gzip snapshots: uninstall, and SessionStart at most once per 24 h
+└── logs/                          ← Hook audit logs, shared by every channel
 ```
 
-Six directory symlinks (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus one `CHANGELOG.md` file link — the canonical list is `_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.
+Six directory symlinks (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus one `CHANGELOG.md` file link — the canonical list is `_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`. Pending approvals are rows in `~/.gaia/gaia.db`, read with `gaia approvals pending`; nothing about them is written under `.claude/`.
 
 Project context (stack, GitOps layout, Terraform layout, etc.) lives in `~/.gaia/gaia.db`, not in `.claude/project-context/`. `npx gaia scan --workspace <name>` re-indexes it and `npx gaia context show` inspects it.
 
@@ -227,12 +229,14 @@ Once installed, you have access to **complete documentation** in each directory:
 
 ```
 .claude/
-├── agents/               9 agents (platform-architect, gitops-operator, etc.)
-├── skills/README.md      37 skill modules
+├── agents/README.md      the orchestrator and 8 specialists (platform-architect, gitops-operator, etc.)
+├── skills/README.md      40 skills
 ├── config/README.md      Contracts, git standards, surface routing
 ├── hooks/README.md       Hook scripts (primary + event handlers)
-├── tools/                Context, memory, validation, review
-└── bin/README.md         CLI utilities
+└── tools/                Context, memory, validation, review
+
+node_modules/@jaguilar87/gaia/
+└── bin/README.md         The gaia CLI and its subcommands (bin/ is not linked into .claude/)
 ```
 
 ---
@@ -457,7 +461,7 @@ Gaia is designed with these principles:
 A: Yes. Every git repository is a project, and one install serves them all. Gather them under workspaces you declare (`npx gaia workspace declare <name> <path>`) and index each with `npx gaia scan --workspace <name> <path>`; a repository belongs to the nearest declared workspace that contains it. One database, `~/.gaia/gaia.db`, holds every workspace. See [README.md, Workspaces and projects](./README.md#workspaces-and-projects).
 
 **Q: Do symlinks work on Windows?**  
-A: Yes, but you need to enable developer mode or run as administrator.
+A: Symlinks need Windows developer mode or an administrator shell. Without that privilege, `gaia install` copies each directory into `.claude/` instead and records the package version of each copy in `.claude/.gaia-symlink-fallback.json`; the next `gaia install` or `gaia update` refreshes a copy whose recorded version differs from the package, and `gaia doctor` checks it. A Windows junction is treated as a link.
 
 **Q: How do I update only documentation without changing code?**
 A: `npm install @jaguilar87/gaia@latest` then `npx gaia update` - symlinks point to the new version automatically.
@@ -465,5 +469,5 @@ A: `npm install @jaguilar87/gaia@latest` then `npx gaia update` - symlinks point
 ---
 
 **Version:** the current release (`version` in `package.json`)
-**Last updated:** 2026-09-24
+**Last updated:** 2026-10-06
 **Maintained by:** Jorge Aguilar

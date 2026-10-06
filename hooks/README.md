@@ -4,19 +4,25 @@ Hooks are the event-driven spine of Gaia. Every significant moment in a Claude C
 
 Each hook is a Python script that reads a JSON event from stdin, processes it, and writes a JSON response to stdout. Claude Code calls these scripts synchronously before or after each tool execution, which means the hook can allow, modify, or block the operation. The hook cannot do complex async work — it runs inline, in the critical path, so every module it calls must complete quickly.
 
-The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` manifest (Environment, Projects, Contract Index, due notifications, workspace memory) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), it builds a different, lighter manifest — a post-compaction context refresh (agent roster + active anomalies) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`.
+The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` manifest (Environment, Projects, Contract Index, due notifications, workspace memory) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), it builds a different, lighter manifest — a post-compaction context refresh (agent roster + active anomalies) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`. The question itself is Gaia's: the orchestrator opens exactly what `gaia approvals question <approval_id>` printed -- one one-line question per command, opened by `[ GAIA-SECURITY ]`, at most four per signature (`gaia/approvals/surface.py`) -- and the PreToolUse `AskUserQuestion` matcher refuses any other shape.
 
-## Cuándo se activa
+Every registered command runs through `hooks/launch.sh`, which picks the first of `python3`, `python` or `py -3` that is Python 3. OpenCode loads none of these entry points: `opencode/plugin.ts` forwards the host's events to `opencode/bridge.py`, and `adapters/opencode.py` maps them onto the same host-neutral cores (session lifecycle, tool policy, the SubagentStop close). There the plugin, not a hook, checks the `question` call, and only the orchestrator may open a signature question.
+
+## When it runs
 
 ```
 Session opens
         |
 [session_start.py] <- fires on SessionStart (matcher: startup|resume|clear|compact|fork)
+        |  Creates or repairs the .claude/hooks link
         |  Registers session in heartbeat-based session_registry
-        |  Sweeps stale registry entries and expired approval files
-        |  Emits one-shot hookSpecificOutput.additionalContext manifest
-        |  (Environment + Projects + Contract Index + due notifications +
-        |   workspace memory)
+        |  Sweeps stale registry entries, marks expired approval grant rows
+        |  EXPIRED in gaia.db (no grant files exist on disk), snapshots
+        |  gaia.db at most once per 24 h, sweeps idle worktrees;
+        |  on the plugin channel, migrates a database that is behind
+        |  Emits one-shot hookSpecificOutput.additionalContext birth block
+        |  (## Projects + ## Environment + ## The user + ## User preferences,
+        |   and ## Database schema when the database and the code disagree)
         v
 User sends prompt
         |

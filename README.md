@@ -59,6 +59,9 @@ Ask the orchestrator "what is Gaia?" or "what can you do for me?" and it explain
 | See or act on pending approvals | `pending-approvals` |
 | Triage the mailbox, or connect a Google account | `gmail-triage`, `gws-setup` |
 | Remember, find or curate what Gaia knows | `memory` |
+| See what a session, an agent or a plan cost in tokens, or how a brief changed | `gaia usage show --plan N` or `--session ID`, and `gaia brief history <slug>`, which the orchestrator reads itself; the transcripts are loaded first with `gaia usage ingest`, run by `gaia-operator` |
+
+Coming from 5.4? The behaviour changes you will meet -- declared workspaces, reminders in place of `gaia schedule`, append-only memory, signed package runners, the new approval questions and more -- are listed in [CHANGELOG.md, Upgrading from 5.4](./CHANGELOG.md#upgrading-from-54).
 
 ## Flow
 
@@ -218,7 +221,7 @@ The orchestrator answers with the picture above and the table of what it can off
 ```
 gaia/
 ├── agents/          # orchestrator + eight specialists; routing: seeds the table
-├── skills/          # 39 techniques loaded by description match
+├── skills/          # 40 techniques loaded by description match
 ├── hooks/           # host lifecycle entry points + security/context modules
 ├── gaia/            # host-neutral core: approvals, SQLite store, worktrees
 ├── opencode/        # the OpenCode plugin; registered by --channel opencode
