@@ -1101,6 +1101,39 @@ const bundleKeys = dir => require(path.join(ROOT, 'tools', 'static-census.cjs'))
   rmDeck(dir);
 }
 
+// ── 11b. OTHER — a failure the headline counts is a failure the report prints ──
+{
+  const dir = mkDeck();
+  const bundle = path.join(dir, 'data', 'data.generated.js');
+  fs.writeFileSync(bundle, fs.readFileSync(bundle, 'utf8').replace('\n  "tokens": ', '\n  "untokened": '), 'utf8');
+  const { code, out } = runNode([CHECK, dir]);
+  report('OTHER: a failure filed outside the CHECKS table (a bundle with no tokens) is printed, not only counted',
+    code !== 0 && out.includes('[FAIL] TOKENS data/data.generated.js'), `exit=${code}\n${out.slice(-600)}`);
+  rmDeck(dir);
+}
+
+// ── 11c. TOKENS/slot — a section sitting in a grid's slot is read as a section ──
+// The fixture's root is one track wide, so section-e is a band and the root is a
+// placed grid whose slots hold a section. Its own `row.cell_h` is a section
+// token; read as a box's, it was a failure.
+{
+  const dir = mkDeck();
+  const failing = () => {
+    const { out } = runNode([CHECK, dir]);
+    const m = out.match(/FAIL — (\d+) failing/);
+    return m ? Number(m[1]) : 0;
+  };
+  const without = failing();
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'section-e').tokens = { row: { cell_h: T.row.cell_h } };
+  saveOverview(p, doc);
+  rebuild(dir);
+  const withTokens = failing();
+  report('TOKENS/slot: a slotted section\'s own row.cell_h adds no failure to the gate', withTokens === without,
+    `failing without tokens ${without}, with tokens ${withTokens}`);
+  rmDeck(dir);
+}
+
 // ── 13. PALETTE OVERRIDES — built, emitted, audited from the generated data ──
 // A legible override passes the contrast audit and reaches the generated CSS; a
 // muted token washed out to near-white fails it even on `neutral`, which gates
@@ -1528,22 +1561,98 @@ const excerpt = out => JSON.stringify(out.trim().slice(0, 300));
 }
 
 {
-  const name = 'VIDEO: the timeline follows the deck — its order is kept, and a section shown before its parent is refused';
+  const name = 'VIDEO: the script orders the reveals — boxes of a section in any order are accepted, a box shown before its section is refused';
+  const reversed = JSON.parse(JSON.stringify(FIXTURE_SCRIPT));
+  reversed.pages[0].sentences = [
+    { say: 'The section first.', show: ['section-e'] },
+    { say: 'Then its second cell,', show: ['item-2'] },
+    { say: 'and then its first.', show: ['item-1'] }];
   const outOfOrder = JSON.parse(JSON.stringify(FIXTURE_SCRIPT));
   outOfOrder.pages[0].sentences = [
     { say: 'A cell first.', show: ['item-1'] },
     { say: 'Then the section that holds it.', show: ['section-e'] }];
-  const good = mkVideoDeck();
+  const good = mkVideoDeck(ENGINE_SRC, reversed);
   const bad = mkVideoDeck(ENGINE_SRC, outOfOrder);
   try {
     const planned = runVideo(good, 'plan');
     const refused = runVideo(bad, 'plan');
-    report(name, planned.code === 0 && /overview/.test(planned.out)
-      && refused.code !== 0 && /deck's order/.test(refused.out),
+    report(name, planned.code === 0 && /show item-2[\s\S]*show item-1/.test(planned.out)
+      && refused.code !== 0 && /"item-1" before its section "section-e"/.test(refused.out),
     `plan exit ${planned.code} ${excerpt(planned.out)} | out of order: exit ${refused.code} ${excerpt(refused.out)}`);
   } finally {
     rmDeck(good);
     rmDeck(bad);
+  }
+}
+
+{
+  const name = 'VIDEO: --pages derives only the chosen pages; a broken page outside the selection is not checked';
+  const doc = { pages: [{ id: 'kept', sections: [{ id: 'a' }] }, { id: 'broken', sections: [{ id: 'b' }] }] };
+  const script = { pages: [
+    { page: 'kept', duration: 2, sentences: [{ say: 'Only this page.', show: ['a'] }] },
+    { page: 'broken', audio: 'audio/broken.wav', sentences: [{ say: 'Not on the page.', show: ['missing'] }] }] };
+  const stale = { pages: [{ page: 'broken', method: 'silencedetect', duration: 1, sentences: [{ text: 'Said before.', start: 0, end: 1 }] }] };
+  // The timeline refuses a mismatch by ending the process; here that is turned
+  // into a failed case so the guards after this one still run.
+  const exit = process.exit;
+  process.exit = code => { throw new Error(`the timeline ended the process with exit ${code}`); };
+  try {
+    const plan = buildPlan(loadTimeline(doc, script, ['kept']), stale);
+    report(name, plan.pages.map(p => p.page).join(',') === 'kept', `planned ${plan.pages.map(p => p.page).join(',')}`);
+  } catch (e) {
+    report(name, false, e.message);
+  } finally {
+    process.exit = exit;
+  }
+}
+
+// ── VIDEO TIMING — a page is timed by its audio, a fixed duration, or seconds ──
+{
+  const name = 'VIDEO/timing: a silent page is timed by its sentences\' seconds and pauses; a page timed two ways, ' +
+    'seconds on only some sentences, typing into a box not on the page, and an ask with no placeholder are refused';
+  const silent = { pages: [{ page: 'overview', sentences: [
+    { say: 'Two seconds, then a pause.', show: ['section-e'], seconds: 2, pause: 1 },
+    { say: 'Three seconds to type.', type: 'item-a', seconds: 3 }] }] };
+  const page = extra => ({ pages: [{ ...FIXTURE_SCRIPT.pages[0], ...extra }] });
+  const refusals = [
+    [page({ duration: 4 }), 'time the page one way'],
+    [page({ audio: undefined, sentences: [{ say: 'Timed.', show: ['section-e'], seconds: 2 }, { say: 'Not timed.' }] }),
+      '"seconds" must be on every sentence or on none'],
+    [page({ sentences: [{ say: 'Typing nowhere.', show: ['section-e'], type: 'item-nowhere' }] }), 'types into "item-nowhere"'],
+    [page({ sentences: [{ say: 'A question.', show: ['section-e'], ask: 'item-a' }] }), '"placeholder"'],
+  ];
+  const dirs = [mkVideoDeck(ENGINE_SRC, silent), ...refusals.map(([s]) => mkVideoDeck(ENGINE_SRC, JSON.parse(JSON.stringify(s))))];
+  try {
+    const planned = runVideo(dirs[0], 'plan');
+    const bad = [];
+    if (!(planned.code === 0 && /timing fixed/.test(planned.out) && /total 8\.00 s/.test(planned.out) && /type item-a/.test(planned.out)))
+      bad.push(`silent page: exit ${planned.code} ${excerpt(planned.out)}`);
+    refusals.forEach(([, needle], i) => {
+      const r = runVideo(dirs[i + 1], 'plan');
+      if (r.code === 0 || !r.out.includes(needle)) bad.push(`${needle}: exit ${r.code} ${excerpt(r.out)}`);
+    });
+    const asked = JSON.parse(JSON.stringify(refusals[3][0]));
+    asked.placeholder = 'Ask the deck…';
+    fs.writeFileSync(path.join(dirs[4], 'video', 'script.json'), JSON.stringify(asked), 'utf8');
+    const withPlaceholder = runVideo(dirs[4], 'plan');
+    if (!(withPlaceholder.code === 0 && /ask item-a/.test(withPlaceholder.out)))
+      bad.push(`ask with a placeholder: exit ${withPlaceholder.code} ${excerpt(withPlaceholder.out)}`);
+    report(name, bad.length === 0, bad.join(' | '));
+  } finally {
+    dirs.forEach(rmDeck);
+  }
+}
+
+// ── VIDEO QUALITY — draft and final are a flag, never an edit ───────────────
+{
+  const name = 'VIDEO/quality: capture refuses an unknown --quality before any work, naming 480p and 1440p among the qualities';
+  const dir = mkVideoDeck();
+  try {
+    const { code, out } = runVideo(dir, 'capture', '--quality', 'nope');
+    report(name, code !== 0 && /"nope" is not a quality/.test(out) && /\b480p\b/.test(out) && /\b1440p\b/.test(out)
+      && !fs.existsSync(path.join(dir, 'out')), `exit ${code} ${excerpt(out)}`);
+  } finally {
+    rmDeck(dir);
   }
 }
 
@@ -1616,6 +1725,42 @@ const excerpt = out => JSON.stringify(out.trim().slice(0, 300));
       && /voices\/af_nope\.pt/.test(missing.out) && !/voices\/am_michael\.pt/.test(missing.out);
     report(name, ok, `blend: exit ${blend.code} ${excerpt(blend.out)} argv=${JSON.stringify(argv)} | ` +
       `missing member: ${excerpt(missing.out)}`);
+  } finally {
+    rmDeck(dir);
+  }
+}
+
+{
+  const name = 'VOICE: chatterbox clones the reference, asks for sentence spans beside the audio and the pauses as gaps; ' +
+    'a missing reference falls back to manual naming it, and an unknown provider is refused naming chatterbox and kokoro';
+  const paused = JSON.parse(JSON.stringify(FIXTURE_SCRIPT));
+  paused.pages[0].sentences[0].pause = 0.5;
+  const dir = mkVideoDeck(ENGINE_SRC, paused);
+  const venv = path.join(dir, 'venv');
+  const model = path.join(dir, 'model');
+  const reference = path.join(dir, 'reference.wav');
+  const argsFile = path.join(dir, 'chatterbox-args.txt');
+  fs.mkdirSync(path.join(venv, 'bin'), { recursive: true });
+  fs.mkdirSync(model, { recursive: true });
+  for (const f of ['ve.safetensors', 't3_cfg.safetensors', 's3gen.safetensors', 'tokenizer.json', 'conds.pt'])
+    fs.writeFileSync(path.join(model, f), '');
+  fs.writeFileSync(reference, '');
+  fs.writeFileSync(path.join(venv, 'bin', 'python'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\n`, { mode: 0o755 });
+  try {
+    const exported = runVideo(dir, 'script');
+    const chatterboxArgs = ['--provider', 'chatterbox', '--chatterbox-venv', venv, '--chatterbox-model', model];
+    const voiced = runVideo(dir, 'voice', ...chatterboxArgs, '--reference', reference);
+    const argv = fs.existsSync(argsFile) ? fs.readFileSync(argsFile, 'utf8').split('\n') : [];
+    const after = flag => argv[argv.indexOf(flag) + 1];
+    const noReference = runVideo(dir, 'voice', ...chatterboxArgs, '--reference', path.join(dir, 'nope.wav'));
+    const unknown = runVideo(dir, 'voice', '--provider', 'nope');
+    const ok = exported.code === 0 && voiced.code === 0 && !/manual provider/.test(voiced.out)
+      && after('--reference') === reference && /overview\.sentences\.json$/.test(after('--sentences') || '')
+      && after('--gaps') === '0.5,0'
+      && /nope\.wav/.test(noReference.out) && /manual provider/.test(noReference.out)
+      && unknown.code !== 0 && /chatterbox/.test(unknown.out) && /kokoro/.test(unknown.out);
+    report(name, ok, `voice: exit ${voiced.code} ${excerpt(voiced.out)} argv=${JSON.stringify(argv)} | ` +
+      `no reference: ${excerpt(noReference.out)} | unknown: exit ${unknown.code} ${excerpt(unknown.out)}`);
   } finally {
     rmDeck(dir);
   }
