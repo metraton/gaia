@@ -166,12 +166,14 @@ def test_gh_program_reaches_only_the_release_gh_calls(fake_gh):
     program, calls = fake_gh
     spy, seen = _publish_spy(program, "a" * 40)
     suite = {"name": "npm test", "status": "PASS", "detail": "ok", "duration_ms": 1}
+    sandbox = {"name": "sandbox install", "status": "PASS", "detail": "ok", "duration_ms": 1}
     with patch("cli.release._run", side_effect=spy), \
          patch("cli.release._xdist_available", return_value=True), \
+         patch("cli.release.step_sandbox_install", return_value=sandbox), \
          patch("cli.release.gate_npm_test", return_value=suite):
         results = release.run_release_publish(_REPO_ROOT, "9.9.9-rc.1", gh=program)
 
-    assert [r["status"] for r in results] == ["PASS"] * 6, results
+    assert [r["status"] for r in results] == ["PASS"] * 8, results
     assert [c["argv"][:2] for c in calls()] == [
         ["api", "repos/metraton/gaia"],
         ["release", "create"],

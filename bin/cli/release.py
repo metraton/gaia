@@ -73,19 +73,26 @@ step runs. Then it runs, strictly
 in order and stopping at the first failure (these steps are causally
 dependent, unlike `check`'s always-run-all-gates design):
 
-  1. `release:prepare <version>` (`scripts/release-prepare.mjs`) -- the
+  1. node deps -- `npm ci --ignore-scripts` when a declared dependency is
+     missing from node_modules (a fresh worktree has none), so
+     `release:prepare` can import chalk.
+  2. `release:prepare <version>` (`scripts/release-prepare.mjs`) -- the
      atomic multi-source version bump + manifest regen + validate.
-  2. tests -- the same `gate_tests` as check's gate 4. HEAD is now the
-     parent of the version-only bump commit step 3 makes, so its green CI
+  3. sandbox install -- pack the bumped tree and install it with
+     `bin/validate-sandbox.sh --target sandbox`, the gate
+     `.github/workflows/publish.yml` runs after the release exists; refused
+     when the tree differs from HEAD outside the version sources.
+  4. tests -- the same `gate_tests` as check's gate 4. HEAD is now the
+     parent of the version-only bump commit step 5 makes, so its green CI
      verdict covers the tree being released; only the version sources
      `release:prepare` just rewrote may differ from HEAD.
-  3. `git add` + `git commit` -- LOCAL-SAFE (see `GIT_LOCAL_SAFE_SUBCOMMANDS`
+  5. `git add` + `git commit` -- LOCAL-SAFE (see `GIT_LOCAL_SAFE_SUBCOMMANDS`
      in `hooks/modules/security/mutative_verbs.py`), not Tier 3.
-  4. `git tag -a v<version>` -- a NEW, force-free tag; never moves one.
-  5. `git push --atomic origin HEAD:refs/heads/<branch> refs/tags/v<version>`
+  6. `git tag -a v<version>` -- a NEW, force-free tag; never moves one.
+  7. `git push --atomic origin HEAD:refs/heads/<branch> refs/tags/v<version>`
      -- Tier 3, mutates the remote; never forced, so a non-fast-forward is
      refused by git itself.
-  6. `<gh> release create v<version>` -- Tier 3, triggers
+  8. `<gh> release create v<version>` -- Tier 3, triggers
      `.github/workflows/publish.yml` in CI.
 
 Every gh call (the push-permission check, the CI-verdict lookup, the release)
@@ -94,7 +101,7 @@ GitHub account is chosen per process: a wrapper such as `ghx` resolves it from
 the origin owner and sets GH_TOKEN for its own process only, so the command
 stays one signable program and gh's active account is never switched.
 
-Steps 5-6 are the only Tier-3 operations and are deliberately last and
+Steps 7-8 are the only Tier-3 operations and are deliberately last and
 separable: the hook layer will block them and require the user's approval
 at runtime, and that is the intended, expected behaviour -- this module
 never retries around it. This module NEVER invokes npm's own
@@ -103,7 +110,7 @@ registry-publish command itself: that command runs only inside
 `tests/cli/test_release.py` for the invocation-shape assertion that
 guarantees this module never constructs that argv.
 
-`--dry-run` prints the six-step sequence (with the resolved version, push
+`--dry-run` prints the eight-step sequence (with the resolved version, push
 target and gh account, and the Tier-3 steps called out) without mutating
 anything: it runs only the read-only lookups that name the target and the
 account, so nothing to approve.
@@ -213,17 +220,21 @@ _VERSION_SOURCES = (
 _CI_VERDICT_HELPER = Path(".github") / "scripts" / "ci_verdict.py"
 _CI_VERDICT_TIMEOUT = 60
 
+_NODE_DEPS_INSTALL = ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"]
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _run(cmd: list[str], *, cwd: Path, timeout: int) -> tuple[int | None, str, str]:
+def _run(
+    cmd: list[str], *, cwd: Path, timeout: int, env: dict[str, str] | None = None
+) -> tuple[int | None, str, str]:
     """Run *cmd*, never raising. Returns (returncode, stdout, stderr).
 
     returncode is None when the subprocess failed to invoke or timed out --
     callers treat that the same as a hard FAIL, with the exception detail
-    carried in stderr.
+    carried in stderr. *env* replaces the inherited environment when given.
     """
     try:
         result = subprocess.run(
@@ -233,6 +244,7 @@ def _run(cmd: list[str], *, cwd: Path, timeout: int) -> tuple[int | None, str, s
             text=True,
             check=False,
             timeout=timeout,
+            env=env,
         )
         return result.returncode, (result.stdout or ""), (result.stderr or "")
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -323,7 +335,10 @@ def gate_npm_sandbox(repo_root: Path, pack: dict[str, Any], *, timeout: int = 60
     tarball `run_release_check` packed (`_pack_helpers.pack_tarball`).
 
     Proves the npm/pnpm surface of exactly what `npm publish` would ship,
-    installed into a throwaway `/tmp` sandbox that cleans itself up.
+    installed into a throwaway `/tmp` sandbox that cleans itself up. The
+    harness never sees the operator's GAIA_DB or GAIA_DATA_DIR: GAIA_DB
+    outranks the data dir the harness exports, so an inherited one would
+    receive the sandbox's seed and install writes.
     """
     t0 = _now_ms()
     name = "gaia:verify-install:local"
@@ -335,10 +350,12 @@ def gate_npm_sandbox(repo_root: Path, pack: dict[str, Any], *, timeout: int = 60
         }
 
     script = repo_root / "bin" / "validate-sandbox.sh"
+    sandbox_env = {k: v for k, v in os.environ.items() if k not in ("GAIA_DB", "GAIA_DATA_DIR")}
     rc, out, err = _run(
         ["bash", str(script), "--tarball", str(pack["tarball"]), "--target", "sandbox"],
         cwd=repo_root,
         timeout=timeout,
+        env=sandbox_env,
     )
 
     duration = _now_ms() - t0
@@ -514,7 +531,7 @@ def gate_tests(
     allowed_changes: tuple[str, ...] = (),
     gh: str = _DEFAULT_GH,
 ) -> dict[str, Any]:
-    """Check's gate 4 and publish's step 2: PASS on a green CI verdict for the
+    """Check's gate 4 and publish's step 4: PASS on a green CI verdict for the
     tree about to ship, citing the run; otherwise, or with *local_suite*, the
     local `npm test`."""
     t0 = _now_ms()
@@ -756,8 +773,97 @@ def _git_commit_paths(repo_root: Path) -> list[str]:
     return [p for p in _VERSION_SOURCES if (repo_root / p).is_file()]
 
 
+def step_node_deps(repo_root: Path, *, timeout: int = 600) -> dict[str, Any]:
+    """Step 1: install the locked Node dependencies unless every one declared
+    in package.json is already in node_modules.
+
+    `npm ci` installs exactly package-lock.json and refuses one out of sync
+    with package.json. `--ignore-scripts` is safe because the root declares
+    no install lifecycle script and chalk and eslint ship none.
+    """
+    t0 = _now_ms()
+    name = "node deps"
+    install = " ".join(_NODE_DEPS_INSTALL)
+    try:
+        manifest = json.loads((repo_root / "package.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"name": name, "status": "FAIL", "detail": f"could not read package.json: {exc}", "duration_ms": _now_ms() - t0}
+
+    declared = sorted({**manifest.get("dependencies", {}), **manifest.get("devDependencies", {})})
+    missing = [dep for dep in declared if not (repo_root / "node_modules" / dep / "package.json").is_file()]
+    if not missing:
+        return {
+            "name": name, "status": "PASS",
+            "detail": f"all {len(declared)} declared dependencies already installed",
+            "duration_ms": _now_ms() - t0,
+        }
+    if not (repo_root / "package-lock.json").is_file():
+        return {
+            "name": name, "status": "FAIL",
+            "detail": (
+                f"{', '.join(missing)} not installed and package-lock.json is missing from "
+                f"{repo_root}, so `{install}` cannot install the locked versions. Restore "
+                f"package-lock.json from git and re-run."
+            ),
+            "duration_ms": _now_ms() - t0,
+        }
+
+    rc, out, err = _run(_NODE_DEPS_INSTALL, cwd=repo_root, timeout=timeout)
+    output = (out + err).strip()[-_DETAIL_TAIL:]
+    if rc == 0:
+        return {
+            "name": name, "status": "PASS",
+            "detail": f"`{install}` installed the locked dependencies ({', '.join(missing)} were missing)",
+            "duration_ms": _now_ms() - t0,
+        }
+    return {
+        "name": name, "status": "FAIL",
+        "detail": (
+            f"`{install}` failed in {repo_root}; fix what npm reports, run `{install}` "
+            f"there until it passes, and re-run:\n{output}"
+        ),
+        "duration_ms": _now_ms() - t0,
+    }
+
+
+def step_sandbox_install(repo_root: Path, *, timeout: int = 600) -> dict[str, Any]:
+    """Step 3: pack the bumped tree and install the tarball into a throwaway
+    sandbox with `bin/validate-sandbox.sh`, the gate publish.yml runs only
+    after the tag and the GitHub release exist (check's gate 2).
+
+    The tag will hold HEAD plus the version sources, so a working tree that
+    differs anywhere else would prove an artifact nobody publishes; it is
+    refused instead.
+    """
+    t0 = _now_ms()
+    name = "sandbox install"
+    changed = _changed_paths(repo_root)
+    if changed is None:
+        return {
+            "name": name, "status": "FAIL",
+            "detail": "git status failed, so the packed tree cannot be matched to the tag",
+            "duration_ms": _now_ms() - t0,
+        }
+    unreleased = [path for path in changed if path not in _VERSION_SOURCES]
+    if unreleased:
+        return {
+            "name": name, "status": "FAIL",
+            "detail": (
+                f"working tree differs from HEAD outside the version sources: {', '.join(unreleased[:5])}. "
+                f"The tag would not hold them, so the sandbox cannot prove what gets published. "
+                f"Commit or remove them and re-run."
+            ),
+            "duration_ms": _now_ms() - t0,
+        }
+
+    with tempfile.TemporaryDirectory(prefix="gaia-release-publish-pack-") as tmp:
+        pack = _pack_helpers.pack_tarball(repo_root, dest_dir=Path(tmp))
+        result = gate_npm_sandbox(repo_root, pack, timeout=timeout)
+    return {**result, "name": name, "duration_ms": _now_ms() - t0}
+
+
 def step_release_prepare(repo_root: Path, version: str, *, timeout: int = 600) -> dict[str, Any]:
-    """Step 1: `node scripts/release-prepare.mjs <version>`.
+    """Step 2: `node scripts/release-prepare.mjs <version>`.
 
     The atomic bump: writes every hand-owned version source, regenerates the
     root plugin manifests, then runs `pre-publish:validate` internally --
@@ -780,7 +886,7 @@ def step_release_prepare(repo_root: Path, version: str, *, timeout: int = 600) -
 
 
 def step_git_commit(repo_root: Path, version: str, *, timeout: int = 60) -> dict[str, Any]:
-    """Step 3: `git add <version sources>` + `git commit`. LOCAL-SAFE, not
+    """Step 5: `git add <version sources>` + `git commit`. LOCAL-SAFE, not
     Tier 3 (see `GIT_LOCAL_SAFE_SUBCOMMANDS` in `mutative_verbs.py` -- add
     and commit only touch the working tree and local refs).
 
@@ -818,12 +924,12 @@ def step_git_commit(repo_root: Path, version: str, *, timeout: int = 60) -> dict
 
 
 def step_git_tag(repo_root: Path, version: str, *, timeout: int = 30) -> dict[str, Any]:
-    """Step 4: `git tag -a v<version>`. LOCAL-SAFE, force-free -- never
+    """Step 6: `git tag -a v<version>`. LOCAL-SAFE, force-free -- never
     force-moves an existing tag (`git tag -f` is hard-denied by
     `blocked_commands.py` regardless; this step never attempts it).
 
     IDEMPOTENT (P1a): if the tag already exists AND points at the current HEAD
-    (the release commit just made in step 3), this is treated as a PASS/skip,
+    (the release commit just made in step 5), this is treated as a PASS/skip,
     not a FAIL -- so a re-run after a LATE failure (git push or gh release
     create) advances through the tag to the gh-release step instead of dying on
     it. If the tag exists but points at a DIFFERENT commit, this is a clear FAIL
@@ -875,7 +981,7 @@ def _push_command(version: str, branch: str) -> list[str]:
 
 
 def step_git_push(repo_root: Path, version: str, branch: str, *, timeout: int = 180) -> dict[str, Any]:
-    """Step 5: push the release commit to origin's *branch* and tag
+    """Step 7: push the release commit to origin's *branch* and tag
     ``v<version>`` with it, both or neither. TIER 3 -- mutates the remote.
 
     The refspec names the remote branch, so the local branch may be called
@@ -893,7 +999,7 @@ def step_git_push(repo_root: Path, version: str, branch: str, *, timeout: int = 
 def step_gh_release_create(
     repo_root: Path, version: str, *, gh: str = _DEFAULT_GH, timeout: int = 180
 ) -> dict[str, Any]:
-    """Step 6: `<gh> release create v<version>`. TIER 3 -- creates the GitHub
+    """Step 8: `<gh> release create v<version>`. TIER 3 -- creates the GitHub
     Release that triggers `.github/workflows/publish.yml` in CI.
 
     This is the ONLY step that reaches the registry-publish pipeline --
@@ -932,7 +1038,7 @@ def _check_gh_push_permission(
     confirmed or the check could not reach GitHub.
 
     The release must not abort on a transient network failure -- that would
-    make the gate itself flaky -- but every other failure is one step 6
+    make the gate itself flaky -- but every other failure is one step 8
     (`<gh> release create`) would hit after the tag is pushed, so it blocks
     here: a missing program, an account the program cannot resolve or has no
     token for, an unauthenticated gh, and a confirmed `push:false`.
@@ -1011,7 +1117,7 @@ def resolve_push_branch(
 
 def _check_push_fast_forward(repo_root: Path, branch: str, *, timeout: int = 30) -> str | None:
     """Return an actionable error unless origin's *branch* exists and HEAD
-    descends from its tip, so the never-forced push of step 5 is a fast-forward."""
+    descends from its tip, so the never-forced push of step 7 is a fast-forward."""
     remote = _git_out(repo_root, ["ls-remote", _PUSH_REMOTE, f"refs/heads/{branch}"], timeout=timeout)
     if remote is None:
         return f"could not read {_PUSH_REMOTE}/{branch} (git ls-remote failed)"
@@ -1069,7 +1175,7 @@ def _check_stable_from_main(version: str, push_branch: str | None) -> str | None
 
     A stable release reaches `latest` for every channel, so it ships only what
     main holds. The check reads the push target, not the local branch name:
-    step 5 fast-forwards exactly that branch, so a stable passes only when what
+    step 7 fast-forwards exactly that branch, so a stable passes only when what
     it pushes lands on main. There is no escape flag.
     """
     if _is_prerelease(version) or push_branch == "main":
@@ -1113,7 +1219,7 @@ def preflight_publish(
     sequence. Aggregates every definite blocker into ONE actionable FAIL so a
     release stops early -- before any mutation -- rather than mid-sequence.
     Never mutates anything. The result carries ``push_branch``, the origin
-    branch step 5 pushes to.
+    branch step 7 pushes to.
 
     Checks:
       1. the account *gh* runs as has push/admin on ``metraton/gaia``;
@@ -1166,13 +1272,14 @@ def run_release_publish(
     A read-only preconditions gate (`preflight_publish`, P0) runs BEFORE step 1:
     if it fails, this returns just that one FAIL result and NO step runs, so the
     sequence never blows up mid-way (the release-saga failure mode). On PASS the
-    gate is transparent -- the six-step contract below is unchanged.
+    gate is transparent -- the returned list holds only the eight steps.
 
     Unlike `run_release_check`'s always-run-all-gates design, these steps
     are causally dependent: tagging an untested tree, or pushing before the
-    tag exists, is actively harmful, not just incomplete reporting. Step 2
-    is check's `gate_tests`, with the bumped version sources allowed to
-    differ from HEAD.
+    tag exists, is actively harmful, not just incomplete reporting. Nothing
+    irreversible precedes the sandbox install of the bumped tree. Step 4 is
+    check's `gate_tests`, with the bumped version sources allowed to differ
+    from HEAD.
     """
     preflight = preflight_publish(repo_root, version, gh=gh, branch=branch)
     if preflight["status"] != "PASS":
@@ -1180,7 +1287,9 @@ def run_release_publish(
     push_branch = preflight.get("push_branch")
 
     steps = (
+        lambda: step_node_deps(repo_root),
         lambda: step_release_prepare(repo_root, version),
+        lambda: step_sandbox_install(repo_root),
         lambda: gate_tests(repo_root, local_suite=local_suite, allowed_changes=_VERSION_SOURCES, gh=gh),
         lambda: step_git_commit(repo_root, version),
         lambda: step_git_tag(repo_root, version),
@@ -1221,9 +1330,19 @@ def build_publish_plan(
         release_cmd.append("--prerelease")
     return [
         {
+            "name": "node deps",
+            "cmd": f"{' '.join(_NODE_DEPS_INSTALL)}, unless node_modules holds every declared dependency",
+            "tier": "local",
+        },
+        {
             "name": "release:prepare",
             "cmd": f"node scripts/release-prepare.mjs {version}",
             "tier": "local (bump + validate)",
+        },
+        {
+            "name": "sandbox install",
+            "cmd": "npm pack, then bash bin/validate-sandbox.sh --tarball <packed> --target sandbox",
+            "tier": "local",
         },
         tests,
         {
@@ -1310,7 +1429,7 @@ def _report_publish_plan(
     quiet: bool = False,
 ) -> None:
     """Print the `--dry-run` preview of the Layer-3 trigger sequence, headed
-    by the origin branch step 5 pushes to and the account the gh calls run as."""
+    by the origin branch step 7 pushes to and the account the gh calls run as."""
     if quiet:
         return
     print(f"\n  gaia release publish -- Layer 3 trigger sequence (DRY RUN, v{version})\n")
@@ -1319,8 +1438,11 @@ def _report_publish_plan(
     for i, step in enumerate(plan, start=1):
         marker = " [T3 -- requires approval]" if step["tier"] == "T3" else ""
         print(f"  {i}. {step['name']:<26} {step['cmd']}{marker}")
+    tier3 = [(i, step["name"]) for i, step in enumerate(plan, start=1) if step["tier"] == "T3"]
+    numbers = "-".join(str(i) for i, _ in tier3)
+    names = ", ".join(name for _, name in tier3)
     print(
-        "\n  DRY RUN -- nothing executed. Steps 5-6 (git push, gh release create) are\n"
+        f"\n  DRY RUN -- nothing executed. Steps {numbers} ({names}) are\n"
         "  Tier-3 remote mutations and will require your approval when actually run.\n"
         "  This flow never runs npm's own registry-publish step directly -- that\n"
         "  happens in CI (.github/workflows/publish.yml), through npm trusted publishing (OIDC).\n"
@@ -1403,7 +1525,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
 
     p_publish = sub.add_parser(
         "publish",
-        help="Trigger the Layer-3 release pipeline (bump -> test -> commit -> tag -> push -> gh release create)",
+        help=(
+            "Trigger the Layer-3 release pipeline "
+            "(deps -> bump -> sandbox -> test -> commit -> tag -> push -> gh release create)"
+        ),
         description=(
             "Runs, in order, the gaia-release Layer 3 trigger sequence -- STOPS at the\n"
             "first failure (unlike `check`'s always-run-all-gates design). A read-only\n"
@@ -1411,22 +1536,30 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "v<version> absent, pytest-xdist importable, and a fast-forward push to\n"
             "the origin branch (--branch) -- a stable version (no -rc/-beta/-alpha)\n"
             "publishes only to main; a pre-release to any branch:\n"
-            "  1. release:prepare <version>  -- atomic multi-source version bump +\n"
+            "  1. node deps                  -- npm ci --ignore-scripts from\n"
+            "                                    package-lock.json when a declared\n"
+            "                                    dependency is missing (fresh worktree)\n"
+            "  2. release:prepare <version>  -- atomic multi-source version bump +\n"
             "                                    manifest regen + validate\n"
             "                                    (scripts/release-prepare.mjs)\n"
-            "  2. CI verdict or local suite  -- PASS citing the CI run when a green\n"
+            "  3. sandbox install            -- pack the bumped tree and install it with\n"
+            "                                    bin/validate-sandbox.sh --target sandbox,\n"
+            "                                    the gate publish.yml runs; refused when\n"
+            "                                    the tree differs from HEAD outside the\n"
+            "                                    version sources\n"
+            "  4. CI verdict or local suite  -- PASS citing the CI run when a green\n"
             "                                    \"CI verdict\" covers HEAD, the parent of\n"
             "                                    the version-only bump commit; else npm\n"
             "                                    test (--local-suite forces it)\n"
-            "  3. git commit                 -- local-safe; the bumped version sources\n"
-            "  4. git tag                    -- a NEW, force-free v<version> tag\n"
-            "  5. git push --atomic origin   -- Tier 3; HEAD to <branch> plus the tag,\n"
+            "  5. git commit                 -- local-safe; the bumped version sources\n"
+            "  6. git tag                    -- a NEW, force-free v<version> tag\n"
+            "  7. git push --atomic origin   -- Tier 3; HEAD to <branch> plus the tag,\n"
             "                                    never forced\n"
-            "  6. <gh> release create        -- Tier 3, triggers\n"
+            "  8. <gh> release create        -- Tier 3, triggers\n"
             "                                    .github/workflows/publish.yml\n"
             "\n"
             "This command never runs npm's own registry-publish step directly -- that\n"
-            "stays in CI, which publishes through npm trusted publishing (OIDC). Steps 5-6 are\n"
+            "stays in CI, which publishes through npm trusted publishing (OIDC). Steps 7-8 are\n"
             "Tier-3 remote mutations; the hook layer will require your approval before\n"
             "they run -- that is expected, not a bug.\n"
             "\n"
@@ -1454,7 +1587,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         dest="local_suite",
         action="store_true",
         default=False,
-        help="Run npm test in step 2 even when a green CI verdict covers HEAD",
+        help="Run npm test in step 4 even when a green CI verdict covers HEAD",
     )
     p_publish.add_argument("--gh", default=_DEFAULT_GH, metavar="PROGRAM", help=_GH_OPTION_HELP)
     p_publish.add_argument(
@@ -1462,7 +1595,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=None,
         metavar="NAME",
         help=(
-            "origin branch step 5 fast-forwards (default: the current branch's origin "
+            "origin branch step 7 fast-forwards (default: the current branch's origin "
             "upstream, else the one origin branch whose tip is HEAD)"
         ),
     )
@@ -1499,7 +1632,7 @@ def cmd_release_publish(args: argparse.Namespace) -> int:
     """Execute `gaia release publish [version]`.
 
     Resolves the version, then either prints the dry-run plan (no
-    subprocess spawned) or runs the six-step trigger sequence for real via
+    subprocess spawned) or runs the eight-step trigger sequence for real via
     `run_release_publish`, stopping at the first failure. This function
     itself never invokes npm's own registry-publish command -- see the
     module docstring and `tests/cli/test_release.py`.

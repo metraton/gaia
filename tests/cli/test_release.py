@@ -877,13 +877,13 @@ class TestResolveSourceRoot(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestBuildPublishPlan(unittest.TestCase):
-    def test_plan_lists_all_six_steps_in_order(self):
+    def test_plan_lists_all_eight_steps_in_order(self):
         plan = build_publish_plan("5.0.5")
         names = [s["name"] for s in plan]
         self.assertEqual(
             names,
-            ["release:prepare", "CI verdict or local suite", "git commit", "git tag", "git push",
-             "gh release create"],
+            ["node deps", "release:prepare", "sandbox install", "CI verdict or local suite", "git commit",
+             "git tag", "git push", "gh release create"],
         )
 
     def test_plan_marks_push_and_gh_release_as_t3(self):
@@ -1122,7 +1122,7 @@ class TestStepGhReleaseCreate(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestRunReleasePublishOrchestration(unittest.TestCase):
-    def test_runs_all_six_steps_in_order_when_all_pass(self):
+    def test_runs_all_eight_steps_in_order_when_all_pass(self):
         call_order = []
 
         def make_step(name):
@@ -1133,7 +1133,9 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
 
         with patch("cli.release.preflight_publish",
                    return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
+             patch("cli.release.step_node_deps", side_effect=make_step("node deps")), \
              patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
+             patch("cli.release.step_sandbox_install", side_effect=make_step("sandbox install")), \
              patch("cli.release.gate_tests", side_effect=make_step("npm test")), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")), \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")), \
@@ -1143,9 +1145,10 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
 
         self.assertEqual(
             call_order,
-            ["release:prepare", "npm test", "git commit", "git tag", "git push", "gh release create"],
+            ["node deps", "release:prepare", "sandbox install", "npm test", "git commit", "git tag", "git push",
+             "gh release create"],
         )
-        self.assertEqual(len(results), 6)
+        self.assertEqual(len(results), 8)
 
     def test_stops_at_first_failure_unlike_release_check(self):
         """Contrasts run_release_check's always-run-all-4 design: publish's
@@ -1165,7 +1168,9 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
 
         with patch("cli.release.preflight_publish",
                    return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
+             patch("cli.release.step_node_deps", side_effect=make_step("node deps")), \
              patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
+             patch("cli.release.step_sandbox_install", side_effect=make_step("sandbox install")), \
              patch("cli.release.gate_tests", side_effect=failing_step), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")) as mock_commit, \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")) as mock_tag, \
@@ -1173,8 +1178,8 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
              patch("cli.release.step_gh_release_create", side_effect=make_step("gh release create")) as mock_gh:
             results = run_release_publish(_REPO_ROOT, "5.0.5")
 
-        self.assertEqual(call_order, ["release:prepare", "npm test"])
-        self.assertEqual(len(results), 2)
+        self.assertEqual(call_order, ["node deps", "release:prepare", "sandbox install", "npm test"])
+        self.assertEqual(len(results), 4)
         self.assertEqual(results[-1]["status"], "FAIL")
         mock_commit.assert_not_called()
         mock_tag.assert_not_called()
@@ -1314,7 +1319,7 @@ class TestNeverInvokesNpmPublishDirectly(unittest.TestCase):
 
 class TestGaiaEntrypointVersionDestCollision(unittest.TestCase):
     def test_release_publish_dry_run_reaches_the_publish_plan(self):
-        """`gaia release publish 5.1.0-rc.1 --dry-run` must print the six-step
+        """`gaia release publish 5.1.0-rc.1 --dry-run` must print the eight-step
         trigger sequence, not just the bare version string."""
         bin_gaia = _BIN_DIR / "gaia"
         with tempfile.TemporaryDirectory() as tmp:

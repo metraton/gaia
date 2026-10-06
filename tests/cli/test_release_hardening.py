@@ -263,14 +263,16 @@ class TestRunReleasePublishPreflightWiring(unittest.TestCase):
         m_push.assert_not_called()
         m_gh.assert_not_called()
 
-    def test_passing_preflight_is_transparent_six_step_contract_unchanged(self):
+    def test_passing_preflight_is_transparent_eight_step_contract_unchanged(self):
         preflight_pass = {"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}
 
         def make_step(name):
             return lambda *a, **k: {"name": name, "status": "PASS", "detail": "ok", "duration_ms": 1}
 
         with patch("cli.release.preflight_publish", return_value=preflight_pass), \
+             patch("cli.release.step_node_deps", side_effect=make_step("node deps")), \
              patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
+             patch("cli.release.step_sandbox_install", side_effect=make_step("sandbox install")), \
              patch("cli.release.gate_tests", side_effect=make_step("npm test")), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")), \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")), \
@@ -278,9 +280,9 @@ class TestRunReleasePublishPreflightWiring(unittest.TestCase):
              patch("cli.release.step_gh_release_create", side_effect=make_step("gh release create")):
             results = run_release_publish(_REPO_ROOT, "5.0.5")
 
-        # Preflight PASS is not prepended -- the returned list is exactly the six steps.
-        self.assertEqual(len(results), 6)
-        self.assertEqual([r["name"] for r in results][0], "release:prepare")
+        # Preflight PASS is not prepended -- the returned list is exactly the eight steps.
+        self.assertEqual(len(results), 8)
+        self.assertEqual([r["name"] for r in results][0], "node deps")
 
 
 # ---------------------------------------------------------------------------
@@ -371,7 +373,7 @@ class TestReleaseCheckReusesCiVerdict(unittest.TestCase):
 
 
 class TestReleasePublishReusesCiVerdict(unittest.TestCase):
-    """Step 2 of `release publish`: after release:prepare HEAD is the parent of
+    """Step 4 of `release publish`: after release:prepare HEAD is the parent of
     the version-only bump commit, and its green verdict replaces the suite."""
 
     def _publish(self, **fake_kwargs):
@@ -380,13 +382,13 @@ class TestReleasePublishReusesCiVerdict(unittest.TestCase):
         preflight = {"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}
         with ExitStack() as stack:
             stack.enter_context(patch("cli.release.preflight_publish", return_value=preflight))
-            for step in ("step_release_prepare", "step_git_commit", "step_git_tag",
-                         "step_git_push", "step_gh_release_create"):
+            for step in ("step_node_deps", "step_release_prepare", "step_sandbox_install", "step_git_commit",
+                         "step_git_tag", "step_git_push", "step_gh_release_create"):
                 stack.enter_context(patch(f"cli.release.{step}", return_value=_PASS))
             npm_test = stack.enter_context(patch("cli.release.gate_npm_test", return_value=_SUITE_PASS))
             stack.enter_context(patch("cli.release._run", side_effect=_fake_run(calls=calls, **fake_kwargs)))
             results = run_release_publish(_REPO_ROOT, "5.5.0-rc.99", local_suite=local_suite)
-        return results[1], npm_test, calls
+        return results[3], npm_test, calls
 
     def test_green_verdict_on_the_bump_parent_skips_the_suite(self):
         result, npm_test, calls = self._publish(status=_BUMPED_BY_PREPARE)
@@ -423,13 +425,13 @@ class TestLocalSuiteFlagAndDryRun(unittest.TestCase):
         self.assertFalse(self._parse(["release", "check"]).local_suite)
 
     def test_dry_run_shows_ci_verdict_or_local_suite(self):
-        step = build_publish_plan("5.5.0-rc.99")[1]
+        step = build_publish_plan("5.5.0-rc.99")[3]
         self.assertEqual(step["name"], "CI verdict or local suite")
         self.assertIn("ci_verdict.py", step["cmd"])
         self.assertIn("npm test", step["cmd"])
 
     def test_dry_run_with_local_suite_shows_only_npm_test(self):
-        step = build_publish_plan("5.5.0-rc.99", local_suite=True)[1]
+        step = build_publish_plan("5.5.0-rc.99", local_suite=True)[3]
         self.assertNotIn("ci_verdict.py", step["cmd"])
         self.assertIn("npm test", step["cmd"])
 

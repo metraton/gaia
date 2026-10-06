@@ -504,15 +504,17 @@ seed_sandbox_db() {
   # node_modules/.bin/gaia) resolves db_path() to the sandbox-local DB.
   export GAIA_DATA_DIR="${sandbox_data_dir}"
 
+  # GAIA_DB outranks GAIA_DATA_DIR, so an inherited one would send every
+  # later gaia call to the caller's database; pin it to the sandbox file.
   local sandbox_db="${sandbox_data_dir}/gaia.db"
+  export GAIA_DB="${sandbox_db}"
 
   echo "[sandbox-db] initializing sandbox-local DB at ${sandbox_db}"
 
   # Run bootstrap to apply the full schema (tables, triggers, FTS5 mirrors).
-  # We pass GAIA_DB so bootstrap_database.sh writes to the sandbox DB.
   local bootstrap_script="${REPO_ROOT}/scripts/bootstrap_database.sh"
   if [[ -f "${bootstrap_script}" ]]; then
-    GAIA_DB="${sandbox_db}" bash "${bootstrap_script}" >/dev/null
+    bash "${bootstrap_script}" >/dev/null
   else
     # Fallback: create the schema directly from the installed package's schema.sql
     local schema_sql="${WORKSPACE}/node_modules/@jaguilar87/gaia/gaia/store/schema.sql"
