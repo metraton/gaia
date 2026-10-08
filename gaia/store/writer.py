@@ -8121,25 +8121,37 @@ def update_approval_grant_status(
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Update the status column of an existing approval_grants row.
+    """Move a PENDING approval_grants row to a terminal status (CONSUMED|REVOKED|EXPIRED).
+
+    A row already past PENDING keeps the status it ended with, and nothing is
+    moved back to PENDING here (:func:`restore_db_semantic_grant` is the one
+    restore, bounded by the window).
 
     Args:
         approval_id: The grant to update.
-        status: New status value (PENDING|CONSUMED|REVOKED|EXPIRED).
+        status: The terminal status to give a PENDING grant.
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
-        {"status": "applied"} on success.
+        {"status": "applied"} on success, {"status": "error", ...} when the
+        status is PENDING or the grant is not PENDING.
     """
+    if status == "PENDING":
+        return {"status": "error", "reason": "a grant is never moved back to PENDING here"}
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
         try:
             con.execute(
-                "UPDATE approval_grants SET status = ? WHERE approval_id = ?",
+                "UPDATE approval_grants SET status = ? WHERE approval_id = ? AND status = 'PENDING'",
                 (status, approval_id),
             )
             con.commit()
+            held = con.execute(
+                "SELECT status FROM approval_grants WHERE approval_id = ?", (approval_id,)
+            ).fetchone()
+            if held is not None and held[0] != status:
+                return {"status": "error", "reason": f"approval_id {approval_id!r} is {held[0]}, not PENDING"}
         except Exception:
             con.rollback()
             raise
@@ -8182,6 +8194,9 @@ def mark_command_set_item_consumed(
             if row is None:
                 con.rollback()
                 return {"status": "error", "reason": f"approval_id {approval_id!r} not found"}
+            if row[2] != "PENDING":
+                con.rollback()
+                return {"status": "error", "reason": f"approval_id {approval_id!r} is {row[2]}, not PENDING"}
 
             command_set = _json.loads(row[0] or "[]")
             consumed = _json.loads(row[1] or "[]")

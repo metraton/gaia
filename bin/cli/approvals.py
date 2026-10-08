@@ -1733,6 +1733,9 @@ def _request_set_items(args) -> list[dict]:
     missing = [cwd for cwd in cwds if not os.path.isdir(cwd)]
     if missing:
         raise ValueError(f"--cwd {missing[0]} is not an existing directory")
+    unenterable = [cwd for cwd in cwds if not os.access(cwd, os.X_OK)]
+    if unenterable:
+        raise ValueError(f"--cwd {unenterable[0]} cannot be entered by this shell")
     does = _per_command(args, "does", commands)
     impacts = _per_command(args, "impact", commands)
     expected: dict[int, list[int]] = {}
