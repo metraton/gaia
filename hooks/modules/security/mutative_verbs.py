@@ -3342,7 +3342,7 @@ def _scan_dangerous_flags(
     """
     found: List[str] = []
 
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if not token.startswith("-"):
             continue
 
@@ -3365,7 +3365,11 @@ def _scan_dangerous_flags(
                 if cli in D_FLAG_MEANS_FORCE_DELETE:
                     found.append(token)
             elif token == "-M":
-                if cli in M_FLAG_MEANS_FORCE_MOVE:
+                # On git, -M is --find-renames for show/log/diff and a forced
+                # rename only after `branch`.
+                if cli in M_FLAG_MEANS_FORCE_MOVE and (
+                    cli != "git" or "branch" in tokens[:index]
+                ):
                     found.append(token)
             elif token == "--delete":
                 if cli in DELETE_FLAG_IS_DESTRUCTIVE:
@@ -4318,7 +4322,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # its deletion consentable at all.  The catastrophic floor (rm -rf /,
         # /*, ~) still runs first in blocked_commands.py, which defers to this
         # detector only for scratch-confined rm commands.
-        if base_cmd == "rm":
+        if base_cmd in ("rm", "rmdir"):
             scratch_targets = _rm_scratch_confined_targets(tuple(tokens))
             if scratch_targets:
                 valuable = _durable_store_under_scratch_targets(scratch_targets)
@@ -4934,6 +4938,20 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
+        # `deploy-key` is a noun, so hyphen-splitting it onto `deploy` reads a
+        # listing as a deployment; add/delete still reach the split below.
+        if token == "deploy-key" and tuple(
+            semantics.semantic_head_tokens[semantic_index + 1:semantic_index + 2]
+        ) == ("list",):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb="list",
+                cli_family=family,
+                confidence="high",
+                reason="Listing deploy keys is read-only",
+            )
+
         # Check compound read-only subcommands BEFORE hyphen-split.
         # Without this, "merge-base" would be split to "merge" -> MUTATIVE.
         if token in COMPOUND_READ_ONLY_SUBCOMMANDS:
