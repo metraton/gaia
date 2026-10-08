@@ -102,6 +102,8 @@ your phrases under fixed English labels:
 [ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm ] [ DOES: gaia dev: instala en tu espacio de trabajo la versión nueva de main. ] [ IMPACT: actualiza tu base de datos; ese cambio no se deshace. ] [ VERIFICATION: gaia doctor muestra la versión nueva. ] [ SHARED-STATE: No: solo tu espacio de trabajo local. ] [ ROLLBACK: Reinstalar la versión anterior; la base de datos queda actualizada. ]
 ```
 
+For a `git worktree remove --force`, Gaia adds a `[ CAPTURED: ... ]` field naming the diff `gaia worktree release` already deposited, its size and a files/lines summary, or stating that no capture is recorded.
+
 A protected-path write is requested the same way with
 `gaia approvals request-file-write --path <absolute path>`, one `--does` and
 `--impact` for the edit, and its `--rollback`.
