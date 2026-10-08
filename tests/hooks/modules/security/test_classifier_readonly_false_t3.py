@@ -5,9 +5,8 @@ Each family pairs the READ form that must run without a signature with the
 MUTATING form of the same command family that must still ask for one, so a
 rule loosened for the read cannot silently loosen the write.
 
-Rows marked ``REGRESSION`` were already correct on the base and are recorded so
-a later change cannot break them. ``OPEN`` rows are known gaps, kept as strict
-expected failures so closing one is a deliberate edit here.
+Rows whose id ends in ``regression`` were already correct on the base and are
+recorded so a later change cannot break them.
 """
 
 import os
@@ -99,18 +98,24 @@ def test_npm_prefix_run_reads_the_script_body(tmp_path):
     assert not is_mutative and tier != SecurityTier.T3_BLOCKED
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="OPEN: tar -xf inside the turn scratch asks for a signature "
-    "(feedback_gaia_scratch_extract_pide_firma)",
-)
 def test_tar_extract_inside_the_turn_scratch_is_free(scratch):
     turn_entry, _ = scratch
-    command = f"tar -xf {turn_entry}/a.tar -C {turn_entry}/empty"
-    assert BashValidator().validate(command).allowed
+    for command in (
+        f"tar -xf {turn_entry}/a.tar -C {turn_entry}/empty",
+        f"tar -xzf {turn_entry}/a.tgz -C {turn_entry}/empty",
+    ):
+        assert BashValidator().validate(command).allowed, command
 
 
-def test_tar_extract_outside_the_scratch_still_asks(scratch):
-    _, tmp_path = scratch
-    command = f"tar -xf {tmp_path}/a.tar -C {tmp_path}/proj"
-    assert not BashValidator().validate(command).allowed
+def test_tar_extract_that_leaves_the_scratch_still_asks(scratch):
+    turn_entry, tmp_path = scratch
+    for command in (
+        f"tar -xf {tmp_path}/a.tar -C {tmp_path}/proj",
+        f"tar -xf {turn_entry}/a.tar -C {tmp_path}/proj",
+        f"tar -xf {tmp_path}/a.tar -C {turn_entry}/empty",
+        f"tar -xf {turn_entry}/a.tar",
+        f"tar -xf {turn_entry}/a.tar -C {turn_entry}/../proj",
+        f"tar -xf {turn_entry}/a.tar -C {turn_entry}/empty --to-command=sh",
+        f"tar -cf {turn_entry}/a.tar -C {turn_entry}/empty .",
+    ):
+        assert not BashValidator().validate(command).allowed, command
