@@ -545,6 +545,35 @@ def resolve_subagent_stop_gate(
     return verdict, source
 
 
+def _project_owner_workspace(
+    workspace: Optional[str],
+    dispatch_project: Optional[str],
+    db_path: Optional[str],
+) -> Optional[str]:
+    """``workspace``, or the workspace owning the project the dispatch named.
+
+    Unchanged for a dispatch that named no project, one the substrate does not
+    know, or a lookup that fails.
+    """
+    if not workspace or not dispatch_project:
+        return workspace
+    try:
+        from modules.core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from tools.context.context_provider import dispatch_project_workspace
+
+        return dispatch_project_workspace(
+            workspace, dispatch_project, Path(db_path) if db_path else None,
+        ) or workspace
+    except Exception:
+        logger.warning(
+            "Project workspace lookup failed for %r; keeping workspace %s",
+            dispatch_project, workspace, exc_info=True,
+        )
+        return workspace
+
+
 def resolve_dispatch_row(
     *,
     session_id: str,
@@ -1194,16 +1223,23 @@ def run_subagent_stop(
         context_update_result = None
         _update_contracts_refused: list = []
         if isinstance(parsed_contract, dict):
+            # The hook's cwd can resolve to a workspace other than the
+            # dispatch's, so the born row's column decides -- unless the row
+            # names a project that another workspace owns.
+            _update_contracts_workspace = (
+                (_bound_dispatch_row or {}).get("workspace")
+                or task_info.get("workspace")
+            )
+            _update_contracts_workspace = _project_owner_workspace(
+                _update_contracts_workspace,
+                (_bound_dispatch_row or {}).get("dispatch_project"),
+                task_info.get("db_path"),
+            )
             _update_contracts_task_info = {
                 "agent": agent_type,
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
-                # The hook's cwd can resolve to a workspace other than the
-                # dispatch's, so the born row's column decides.
-                "workspace": (
-                    (_bound_dispatch_row or {}).get("workspace")
-                    or task_info.get("workspace")
-                ),
+                "workspace": _update_contracts_workspace,
             }
             _update_contracts_result = process_update_contracts(
                 parsed_contract, _update_contracts_task_info

@@ -402,6 +402,33 @@ def _project_display(entry: dict) -> str:
     return f"{name} ({local_path})" if local_path else name
 
 
+def _dispatch_project_row(
+    workspace: str,
+    dispatch_project: str,
+    db_path: Optional[Path] = None,
+) -> Optional[dict]:
+    """The ``projects`` row a born row's ``dispatch_project`` display names, or None."""
+    name, _, rest = dispatch_project.partition(" (")
+    local_path = rest[:-1] if rest.endswith(")") else None
+    return _dispatched_project_row(workspace, name, local_path, db_path=db_path)
+
+
+def dispatch_project_workspace(
+    workspace: str,
+    dispatch_project: Optional[str],
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """The workspace that owns the project a born row's ``dispatch_project`` names.
+
+    None when the dispatch named no project or the substrate does not know it,
+    so the caller keeps the workspace the dispatch was born in.
+    """
+    if not workspace or not dispatch_project:
+        return None
+    row = _dispatch_project_row(workspace, dispatch_project, db_path)
+    return row["workspace"] if row else None
+
+
 def dispatch_project_entry(
     workspace: str,
     dispatch_project: Optional[str],
@@ -417,9 +444,7 @@ def dispatch_project_entry(
     """
     if not workspace or not dispatch_project:
         return None
-    name, _, rest = dispatch_project.partition(" (")
-    local_path = rest[:-1] if rest.endswith(")") else None
-    row = _dispatched_project_row(workspace, name, local_path, db_path=db_path)
+    row = _dispatch_project_row(workspace, dispatch_project, db_path)
     entry = _project_entry(row, db_path) if row else None
     if entry is not None:
         return entry
