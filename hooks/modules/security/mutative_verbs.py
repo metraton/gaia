@@ -840,6 +840,9 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("config", "set")),
         MutativeAnchor(path=("config", "configurations", "create")),
         MutativeAnchor(path=("config", "configurations", "delete")),
+        # `add` is kept out of MUTATIVE_VERBS so `git add` stays free; this one
+        # publishes a new secret value to every consumer of `latest`.
+        MutativeAnchor(path=("secrets", "versions", "add")),
     ),
     # The same noun shadows the same class of write in three more CLIs, each
     # measured the same way. `kubectl config set-context` repoints the cluster

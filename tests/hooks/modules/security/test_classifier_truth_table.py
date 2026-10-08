@@ -23,6 +23,7 @@ The table is the shared harness: work that changes a verdict extends this
 table instead of standing up its own assertions somewhere else.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -193,6 +194,22 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gh-workflow-list", FREE, "gh workflow list", False, T0),
     ("read-gh-workflow-view", FREE, "gh workflow view deploy.yml", False, T0),
     ("read-gh-run-view", FREE, "gh run view 123456", False, T0),
+    # ---- Adding a secret version publishes a value to every consumer of it ----
+    (
+        "secret-version-add",
+        GATED,
+        "gcloud secrets versions add my-secret --project=p --data-file=f",
+        True,
+        T3,
+    ),
+    (
+        "secret-version-add-stdin",
+        GATED,
+        "gcloud secrets versions add my-secret --data-file=-",
+        True,
+        T3,
+    ),
+    ("read-gcloud-secret-versions-list", FREE, "gcloud secrets versions list my-secret", False, T0),
     # ---- CLOSED: state, destination and direct write ----
     # These four were recorded OPEN (False, T0). None of the three verbs
     # behind them sits in MUTATIVE_VERBS -- `init` names no lifecycle action
@@ -1375,7 +1392,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 171
+_MINIMUM_MEASURED_CASES = 174
 
 
 @pytest.mark.parametrize(
@@ -1421,3 +1438,50 @@ def test_classifier_truth_table_carries_both_directions():
     """
     families = {row[1] for row in CLASSIFIER_TRUTH_TABLE}
     assert {OPEN, GATED, FREE} <= families
+
+
+@pytest.mark.parametrize(
+    "command,gated",
+    [
+        ("mywrap workflow run build.yml", True),
+        ("mywrap -C /r workflow run build.yml", True),
+        ("mywrap workflow list", False),
+        ("mywrap pr view 1", False),
+    ],
+)
+def test_declared_wrapper_costs_what_the_cli_it_wraps_costs(monkeypatch, command, gated):
+    """A wrapper the user declares in GAIA_CLI_ALIASES is read as its target."""
+    monkeypatch.setenv("GAIA_CLI_ALIASES", "mywrap=gh")
+    detect_mutative_command.cache_clear()
+    assert detect_mutative_command(command).is_mutative is gated, command
+    assert (classify_command_tier(command) == T3) is gated, command
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "npm --prefix {d} run x",
+        "npm run x --prefix {d}",
+        "npm --prefix={d} run x",
+        "npm -C {d} run x",
+        "pnpm --dir {d} run x",
+        "yarn --cwd {d} run x",
+        "bun --cwd {d} run x",
+    ],
+)
+@pytest.mark.parametrize(
+    "body,gated",
+    [
+        ("kubectl delete deployment web", True),
+        ("echo start; kubectl delete pod p", True),
+        ("vite build", False),
+    ],
+)
+def test_directory_option_before_run_classifies_by_the_script_body(
+    tmp_path, form, body, gated
+):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"x": body}}))
+    command = form.format(d=tmp_path)
+    assert detect_mutative_command(command).is_mutative is gated, command
+    if gated:
+        assert classify_command_tier(command) == T3, command
