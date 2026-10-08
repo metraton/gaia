@@ -129,6 +129,24 @@ class TestGrantSurvivesFailure:
         assert _lookup(OTHER_COMMAND, SEALED_DIR) is None
         assert _lookup(COMMAND, OTHER_DIR) is None
 
+    def test_second_failure_leaves_the_grant_spent(self, isolated_db):
+        approval_id = _grant_for()
+        _run_and_close(approval_id, exit_code=1)
+
+        assert _run_and_close(approval_id, exit_code=1) == "failed"
+
+        assert _status(isolated_db, approval_id) == "CONSUMED"
+        assert _lookup(COMMAND, SEALED_DIR) is None
+
+    def test_retry_that_succeeds_spends_the_grant(self, isolated_db):
+        approval_id = _grant_for()
+        _run_and_close(approval_id, exit_code=1)
+
+        assert _run_and_close(approval_id, exit_code=0) == "executed"
+
+        assert _status(isolated_db, approval_id) == "CONSUMED"
+        assert _lookup(COMMAND, SEALED_DIR) is None
+
     def test_successful_run_still_spends_the_grant(self, isolated_db):
         approval_id = _grant_for()
 

@@ -199,4 +199,6 @@ This is the same in Claude Code and OpenCode: nothing is asked in your
 session, neither when you request nor when your turn ends. The orchestrator
 reads the approval id from your contract and decides when to ask the user.
 A set that failed is not resumed: after fresh investigation, request what still
-has to run as a new request.
+has to run as a new request. A single command that failed keeps its signature
+for one retry of the same bytes in the same directory within the window; a
+second failure needs a new request.

@@ -8115,6 +8115,39 @@ def restore_db_semantic_grant(
         con.close()
 
 
+#: ``failure_reason`` of a single-command grant that spent its one retry.
+RETRY_SPENT_REASON = "retry used after a failed run"
+
+
+def retry_db_semantic_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Return a SCOPE_SEMANTIC_SIGNATURE grant whose command failed to PENDING, once.
+
+    One retry inside the window: the first failure restores the grant and
+    stamps :data:`RETRY_SPENT_REASON`, a second leaves it CONSUMED so a partial
+    side effect is never retried on one consent. An expired grant stays spent.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET status='PENDING', consumed_at=NULL, failure_reason=? "
+            "WHERE approval_id=? AND scope='SCOPE_SEMANTIC_SIGNATURE' "
+            "AND status='CONSUMED' AND expires_at > ? AND failure_reason IS NULL",
+            (RETRY_SPENT_REASON, approval_id, _now_iso()),
+        ).rowcount
+        con.commit()
+        return changed == 1
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
 def update_approval_grant_status(
     approval_id: str,
     status: str,

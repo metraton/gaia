@@ -46,6 +46,9 @@ source changes. The same prohibition applies to fixtures and bulk operations.
    that never reports back is recorded as no result, not as a failure, and
    does not advance the set. Read its state before deciding anything, and
    request anything still needed as a new request.
+   A single-command signature whose command exited non-zero is given back
+   once, while its window lasts: retry the same sealed bytes from the same
+   directory, and after a second failure investigate and request anew.
 6. After successful mutations, verify desired state with separate read-only
    checks. Success exit codes alone are insufficient.
 7. Checkpoint verification and emit `NEEDS_VERIFICATION` for a plan-task-bound
