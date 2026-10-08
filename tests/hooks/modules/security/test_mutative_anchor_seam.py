@@ -252,8 +252,8 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         IAM bindings are deliberately absent: six anchors used to carry them
         and the enumeration trailed the CLI, so their gate is now a form rule
         (`IAM_BINDING_TOKEN_SUFFIXES`) that holds at any depth on any surface.
-        What remains here is the mutation that has no distinguishing form and
-        can only be named by its path.
+        What remains here are the mutations that have no distinguishing form
+        and can only be named by their path.
         """
         paths = {
             a.path
@@ -262,6 +262,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         }
         assert paths == {
             ("sql", "users", "set-password"),
+            ("secrets", "versions", "add"),
         }
 
     def test_configuration_write_paths_are_the_reviewed_ones(self):
