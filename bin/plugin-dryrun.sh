@@ -18,6 +18,9 @@
 # Usage:
 #   bash bin/plugin-dryrun.sh              # structural + `claude plugin validate`
 #   bash bin/plugin-dryrun.sh --functional # also run a headless `claude -p` probe
+#   bash bin/plugin-dryrun.sh --marketplace v5.5.0
+#                                          # also install gaia from that published tag
+#                                          # into a throwaway CLAUDE_CONFIG_DIR
 #
 # Exit 0 when every check passes; 1 otherwise.
 
@@ -26,9 +29,14 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 FUNCTIONAL=0
-if [[ "${1:-}" == "--functional" ]]; then
-  FUNCTIONAL=1
-fi
+MARKETPLACE_REF=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --functional) FUNCTIONAL=1; shift ;;
+    --marketplace) MARKETPLACE_REF="${2:?--marketplace needs a release tag}"; shift 2 ;;
+    *) echo "FATAL: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # (a) Pack -> prepack regenerates the root plugin.json (metadata only) + hooks/hooks.json
@@ -67,8 +75,10 @@ echo "[dryrun] packed ${TARBALL_NAME}"
 PLUGIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gaia-plugin-dryrun-XXXXXX")"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gaia-plugin-work-XXXXXX")"
 
+CONFIG_DIR=""
+
 cleanup() {
-  rm -rf "${PLUGIN_DIR}" "${WORK_DIR}" "${TARBALL}" 2>/dev/null || true
+  rm -rf "${PLUGIN_DIR}" "${WORK_DIR}" "${TARBALL}" "${CONFIG_DIR}" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -188,6 +198,42 @@ if [[ "${FUNCTIONAL}" -eq 1 ]]; then
       || { echo "  [FAIL] functional probe"; fail=1; }
   else
     echo "  [SKIP] claude CLI not on PATH -- cannot run functional probe"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# (c'') OPTIONAL marketplace install of a published tag -- explicit opt-in only
+#       Needs network and the claude CLI.
+# ---------------------------------------------------------------------------
+if [[ -n "${MARKETPLACE_REF}" ]]; then
+  echo
+  echo "=== Marketplace install pinned to ${MARKETPLACE_REF} ==="
+  if ! [[ "${MARKETPLACE_REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+    echo "  [FAIL] --marketplace takes a release tag (vX.Y.Z or vX.Y.Z-rc.N), got: ${MARKETPLACE_REF}"
+    fail=1
+  elif ! command -v claude >/dev/null 2>&1; then
+    echo "  [SKIP] claude CLI not on PATH -- cannot run the marketplace install"
+  else
+    # The user's own settings.json declares gaia-marketplace without a ref,
+    # which would win over the pinned tag; an empty config dir has no such entry.
+    CONFIG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/gaia-marketplace-config-XXXXXX")"
+    export CLAUDE_CONFIG_DIR="${CONFIG_DIR}"
+    if claude plugin marketplace add "metraton/gaia#${MARKETPLACE_REF}" --scope user \
+        && claude plugin install gaia@gaia-marketplace --scope user \
+        && claude plugin list --json > "${CONFIG_DIR}/installed.json" \
+        && python3 - "${CONFIG_DIR}/installed.json" "${MARKETPLACE_REF#v}" <<'PY'
+import json, sys
+
+listing = json.load(open(sys.argv[1]))
+versions = [p.get("version") for p in listing if p.get("id") == "gaia@gaia-marketplace"]
+assert versions == [sys.argv[2]], f"installed gaia versions {versions}, expected [{sys.argv[2]!r}]"
+PY
+    then
+      echo "  [PASS] gaia@gaia-marketplace ${MARKETPLACE_REF#v} installed from the tag, config dir ${CONFIG_DIR}"
+    else
+      echo "  [FAIL] marketplace install of ${MARKETPLACE_REF}"
+      fail=1
+    fi
   fi
 fi
 

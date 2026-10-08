@@ -9,7 +9,7 @@ on:
 jobs:
   exhaustive:
     name: Exhaustive matrices
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -45,7 +45,7 @@ jobs:
   # kills and the eval-harness tests); naming each entry here runs it anyway.
   nightly-only:
     name: Mutant kills, eval harness and slow integration
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
