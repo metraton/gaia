@@ -41,6 +41,18 @@ READONLY_FALSE_T3_TABLE = [
     # ---- node -e: reading is free, writing is not ----
     ("node-e-read", FREE, "node -e \"console.log(require('fs').readFileSync('a.yml','utf8'))\""),
     ("node-e-write", GATED, "node -e \"require('fs').writeFileSync('a.txt','x')\""),
+    (
+        "node-e-long-yaml-read-regression",
+        FREE,
+        "node -e \"const y=require('js-yaml');const fs=require('fs');"
+        "const d=y.load(fs.readFileSync('a.yml','utf8'));"
+        "for (const k of Object.keys(d)) { console.log(k, JSON.stringify(d[k]).length); }"
+        "console.log('rows', Object.keys(d).length, 'ok');"
+        "if (!d.name) { console.error('missing name'); process.exit(1); }\"",
+    ),
+    # ---- a greater-than inside a quoted argument is data, not a redirect ----
+    ("quoted-gt-single-regression", FREE, "grep -c 'X_PR>' f"),
+    ("quoted-gt-double-regression", FREE, 'grep -n "a > b" f'),
 ]
 
 
