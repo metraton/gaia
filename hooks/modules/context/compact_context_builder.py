@@ -92,6 +92,26 @@ def _entry_text(entry: dict) -> str:
     return ""
 
 
+def build_summary_instructions() -> str:
+    """The brief a host that summarizes its own session is given before it writes the summary.
+
+    Aimed at the summarizer, so only a pre-summary hook delivers it; the
+    post-compaction refresh above speaks to the session that resumes.
+    """
+    return (
+        "# Compaction Instructions\n\n"
+        "Write the summary so the next turn can resume without re-deriving anything:\n"
+        "- Keep the session snapshot above (resume point, open contracts, pending "
+        "signatures, active brief/plan/task) verbatim; it is the source of truth for "
+        "where work stands.\n"
+        "- State the active objective and the exact next action.\n"
+        "- Refer to durable work by identifier (memory slugs, brief/plan/task ids, "
+        "contract ids); never copy their bodies.\n"
+        "- Keep facts that exist only in this conversation, labeled as not durable.\n"
+        "- Compress tool output and intermediate reasoning to what the next decision needs."
+    )
+
+
 def _build_identity_block() -> str:
     return (
         "# Post-Compaction Context Refresh\n\n"

@@ -1243,6 +1243,63 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // no TUI attached).
   const childCloses = new Map<string, Promise<void>>()
   const parentNotices = new Map<string, string[]>()
+  const compactionRequested = new Set<string>()
+  const compactionTimers = new Set<ReturnType<typeof setTimeout>>()
+  const compactionRetry = {
+    delayMs: input?.compaction?.delayMs ?? 500,
+    maxAttempts: input?.compaction?.maxAttempts ?? 5,
+  }
+
+  /** Whether the host refused a summarize because the session is still working. */
+  function sessionBusy(result: unknown): boolean {
+    const outcome = result as { error?: { name?: unknown }; response?: { status?: number } } | undefined
+    return outcome?.response?.status === 409 || outcome?.error?.name === "SessionBusyError"
+  }
+
+  /** The provider and model of the session's latest assistant turn, so the summary runs on the model the session uses. */
+  async function summaryModel(sessionID: string): Promise<{ providerID: string; modelID: string } | undefined> {
+    try {
+      const list = (await input.client?.session?.messages?.({ path: { id: sessionID } }))?.data
+      if (!Array.isArray(list)) return undefined
+      for (let index = list.length - 1; index >= 0; index--) {
+        const info = list[index]?.info
+        if (info?.role === "assistant" && typeof info.providerID === "string" && typeof info.modelID === "string") {
+          return { providerID: info.providerID, modelID: info.modelID }
+        }
+      }
+    } catch {
+      return undefined
+    }
+    return undefined
+  }
+
+  /** Run the requested compaction off the idle event, retrying a busy session a bounded number of times.
+   *
+   * session.idle is published while the host still holds the session, so
+   * summarizing inside the handler answers 409; the first attempt waits one
+   * delay and each retry doubles it.
+   */
+  function scheduleCompaction(sessionID: string, attempt = 1): void {
+    const timer = setTimeout(async () => {
+      compactionTimers.delete(timer)
+      try {
+        const model = await summaryModel(sessionID)
+        const result = await input.client?.session?.summarize?.({
+          path: { id: sessionID },
+          ...(model ? { body: model } : {}),
+        })
+        if (sessionBusy(result) && attempt < compactionRetry.maxAttempts) {
+          scheduleCompaction(sessionID, attempt + 1)
+          return
+        }
+        const refused = result === undefined ? "client has no session.summarize" : hostRejection(result)
+        if (refused) console.error(`[gaia-opencode:compact] compaction of ${sessionID} not run after ${attempt} attempt(s): ${refused}`)
+      } catch (error) {
+        console.error(`[gaia-opencode:compact] compaction of ${sessionID} failed: ${error}`)
+      }
+    }, compactionRetry.delayMs * 2 ** (attempt - 1))
+    compactionTimers.add(timer)
+  }
 
   /** A background Task returns before its child's turn ends, so the child's idle is what completes that dispatch and lets a later task_id resume it. */
   function completeBackgroundDispatch(childSessionID: string): void {
@@ -2045,7 +2102,26 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   }
 
   return {
+    // A tool, not a command: a command is typed by the user, while the
+    // orchestrator calls tools, and task 'compactemos' needs the latter.
+    tool: {
+      gaia_compact_when_idle: {
+        description: "Request compaction of this session. It runs when the session next goes idle, never mid-turn; call it once and finish the turn.",
+        args: {},
+        execute: async (_args: unknown, context: { sessionID?: string }) => {
+          const sessionID = context?.sessionID
+          if (typeof sessionID !== "string" || await hostRecordsMain(sessionID) !== true) {
+            return "Compaction was not requested: only the main session can be compacted this way."
+          }
+          compactionRequested.add(sessionID)
+          return "Compaction requested; it will run when this session goes idle."
+        },
+      },
+    },
     dispose: async () => {
+      for (const timer of compactionTimers) clearTimeout(timer)
+      compactionTimers.clear()
+      compactionRequested.clear()
       shellIdentities.clear()
       controlByQuestion.clear()
       controlsBySession.clear()
@@ -2165,6 +2241,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (typeof sessionID === "string") {
           const agent = agentBySession.get(sessionID)
           if (event.type === "session.idle") {
+            if (compactionRequested.delete(sessionID)) scheduleCompaction(sessionID)
             const closing = (async () => {
               const control = activeControl(sessionID)
               if (control) await clearControl(control, "session_ended", event.type)

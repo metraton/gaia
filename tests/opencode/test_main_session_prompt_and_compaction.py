@@ -103,8 +103,35 @@ def test_primary_compaction_bridge_returns_the_claude_code_compact_context(isola
 
     context = response["updated_input"]["context"]
     assert response["action"] == "allow"
-    assert context == [start_context("compact", [], MAIN_SESSION)]
+    assert context[0] == start_context("compact", [], MAIN_SESSION)
     assert context[0]
+
+
+def test_primary_compaction_carries_the_session_snapshot_and_the_summary_instructions(isolated):
+    import bridge
+    from gaia.session_snapshot import write_resume_point
+    from modules.context.compact_context_builder import build_summary_instructions
+
+    write_resume_point(MAIN_SESSION, "finish task 892, then run its gate")
+    write_resume_point(CHILD_SESSION, "another session's resume point")
+
+    response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
+
+    snapshot, instructions = response["updated_input"]["context"]
+    assert "finish task 892, then run its gate" in snapshot
+    assert "another session's resume point" not in snapshot
+    assert instructions == build_summary_instructions()
+    assert "verbatim" in instructions and "never copy their bodies" in instructions
+
+
+def test_a_compaction_with_no_context_to_inject_adds_no_instructions(isolated, monkeypatch):
+    import bridge
+
+    monkeypatch.setattr("modules.session.session_lifecycle.start_context", lambda *args: "")
+
+    response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
+
+    assert response == {"action": "allow"}
 
 
 def test_primary_compaction_is_not_injected_into_an_unbound_non_main_session(isolated):
@@ -148,5 +175,16 @@ def test_prompt_submit_and_primary_compaction_plugin_ask_only_for_the_main_sessi
         capture_output=True,
         text=True,
         timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_requested_compaction_runs_when_idle_off_the_event_and_retries_a_busy_session():
+    result = subprocess.run(
+        ["bun", "test", str(_ROOT / "tests/opencode/compaction_when_idle.test.ts")],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr

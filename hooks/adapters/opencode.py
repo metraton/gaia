@@ -1465,7 +1465,10 @@ class OpenCodeAdapter(HookAdapter):
         messages. A dispatched child gets back the kernel its row was born
         with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
         what Claude Code's SessionStart(compact) delivers, from the same
-        ``start_context``.
+        ``start_context``, followed by the instructions that steer the summary.
+        Both travel as ``context`` entries, which the host appends to its own
+        summary prompt; replacing the prompt (``output.prompt``) would discard
+        the host's summary template, which Gaia has no stake in owning.
 
         Degrades to a plain allow whenever there is nothing to inject or
         building it fails: a compaction must never be blocked by injection,
@@ -1477,12 +1480,16 @@ class OpenCodeAdapter(HookAdapter):
                 output={"action": "allow", "updated_input": {"context": [kernel]}}
             )
         if event.payload.get("main") is True:
+            from modules.context.compact_context_builder import build_summary_instructions
             from modules.session.session_lifecycle import start_context
 
             context = start_context("compact", [], event.session_id)
             if context:
                 return HookResponse(
-                    output={"action": "allow", "updated_input": {"context": [context]}}
+                    output={
+                        "action": "allow",
+                        "updated_input": {"context": [context, build_summary_instructions()]},
+                    }
                 )
         return HookResponse(output={"action": "allow"})
 
