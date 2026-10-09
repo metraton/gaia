@@ -1157,6 +1157,9 @@ def _validate_read_flags(
 _BRIEF_STATUSES = frozenset({"draft", "open", "in-progress", "closed", "archived"})
 _PLAN_STATUSES = frozenset({"draft", "active", "closed"})
 _TASK_STATUSES = frozenset({"pending", "done", "skipped"})
+# Must equal gaia.session_snapshot.RESUME_POINT_MAX_CHARS, which write_resume_point
+# enforces; tests/hooks/modules/security/test_orchestrator_resume_point_lane.py pins both.
+_RESUME_POINT_MAX_CHARS = 2000
 
 
 def _has_value(args: Tuple[str, ...], flag: str) -> bool:
@@ -1322,6 +1325,13 @@ def _validate_orchestrator_write(
             and len(positional) == 3
             and positional[1].isdigit()
             and positional[2] in _TASK_STATUSES
+        )
+    elif phrase == ("session", "resume-point", "set"):
+        flags = _single_valued_flags(args)
+        valid = (
+            flags is not None
+            and set(flags) == {"--session-id", "--text"}
+            and 0 < len(flags["--text"].strip()) <= _RESUME_POINT_MAX_CHARS
         )
     elif phrase == ("notifications", "ack"):
         valid = (len(args) == 1 and (args[0].isdigit() or args[0] == "--all"))

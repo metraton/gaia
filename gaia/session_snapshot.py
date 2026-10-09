@@ -17,6 +17,7 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _RESUME_DIR = "session_resume"
 _RESUME_MAX_AGE_SECONDS = 30 * 24 * 3600
 _RESUME_MAX_CHARS = 600
+RESUME_POINT_MAX_CHARS = 2000
 _MAX_LISTED = 10
 _BLOCK_MAX_CHARS = 1500
 _TRUNCATED = "\n... (snapshot truncated; `gaia session snapshot --json` has the rest)"
@@ -44,10 +45,13 @@ def _prune_resume_points(directory, keep) -> None:
 
 
 def write_resume_point(session_id: str, text: str) -> str:
-    """Replace the session's resume point with *text*, drop resume points older than 30 days, and return the file written."""
+    """Replace the session's resume point with *text* (at most 2000 characters), drop resume points older than 30 days, and return the file written."""
+    text = text.strip()
+    if len(text) > RESUME_POINT_MAX_CHARS:
+        raise ValueError(f"resume point is {len(text)} characters; the limit is {RESUME_POINT_MAX_CHARS}")
     path = _resume_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.strip() + "\n", encoding="utf-8")
+    path.write_text(text + "\n", encoding="utf-8")
     _prune_resume_points(path.parent, path)
     return str(path)
 

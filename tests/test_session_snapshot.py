@@ -108,7 +108,7 @@ def test_the_block_is_cut_to_the_cap_even_when_every_section_is_full(db):
     from gaia.session_snapshot import build_snapshot, render_snapshot, write_resume_point
 
     _add_contracts(db, 12, "ses-full", kind="task_execution-" + "x" * 80)
-    write_resume_point("ses-full", "r" * 5000)
+    write_resume_point("ses-full", "r" * 2000)
 
     rendered = render_snapshot(build_snapshot("ses-full"))
 
