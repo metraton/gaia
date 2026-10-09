@@ -8,12 +8,18 @@ compaction deliveries and printed by ``gaia session snapshot``.
 from __future__ import annotations
 
 import re
+import time
 from typing import Any
 
 from gaia.paths.resolver import data_dir
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _RESUME_DIR = "session_resume"
+_RESUME_MAX_AGE_SECONDS = 30 * 24 * 3600
+_RESUME_MAX_CHARS = 600
+_MAX_LISTED = 10
+_BLOCK_MAX_CHARS = 1500
+_TRUNCATED = "\n... (snapshot truncated; `gaia session snapshot --json` has the rest)"
 _EMPTY_BLOCK = (
     "## Session Snapshot\n"
     "No open contracts, pending signatures, active task or resume point is "
@@ -27,11 +33,22 @@ def _resume_path(session_id: str):
     return data_dir() / _RESUME_DIR / f"{session_id}.txt"
 
 
+def _prune_resume_points(directory, keep) -> None:
+    cutoff = time.time() - _RESUME_MAX_AGE_SECONDS
+    for stale in directory.glob("*.txt"):
+        try:
+            if stale != keep and stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            continue
+
+
 def write_resume_point(session_id: str, text: str) -> str:
-    """Replace the session's resume point with *text* and return the file written."""
+    """Replace the session's resume point with *text*, drop resume points older than 30 days, and return the file written."""
     path = _resume_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text.strip() + "\n", encoding="utf-8")
+    _prune_resume_points(path.parent, path)
     return str(path)
 
 
@@ -45,19 +62,39 @@ def read_resume_point(session_id: str) -> str | None:
 
 
 def _open_contracts(con, session_id: str) -> list[dict[str, Any]]:
-    rows = con.execute(
-        "SELECT contract_id, agent_id, agent_state, kind, plan_task_id "
-        "FROM agent_contract_handoffs "
-        "WHERE session_id = ? AND agent_state <> 'COMPLETE' ORDER BY id",
-        (session_id,),
-    ).fetchall()
-    return [dict(r) for r in rows]
+    """Contracts whose chain is unfinished and not superseded by a later verifier pass, newest first.
+
+    A chain is open while its latest link (the row no other row continues) is
+    not COMPLETE. A verifier's COMPLETE on a plan task closes every earlier
+    row of the same task.
+    """
+    rows = [
+        dict(r)
+        for r in con.execute(
+            "SELECT id, contract_id, agent_id, agent_state, kind, plan_task_id, "
+            "continues_handoff_id FROM agent_contract_handoffs WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        )
+    ]
+    continued = {r["continues_handoff_id"] for r in rows if r["continues_handoff_id"] is not None}
+    verified_through: dict[int, int] = {
+        r["plan_task_id"]: r["id"]
+        for r in rows
+        if r["kind"] == "verifier" and r["agent_state"] == "COMPLETE" and r["plan_task_id"] is not None
+    }
+    open_rows = [
+        r for r in rows
+        if r["id"] not in continued
+        and r["agent_state"] != "COMPLETE"
+        and verified_through.get(r["plan_task_id"], 0) < r["id"]
+    ]
+    return sorted(open_rows, key=lambda r: r["id"], reverse=True)
 
 
 def _pending_signatures(con, session_id: str) -> list[dict[str, Any]]:
     rows = con.execute(
         "SELECT id, agent_id, created_at FROM approvals "
-        "WHERE session_id = ? AND status = 'pending' ORDER BY created_at",
+        "WHERE session_id = ? AND status = 'pending' ORDER BY created_at DESC",
         (session_id,),
     ).fetchall()
     return [dict(r) for r in rows]
@@ -114,8 +151,15 @@ def build_snapshot(session_id: str) -> dict[str, Any]:
     return snapshot
 
 
+def _listed(title: str, lines: list[str]) -> str:
+    shown = lines[:_MAX_LISTED]
+    if len(lines) > _MAX_LISTED:
+        shown.append(f"+{len(lines) - _MAX_LISTED} more")
+    return f"{title}:\n" + "\n".join(shown)
+
+
 def render_snapshot(snapshot: dict[str, Any]) -> str:
-    """The markdown block a compaction delivers; a minimal block when the snapshot is empty."""
+    """The markdown block a compaction delivers, at most 1500 characters; a minimal block when the snapshot is empty."""
     sections: list[str] = []
     task = snapshot["active_task"]
     if task:
@@ -125,21 +169,25 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
             f"task {task['task_id']} (order {task['task_order']})"
             + (f" -- {goal[0][:160]}" if goal else "")
         )
+    if snapshot["resume_point"]:
+        resume = snapshot["resume_point"]
+        if len(resume) > _RESUME_MAX_CHARS:
+            resume = resume[:_RESUME_MAX_CHARS] + "..."
+        sections.append("Resume point:\n" + resume)
+    if snapshot["pending_signatures"]:
+        sections.append(_listed("Pending signatures", [
+            f"- {a['id']} (agent {a['agent_id'] or 'unknown'}, {a['created_at']})"
+            for a in snapshot["pending_signatures"]
+        ]))
     if snapshot["open_contracts"]:
-        lines = [
+        sections.append(_listed("Open contracts", [
             f"- {c['contract_id'] or c['agent_id']} [{c['agent_state']}]"
             + (f" kind={c['kind']}" if c["kind"] else "")
             for c in snapshot["open_contracts"]
-        ]
-        sections.append("Open contracts:\n" + "\n".join(lines))
-    if snapshot["pending_signatures"]:
-        lines = [
-            f"- {a['id']} (agent {a['agent_id'] or 'unknown'}, {a['created_at']})"
-            for a in snapshot["pending_signatures"]
-        ]
-        sections.append("Pending signatures:\n" + "\n".join(lines))
-    if snapshot["resume_point"]:
-        sections.append("Resume point:\n" + snapshot["resume_point"])
+        ]))
     if not sections:
         return _EMPTY_BLOCK
-    return "## Session Snapshot\n" + "\n\n".join(sections)
+    block = "## Session Snapshot\n" + "\n\n".join(sections)
+    if len(block) > _BLOCK_MAX_CHARS:
+        block = block[: _BLOCK_MAX_CHARS - len(_TRUNCATED)] + _TRUNCATED
+    return block

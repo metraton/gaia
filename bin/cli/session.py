@@ -1,8 +1,11 @@
 """
-gaia session -- Inspect what a new session would receive at SessionStart.
+gaia session -- Inspect what a session receives, and record where it resumes.
 
 Subcommands:
-  session preview   Print the session birth block verbatim.
+  session preview                Print the session birth block verbatim.
+  session snapshot               Print one session's open contracts, pending
+                                 signatures, active task and resume point.
+  session resume-point set       Replace a session's resume point.
 
 `preview` calls build_session_context() (hooks/modules/session/
 session_manifest.py), the same assembler the SessionStart hook delivers, in
@@ -76,14 +79,19 @@ def register(subparsers):
     """Register the session subcommand with nested actions."""
     session_parser = subparsers.add_parser(
         "session",
-        help="Inspect SessionStart injection content -- read-only",
+        help="Inspect what a session receives; record its resume point",
         description=(
-            "Inspect what a new session would receive at SessionStart.\n\n"
+            "Inspect what a session receives, and record where it resumes.\n\n"
             "preview: print the session birth block a session opened in this\n"
             "  folder would receive -- projects, environment, the user and their\n"
             "  preferences. Writes nothing: no telemetry, no database change.\n"
             "  Notices only a real session start produces (a database upgrade\n"
-            "  it just ran) are not shown."
+            "  it just ran) are not shown.\n\n"
+            "snapshot: print one session's open contracts, pending signatures,\n"
+            "  active brief/plan/task and resume point -- what a compaction\n"
+            "  delivers. Writes nothing.\n\n"
+            "resume-point set: replace the session's resume point (one small file\n"
+            "  under the Gaia data directory; older ones are pruned)."
         ),
     )
     # No `func=None` default here: an explicit default would shadow the

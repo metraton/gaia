@@ -73,6 +73,89 @@ def test_snapshot_of_session_a_excludes_session_b(db):
     assert "ccccccccccccccccc" not in rendered and "P-done" not in rendered
 
 
+def _add_contracts(path, count, session_id, state="NEEDS_VERIFICATION", **columns):
+    con = sqlite3.connect(path)
+    for n in range(count):
+        con.execute(
+            "INSERT INTO agent_contract_handoffs "
+            "(contract_id, agent_id, session_id, workspace, agent_state, raw_handoff_json, kind, plan_task_id, continues_handoff_id) "
+            "VALUES (?, ?, ?, 'me', ?, '{}', ?, ?, ?)",
+            (f"{session_id}-{state}-{n}", f"{n:017x}", session_id, state,
+             columns.get("kind"), columns.get("plan_task_id"), columns.get("continues_handoff_id")),
+        )
+    con.commit()
+    con.close()
+
+
+def test_a_long_session_lists_ten_newest_contracts_and_caps_the_block(db):
+    from gaia.session_snapshot import build_snapshot, render_snapshot, write_resume_point
+
+    _add_contracts(db, 40, "ses-long")
+    write_resume_point("ses-long", "resume here " * 100)
+
+    snapshot = build_snapshot("ses-long")
+    rendered = render_snapshot(snapshot)
+
+    assert len(snapshot["open_contracts"]) == 40
+    assert "ses-long-NEEDS_VERIFICATION-39" in rendered and "ses-long-NEEDS_VERIFICATION-30" in rendered
+    assert "ses-long-NEEDS_VERIFICATION-29" not in rendered
+    assert "+30 more" in rendered
+    assert "resume here" in rendered
+    assert len(rendered) <= 1500
+
+
+def test_the_block_is_cut_to_the_cap_even_when_every_section_is_full(db):
+    from gaia.session_snapshot import build_snapshot, render_snapshot, write_resume_point
+
+    _add_contracts(db, 12, "ses-full", kind="task_execution-" + "x" * 80)
+    write_resume_point("ses-full", "r" * 5000)
+
+    rendered = render_snapshot(build_snapshot("ses-full"))
+
+    assert len(rendered) <= 1500
+    assert rendered.startswith("## Session Snapshot")
+
+
+def test_a_continued_chain_counts_once_and_a_complete_latest_link_closes_it(db):
+    from gaia.session_snapshot import build_snapshot
+
+    con = sqlite3.connect(db)
+    first = con.execute("SELECT id FROM agent_contract_handoffs WHERE contract_id = 'bbbbbbbbbbbbbbbbb.tokenb'").fetchone()[0]
+    con.close()
+    _add_contracts(db, 1, SESSION_B, state="COMPLETE", continues_handoff_id=first)
+
+    assert build_snapshot(SESSION_B)["open_contracts"] == []
+
+
+def test_a_later_verifier_pass_on_the_same_task_supersedes_the_producer_rows(db):
+    from gaia.session_snapshot import build_snapshot
+
+    _add_contracts(db, 2, "ses-v", plan_task_id=1)
+    _add_contracts(db, 1, "ses-v", state="BLOCKED")
+    _add_contracts(db, 1, "ses-v", state="COMPLETE", kind="verifier", plan_task_id=1)
+
+    open_ids = [c["contract_id"] for c in build_snapshot("ses-v")["open_contracts"]]
+
+    assert open_ids == ["ses-v-BLOCKED-0"]
+
+
+def test_a_new_resume_point_prunes_files_older_than_thirty_days(db):
+    import os
+    import time
+
+    from gaia.session_snapshot import write_resume_point
+
+    old = Path(write_resume_point("ses-old", "stale"))
+    fresh = Path(write_resume_point("ses-fresh", "recent"))
+    aged = time.time() - 31 * 24 * 3600
+    os.utime(old, (aged, aged))
+
+    write_resume_point(SESSION_A, "now")
+
+    assert not old.exists()
+    assert fresh.exists()
+
+
 def test_resume_point_is_session_scoped_and_rendered(db):
     from gaia.session_snapshot import build_snapshot, render_snapshot, write_resume_point
 
