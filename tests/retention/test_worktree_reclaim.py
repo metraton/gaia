@@ -183,6 +183,7 @@ def test_clean_worktree_recycles_without_capturing_anything(repo):
     assert result == {
         "status": "recycled",
         "recycled": True, "captured": False, "evidence_id": None, "reason": None,
+        "branch": result["branch"], "branch_deleted": True, "branch_kept_reason": None,
     }
     assert not worktree.exists()
 
@@ -348,6 +349,7 @@ def test_untouched_canonical_worktree_releases_clean_with_no_brief_or_ac(repo):
     assert result == {
         "status": "recycled",
         "recycled": True, "captured": False, "evidence_id": None, "reason": None,
+        "branch": result["branch"], "branch_deleted": True, "branch_kept_reason": None,
     }
     assert not worktree.exists()
 

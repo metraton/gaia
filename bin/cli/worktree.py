@@ -236,6 +236,10 @@ def _cmd_release(args) -> int:
         print(f"status={result['status']}")
         print(f"recycled={result['recycled']}")
         print(f"captured={result['captured']}")
+        if "branch_deleted" in result:
+            print(f"branch_deleted={result['branch_deleted']}")
+        if result.get("branch_kept_reason"):
+            print(f"branch_kept_reason={result['branch_kept_reason']}")
         if result.get("evidence_id") is not None:
             print(f"evidence_id={result['evidence_id']}")
         if result.get("contract_capture_path"):

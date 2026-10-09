@@ -48,12 +48,22 @@ THE THREE INDEPENDENT TESTS, and why none alone is the criterion:
    "that one commit's diff" are the same thing. A multi-commit rebase would
    need each commit compared individually, which this test does not do.
 
-THE COMPOSITION: deletable if ANY of the three tests is true --
-``merged OR reachable OR squashed``. This is not a simplification to one
-test; it is the union of three independent ways a branch's content can be
+4. ``unintegrated_commits`` -- does every commit unique to the branch
+   (reachable from no other local or remote ref) have a verbatim patch-id
+   twin in some other ref? This is what a cherry-pick integration
+   produces: new hashes, identical change, on a ref that is not the remote
+   main and may not be pushed at all. Tests 1-3 cannot see it. The match
+   uses ``git patch-id --verbatim`` rather than ``git cherry``, whose
+   whitespace-insensitive ids would call a whitespace-only difference
+   "integrated". A merge commit among the unique ones, an empty commit, or
+   a commit with no twin all leave the branch not integrated.
+
+THE COMPOSITION: deletable if ANY of the four tests is true --
+``merged OR reachable OR squashed OR integrated``. This is not a simplification to one
+test; it is the union of independent ways a branch's content can be
 proven to survive its own deletion, and each is necessary because each
-catches cases the other two miss (see the numbers above). A branch is
-judged NEVER deletable only when all three independently fail to find its
+catches cases the others miss (see the numbers above). A branch is
+judged NEVER deletable only when all of them independently fail to find its
 content anywhere else -- which is precisely the "genuinely unique work"
 case, and precisely the case an upstream-gone heuristic cannot distinguish
 from an abandoned, safely-discardable branch. This module never reads
@@ -65,6 +75,7 @@ Public API::
     is_merged_into_remote_main(repo_path, branch, remote_main) -> bool
     commits_reachable_from_any_remote(repo_path, branch) -> bool
     content_already_in_main_via_squash(repo_path, branch, remote_main) -> bool
+    unintegrated_commits(repo_path, tip, *, own_ref=None) -> list[str]
     branch_deletion_verdict(repo_path, branch, *, remote_main="origin/main") -> dict
 """
 
@@ -72,7 +83,11 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
+
+# Commits inspected per ref when looking for patch-id twins; an older twin
+# is missed, which keeps the branch rather than deleting it.
+_MAX_COMMITS_PER_REF = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -180,13 +195,87 @@ def content_already_in_main_via_squash(repo_path: Path, branch: str, remote_main
 
 
 # ---------------------------------------------------------------------------
-# Composition -- deletable only when at least one of the three independent
+# Test 4: integration by content (cherry-pick) into any other ref
+# ---------------------------------------------------------------------------
+
+def _other_refs(repo_path: Path, own_ref: Optional[str]) -> List[str]:
+    """Every local and remote-tracking ref except *own_ref*, newest first."""
+    out = _run_git(repo_path, [
+        "for-each-ref", "--sort=-committerdate", "--format=%(refname)",
+        "refs/heads", "refs/remotes",
+    ])
+    return [
+        ref for ref in out.splitlines()
+        if ref and ref != own_ref and not ref.endswith("/HEAD")
+    ]
+
+
+def _verbatim_patch_ids(repo_path: Path, log_args: List[str]) -> Dict[str, str]:
+    """Map commit -> verbatim patch-id for the non-merge commits *log_args*
+    selects; a commit with an empty diff has no patch-id and is absent."""
+    log_output = _run_git(
+        repo_path, ["log", "-p", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv", *log_args]
+    )
+    if not log_output.strip():
+        return {}
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "patch-id", "--verbatim"],
+        input=log_output, capture_output=True, text=True, check=True,
+    )
+    ids: Dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        patch_id, commit = line.split()
+        ids[commit] = patch_id
+    return ids
+
+
+def unintegrated_commits(repo_path: Path, tip: str, *, own_ref: Optional[str] = None) -> List[str]:
+    """Commits that survive only through *tip*, oldest first: reachable from
+    no other ref and without a verbatim patch-id twin in any other ref.
+
+    *own_ref* is the full refname of the branch *tip* belongs to (excluded
+    from "other refs"); None for a detached HEAD.
+    """
+    others = _other_refs(repo_path, own_ref)
+    listing = _run_git(repo_path, ["rev-list", "--reverse", "--parents", tip, "--not", *others])
+    unique = [line.split() for line in listing.splitlines() if line.strip()]
+    commits = [fields[0] for fields in unique]
+    if any(len(fields) > 2 for fields in unique):
+        return commits
+
+    patch_ids = _verbatim_patch_ids(repo_path, ["--no-walk=unsorted", *commits]) if commits else {}
+    unmatched = set(commits)
+    for ref in others:
+        if not unmatched:
+            break
+        twins = set(_verbatim_patch_ids(
+            repo_path, [f"--max-count={_MAX_COMMITS_PER_REF}", f"{tip}..{ref}"]
+        ).values())
+        unmatched = {c for c in unmatched if patch_ids.get(c) not in twins}
+    return [c for c in commits if c in unmatched]
+
+
+def content_integrated_in_other_refs(repo_path: Path, branch: str) -> bool:
+    """True when *branch* has no commit whose content lives only on it."""
+    return not unintegrated_commits(repo_path, branch, own_ref=f"refs/heads/{branch}")
+
+
+# ---------------------------------------------------------------------------
+# Composition -- deletable only when at least one of the independent
 # tests proves the content survives the branch's deletion. Deliberately does
 # NOT read whether the branch's upstream is configured or gone.
 # ---------------------------------------------------------------------------
 
+def _ref_exists(repo_path: Path, ref: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        capture_output=True, text=True,
+    )
+    return result.returncode == 0
+
+
 def branch_deletion_verdict(repo_path: Path, branch: str, *, remote_main: str = "origin/main") -> dict:
-    """Compose the three independent tests into one deletion verdict for
+    """Compose the independent tests into one deletion verdict for
     *branch*. Never deletes anything -- this is a decision, not an action.
 
     Returns a dict shaped::
@@ -194,21 +283,26 @@ def branch_deletion_verdict(repo_path: Path, branch: str, *, remote_main: str = 
         {"branch": str, "deletable": bool,
          "merged_into_remote_main": bool,
          "reachable_from_any_remote": bool,
-         "content_already_in_main": bool}
+         "content_already_in_main": bool,
+         "content_integrated_in_other_refs": bool}
 
-    ``deletable`` is the union of the three booleans: true when ANY of them
+    ``deletable`` is the union of the four booleans: true when ANY of them
     independently proves the branch's content survives elsewhere. It is
-    false only when all three fail -- the genuinely-unique-work case this
+    false only when all fail -- the genuinely-unique-work case this
     module exists to protect, regardless of whether the branch's upstream
-    is still configured.
+    is still configured. A *remote_main* that does not resolve proves
+    nothing, so the two tests that need it report False.
     """
-    merged = is_merged_into_remote_main(repo_path, branch, remote_main)
+    has_main = _ref_exists(repo_path, remote_main)
+    merged = has_main and is_merged_into_remote_main(repo_path, branch, remote_main)
     reachable = commits_reachable_from_any_remote(repo_path, branch)
-    squashed = content_already_in_main_via_squash(repo_path, branch, remote_main)
+    squashed = has_main and content_already_in_main_via_squash(repo_path, branch, remote_main)
+    integrated = content_integrated_in_other_refs(repo_path, branch)
     return {
         "branch": branch,
-        "deletable": merged or reachable or squashed,
+        "deletable": merged or reachable or squashed or integrated,
         "merged_into_remote_main": merged,
         "reachable_from_any_remote": reachable,
         "content_already_in_main": squashed,
+        "content_integrated_in_other_refs": integrated,
     }
