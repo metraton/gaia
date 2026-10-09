@@ -336,7 +336,7 @@ window.__DOC__ = {
           "description": [
             "a story that returns is a round trip; a story that grows is a climb"
           ],
-          "detail": "Before any piece, say what the story does in one sentence. This one goes out and comes back (say it, name who acts, test it, tell a listener, hear the gap, say it again), so the page is a round trip: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a climb. The shape is decided by the sentence you tell, never by the boxes you have."
+          "detail": "Before any piece, say what the story does in one sentence. This one goes out and comes back (say it, name who acts, test it, tell a listener, hear the gap, say it again), so the page is a round trip: an outbound leg and a return leg, with one chip across them. The story below it grows (the later a mistake is found, the more it costs), so it is drawn as bars of rising height, one per cost. The shape is decided by the sentence you tell, never by the boxes you have."
         },
         {
           "id": "p12-out",
@@ -452,7 +452,7 @@ window.__DOC__ = {
               "description": [
                 "the latest, dearest find"
               ],
-              "detail": "This story grows: the later a mistake is found, the more it costs, so each step stands taller than the last. A story that climbs is told as a climb, from the smallest step to the largest."
+              "detail": "This story grows: the later a mistake is found, the more it costs, so each step stands taller than the last. A story that grows is told as bars of rising height, from the smallest cost to the largest."
             },
             {
               "id": "p12-gap-1",
