@@ -3671,7 +3671,11 @@ def register(subparsers):
         help="Compact Workspace Memory block for SessionStart injection",
         description=(
             "Emit a curated-memory block for SessionStart injection or "
-            "direct reading. NEVER writes. Dispatch is flag-driven and each "
+            "direct reading. Changes no memory content; the only write is "
+            "read telemetry on the rows it returns: injection_count for the "
+            "digest and --sections/--types renderers, deliberate_count for "
+            "--initiative/--project (naming the project identifies the rows). "
+            "Dispatch is flag-driven and each "
             "mode has a DIFFERENT failure/budget contract, not a shared one: "
             "with no flag, the cross-project DIGEST is emitted -- capped by "
             "--max-chars, top-K initiatives, one freshest item each, excess "
