@@ -24,9 +24,11 @@ jobs:
   # exists the pytest shards and the bun suite are skipped and the verdict
   # cites that run. The short jobs still run: validate-manifests and
   # build-plugins are exactly what a version-only commit can break. A pull
-  # request is judged by its head, not
-  # the merge ref, so the squash landing on main finds the same tree. A failed
-  # lookup reports "not reusable", which runs everything.
+  # request is looked up by its head commit, but its jobs check out and test
+  # the merge ref, and the run records the head's tree. The squash landing on
+  # main therefore reuses the verdict only when its tree equals the head's,
+  # which holds when the branch already contained main. A failed lookup reports
+  # "not reusable", which runs everything.
   decide:
     name: Reuse decision
     runs-on: ubuntu-24.04
