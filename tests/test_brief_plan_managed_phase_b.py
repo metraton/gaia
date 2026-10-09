@@ -507,12 +507,19 @@ def _finished(db: Path) -> None:
     _pass(db, 1, gate_1)
     insert_evidence(_WS, _brief_id(db), "AC-1", type="text", text="passed",
                     gate_id=gate_1, db_path=db)
+    # Real rows: the producer is bound to its plan task and the verifier to its
+    # producer; neither carries a brief_id.
     con = sqlite3.connect(str(db))
     try:
+        producer = con.execute(
+            "INSERT INTO agent_contract_handoffs "
+            "(agent_id, workspace, plan_task_id, agent_state, raw_handoff_json) "
+            "VALUES ('a0123456789abcdef', ?, ?, 'COMPLETE', '{}')",
+            (_WS, _task_id(db, 1))).lastrowid
         con.execute(
             "INSERT INTO agent_contract_handoffs "
-            "(agent_id, workspace, brief_id, agent_state, raw_handoff_json) "
-            "VALUES ('test-agent', ?, ?, 'COMPLETE', '{}')", (_WS, _brief_id(db)))
+            "(agent_id, workspace, parent_handoff_id, agent_state, raw_handoff_json) "
+            "VALUES ('a0123456789abcde0', ?, ?, 'COMPLETE', '{}')", (_WS, producer))
         con.commit()
     finally:
         con.close()
@@ -558,7 +565,19 @@ def test_close_refuses_while_verify_finds_inconsistencies(db, capsys):
     err = capsys.readouterr().err
     assert "AC-2" in err
     statuses = _statuses(db)
-    assert statuses["brief"] == "open" and statuses["plan"] == "active"
+    assert statuses == {"brief": "open", "plan": "active", "ac": "pending"}, (
+        "a refused close writes nothing, the AC sync included"
+    )
+
+
+@pytest.mark.table("command", [
+    "brief set-status my-brief closed",
+    "plan set-status my-brief closed",
+])
+def test_the_orchestrator_cannot_close_without_verify(guard, command):
+    allowed, reason = guard.check(f"{_GAIA} {command}", {})
+    assert allowed is False
+    assert "gaia brief close my-brief" in reason
 
 
 def test_a_subagent_cannot_close_a_brief(db, monkeypatch):

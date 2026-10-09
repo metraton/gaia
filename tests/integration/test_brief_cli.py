@@ -173,15 +173,13 @@ def test_close(tmp_db):
     assert close_brief("me", "ghost", db_path=tmp_db) is False
 
 
-def test_close_advisory_warns_on_inconsistency(tmp_db, tmp_path, monkeypatch, capsys):
-    """AC-3: brief close emits advisory warnings to stderr for inconsistencies.
+def test_close_refuses_on_inconsistency(tmp_db, tmp_path, monkeypatch, capsys):
+    """brief close refuses when verify finds an inconsistency.
 
     Creates a brief with an empty plan (zero tasks) -- invariant 1 of
     verify_brief (empty_plan). Asserts:
-      - _cmd_close returns 0 (close always succeeds)
-      - brief status is 'closed' (mutation applied)
-      - stderr contains at least one Warning line for the inconsistency
-      - stdout contains the 'Closed' confirmation
+      - _cmd_close returns 2 and the brief keeps its status
+      - stderr names the inconsistency
     """
     import argparse
     from cli.brief import _cmd_close
@@ -201,17 +199,10 @@ def test_close_advisory_warns_on_inconsistency(tmp_db, tmp_path, monkeypatch, ca
     rc = _cmd_close(args)
 
     captured = capsys.readouterr()
-    assert rc == 0, f"expected exit 0, got {rc}; stderr={captured.err}"
+    assert rc == 2, f"expected exit 2, got {rc}; stderr={captured.err}"
 
     brief = get_brief("me", "ac3-advisory-brief", db_path=tmp_db)
-    assert brief["status"] == "closed", "brief must be closed after _cmd_close"
-
-    assert "Closed" in captured.out
-    # Advisory fires: at least one Warning line on stderr.
-    assert "Warning:" in captured.err, (
-        f"expected stderr advisory warnings, got: {captured.err!r}"
-    )
-    # The empty_plan kind must be surfaced.
+    assert brief["status"] == "draft", "a refused close must not change the brief"
     assert "empty_plan" in captured.err
 
 

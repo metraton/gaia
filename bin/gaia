@@ -304,9 +304,11 @@ READ -- changes nothing. The orchestrator runs these itself.
                  render the SessionStart manifest in-process.
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
-  brief          new | edit | set-status | set-project | ac add|edit|remove |
-                 decision add
-  plan           set-status | pause | resume | change request|approve
+  brief          new | edit | set-status (not closed) | close | set-project |
+                 ac add|edit|remove | decision add
+                 close verifies first, syncs the ACs that compute done and
+                 closes the plan and the brief, or refuses and writes nothing.
+  plan           set-status (not closed) | pause | resume | change request|approve
                  steer the plan without judging or authoring it: the planner
                  proposes and applies a change, a verifier records verdicts.
   task           set-status (no --override) | gate reverify

@@ -1234,6 +1234,14 @@ def _validate_orchestrator_write(
         "coordination shape"
     )
 
+    if phrase in (("brief", "set-status"), ("plan", "set-status")) and args[1:2] == ("closed",):
+        return (
+            f"GAIA CLI ONLY: 'gaia {' '.join(candidate)}' would close without "
+            f"verify. Use 'gaia brief close {args[0]}': it verifies, syncs the "
+            f"ACs that compute done and closes the plan and the brief. "
+            f"Denied outright, not approvable."
+        )
+
     if phrase == ("brief", "new"):
         valid = "--headless" in args and _has_value(args, "--title")
     elif phrase == ("brief", "edit"):
