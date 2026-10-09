@@ -20,6 +20,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _HOOKS_DIR = str(_REPO_ROOT / "hooks")
 _TOOLS_DIR = str(_REPO_ROOT / "tools")
@@ -41,6 +43,30 @@ def test_project_token_extracted():
         "subagent_type": "developer",
     })
     assert binding["project"] == "branchkinect"
+
+
+@pytest.mark.parametrize("prompt, expected", [
+    ("project=gaia. Declare the workflow.", "gaia"),
+    ("project=gaia; then report", "gaia"),
+    ("project=gaia, then report", "gaia"),
+    ("(project=gaia) then report", "gaia"),
+    ("[project=gaia] then report", "gaia"),
+    ("project=gaia: declare the workflow", "gaia"),
+    ("project='gaia'. Declare the workflow.", "gaia"),
+    ('project="gaia", declare the workflow', "gaia"),
+    ("project=gaia...", "gaia"),
+    ("project=metraton.github.io", "metraton.github.io"),
+    ("project=metraton.github.io.", "metraton.github.io"),
+    ("project=my-app_v2.", "my-app_v2"),
+])
+def test_project_token_stops_before_trailing_punctuation(prompt, expected):
+    binding = extract_dispatch_binding({"prompt": prompt, "subagent_type": "developer"})
+    assert binding["project"] == expected
+
+
+def test_project_token_of_only_punctuation_is_none():
+    binding = extract_dispatch_binding({"prompt": "project=. next", "subagent_type": "developer"})
+    assert binding["project"] is None
 
 
 def test_project_token_absent_is_none():
