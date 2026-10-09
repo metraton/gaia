@@ -218,7 +218,7 @@ def test_opencode_compacting_for_the_primary_session_receives_the_snapshot(db, m
     monkeypatch.setenv("GAIA_HOST", "opencode")
     response = bridge.handle({"event": "session.compacting", "sessionID": SESSION_A, "main": True})
 
-    (context,) = response["updated_input"]["context"]
+    context, _instructions = response["updated_input"]["context"]
     assert "## Session Snapshot" in context
     assert "aaaaaaaaaaaaaaaaa.tokena" in context and "P-a" in context
     assert "bbbbbbbbbbbbbbbbb" not in context
