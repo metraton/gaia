@@ -1549,7 +1549,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     // message object the bus event would have carried, so the name is still the
     // host's and this edge composes none of its own.
     try {
-      const messages = await input.client?.session?.messages?.({ sessionID })
+      const messages = await input.client?.session?.messages?.({ path: { id: sessionID } })
       const list = messages?.data
       if (!Array.isArray(list)) return undefined
       for (let index = list.length - 1; index >= 0; index--) {
