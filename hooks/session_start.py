@@ -159,7 +159,6 @@ if __name__ == "__main__":
             is_headless=_detect_headless(),
             pinned_build=_pinned_build(),
             workspace_dir=Path.cwd(),
-            transcript_path=event_data.get("transcript_path", ""),
         ))
 
         response = {"session_type": "startup"}

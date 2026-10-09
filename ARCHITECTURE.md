@@ -291,6 +291,7 @@ Besides the `hooks` event table, `hooks/hooks.json` carries a top-level `modules
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
 | **File (npm channel)** | `hooks/hooks.json` (symlinked into `.claude/hooks/`) |
 | **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
+| **Compaction delivery** | The session snapshot reaches the model once per compaction, through the SessionStart(compact) refresh alone (`compact_context_builder.build_compact_context`), which the host raises after manual and automatic compactions. The compaction mod (`hooks/mods/compaction/`) only adds Gaia's steering to the summarizer's instructions; it appends nothing and starts no process. Gaia triggers no compaction of its own on Claude Code. |
 | **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage, AskUserQuestion, and the file and web tools), PostToolUse (Bash, Task, AskUserQuestion), PostToolUseFailure (Bash), SubagentStop, SubagentStart, SessionStart (`startup\|resume\|clear\|compact\|fork`), SessionEnd, PreCompact, PostCompact, Stop, TaskCompleted, UserPromptSubmit (sparse notices) |
 
 ### HookAdapter ABC Contract

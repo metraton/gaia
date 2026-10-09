@@ -1,9 +1,9 @@
-"""The compaction mod ships in the plugin build and can start only the snapshot read.
+"""The compaction mod ships in the plugin build, only steers, and starts no process.
 
 The mod is a Claude Code hooks module (hooks/mods/compaction/). It reaches the
 host through hooks/hooks.json's `modules` key, generated from the manifest's
-`host_mods` key; `$.process.run` skips the permission prompt and Gaia's
-PreToolUse, so the second class pins what the mod's source may spawn.
+`host_mods` key; `$.process.run` would skip the permission prompt and Gaia's
+PreToolUse, so the second class pins that the mod's source spawns nothing.
 """
 
 import importlib.util
@@ -82,172 +82,30 @@ class TestBuildOutputShipsTheMod:
         assert guard.main() == 0, capsys.readouterr().err
 
 
-class TestModSpawnsOnlyTheSnapshotRead:
-    SNAPSHOT = MOD_DIR / "register.ts"
-    PROCESS_USE = re.compile(r"\$\.process\.(\w+)")
-    OTHER_REACH = re.compile(
-        r"\$\.(tool|agent|network|fs|settings|env)\b|\bimport\s*\(|\beval\s*\(|new Function|\bfetch\s*\("
+class TestModReachesNothingOutsideItsHook:
+    REACH = re.compile(
+        r"\$\.(process|tool|agent|network|fs|settings|env|clock)\b|\bimport\s*\(|\beval\s*\(|new Function|\bfetch\s*\("
     )
 
     def test_mod_sources_exist(self):
-        assert self.SNAPSHOT in MOD_SOURCES
+        assert MOD_DIR / "register.ts" in MOD_SOURCES
 
-    def test_the_only_process_use_is_one_run_in_register_ts(self):
-        uses = [
-            (path.name, verb)
-            for path in MOD_SOURCES
-            for verb in self.PROCESS_USE.findall(path.read_text())
-        ]
-        assert uses == [("register.ts", "run")]
-
-    def test_mod_reaches_nothing_else_outside_its_own_session_and_ui(self):
+    def test_mod_starts_no_process_and_reaches_nothing_else(self):
         for path in MOD_SOURCES:
-            assert not self.OTHER_REACH.search(path.read_text()), path.name
-
-    def test_run_receives_the_argv_built_in_register_ts(self):
-        source = self.SNAPSHOT.read_text()
-        assert re.search(r"\$\.process\.run\(argv,", source)
-        argv = re.search(r"const argv = \[(.*?)\n  \]", source, re.S).group(1)
-        elements = [line.strip().rstrip(",") for line in argv.strip().splitlines()]
-        assert elements == [
-            "'sh'",
-            "`${root}/${LAUNCHER}`",
-            "`${root}/${GAIA_CLI}`",
-            "...SNAPSHOT_ARGS",
-            "await $.session.id()",
-        ]
-
-    def test_constants_name_the_read_only_snapshot_verb_of_this_package(self):
-        source = self.SNAPSHOT.read_text()
-        launcher = re.search(r"const LAUNCHER = '([^']+)'", source).group(1)
-        cli = re.search(r"const GAIA_CLI = '([^']+)'", source).group(1)
-        args = re.search(r"const SNAPSHOT_ARGS = \[(.*?)\] as const", source).group(1)
-
-        assert (ROOT / launcher).is_file()
-        assert cli == json.loads((ROOT / "package.json").read_text())["bin"]["gaia"]
-        assert re.findall(r"'([^']+)'", args) == ["session", "snapshot", "--session-id"]
-
-    def test_the_snapshot_verb_it_names_is_read_only(self):
-        session_cli = (ROOT / "bin" / "cli" / "session.py").read_text()
-        assert "Print one session's open contracts" in session_cli
-        assert "read-only" in session_cli
+            assert not self.REACH.search(path.read_text()), path.name
 
 
-class TestSnapshotArrivesOnce:
-    """With the mod active the SessionStart(compact) refresh drops its snapshot copy."""
+class TestTheRefreshDeliversTheSnapshotOnce:
+    """The SessionStart(compact) refresh carries exactly one snapshot; register.test.ts pins that the mod adds none."""
 
-    @pytest.fixture
-    def builder(self, monkeypatch):
-        from modules.context import compact_context_builder as builder
+    def test_the_compact_start_context_carries_one_snapshot(self, monkeypatch):
+        import gaia.session_snapshot as snapshot
+        from modules.session.session_lifecycle import start_context
 
-        monkeypatch.setattr(builder, "_build_snapshot_block", lambda session_id: "SNAPSHOT")
-        return builder
+        monkeypatch.setattr(snapshot, "build_snapshot", lambda session_id: {"session_id": session_id})
+        monkeypatch.setattr(snapshot, "render_snapshot", lambda snap: f"## Session Snapshot\n{snap['session_id']}")
 
-    @staticmethod
-    def _boundary(pre_tokens=1000):
-        compact = {} if pre_tokens is None else {"preTokens": pre_tokens}
-        return {"type": "system", "subtype": "compact_boundary", "compactMetadata": compact}
+        refresh = start_context("compact", ["## Workspace\nnotice"], "session-1")
 
-    @staticmethod
-    def _user(text):
-        return {"type": "user", "message": {"role": "user", "content": text}}
-
-    @staticmethod
-    def _transcript(tmp_path, entries, raw_head=""):
-        path = tmp_path / "transcript.jsonl"
-        path.write_text(raw_head + "".join(json.dumps(entry) + "\n" for entry in entries))
-        return str(path)
-
-    def _delivered(self, builder, path) -> bool:
-        context = builder.build_compact_context(session_id="s", transcript_path=path)
-        assert "Post-Compaction Context Refresh" in context
-        return "SNAPSHOT" in context
-
-    def test_the_mod_builds_the_marker_the_builder_looks_for(self, builder):
-        source = (MOD_DIR / "register.ts").read_text()
-        template = re.search(r"`(\[gaia:session-snapshot tokens-before=\$\{tokensBefore\}\])\\n", source)
-        assert template.group(1).replace("${tokensBefore}", "1000") == builder.snapshot_marker(1000)
-
-    def test_the_mod_marks_nothing_without_a_token_count(self):
-        source = (MOD_DIR / "register.ts").read_text()
-        assert "tokensBefore === undefined\n    ? snapshot" in source
-
-    def test_the_marker_is_written_by_the_compact_hook_alone(self):
-        source = (MOD_DIR / "register.ts").read_text()
-        schedule = source[source.index("export function scheduleCompact"):source.index("export const register")]
-        assert "withMarker" not in schedule
-        assert source.count("withMarker(snapshot, compacted.tokensBefore)") == 1
-
-    def test_this_compactions_marker_leaves_the_snapshot_out(self, builder, tmp_path):
-        path = self._transcript(tmp_path, [
-            self._boundary(1000),
-            self._user("summary"),
-            self._user(builder.snapshot_marker(1000) + "\nstate"),
-        ])
-        assert not self._delivered(builder, path)
-
-    def test_a_read_that_failed_appended_nothing_so_the_snapshot_is_delivered(self, builder, tmp_path):
-        path = self._transcript(tmp_path, [self._boundary(1000), self._user("summary")])
-        assert self._delivered(builder, path)
-
-    def test_a_compaction_that_skipped_the_hook_delivers_the_snapshot_despite_an_older_marker(
-        self, builder, tmp_path
-    ):
-        path = self._transcript(tmp_path, [
-            self._boundary(1000),
-            self._user("summary"),
-            self._user(builder.snapshot_marker(1000) + "\nstate"),
-            self._boundary(2000),
-            self._user("summary"),
-        ])
-        assert self._delivered(builder, path)
-
-    def test_a_marker_kept_across_the_boundary_for_another_compaction_does_not_count(
-        self, builder, tmp_path
-    ):
-        path = self._transcript(tmp_path, [
-            self._boundary(2000),
-            self._user("summary"),
-            self._user(builder.snapshot_marker(1000) + "\nstate"),
-        ])
-        assert self._delivered(builder, path)
-
-    def test_marker_text_quoted_in_the_conversation_does_not_count(self, builder, tmp_path):
-        quoted = f"the mod writes {builder.snapshot_marker(1000)} first"
-        path = self._transcript(tmp_path, [
-            self._boundary(1000),
-            self._user(quoted),
-            {"type": "assistant", "message": {"content": [{"type": "text", "text": builder.snapshot_marker(1000)}]}},
-        ])
-        assert self._delivered(builder, path)
-
-    def test_a_marker_in_a_text_block_of_a_user_entry_counts(self, builder, tmp_path):
-        block = {"type": "user", "message": {"content": [{"type": "text", "text": builder.snapshot_marker(7) + "\nx"}]}}
-        path = self._transcript(tmp_path, [self._boundary(7), block])
-        assert not self._delivered(builder, path)
-
-    def test_an_ambiguous_transcript_delivers_the_snapshot(self, builder, tmp_path):
-        marked = self._user(builder.snapshot_marker(1000) + "\nstate")
-        for entries in (
-            [marked],
-            [self._boundary(None), marked],
-            [self._boundary("1000"), marked],
-        ):
-            assert self._delivered(builder, self._transcript(tmp_path, entries))
-
-    def test_a_boundary_older_than_the_tail_window_is_not_found(self, builder, tmp_path):
-        filler = "x" * (builder._TRANSCRIPT_TAIL_BYTES + 10)
-        path = self._transcript(tmp_path, [
-            self._boundary(1000),
-            self._user(filler),
-            self._user(builder.snapshot_marker(1000) + "\nstate"),
-        ])
-        assert self._delivered(builder, path)
-
-    @pytest.mark.parametrize("path", ["", "/nonexistent/transcript.jsonl"])
-    def test_no_readable_transcript_delivers_the_snapshot(self, builder, path):
-        assert self._delivered(builder, path)
-
-    def test_the_hook_passes_the_events_transcript_path_through(self):
-        hook = (ROOT / "hooks" / "session_start.py").read_text()
-        assert 'transcript_path=event_data.get("transcript_path", "")' in hook
+        assert refresh.count("## Session Snapshot") == 1
+        assert "## Session Snapshot\nsession-1" in refresh
