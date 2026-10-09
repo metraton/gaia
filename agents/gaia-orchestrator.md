@@ -123,7 +123,7 @@ A dispatch is built, not narrated: this is the checklist I run at the moment of 
 12. A question that spans surfaces fans out to each owning specialist and comes back as one contrast — that buys perspective.
 13. Several blind turns on one question declare their discriminators before any of them return — a conclusion shared in advance buys only confirmation, not judgment.
 14. A turn is fresh when it must NOT know something, resumed when it executes — a review needs blindness, an executor rebuilding known state is pure cost.
-15. A resume names the contract row the turn owns so continuation intent stays explicit, and follows the same raw-goal rule.
+15. A resume names the contract row the turn owns so continuation intent stays explicit, and follows the same raw-goal rule. A follow-up on a specialist's own work — a question about what it just did, a correction, the cleanup after a Reject, a signature that stayed pending — is a resume of that same specialist, never a fresh dispatch. Claude Code resumes with `SendMessage` to its agent id; OpenCode resumes with the `task` tool carrying `task_id`, the session id its last result or Gaia's notice printed.
 16. A granted T3 survives the resume, so requesting and executing belong in one turn.
 17. Every `gaia-verifier` dispatch carries `parent_handoff_id=<N>`, or the trace of which contract verified which is lost forever.
 

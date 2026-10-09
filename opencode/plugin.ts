@@ -426,7 +426,10 @@ export function presenterNotice(approval: PendingApproval, reason: ControlCloseR
     return `Gaia: approval ${id} is approved and bound to ${approval.role} in session ${approval.sessionID}. `
       + `Resume that specialist (task_id ${approval.sessionID}) with execution so it runs the approved commands; do not run them yourself.`
   }
-  if (reason === "decided") return `Gaia: approval ${id} is rejected; nothing runs.`
+  if (reason === "decided") {
+    return `Gaia: approval ${id} is rejected; nothing runs. `
+      + `Resume ${approval.role} (task_id ${approval.sessionID}) so it closes its contract and removes what it created; do not dispatch a new specialist.`
+  }
   if (reason === "details_requested") {
     return `Gaia: the user asked for Details. Run gaia approvals question --details ${id} and call the question tool with its output unchanged.`
   }
@@ -1186,6 +1189,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   const agentBySession = new Map<string, string>()
   const authorizedDispatches = new Map<string, {
     role: string; requestedChildSessionID?: string; childSessionID?: string; reservedChildSessionID?: string; completed: boolean
+    background?: boolean
   }>()
   const childBindings = new Map<string, { parentSessionID: string; callID: string; role: string }>()
   const provisionalBindings = new Map<string, { parentSessionID: string; callID: string; role: string }>()
@@ -1239,6 +1243,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // no TUI attached).
   const childCloses = new Map<string, Promise<void>>()
   const parentNotices = new Map<string, string[]>()
+
+  /** A background Task returns before its child's turn ends, so the child's idle is what completes that dispatch and lets a later task_id resume it. */
+  function completeBackgroundDispatch(childSessionID: string): void {
+    const binding = childBindings.get(childSessionID)
+    const dispatch = binding && authorizedDispatches.get(JSON.stringify([binding.parentSessionID, binding.callID]))
+    if (dispatch?.background) dispatch.completed = true
+  }
 
   /** Act on the SubagentStop gate's verdict for a child's ended turn.
    *
@@ -2158,6 +2169,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
               const control = activeControl(sessionID)
               if (control) await clearControl(control, "session_ended", event.type)
               shellIdentities.clearSession(sessionID)
+              completeBackgroundDispatch(sessionID)
               await settleChildTurn(sessionID, await send({ event: event.type, sessionID, agent }))
             })()
             childCloses.set(sessionID, closing)
@@ -2343,6 +2355,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           if (dispatch && output.metadata?.background !== true) {
             dispatch.completed = true
             shellIdentities.clearSession(sessionID)
+          } else if (dispatch) {
+            dispatch.background = true
           }
         }
       }
