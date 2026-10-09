@@ -469,9 +469,12 @@ def _checked_out_branches(repo_path: Path) -> Set[str]:
     return {line[len(prefix):] for line in listing.splitlines() if line.startswith(prefix)}
 
 
-def _dispose_branch(repo_path: Path, branch: Optional[str], keep: Iterable[str] = ()) -> dict:
+def _dispose_branch(
+    repo_path: Path, branch: Optional[str], keep: Iterable[str] = (), *, dry_run: bool = False
+) -> dict:
     """Delete the branch a recycled worktree had checked out, but only when
     ``branch_deletion_verdict`` proves its content survives elsewhere.
+    With *dry_run* a deletable branch is reported as ``would_delete`` and kept.
 
     The forced ``git branch -D`` is what a cherry-picked branch needs (git's
     own ``-d`` judges by SHA) and is safe only because the verdict has
@@ -498,6 +501,9 @@ def _dispose_branch(repo_path: Path, branch: Optional[str], keep: Iterable[str] 
         if not verdict["deletable"]:
             return {"branch": branch, "branch_deleted": False,
                     "branch_kept_reason": "it carries commits found nowhere else"}
+        if dry_run:
+            return {"branch": branch, "branch_deleted": False, "would_delete": True,
+                    "branch_kept_reason": None}
         subprocess.run(
             ["git", "-C", str(repo_path), "branch", "-D", branch],
             check=True, capture_output=True, text=True,
@@ -508,16 +514,20 @@ def _dispose_branch(repo_path: Path, branch: Optional[str], keep: Iterable[str] 
     return {"branch": branch, "branch_deleted": True, "branch_kept_reason": None}
 
 
-def remove_integrated_branches(repo_path: Path, *, keep: Iterable[str] = ()) -> List[dict]:
+def remove_integrated_branches(
+    repo_path: Path, *, keep: Iterable[str] = (), dry_run: bool = False
+) -> List[dict]:
     """Post-merge pass: delete every local branch whose content the default
     branch (as last fetched) or another ref already holds; one result per
-    branch, in ``_dispose_branch``'s shape.
+    branch, in ``_dispose_branch``'s shape. A branch that carries commits
+    found nowhere else is never touched here: removing it stays a forced
+    ``git branch -D``, which asks for a signature.
 
     A fast-forward merge leaves the branch on the default branch's tip, which
     is indistinguishable from a branch just created there, so both go.
     """
     branches = _run_git(repo_path, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
-    return [_dispose_branch(repo_path, branch, keep) for branch in branches.split()]
+    return [_dispose_branch(repo_path, branch, keep, dry_run=dry_run) for branch in branches.split()]
 
 
 # ---------------------------------------------------------------------------

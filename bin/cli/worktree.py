@@ -192,6 +192,35 @@ def _cmd_show_capture(args) -> int:
     return 0
 
 
+def _cmd_prune_branches(args) -> int:
+    from gaia.retention.worktree_reclaim import remove_integrated_branches
+    from gaia.worktree import resolve_default_base
+
+    as_json = getattr(args, "json", False)
+    repo = Path(args.repo).resolve() if args.repo else Path.cwd()
+
+    try:
+        resolve_default_base(repo)
+        results = remove_integrated_branches(
+            repo, keep=args.keep_branch, dry_run=args.dry_run
+        )
+    except Exception as exc:  # noqa: BLE001 -- surface any failure, never mask it
+        return _err(f"prune-branches failed: {exc}", as_json)
+
+    removed = [r["branch"] for r in results if r.get("branch_deleted")]
+    would = [r["branch"] for r in results if r.get("would_delete")]
+    kept = len(results) - len(removed) - len(would)
+    if as_json:
+        print(json.dumps({"dry_run": args.dry_run, "removed": removed,
+                          "would_remove": would, "kept": kept}))
+        return 0
+    for branch in would if args.dry_run else removed:
+        print(f"{'would remove' if args.dry_run else 'removed'} {branch}")
+    print(f"{len(would) if args.dry_run else len(removed)} "
+          f"{'would go' if args.dry_run else 'removed'}, {kept} kept")
+    return 0
+
+
 def _cmd_release(args) -> int:
     from gaia.retention.worktree_reclaim import reclaim_worktree
     from gaia.worktree import read_worktree_metadata
@@ -384,6 +413,31 @@ def register(subparsers) -> None:
     release_p.add_argument("--json", action="store_true", default=False,
                            help="Emit JSON output.")
 
+    # -- prune-branches ------------------------------------------------------
+    prune_p = actions.add_parser(
+        "prune-branches",
+        help="Post-merge pass: delete local branches whose content is already integrated",
+        description=(
+            "Fetch the remote's default branch, then delete every local branch whose "
+            "commits the default branch or another ref already holds. A branch that "
+            "carries commits found nowhere else, is checked out, or is named with "
+            "--keep-branch is never touched; deleting it stays a forced `git branch -D`."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia worktree prune-branches --repo . --dry-run\n"
+               "  gaia worktree prune-branches --repo . --keep-branch feat/gaia-5-6\n",
+    )
+    prune_p.add_argument("--repo", default=None, metavar="PATH",
+                         help="Repository to prune. Default: cwd.")
+    prune_p.add_argument("--keep-branch", action="append", default=[], dest="keep_branch",
+                         metavar="NAME",
+                         help="Branch that must survive even when integrated, e.g. the "
+                              "accumulating branch. Repeatable.")
+    prune_p.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
+                         help="List what would go; delete nothing.")
+    prune_p.add_argument("--json", action="store_true", default=False,
+                         help="Emit JSON output.")
+
     # -- show-capture --------------------------------------------------------
     show_capture_p = actions.add_parser(
         "show-capture",
@@ -412,10 +466,12 @@ def cmd_worktree(args) -> int:
         "list": _cmd_list,
         "show": _cmd_show,
         "release": _cmd_release,
+        "prune-branches": _cmd_prune_branches,
         "show-capture": _cmd_show_capture,
     }
     if action in handlers:
         return handlers[action](args)
 
-    print("Usage: gaia worktree <create|list|show|release|show-capture>", file=sys.stderr)
+    print("Usage: gaia worktree <create|list|show|release|prune-branches|show-capture>",
+          file=sys.stderr)
     return 0

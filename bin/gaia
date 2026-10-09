@@ -346,8 +346,9 @@ WRITE a specialist owns -- DELEGATE; do not run it here.
                  task add|remove|reorder|cover|depend (planner) |
                  task gate add|remove|set-status |
                  contract set|add|fill|finalize |
-                 worktree create|release -- create/release its OWN isolated
-                 git worktree (T0 at the tier layer -- see
+                 worktree create|release|prune-branches -- create/release its
+                 OWN isolated git worktree, or prune the branches whose content
+                 is already integrated (T0 at the tier layer -- see
                  COMMAND_SUBCOMMAND_TIER_EXCEPTIONS in mutative_verbs.py --
                  but still outside the orchestrator's bare CLI lane)
 

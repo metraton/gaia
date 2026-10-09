@@ -68,9 +68,14 @@ One ordered set per integrating turn, run from the turn's worktree:
 Moments of cleanup: integrating a task is followed by its turn's `gaia worktree
 release`, which deletes the task branch. After the user merges the PR, fetch the
 default branch and run the post-merge pass, which removes every local branch
-whose content the fetched default branch or another ref already holds. The verb
-for that pass is pending in plan task 882; until it lands the orchestrator names
-the leftovers to the user instead of deleting them.
+whose content the fetched default branch or another ref already holds:
+`gaia worktree prune-branches --repo <path>`, which fetches first, takes
+`--keep-branch` (repeatable, for the accumulating branch) and lists what would
+go under `--dry-run`. It is a specialist's verb, outside the orchestrator's lane,
+and it never touches a branch carrying commits found nowhere else; that stays a
+forced `git branch -D`, which takes a signature. A session started at a
+workspace root shows the leftover counts of every repo of the declared workspace
+and deletes none of them.
 
 Only the push leaves the machine, so it is the step that takes the user's
 signature, named by branch (`subagent-request-approval`). A rejected push means

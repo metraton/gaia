@@ -11,6 +11,8 @@ uncommitted work, is kept or captured as before.
 
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -183,6 +185,44 @@ def test_post_merge_pass_removes_merged_branches_and_keeps_unmerged_ones(repo):
     remove_integrated_branches(repo)
 
     assert sorted(_branches(repo)) == ["main", "unmerged-task"]
+
+
+def test_post_merge_dry_run_lists_what_would_go_and_deletes_nothing(repo):
+    from gaia.retention.worktree_reclaim import remove_integrated_branches
+
+    _git(repo, "branch", "merged-at-tip")
+    _git(repo, "checkout", "-q", "-b", "unmerged")
+    _commit_file(repo, "work.txt", "only here\n", "unique work")
+    _git(repo, "checkout", "-q", "main")
+    before = _branches(repo)
+
+    results = remove_integrated_branches(repo, dry_run=True)
+
+    assert _branches(repo) == before
+    would = {r["branch"] for r in results if r.get("would_delete")}
+    assert would == {"merged-at-tip"}
+    kept = {r["branch"]: r["branch_kept_reason"] for r in results if not r.get("would_delete")}
+    assert kept["unmerged"] == "it carries commits found nowhere else"
+
+
+def test_prune_branches_verb_dry_run_then_real(repo, tmp_path):
+    env = {**os.environ, "GAIA_DATA_DIR": str(tmp_path / "gaia-data")}
+    _git(tmp_path / "origin.git", "symbolic-ref", "HEAD", "refs/heads/main")
+    _git(repo, "branch", "merged-at-tip")
+    _git(repo, "branch", "kept-by-flag")
+    gaia = str(_REPO_ROOT / "bin" / "gaia")
+    args = [sys.executable, gaia, "worktree", "prune-branches", "--repo", str(repo),
+            "--keep-branch", "kept-by-flag", "--json"]
+
+    dry = subprocess.run([*args, "--dry-run"], capture_output=True, text=True, env=env)
+    assert dry.returncode == 0, dry.stderr
+    assert json.loads(dry.stdout)["would_remove"] == ["merged-at-tip"]
+    assert "merged-at-tip" in _branches(repo)
+
+    real = subprocess.run(args, capture_output=True, text=True, env=env)
+    assert real.returncode == 0, real.stderr
+    assert json.loads(real.stdout)["removed"] == ["merged-at-tip"]
+    assert sorted(_branches(repo)) == ["kept-by-flag", "main"]
 
 
 def test_post_merge_pass_never_deletes_checked_out_or_declared_branches(repo, tmp_path):

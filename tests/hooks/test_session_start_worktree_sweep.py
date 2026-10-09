@@ -154,6 +154,82 @@ def test_live_session_worktree_never_touched(sandbox):
     )
 
 
+def _declare_workspace(data_dir: Path, root: Path, repos) -> None:
+    con = sqlite3.connect(str(data_dir / "gaia.db"))
+    con.execute("create table workspaces (name text primary key, root_path text)")
+    con.execute(
+        "create table projects (workspace text, name text, path text, status text)"
+    )
+    con.execute("insert into workspaces values ('ws', ?)", (str(root),))
+    con.executemany(
+        "insert into projects values ('ws', ?, ?, 'active')",
+        [(repo.name, str(repo)) for repo in repos],
+    )
+    con.commit()
+    con.close()
+
+
+def _repo_with_leftovers(root: Path, name: str, idle_branches: int) -> Path:
+    repo = root / name
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "test")
+    (repo / "README.md").write_text("hello\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-q", "-m", "initial")
+    for index in range(idle_branches):
+        _git(repo, "branch", f"old-{index}")
+    _git(repo, "worktree", "add", "-q", str(root / f"{name}-wt"), "-b", f"live-{name}")
+    return repo
+
+
+def test_workspace_notice_counts_the_leftovers_of_every_repo(sandbox, tmp_path):
+    """The notice reaches repos other than the cwd one, and deletes nothing."""
+    _, data_dir, _ = sandbox
+    root = tmp_path / "workspace"
+    first = _repo_with_leftovers(root, "first", idle_branches=2)
+    second = _repo_with_leftovers(root, "second", idle_branches=3)
+    _declare_workspace(data_dir, root, [first, second])
+
+    from gaia.retention.workspace_leftovers import leftovers_notice
+
+    notice = leftovers_notice(root)
+
+    assert "first: 1 worktrees, 2 branches" in notice
+    assert "second: 1 worktrees, 3 branches" in notice
+    assert "gaia worktree prune-branches" in notice
+    assert "\n" not in notice
+    for repo, idle in ((first, 2), (second, 3)):
+        assert (root / f"{repo.name}-wt").exists()
+        assert len(_git(repo, "for-each-ref", "refs/heads").splitlines()) == idle + 2
+
+
+def test_workspace_notice_stays_short_with_many_repos(sandbox, tmp_path):
+    _, data_dir, _ = sandbox
+    root = tmp_path / "workspace"
+    repos = [_repo_with_leftovers(root, f"repo{n}", idle_branches=n) for n in range(7)]
+    _declare_workspace(data_dir, root, repos)
+
+    from gaia.retention.workspace_leftovers import leftovers_notice
+
+    notice = leftovers_notice(root)
+
+    assert "+2 more repos" in notice
+    assert len(notice) < 600
+
+
+def test_workspace_notice_is_empty_outside_a_declared_workspace(sandbox, tmp_path):
+    _, data_dir, _ = sandbox
+    declared = tmp_path / "workspace"
+    repo = _repo_with_leftovers(declared, "only", idle_branches=1)
+    _declare_workspace(data_dir, declared, [repo])
+
+    from gaia.retention.workspace_leftovers import leftovers_notice
+
+    assert leftovers_notice(tmp_path / "elsewhere") == ""
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

@@ -52,6 +52,7 @@ def start_session(start: SessionStart) -> StartOutcome:
         "## Database upgrade": upgrade_notice,
         "## Data home": data_home_notice,
         "## Workspace": workspace_notice,
+        "## Leftovers": _leftovers_notice(start.workspace_dir),
     }
     shown = {title: text for title, text in notices.items() if text}
     alarms = [f"{title}\n{text}" for title, text in shown.items()]
@@ -140,6 +141,16 @@ def run_start_maintenance(start: SessionStart) -> None:
             )
     except Exception as exc:
         logger.debug("sweep_repo_worktrees failed (non-fatal): %s", exc)
+
+
+def _leftovers_notice(workspace_dir: Path) -> str:
+    """Counts of leftover worktrees, branches and scratch across the declared workspace's repos."""
+    try:
+        from gaia.retention.workspace_leftovers import leftovers_notice
+        return leftovers_notice(workspace_dir)
+    except Exception as exc:
+        logger.debug("leftovers_notice failed (non-fatal): %s", exc)
+        return ""
 
 
 def _reconcile_install() -> tuple[str, str]:
