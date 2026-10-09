@@ -227,7 +227,6 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             "gcloud",
             "kubectl",
             "gh",
-            "npm",
             "git",
             "terraform",
             "terragrunt",
@@ -266,12 +265,11 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         }
 
     def test_configuration_write_paths_are_the_reviewed_ones(self):
-        """Writes to a CLI's own configuration, which a read-only noun shadowed.
+        """Per-CLI anchors under `config`: only the nested gcloud group remains.
 
-        `config` is a READ_ONLY_VERBS entry and the verb scan returns on it, so
-        the verb behind it was never read. These paths are the write forms that
-        held open; the read forms of the same noun carry no anchor and are what
-        the surrounding suite checks stayed free.
+        `config <write verb>` is now one any-binary rule
+        (`_check_generic_cli_shape`) that reads two tokens; the gcloud
+        `configurations` group sits one token deeper, so it keeps its anchors.
         """
         paths = {
             (base_cmd,) + anchor.path
@@ -280,30 +278,18 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             if anchor.path[0] == "config"
         }
         assert paths == {
-            ("gcloud", "config", "set"),
             ("gcloud", "config", "configurations", "create"),
             ("gcloud", "config", "configurations", "delete"),
-            ("kubectl", "config", "set"),
-            ("kubectl", "config", "set-cluster"),
-            ("kubectl", "config", "set-context"),
-            ("kubectl", "config", "set-credentials"),
-            ("kubectl", "config", "delete-cluster"),
-            ("kubectl", "config", "delete-context"),
-            ("kubectl", "config", "delete-user"),
-            ("kubectl", "config", "rename-context"),
-            ("gh", "config", "set"),
-            ("npm", "config", "set"),
-            ("npm", "config", "delete"),
-            ("npm", "config", "edit"),
         }
 
     def test_indirect_trigger_and_live_workload_paths_are_the_reviewed_ones(self):
-        """Remote triggers, a re-trigger, a cancel, and a live workload create.
+        """The live workload create is the one per-CLI trigger anchor left.
 
-        None of these carries a verb in MUTATIVE_VERBS -- ``run`` is
-        deliberately excluded ("safe by elimination"), and ``rerun``/``cancel``
-        were never in the taxonomy -- so all four fell through to Step 4 and
-        classified READ_ONLY by elimination.
+        ``run`` is deliberately excluded from MUTATIVE_VERBS ("safe by
+        elimination"). ``gh workflow run``, ``run rerun`` and ``run cancel``
+        are held for any binary by ``_check_generic_cli_shape`` and the
+        ``rerun``/``dispatch``/``cancel`` verbs; ``kubectl run`` needs its
+        ``--image`` condition, which a path-only shape cannot express.
         """
         paths = {
             (base_cmd,) + anchor.path
@@ -312,12 +298,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             if base_cmd == "gh" and anchor.path[0] in ("workflow", "run")
             or base_cmd == "kubectl" and anchor.path[0] == "run"
         }
-        assert paths == {
-            ("gh", "workflow", "run"),
-            ("gh", "run", "rerun"),
-            ("gh", "run", "cancel"),
-            ("kubectl", "run"),
-        }
+        assert paths == {("kubectl", "run")}
 
     def test_state_destination_paths_are_the_reviewed_ones(self):
         """A new remote destination, and infra init that migrates/reconfigures state.

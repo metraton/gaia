@@ -50,12 +50,6 @@ CLOSED = [
     ("gh-auth-logout-bare", "gh auth logout"),
 ]
 
-# The exact anchors this work adds. Used only to withdraw precisely these for
-# the counterfactual, leaving anything a sibling task anchored under `gh`.
-_ANCHORED_PATHS_BY_BASE_CMD = {
-    "gh": {("auth", "switch"), ("auth", "logout")},
-}
-
 # --- Face (b): reading the slot, and ADDING to it, stay free ----------------
 FREE = [
     ("gh-auth-status", "gh auth status"),
@@ -84,16 +78,14 @@ def isolated_classifier_cache():
 
 @pytest.fixture
 def without_the_account_slot_anchors(monkeypatch):
-    """Withdraw exactly the anchors this work adds, caches cleared on both edges."""
-    for base_cmd, paths in _ANCHORED_PATHS_BY_BASE_CMD.items():
-        anchors = COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ())
-        survivors = tuple(a for a in anchors if a.path not in paths)
-        if len(survivors) == len(anchors):
-            continue
-        if survivors:
-            monkeypatch.setitem(COMMAND_PATH_MUTATIVE_UPGRADES, base_cmd, survivors)
-        else:
-            monkeypatch.delitem(COMMAND_PATH_MUTATIVE_UPGRADES, base_cmd)
+    """Stand down the any-binary shape rule that holds the account slot."""
+    from modules.security import mutative_verbs as mutative_verbs_module
+
+    monkeypatch.setattr(
+        mutative_verbs_module,
+        "_check_generic_cli_shape",
+        lambda base_cmd, family, semantics: None,
+    )
     _clear_classifier_caches()
     yield
     _clear_classifier_caches()

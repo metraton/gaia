@@ -7,6 +7,7 @@ and with nothing declared the same launcher is just an unknown command.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -29,8 +30,7 @@ from modules.security.publish_attribution_guard import (  # noqa: E402
 WRAPPER = "ghwrap"
 FOOTER = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
-# Actions gh gates only through its anchors, so the wrapper reaches consent
-# through the alias or not at all.
+# Remote triggers: gated by command shape on any binary, alias or not.
 PUBLISHING_ACTIONS = [
     f"{WRAPPER} workflow run ci.yml --ref main",
     f"{WRAPPER} run rerun 123456",
@@ -79,14 +79,35 @@ def test_declared_wrapper_reads_stay_free(monkeypatch, command):
 
 
 @pytest.mark.parametrize("command", PUBLISHING_ACTIONS)
-def test_undeclared_wrapper_inherits_nothing(command):
-    assert not detect_mutative_command(command).is_mutative, (
-        f"{command!r} took gh's anchors with no alias declared"
+def test_undeclared_wrapper_pays_the_consent_for_a_remote_trigger(command):
+    """The trigger shape is classified by command shape, so no alias is needed."""
+    assert detect_mutative_command(command).is_mutative, (
+        f"{command!r} ran free: a remote trigger asks on any binary"
     )
+    assert tiers_module.classify_command_tier(command).name == "T3_BLOCKED"
+
+
+@pytest.mark.parametrize("command", READS)
+def test_undeclared_wrapper_reads_stay_free(command):
+    assert not detect_mutative_command(command).is_mutative, command
 
 
 def test_no_wrapper_name_is_built_in():
-    assert not detect_mutative_command("ghx workflow run ci.yml").is_mutative
+    """Gaia knows no wrapper by name: nothing resolves one, and no source names one."""
+    from modules.security.cli_aliases import as_wrapped_cli
+
+    assert as_wrapped_cli("ghx pr list") is None
+
+    wrapper_name = re.compile(r"\bghx\b")
+    offenders = [
+        str(path)
+        for root in ("hooks", "gaia", "bin")
+        for path in (_REPO_ROOT / root).rglob("*")
+        if path.suffix in {".py", ".md", ".sh"}
+        and "__pycache__" not in path.parts
+        and wrapper_name.search(path.read_text(errors="ignore"))
+    ]
+    assert offenders == []
 
 
 def test_an_alias_never_removes_a_cli_own_gates(monkeypatch):

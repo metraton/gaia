@@ -425,7 +425,7 @@ def _classify_git_tag(semantics: CommandSemantics) -> str:
 CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # Gmail API: "modify" only changes labels/flags on messages — it cannot
     # alter message content, send mail, or delete anything.  Safe as T0 unless
-    # it removes INBOX (archives), which _archives_gmail_inbox carves back out.
+    # it may remove INBOX (archive), which _may_archive_gmail carves back out.
     ("workspace", "modify"): CATEGORY_READ_ONLY,
 }
 
@@ -648,11 +648,29 @@ _REMOTE_RUN_NOUNS: FrozenSet[str] = frozenset({
 })
 _ACCOUNT_SLOT_ACTIONS: FrozenSet[str] = frozenset({"switch", "logout"})
 _GMAIL_ARCHIVE_RE = re.compile(r"removelabelids\W[^\]]*\binbox\b", re.DOTALL)
+_GMAIL_HIDDEN_PAYLOAD_RE = re.compile(
+    r"--[\w-]*file\b"
+    r"|--[\w-]*(?:json|body|data|params)[\w-]*(?:=|\s+)@"
+    r"|--[\w-]*(?:json|body|data)(?:=|\s+)-(?:\s|$)"
+    r"|<\s*[^\s<]"
+    r"|<<"
+)
 
 
-def _archives_gmail_inbox(semantics: CommandSemantics) -> bool:
-    """Does this Gmail `modify` remove INBOX, i.e. archive the message?"""
-    return bool(_GMAIL_ARCHIVE_RE.search(semantics.raw_command.lower()))
+def _may_archive_gmail(semantics: CommandSemantics) -> bool:
+    """Can this Gmail `modify` remove INBOX, i.e. archive the message?
+
+    Yes when the inline label payload removes INBOX, and also when the payload
+    comes from a file or stdin: the command text cannot show what it removes,
+    so it asks. An inline payload that names labels without removing INBOX
+    stays free.
+    """
+    text = semantics.raw_command.lower()
+    if _GMAIL_ARCHIVE_RE.search(text):
+        return True
+    if "labelids" in text:
+        return False
+    return bool(_GMAIL_HIDDEN_PAYLOAD_RE.search(text))
 
 
 def _check_generic_cli_shape(
@@ -5062,7 +5080,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             # combos are safe despite the verb being in MUTATIVE_VERBS.
             # Example: Gmail API "modify" only changes labels/flags.
             exception_key = (family, verb)
-            if exception_key in CLI_VERB_TIER_EXCEPTIONS and not _archives_gmail_inbox(semantics):
+            if exception_key in CLI_VERB_TIER_EXCEPTIONS and not _may_archive_gmail(semantics):
                 target_category = CLI_VERB_TIER_EXCEPTIONS[exception_key]
                 return MutativeResult(
                     is_mutative=False,
@@ -5143,7 +5161,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                                 confidence="high",
                                 reason=f"CamelCase verb '{part}' (from '{raw_token}') overridden to read-only by flag",
                             )
-                    if (family, part) in CLI_VERB_TIER_EXCEPTIONS and not _archives_gmail_inbox(semantics):
+                    if (family, part) in CLI_VERB_TIER_EXCEPTIONS and not _may_archive_gmail(semantics):
                         target_category = CLI_VERB_TIER_EXCEPTIONS[(family, part)]
                         return MutativeResult(
                             is_mutative=False,

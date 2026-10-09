@@ -235,7 +235,34 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
+    # A payload the command text cannot show may archive, so it asks.
+    (
+        "gmail-modify-payload-from-file",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json @labels.json",
+        True,
+        T3,
+    ),
+    (
+        "gmail-modify-payload-file-flag",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json-file labels.json",
+        True,
+        T3,
+    ),
+    (
+        "gmail-modify-payload-from-stdin",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json -",
+        True,
+        T3,
+    ),
     # ---- FREE: the generic shapes do not reach ordinary reads ----
+    # `run` is not the head of the path here, so the trigger shape never reads it.
+    ("shape-read-docker-run-ci-run", FREE, "docker run ci run", False, T0),
     ("shape-read-gh-pr-view", FREE, "gh pr view 1", False, T0),
     ("shape-read-wrapper-pr-view", FREE, "wrapbin pr view 1", False, T0),
     ("shape-read-wrapper-run-view", FREE, "wrapbin run view 123456", False, T0),
