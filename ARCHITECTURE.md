@@ -46,8 +46,8 @@ Agent executes
     v
 subagent_stop.py  (SubagentStop hook)
     |  1. Gate the turn's own agent_contract_handoffs row
-    |  2. Record workflow metrics, audit the workflow, store the episode
-    |  3. Process update_contracts, clean up the agent's approval
+    |  2. Clean up the agent's approval, process update_contracts
+    |  3. Record workflow metrics, audit the workflow, store the episode
     v
 Orchestrator reads the row's closing state (via agent-response skill)
     |  COMPLETE -> summarize to user
@@ -79,11 +79,12 @@ Order is short-circuit -- first match wins:
 ### Task/Agent Validation
 
 ```
-1. TaskValidator            --> validate agent name, check available agents
-2. Session events digest    --> recent git commits, pushes, file mods, handed to the host
+1. Session events digest    --> recent git commits, pushes, file mods, built first
+2. TaskValidator            --> validate agent name, check available agents; a refusal ends here
 3. Row birth                --> birth the agent_contract_handoffs row the turn will claim
                                 (hooks/adapters/tool_policy.py::_maybe_birth_dispatched_row);
                                 a failed birth degrades the row and never blocks the dispatch
+4. Digest delivery          --> the digest, when not empty, is handed to the host
 ```
 
 The subagent's context is not assembled here: it is rendered at SubagentStart
@@ -111,11 +112,11 @@ Fires after every agent tool completes:
    |  Found unfinalized, or no row at all -> reject the close (exit 2)
    |  A rejected turn's substantive text is preserved and relayed back
    |  (modules/agents/rejected_turn_relay.py)
-2. Record workflow metrics      --> modules/audit/workflow_recorder.py
-3. Audit the workflow           --> modules/audit/workflow_auditor.py; anomalies reach the episode
-4. Store the episode            --> modules/memory/episode_writer.py
-5. Process update_contracts     --> modules/context/context_writer.py
-6. Clean up the agent's approval --> modules/security/approval_cleanup.py
+2. Clean up the agent's approval --> modules/security/approval_cleanup.py
+3. Process update_contracts     --> modules/context/context_writer.py
+4. Record workflow metrics      --> modules/audit/workflow_recorder.py
+5. Audit the workflow           --> modules/audit/workflow_auditor.py; anomalies reach the episode
+6. Store the episode            --> modules/memory/episode_writer.py
 ```
 
 The agent writes its contract during the turn with `gaia contract set|add|fill`

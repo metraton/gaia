@@ -1,7 +1,7 @@
 """
 Approval grant management for T3 command passthrough.
 
-Two-phase nonce-based approval flow:
+Two-phase approval flow keyed by approval_id:
 
   Phase 1 -- BLOCKING:
     bash_validator detects a T3 command, records a pending approval row in
