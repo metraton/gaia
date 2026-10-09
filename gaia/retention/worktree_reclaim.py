@@ -113,7 +113,7 @@ import subprocess
 from pathlib import Path
 from typing import Iterable, List, Optional, Set
 
-from gaia.retention.branch_disposition import branch_deletion_verdict, unintegrated_commits
+from gaia.retention.branch_disposition import branch_is_deletable, unintegrated_commits
 
 
 # ---------------------------------------------------------------------------
@@ -497,8 +497,7 @@ def _dispose_branch(
         return {"branch": branch, "branch_deleted": False,
                 "branch_kept_reason": "it is checked out in a worktree"}
     try:
-        verdict = branch_deletion_verdict(repo_path, branch, remote_main=remote_main)
-        if not verdict["deletable"]:
+        if not branch_is_deletable(repo_path, branch, remote_main=remote_main):
             return {"branch": branch, "branch_deleted": False,
                     "branch_kept_reason": "it carries commits found nowhere else"}
         if dry_run:

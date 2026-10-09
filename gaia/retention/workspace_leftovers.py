@@ -1,11 +1,11 @@
 """
 gaia.retention.workspace_leftovers -- the one line SessionStart shows about
-what past work left behind in every repo of the declared workspace.
+what past work left behind in every repo of the declared workspaces around the
+session's directory.
 
 Informative only: nothing here removes, captures or fetches anything. The repo
-list comes from the ``projects`` rows of the declared workspace that owns the
-session's directory, so it is as fresh as that workspace's last ``gaia scan``
-and costs no scan at session start.
+list comes from the ``projects`` rows of the declared workspaces, so it is as
+fresh as their last ``gaia scan`` and costs no scan at session start.
 """
 
 from __future__ import annotations
@@ -13,11 +13,11 @@ from __future__ import annotations
 import sqlite3
 import subprocess
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from gaia.install_root import owning_root, registered_roots
 from gaia.paths import db_path, scratch_dir
-from gaia.retention.worktree_reclaim import _checked_out_branches, _remote_default_branch
+from gaia.retention.worktree_reclaim import _remote_default_branch
 
 MAX_REPOS_LISTED = 5
 
@@ -27,23 +27,31 @@ HINT = (
 )
 
 
-def workspace_repos(start: Path) -> Tuple[Optional[str], List[Path]]:
-    """The declared workspace owning *start* and its active repos on disk."""
+def declared_workspaces_around(start: Path) -> List[str]:
+    """Names of the declared workspace owning *start* and of every one rooted beneath it."""
+    start = Path(start).resolve()
     roots = registered_roots()
-    root = owning_root(Path(start).resolve(), roots)
-    if root is None:
-        return None, []
-    name = roots[root]
+    owner = owning_root(start, roots)
+    names = [roots[owner]] if owner is not None else []
+    names += [name for root, name in roots.items() if start in root.parents and name not in names]
+    return names
+
+
+def workspace_repos(start: Path) -> List[Path]:
+    """Active repos on disk of every declared workspace around *start*."""
+    names = declared_workspaces_around(start)
+    if not names:
+        return []
     connection = sqlite3.connect(f"file:{db_path()}?mode=ro", uri=True)
     try:
         rows = connection.execute(
-            "SELECT path FROM projects "
-            "WHERE workspace = ? AND status = 'active' AND path IS NOT NULL ORDER BY name",
-            (name,),
+            "SELECT path FROM projects WHERE status = 'active' AND path IS NOT NULL "
+            f"AND workspace IN ({','.join('?' * len(names))}) ORDER BY workspace, name",
+            names,
         ).fetchall()
     finally:
         connection.close()
-    return name, [Path(path) for (path,) in rows if (Path(path) / ".git").exists()]
+    return [Path(path) for (path,) in rows if (Path(path) / ".git").exists()]
 
 
 def _git_lines(repo: Path, *args: str) -> List[str]:
@@ -55,25 +63,21 @@ def _git_lines(repo: Path, *args: str) -> List[str]:
 
 def repo_leftovers(repo: Path) -> Tuple[int, int]:
     """(linked worktrees, local branches that are neither checked out nor the default)."""
-    linked = sum(
-        1 for line in _git_lines(repo, "worktree", "list", "--porcelain")
-        if line.startswith("worktree ")
-    ) - 1
+    listing = _git_lines(repo, "worktree", "list", "--porcelain")
+    linked = sum(1 for line in listing if line.startswith("worktree ")) - 1
+    checked_out = {line[len("branch refs/heads/"):] for line in listing if line.startswith("branch refs/heads/")}
     default = _remote_default_branch(repo).split("/", 1)[-1]
-    idle = (
-        set(_git_lines(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads"))
-        - _checked_out_branches(repo) - {default}
-    )
-    return max(linked, 0), len(idle)
+    local = set(_git_lines(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads"))
+    return max(linked, 0), len(local - checked_out - {default})
 
 
 def leftovers_notice(start: Path) -> str:
-    """The notice for the workspace owning *start*, or "" when it holds nothing leftover."""
-    name, repos = workspace_repos(start)
-    if name is None:
+    """The notice for the declared workspaces around *start*, or "" when nothing is leftover."""
+    names = declared_workspaces_around(start)
+    if not names:
         return ""
     counts = []
-    for repo in repos:
+    for repo in workspace_repos(start):
         try:
             worktrees, branches = repo_leftovers(repo)
         except (subprocess.CalledProcessError, OSError):
@@ -91,4 +95,5 @@ def leftovers_notice(start: Path) -> str:
         shown.append(f"+{len(counts) - MAX_REPOS_LISTED} more repos")
     if scratch_entries:
         shown.append(f"scratch: {scratch_entries} entries")
-    return f"Workspace {name}, nothing is deleted: " + "; ".join(shown) + f". {HINT}."
+    label = "Workspace " + names[0] if len(names) == 1 else "Workspaces " + ", ".join(names)
+    return f"{label}, nothing is deleted: " + "; ".join(shown) + f". {HINT}."

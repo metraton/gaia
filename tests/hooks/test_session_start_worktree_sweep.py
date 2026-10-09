@@ -154,16 +154,16 @@ def test_live_session_worktree_never_touched(sandbox):
     )
 
 
-def _declare_workspace(data_dir: Path, root: Path, repos) -> None:
+def _declare_workspace(data_dir: Path, root: Path, repos, name: str = "ws") -> None:
     con = sqlite3.connect(str(data_dir / "gaia.db"))
-    con.execute("create table workspaces (name text primary key, root_path text)")
+    con.execute("create table if not exists workspaces (name text primary key, root_path text)")
     con.execute(
-        "create table projects (workspace text, name text, path text, status text)"
+        "create table if not exists projects (workspace text, name text, path text, status text)"
     )
-    con.execute("insert into workspaces values ('ws', ?)", (str(root),))
+    con.execute("insert into workspaces values (?, ?)", (name, str(root)))
     con.executemany(
-        "insert into projects values ('ws', ?, ?, 'active')",
-        [(repo.name, str(repo)) for repo in repos],
+        "insert into projects values (?, ?, ?, 'active')",
+        [(name, repo.name, str(repo)) for repo in repos],
     )
     con.commit()
     con.close()
@@ -217,6 +217,24 @@ def test_workspace_notice_stays_short_with_many_repos(sandbox, tmp_path):
 
     assert "+2 more repos" in notice
     assert len(notice) < 600
+
+
+def test_workspace_notice_from_a_directory_holding_declared_roots(sandbox, tmp_path):
+    """Opened above several declared workspaces, the session sees all their repos."""
+    _, data_dir, _ = sandbox
+    parent = tmp_path / "parent"
+    left = _repo_with_leftovers(parent / "left-ws", "left-repo", idle_branches=2)
+    right = _repo_with_leftovers(parent / "right-ws", "right-repo", idle_branches=4)
+    _declare_workspace(data_dir, parent / "left-ws", [left], name="left")
+    _declare_workspace(data_dir, parent / "right-ws", [right], name="right")
+
+    from gaia.retention.workspace_leftovers import leftovers_notice
+
+    notice = leftovers_notice(parent)
+
+    assert "left-repo: 1 worktrees, 2 branches" in notice
+    assert "right-repo: 1 worktrees, 4 branches" in notice
+    assert leftovers_notice(tmp_path / "elsewhere") == ""
 
 
 def test_workspace_notice_is_empty_outside_a_declared_workspace(sandbox, tmp_path):

@@ -34,6 +34,13 @@ Subcommands:
     contract row, defaulted from the worktree's own metadata when omitted.
     See ``gaia worktree show-capture`` to retrieve a contract-row capture.)
 
+    gaia worktree prune-branches [--repo <path>] [--keep-branch <name>]...
+                          [--dry-run] [--json]
+
+    (Post-merge pass: fetches the default branch, then deletes the local
+    branches whose content is already integrated. A branch with commits found
+    nowhere else is never touched.)
+
     gaia worktree show-capture <contract_id> [--diff] [--json]
 """
 

@@ -85,9 +85,10 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-# Commits inspected per ref when looking for patch-id twins; an older twin
-# is missed, which keeps the branch rather than deleting it.
-_MAX_COMMITS_PER_REF = 1000
+# Commits, across every other ref together, inspected when looking for
+# patch-id twins; an older twin is missed, which keeps the branch rather than
+# deleting it.
+_MAX_TWIN_CANDIDATES = 5000
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +169,18 @@ def _main_commit_patch_ids_since(repo_path: Path, merge_base: str, remote_main: 
     *merge_base* -- a squash-merge commit is exactly one of these, and its
     patch-id matches the branch's total-change patch-id when the content is
     the same even though the original commit hash is not."""
-    revs = _run_git(repo_path, ["log", "--format=%H", f"{merge_base}..{remote_main}"])
-    ids: Set[str] = set()
-    for commit in (line for line in revs.splitlines() if line):
-        diff_output = _run_git(repo_path, ["diff", f"{commit}~1", commit])
-        patch_id = _patch_id_of_diff(repo_path, diff_output)
-        if patch_id:
-            ids.add(patch_id)
-    return ids
+    log_output = _run_git(
+        repo_path,
+        ["log", "-p", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv",
+         f"{merge_base}..{remote_main}"],
+    )
+    if not log_output.strip():
+        return set()
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "patch-id", "--stable"],
+        input=log_output, capture_output=True, text=True, check=True,
+    )
+    return {line.split()[0] for line in result.stdout.splitlines() if line.strip()}
 
 
 def content_already_in_main_via_squash(repo_path: Path, branch: str, remote_main: str) -> bool:
@@ -243,16 +248,13 @@ def unintegrated_commits(repo_path: Path, tip: str, *, own_ref: Optional[str] = 
     if any(len(fields) > 2 for fields in unique):
         return commits
 
-    patch_ids = _verbatim_patch_ids(repo_path, ["--no-walk=unsorted", *commits]) if commits else {}
-    unmatched = set(commits)
-    for ref in others:
-        if not unmatched:
-            break
-        twins = set(_verbatim_patch_ids(
-            repo_path, [f"--max-count={_MAX_COMMITS_PER_REF}", f"{tip}..{ref}"]
-        ).values())
-        unmatched = {c for c in unmatched if patch_ids.get(c) not in twins}
-    return [c for c in commits if c in unmatched]
+    if not commits:
+        return []
+    patch_ids = _verbatim_patch_ids(repo_path, ["--no-walk=unsorted", *commits])
+    twins = set(_verbatim_patch_ids(
+        repo_path, [f"--max-count={_MAX_TWIN_CANDIDATES}", *others, "--not", tip]
+    ).values())
+    return [c for c in commits if patch_ids.get(c) not in twins]
 
 
 def content_integrated_in_other_refs(repo_path: Path, branch: str) -> bool:
@@ -272,6 +274,20 @@ def _ref_exists(repo_path: Path, ref: str) -> bool:
         capture_output=True, text=True,
     )
     return result.returncode == 0
+
+
+def branch_is_deletable(repo_path: Path, branch: str, *, remote_main: str = "origin/main") -> bool:
+    """``branch_deletion_verdict(...)["deletable"]`` without evaluating the
+    tests after the first that proves it, cheapest first, so a pass over many
+    branches pays the patch-id work only for those the cheap tests leave open."""
+    has_main = _ref_exists(repo_path, remote_main)
+    if has_main and is_merged_into_remote_main(repo_path, branch, remote_main):
+        return True
+    if commits_reachable_from_any_remote(repo_path, branch):
+        return True
+    if content_integrated_in_other_refs(repo_path, branch):
+        return True
+    return has_main and content_already_in_main_via_squash(repo_path, branch, remote_main)
 
 
 def branch_deletion_verdict(repo_path: Path, branch: str, *, remote_main: str = "origin/main") -> dict:
