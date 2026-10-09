@@ -329,7 +329,7 @@ NON_CLASSIFYING_FLAGS: dict[str, frozenset[str]] = {
     "reclassify": frozenset({"--workspace"}),
     "link": frozenset({"--workspace", "--delete"}),
     "add": frozenset({"--workspace", "--audience", "--body-file", "--project",
-                      "--project-ref", "--status"}),
+                      "--project-ref", "--status", "--measured-at", "--method"}),
     "checkpoint": frozenset({"--workspace", "--project", "--project-ref",
                              "--initiative"}),
     "get-relevant": frozenset({"--workspace"}),
