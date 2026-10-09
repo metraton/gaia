@@ -88,13 +88,29 @@ def _foreign_row_message(row: dict, own: Optional[dict]) -> str:
     return message + " Run `gaia contract init` for a contract of your own."
 
 
-def check(command: str, harness_agent_id: str) -> Tuple[bool, Optional[str]]:
+def _owned_by(row: dict, agent_id: str, session_id: str) -> bool:
+    """Whether the caller is the turn ``row`` was stamped to.
+
+    The hosts stamp different ids. Claude Code stamps the payload's ``agent_id``.
+    OpenCode stamps the child session id, which is the payload's ``session_id``,
+    while its ``agent_id`` is the Task call id: the dispatch row's
+    ``dispatch_tool_use_id``, which also matches before the bind has landed.
+    """
+    return (
+        row.get("harness_agent_id") in {agent_id, session_id}
+        or (bool(agent_id) and row.get("dispatch_tool_use_id") == agent_id)
+    )
+
+
+def check(
+    command: str, agent_id: str, session_id: str = "",
+) -> Tuple[bool, Optional[str]]:
     """Refuse a contract open/write that belongs to another turn, naming the owner.
 
-    ``harness_agent_id`` is the host's id for the calling subagent; empty means
-    the orchestrator or a human, which are not checked.
+    ``agent_id`` and ``session_id`` are the hook payload's; an empty ``agent_id``
+    means the orchestrator or a human, which are not checked.
     """
-    if not harness_agent_id:
+    if not agent_id:
         return True, None
     calls = list(_contract_calls(command))
     if not calls:
@@ -102,9 +118,13 @@ def check(command: str, harness_agent_id: str) -> Tuple[bool, Optional[str]]:
     try:
         from gaia.store.writer import list_agent_contract_handoffs
 
-        owned = list_agent_contract_handoffs(
-            harness_agent_id=harness_agent_id, limit=_LOOKUP_LIMIT,
-        )
+        owned = [
+            row
+            for harness_id in {agent_id, session_id} if harness_id
+            for row in list_agent_contract_handoffs(
+                harness_agent_id=harness_id, limit=_LOOKUP_LIMIT,
+            )
+        ]
         own = max(owned, key=lambda r: r.get("id") or 0) if owned else None
         for verb, draft_id in calls:
             if verb == "init":
@@ -114,8 +134,11 @@ def check(command: str, harness_agent_id: str) -> Tuple[bool, Optional[str]]:
             if not draft_id:
                 continue
             rows = list_agent_contract_handoffs(contract_id=draft_id, limit=1)
-            owner = rows[0].get("harness_agent_id") if rows else None
-            if owner and owner != harness_agent_id:
+            if (
+                rows
+                and rows[0].get("harness_agent_id")
+                and not _owned_by(rows[0], agent_id, session_id)
+            ):
                 return False, _foreign_row_message(rows[0], own)
     except Exception as exc:
         logger.debug("contract ownership lookup failed, allowing: %s", exc)

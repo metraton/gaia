@@ -843,6 +843,7 @@ class BashValidator:
         # ================================================================
         ownership_allowed, ownership_reason = check_contract_ownership(
             command, (hook_payload or {}).get("agent_id") or "",
+            (hook_payload or {}).get("session_id") or "",
         )
         if not ownership_allowed:
             logger.warning(
