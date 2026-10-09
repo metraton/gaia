@@ -1479,7 +1479,7 @@ class OpenCodeAdapter(HookAdapter):
         if event.payload.get("main") is True:
             from modules.session.session_lifecycle import start_context
 
-            context = start_context("compact", [])
+            context = start_context("compact", [], event.session_id)
             if context:
                 return HookResponse(
                     output={"action": "allow", "updated_input": {"context": [context]}}

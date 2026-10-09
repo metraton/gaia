@@ -59,7 +59,7 @@ def start_session(start: SessionStart) -> StartOutcome:
     return StartOutcome(
         setup_message=setup_message,
         notices=shown,
-        context=start_context(start.source, alarms),
+        context=start_context(start.source, alarms, start.session_id),
     )
 
 
@@ -190,8 +190,8 @@ def _reconcile_install() -> tuple[str, str]:
     return upgrade_notice, workspace_notice
 
 
-def start_context(source: str, alarms: list) -> str:
-    """Return the birth block, or after compaction the lighter refresh; "" when building fails.
+def start_context(source: str, alarms: list, session_id: str = "") -> str:
+    """Return the birth block, or after compaction the refresh carrying ``session_id``'s snapshot; "" when building fails.
 
     Compaction takes the refresh because the birth block's scan, memory and
     environment were already delivered at the true start.
@@ -199,7 +199,7 @@ def start_context(source: str, alarms: list) -> str:
     try:
         if source == "compact":
             from modules.context.compact_context_builder import build_compact_context
-            return "\n\n".join(b for b in (*alarms, build_compact_context()) if b)
+            return "\n\n".join(b for b in (*alarms, build_compact_context(session_id=session_id)) if b)
         from modules.session.session_manifest import build_session_context
         return build_session_context(alarms=alarms, record_injection=True)
     except Exception as exc:

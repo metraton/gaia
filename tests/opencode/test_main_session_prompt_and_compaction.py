@@ -103,7 +103,7 @@ def test_primary_compaction_bridge_returns_the_claude_code_compact_context(isola
 
     context = response["updated_input"]["context"]
     assert response["action"] == "allow"
-    assert context == [start_context("compact", [])]
+    assert context == [start_context("compact", [], MAIN_SESSION)]
     assert context[0]
 
 

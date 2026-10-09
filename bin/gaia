@@ -300,7 +300,7 @@ READ -- changes nothing. The orchestrator runs these itself.
                  inspect a specialist's own isolated git worktree (never
                  create or release it -- those are the specialist's own
                  governed writes, below).
-  session        preview
+  session        preview | snapshot
                  render the SessionStart manifest in-process.
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
@@ -312,6 +312,7 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
                  steer the plan without judging or authoring it: the planner
                  proposes and applies a change, a verifier records verdicts.
   task           set-status (no --override) | gate reverify
+  session        resume-point set
   notifications  ack | add | snooze | cancel
                  add is a reminder or routine only (--at, --cron or --every);
                  snooze and cancel take ONE id.

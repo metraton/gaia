@@ -529,6 +529,9 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # reachable. Denying it would leave the verb built for the orchestrator
     # unreachable by the orchestrator.
     ("session", "preview"),
+    # Reads one session's contracts, signatures, active task and resume point
+    # (gaia.session_snapshot.build_snapshot): SELECTs and one file read.
+    ("session", "snapshot"),
     # A specialist's own worktree lifecycle: the orchestrator may inspect
     # (never create or release) another turn's isolated worktree, the same
     # posture it already has over every other specialist-owned resource.
@@ -594,6 +597,9 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("plan", "change", "approve"),
     ("task", "gate", "reverify"),
     ("task", "set-status"),
+    # The orchestrator's own resume point for a compaction; it replaces one
+    # small file under the Gaia data directory and touches nothing else.
+    ("session", "resume-point", "set"),
     ("notifications", "ack"),
     # "Remind me tomorrow at 4" is the user's own bookkeeping, recorded where it
     # is said; each shape is bounded in _validate_orchestrator_write so a report
