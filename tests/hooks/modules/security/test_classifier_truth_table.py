@@ -194,6 +194,59 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gh-workflow-list", FREE, "gh workflow list", False, T0),
     ("read-gh-workflow-view", FREE, "gh workflow view deploy.yml", False, T0),
     ("read-gh-run-view", FREE, "gh run view 123456", False, T0),
+    # ---- Remote triggers and setting changes classify by SHAPE, any binary ----
+    # `wrapbin` is declared nowhere (no GAIA_CLI_ALIASES), so these rows prove
+    # the verdict does not depend on the binary being named `gh`.
+    ("shape-workflow-run-wrapper", GATED, "wrapbin workflow run deploy.yml", True, T3),
+    ("shape-workflows-run-wrapper", GATED, "wrapbin workflows run deploy.yml", True, T3),
+    ("shape-run-rerun-wrapper", GATED, "wrapbin run rerun 123456", True, T3),
+    ("shape-run-cancel-wrapper", GATED, "wrapbin run cancel 123456", True, T3),
+    ("shape-pipeline-run-wrapper", GATED, "wrapbin pipeline run main", True, T3),
+    ("shape-pipelines-run-wrapper", GATED, "wrapbin pipelines run main", True, T3),
+    ("shape-ci-run-wrapper", GATED, "wrapbin ci run --branch main", True, T3),
+    ("shape-pipeline-run-gh", GATED, "gh pipeline run main", True, T3),
+    ("shape-ci-run-glab", GATED, "glab ci run --branch main", True, T3),
+    ("shape-config-set-wrapper", GATED, "wrapbin config set editor vim", True, T3),
+    ("shape-config-set-context-wrapper", GATED, "wrapbin config set-context prod", True, T3),
+    ("shape-config-delete-wrapper", GATED, "wrapbin config delete-cluster prod", True, T3),
+    ("shape-auth-switch-wrapper", GATED, "wrapbin auth switch -u someone", True, T3),
+    ("shape-auth-logout-wrapper", GATED, "wrapbin auth logout", True, T3),
+    (
+        "gmail-modify-archive",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json '{\"removeLabelIds\":[\"INBOX\"]}'",
+        True,
+        T3,
+    ),
+    (
+        "gmail-modify-add-label",
+        FREE,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json '{\"addLabelIds\":[\"Label_1\"]}'",
+        False,
+        T0,
+    ),
+    (
+        "gmail-modify-remove-other-label",
+        FREE,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json '{\"removeLabelIds\":[\"UNREAD\"]}'",
+        False,
+        T0,
+    ),
+    # ---- FREE: the generic shapes do not reach ordinary reads ----
+    ("shape-read-gh-pr-view", FREE, "gh pr view 1", False, T0),
+    ("shape-read-wrapper-pr-view", FREE, "wrapbin pr view 1", False, T0),
+    ("shape-read-wrapper-run-view", FREE, "wrapbin run view 123456", False, T0),
+    ("shape-read-wrapper-workflow-list", FREE, "wrapbin workflow list", False, T0),
+    ("shape-read-wrapper-config-list", FREE, "wrapbin config list", False, T0),
+    ("shape-read-wrapper-config-get", FREE, "wrapbin config get editor", False, T0),
+    ("shape-read-wrapper-auth-status", FREE, "wrapbin auth status", False, T0),
+    ("shape-read-kubectl-get", FREE, "kubectl get pods -n web", False, T0),
+    ("shape-read-kubectl-config-view", FREE, "kubectl config view", False, T0),
+    ("shape-read-npm-run-test", FREE, "npm run test", False, T0),
+    ("shape-read-gaia-memory-list", FREE, "gaia memory list --type user", False, T0),
     # ---- Adding a secret version publishes a value to every consumer of it ----
     (
         "secret-version-add",

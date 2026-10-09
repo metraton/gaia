@@ -167,7 +167,7 @@ def _suggested_commands(guidance: str) -> list[str]:
     """The runnable commands a guidance names: its backticked spans, one of
     which must be the per-process wrapper form."""
     commands = re.findall(r"`([^`]+)`", guidance)
-    assert any(c.startswith("ghx ") for c in commands), f"guidance names no per-process form: {guidance!r}"
+    assert any(c.startswith("GH_TOKEN=") for c in commands), f"guidance names no per-process form: {guidance!r}"
     return commands
 
 
