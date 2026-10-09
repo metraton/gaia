@@ -375,6 +375,11 @@ def _remove_tree_or_link(target: Path) -> None:
         shutil.rmtree(target)
 
 
+# Each name must equal a key of `tool` in opencode/plugin.ts: the wildcard deny
+# hides any plugin tool the frontmatter translation does not name.
+_OPENCODE_ORCHESTRATOR_PLUGIN_TOOLS = ("gaia_compact_when_idle",)
+
+
 def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict:
     """Derive OpenCode agent entries from Gaia's canonical Markdown sources."""
     agents = dict(existing) if isinstance(existing, dict) else {}
@@ -422,6 +427,7 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
                 **{specialist: "allow" for specialist in specialist_names},
             }
             permission.update(_opencode_orchestrator_paths(package_root))
+            permission.update(dict.fromkeys(_OPENCODE_ORCHESTRATOR_PLUGIN_TOOLS, "allow"))
         if permission:
             agent["permission"] = permission
         agents[name] = agent

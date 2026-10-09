@@ -184,6 +184,24 @@ def test_approval_core_contract_every_request_kind_is_sealed_alike(db, tmp_path)
     assert reactive["items"][0]["cwd"] == REPO
 
 
+def test_approval_core_contract_expect_exit_given_twice_for_a_command_keeps_every_code(db):
+    """A declared exit is never dropped: two flags for one position seal both codes."""
+    from bin.cli.approvals import cmd_request_set
+
+    args = argparse.Namespace(
+        command=list(COMMANDS), cwd=[REPO], expect_exit=["1=1", "1=2", "2=1"], what="Publish the branch",
+        question=QUESTION, does=[DOES, DOES], impact=[IMPACT, IMPACT],
+        rationale=None, rollback=ROLLBACK, **OWED,
+        agent_id=AGENT, session_id=SESSION, json=True,
+    )
+    out = io.StringIO()
+    with redirect_stdout(out):
+        assert cmd_request_set(args) == 0
+
+    sealed = _payload(db, json.loads(out.getvalue())["approval_id"])
+    assert [item["expect_exit"] for item in sealed["items"]] == [[1, 2], [1]]
+
+
 # --------------------------------------------------------------------------- #
 # Decide (structured decision bound to a recorded presentation, D6)
 # --------------------------------------------------------------------------- #

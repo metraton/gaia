@@ -46,9 +46,9 @@ const client = scenario.clientHasSessionApi === false
   ? {}
   : {
       session: {
-        async messages({ sessionID }: { sessionID: string }) {
-          messageReads.push(sessionID)
-          return { data: hostMessages[sessionID] ?? [] }
+        async messages({ path }: { path: { id: string } }) {
+          messageReads.push(path.id)
+          return { data: hostMessages[path.id] ?? [] }
         },
       },
     }

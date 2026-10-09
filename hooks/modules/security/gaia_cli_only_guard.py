@@ -529,6 +529,9 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # reachable. Denying it would leave the verb built for the orchestrator
     # unreachable by the orchestrator.
     ("session", "preview"),
+    # Reads one session's contracts, signatures, active task and resume point
+    # (gaia.session_snapshot.build_snapshot): SELECTs and one file read.
+    ("session", "snapshot"),
     # A specialist's own worktree lifecycle: the orchestrator may inspect
     # (never create or release) another turn's isolated worktree, the same
     # posture it already has over every other specialist-owned resource.
@@ -574,6 +577,9 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "new"),
     ("brief", "edit"),
     ("brief", "set-status"),
+    # Unlike set-status, close verifies before closing and syncs the stored AC
+    # status that computes done; the store refuses non-curator callers.
+    ("brief", "close"),
     ("brief", "set-project"),
     ("brief", "ac", "add"),
     ("brief", "ac", "edit"),
@@ -591,6 +597,9 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("plan", "change", "approve"),
     ("task", "gate", "reverify"),
     ("task", "set-status"),
+    # The orchestrator's own resume point for a compaction; it replaces one
+    # small file under the Gaia data directory and touches nothing else.
+    ("session", "resume-point", "set"),
     ("notifications", "ack"),
     # "Remind me tomorrow at 4" is the user's own bookkeeping, recorded where it
     # is said; each shape is bounded in _validate_orchestrator_write so a report
@@ -1148,6 +1157,9 @@ def _validate_read_flags(
 _BRIEF_STATUSES = frozenset({"draft", "open", "in-progress", "closed", "archived"})
 _PLAN_STATUSES = frozenset({"draft", "active", "closed"})
 _TASK_STATUSES = frozenset({"pending", "done", "skipped"})
+# Must equal gaia.session_snapshot.RESUME_POINT_MAX_CHARS, which write_resume_point
+# enforces; tests/hooks/modules/security/test_orchestrator_resume_point_lane.py pins both.
+_RESUME_POINT_MAX_CHARS = 2000
 
 
 def _has_value(args: Tuple[str, ...], flag: str) -> bool:
@@ -1231,13 +1243,21 @@ def _validate_orchestrator_write(
         "coordination shape"
     )
 
+    if phrase in (("brief", "set-status"), ("plan", "set-status")) and args[1:2] == ("closed",):
+        return (
+            f"GAIA CLI ONLY: 'gaia {' '.join(candidate)}' would close without "
+            f"verify. Use 'gaia brief close {args[0]}': it verifies, syncs the "
+            f"ACs that compute done and closes the plan and the brief. "
+            f"Denied outright, not approvable."
+        )
+
     if phrase == ("brief", "new"):
         valid = "--headless" in args and _has_value(args, "--title")
     elif phrase == ("brief", "edit"):
         valid = bool(args) and not args[0].startswith("-") and "--headless" in args
     elif phrase == ("brief", "set-status"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _BRIEF_STATUSES
-    elif phrase == ("brief", "set-project"):
+    elif phrase in (("brief", "set-project"), ("brief", "close")):
         valid = bool(args) and not args[0].startswith("-")
     elif phrase[:2] == ("brief", "ac"):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args[1:], "--id")
@@ -1305,6 +1325,13 @@ def _validate_orchestrator_write(
             and len(positional) == 3
             and positional[1].isdigit()
             and positional[2] in _TASK_STATUSES
+        )
+    elif phrase == ("session", "resume-point", "set"):
+        flags = _single_valued_flags(args)
+        valid = (
+            flags is not None
+            and set(flags) == {"--session-id", "--text"}
+            and 0 < len(flags["--text"].strip()) <= _RESUME_POINT_MAX_CHARS
         )
     elif phrase == ("notifications", "ack"):
         valid = (len(args) == 1 and (args[0].isdigit() or args[0] == "--all"))

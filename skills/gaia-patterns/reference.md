@@ -6,7 +6,7 @@ Package: `@jaguilar87/gaia` | Node >=18 | Python >=3.12
 
 ## 1. Component Map
 
-### Hook Entry Points (10 files)
+### Hook Entry Points (11 files)
 
 | File | Event | Matchers |
 |------|-------|----------|
@@ -16,9 +16,10 @@ Package: `@jaguilar87/gaia` | Node >=18 | Python >=3.12
 | `hooks/user_prompt_submit.py` | UserPromptSubmit | (all) |
 | `hooks/subagent_start.py` | SubagentStart | `*` |
 | `hooks/subagent_stop.py` | SubagentStop | `*` |
-| `hooks/session_start.py` | SessionStart | `startup` |
+| `hooks/session_start.py` | SessionStart | `startup\|resume\|clear\|compact\|fork` |
 | `hooks/session_end_hook.py` | SessionEnd | (all) |
 | `hooks/task_completed.py` | TaskCompleted | (all) |
+| `hooks/pre_compact.py` | PreCompact | (all) |
 | `hooks/post_compact.py` | PostCompact | (all) |
 
 On the plugin channel, which never runs `gaia install`, SessionStart first brings the database up to the code (`hooks/modules/session/plugin_upgrade.py`): one read of the ledger when nothing is pending; a behind database goes through `gaia migrate apply` (a structure-only chain applies after its backup, a data-reaching one is left and its `gaia migrate apply --consent-chain vA..vB` is named in a `## Database upgrade` block and the user-facing `systemMessage`); a database ahead of the code is never moved; and a package version other than the one recorded in `<plugin data>/seeded-version` re-runs install's contract-permission and surface-routing seeds, with no hooks written to settings. SessionStart then emits a one-shot `hookSpecificOutput.additionalContext` manifest: first a `## Database schema` block, only when `gaia.db` and the code disagree on schema version (behind names `gaia migrate apply`; ahead says every write is refused and names the newer Gaia to install), then the four-section birth block (`hooks/modules/session/session_manifest.py::build_session_context`): `## Projects` (each project with its live-pending count), `## Environment` (machine, installation, folder, the `gaia` CLI path, the data home and database, the tools on PATH, and one line of recurring work that is due -- unread reports, due reminders and routines), then `## The user` and `## User preferences` (the user's standing rows, whole). Project memory never loads at birth. Pending approvals are not part of this manifest -- approvals are in-loop and single-session, with no cross-session resurfacing (no `[ACTIONABLE]` block, no per-turn verified-pendings feed); see `pending-approvals` skill. UserPromptSubmit emits only sparse notices such as the first-run welcome and the unread-notifications counter; routing remains DB-backed and callable for diagnostics, but is not injected into every turn. SubagentStart claims the born dispatch row and injects the kernel into every dispatched agent (`hooks/modules/context/kernel_builder.py::build_kernel_context`): `# Your Contract` (identity, goal, role/surface, `project` with its declared `workflow` line when the project's `project_identity` entry declares one, `can_read`/`can_write`, the acceptance gates on a plan-bound turn), `# Your CLI`, and `# How the user works` (the user's standing rows with their bodies, minus those whose audience is the orchestrator alone); the dispatch also carries the session's recent-events digest (`hooks/modules/session/session_event_injector.py::build_session_events`). Project context, episodic memory indexes, and surface routing are NOT preloaded -- the agent pulls what it needs on demand, within its `can_read` menu, with the verbs in `agent-protocol/read-map.md`.
@@ -28,7 +29,7 @@ On the plugin channel, which never runs `gaia install`, SessionStart first bring
 | Package | Files | Purpose |
 |---------|-------|---------|
 | `core/` | `hook_entry`, `paths`, `plugin_mode`, `plugin_setup`, `state`, `stdin` | Entry dispatch, path resolution, mode detection, shared state |
-| `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval nonce lifecycle |
+| `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval grant lifecycle |
 | `audit/` | `logger`, `metrics`, `event_detector`, `workflow_auditor`, `workflow_recorder` | Structured logging, metrics collection, workflow audit trail |
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Context freshness checks, contract loading, context writing |
@@ -134,7 +135,7 @@ Gaia ships as a **single, unified** plugin named `gaia`. There is **no `dist/` b
 | T2 | Simulation | None (dry-run) | No |
 | T3 | Realization | Modifies state | Yes |
 
-Enforcement: `blocked_commands.py` (permanent deny) + `mutative_verbs.py` (nonce-based approval). Everything not blocked and not mutative is safe by elimination.
+Enforcement: `blocked_commands.py` (permanent deny) + `mutative_verbs.py` (T3 verbs ask for a signature through an `approval_id`; the grant is single-use and consumed at match). Everything not blocked and not mutative is safe by elimination.
 
 ---
 
@@ -387,7 +388,7 @@ Analyzes agent transcripts for contract compliance, skill adherence, and behavio
 python3 tools/validation/approval_gate.py
 ```
 
-Validates T3 approval nonce lifecycle: generation, scope matching, expiry, grant/deny.
+Validates the T3 approval grant lifecycle: request, scope matching, expiry, grant/deny.
 
 ### Doctor
 

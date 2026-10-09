@@ -183,18 +183,18 @@ class TestAc2GateWellformednessValid:
 # ---------------------------------------------------------------------------
 
 class TestAc3GateInvariantDualSurface:
-    def test_gate_invariant_dual_surface_close_is_advisory_exit0(self, tmp_db, capsys):
-        """`gaia brief close` surfaces the gate inconsistency as an advisory
-        stderr warning and still returns 0 (never blocks)."""
+    def test_gate_invariant_dual_surface_close_refuses_exit2(self, tmp_db, capsys):
+        """`gaia brief close` refuses (exit 2) on the gate inconsistency and
+        leaves the brief as it was."""
         from cli.brief import _cmd_close
         from gaia.briefs import get_brief
         _, plan_id = _seed_brief_and_plan(tmp_db, "r1b1-close")
+        before = get_brief("me", "r1b1-close", db_path=tmp_db)["status"]
         _add_task(tmp_db, plan_id, 1)  # gate-less -> task_missing_gate
         rc = _cmd_close(argparse.Namespace(name="r1b1-close", workspace="me"))
         captured = capsys.readouterr()
-        assert rc == 0, f"close must be advisory (exit 0), got {rc}; stderr={captured.err}"
-        assert get_brief("me", "r1b1-close", db_path=tmp_db)["status"] == "closed"
-        assert "Warning:" in captured.err
+        assert rc == 2, f"close must refuse (exit 2), got {rc}; stderr={captured.err}"
+        assert get_brief("me", "r1b1-close", db_path=tmp_db)["status"] == before
         assert "task_missing_gate" in captured.err
 
     def test_gate_invariant_dual_surface_verify_exit2_missing(self, tmp_db):

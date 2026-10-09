@@ -524,10 +524,41 @@ def _classify_awk(tokens: List[str]) -> Optional[FlagClassifierResult]:
 
 
 # 11. tar
+_TAR_SCRATCH_EXTRACT_LETTERS = frozenset("xvzjJfCkpm")
+
+
+def _tar_extracts_only_into_scratch(tokens: List[str]) -> bool:
+    """True for a short-flag extraction whose archive and -C target are in scratch.
+
+    Fail-closed: long options (--to-command and --use-compress-program run
+    programs), a stdin archive, a missing -C and any path the scratch check
+    cannot confine all decline. The archive's members are not inspected.
+    """
+    from .mutative_verbs import _rm_scratch_confined_targets
+
+    flags = [a for a in tokens[1:] if a.startswith("-")]
+    if any(len(a) < 2 or a.startswith("--") for a in flags):
+        return False
+    letters = "".join(a[1:] for a in flags)
+    if "x" not in letters or "C" not in letters:
+        return False
+    if not set(letters) <= _TAR_SCRATCH_EXTRACT_LETTERS:
+        return False
+    return _rm_scratch_confined_targets(tuple(tokens)) is not None
+
+
 def _classify_tar(tokens: List[str]) -> Optional[FlagClassifierResult]:
     if not tokens or tokens[0] != "tar":
         return None
     args = tokens[1:]
+
+    if _tar_extracts_only_into_scratch(tokens):
+        return FlagClassifierResult(
+            outcome=OUTCOME_READ_ONLY,
+            reason="tar extraction confined to the Gaia scratch directory",
+            matched_pattern="tar-scratch-extract",
+            command_family="tar",
+        )
 
     # Long-form operation flags
     long_mutative = _has_flag(args, "--create", "--extract", "--append", "--update",

@@ -1553,11 +1553,31 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             # omitted; the agent still addresses its own draft by --draft-id.
             return None
         if not draft_id:
-            return None
+            return self._closed_contract_hint(agent_id)
         envelope = load_draft(draft_id)
         if not envelope:
-            return None
+            return self._closed_contract_hint(agent_id)
         return render_resume_hint(draft_id, envelope)
+
+    @staticmethod
+    def _closed_contract_hint(agent_id: str) -> Optional[str]:
+        """The hint for a resumed agent whose newest contract already closed, or None.
+
+        A closed contract leaves no live draft, so the resumed turn would
+        otherwise start with no contract and learn of it from a denied ``init``.
+        """
+        try:
+            from gaia.state import CLOSED_TURN_PLAN_STATUSES
+            from gaia.contract.view import render_closed_contract_hint
+            from gaia.store.writer import list_agent_contract_handoffs
+
+            rows = list_agent_contract_handoffs(agent_id=agent_id, limit=50)
+            newest = max(rows, key=lambda row: row.get("id") or 0) if rows else None
+            if newest is None or newest.get("agent_state") not in CLOSED_TURN_PLAN_STATUSES:
+                return None
+            return render_closed_contract_hint(newest["contract_id"], newest["agent_state"])
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------ #
     # v43 dispatch kernel: claim the born row, render the kernel blocks

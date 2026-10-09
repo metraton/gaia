@@ -579,7 +579,11 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     # with cwd resolution kept only as the fallback. Deliberately NOT a
     # binding coordinate: it never gates a birth, so it plays no part in the
     # kind classification below.
-    project_match = _re.search(r"\bproject\s*=\s*([A-Za-z0-9._\-]+)", prompt)
+    # The name may hold inner dots (``metraton.github.io``) but must end on a
+    # word character, so a sentence's closing ``.`` is not read as part of it.
+    project_match = _re.search(
+        r"\bproject\s*=\s*[\"']?([A-Za-z0-9._\-]*[A-Za-z0-9_\-])", prompt,
+    )
     project = project_match.group(1) if project_match else None
     # A verifier dispatch names the PRODUCER handoff it verifies via a
     # ``parent_handoff_id=<N>`` token in its prompt. Without this the verifier

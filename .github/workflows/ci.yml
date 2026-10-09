@@ -24,12 +24,14 @@ jobs:
   # exists the pytest shards and the bun suite are skipped and the verdict
   # cites that run. The short jobs still run: validate-manifests and
   # build-plugins are exactly what a version-only commit can break. A pull
-  # request is judged by its head, not
-  # the merge ref, so the squash landing on main finds the same tree. A failed
-  # lookup reports "not reusable", which runs everything.
+  # request is looked up by its head commit, but its jobs check out and test
+  # the merge ref, and the run records the head's tree. The squash landing on
+  # main therefore reuses the verdict only when its tree equals the head's,
+  # which holds when the branch already contained main. A failed lookup reports
+  # "not reusable", which runs everything.
   decide:
     name: Reuse decision
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
@@ -61,7 +63,7 @@ jobs:
     name: Python ${{ matrix.python-version }} (shard ${{ matrix.group }}/4)
     needs: decide
     if: ${{ needs.decide.outputs.reusable != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -102,7 +104,7 @@ jobs:
       # The Python suite includes tests that shell out to real Node scripts
       # (e.g. tests/cli/test_pre_publish_dry_run_representative.py runs
       # `node bin/pre-publish-validate.js --dry-run`, which imports the `chalk`
-      # devDependency). ubuntu-latest ships Node, so those tests do NOT skip --
+      # devDependency). The runner image ships Node, so those tests do NOT skip --
       # without node_modules they fail with "Cannot find package 'chalk'".
       # Install the dev dependencies so the Node-backed tests resolve chalk.
       - name: Install Node dependencies
@@ -116,7 +118,7 @@ jobs:
       # import run on every push; without it, collection of those two modules
       # (plus test_evals.py, which imports catalog.py) fails outright.
       # Installed explicitly here, rather than assumed present on the
-      # runner image -- ubuntu-latest does not ship pyyaml by default.
+      # runner image -- the Linux image does not ship pyyaml by default.
       #
       # pytest-xdist and pytest-split are in pyproject.toml's [dev] extra, but
       # this job installs explicit specs rather than `.[dev]`, so each must be
@@ -150,7 +152,7 @@ jobs:
 
       - name: Upload shard durations
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-durations-${{ matrix.group }}
           path: ${{ runner.temp }}/durations-${{ matrix.group }}.json
@@ -164,7 +166,7 @@ jobs:
     name: OpenCode TypeScript tests (bun)
     needs: decide
     if: ${{ needs.decide.outputs.reusable != 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -180,9 +182,9 @@ jobs:
     name: Merge test durations
     needs: test-python
     if: ${{ !cancelled() && needs.test-python.result != 'skipped' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: test-durations-*
           merge-multiple: true
@@ -191,7 +193,7 @@ jobs:
       - name: Merge shard durations into .test_durations
         run: jq -S -s add shards/durations-*.json > .test_durations
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: test-durations
           path: .test_durations
@@ -200,7 +202,7 @@ jobs:
 
   l2-ci-subset:
     name: L2 ci_subset (budget-bounded LLM)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Budget guard: the subset only spends tokens on push to main, and only when
     # the ANTHROPIC_API_KEY secret is configured. On secretless runs the step
     # no-ops, so the subset never burns budget unexpectedly (brief #89 AC-6).
@@ -233,7 +235,7 @@ jobs:
 
   lint-js:
     name: ESLint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -251,7 +253,7 @@ jobs:
 
   build-plugins:
     name: Build Plugin (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -279,7 +281,7 @@ jobs:
 
   validate-manifests:
     name: Validate Manifests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -299,7 +301,7 @@ jobs:
   # Windows compatibility -- the evidence source for the Windows artifact
   # acceptance criteria (brief gaia-windows-compatibility: AC-2/4/6/8).
   #
-  # Every other job runs on ubuntu-latest, so before this job Gaia had ZERO
+  # Every other job runs on Linux, so before this job Gaia had ZERO
   # Windows coverage. This job runs the landed compatibility fixes on a REAL
   # windows-latest runner, so each is exercised on the platform it targets:
   #   * hooks/modules/core/filelock.py     -- removes the POSIX-only `import
@@ -610,7 +612,7 @@ jobs:
   # failed pack skips every cell, and a skipped cell alone reads as green.
   pack:
     name: Pack the package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -623,7 +625,7 @@ jobs:
           mkdir pack-out
           npm pack --silent --pack-destination pack-out
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: package
           path: pack-out/*.tgz
@@ -648,7 +650,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
         base: [21, 26, 33, 37, 51, 57]
     steps:
       - uses: actions/checkout@v7
@@ -661,7 +663,7 @@ jobs:
         with:
           node-version: "20"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: package
           path: pack-out
@@ -693,7 +695,7 @@ jobs:
       - pack
       - upgrade
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Report job results
         env:

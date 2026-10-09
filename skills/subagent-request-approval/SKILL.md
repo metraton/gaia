@@ -56,7 +56,13 @@ Optional, per command:
 `--cwd` (the existing directory it must run in, once for all or once per
 command; the default is where you run the request) and
 `--expect-exit POSITION=CODES` (non-zero exits that still let the set go on,
-e.g. `2=1`). Details names a command's folder when it runs somewhere other
+e.g. `2=1`; repeat the flag, or list codes with commas, for more than one code).
+Declare it for every command whose non-zero exit is part of its normal contract
+-- a `git rebase` that stops on a conflict you will resolve, a `git cherry-pick`
+likewise -- because only a declaration made here lets the set go on; an
+undeclared non-zero exit freezes it and the rest needs a new request. The user
+sees each declared exit on that command's signature as `ALLOWED EXIT`. Details
+names a command's folder when it runs somewhere other
 than where you asked from, or when the command uses relative paths.
 
 One request holds at most 4 signed commands, because the host shows at most 4
@@ -101,6 +107,8 @@ your phrases under fixed English labels:
 ```
 [ GAIA-SECURITY ] [ DETAILS ] [ gaia-system ] [ COMMAND: python3 <workspace>/.project-worktrees/gaia/0ac7481a9c2e4f6b8d0a1c3e5f7b9d2e/bin/gaia dev --workspace <dev-install-folder> --ref bbc2f09 --channel npm ] [ DOES: gaia dev: instala en tu espacio de trabajo la versión nueva de main. ] [ IMPACT: actualiza tu base de datos; ese cambio no se deshace. ] [ VERIFICATION: gaia doctor muestra la versión nueva. ] [ SHARED-STATE: No: solo tu espacio de trabajo local. ] [ ROLLBACK: Reinstalar la versión anterior; la base de datos queda actualizada. ]
 ```
+
+For a `git worktree remove --force`, Gaia adds a `[ CAPTURED: ... ]` field naming the diff `gaia worktree release` already deposited, its size and a files/lines summary, or stating that no capture is recorded.
 
 A protected-path write is requested the same way with
 `gaia approvals request-file-write --path <absolute path>`, one `--does` and
@@ -199,4 +207,6 @@ This is the same in Claude Code and OpenCode: nothing is asked in your
 session, neither when you request nor when your turn ends. The orchestrator
 reads the approval id from your contract and decides when to ask the user.
 A set that failed is not resumed: after fresh investigation, request what still
-has to run as a new request.
+has to run as a new request. A single command that failed keeps its signature
+for one retry of the same bytes in the same directory within the window; a
+second failure needs a new request.

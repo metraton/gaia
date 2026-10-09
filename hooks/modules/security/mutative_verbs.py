@@ -18,6 +18,7 @@ Categories retained internally for verb classification:
 
 import functools
 import logging
+import re
 import shlex
 from dataclasses import dataclass, replace
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
@@ -175,6 +176,10 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # still short-circuits to non-mutative via the SIMULATION_FLAGS check in
     # Step 3, which runs before this table is ever consulted.
     "exec", "execute", "invoke", "trigger", "send", "reply", "replay",
+    # Remote execution entry points: re-run a finished run, fire a dispatch
+    # event, stop a run in flight. `run` itself stays out (see above); these
+    # three name the effect, so they need no per-binary anchor.
+    "rerun", "dispatch", "cancel",
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
     # NOTE: "commit" removed -- local-only operation, trust system
@@ -419,7 +424,8 @@ def _classify_git_tag(semantics: CommandSemantics) -> str:
 
 CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # Gmail API: "modify" only changes labels/flags on messages — it cannot
-    # alter message content, send mail, or delete anything.  Safe as T0.
+    # alter message content, send mail, or delete anything.  Safe as T0 unless
+    # it may remove INBOX (archive), which _may_archive_gmail carves back out.
     ("workspace", "modify"): CATEGORY_READ_ONLY,
 }
 
@@ -626,15 +632,85 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 # here. This dict lives inside the hooks directory and is itself T3-protected.
 
 
-# Shared by the two `gh auth` anchors below: one account slot, two ways to
-# disturb it, one replacement for both.
-_GH_ACCOUNT_GUIDANCE = (
-    "The active gh account is global state shared with every other session on "
-    "this machine -- choose the account per process instead of switching it: "
-    "run gh through a wrapper that sets GH_TOKEN for its own process only, "
-    "e.g. `ghx pr list` (ghx maps the origin owner to an account). "
-    "`gh auth status` lists the accounts; `gh auth login` adds a missing one."
+# Carried by `<cli> auth switch|logout` (see _check_generic_cli_shape): one
+# account slot, two ways to disturb it, one replacement for both.
+_ACCOUNT_SLOT_GUIDANCE = (
+    "The active account of a CLI is global state shared with every other "
+    "session on this machine -- choose the account per process instead of "
+    "switching it: set the CLI's token variable for that one process, e.g. "
+    "`GH_TOKEN=$ACCOUNT_TOKEN gh pr list`, or run it through a wrapper that "
+    "does the same. `gh auth status` lists the accounts; `gh auth login` adds "
+    "a missing one."
 )
+
+_REMOTE_RUN_NOUNS: FrozenSet[str] = frozenset({
+    "workflow", "workflows", "pipeline", "pipelines", "ci",
+})
+_ACCOUNT_SLOT_ACTIONS: FrozenSet[str] = frozenset({"switch", "logout"})
+_GMAIL_ARCHIVE_RE = re.compile(r"removelabelids\W[^\]]*\binbox\b", re.DOTALL)
+_GMAIL_HIDDEN_PAYLOAD_RE = re.compile(
+    r"--[\w-]*file\b"
+    r"|--[\w-]*(?:json|body|data|params)[\w-]*(?:=|\s+)@"
+    r"|--[\w-]*(?:json|body|data)(?:=|\s+)-(?:\s|$)"
+    r"|<\s*[^\s<]"
+    r"|<<"
+)
+
+
+def _may_archive_gmail(semantics: CommandSemantics) -> bool:
+    """Can this Gmail `modify` remove INBOX, i.e. archive the message?
+
+    Yes when the inline label payload removes INBOX, and also when the payload
+    comes from a file or stdin: the command text cannot show what it removes,
+    so it asks. An inline payload that names labels without removing INBOX
+    stays free.
+    """
+    text = semantics.raw_command.lower()
+    if _GMAIL_ARCHIVE_RE.search(text):
+        return True
+    if "labelids" in text:
+        return False
+    return bool(_GMAIL_HIDDEN_PAYLOAD_RE.search(text))
+
+
+def _check_generic_cli_shape(
+    base_cmd: str, family: str, semantics: CommandSemantics
+) -> Optional["MutativeResult"]:
+    """T3 for command shapes whose effect does not depend on the binary's name.
+
+    `<noun> run` for a remote-run noun triggers a remote execution, `config
+    <write verb>` rewrites where every later command points, and `auth
+    switch|logout` rewrites the shared account slot. `config` heads the read
+    forms people run all day, so only a write verb after it decides; `use-context`
+    and `activate` carry none and stay out. Only the leading path is read, so
+    `docker run ci run`, `npm run test` and `gh run list` are untouched.
+    """
+    path = semantics.non_flag_tokens
+    if len(path) < 2:
+        return None
+    head, action = path[0], path[1]
+    guidance = ""
+    if head in _REMOTE_RUN_NOUNS and action == "run":
+        pass
+    elif head == "config" and action.split("-", 1)[0] in MUTATIVE_VERBS:
+        pass
+    elif head == "auth" and action in _ACCOUNT_SLOT_ACTIONS:
+        guidance = _ACCOUNT_SLOT_GUIDANCE
+    else:
+        return None
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb=action,
+        cli_family=family,
+        confidence="high",
+        reason=(
+            f"State-mutating command shape '{base_cmd} {head} {action}' "
+            f"is MUTATIVE (T3) for any binary"
+            + (f". {guidance}" if guidance else "")
+        ),
+        guidance=guidance,
+    )
 
 
 @dataclass(frozen=True)
@@ -824,43 +900,19 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # shallow compound-verb scan, so paths and arguments containing cheap
         # tier words must not leave a real credential mutation ungated.
         MutativeAnchor(path=("sql", "users", "set-password")),
-        # `config` is a READ_ONLY_VERBS entry, so the Step 4 scan stops at it
-        # and returns before it ever reads the verb behind it: `gcloud config
-        # set project other-project` and `gcloud config set account
-        # someone@else.com` redirect every later command onto another project
-        # and another identity, and both were T0. Measured directly -- withdraw
-        # `config` from the read-only table and the same commands come back
-        # MUTATIVE on `set`. The noun is not wrong; deciding alone is.
-        #
-        # Anchored per path rather than by dropping `config` from the read-only
-        # table: that noun heads the read forms this user runs dozens of times a
-        # day (`gcloud config list`, `gcloud config get-value project`), and
-        # those must keep costing nothing. An anchor fires on the exact write
-        # paths and leaves every sibling read where it was.
-        MutativeAnchor(path=("config", "set")),
+        # `config set` is covered by _check_generic_cli_shape; the nested
+        # `configurations` group sits one token deeper than that rule reads.
         MutativeAnchor(path=("config", "configurations", "create")),
         MutativeAnchor(path=("config", "configurations", "delete")),
+        # `add` is kept out of MUTATIVE_VERBS so `git add` stays free; this one
+        # publishes a new secret value to every consumer of `latest`.
+        MutativeAnchor(path=("secrets", "versions", "add")),
     ),
-    # The same noun shadows the same class of write in three more CLIs, each
-    # measured the same way. `kubectl config set-context` repoints the cluster
-    # and namespace every later kubectl reaches; `npm config set registry`
-    # repoints where every later install downloads from. Anchored per CLI so
-    # closing one cannot tax another.
-    #
-    # NOT anchored, and left open on purpose: `kubectl config use-context` and
-    # `gcloud config configurations activate` hide no mutative verb -- `use` and
-    # `activate` are absent from the verb taxonomy, so the shadow is not what
-    # holds them at T0 and removing it would not move them. They redirect as
-    # hard as the forms above and need their own decision.
+    # `config <write verb>` is generic (_check_generic_cli_shape). NOT gated,
+    # and left open on purpose: `kubectl config use-context` and `gcloud config
+    # configurations activate` carry no write verb -- `use` and `activate` are
+    # absent from the verb taxonomy -- and need their own decision.
     "kubectl": (
-        MutativeAnchor(path=("config", "set")),
-        MutativeAnchor(path=("config", "set-cluster")),
-        MutativeAnchor(path=("config", "set-context")),
-        MutativeAnchor(path=("config", "set-credentials")),
-        MutativeAnchor(path=("config", "delete-cluster")),
-        MutativeAnchor(path=("config", "delete-context")),
-        MutativeAnchor(path=("config", "delete-user")),
-        MutativeAnchor(path=("config", "rename-context")),
         # `run` is deliberately absent from MUTATIVE_VERBS ("safe by
         # elimination" -- a global entry would gate every `docker run` and
         # similar dev-workflow invocation), so `kubectl run` fell through to
@@ -874,52 +926,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("run",), flags=frozenset({"--image"})),
     ),
     "gh": (
-        MutativeAnchor(path=("config", "set")),
-        # Three more forms hidden the same way `add-iam-policy-binding` was:
-        # no verb in MUTATIVE_VERBS sits behind them, so all three fell
-        # through to Step 4 and classified READ_ONLY by elimination.
-        #
-        # `gh workflow run` dispatches a `workflow_dispatch` run against
-        # whatever ref is given -- a remote trigger indistinguishable in
-        # effect from pushing the commit that would have triggered it.
-        # `gh run rerun` re-dispatches a COMPLETED run, which is the same
-        # remote-execution effect reached from a different entry point.
-        # `gh run cancel` was not in the original brief -- observed while
-        # closing the other two as the same property from the other
-        # direction: it reaches into a run that is CURRENTLY EXECUTING and
-        # changes its outcome, which is exactly the "provoke or reach into a
-        # remote execution" property the anchor exists to gate, not merely
-        # its trigger half.
-        MutativeAnchor(path=("workflow", "run")),
-        MutativeAnchor(path=("run", "rerun")),
-        MutativeAnchor(path=("run", "cancel")),
         # Merges or rebases the base branch into the PR's REMOTE head: a push
         # to someone's branch, and a CI trigger besides. Today the verb scan
         # reaches it only by splitting `update-branch`; the anchor names it.
         MutativeAnchor(path=("pr", "update-branch")),
-        # `gh` keeps ONE active account per host, so switching or logging out
-        # rewrites a slot every concurrent session and agent on the machine
-        # reads -- a mutation whose blast radius is other people's work, not
-        # this command's repository. Neither `switch` nor `logout` carries a
-        # verb in MUTATIVE_VERBS, so both fell through to Step 4 and classified
-        # READ_ONLY by elimination.
-        #
-        # `login` is deliberately NOT anchored: it ADDS an account without
-        # displacing the active one, and it is the only way out when the
-        # account a command needs is absent. `status` and `token` only read.
-        MutativeAnchor(
-            path=("auth", "switch"),
-            guidance=_GH_ACCOUNT_GUIDANCE,
-        ),
-        MutativeAnchor(
-            path=("auth", "logout"),
-            guidance=_GH_ACCOUNT_GUIDANCE,
-        ),
-    ),
-    "npm": (
-        MutativeAnchor(path=("config", "set")),
-        MutativeAnchor(path=("config", "delete")),
-        MutativeAnchor(path=("config", "edit")),
     ),
     # `git remote add` creates a NEW remote destination the repository will
     # push to and fetch from thereafter -- the same "grants a new capability"
@@ -3342,7 +3352,7 @@ def _scan_dangerous_flags(
     """
     found: List[str] = []
 
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if not token.startswith("-"):
             continue
 
@@ -3365,7 +3375,11 @@ def _scan_dangerous_flags(
                 if cli in D_FLAG_MEANS_FORCE_DELETE:
                     found.append(token)
             elif token == "-M":
-                if cli in M_FLAG_MEANS_FORCE_MOVE:
+                # On git, -M is --find-renames for show/log/diff and a forced
+                # rename only after `branch`.
+                if cli in M_FLAG_MEANS_FORCE_MOVE and (
+                    cli != "git" or "branch" in tokens[:index]
+                ):
                     found.append(token)
             elif token == "--delete":
                 if cli in DELETE_FLAG_IS_DESTRUCTIVE:
@@ -4318,7 +4332,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # its deletion consentable at all.  The catastrophic floor (rm -rf /,
         # /*, ~) still runs first in blocked_commands.py, which defers to this
         # detector only for scratch-confined rm commands.
-        if base_cmd == "rm":
+        if base_cmd in ("rm", "rmdir"):
             scratch_targets = _rm_scratch_confined_targets(tuple(tokens))
             if scratch_targets:
                 valuable = _durable_store_under_scratch_targets(scratch_targets)
@@ -4802,6 +4816,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 guidance=anchor.guidance,
             )
 
+    shape_result = _check_generic_cli_shape(base_cmd, family, semantics)
+    if shape_result is not None:
+        return shape_result
+
     # --- Step 3e: Command+subcommand tier exception (anchored) ---
     # Some project-CLI subcommand groups (e.g., `gaia brief`, `gaia ac`) are
     # local-only planning bookkeeping: edit/set-status/add/remove only touch a
@@ -4934,6 +4952,20 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
+        # `deploy-key` is a noun, so hyphen-splitting it onto `deploy` reads a
+        # listing as a deployment; add/delete still reach the split below.
+        if token == "deploy-key" and tuple(
+            semantics.semantic_head_tokens[semantic_index + 1:semantic_index + 2]
+        ) == ("list",):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb="list",
+                cli_family=family,
+                confidence="high",
+                reason="Listing deploy keys is read-only",
+            )
+
         # Check compound read-only subcommands BEFORE hyphen-split.
         # Without this, "merge-base" would be split to "merge" -> MUTATIVE.
         if token in COMPOUND_READ_ONLY_SUBCOMMANDS:
@@ -5048,7 +5080,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             # combos are safe despite the verb being in MUTATIVE_VERBS.
             # Example: Gmail API "modify" only changes labels/flags.
             exception_key = (family, verb)
-            if exception_key in CLI_VERB_TIER_EXCEPTIONS:
+            if exception_key in CLI_VERB_TIER_EXCEPTIONS and not _may_archive_gmail(semantics):
                 target_category = CLI_VERB_TIER_EXCEPTIONS[exception_key]
                 return MutativeResult(
                     is_mutative=False,
@@ -5129,7 +5161,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                                 confidence="high",
                                 reason=f"CamelCase verb '{part}' (from '{raw_token}') overridden to read-only by flag",
                             )
-                    if (family, part) in CLI_VERB_TIER_EXCEPTIONS:
+                    if (family, part) in CLI_VERB_TIER_EXCEPTIONS and not _may_archive_gmail(semantics):
                         target_category = CLI_VERB_TIER_EXCEPTIONS[(family, part)]
                         return MutativeResult(
                             is_mutative=False,
@@ -7824,7 +7856,7 @@ def build_t3_block_response(
     Args:
         command: The original shell command.
         danger: MutativeResult from detect_mutative_command.
-        nonce: Cryptographic nonce for this pending approval. When provided,
+        nonce: The approval_id this block asks the user to approve. When provided,
             the block message includes the approval code that the agent must
             present to the user.
 

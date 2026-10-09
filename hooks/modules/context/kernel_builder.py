@@ -168,6 +168,44 @@ def _wrap_goal(prompt: str) -> str:
     return "\n".join(rendered)
 
 
+def unwrap_injected_prompt(prompt: str) -> str:
+    """The instruction *prompt* carried before kernels were injected into it, every layer peeled.
+
+    A prompt that already holds a rendered ``# Your Contract`` block (heading
+    alone on its line, followed by ``contract_id:`` and ``agent_id:``) is one
+    this builder wrapped; its ``goal:`` field is the instruction underneath.
+    Prose that merely mentions the heading is returned unchanged.
+    """
+    current = prompt
+    while True:
+        lines = current.split("\n")
+        start = next(
+            (
+                i for i, line in enumerate(lines[:-4])
+                if line == KERNEL_HEADING
+                and lines[i + 2].startswith("contract_id: ")
+                and lines[i + 3].startswith("agent_id:")
+                and lines[i + 5].startswith("goal: ")
+            ),
+            None,
+        )
+        if start is None:
+            return current
+        goal_at = start + 5
+        end = next(
+            (i for i in range(goal_at + 1, len(lines)) if lines[i].startswith("role:")),
+            len(lines),
+        )
+        goal = [lines[goal_at][len("goal: "):]]
+        goal.extend(
+            line[len(_GOAL_INDENT):] if line.startswith(_GOAL_INDENT) else line
+            for line in lines[goal_at + 1:end]
+        )
+        while goal and not goal[-1].strip():
+            goal.pop()
+        current = "\n".join(goal)
+
+
 def _acceptance_lines(plan_task_id: int, db_path=None) -> list:
     """One line per task gate, read via the writer's own gate SELECT (SSOT)."""
     try:

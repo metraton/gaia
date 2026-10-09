@@ -542,7 +542,13 @@ def close_brief(
     *,
     db_path: Path | None = None,
 ) -> bool:
-    """Set the brief status to 'closed' and update updated_at."""
+    """Set the brief status to 'closed' and update updated_at.
+
+    Raises StateTransitionForbidden for a dispatched agent that is not a curator.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("briefs")
+
     con = _connect(db_path)
     try:
         cur = con.execute(
@@ -554,6 +560,48 @@ def close_brief(
         return cur.rowcount > 0
     finally:
         con.close()
+
+
+def close_brief_verified(
+    workspace: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Close a brief and its active plan, but only if verify passes for the closed state.
+
+    Verify runs against the closed state first (``verify_brief(closing=True)``,
+    which also reports the pending ACs that compute done); a refusal writes
+    nothing. Only then are the plan closed, those ACs synced and the brief closed.
+    Returns ``{"closed": bool, "synced": [ac_id], "inconsistencies": [...]}``.
+
+    Raises StateTransitionForbidden for a dispatched agent that is not a curator,
+    ValueError when the brief is missing or its plan cannot be closed (paused).
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    from gaia.store.writer import set_plan_status, set_ac_status
+
+    _assert_dispatch_can_advance_state("briefs")
+
+    verdict = verify_brief(workspace, name, closing=True, db_path=db_path)
+    if not verdict["pass"]:
+        return {"closed": False, "synced": [], "inconsistencies": verdict["inconsistencies"]}
+
+    con = _connect(db_path)
+    try:
+        plan = con.execute(
+            "SELECT p.status FROM plans p JOIN briefs b ON b.id = p.brief_id "
+            "WHERE b.workspace = ? AND b.name = ?",
+            (workspace, name),
+        ).fetchone()
+    finally:
+        con.close()
+    if plan is not None and plan["status"] == "active":
+        set_plan_status(workspace, name, "closed", db_path=db_path)
+    for ac_id in verdict["synced"]:
+        set_ac_status(workspace, name, ac_id, "done", db_path=db_path)
+    close_brief(workspace, name, db_path=db_path)
+    return {"closed": True, "synced": verdict["synced"], "inconsistencies": []}
 
 
 # ---------------------------------------------------------------------------
@@ -1463,9 +1511,14 @@ def verify_brief(
     workspace: str,
     name: str,
     *,
+    closing: bool = False,
     db_path: Path | None = None,
 ) -> dict:
     """Run invariant checks on a brief and return a structured diagnosis.
+
+    With ``closing`` the checks run against the state a close would leave (the
+    brief closed, an active plan closed) and the transaction is rolled back, so
+    nothing is written.
 
     Returns dict with keys:
       * brief_name (str)
@@ -1486,6 +1539,41 @@ def verify_brief(
         brief_status = brief_row["status"]
 
         inconsistencies: list[dict] = []
+
+        synced: list[str] = []
+        if closing:
+            brief_status = "closed"
+            synced = [
+                ac["ac_id"]
+                for ac in derive_brief_state(workspace, name, db_path=db_path)[
+                    "acceptance_criteria"
+                ]
+                if ac["done"] and ac["status"] == "pending"
+            ]
+            for ac_id in synced:
+                con.execute(
+                    "UPDATE acceptance_criteria SET status = 'done' "
+                    "WHERE brief_id = ? AND ac_id = ?",
+                    (brief_id, ac_id),
+                )
+            con.execute("UPDATE briefs SET status = 'closed' WHERE id = ?", (brief_id,))
+            con.execute(
+                "UPDATE plans SET status = 'closed' WHERE brief_id = ? AND status = 'active'",
+                (brief_id,),
+            )
+            for task in con.execute(
+                "SELECT t.order_num, t.status FROM tasks t JOIN plans p ON p.id = t.plan_id "
+                "WHERE p.brief_id = ? AND p.status = 'closed' "
+                "AND t.status NOT IN ('done', 'skipped') ORDER BY t.order_num",
+                (brief_id,),
+            ):
+                inconsistencies.append({
+                    "kind": "closing_with_open_task",
+                    "detail": (
+                        f"task order_num={task['order_num']} is "
+                        f"'{task['status']}' -- the plan cannot close with it open"
+                    ),
+                })
 
         # The TERMINAL set for an AC: an AC is "resolved" when it is either
         # satisfied ('done') or deliberately dropped ('descoped', v21). Any other
@@ -1597,10 +1685,18 @@ def verify_brief(
                 "SELECT status FROM plans WHERE id = ?", (plan_id,)
             ).fetchone()
             if plan_status_row and plan_status_row["status"] == "closed":
+                # Handoffs are bound to the brief through the plan's tasks, and a
+                # verifier row through its producer: brief_id itself stays NULL
+                # on CLI-finalized rows.
                 complete_count = con.execute(
-                    "SELECT COUNT(*) AS c FROM agent_contract_handoffs "
-                    "WHERE brief_id = ? AND agent_state = 'COMPLETE'",
-                    (brief_id,),
+                    "SELECT COUNT(*) AS c FROM agent_contract_handoffs h "
+                    "WHERE h.agent_state = 'COMPLETE' AND ("
+                    " h.brief_id = :brief OR h.plan_id = :plan"
+                    " OR h.plan_task_id IN (SELECT id FROM tasks WHERE plan_id = :plan)"
+                    " OR h.parent_handoff_id IN (SELECT id FROM agent_contract_handoffs"
+                    "  WHERE plan_id = :plan OR plan_task_id IN"
+                    "  (SELECT id FROM tasks WHERE plan_id = :plan)))",
+                    {"brief": brief_id, "plan": plan_id},
                 ).fetchone()["c"]
                 if complete_count == 0:
                     inconsistencies.append({
@@ -1812,7 +1908,8 @@ def verify_brief(
             "acceptance_criteria"
         ]:
             stored_done = ac["status"] == "done"
-            if ac["status"] == "descoped" or stored_done == ac["done"]:
+            if (ac["status"] == "descoped" or stored_done == ac["done"]
+                    or ac["ac_id"] in synced):
                 continue
             inconsistencies.append({
                 "kind": "ac_status_contradicts_computed",
@@ -1828,6 +1925,7 @@ def verify_brief(
             "brief_name": name,
             "inconsistencies": inconsistencies,
             "pass": len(inconsistencies) == 0,
+            "synced": synced,
         }
     finally:
         con.close()

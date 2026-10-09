@@ -120,6 +120,9 @@ def resolve_file_list(manifest: dict) -> list[Path]:
     for entry in manifest["hooks"]["entries"]:
         files.append(REPO_ROOT / entry)
 
+    for mod in manifest.get("host_mods", []):
+        _collect_paths((REPO_ROOT / "hooks" / mod).parent, files)
+
     # Modules
     modules = manifest.get("modules", [])
     if modules == "all":
@@ -219,6 +222,13 @@ def generate_hooks_json(manifest: dict) -> dict:
             entries.append(entry)
 
         hooks_json["hooks"][event_name] = entries
+
+    # Claude Code mods: hooks modules the host loads in-process, relative to
+    # hooks/hooks.json. Not the manifest's `modules` key, which lists Python
+    # hook-module directories.
+    mods = manifest.get("host_mods", [])
+    if mods:
+        hooks_json["modules"] = list(mods)
 
     return hooks_json
 
@@ -433,7 +443,8 @@ def write_root_manifests(plugin_name: str, output_dir: Path, *, force: bool = Fa
         force=force,
     )
     print(
-        f"  hooks/hooks.json: {outcome} ({len(hooks_json['hooks'])} events)",
+        f"  hooks/hooks.json: {outcome} ({len(hooks_json['hooks'])} events, "
+        f"{len(hooks_json.get('modules', []))} mods)",
         file=sys.stderr,
     )
 

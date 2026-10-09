@@ -46,6 +46,7 @@ approval id in its contract. You decide when to ask.
 Read the decision with `gaia approvals show <approval_id>` (its State). Approved:
 resume the specialist that requested it -- the same agent, not a new one --
 with `execution`; the signature is bound to that agent and session. Rejected:
-nothing runs; tell the requester if its work depends on it. A typed answer is
+nothing runs; resume the same requester so it closes its contract and removes
+what it created, instead of dispatching a new one. A typed answer is
 not a decision. You may withdraw a pending approval (`pending-approvals`), but
 the decision to approve is the user's alone.

@@ -492,6 +492,103 @@ def test_brief_close_help_recommends_no_verb_outside_the_lane(db, capsys):
     assert "descoped" in out
 
 
+# ---------------------------------------------------------------------------
+# 8. One verb closes a finished plan and its brief: it syncs the stored AC
+#    status to the computed one, refuses on inconsistencies, curator only.
+# ---------------------------------------------------------------------------
+
+def _finished(db: Path) -> None:
+    """Last task verified: AC-1 computes done while stored pending, plan still active."""
+    from gaia.evidence.store import insert_evidence
+    from gaia.store.writer import link_task_criteria
+
+    (gate_1,) = _seed(db)
+    link_task_criteria(_WS, _BRIEF, 1, ["AC-1"], db_path=db)
+    _pass(db, 1, gate_1)
+    insert_evidence(_WS, _brief_id(db), "AC-1", type="text", text="passed",
+                    gate_id=gate_1, db_path=db)
+    # Real rows: the producer is bound to its plan task and the verifier to its
+    # producer; neither carries a brief_id.
+    con = sqlite3.connect(str(db))
+    try:
+        producer = con.execute(
+            "INSERT INTO agent_contract_handoffs "
+            "(agent_id, workspace, plan_task_id, agent_state, raw_handoff_json) "
+            "VALUES ('a0123456789abcdef', ?, ?, 'COMPLETE', '{}')",
+            (_WS, _task_id(db, 1))).lastrowid
+        con.execute(
+            "INSERT INTO agent_contract_handoffs "
+            "(agent_id, workspace, parent_handoff_id, agent_state, raw_handoff_json) "
+            "VALUES ('a0123456789abcde0', ?, ?, 'COMPLETE', '{}')", (_WS, producer))
+        con.commit()
+    finally:
+        con.close()
+
+
+def _statuses(db: Path) -> dict:
+    con = sqlite3.connect(str(db))
+    try:
+        return {
+            "brief": con.execute("SELECT status FROM briefs WHERE name = ?",
+                                 (_BRIEF,)).fetchone()[0],
+            "plan": con.execute(
+                "SELECT p.status FROM plans p JOIN briefs b ON b.id = p.brief_id "
+                "WHERE b.name = ?", (_BRIEF,)).fetchone()[0],
+            "ac": con.execute(
+                "SELECT a.status FROM acceptance_criteria a JOIN briefs b "
+                "ON b.id = a.brief_id WHERE b.name = ? AND a.ac_id = 'AC-1'",
+                (_BRIEF,)).fetchone()[0],
+        }
+    finally:
+        con.close()
+
+
+def test_the_orchestrator_may_close_a_brief(guard):
+    allowed, reason = guard.check(f"{_GAIA} brief close my-brief", {})
+    assert allowed is True, reason
+
+
+def test_close_syncs_the_computed_ac_and_closes_the_plan_and_the_brief(db):
+    _finished(db)
+    assert _statuses(db) == {"brief": "open", "plan": "active", "ac": "pending"}
+
+    assert _cli("brief", ["brief", "close", _BRIEF]) == 0
+
+    assert _statuses(db) == {"brief": "closed", "plan": "closed", "ac": "done"}
+
+
+def test_close_refuses_while_verify_finds_inconsistencies(db, capsys):
+    _mixed_states(db)
+
+    assert _cli("brief", ["brief", "close", _BRIEF]) != 0
+
+    err = capsys.readouterr().err
+    assert "AC-2" in err
+    statuses = _statuses(db)
+    assert statuses == {"brief": "open", "plan": "active", "ac": "pending"}, (
+        "a refused close writes nothing, the AC sync included"
+    )
+
+
+@pytest.mark.table("command", [
+    "brief set-status my-brief closed",
+    "plan set-status my-brief closed",
+])
+def test_the_orchestrator_cannot_close_without_verify(guard, command):
+    allowed, reason = guard.check(f"{_GAIA} {command}", {})
+    assert allowed is False
+    assert "gaia brief close my-brief" in reason
+
+
+def test_a_subagent_cannot_close_a_brief(db, monkeypatch):
+    _finished(db)
+    monkeypatch.setenv("GAIA_DISPATCH_AGENT", "developer")
+
+    assert _cli("brief", ["brief", "close", _BRIEF]) != 0
+
+    assert _statuses(db) == {"brief": "open", "plan": "active", "ac": "pending"}
+
+
 def test_brief_show_text_shows_computed_ac_and_task_states(db, capsys):
     ids = _mixed_states(db)
 

@@ -13,6 +13,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPO = "metraton/gaia"
 
+JSON_VERSION_PATCH = '@@ -3 +3 @@\n-  "version": "5.5.0-rc.4",\n+  "version": "5.5.0-rc.5",'
+TOML_VERSION_PATCH = '@@ -3 +3 @@\n-version = "5.5.0-rc.4"\n+version = "5.5.0-rc.5"'
+CHANGELOG_PATCH = "@@ -81,0 +82,2 @@\n+## [5.5.0-rc.5] - 2026-10-06\n+"
+SCRIPTS_PATCH = '@@ -20 +20 @@\n-    "test": "pytest",\n+    "test": "true",'
+DEPENDENCY_PATCH = '@@ -30 +30 @@\n-    "chalk": "^5.3.0"\n+    "chalk": "^5.4.0"'
+
 
 def _load_helper():
     spec = importlib.util.spec_from_file_location(
@@ -26,12 +32,28 @@ def _load_helper():
 ci_verdict = _load_helper()
 
 
-def _commit(sha, tree, parents=(), files=()):
+def _default_patch(name):
+    if name == "pyproject.toml":
+        return TOML_VERSION_PATCH
+    if name == "CHANGELOG.md":
+        return CHANGELOG_PATCH
+    return JSON_VERSION_PATCH
+
+
+def _commit(sha, tree, parents=(), files=(), patches=None):
+    patches = patches or {}
+    entries = []
+    for name in files:
+        entry = {"filename": name}
+        patch = patches.get(name, _default_patch(name))
+        if patch is not None:
+            entry["patch"] = patch
+        entries.append(entry)
     return {
         "sha": sha,
         "commit": {"tree": {"sha": tree}},
         "parents": [{"sha": p} for p in parents],
-        "files": [{"filename": f} for f in files],
+        "files": entries,
     }
 
 
@@ -75,6 +97,16 @@ def _find(api, sha):
     return ci_verdict.find_reusable_verdict(REPO, sha, workflow="ci.yml", api=api)
 
 
+def _bump_over_green_parent(files, patches=None):
+    return FakeApi(
+        commits=[
+            _commit("release", "t-release", parents=["parent"], files=files, patches=patches),
+            _commit("parent", "t-parent", parents=["gp"], files=["bin/gaia"]),
+        ],
+        runs=[_run(301, "parent", "t-parent")],
+    )
+
+
 def test_same_sha_with_green_verdict_is_reusable():
     api = FakeApi(
         commits=[_commit("s1", "t1", parents=["p1"], files=["bin/gaia"])],
@@ -97,26 +129,50 @@ def test_squash_commit_reuses_the_pr_head_with_the_same_tree():
     assert "same tree" in verdict.reason
 
 
-def test_version_only_commit_reuses_its_parent():
-    release_files = [
-        "package.json",
-        "pyproject.toml",
-        "CHANGELOG.md",
-        ".claude-plugin/plugin.json",
-        ".claude-plugin/marketplace.json",
-        "hooks/hooks.json",
-    ]
+def test_squash_onto_a_main_that_moved_has_another_tree_and_runs_the_suite():
     api = FakeApi(
-        commits=[
-            _commit("release", "t-release", parents=["parent"], files=release_files),
-            _commit("parent", "t-parent", parents=["gp"], files=["bin/gaia"]),
-        ],
-        runs=[_run(301, "parent", "t-parent")],
+        commits=[_commit("squash", "t-merged", parents=["main-after"], files=["bin/gaia"])],
+        runs=[_run(210, "pr-head", "t-pr")],
+    )
+    assert _find(api, "squash") is None
+
+
+def test_version_only_commit_reuses_its_parent():
+    api = _bump_over_green_parent(
+        [
+            "package.json",
+            "pyproject.toml",
+            "CHANGELOG.md",
+            ".claude-plugin/plugin.json",
+            ".claude-plugin/marketplace.json",
+        ]
     )
     verdict = _find(api, "release")
     assert verdict.run_id == 301
     assert verdict.head_sha == "parent"
     assert "version" in verdict.reason
+
+
+def test_changelog_entry_alone_reuses_its_parent():
+    assert _find(_bump_over_green_parent(["CHANGELOG.md"]), "release").run_id == 301
+
+
+@pytest.mark.parametrize(
+    ("name", "patch"),
+    [
+        ("package.json", SCRIPTS_PATCH),
+        ("package.json", DEPENDENCY_PATCH),
+        ("package.json", JSON_VERSION_PATCH + "\n" + SCRIPTS_PATCH),
+        ("pyproject.toml", '@@ -9 +9 @@\n-addopts = "-n auto"\n+addopts = ""'),
+        ("hooks/hooks.json", '@@ -5 +5 @@\n-      "command": "a"\n+      "command": "b"'),
+        (".claude-plugin/plugin.json", '@@ -4 +4 @@\n-  "name": "gaia",\n+  "name": "other",'),
+        ("package.json", None),
+    ],
+    ids=["scripts", "dependency", "version-plus-scripts", "pytest-config", "hooks", "plugin-name", "no-patch"],
+)
+def test_version_source_edit_beyond_the_version_is_code(name, patch):
+    api = _bump_over_green_parent([name], patches={name: patch})
+    assert _find(api, "release") is None
 
 
 def test_changed_tree_has_no_reusable_verdict():

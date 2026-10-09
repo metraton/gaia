@@ -33,7 +33,7 @@ duplicating their bodies.
    - blockers and approvals;
    - active files needed to resume;
    - user-provided preservation instructions.
-5. **Invoke `/compact` with that handoff** -- the orchestrator's own action; this skill cannot invoke it.
+5. **Hand the handoff to the user for `/compact`** -- `/compact` is a host command typed by the user; neither this skill nor the orchestrator can invoke it.
 
 ## Preservation prompt
 

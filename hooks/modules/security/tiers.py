@@ -11,7 +11,7 @@ Tiers:
 - T1: Validation operations (validate, lint, fmt, check) -- local only
 - T2: Simulation operations (plan, diff, dry-run) -- may contact remote APIs
 - T3: State-modifying operations (mutative_verbs.py detection,
-  nonce-based approval via approval_grants.py)
+  approval via approval_grants.py)
 """
 from __future__ import annotations
 

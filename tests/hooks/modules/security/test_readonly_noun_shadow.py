@@ -56,7 +56,8 @@ T3 = SecurityTier.T3_BLOCKED
 SHADOWING_NOUN = "config"
 
 # --- Face (a): configuration writes the shadow was covering -----------------
-# Carried by an anchor in COMMAND_PATH_MUTATIVE_UPGRADES, per CLI.
+# Carried by the any-binary `config <write verb>` rule, or by a per-CLI anchor
+# in COMMAND_PATH_MUTATIVE_UPGRADES (the gcloud `configurations` group).
 ANCHORED_WRITES = [
     ("gcloud-redirect-project", "gcloud config set project other-project"),
     ("gcloud-redirect-account", "gcloud config set account someone@else.com"),
@@ -157,8 +158,14 @@ def without_the_config_anchors(monkeypatch):
 
     Anchors whose path starts with another token are left in place, so a CLI
     that was already anchored for unrelated reasons keeps those verdicts and
-    the counterfactual measures this entry rather than the fixture.
+    the counterfactual measures this entry rather than the fixture. Also stands
+    down the any-binary `config <write verb>` rule.
     """
+    monkeypatch.setattr(
+        mutative_verbs_module,
+        "_check_generic_cli_shape",
+        lambda base_cmd, family, semantics: None,
+    )
     for base_cmd, anchors in list(COMMAND_PATH_MUTATIVE_UPGRADES.items()):
         survivors = tuple(a for a in anchors if a.path[0] != SHADOWING_NOUN)
         if len(survivors) == len(anchors):

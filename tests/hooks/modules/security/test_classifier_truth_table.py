@@ -23,6 +23,7 @@ The table is the shared harness: work that changes a verdict extends this
 table instead of standing up its own assertions somewhere else.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -193,6 +194,102 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gh-workflow-list", FREE, "gh workflow list", False, T0),
     ("read-gh-workflow-view", FREE, "gh workflow view deploy.yml", False, T0),
     ("read-gh-run-view", FREE, "gh run view 123456", False, T0),
+    # ---- Remote triggers and setting changes classify by SHAPE, any binary ----
+    # `wrapbin` is declared nowhere (no GAIA_CLI_ALIASES), so these rows prove
+    # the verdict does not depend on the binary being named `gh`.
+    ("shape-workflow-run-wrapper", GATED, "wrapbin workflow run deploy.yml", True, T3),
+    ("shape-workflows-run-wrapper", GATED, "wrapbin workflows run deploy.yml", True, T3),
+    ("shape-run-rerun-wrapper", GATED, "wrapbin run rerun 123456", True, T3),
+    ("shape-run-cancel-wrapper", GATED, "wrapbin run cancel 123456", True, T3),
+    ("shape-pipeline-run-wrapper", GATED, "wrapbin pipeline run main", True, T3),
+    ("shape-pipelines-run-wrapper", GATED, "wrapbin pipelines run main", True, T3),
+    ("shape-ci-run-wrapper", GATED, "wrapbin ci run --branch main", True, T3),
+    ("shape-pipeline-run-gh", GATED, "gh pipeline run main", True, T3),
+    ("shape-ci-run-glab", GATED, "glab ci run --branch main", True, T3),
+    ("shape-config-set-wrapper", GATED, "wrapbin config set editor vim", True, T3),
+    ("shape-config-set-context-wrapper", GATED, "wrapbin config set-context prod", True, T3),
+    ("shape-config-delete-wrapper", GATED, "wrapbin config delete-cluster prod", True, T3),
+    ("shape-auth-switch-wrapper", GATED, "wrapbin auth switch -u someone", True, T3),
+    ("shape-auth-logout-wrapper", GATED, "wrapbin auth logout", True, T3),
+    (
+        "gmail-modify-archive",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json '{\"removeLabelIds\":[\"INBOX\"]}'",
+        True,
+        T3,
+    ),
+    (
+        "gmail-modify-add-label",
+        FREE,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json '{\"addLabelIds\":[\"Label_1\"]}'",
+        False,
+        T0,
+    ),
+    (
+        "gmail-modify-remove-other-label",
+        FREE,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json '{\"removeLabelIds\":[\"UNREAD\"]}'",
+        False,
+        T0,
+    ),
+    # A payload the command text cannot show may archive, so it asks.
+    (
+        "gmail-modify-payload-from-file",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json @labels.json",
+        True,
+        T3,
+    ),
+    (
+        "gmail-modify-payload-file-flag",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json-file labels.json",
+        True,
+        T3,
+    ),
+    (
+        "gmail-modify-payload-from-stdin",
+        GATED,
+        "gws gmail users messages modify --params '{\"userId\":\"me\",\"id\":\"m1\"}' "
+        "--json -",
+        True,
+        T3,
+    ),
+    # ---- FREE: the generic shapes do not reach ordinary reads ----
+    # `run` is not the head of the path here, so the trigger shape never reads it.
+    ("shape-read-docker-run-ci-run", FREE, "docker run ci run", False, T0),
+    ("shape-read-gh-pr-view", FREE, "gh pr view 1", False, T0),
+    ("shape-read-wrapper-pr-view", FREE, "wrapbin pr view 1", False, T0),
+    ("shape-read-wrapper-run-view", FREE, "wrapbin run view 123456", False, T0),
+    ("shape-read-wrapper-workflow-list", FREE, "wrapbin workflow list", False, T0),
+    ("shape-read-wrapper-config-list", FREE, "wrapbin config list", False, T0),
+    ("shape-read-wrapper-config-get", FREE, "wrapbin config get editor", False, T0),
+    ("shape-read-wrapper-auth-status", FREE, "wrapbin auth status", False, T0),
+    ("shape-read-kubectl-get", FREE, "kubectl get pods -n web", False, T0),
+    ("shape-read-kubectl-config-view", FREE, "kubectl config view", False, T0),
+    ("shape-read-npm-run-test", FREE, "npm run test", False, T0),
+    ("shape-read-gaia-memory-list", FREE, "gaia memory list --type user", False, T0),
+    # ---- Adding a secret version publishes a value to every consumer of it ----
+    (
+        "secret-version-add",
+        GATED,
+        "gcloud secrets versions add my-secret --project=p --data-file=f",
+        True,
+        T3,
+    ),
+    (
+        "secret-version-add-stdin",
+        GATED,
+        "gcloud secrets versions add my-secret --data-file=-",
+        True,
+        T3,
+    ),
+    ("read-gcloud-secret-versions-list", FREE, "gcloud secrets versions list my-secret", False, T0),
     # ---- CLOSED: state, destination and direct write ----
     # These four were recorded OPEN (False, T0). None of the three verbs
     # behind them sits in MUTATIVE_VERBS -- `init` names no lifecycle action
@@ -1375,7 +1472,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 171
+_MINIMUM_MEASURED_CASES = 174
 
 
 @pytest.mark.parametrize(
@@ -1421,3 +1518,50 @@ def test_classifier_truth_table_carries_both_directions():
     """
     families = {row[1] for row in CLASSIFIER_TRUTH_TABLE}
     assert {OPEN, GATED, FREE} <= families
+
+
+@pytest.mark.parametrize(
+    "command,gated",
+    [
+        ("mywrap workflow run build.yml", True),
+        ("mywrap -C /r workflow run build.yml", True),
+        ("mywrap workflow list", False),
+        ("mywrap pr view 1", False),
+    ],
+)
+def test_declared_wrapper_costs_what_the_cli_it_wraps_costs(monkeypatch, command, gated):
+    """A wrapper the user declares in GAIA_CLI_ALIASES is read as its target."""
+    monkeypatch.setenv("GAIA_CLI_ALIASES", "mywrap=gh")
+    detect_mutative_command.cache_clear()
+    assert detect_mutative_command(command).is_mutative is gated, command
+    assert (classify_command_tier(command) == T3) is gated, command
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "npm --prefix {d} run x",
+        "npm run x --prefix {d}",
+        "npm --prefix={d} run x",
+        "npm -C {d} run x",
+        "pnpm --dir {d} run x",
+        "yarn --cwd {d} run x",
+        "bun --cwd {d} run x",
+    ],
+)
+@pytest.mark.parametrize(
+    "body,gated",
+    [
+        ("kubectl delete deployment web", True),
+        ("echo start; kubectl delete pod p", True),
+        ("vite build", False),
+    ],
+)
+def test_directory_option_before_run_classifies_by_the_script_body(
+    tmp_path, form, body, gated
+):
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"x": body}}))
+    command = form.format(d=tmp_path)
+    assert detect_mutative_command(command).is_mutative is gated, command
+    if gated:
+        assert classify_command_tier(command) == T3, command

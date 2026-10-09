@@ -329,7 +329,7 @@ NON_CLASSIFYING_FLAGS: dict[str, frozenset[str]] = {
     "reclassify": frozenset({"--workspace"}),
     "link": frozenset({"--workspace", "--delete"}),
     "add": frozenset({"--workspace", "--audience", "--body-file", "--project",
-                      "--project-ref", "--status"}),
+                      "--project-ref", "--status", "--measured-at", "--method"}),
     "checkpoint": frozenset({"--workspace", "--project", "--project-ref",
                              "--initiative"}),
     "get-relevant": frozenset({"--workspace"}),
@@ -709,6 +709,16 @@ def _query_parser():
 
 def _flags_in(argv) -> set[str]:
     return {token.split("=", 1)[0] for token in argv if token.startswith("--")}
+
+
+def test_get_relevant_help_names_the_counters_it_moves(seeded):
+    """The help text is the documentation of the read telemetry: it may not
+    claim the verb never writes while two of its modes bump a counter."""
+    out = _run(["memory", "get-relevant", "--help"], seeded).stdout
+    flat = " ".join(out.split())
+    assert "NEVER writes" not in flat
+    assert "injection_count" in flat
+    assert "deliberate_count" in flat
 
 
 def test_every_memory_action_is_classified():

@@ -1,60 +1,49 @@
-"""Compact context builder for post-compaction re-injection.
-
-Builds a lightweight context summary from session data sources.
-Each source is independent and fail-safe.
-"""
+"""Compact context builder for post-compaction re-injection."""
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Defaults
-DEFAULT_MAX_SNAPSHOTS = 5
 
+def build_compact_context(*, session_id: str = "") -> str:
+    """Build the orchestrator identity reminder plus the session's own snapshot.
 
-def build_compact_context(
-    *,
-    max_snapshots: int = DEFAULT_MAX_SNAPSHOTS,
-) -> str:
-    """Build compact context for post-compaction re-injection.
-
-    Returns a markdown string with 2 blocks:
-    1. Orchestrator identity reminder
-    2. Session activity summary (from the episodes table)
-
-    Each block is independent — if a source fails, the others still produce output.
-
-    Two blocks were removed on 2026-08-14 by the user's decision. ACTIVE
-    ANOMALIES arrived with eight warnings that the orchestrator ignored for an
-    entire session: an alert nobody attends is noise wearing the appearance of
-    an alert, and the honest options were to make it actionable or withdraw it.
-    RECENT EVENTS restated what already reaches the session by another route.
-    Session activity stays: after compaction it is the only thing that says
-    what happened before the context was lost.
+    The snapshot is keyed by ``session_id``; the host event that triggers the
+    refresh carries the same id across compaction, so another session's
+    contracts and signatures never reach this one. This refresh is the
+    snapshot's only post-compaction delivery: the compaction mod only steers.
     """
-    blocks = []
-
-    # Block 1: Orchestrator identity (always present, static)
-    blocks.append(_build_identity_block())
-
-    # Block 2: Session activity from the episodes table
-    activity = _build_activity_block(max_snapshots)
-    if activity:
-        blocks.append(activity)
-
+    blocks = [_build_identity_block()]
+    snapshot = _build_snapshot_block(session_id)
+    if snapshot:
+        blocks.append(snapshot)
     return "\n\n".join(blocks)
 
 
-def _build_identity_block() -> str:
-    """Minimal post-compaction identity reminder.
+def build_summary_instructions() -> str:
+    """The brief a host that summarizes its own session is given before it writes the summary.
 
-    Full identity lives in agents/gaia-orchestrator.md and is injected at
-    session start.  This block only restores the core posture after context
-    compaction — it intentionally does NOT list specific agents because
-    the agent roster can change and a stale list causes drift.
+    Aimed at the summarizer, so only a pre-summary hook delivers it; the
+    post-compaction refresh above speaks to the session that resumes.
     """
+    return (
+        "# Compaction Instructions\n\n"
+        "Write the summary so the next turn can resume without re-deriving anything:\n"
+        "- Keep the session snapshot above (resume point, open contracts, pending "
+        "signatures, active brief/plan/task) verbatim; it is the source of truth for "
+        "where work stands.\n"
+        "- State the active objective and the exact next action.\n"
+        "- Refer to durable work by identifier (memory slugs, brief/plan/task ids, "
+        "contract ids); never copy their bodies.\n"
+        "- Keep facts that exist only in this conversation, labeled as not durable.\n"
+        "- Compress tool output and intermediate reasoning to what the next decision needs."
+    )
+
+
+def _build_identity_block() -> str:
     return (
         "# Post-Compaction Context Refresh\n\n"
         "You are the orchestrator. Dispatch work via Agent, resume agents via "
@@ -62,68 +51,14 @@ def _build_identity_block() -> str:
     )
 
 
-def _build_activity_block(max_snapshots: int) -> str | None:
-    """Build session activity summary from episodes table in gaia.db.
-
-    T6 migration: reads from episodes table instead of run-snapshots.jsonl.
-    Selects recent episodes ordered by timestamp DESC with agent, plan_status,
-    title/prompt and tier columns (equivalent of run-snapshot data).
-    """
+def _build_snapshot_block(session_id: str) -> str | None:
+    repo_root = str(Path(__file__).resolve().parent.parent.parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
     try:
-        import sys as _sys
-        _hooks_dir = Path(__file__).resolve().parent.parent.parent
-        _repo_root = _hooks_dir.parent
-        if str(_repo_root) not in _sys.path:
-            _sys.path.insert(0, str(_repo_root))
-        from gaia.store.writer import _connect as _store_connect
-        from gaia.project import current as _project_current
-    except ImportError:
+        from gaia.session_snapshot import build_snapshot, render_snapshot
+
+        return render_snapshot(build_snapshot(session_id))
+    except Exception as exc:
+        logger.debug("Failed to build session snapshot (non-fatal): %s", exc)
         return None
-
-    try:
-        ws = _project_current()
-    except Exception:
-        ws = None
-
-    try:
-        con = _store_connect()
-        try:
-            if ws:
-                rows = con.execute(
-                    "SELECT agent, plan_status, title, prompt, tier, "
-                    "output_tokens_approx, timestamp "
-                    "FROM episodes "
-                    "WHERE workspace = ? AND agent IS NOT NULL "
-                    "ORDER BY timestamp DESC LIMIT ?",
-                    (ws, max_snapshots),
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT agent, plan_status, title, prompt, tier, "
-                    "output_tokens_approx, timestamp "
-                    "FROM episodes "
-                    "WHERE agent IS NOT NULL "
-                    "ORDER BY timestamp DESC LIMIT ?",
-                    (max_snapshots,),
-                ).fetchall()
-        finally:
-            con.close()
-    except Exception as e:
-        logger.debug("Failed to build activity block (non-fatal): %s", e)
-        return None
-
-    if not rows:
-        return None
-
-    entries = []
-    for row in rows:
-        d = dict(row)
-        agent = d.get("agent", "unknown")
-        status = d.get("plan_status", "unknown") or "unknown"
-        title = d.get("title") or d.get("prompt") or ""
-        prompt = title[:80]
-        tier = d.get("tier") or ""
-        tier_str = f" [{tier}]" if tier else ""
-        entries.append(f"- {agent} → {status}{tier_str} ({prompt})")
-
-    return "## Session Activity\n" + "\n".join(entries)

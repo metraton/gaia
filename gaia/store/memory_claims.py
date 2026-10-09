@@ -38,6 +38,15 @@ _KIND_BY_FOLDED = {
 }
 
 
+_MEASUREMENT_FIRST_WORDS = frozenset({"measured", "medido"})
+
+
+def claims_measurement(description: str | None) -> bool:
+    """Whether a description opens as a measurement ("Measured: ...", "MEDIDO: ..."), read like :func:`memory_claim_kind`."""
+    words = (description or "").split(maxsplit=1)
+    return bool(words) and _fold(words[0].rstrip(":")) in _MEASUREMENT_FIRST_WORDS
+
+
 def memory_claim_kind(description: str | None) -> str | None:
     """The :data:`MEMORY_CLAIM_KINDS` entry a description starts with, or None.
 

@@ -99,11 +99,14 @@ def _seed_project(db_path: Path, writer_agent: str) -> None:
     assert seeded["success"], seeded
 
 
-def _close_turn(db_path: Path, monkeypatch, agent: str, state: str):
+def _close_turn(
+    db_path: Path, monkeypatch, agent: str, state: str,
+    prompt: str = "declare the project's workflow",
+):
     """Birth, fill and finalize a turn carrying the 25793 proposal, then run
     SubagentStop from a cwd that resolves to another workspace."""
     identity = ClaudeCodeAdapter._maybe_birth_dispatched_row(
-        {"prompt": "declare the project's workflow"}, agent, SESSION_ID,
+        {"prompt": prompt}, agent, SESSION_ID,
     )
     assert identity is not None
     stamp_harness_agent_id(identity["contract_id"], HARNESS_AGENT_ID, db_path=db_path)

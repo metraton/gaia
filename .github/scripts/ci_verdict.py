@@ -6,7 +6,7 @@ head commit is, in order of preference:
 
   1. SHA itself;
   2. another commit with SHA's tree -- the PR head a squash merge reproduces;
-  3. SHA's only parent, when parent..SHA touches version sources only
+  3. SHA's only parent, when parent..SHA changes version declarations only
      (the chore(release) commit).
 
 Everything is read through the GitHub API with `gh api`, so the answer does not
@@ -18,16 +18,21 @@ Exit status: 0 a verdict is reusable, 1 none is, 2 the API could not answer.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 
 VERDICT_JOB = "CI verdict"
 
-# The files a release rewrites and nothing else does; a diff confined to them
-# changes no code a test could observe.
 VERSION_FILES = frozenset({"package.json", "pyproject.toml", "CHANGELOG.md", "hooks/hooks.json"})
 VERSION_DIRS = (".claude-plugin/",)
+
+# These files also carry scripts, dependencies, test options and hook commands,
+# so a name in them proves nothing: only a changed line that is the version
+# declaration itself leaves the tested code as it was.
+VERSION_LINE = re.compile(r'^\s*(?:"version"\s*:\s*"[^"]+",?|version\s*=\s*"[^"]+")\s*$')
+PROSE_FILE = "CHANGELOG.md"
 
 
 class ApiError(RuntimeError):
@@ -58,11 +63,27 @@ def runs_path(repo, workflow):
     return f"repos/{repo}/actions/workflows/{workflow}/runs?status=success&per_page=100"
 
 
-def is_version_only(filenames):
-    """True when a non-empty diff touches version sources and nothing else."""
-    return bool(filenames) and all(
-        name in VERSION_FILES or name.startswith(VERSION_DIRS) for name in filenames
-    )
+def _edits_only_the_version(entry):
+    name = entry["filename"]
+    if name == PROSE_FILE:
+        return True
+    if name not in VERSION_FILES and not name.startswith(VERSION_DIRS):
+        return False
+    edits = [
+        line[1:]
+        for line in (entry.get("patch") or "").splitlines()
+        if line.startswith(("+", "-"))
+    ]
+    return bool(edits) and all(VERSION_LINE.match(line) for line in edits)
+
+
+def is_version_only(files):
+    """True when a non-empty diff changes version declarations and nothing else.
+
+    *files* are the commit API's file entries; one without a patch (too large
+    or binary) cannot be shown to change only the version, so it is not.
+    """
+    return bool(files) and all(_edits_only_the_version(entry) for entry in files)
 
 
 def _verdict_is_green(repo, run_id, api):
@@ -80,8 +101,9 @@ def find_reusable_verdict(repo, sha, workflow="ci.yml", api=gh_api):
         (lambda run: run["head_commit"]["tree_id"] == tree, "same tree"),
     ]
     parents = commit["parents"]
-    changed = [entry["filename"] for entry in commit.get("files", [])]
-    if len(parents) == 1 and is_version_only(changed):
+    files = commit.get("files", [])
+    if len(parents) == 1 and is_version_only(files):
+        changed = [entry["filename"] for entry in files]
         parent_sha = parents[0]["sha"]
         parent_tree = api(f"repos/{repo}/commits/{parent_sha}")["commit"]["tree"]["sha"]
         rules.append(

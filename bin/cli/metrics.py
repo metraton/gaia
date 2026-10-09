@@ -632,10 +632,35 @@ def _read_agent_definition(root: Path, agent_name: str) -> dict:
 # Utility functions
 # ---------------------------------------------------------------------------
 
+_PREAMBLE_RE = re.compile(
+    r'\s*(?:'
+    r'export\s+(?:[A-Za-z_]\w*=\S*\s*)+(?:&&|;)'
+    r'|(?:cd|pushd)\s+\S+\s*(?:&&|;)'
+    r'|(?:[A-Za-z_]\w*=\S*\s+)+'
+    r'|timeout\s+\S+\s+'
+    r')\s*'
+)
+
+
+def _strip_preamble(command: str) -> str:
+    """Drop what runs before the command proper: env exports and assignments,
+    a ``timeout`` wrapper, a leading ``cd``. The dispatch hook prepends
+    ``export GAIA_DISPATCH_AGENT=...;`` to every subagent command, so without
+    this every such command shares one label and one type."""
+    cmd = command.strip()
+    while True:
+        m = _PREAMBLE_RE.match(cmd)
+        if not m:
+            return cmd
+        cmd = cmd[m.end():]
+
+
 def _classify_command(command: str) -> str:
     if not command:
         return "general"
-    cmd = command.strip().lower()
+    cmd = _strip_preamble(command).lower()
+    if cmd == "gaia" or cmd.startswith("gaia "):
+        return "gaia"
     if cmd.startswith("terragrunt") or cmd.startswith("terraform"):
         return "terraform"
     if cmd.startswith("kubectl"):
@@ -659,15 +684,7 @@ def _extract_command_label(command: str) -> str:
     """Extract short human-readable label from full command string."""
     if not command:
         return "(unknown)"
-    cmd = command.strip()
-    # Strip env var assignments
-    cmd = re.sub(r'^(?:[A-Z_][A-Z0-9_]*=\S+\s+)+', '', cmd)
-    # Strip timeout wrapper
-    cmd = re.sub(r'^timeout\s+\S+\s+', '', cmd)
-    # Strip cd/pushd navigation
-    m = re.match(r'^(?:cd|pushd)\s+\S+\s*(?:&&|;)\s*(.*)', cmd)
-    if m:
-        cmd = m.group(1).strip()
+    cmd = _strip_preamble(command)
     # Strip at pipe/semicolon/&&
     cmd = re.split(r'\s*(?:[|;&]|&&|\|\|)\s*', cmd)[0].strip()
     # Strip trailing redirections
@@ -1635,7 +1652,7 @@ def render_console(snapshot: MetricsSnapshot) -> None:
             rows.append(f"{item['type']:<12}{item['count']:>4}  {bar}  {item['percentage']:>5.1f}%")
     legend = [
         "WHAT: groups the same commands by domain (terraform, kubernetes, git,",
-        "      gcp, docker, dev, general) instead of by risk tier.",
+        "      gcp, docker, dev, gaia, general) instead of by risk tier.",
         "NOTE: classified from Bash tool_name entries in audit-*.jsonl.",
         window_note,
     ]

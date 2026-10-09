@@ -1012,6 +1012,8 @@ CREATE TABLE IF NOT EXISTS memory (
     created_at         TEXT,  -- v50: row age. Forward-only BY DECISION -- no backfill, here or ever. NULL means "age unknown", never "age zero"; a pre-v50 row has no knowable birth date and every substitute (now, updated_at) is a fabrication that would distort a recency-weighted ranking. Column added v50.
     kernel_count       INTEGER NOT NULL DEFAULT 0,  -- v50: third access axis, separate from injection_count for the same reason injection and deliberate were kept apart in v48 -- mixing signals of different natures freezes the ranking. Fires on every subagent dispatch over type=user AND audience=executor rows. Column added v50; existing rows default/backfill to 0, never NULL. CAVEAT FOR ANY CONSUMER: this axis holds no pre-v50 history -- kernel injections before the split were counted into injection_count and were not moved here, so a low value on an old row means "not measured yet", not "not injected".
     last_kernel_at     TEXT,  -- v50: ISO8601 timestamp of the most recent kernel injection; NULL = never injected into a kernel. Column added v50.
+    measured_at        TEXT,  -- v67: ISO8601 date (or datetime) the fact in the row was measured. NULL = the row states no measurement, or predates v67 and its date is unknown; never backfilled. Column added v67.
+    method             TEXT,  -- v67: how the fact was measured (command, query, sample). NULL as for measured_at. Column added v67.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );

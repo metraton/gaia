@@ -825,7 +825,14 @@ class OpenCodeAdapter(HookAdapter):
         the callID the shared policy birthed it under, never born a second
         time. Any denial or claim/render miss returns the plain verdict: kernel
         injection must never block a dispatch.
+
+        A prompt that already carries a kernel this adapter rendered (a call
+        evaluated again, or an orchestrator that echoed one back) is reduced to
+        its instruction before the row is born, so the dispatched prompt holds
+        exactly one contract block. A call that resumes a child session by
+        ``task_id`` links the row it births to the one that child last held.
         """
+        self._reduce_prompt_to_instruction(policy_event)
         translated = self._format_policy_verdict(policy.pre_tool_verdict(policy_event))
         output = translated.output
         if output.get("action") != "allow":
@@ -845,8 +852,10 @@ class OpenCodeAdapter(HookAdapter):
         if row is None:
             return translated
 
+        tool_input = policy_event.payload.get("tool_input") or {}
+        self._link_resumed_row(row, tool_input.get("task_id"))
+
         try:
-            tool_input = policy_event.payload.get("tool_input") or {}
             kernel = self._child_kernel(row, str(tool_input.get("subagent_type") or ""))
         except Exception:
             kernel = None
@@ -858,6 +867,43 @@ class OpenCodeAdapter(HookAdapter):
         updated_input["prompt"] = "\n\n".join(section for section in sections if section)
         output["updated_input"] = updated_input
         return translated
+
+    @staticmethod
+    def _reduce_prompt_to_instruction(policy_event: HookEvent) -> None:
+        from modules.context.kernel_builder import unwrap_injected_prompt
+
+        tool_input = policy_event.payload.get("tool_input")
+        prompt = tool_input.get("prompt") if isinstance(tool_input, dict) else None
+        if not isinstance(prompt, str):
+            return
+        instruction = unwrap_injected_prompt(prompt)
+        if instruction != prompt:
+            policy_event.payload["tool_input"] = {**tool_input, "prompt": instruction}
+
+    @staticmethod
+    def _link_resumed_row(row: dict, resumed_session_id: object) -> None:
+        """Make the row born for a ``task_id`` resume continue the row that child session last held.
+
+        Best-effort like the kernel injection: a miss leaves the row unlinked,
+        never blocks the dispatch.
+        """
+        if not isinstance(resumed_session_id, str) or not resumed_session_id:
+            return
+        try:
+            from gaia.store.writer import (
+                find_dispatch_row_by_harness_agent_id,
+                link_dispatch_continuation,
+            )
+
+            previous = find_dispatch_row_by_harness_agent_id(resumed_session_id)
+            if previous is not None and previous.get("contract_id") != row.get("contract_id"):
+                link_dispatch_continuation(
+                    row.get("contract_id"),
+                    continues_handoff_id=previous["id"],
+                    harness_agent_id=resumed_session_id,
+                )
+        except Exception:
+            return
 
     @staticmethod
     def _resolved_attestation(event: HookEvent) -> "Attestation | None":
@@ -1419,7 +1465,10 @@ class OpenCodeAdapter(HookAdapter):
         messages. A dispatched child gets back the kernel its row was born
         with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
         what Claude Code's SessionStart(compact) delivers, from the same
-        ``start_context``.
+        ``start_context``, followed by the instructions that steer the summary.
+        Both travel as ``context`` entries, which the host appends to its own
+        summary prompt; replacing the prompt (``output.prompt``) would discard
+        the host's summary template, which Gaia has no stake in owning.
 
         Degrades to a plain allow whenever there is nothing to inject or
         building it fails: a compaction must never be blocked by injection,
@@ -1431,12 +1480,16 @@ class OpenCodeAdapter(HookAdapter):
                 output={"action": "allow", "updated_input": {"context": [kernel]}}
             )
         if event.payload.get("main") is True:
+            from modules.context.compact_context_builder import build_summary_instructions
             from modules.session.session_lifecycle import start_context
 
-            context = start_context("compact", [])
+            context = start_context("compact", [], event.session_id)
             if context:
                 return HookResponse(
-                    output={"action": "allow", "updated_input": {"context": [context]}}
+                    output={
+                        "action": "allow",
+                        "updated_input": {"context": [context, build_summary_instructions()]},
+                    }
                 )
         return HookResponse(output={"action": "allow"})
 

@@ -196,7 +196,8 @@ def not_superseded(row: str = "memory") -> str:
 
 _PENDING_THREADS_WITH_A_PROJECT = (
     "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
-    "       m.initiative, m.project_ref, m.class, m.status "
+    "       m.initiative, m.project_ref, m.class, m.status, "
+    "       m.measured_at, m.method "
     "FROM memory m "
     "WHERE m.deleted_at IS NULL "
     "  AND m.class = 'thread' "
@@ -231,7 +232,8 @@ def pending_threads_by_project(
 
 _LIVE_ANCHORS_WITH_A_PROJECT = (
     "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
-    "       m.initiative, m.project_ref, m.class, m.status "
+    "       m.initiative, m.project_ref, m.class, m.status, "
+    "       m.measured_at, m.method "
     "FROM memory m "
     "WHERE m.deleted_at IS NULL "
     "  AND m.class = 'anchor' "

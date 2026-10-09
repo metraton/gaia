@@ -2472,6 +2472,8 @@ def upsert_memory(
     class_: str | None = None,
     status: str | None = None,
     replace: bool = False,
+    measured_at: str | None = None,
+    method: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -2532,6 +2534,10 @@ def upsert_memory(
     schema's ``log`` for every other type. ``class_`` and ``status`` given
     explicitly are applied with :func:`reclassify_memory`'s rules, so an update
     changes the class only when the caller names one.
+
+    ``measured_at`` / ``method`` -- when and how the row's fact was measured.
+    Coalesce-or-omit like ``audience``: ``None`` never clears a stamp already
+    stored.
     """
     _assert_dispatch_can_write_memory()
 
@@ -2579,8 +2585,9 @@ def upsert_memory(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
-                                    updated_at, audience, created_at, class)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?)
+                                    updated_at, audience, created_at, class,
+                                    measured_at, method)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2589,7 +2596,9 @@ def upsert_memory(
                     initiative        = COALESCE(excluded.initiative, initiative),
                     origin_session_id = excluded.origin_session_id,
                     updated_at        = excluded.updated_at,
-                    audience          = COALESCE(?, audience)
+                    audience          = COALESCE(?, audience),
+                    measured_at       = COALESCE(excluded.measured_at, measured_at),
+                    method            = COALESCE(excluded.method, method)
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no
@@ -2608,7 +2617,7 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, born_class, audience),
+                 now, born_class, measured_at, method, audience),
             )
             result = {
                 "status": "applied",
@@ -3717,7 +3726,7 @@ def get_memory(
             "SELECT workspace, name, type, description, body, project_ref, "
             "       initiative, origin_session_id, updated_at, deleted_at, "
             "       audience, injection_count, deliberate_count, "
-            "       last_injected_at, last_deliberate_at "
+            "       last_injected_at, last_deliberate_at, measured_at, method "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
         if not include_deleted:
@@ -8115,31 +8124,76 @@ def restore_db_semantic_grant(
         con.close()
 
 
+#: ``failure_reason`` of a single-command grant that spent its one retry.
+RETRY_SPENT_REASON = "retry used after a failed run"
+
+
+def retry_db_semantic_grant(
+    approval_id: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Return a SCOPE_SEMANTIC_SIGNATURE grant whose command failed to PENDING, once.
+
+    One retry inside the window: the first failure restores the grant and
+    stamps :data:`RETRY_SPENT_REASON`, a second leaves it CONSUMED so a partial
+    side effect is never retried on one consent. An expired grant stays spent.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        changed = con.execute(
+            "UPDATE approval_grants SET status='PENDING', consumed_at=NULL, failure_reason=? "
+            "WHERE approval_id=? AND scope='SCOPE_SEMANTIC_SIGNATURE' "
+            "AND status='CONSUMED' AND expires_at > ? AND failure_reason IS NULL",
+            (RETRY_SPENT_REASON, approval_id, _now_iso()),
+        ).rowcount
+        con.commit()
+        return changed == 1
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
 def update_approval_grant_status(
     approval_id: str,
     status: str,
     *,
     db_path: Path | None = None,
 ) -> dict:
-    """Update the status column of an existing approval_grants row.
+    """Move a PENDING approval_grants row to a terminal status (CONSUMED|REVOKED|EXPIRED).
+
+    A row already past PENDING keeps the status it ended with, and nothing is
+    moved back to PENDING here (:func:`restore_db_semantic_grant` is the one
+    restore, bounded by the window).
 
     Args:
         approval_id: The grant to update.
-        status: New status value (PENDING|CONSUMED|REVOKED|EXPIRED).
+        status: The terminal status to give a PENDING grant.
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
-        {"status": "applied"} on success.
+        {"status": "applied"} on success, {"status": "error", ...} when the
+        status is PENDING or the grant is not PENDING.
     """
+    if status == "PENDING":
+        return {"status": "error", "reason": "a grant is never moved back to PENDING here"}
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
         try:
             con.execute(
-                "UPDATE approval_grants SET status = ? WHERE approval_id = ?",
+                "UPDATE approval_grants SET status = ? WHERE approval_id = ? AND status = 'PENDING'",
                 (status, approval_id),
             )
             con.commit()
+            held = con.execute(
+                "SELECT status FROM approval_grants WHERE approval_id = ?", (approval_id,)
+            ).fetchone()
+            if held is not None and held[0] != status:
+                return {"status": "error", "reason": f"approval_id {approval_id!r} is {held[0]}, not PENDING"}
         except Exception:
             con.rollback()
             raise
@@ -8182,6 +8236,9 @@ def mark_command_set_item_consumed(
             if row is None:
                 con.rollback()
                 return {"status": "error", "reason": f"approval_id {approval_id!r} not found"}
+            if row[2] != "PENDING":
+                con.rollback()
+                return {"status": "error", "reason": f"approval_id {approval_id!r} is {row[2]}, not PENDING"}
 
             command_set = _json.loads(row[0] or "[]")
             consumed = _json.loads(row[1] or "[]")
@@ -9964,7 +10021,8 @@ def find_orphaned_dispatched_handoff(
 
     Returns:
         ``{"id": int, "contract_id": str, "agent_id": str,
-        "plan_task_id": int | None}`` of the orphaned nascent row, or None when
+        "plan_task_id": int | None, "workspace": str | None,
+        "dispatch_project": str | None}`` of the orphaned nascent row, or None when
         no DISPATCHED row exists for that (session, agent) pair. ``agent_id`` is
         the identity the row was BORN under: a closer must preserve it rather
         than restamp the row with whichever candidate it searched by, or a row
@@ -9983,7 +10041,8 @@ def find_orphaned_dispatched_handoff(
     try:
         placeholders = ", ".join("?" for _ in candidates)
         row = con.execute(
-            f"SELECT id, contract_id, agent_id, plan_task_id "
+            f"SELECT id, contract_id, agent_id, plan_task_id, "
+            f"workspace, dispatch_project "
             f"FROM agent_contract_handoffs "
             f"WHERE agent_state = 'DISPATCHED' AND session_id = ? "
             f"AND agent_id IN ({placeholders}) "
@@ -9997,6 +10056,8 @@ def find_orphaned_dispatched_handoff(
             "contract_id": row["contract_id"],
             "agent_id": row["agent_id"],
             "plan_task_id": row["plan_task_id"],
+            "workspace": row["workspace"],
+            "dispatch_project": row["dispatch_project"],
         }
     finally:
         con.close()
@@ -10051,7 +10112,8 @@ def find_dispatched_row_by_agent_name(
 
     Returns:
         ``{"id": int, "contract_id": str, "agent_id": str,
-        "plan_task_id": int | None}`` when exactly one row matches; None when
+        "plan_task_id": int | None, "workspace": str | None,
+        "dispatch_project": str | None}`` when exactly one row matches; None when
         none or several do.
     """
     if not session_id or not agent_name:
@@ -10059,7 +10121,8 @@ def find_dispatched_row_by_agent_name(
     con = _connect(db_path)
     try:
         rows = con.execute(
-            f"SELECT id, contract_id, agent_id, plan_task_id "
+            f"SELECT id, contract_id, agent_id, plan_task_id, "
+            f"workspace, dispatch_project "
             f"FROM agent_contract_handoffs "
             f"WHERE agent_state = 'DISPATCHED' AND session_id = ? "
             f"AND {_BIRTH_AGENT_NAME_SQL} = ? "
@@ -10074,6 +10137,8 @@ def find_dispatched_row_by_agent_name(
             "contract_id": row["contract_id"],
             "agent_id": row["agent_id"],
             "plan_task_id": row["plan_task_id"],
+            "workspace": row["workspace"],
+            "dispatch_project": row["dispatch_project"],
         }
     finally:
         con.close()
@@ -10783,11 +10848,16 @@ _CONTINUATION_CONSTRAINT_COLUMNS = (
 # it per RUN, not per turn, so a resumption genuinely carries the same one. It is
 # also load-bearing -- the SubagentStop bridge resolves the closing turn's row by
 # it (see collapse_continuation_chains).
+#
+# dispatch_project is load-bearing the same way: SubagentStop reads the closing
+# turn's live link to pick the workspace an update_contracts write lands in, and
+# a NULL there sends a resumed turn's write to the session workspace.
 _CONTINUATION_IDENTITY_COLUMNS = (
     "agent_id",
     "session_id",
     "workspace",
     "harness_agent_id",
+    "dispatch_project",
 )
 
 # Everything NOT in these two tuples is either set explicitly by
@@ -11210,6 +11280,61 @@ def open_contract_continuation(
                     "continues_contract_id": parent_contract_id,
                     "continues_handoff_id": parent["id"],
                 }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def link_dispatch_continuation(
+    contract_id: "str | None",
+    *,
+    continues_handoff_id: int,
+    harness_agent_id: str,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Chain a freshly born dispatch row to the row its resumed harness session last held.
+
+    A host that resumes a session by id (OpenCode ``task_id``) births a new row
+    for the resumed turn; this stamps the harness id on it at birth and points
+    ``continues_handoff_id`` at the previous link, so ``collapse_continuation_chains``
+    resolves the session to the new live link. Only an unlinked, non-terminal
+    row is written; ``{"status": "skipped", "reason": ...}`` otherwise
+    (``no_contract_id`` / ``not_linkable``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                from gaia.state import TERMINAL_PLAN_STATUSES
+
+                placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
+                cur = con.execute(
+                    f"""
+                    UPDATE agent_contract_handoffs
+                       SET continues_handoff_id = ?, harness_agent_id = ?
+                     WHERE contract_id = ?
+                       AND continues_handoff_id IS NULL
+                       AND agent_state NOT IN ({placeholders})
+                    """,
+                    (
+                        int(continues_handoff_id), str(harness_agent_id),
+                        contract_id, *TERMINAL_PLAN_STATUSES,
+                    ),
+                )
+                con.commit()
+                if cur.rowcount != 1:
+                    return {"status": "skipped", "reason": "not_linkable"}
+                return {"status": "applied", "contract_id": contract_id}
             except Exception:
                 con.rollback()
                 raise
@@ -11917,14 +12042,16 @@ def dispatch_row_for_identity(
 
     Returns:
         ``{"id": int, "contract_id": str, "agent_id": str, "agent_state": str,
-        "plan_task_id": int | None}`` of the most-recent match, or None.
+        "plan_task_id": int | None, "workspace": str | None,
+        "dispatch_project": str | None}`` of the most-recent match, or None.
     """
     if not session_id or not agent_id:
         return None
     con = _connect(db_path)
     try:
         row = con.execute(
-            "SELECT id, contract_id, agent_id, agent_state, plan_task_id "
+            "SELECT id, contract_id, agent_id, agent_state, plan_task_id, "
+            "workspace, dispatch_project "
             "FROM agent_contract_handoffs "
             "WHERE session_id = ? AND agent_id = ? "
             "ORDER BY id DESC LIMIT 1",
@@ -11938,6 +12065,8 @@ def dispatch_row_for_identity(
             "agent_id": row["agent_id"],
             "agent_state": row["agent_state"],
             "plan_task_id": row["plan_task_id"],
+            "workspace": row["workspace"],
+            "dispatch_project": row["dispatch_project"],
         }
     finally:
         con.close()

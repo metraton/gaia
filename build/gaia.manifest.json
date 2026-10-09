@@ -43,6 +43,7 @@
     }
   },
   "modules": "all",
+  "host_mods": ["./mods/compaction/register.ts"],
   "agents": [
     "agents/gaia-orchestrator.md",
     "agents/gaia-operator.md",

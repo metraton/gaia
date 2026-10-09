@@ -1075,8 +1075,11 @@ def close_call(
     Only the host event that reports this ``tool_use_id``'s outcome may call
     this; a turn or session ending is never one. A ``reserved`` set item settles
     through :func:`close_command`; a single-command grant was already spent at
-    its match, so its outcome is exit 0 or not. ``command`` is the sealed bytes
-    the call matched, which the EXECUTED or FAILED event records.
+    its match, so its outcome is exit 0 or not. The first non-zero exit returns
+    it to PENDING for the rest of its window, for one retry of the same signed
+    bytes in the same directory; a second failure leaves it spent.
+    ``command`` is the sealed bytes the call matched, which the EXECUTED or
+    FAILED event records.
     """
     from gaia.approvals import store
 
@@ -1088,6 +1091,10 @@ def close_call(
             return outcome
     else:
         outcome = "executed" if exit_code == 0 else "failed"
+        if outcome == "failed":
+            from gaia.store.writer import retry_db_semantic_grant
+
+            retry_db_semantic_grant(approval_id)
     payload = {
         "command": redact_text(command),
         "exit_code": exit_code,
