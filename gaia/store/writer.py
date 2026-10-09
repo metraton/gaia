@@ -11276,6 +11276,61 @@ def open_contract_continuation(
     return _retry_on_locked(_work)
 
 
+def link_dispatch_continuation(
+    contract_id: "str | None",
+    *,
+    continues_handoff_id: int,
+    harness_agent_id: str,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Chain a freshly born dispatch row to the row its resumed harness session last held.
+
+    A host that resumes a session by id (OpenCode ``task_id``) births a new row
+    for the resumed turn; this stamps the harness id on it at birth and points
+    ``continues_handoff_id`` at the previous link, so ``collapse_continuation_chains``
+    resolves the session to the new live link. Only an unlinked, non-terminal
+    row is written; ``{"status": "skipped", "reason": ...}`` otherwise
+    (``no_contract_id`` / ``not_linkable``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                from gaia.state import TERMINAL_PLAN_STATUSES
+
+                placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
+                cur = con.execute(
+                    f"""
+                    UPDATE agent_contract_handoffs
+                       SET continues_handoff_id = ?, harness_agent_id = ?
+                     WHERE contract_id = ?
+                       AND continues_handoff_id IS NULL
+                       AND agent_state NOT IN ({placeholders})
+                    """,
+                    (
+                        int(continues_handoff_id), str(harness_agent_id),
+                        contract_id, *TERMINAL_PLAN_STATUSES,
+                    ),
+                )
+                con.commit()
+                if cur.rowcount != 1:
+                    return {"status": "skipped", "reason": "not_linkable"}
+                return {"status": "applied", "contract_id": contract_id}
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
 def stamp_harness_agent_id(
     contract_id: "str | None",
     harness_agent_id: "str | None",
