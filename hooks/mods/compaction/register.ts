@@ -7,7 +7,17 @@ const SNAPSHOT_TIMEOUT_MS = 10_000
 const RETRY_DELAY_MS = 2_000
 const MAX_ATTEMPTS = 30
 
-export const SNAPSHOT_MARKER = '[gaia:session-snapshot]'
+/**
+ * First line of the message appended to one compaction. The token count binds
+ * it to that compaction's boundary entry, which the SessionStart(compact)
+ * refresh compares against; without a count nothing is marked, and the refresh
+ * delivers its own copy.
+ */
+export function withMarker(snapshot: string, tokensBefore: number | undefined): string {
+  return tokensBefore === undefined
+    ? snapshot
+    : `[gaia:session-snapshot tokens-before=${tokensBefore}]\n${snapshot}`
+}
 
 export const STEERING = [
   'Preserve continuity for the next turn:',
@@ -81,7 +91,7 @@ export const register: Register = on => {
 
     const snapshot = await readSnapshot($)
     if (!snapshot) return compacted
-    const text = `${SNAPSHOT_MARKER}\n${snapshot}`
+    const text = withMarker(snapshot, compacted.tokensBefore)
     return { ...compacted, messages: [...compacted.messages, { role: 'user', text, toolUses: [] }] }
   })
 }

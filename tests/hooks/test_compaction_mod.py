@@ -144,39 +144,109 @@ class TestSnapshotArrivesOnce:
         return builder
 
     @staticmethod
-    def _transcript(tmp_path, tail: str, head: str = "") -> str:
+    def _boundary(pre_tokens=1000):
+        compact = {} if pre_tokens is None else {"preTokens": pre_tokens}
+        return {"type": "system", "subtype": "compact_boundary", "compactMetadata": compact}
+
+    @staticmethod
+    def _user(text):
+        return {"type": "user", "message": {"role": "user", "content": text}}
+
+    @staticmethod
+    def _transcript(tmp_path, entries, raw_head=""):
         path = tmp_path / "transcript.jsonl"
-        path.write_text(head + tail)
+        path.write_text(raw_head + "".join(json.dumps(entry) + "\n" for entry in entries))
         return str(path)
 
-    def test_the_mod_and_the_builder_share_one_marker(self, builder):
-        declared = re.search(
-            r"SNAPSHOT_MARKER = '([^']+)'", (MOD_DIR / "register.ts").read_text()
-        ).group(1)
-        assert declared == builder.MOD_SNAPSHOT_MARKER
-
-    def test_the_mod_prefixes_the_appended_message_with_the_marker(self):
-        source = (MOD_DIR / "register.ts").read_text()
-        assert "`${SNAPSHOT_MARKER}\\n${snapshot}`" in source
-
-    def test_marker_in_the_transcript_tail_leaves_the_snapshot_out(self, builder, tmp_path):
-        path = self._transcript(tmp_path, f'{{"text": "{builder.MOD_SNAPSHOT_MARKER}\\nstate"}}\n')
+    def _delivered(self, builder, path) -> bool:
         context = builder.build_compact_context(session_id="s", transcript_path=path)
-        assert "SNAPSHOT" not in context
         assert "Post-Compaction Context Refresh" in context
+        return "SNAPSHOT" in context
 
-    def test_no_marker_delivers_the_snapshot(self, builder, tmp_path):
-        path = self._transcript(tmp_path, '{"text": "summary"}\n')
-        assert "SNAPSHOT" in builder.build_compact_context(session_id="s", transcript_path=path)
+    def test_the_mod_builds_the_marker_the_builder_looks_for(self, builder):
+        source = (MOD_DIR / "register.ts").read_text()
+        template = re.search(r"`(\[gaia:session-snapshot tokens-before=\$\{tokensBefore\}\])\\n", source)
+        assert template.group(1).replace("${tokensBefore}", "1000") == builder.snapshot_marker(1000)
 
-    def test_a_marker_older_than_the_tail_window_does_not_count(self, builder, tmp_path):
-        old = builder.MOD_SNAPSHOT_MARKER + "\n"
-        path = self._transcript(tmp_path, "x" * (builder._TRANSCRIPT_TAIL_BYTES + 10), head=old)
-        assert "SNAPSHOT" in builder.build_compact_context(session_id="s", transcript_path=path)
+    def test_the_mod_marks_nothing_without_a_token_count(self):
+        source = (MOD_DIR / "register.ts").read_text()
+        assert "tokensBefore === undefined\n    ? snapshot" in source
+
+    def test_the_marker_is_written_by_the_compact_hook_alone(self):
+        source = (MOD_DIR / "register.ts").read_text()
+        schedule = source[source.index("export function scheduleCompact"):source.index("export const register")]
+        assert "withMarker" not in schedule
+        assert source.count("withMarker(snapshot, compacted.tokensBefore)") == 1
+
+    def test_this_compactions_marker_leaves_the_snapshot_out(self, builder, tmp_path):
+        path = self._transcript(tmp_path, [
+            self._boundary(1000),
+            self._user("summary"),
+            self._user(builder.snapshot_marker(1000) + "\nstate"),
+        ])
+        assert not self._delivered(builder, path)
+
+    def test_a_read_that_failed_appended_nothing_so_the_snapshot_is_delivered(self, builder, tmp_path):
+        path = self._transcript(tmp_path, [self._boundary(1000), self._user("summary")])
+        assert self._delivered(builder, path)
+
+    def test_a_compaction_that_skipped_the_hook_delivers_the_snapshot_despite_an_older_marker(
+        self, builder, tmp_path
+    ):
+        path = self._transcript(tmp_path, [
+            self._boundary(1000),
+            self._user("summary"),
+            self._user(builder.snapshot_marker(1000) + "\nstate"),
+            self._boundary(2000),
+            self._user("summary"),
+        ])
+        assert self._delivered(builder, path)
+
+    def test_a_marker_kept_across_the_boundary_for_another_compaction_does_not_count(
+        self, builder, tmp_path
+    ):
+        path = self._transcript(tmp_path, [
+            self._boundary(2000),
+            self._user("summary"),
+            self._user(builder.snapshot_marker(1000) + "\nstate"),
+        ])
+        assert self._delivered(builder, path)
+
+    def test_marker_text_quoted_in_the_conversation_does_not_count(self, builder, tmp_path):
+        quoted = f"the mod writes {builder.snapshot_marker(1000)} first"
+        path = self._transcript(tmp_path, [
+            self._boundary(1000),
+            self._user(quoted),
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": builder.snapshot_marker(1000)}]}},
+        ])
+        assert self._delivered(builder, path)
+
+    def test_a_marker_in_a_text_block_of_a_user_entry_counts(self, builder, tmp_path):
+        block = {"type": "user", "message": {"content": [{"type": "text", "text": builder.snapshot_marker(7) + "\nx"}]}}
+        path = self._transcript(tmp_path, [self._boundary(7), block])
+        assert not self._delivered(builder, path)
+
+    def test_an_ambiguous_transcript_delivers_the_snapshot(self, builder, tmp_path):
+        marked = self._user(builder.snapshot_marker(1000) + "\nstate")
+        for entries in (
+            [marked],
+            [self._boundary(None), marked],
+            [self._boundary("1000"), marked],
+        ):
+            assert self._delivered(builder, self._transcript(tmp_path, entries))
+
+    def test_a_boundary_older_than_the_tail_window_is_not_found(self, builder, tmp_path):
+        filler = "x" * (builder._TRANSCRIPT_TAIL_BYTES + 10)
+        path = self._transcript(tmp_path, [
+            self._boundary(1000),
+            self._user(filler),
+            self._user(builder.snapshot_marker(1000) + "\nstate"),
+        ])
+        assert self._delivered(builder, path)
 
     @pytest.mark.parametrize("path", ["", "/nonexistent/transcript.jsonl"])
     def test_no_readable_transcript_delivers_the_snapshot(self, builder, path):
-        assert "SNAPSHOT" in builder.build_compact_context(session_id="s", transcript_path=path)
+        assert self._delivered(builder, path)
 
     def test_the_hook_passes_the_events_transcript_path_through(self):
         hook = (ROOT / "hooks" / "session_start.py").read_text()

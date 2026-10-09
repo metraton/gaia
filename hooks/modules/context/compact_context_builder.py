@@ -1,16 +1,24 @@
 """Compact context builder for post-compaction re-injection."""
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# First line of the message the compaction mod appends; hooks/mods/compaction/
-# register.ts declares the same string, and a test holds the two equal.
-MOD_SNAPSHOT_MARKER = "[gaia:session-snapshot]"
-_TRANSCRIPT_TAIL_BYTES = 32_768
+_TRANSCRIPT_TAIL_BYTES = 262_144
+
+
+def snapshot_marker(pre_tokens: int) -> str:
+    """First line of the message the compaction mod appends to one compaction.
+
+    The token count is the one the host records in that compaction's boundary
+    entry (``compactMetadata.preTokens``) and the mod reads back as
+    ``tokensBefore``; hooks/mods/compaction/register.ts builds the same line.
+    """
+    return f"[gaia:session-snapshot tokens-before={pre_tokens}]"
 
 
 def build_compact_context(*, session_id: str = "", transcript_path: str = "") -> str:
@@ -18,8 +26,8 @@ def build_compact_context(*, session_id: str = "", transcript_path: str = "") ->
 
     The snapshot is keyed by ``session_id``; the host event that triggers the
     refresh carries the same id across compaction, so another session's
-    contracts and signatures never reach this one. It is left out when the
-    compaction mod already appended it to the transcript.
+    contracts and signatures never reach this one. It is left out only when
+    the compaction mod appended it to this compaction.
     """
     blocks = [_build_identity_block()]
     snapshot = None if _mod_appended_snapshot(transcript_path) else _build_snapshot_block(session_id)
@@ -29,17 +37,59 @@ def build_compact_context(*, session_id: str = "", transcript_path: str = "") ->
 
 
 def _mod_appended_snapshot(transcript_path: str) -> bool:
-    """True when the end of the transcript carries the mod's marker; any doubt reads as False so the snapshot is delivered twice rather than never."""
+    """True when a user entry after the latest compact boundary starts with that boundary's marker.
+
+    Any doubt reads as False so the snapshot is delivered twice rather than
+    never: no boundary in the tail, an unreadable or unparsable transcript, a
+    boundary without a token count, or a marker that belongs to another
+    compaction or is merely quoted in a message.
+    """
     if not transcript_path:
         return False
     try:
         with open(transcript_path, "rb") as transcript:
-            transcript.seek(0, 2)
-            transcript.seek(max(0, transcript.tell() - _TRANSCRIPT_TAIL_BYTES))
-            return MOD_SNAPSHOT_MARKER.encode() in transcript.read()
+            size = transcript.seek(0, 2)
+            transcript.seek(max(0, size - _TRANSCRIPT_TAIL_BYTES))
+            lines = transcript.read().decode("utf-8", errors="replace").splitlines()
     except OSError as exc:
         logger.debug("Transcript tail unreadable (non-fatal): %s", exc)
         return False
+
+    entries = [entry for entry in map(_parse_entry, lines) if entry is not None]
+    boundaries = [
+        i for i, entry in enumerate(entries)
+        if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary"
+    ]
+    if not boundaries:
+        return False
+    pre_tokens = (entries[boundaries[-1]].get("compactMetadata") or {}).get("preTokens")
+    if not isinstance(pre_tokens, int):
+        return False
+    marker = snapshot_marker(pre_tokens)
+    return any(
+        entry.get("type") == "user" and _entry_text(entry).startswith(marker)
+        for entry in entries[boundaries[-1] + 1:]
+    )
+
+
+def _parse_entry(line: str) -> dict | None:
+    try:
+        entry = json.loads(line)
+    except ValueError:
+        return None
+    return entry if isinstance(entry, dict) else None
+
+
+def _entry_text(entry: dict) -> str:
+    message = entry.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                return str(block.get("text", ""))
+    return ""
 
 
 def _build_identity_block() -> str:
