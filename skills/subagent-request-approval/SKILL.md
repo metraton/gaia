@@ -60,7 +60,8 @@ e.g. `2=1`; repeat the flag, or list codes with commas, for more than one code).
 Declare it for every command whose non-zero exit is part of its normal contract
 -- a `git rebase` that stops on a conflict you will resolve, a `git cherry-pick`
 likewise -- because only a declaration made here lets the set go on; an
-undeclared non-zero exit freezes it and the rest needs a new request. Details
+undeclared non-zero exit freezes it and the rest needs a new request. The user
+sees each declared exit on that command's signature as `ALLOWED EXIT`. Details
 names a command's folder when it runs somewhere other
 than where you asked from, or when the command uses relative paths.
 

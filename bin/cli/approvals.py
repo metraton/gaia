@@ -1725,6 +1725,8 @@ def _request_set_items(args) -> list[dict]:
     position named twice accumulates its codes.
     --does and --impact, when given, come once per command.
     """
+    from gaia.approvals.core import _MAX_EXIT_CODE
+
     commands = list(args.command)
     cwds = [os.path.abspath(cwd) for cwd in getattr(args, "cwd", None) or [os.getcwd()]]
     if len(cwds) == 1:
@@ -1744,7 +1746,12 @@ def _request_set_items(args) -> list[dict]:
         position, _, codes = spec.partition("=")
         if not position.isdigit() or not 1 <= int(position) <= len(commands) or not codes:
             raise ValueError(f"--expect-exit {spec!r} must be POSITION=CODE[,CODE] for a listed command")
-        expected.setdefault(int(position) - 1, []).extend(int(code) for code in codes.split(","))
+        listed = codes.split(",")
+        if not all(code.isdecimal() and 1 <= int(code) <= _MAX_EXIT_CODE for code in listed):
+            raise ValueError(
+                f"--expect-exit {spec!r}: every code must be a non-zero integer 1-{_MAX_EXIT_CODE}"
+            )
+        expected.setdefault(int(position) - 1, []).extend(int(code) for code in listed)
     return [
         {
             "command": command, "cwd": cwd,

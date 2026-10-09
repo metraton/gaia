@@ -202,10 +202,23 @@ def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Opti
     return None
 
 
+def _allowed_exit(item: Mapping[str, Any]) -> list[str]:
+    """The ``ALLOWED EXIT`` field of a command that declared non-zero exits it may end with, else none."""
+    codes = item.get("expect_exit") or []
+    return [f"[ ALLOWED EXIT: {','.join(str(code) for code in codes)} ]"] if codes else []
+
+
 def _steps_text(payload: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
-    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37)."""
+    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37).
+
+    A signed command that declared exits it may end with non-zero shows them
+    after its text, so the user signs what the set tolerates as well as what it runs.
+    """
     fields = (
-        f"[ {'COMMAND' if is_signed(step) else 'UNSIGNED STEP'} ] [ {_target(step)} ]"
+        " ".join([
+            f"[ {'COMMAND' if is_signed(step) else 'UNSIGNED STEP'} ] [ {_target(step)} ]",
+            *(_allowed_exit(step) if is_signed(step) else []),
+        ])
         for step in steps
     )
     return " ".join([f"{_PREFIX} [ AGENT-REQUEST ] [ {_agent(payload)} ]", *fields])
@@ -294,6 +307,7 @@ def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
         "[ DETAILS ]",
         f"[ {_agent(payload)} ]",
         f"[ COMMAND: {_target(item)} ]",
+        *_allowed_exit(item),
         f"[ DOES: {_one_line(item.get('does') or _NO_DOES)} ]",
         f"[ IMPACT: {_one_line(item.get('impact') or _NO_IMPACT)} ]",
         f"[ VERIFICATION: {_one_line(payload.get('verification') or _NO_VERIFICATION)} ]",
