@@ -148,8 +148,9 @@ Limits:
   one's. Where the tallest must end level with a shorter neighbour section,
   the section holding them is `compact`, with shorter rows.
 - `half` and `vertical` are title-only: a `description` on them is a build
-  error. `half` and a `rowspan` above 1 exclude each other, a run of halves is
-  even, and the two halves of a pair declare the same `span`
+  error. `half` and a `rowspan` above 1 exclude each other, halves come in
+  consecutive pairs (an unpaired half is a build error), and the two halves of a
+  pair declare the same `span`
   (`assets/engine/build-data.mjs::checkHalfPairing`).
 - The lead band is a box, a direct child of the page, first in `order`, with
   `span` equal to the page's `columns`, and neither `half` nor `vertical`

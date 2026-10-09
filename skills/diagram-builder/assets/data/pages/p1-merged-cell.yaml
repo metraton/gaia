@@ -11,7 +11,7 @@
 #
 # WHAT IT EXERCISES: the uniform slot · `columns` as track declaration · a REAL
 # partial merge (span 2 of 3, with the siblings that create the third track) · a
-# full-width band (span == columns) · a `rowspan` ladder 1·2·3·4 whose colour
+# full-width band (span == columns) · a row of `rowspan` bars 1·2·3·4 whose colour
 # scales in parallel with its height, which is where `warn` and `bad` are put to
 # work, and which rests on a base of `type: spacer` cells so the four heights are
 # read from a shared floor.
@@ -171,7 +171,7 @@ sections:
         detail: "Where you write it is part of what it says: a band written last shows as a full-width base under everything above it, which is where a foundation, a shared platform or a timeline belongs. It stays full width on every screen."
         variant: neutral
 
-  # ── ROW 3 · HEIGHT AS MAGNITUDE — the rowspan ladder, colour in parallel ──
+  # ── ROW 3 · HEIGHT AS MAGNITUDE — the rowspan bars, colour in parallel ──
   # rowspan 1·2·3·4 side by side: the cell's HEIGHT encodes the magnitude, and
   # the colour role escalates with it (neutral -> good -> warn -> bad), so the
   # same claim is carried by two values at once. The tallest bar is what creates

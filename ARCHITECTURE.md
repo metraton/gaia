@@ -32,26 +32,28 @@ Orchestrator dispatches to agent
     |  Routes by surface classification
     v
 pre_tool_use.py  (PreToolUse hook)
-    |  1. Inject project-context into agent prompt (Task/Agent)
-    |  2. Inject session events (Task/Agent)
-    |  3. Validate Bash commands (security gate)
-    |  4. Validate SendMessage (agent resumption)
+    |  1. Validate the Task/Agent dispatch and birth the contract row its turn will claim
+    |  2. Validate Bash commands (security gate)
+    |  3. Validate SendMessage (agent resumption)
+    v
+subagent_start.py  (SubagentStart hook)
+    |  Claim the born row and inject the dispatch kernel:
+    |  # Your Contract, # Your CLI, # How the user works
     v
 Agent executes
-    |  Uses tools, follows skills, emits agent_contract_handoff
+    |  Pulls project context and memory on demand (gaia context, gaia memory),
+    |  fills its contract row with gaia contract set|add|fill, closes with finalize
     v
 subagent_stop.py  (SubagentStop hook)
-    |  1. Read transcript, extract task description
-    |  2. Capture workflow metrics
-    |  3. Validate response contract
-    |  4. Detect anomalies
-    |  5. Store episodic memory
-    |  6. Process update_contracts from the agent_contract_handoff envelope
+    |  1. Gate the turn's own agent_contract_handoffs row
+    |  2. Record workflow metrics, audit the workflow, store the episode
+    |  3. Process update_contracts, clean up the agent's approval
     v
-Orchestrator processes agent_contract_handoff (via agent-response skill)
+Orchestrator reads the row's closing state (via agent-response skill)
     |  COMPLETE -> summarize to user
     |  APPROVAL_REQUEST (with approval_id) -> get approval -> resume via SendMessage
     |  NEEDS_INPUT -> ask user -> resume via SendMessage
+    |  NEEDS_VERIFICATION -> dispatch an independent verifier
     |  BLOCKED -> report blocker
 ```
 
@@ -77,11 +79,15 @@ Order is short-circuit -- first match wins:
 ### Task/Agent Validation
 
 ```
-1. Response contract guard  --> if pending repair exists, block new tasks until resolved
-2. Context injection        --> context_provider.py assembles payload, injected via additionalContext
-3. Session events injection --> recent git commits, pushes, file mods added via additionalContext
-4. TaskValidator            --> validate agent name, check available agents
+1. TaskValidator            --> validate agent name, check available agents
+2. Session events digest    --> recent git commits, pushes, file mods, handed to the host
+3. Row birth                --> birth the agent_contract_handoffs row the turn will claim
+                                (hooks/adapters/tool_policy.py::_maybe_birth_dispatched_row);
+                                a failed birth degrades the row and never blocks the dispatch
 ```
+
+The subagent's context is not assembled here: it is rendered at SubagentStart
+from the born row (see Dispatch Kernel).
 
 ### SendMessage Validation (PreToolUse matcher)
 
@@ -101,17 +107,20 @@ approval question is read by the PostToolUse `AskUserQuestion` handler
 Fires after every agent tool completes:
 
 ```
-1. Validate the turn's own agent_contract_handoffs row
+1. Gate the turn's own agent_contract_handoffs row
    |  Found unfinalized, or no row at all -> reject the close (exit 2)
    |  A rejected turn's substantive text is preserved and relayed back
    |  (modules/agents/rejected_turn_relay.py)
-2. Record workflow metrics
-3. Store episodic memory
+2. Record workflow metrics      --> modules/audit/workflow_recorder.py
+3. Audit the workflow           --> modules/audit/workflow_auditor.py; anomalies reach the episode
+4. Store the episode            --> modules/memory/episode_writer.py
+5. Process update_contracts     --> modules/context/context_writer.py
+6. Clean up the agent's approval --> modules/security/approval_cleanup.py
 ```
 
 The agent writes its contract during the turn with `gaia contract set|add|fill`
-and promotes it with `gaia contract finalize`; the hook validates that row and
-does not parse the final message. Details: `hooks/README.md`.
+and promotes it with `gaia contract finalize`; the hook gates that row and does
+not parse the final message (`hooks/adapters/subagent_stop_core.py::run_subagent_stop`).
 
 ## Surface Routing: surface_router.py
 
@@ -136,32 +145,28 @@ Classifies user tasks into surfaces using whole-token signal matching against th
 
 **Investigation brief** is generated per agent from routing results. It contains role assignment (primary/cross_check/adjacent), required evidence fields, stop conditions, and whether a CONSOLIDATION_REPORT is required.
 
-## Context Injection: context_provider.py
+## Dispatch Kernel: kernel_builder.py
 
-Assembles the context payload injected into agent prompts by pre_tool_use.py.
+A dispatched subagent starts with a small, data-only kernel, not a preloaded
+project-context snapshot. At PreToolUse the hook births the turn's
+`agent_contract_handoffs` row; at SubagentStart `claim_dispatch_row`
+correlates the starting subagent to that row and
+`hooks/modules/context/kernel_builder.py` renders three blocks from it:
 
 ```
-context_provider.py <agent_name> <user_task>
-    |
-    +--> Load project context from ~/.gaia/gaia.db (project_context_contracts table)
-    +--> Detect cloud provider (GCP/AWS) from DB workspace record
-    +--> Load base contracts from DB (agent_contract_permissions table)
-    +--> Merge cloud overrides (config/cloud/{provider}.json)
-    +--> Extract contracted sections for this agent (read permissions)
-    +--> Load relevant episodic memory (similarity match)
-    +--> Classify surfaces (surface_router.py)
-    +--> Build investigation brief (surface_router.py)
-    |
-    v
-    JSON payload:
-      project_knowledge:      {sections the agent may read}
-      write_permissions:      {readable/writable section lists}
-      rules:                  {universal + agent-specific rules}
-      surface_routing:        {active surfaces, dispatch mode, confidence}
-      investigation_brief:    {role, required checks, stop conditions}
-      historical_context:     {relevant episodes if any}
-      metadata:               {provider, version, counts}
+# Your Contract       identity, goal, role and surface, the dispatch project and the
+                      workflow it declared, can_read / can_write section scope, and the
+                      acceptance gates when the turn is bound to a plan task
+# Your CLI            the gaia verbs the turn uses to pull context (gaia context),
+                      memory (gaia memory) and its own contract (gaia contract)
+# How the user works  the user's standing rows, bodies inline, minus those whose
+                      audience is the orchestrator alone
 ```
+
+`can_read` is the menu of `project_context_contracts` sections the turn pulls on
+demand. A fourth block, `# Your skills`, is rendered only for a host that
+preloads no skill body (OpenCode). Every builder is fail-safe: a failed read
+shrinks the block and never fails SubagentStart.
 
 ## Approval Flow
 
@@ -192,13 +197,13 @@ Pending approvals and grants are rows in `~/.gaia/gaia.db` (`gaia/approvals/stor
 
 ## Response Contract Validation
 
-Every agent response must end with a `agent_contract_handoff` block containing `agent_status`. The contract validator (`hooks/modules/agents/contract_validator.py`) enforces:
+Every turn persists one contract in its `agent_contract_handoffs` row, filled during the turn with `gaia contract set|add|fill` and promoted by `gaia contract finalize`; the final message carries no envelope. SubagentStop gates the row (`hooks/adapters/subagent_stop_core.py`), and `hooks/modules/agents/contract_validator.py` checks the envelope:
 
-- **AGENT_STATUS**: PLAN_STATUS (from 5 valid states: COMPLETE, NEEDS_INPUT, APPROVAL_REQUEST, BLOCKED, IN_PROGRESS), PENDING_STEPS, NEXT_ACTION, AGENT_ID
-- **EVIDENCE_REPORT**: required for all valid states. Seven fields: PATTERNS_CHECKED, FILES_CHECKED, COMMANDS_RUN, KEY_OUTPUTS, VERBATIM_OUTPUTS, CROSS_LAYER_IMPACTS, OPEN_GAPS
-- **CONSOLIDATION_REPORT**: required when multi-surface or cross-check. Fields: OWNERSHIP_ASSESSMENT (enum), CONFIRMED_FINDINGS, SUSPECTED_FINDINGS, CONFLICTS, OPEN_GAPS, NEXT_BEST_AGENT
+- **agent_status**: `agent_state` is one of IN_PROGRESS, BLOCKED, NEEDS_INPUT, APPROVAL_REQUEST, NEEDS_VERIFICATION, COMPLETE (only COMPLETE is terminal), with `agent_id`, `pending_steps` and `next_action`
+- **evidence_report**: the seven lists `patterns_checked`, `files_checked`, `commands_run`, `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, `open_gaps`, plus `verification`; a COMPLETE turn needs `verification.result` of `pass`
+- **consolidation_report**: carried when the task is multi-surface or a cross-check
 
-Invalid responses trigger a repair loop: save pending-repair.json, pre_tool_use guard blocks new tasks, orchestrator must resume the same agent for repair (max 2 attempts before escalation).
+A row that is missing or was never cleanly finalized rejects the close (exit 2); the rejected turn's substantive text is preserved and relayed back (`hooks/modules/agents/rejected_turn_relay.py`). A COMPLETE turn bound to a plan task cannot seal itself: `_blind_verification_required` makes it close NEEDS_VERIFICATION for an independent verifier.
 
 ## Adapter Layer
 
@@ -242,9 +247,9 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 |-----------|-------|
 | **File** | `hooks/pre_tool_use.py` |
 | **Hook event** | PreToolUse |
-| **What it does** | Security gate for all Bash, Task, and Agent tool invocations. Validates commands (blocked patterns, mutative verbs, approval grants), injects project-context into agent prompts, guards pending contract repairs. |
+| **What it does** | Security gate for all Bash, Task, and Agent tool invocations. Validates commands (blocked patterns, mutative verbs, approval grants), validates Task/Agent dispatches and births the contract row each dispatched turn claims. |
 | **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_pre_tool_use()`, `ClaudeCodeAdapter.format_validation_response()` |
-| **Business logic modules** | `security/blocked_commands.py`, `security/mutative_verbs.py`, `security/approval_grants.py`, `tools/bash_validator.py`, `tools/task_validator.py`, `agents/response_contract.py`, `context/context_provider.py` |
+| **Business logic modules** | `security/blocked_commands.py`, `security/mutative_verbs.py`, `security/approval_grants.py`, `tools/bash_validator.py`, `tools/task_validator.py`, `agents/dispatch_identity.py` (row birth) |
 
 ### CP-2: `hooks/post_tool_use.py` -- Audit Logging Entry Point
 
@@ -262,9 +267,9 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 |-----------|-------|
 | **File** | `hooks/subagent_stop.py` |
 | **Hook event** | SubagentStop |
-| **What it does** | Fires after every agent completes. Validates the turn's own agent_contract_handoffs row, records workflow metrics, and stores episodic memory. |
-| **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_agent_completion()` |
-| **Business logic modules** | `agents/response_contract.py` (`validate_response_contract`, `save_pending_repair`, `clear_pending_repair`), `tools/memory/episodic.py` (`EpisodicMemory.store_episode`), `context/context_writer.py` (`process_update_contracts`) |
+| **What it does** | Fires after every agent completes. Gates the turn's own agent_contract_handoffs row, records workflow metrics, audits the workflow, stores the episode, processes `update_contracts`, and cleans up the agent's approval. |
+| **Adapter methods called** | `ClaudeCodeAdapter.adapt_subagent_stop()` (delegates to `adapters/subagent_stop_core.py::run_subagent_stop`) |
+| **Business logic modules** | `audit/workflow_recorder.py`, `audit/workflow_auditor.py`, `memory/episode_writer.py`, `context/context_writer.py` (`process_update_contracts`), `security/approval_cleanup.py`, `agents/rejected_turn_relay.py` |
 
 ### CP-4: `hooks/modules/tools/hook_response.py` -- Response Formatting
 
@@ -306,7 +311,7 @@ Additional abstract methods for P1/P2 events: `adapt_session_start`, `format_boo
 
 ### Adding a New Hook Event
 
-To add support for a new Claude Code hook event (e.g., a future `PreCompact` event):
+To add support for a new Claude Code hook event (one not yet in `HookEventType`):
 
 1. **Add enum value** to `HookEventType` in `hooks/adapters/types.py` (already present for all 19 known events).
 2. **Add adapter method** to `ClaudeCodeAdapter` in `hooks/adapters/claude_code.py` -- implement `adapt_<event_name>(raw: dict) -> <ResultType>` and the corresponding `format_<result>_response()` if a new result type is needed.
@@ -340,9 +345,10 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | `hooks/modules/security/blocked_commands.py` | Permanently denied command patterns |
 | `hooks/modules/security/mutative_verbs.py` | CLI-agnostic mutative verb detector |
 | `hooks/modules/security/approval_grants.py` | Approval grant lifecycle management |
-| `hooks/modules/agents/response_contract.py` | Agent response contract validator |
+| `hooks/adapters/subagent_stop_core.py` | SubagentStop contract gate and close |
+| `hooks/modules/agents/contract_validator.py` | Agent contract envelope validator |
+| `hooks/modules/context/kernel_builder.py` | Dispatch kernel rendered at SubagentStart |
 | `hooks/modules/context/context_writer.py` | Progressive context enrichment |
-| `tools/context/context_provider.py` | Context payload assembly |
 | `tools/context/surface_router.py` | Surface classification and investigation briefs (reads DB-backed `surface_routing`) |
 | `tools/scan/seed_surface_routing.py` | Install-time seeder: agent `routing:` frontmatter -> `surface_routing` table |
 | `tools/memory/episodic.py` | Episodic memory storage |

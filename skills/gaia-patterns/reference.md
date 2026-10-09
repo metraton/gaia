@@ -29,7 +29,7 @@ On the plugin channel, which never runs `gaia install`, SessionStart first bring
 | Package | Files | Purpose |
 |---------|-------|---------|
 | `core/` | `hook_entry`, `paths`, `plugin_mode`, `plugin_setup`, `state`, `stdin` | Entry dispatch, path resolution, mode detection, shared state |
-| `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval nonce lifecycle |
+| `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval grant lifecycle |
 | `audit/` | `logger`, `metrics`, `event_detector`, `workflow_auditor`, `workflow_recorder` | Structured logging, metrics collection, workflow audit trail |
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Context freshness checks, contract loading, context writing |
@@ -135,7 +135,7 @@ Gaia ships as a **single, unified** plugin named `gaia`. There is **no `dist/` b
 | T2 | Simulation | None (dry-run) | No |
 | T3 | Realization | Modifies state | Yes |
 
-Enforcement: `blocked_commands.py` (permanent deny) + `mutative_verbs.py` (nonce-based approval). Everything not blocked and not mutative is safe by elimination.
+Enforcement: `blocked_commands.py` (permanent deny) + `mutative_verbs.py` (T3 verbs ask for a signature through an `approval_id`; the grant is single-use and consumed at match). Everything not blocked and not mutative is safe by elimination.
 
 ---
 
@@ -388,7 +388,7 @@ Analyzes agent transcripts for contract compliance, skill adherence, and behavio
 python3 tools/validation/approval_gate.py
 ```
 
-Validates T3 approval nonce lifecycle: generation, scope matching, expiry, grant/deny.
+Validates the T3 approval grant lifecycle: request, scope matching, expiry, grant/deny.
 
 ### Doctor
 
