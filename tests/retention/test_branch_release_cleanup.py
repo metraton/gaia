@@ -86,13 +86,41 @@ def test_cherry_picked_task_branch_releases_and_its_branch_is_deleted(repo):
     _cherry_pick_onto_accumulating_branch(repo, [sha])
     assert sha not in _git(repo, "rev-list", "accumulating")
 
-    result = reclaim_worktree(repo, worktree)
+    result = reclaim_worktree(repo, worktree, delete_branch=True)
 
     assert result["status"] == "recycled"
     assert result["branch_deleted"] is True
     assert not worktree.exists()
     assert "task-a" not in _branches(repo)
     assert "accumulating" in _branches(repo)
+
+
+def test_release_without_delete_branch_leaves_the_branch(repo):
+    from gaia.retention.worktree_reclaim import reclaim_worktree
+
+    worktree = _task_worktree(repo, "task-f")
+    sha = _commit_file(worktree, "feature.txt", "feature\n", "task work")
+    _cherry_pick_onto_accumulating_branch(repo, [sha])
+
+    result = reclaim_worktree(repo, worktree)
+
+    assert result["status"] == "recycled"
+    assert "branch_deleted" not in result
+    assert "task-f" in _branches(repo)
+
+
+def test_release_keeps_a_branch_declared_to_keep(repo):
+    from gaia.retention.worktree_reclaim import reclaim_worktree
+
+    worktree = _task_worktree(repo, "task-g")
+    sha = _commit_file(worktree, "feature.txt", "feature\n", "task work")
+    _cherry_pick_onto_accumulating_branch(repo, [sha])
+
+    result = reclaim_worktree(repo, worktree, delete_branch=True, keep_branches=["task-g"])
+
+    assert result["status"] == "recycled"
+    assert result["branch_deleted"] is False
+    assert "task-g" in _branches(repo)
 
 
 def test_branch_with_a_commit_not_upstream_by_content_is_kept(repo):
@@ -155,6 +183,22 @@ def test_post_merge_pass_removes_merged_branches_and_keeps_unmerged_ones(repo):
     remove_integrated_branches(repo)
 
     assert sorted(_branches(repo)) == ["main", "unmerged-task"]
+
+
+def test_post_merge_pass_never_deletes_checked_out_or_declared_branches(repo, tmp_path):
+    from gaia.retention.worktree_reclaim import remove_integrated_branches
+
+    for name in ("in-linked-worktree", "declared-accumulating", "in-main-checkout"):
+        _git(repo, "branch", name, "main")
+    linked = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", str(linked), "in-linked-worktree")
+    _git(repo, "checkout", "-q", "in-main-checkout")
+
+    remove_integrated_branches(repo, keep=["declared-accumulating"])
+
+    assert sorted(_branches(repo)) == [
+        "declared-accumulating", "in-linked-worktree", "in-main-checkout", "main",
+    ]
 
 
 def test_verdict_reports_content_integration_in_a_local_branch(repo):

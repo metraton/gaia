@@ -41,9 +41,16 @@ The specialist runs both verbs itself, inside its turn.
   feature branch, fetch that branch and pass `--base origin/<branch>`.
 - Location: `<workspace>/.project-worktrees/<project>/<id>`, the workspace
   being the declared workspace that holds the project.
-- Release: `gaia worktree release <path>`. A clean tree is unlocked and
-  removed; a dirty one has its diff deposited as evidence (`--brief --ac
-  --workspace`, or `--contract-id` for a turn with no brief) and stays in place.
+- Release: `gaia worktree release <path> [--keep-branch <accumulating>]`. A
+  tree with nothing only it holds is unlocked and removed, and its branch is
+  deleted when every commit on it is reachable from another ref or has an
+  identical change (verbatim patch-id) in one, which is how a cherry-pick
+  integration counts. A branch checked out anywhere, the remote's default
+  branch and each `--keep-branch` survive. A tree with uncommitted work or a
+  commit found nowhere else has its diff deposited as evidence (`--brief --ac
+  --workspace`, or `--contract-id` for a turn with no brief) and stays in
+  place, branch included. The SessionStart sweep and `gaia cleanup` recycle
+  worktrees but never delete a branch.
 - Inspect: `gaia worktree list --repo <path>`, `gaia worktree show <path>`.
 
 The orchestrator's frontmatter withholds `EnterWorktree` and `ExitWorktree`.
@@ -57,6 +64,13 @@ One ordered set per integrating turn, run from the turn's worktree:
 3. every command gate of the task, re-run on the rebased tree
 4. the tests that guard the touched area
 5. `git -C <wt> push origin HEAD:<branch>` -- never `--force`
+
+Moments of cleanup: integrating a task is followed by its turn's `gaia worktree
+release`, which deletes the task branch. After the user merges the PR, fetch the
+default branch and run the post-merge pass, which removes every local branch
+whose content the fetched default branch or another ref already holds. The verb
+for that pass is pending in plan task 882; until it lands the orchestrator names
+the leftovers to the user instead of deleting them.
 
 Only the push leaves the machine, so it is the step that takes the user's
 signature, named by branch (`subagent-request-approval`). A rejected push means

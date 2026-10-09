@@ -111,7 +111,7 @@ from __future__ import annotations
 import hashlib
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional, Set
 
 from gaia.retention.branch_disposition import branch_deletion_verdict, unintegrated_commits
 
@@ -462,14 +462,23 @@ def _remote_default_branch(repo_path: Path) -> str:
     return result.stdout.strip() if result.returncode == 0 else "origin/main"
 
 
-def _dispose_branch(repo_path: Path, branch: Optional[str]) -> dict:
+def _checked_out_branches(repo_path: Path) -> Set[str]:
+    """Branches checked out in the main checkout or any linked worktree."""
+    listing = _run_git(repo_path, ["worktree", "list", "--porcelain"])
+    prefix = "branch refs/heads/"
+    return {line[len(prefix):] for line in listing.splitlines() if line.startswith(prefix)}
+
+
+def _dispose_branch(repo_path: Path, branch: Optional[str], keep: Iterable[str] = ()) -> dict:
     """Delete the branch a recycled worktree had checked out, but only when
     ``branch_deletion_verdict`` proves its content survives elsewhere.
 
     The forced ``git branch -D`` is what a cherry-picked branch needs (git's
     own ``-d`` judges by SHA) and is safe only because the verdict has
-    established that no commit exists solely on the branch. Any failure or a
-    negative verdict keeps the branch and reports why.
+    established that no commit exists solely on the branch. A branch named
+    in *keep* (the accumulating branch, which no ref records), the remote's
+    default branch, and any branch checked out somewhere are never deleted.
+    Any failure or a negative verdict keeps the branch and reports why.
     """
     if branch is None:
         return {"branch": None, "branch_deleted": False,
@@ -478,6 +487,12 @@ def _dispose_branch(repo_path: Path, branch: Optional[str]) -> dict:
     if branch == remote_main.split("/", 1)[-1]:
         return {"branch": branch, "branch_deleted": False,
                 "branch_kept_reason": "it is the remote's default branch"}
+    if branch in set(keep):
+        return {"branch": branch, "branch_deleted": False,
+                "branch_kept_reason": "it was declared to keep"}
+    if branch in _checked_out_branches(repo_path):
+        return {"branch": branch, "branch_deleted": False,
+                "branch_kept_reason": "it is checked out in a worktree"}
     try:
         verdict = branch_deletion_verdict(repo_path, branch, remote_main=remote_main)
         if not verdict["deletable"]:
@@ -493,7 +508,7 @@ def _dispose_branch(repo_path: Path, branch: Optional[str]) -> dict:
     return {"branch": branch, "branch_deleted": True, "branch_kept_reason": None}
 
 
-def remove_integrated_branches(repo_path: Path) -> List[dict]:
+def remove_integrated_branches(repo_path: Path, *, keep: Iterable[str] = ()) -> List[dict]:
     """Post-merge pass: delete every local branch whose content the default
     branch (as last fetched) or another ref already holds; one result per
     branch, in ``_dispose_branch``'s shape.
@@ -502,7 +517,7 @@ def remove_integrated_branches(repo_path: Path) -> List[dict]:
     is indistinguishable from a branch just created there, so both go.
     """
     branches = _run_git(repo_path, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
-    return [_dispose_branch(repo_path, branch) for branch in branches.split()]
+    return [_dispose_branch(repo_path, branch, keep) for branch in branches.split()]
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +535,8 @@ def reclaim_worktree(
     task_id: Optional[str] = None,
     created_by_agent: Optional[str] = None,
     db_path=None,
+    delete_branch: bool = False,
+    keep_branches: Iterable[str] = (),
 ) -> dict:
     """Recycle a clean worktree; capture and STOP for a dirty one.
 
@@ -565,10 +582,13 @@ def reclaim_worktree(
          "recycled": bool, "captured": bool,
          "evidence_id": int | None, "reason": str | None}
 
-    A ``recycled`` result of a worktree that was present also carries
+    With ``delete_branch=True`` (the explicit release path; the SessionStart
+    and ``gaia cleanup`` collector leave it False and never delete a branch),
+    a ``recycled`` result of a worktree that was present also carries
     ``branch``, ``branch_deleted`` and ``branch_kept_reason``: the branch is
     deleted when ``branch_deletion_verdict`` finds its content elsewhere
-    (including as cherry-picked twins), and kept with the reason otherwise.
+    (including as cherry-picked twins) and it is not in ``keep_branches``,
+    and kept with the reason otherwise.
     Commits count as "unpushed" only when no other ref reaches them or
     carries a patch-id twin of them.
 
@@ -622,7 +642,7 @@ def reclaim_worktree(
             "captured": False,
             "evidence_id": None,
             "reason": None,
-            **_dispose_branch(repo_path, branch),
+            **(_dispose_branch(repo_path, branch, keep_branches) if delete_branch else {}),
         }
 
     have_brief_triple = bool(workspace and brief_slug and ac_id)

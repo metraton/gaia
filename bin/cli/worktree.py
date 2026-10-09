@@ -226,6 +226,8 @@ def _cmd_release(args) -> int:
             contract_id=contract_id,
             task_id=args.task_id,
             created_by_agent=created_by,
+            delete_branch=True,
+            keep_branches=getattr(args, "keep_branch", []),
         )
     except Exception as exc:  # noqa: BLE001 -- surface any failure, never mask it
         return _err(f"release failed: {exc}", as_json)
@@ -375,6 +377,10 @@ def register(subparsers) -> None:
                            help="Opaque task reference (optional).")
     release_p.add_argument("--created-by", default=None, dest="created_by", metavar="AGENT",
                            help="Agent slug attributed on the evidence row. Default: the worktree's own agent_id.")
+    release_p.add_argument("--keep-branch", action="append", default=[], dest="keep_branch",
+                           metavar="NAME",
+                           help="Branch that must survive the release even when its content is "
+                                "integrated, e.g. the accumulating branch. Repeatable.")
     release_p.add_argument("--json", action="store_true", default=False,
                            help="Emit JSON output.")
 
