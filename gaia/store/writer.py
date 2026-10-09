@@ -10021,7 +10021,8 @@ def find_orphaned_dispatched_handoff(
 
     Returns:
         ``{"id": int, "contract_id": str, "agent_id": str,
-        "plan_task_id": int | None}`` of the orphaned nascent row, or None when
+        "plan_task_id": int | None, "workspace": str | None,
+        "dispatch_project": str | None}`` of the orphaned nascent row, or None when
         no DISPATCHED row exists for that (session, agent) pair. ``agent_id`` is
         the identity the row was BORN under: a closer must preserve it rather
         than restamp the row with whichever candidate it searched by, or a row
@@ -10040,7 +10041,8 @@ def find_orphaned_dispatched_handoff(
     try:
         placeholders = ", ".join("?" for _ in candidates)
         row = con.execute(
-            f"SELECT id, contract_id, agent_id, plan_task_id "
+            f"SELECT id, contract_id, agent_id, plan_task_id, "
+            f"workspace, dispatch_project "
             f"FROM agent_contract_handoffs "
             f"WHERE agent_state = 'DISPATCHED' AND session_id = ? "
             f"AND agent_id IN ({placeholders}) "
@@ -10054,6 +10056,8 @@ def find_orphaned_dispatched_handoff(
             "contract_id": row["contract_id"],
             "agent_id": row["agent_id"],
             "plan_task_id": row["plan_task_id"],
+            "workspace": row["workspace"],
+            "dispatch_project": row["dispatch_project"],
         }
     finally:
         con.close()
@@ -10108,7 +10112,8 @@ def find_dispatched_row_by_agent_name(
 
     Returns:
         ``{"id": int, "contract_id": str, "agent_id": str,
-        "plan_task_id": int | None}`` when exactly one row matches; None when
+        "plan_task_id": int | None, "workspace": str | None,
+        "dispatch_project": str | None}`` when exactly one row matches; None when
         none or several do.
     """
     if not session_id or not agent_name:
@@ -10116,7 +10121,8 @@ def find_dispatched_row_by_agent_name(
     con = _connect(db_path)
     try:
         rows = con.execute(
-            f"SELECT id, contract_id, agent_id, plan_task_id "
+            f"SELECT id, contract_id, agent_id, plan_task_id, "
+            f"workspace, dispatch_project "
             f"FROM agent_contract_handoffs "
             f"WHERE agent_state = 'DISPATCHED' AND session_id = ? "
             f"AND {_BIRTH_AGENT_NAME_SQL} = ? "
@@ -10131,6 +10137,8 @@ def find_dispatched_row_by_agent_name(
             "contract_id": row["contract_id"],
             "agent_id": row["agent_id"],
             "plan_task_id": row["plan_task_id"],
+            "workspace": row["workspace"],
+            "dispatch_project": row["dispatch_project"],
         }
     finally:
         con.close()
@@ -10840,11 +10848,16 @@ _CONTINUATION_CONSTRAINT_COLUMNS = (
 # it per RUN, not per turn, so a resumption genuinely carries the same one. It is
 # also load-bearing -- the SubagentStop bridge resolves the closing turn's row by
 # it (see collapse_continuation_chains).
+#
+# dispatch_project is load-bearing the same way: SubagentStop reads the closing
+# turn's live link to pick the workspace an update_contracts write lands in, and
+# a NULL there sends a resumed turn's write to the session workspace.
 _CONTINUATION_IDENTITY_COLUMNS = (
     "agent_id",
     "session_id",
     "workspace",
     "harness_agent_id",
+    "dispatch_project",
 )
 
 # Everything NOT in these two tuples is either set explicitly by
@@ -12029,14 +12042,16 @@ def dispatch_row_for_identity(
 
     Returns:
         ``{"id": int, "contract_id": str, "agent_id": str, "agent_state": str,
-        "plan_task_id": int | None}`` of the most-recent match, or None.
+        "plan_task_id": int | None, "workspace": str | None,
+        "dispatch_project": str | None}`` of the most-recent match, or None.
     """
     if not session_id or not agent_id:
         return None
     con = _connect(db_path)
     try:
         row = con.execute(
-            "SELECT id, contract_id, agent_id, agent_state, plan_task_id "
+            "SELECT id, contract_id, agent_id, agent_state, plan_task_id, "
+            "workspace, dispatch_project "
             "FROM agent_contract_handoffs "
             "WHERE session_id = ? AND agent_id = ? "
             "ORDER BY id DESC LIMIT 1",
@@ -12050,6 +12065,8 @@ def dispatch_row_for_identity(
             "agent_id": row["agent_id"],
             "agent_state": row["agent_state"],
             "plan_task_id": row["plan_task_id"],
+            "workspace": row["workspace"],
+            "dispatch_project": row["dispatch_project"],
         }
     finally:
         con.close()
