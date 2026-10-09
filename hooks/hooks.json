@@ -189,5 +189,8 @@
         ]
       }
     ]
-  }
+  },
+  "modules": [
+    "./mods/compaction/register.ts"
+  ]
 }

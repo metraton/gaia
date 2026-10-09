@@ -284,6 +284,8 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 
 ### CP-5: `hooks/hooks.json` -- Hook Configuration
 
+Besides the `hooks` event table, `hooks/hooks.json` carries a top-level `modules` key naming the Claude Code mods under `hooks/mods/` (generated from the build manifest's `host_mods` list and checked by `scripts/check_hooks_drift.py`).
+
 | Attribute | Value |
 |-----------|-------|
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |

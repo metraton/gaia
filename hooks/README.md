@@ -80,6 +80,8 @@ hooks/pre_tool_use.py              <- Entry point: stdin/stdout glue only
 
 To add a new behavior to an existing hook: write a module in `modules/<package>/`, import it in the adapter, and call it from the relevant adapter method. Modules receive parsed context as arguments and return results. They never read stdin or write stdout directly.
 
+`hooks/mods/` holds Claude Code mods, hooks modules the host loads in-process and that `hooks/hooks.json` names under its top-level `modules` key (generated from the build manifest's `host_mods` list); `mods/compaction/` steers every compaction and appends the session snapshot.
+
 To add a new hook entry point: create `hooks/<event_name>.py`, register it in `build/gaia.manifest.json` under `hooks.entries` and `hooks.matchers`, then write the adapter method. The entry point pattern is always the same: read stdin JSON, call adapter, print response.
 
 ## What's here
