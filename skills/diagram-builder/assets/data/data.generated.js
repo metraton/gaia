@@ -334,9 +334,9 @@ window.__DOC__ = {
           "kicker": "STORY · 2 OF 2",
           "title": "Does your story come back, or climb?",
           "description": [
-            "a story that returns is a ring; a story that grows is a staircase"
+            "a story that returns is a round trip; a story that grows is a climb"
           ],
-          "detail": "Before any piece, say what the story does in one sentence. This one goes out and comes back (say it, name who acts, test it, tell a listener, hear the gap, say it again), so the page is a ring: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a staircase. The shape is decided by the sentence you tell, never by the boxes you have."
+          "detail": "Before any piece, say what the story does in one sentence. This one goes out and comes back (say it, name who acts, test it, tell a listener, hear the gap, say it again), so the page is a round trip: an outbound leg and a return leg, with one chip across them. The story below it climbs, so it is a climb. The shape is decided by the sentence you tell, never by the boxes you have."
         },
         {
           "id": "p12-out",
@@ -430,7 +430,7 @@ window.__DOC__ = {
               "filters": [
                 "loop"
               ],
-              "detail": "The ring closes in text: the kicker says where the path goes next, and the chip's steps say it again."
+              "detail": "The round trip closes in text: the kicker says where the path goes next, and the chip's steps say it again."
             }
           ]
         },
@@ -452,7 +452,7 @@ window.__DOC__ = {
               "description": [
                 "the latest, dearest find"
               ],
-              "detail": "This story grows: the later a mistake is found, the more it costs, so each step stands taller than the last. A story that climbs is told as a staircase, from the smallest step to the largest."
+              "detail": "This story grows: the later a mistake is found, the more it costs, so each step stands taller than the last. A story that climbs is told as a climb, from the smallest step to the largest."
             },
             {
               "id": "p12-gap-1",
@@ -2974,7 +2974,7 @@ window.__DOC__ = {
                   "description": [
                     "treatment: [vertical]"
                   ],
-                  "detail": "<code>- { id: centred, title: Centred, treatment: [centered] }</code><br><code>- { id: vertical, title: Vertical, treatment: [vertical] }</code><br>The others: <code>outside</code> (dashed frame), <code>plain</code> (frameless wrapper, which holds every entry on these pages), <code>compact</code> (short-row staircase)."
+                  "detail": "<code>- { id: centred, title: Centred, treatment: [centered] }</code><br><code>- { id: vertical, title: Vertical, treatment: [vertical] }</code><br>The others: <code>outside</code> (dashed frame), <code>plain</code> (frameless wrapper, which holds every entry on these pages), <code>compact</code> (short rows, so stepped rowspans end level)."
                 },
                 {
                   "id": "piece-treatment-says",
@@ -4420,7 +4420,7 @@ window.__DOC__ = {
                 "write a spacer; the taper",
                 "of a chart is the one exception"
               ],
-              "detail": "Write a <code>spacer</code> where the gap is meant, as the band at the bottom of this page does. One asymmetry needs no spacer: the rows a <code>rowspan</code> box touches are allowed to taper, because a ladder of bars 1·2·3·4 tapers by design and the taper IS the chart. Any other gap is closed or declared.",
+              "detail": "Write a <code>spacer</code> where the gap is meant, as the band at the bottom of this page does. One asymmetry needs no spacer: the rows a <code>rowspan</code> box touches are allowed to taper, because a row of bars 1·2·3·4 tapers by design and the taper IS the chart. Any other gap is closed or declared.",
               "variant": "warn"
             }
           ]
