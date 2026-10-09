@@ -542,7 +542,13 @@ def close_brief(
     *,
     db_path: Path | None = None,
 ) -> bool:
-    """Set the brief status to 'closed' and update updated_at."""
+    """Set the brief status to 'closed' and update updated_at.
+
+    Raises StateTransitionForbidden for a dispatched agent that is not a curator.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("briefs")
+
     con = _connect(db_path)
     try:
         cur = con.execute(
@@ -554,6 +560,54 @@ def close_brief(
         return cur.rowcount > 0
     finally:
         con.close()
+
+
+def close_brief_verified(
+    workspace: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Close a brief and its active plan, but only if verify passes for the closed state.
+
+    Stored AC statuses that compute done are synced first, since that
+    reconciliation holds whether or not the close goes through. Returns
+    ``{"closed": bool, "synced": [ac_id], "inconsistencies": [...]}``; nothing
+    but the AC sync is written when ``closed`` is False.
+
+    Raises StateTransitionForbidden for a dispatched agent that is not a curator,
+    ValueError when the brief is missing or its plan cannot be closed (paused).
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    from gaia.store.writer import set_plan_status, set_ac_status
+
+    _assert_dispatch_can_advance_state("briefs")
+
+    synced = [
+        ac["ac_id"]
+        for ac in derive_brief_state(workspace, name, db_path=db_path)["acceptance_criteria"]
+        if ac["done"] and ac["status"] == "pending"
+    ]
+    for ac_id in synced:
+        set_ac_status(workspace, name, ac_id, "done", db_path=db_path)
+
+    inconsistencies = verify_brief(workspace, name, closing=True, db_path=db_path)["inconsistencies"]
+    if inconsistencies:
+        return {"closed": False, "synced": synced, "inconsistencies": inconsistencies}
+
+    con = _connect(db_path)
+    try:
+        plan = con.execute(
+            "SELECT p.status FROM plans p JOIN briefs b ON b.id = p.brief_id "
+            "WHERE b.workspace = ? AND b.name = ?",
+            (workspace, name),
+        ).fetchone()
+    finally:
+        con.close()
+    if plan is not None and plan["status"] == "active":
+        set_plan_status(workspace, name, "closed", db_path=db_path)
+    close_brief(workspace, name, db_path=db_path)
+    return {"closed": True, "synced": synced, "inconsistencies": []}
 
 
 # ---------------------------------------------------------------------------
@@ -1463,9 +1517,14 @@ def verify_brief(
     workspace: str,
     name: str,
     *,
+    closing: bool = False,
     db_path: Path | None = None,
 ) -> dict:
     """Run invariant checks on a brief and return a structured diagnosis.
+
+    With ``closing`` the checks run against the state a close would leave (the
+    brief closed, an active plan closed) and the transaction is rolled back, so
+    nothing is written.
 
     Returns dict with keys:
       * brief_name (str)
@@ -1486,6 +1545,27 @@ def verify_brief(
         brief_status = brief_row["status"]
 
         inconsistencies: list[dict] = []
+
+        if closing:
+            brief_status = "closed"
+            con.execute("UPDATE briefs SET status = 'closed' WHERE id = ?", (brief_id,))
+            con.execute(
+                "UPDATE plans SET status = 'closed' WHERE brief_id = ? AND status = 'active'",
+                (brief_id,),
+            )
+            for task in con.execute(
+                "SELECT t.order_num, t.status FROM tasks t JOIN plans p ON p.id = t.plan_id "
+                "WHERE p.brief_id = ? AND p.status = 'closed' "
+                "AND t.status NOT IN ('done', 'skipped') ORDER BY t.order_num",
+                (brief_id,),
+            ):
+                inconsistencies.append({
+                    "kind": "closing_with_open_task",
+                    "detail": (
+                        f"task order_num={task['order_num']} is "
+                        f"'{task['status']}' -- the plan cannot close with it open"
+                    ),
+                })
 
         # The TERMINAL set for an AC: an AC is "resolved" when it is either
         # satisfied ('done') or deliberately dropped ('descoped', v21). Any other

@@ -574,6 +574,9 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "new"),
     ("brief", "edit"),
     ("brief", "set-status"),
+    # Unlike set-status, close verifies before closing and syncs the stored AC
+    # status that computes done; the store refuses non-curator callers.
+    ("brief", "close"),
     ("brief", "set-project"),
     ("brief", "ac", "add"),
     ("brief", "ac", "edit"),
@@ -1237,7 +1240,7 @@ def _validate_orchestrator_write(
         valid = bool(args) and not args[0].startswith("-") and "--headless" in args
     elif phrase == ("brief", "set-status"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _BRIEF_STATUSES
-    elif phrase == ("brief", "set-project"):
+    elif phrase in (("brief", "set-project"), ("brief", "close")):
         valid = bool(args) and not args[0].startswith("-")
     elif phrase[:2] == ("brief", "ac"):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args[1:], "--id")
