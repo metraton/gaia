@@ -2472,6 +2472,8 @@ def upsert_memory(
     class_: str | None = None,
     status: str | None = None,
     replace: bool = False,
+    measured_at: str | None = None,
+    method: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -2532,6 +2534,10 @@ def upsert_memory(
     schema's ``log`` for every other type. ``class_`` and ``status`` given
     explicitly are applied with :func:`reclassify_memory`'s rules, so an update
     changes the class only when the caller names one.
+
+    ``measured_at`` / ``method`` -- when and how the row's fact was measured.
+    Coalesce-or-omit like ``audience``: ``None`` never clears a stamp already
+    stored.
     """
     _assert_dispatch_can_write_memory()
 
@@ -2579,8 +2585,9 @@ def upsert_memory(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
-                                    updated_at, audience, created_at, class)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?)
+                                    updated_at, audience, created_at, class,
+                                    measured_at, method)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2589,7 +2596,9 @@ def upsert_memory(
                     initiative        = COALESCE(excluded.initiative, initiative),
                     origin_session_id = excluded.origin_session_id,
                     updated_at        = excluded.updated_at,
-                    audience          = COALESCE(?, audience)
+                    audience          = COALESCE(?, audience),
+                    measured_at       = COALESCE(excluded.measured_at, measured_at),
+                    method            = COALESCE(excluded.method, method)
                 """,
                 # `audience` is bound twice deliberately: once for the INSERT
                 # branch (COALESCE(?, 'any') -- a brand-new row with no
@@ -2608,7 +2617,7 @@ def upsert_memory(
                 # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 now, born_class, audience),
+                 now, born_class, measured_at, method, audience),
             )
             result = {
                 "status": "applied",
@@ -3717,7 +3726,7 @@ def get_memory(
             "SELECT workspace, name, type, description, body, project_ref, "
             "       initiative, origin_session_id, updated_at, deleted_at, "
             "       audience, injection_count, deliberate_count, "
-            "       last_injected_at, last_deliberate_at "
+            "       last_injected_at, last_deliberate_at, measured_at, method "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
         if not include_deleted:

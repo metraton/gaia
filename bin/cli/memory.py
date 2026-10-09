@@ -685,18 +685,41 @@ def _emit_write_warnings(warnings: list[dict], as_json: bool) -> None:
     print(_WRITE_POINTER)
 
 
+def _stamp_suffix(row: dict) -> str:
+    """``(measured 2026-10-08 via <method>)`` for a row carrying either half of the stamp, else ``""``."""
+    parts = []
+    if row.get("measured_at"):
+        parts.append(f"measured {row['measured_at']}")
+    if row.get("method"):
+        parts.append(f"via {row['method']}")
+    return f"({' '.join(parts)})" if parts else ""
+
+
 def _add_warnings(
     *, mem_type: str, description: str | None, body: str, owned: bool,
-    previous_body: str | None,
+    previous_body: str | None, measured_at: str | None = None,
+    method: str | None = None,
 ) -> list[dict]:
     """What a ``memory add`` call should hear about the row it is writing.
 
     ``owned`` is whether the call named a project or initiative;
     ``previous_body`` is the body already stored under the same name, or None.
     """
-    from gaia.store.memory_claims import PREFERENCE_KIND, memory_claim_kind
+    from gaia.store.memory_claims import (
+        PREFERENCE_KIND, claims_measurement, memory_claim_kind,
+    )
 
     warnings = []
+    if claims_measurement(description) and not (measured_at and method):
+        warnings.append(_warning(
+            "measurement_unstamped",
+            "the description claims a measurement but the row names "
+            "no " + " or ".join(
+                label for label, given in
+                (("--measured-at", measured_at), ("--method", method))
+                if not given
+            ) + "; a measured fact says when and how it was measured.",
+        ))
     if description and len(description) > _DESCRIPTION_WARN_CHARS:
         warnings.append(_warning(
             "description_long",
@@ -752,8 +775,19 @@ def _cmd_add(args) -> int:
     project_flag = getattr(args, "project", None)
     project_ref_flag = getattr(args, "project_ref", None)
     audience_flag = getattr(args, "audience", None)
+    measured_at = getattr(args, "measured_at", None)
+    method = getattr(args, "method", None)
     workspace = _resolve_workspace(workspace_flag)
 
+    if measured_at is not None:
+        try:
+            datetime.fromisoformat(measured_at)
+        except ValueError:
+            return _err(
+                f"--measured-at {measured_at!r} is not an ISO date; "
+                f"use 2026-10-08 or 2026-10-08T14:30:00Z",
+                as_json,
+            )
     if not name:
         return _err("--name is required", as_json)
     if not mem_type:
@@ -881,6 +915,7 @@ def _cmd_add(args) -> int:
         mem_type=mem_type, description=description, body=body,
         owned=project_ref is not None or initiative is not None,
         previous_body=stored["body"] if stored else None,
+        measured_at=measured_at, method=method,
     )
 
     _, status_for_writer = _normalize_status_flag(status_flag)
@@ -897,6 +932,8 @@ def _cmd_add(args) -> int:
             class_=class_flag,
             status=status_for_writer,
             replace=getattr(args, "replace", False),
+            measured_at=measured_at,
+            method=method,
         )
     except (MemoryHostScopeError, MemoryUserScopeError, MemoryNameExistsError) as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
@@ -2166,6 +2203,8 @@ def _project_mode_item(row: dict, label: str, section: str) -> dict:
         "section": section,
         "description": row.get("description") or "",
         "body": row.get("body"),
+        "measured_at": row.get("measured_at"),
+        "method": row.get("method"),
     }
 
 
@@ -2237,13 +2276,13 @@ def _render_project_mode(args, workspace: str, initiative_arg: str | None,
     for r in rows:
         name = r.get("name") or ""
         description = r.get("description") or ""
-        bullet = _collapse_desc(description)
+        bullet = " ".join(filter(None, (_collapse_desc(description), _stamp_suffix(r))))
         lines.append(f"- {name}: {bullet}" if bullet else f"- {name}")
         items.append(_project_mode_item(r, label, "project"))
     if anchors:
         lines.extend(([""] if lines else []) + [f"## Memory — Anchors of {label}", ""])
     for r in anchors:
-        lines.append(f"- {r.get('name') or ''}:")
+        lines.append(" ".join(filter(None, (f"- {r.get('name') or ''}:", _stamp_suffix(r)))))
         lines.extend(f"  {line}" for line in (r.get("body") or "").splitlines())
         items.append(_project_mode_item(r, label, "anchor"))
 
@@ -2569,6 +2608,9 @@ def _cmd_curated_show(args) -> int:
     print(f"# class: {row.get('class')}  status: {row.get('status')}")
     print(f"# audience: {row.get('audience')}")
     print(f"# updated_at: {row.get('updated_at')}")
+    if row.get("measured_at") or row.get("method"):
+        print(f"# measured_at: {row.get('measured_at') or '(unknown)'}  "
+              f"method: {row.get('method') or '(unknown)'}")
     # Kept on separate lines rather than summed: one combined number would let
     # a row's automatic injections pass for deliberate reads.
     print(f"# injection_count: {row.get('injection_count', 0)}  "
@@ -3600,6 +3642,18 @@ def register(subparsers):
             "row gets 'any' and --replace keeps the stored value (never "
             "silently reset)."
         ),
+    )
+    add_p.add_argument(
+        "--measured-at", dest="measured_at", default=None, metavar="DATE",
+        help=(
+            "ISO date (2026-10-08) or datetime the fact was measured. Give it "
+            "with --method on any row whose description says 'Measured'; "
+            "show and get-relevant --initiative print both beside the row."
+        ),
+    )
+    add_p.add_argument(
+        "--method", default=None,
+        help="How the fact was measured: the command, query or sample.",
     )
     add_p.add_argument("--workspace", default=None, metavar="W",
                        help="Workspace identity.")
