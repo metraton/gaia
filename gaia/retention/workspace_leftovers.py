@@ -6,17 +6,25 @@ session's directory.
 Informative only: nothing here removes, captures or fetches anything. The repo
 list comes from the ``projects`` rows of the declared workspaces, so it is as
 fresh as their last ``gaia scan`` and costs no scan at session start.
+
+Counting takes seconds on a large workspace, so SessionStart never counts: it
+reads the line a detached refresh (``python -m gaia.retention.workspace_leftovers
+<dir>``) stored under the data home, and shows nothing until one exists.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import List, Tuple
 
 from gaia.install_root import owning_root, registered_roots
-from gaia.paths import db_path, scratch_dir
+from gaia.paths import data_dir, db_path, scratch_dir
 from gaia.retention.worktree_reclaim import _remote_default_branch
 
 MAX_REPOS_LISTED = 5
@@ -71,8 +79,8 @@ def repo_leftovers(repo: Path) -> Tuple[int, int]:
     return max(linked, 0), len(local - checked_out - {default})
 
 
-def leftovers_notice(start: Path) -> str:
-    """The notice for the declared workspaces around *start*, or "" when nothing is leftover."""
+def build_notice(start: Path) -> str:
+    """Count the leftovers now (seconds on a large workspace); "" when there are none."""
     names = declared_workspaces_around(start)
     if not names:
         return ""
@@ -97,3 +105,69 @@ def leftovers_notice(start: Path) -> str:
         shown.append(f"scratch: {scratch_entries} entries")
     label = "Workspace " + names[0] if len(names) == 1 else "Workspaces " + ", ".join(names)
     return f"{label}, nothing is deleted: " + "; ".join(shown) + f". {HINT}."
+
+
+REFRESH_AFTER_SECONDS = 15 * 60
+# A refresh still running this long after it started is presumed dead.
+REFRESH_CLAIM_SECONDS = 5 * 60
+
+
+def _cache_path() -> Path:
+    return data_dir() / "leftovers-notice.json"
+
+
+def _read_cache() -> dict:
+    try:
+        loaded = json.loads(_cache_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _write_entry(key: str, entry: dict) -> None:
+    cache = _read_cache()
+    cache[key] = entry
+    target = _cache_path()
+    scratch = target.with_name(f"{target.name}.{os.getpid()}")
+    scratch.write_text(json.dumps(cache), encoding="utf-8")
+    os.replace(scratch, target)
+
+
+def _spawn_refresh(start: Path) -> None:
+    package_root = Path(__file__).resolve().parents[2]
+    subprocess.Popen(
+        [sys.executable, "-m", "gaia.retention.workspace_leftovers", str(start)],
+        cwd=package_root, start_new_session=True,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def leftovers_notice(start: Path) -> str:
+    """The stored notice for *start*; "" when none is stored yet.
+
+    Never counts. When the stored line is missing or older than
+    ``REFRESH_AFTER_SECONDS`` it claims and starts one detached refresh, so the
+    next session sees the new counts.
+    """
+    start = Path(start).resolve()
+    if not declared_workspaces_around(start):
+        return ""
+    key = str(start)
+    entry = _read_cache().get(key, {})
+    now = time.time()
+    stale = now - entry.get("counted_at", 0) > REFRESH_AFTER_SECONDS
+    claimed = now - entry.get("claimed_at", 0) < REFRESH_CLAIM_SECONDS
+    if stale and not claimed:
+        _write_entry(key, {**entry, "claimed_at": now})
+        _spawn_refresh(start)
+    return entry.get("notice", "")
+
+
+def refresh(start: Path) -> None:
+    """Count now and store the line with its timestamp, releasing the claim."""
+    start = Path(start).resolve()
+    _write_entry(str(start), {"notice": build_notice(start), "counted_at": time.time()})
+
+
+if __name__ == "__main__":
+    refresh(Path(sys.argv[1]))
