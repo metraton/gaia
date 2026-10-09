@@ -1721,7 +1721,8 @@ def _request_set_items(args) -> list[dict]:
 
     One --cwd applies to every command; N --cwd flags align with N commands,
     and each must be an existing directory, or no call could ever run there.
-    --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions.
+    --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions; a
+    position named twice accumulates its codes.
     --does and --impact, when given, come once per command.
     """
     commands = list(args.command)
@@ -1743,7 +1744,7 @@ def _request_set_items(args) -> list[dict]:
         position, _, codes = spec.partition("=")
         if not position.isdigit() or not 1 <= int(position) <= len(commands) or not codes:
             raise ValueError(f"--expect-exit {spec!r} must be POSITION=CODE[,CODE] for a listed command")
-        expected[int(position) - 1] = [int(code) for code in codes.split(",")]
+        expected.setdefault(int(position) - 1, []).extend(int(code) for code in codes.split(","))
     return [
         {
             "command": command, "cwd": cwd,

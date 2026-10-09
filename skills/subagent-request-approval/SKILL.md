@@ -56,7 +56,12 @@ Optional, per command:
 `--cwd` (the existing directory it must run in, once for all or once per
 command; the default is where you run the request) and
 `--expect-exit POSITION=CODES` (non-zero exits that still let the set go on,
-e.g. `2=1`). Details names a command's folder when it runs somewhere other
+e.g. `2=1`; repeat the flag, or list codes with commas, for more than one code).
+Declare it for every command whose non-zero exit is part of its normal contract
+-- a `git rebase` that stops on a conflict you will resolve, a `git cherry-pick`
+likewise -- because only a declaration made here lets the set go on; an
+undeclared non-zero exit freezes it and the rest needs a new request. Details
+names a command's folder when it runs somewhere other
 than where you asked from, or when the command uses relative paths.
 
 One request holds at most 4 signed commands, because the host shows at most 4

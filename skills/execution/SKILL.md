@@ -32,7 +32,8 @@ source changes. The same prohibition applies to fixtures and bulk operations.
    OpenCode, and nothing is asked in your session.
 3. After every result, checkpoint the exact command, index and exit status.
 4. A command that exits with a code its request declared with `--expect-exit`
-   has succeeded for the set: continue with the next index. Any other failure
+   has succeeded for the set: continue with the next index. Only a declaration
+   made when the set was requested counts; you cannot declare one now. Any other failure
    stops the set; apply `command-execution`'s COMMAND_SET fail-fast rule, then
    use `agent-protocol` to reconcile the result for its consumer.
    An unsigned step of the set (`gaia approvals show` marks it
