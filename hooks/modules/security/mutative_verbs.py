@@ -7856,7 +7856,7 @@ def build_t3_block_response(
     Args:
         command: The original shell command.
         danger: MutativeResult from detect_mutative_command.
-        nonce: Cryptographic nonce for this pending approval. When provided,
+        nonce: The approval_id this block asks the user to approve. When provided,
             the block message includes the approval code that the agent must
             present to the user.
 

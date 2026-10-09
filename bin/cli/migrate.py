@@ -17,6 +17,11 @@ import sys
 from pathlib import Path
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
+
+from gaia.paths import db_path as _resolved_db_path  # noqa: E402
+
 ENGINE = _PACKAGE_ROOT / "scripts" / "bootstrap_database.py"
 
 _DESCRIPTION = """\
@@ -73,10 +78,15 @@ def run(
     db_path: str | None = None,
     capture: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run the engine; ``db_path`` overrides the database via GAIA_DB."""
+    """Run the engine on ``db_path``, else on the database every gaia call resolves.
+
+    The engine reads GAIA_DB alone, so the resolver's answer (which also honors
+    GAIA_DATA_DIR) is handed to it through that variable.
+    """
     env = os.environ.copy()
-    if db_path:
-        env["GAIA_DB"] = str(Path(db_path).expanduser().resolve())
+    env["GAIA_DB"] = (
+        str(Path(db_path).expanduser().resolve()) if db_path else str(_resolved_db_path())
+    )
     return subprocess.run(
         engine_command(action, consent_chain),
         env=env,
@@ -107,7 +117,7 @@ def register(subparsers):
             "--db",
             dest="db_path",
             default=None,
-            help="Database path (default: GAIA_DB, else ~/.gaia/gaia.db)",
+            help="Database path (default: GAIA_DB, else GAIA_DATA_DIR/gaia.db, else ~/.gaia/gaia.db)",
         )
         if name == "apply":
             sub.add_argument(

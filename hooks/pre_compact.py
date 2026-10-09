@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """PreCompact hook — a schema-valid no-op registered for the PreCompact event.
 
-The event carries no deliverable payload: Claude Code neither validates nor
-consumes ``hookSpecificOutput`` for PreCompact (see ``_handle_pre_compact``),
-so there is nothing this hook can inject into the model's context. It stays
-registered so the event has a well-formed responder that can never block
-compaction, and so a future capability has a wired entry point.
+PreCompact can run code and can block compaction (exit code 2, or a top-level
+``decision: "block"``), but Claude Code neither validates nor consumes
+``hookSpecificOutput`` for it (see ``_handle_pre_compact``), so this hook has no
+way to inject model context. It stays registered as a well-formed responder
+that never blocks, and as the wired entry point for a future capability.
 
 All errors are caught — this hook never blocks compaction.
 """

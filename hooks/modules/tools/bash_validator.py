@@ -70,8 +70,8 @@ from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
     last_check_found_expired,
-    # DEPRECATED (T2.1 cutover): generate_nonce, write_pending_approval,
-    # find_pending_for_command are no longer used in the T3 subagent intercept
+    # DEPRECATED (T2.1 cutover): the filesystem pending-file helpers
+    # (write_pending_approval, find_pending_for_command, generate_nonce) are no longer used in the T3 subagent intercept
     # path. They remain in approval_grants.py for M3/M4 consumers (e.g.,
     # filesystem-based activation in pre_tool_use) until those layers are
     # migrated. Do not re-introduce these calls in _validate_atomic_command.

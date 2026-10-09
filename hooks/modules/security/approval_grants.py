@@ -4,16 +4,16 @@ Approval grant management for T3 command passthrough.
 Two-phase nonce-based approval flow:
 
   Phase 1 -- BLOCKING:
-    bash_validator detects a T3 command, generates a cryptographic nonce,
-    writes a pending-{nonce}.json file, and returns a block response that
-    includes the nonce for the agent to present.
+    bash_validator detects a T3 command, records a pending approval row in
+    gaia.db, and returns a block response carrying its approval_id for the
+    agent to present.
 
   Phase 2 -- ACTIVATION:
-    The orchestrator resumes the agent with "APPROVE:{nonce}". The
-    pre_tool_use hook finds the pending file, validates it (session, TTL,
-    nonce match), converts it to an active grant, and deletes the pending
-    file. The agent retries the command; bash_validator finds the active
-    grant and allows it.
+    The orchestrator opens the question ``gaia approvals question
+    <approval_id>`` printed, and the user's answer is read by the PostToolUse
+    AskUserQuestion handler (adapters/claude_code.py), which turns the pending
+    row into an active grant. The agent retries the byte-identical command;
+    bash_validator finds the active grant and allows it.
 
 Grants are:
 - Time-limited by one window for every lane, gaia.store.writer's
@@ -656,7 +656,7 @@ def _db_row_to_pending_dict(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     The legacy filesystem pending dict shape (nonce, command, danger_verb,
     danger_category, scope_type, scope_signature, timestamp, context, ...) is
     still what readers like ``bin/cli/approvals.py`` expect. This mapping is the
-    DB-backed equivalent of the filesystem ``pending-{nonce}.json`` payload --
+    DB-backed equivalent of the legacy filesystem pending-approval payload --
     mirrors ``_scan_pending_shared`` in ``bin/cli/approvals.py``.
 
     Returns None when the row cannot be parsed.
@@ -762,7 +762,7 @@ def find_pending_for_command(
         command: The command to match against pending approvals.
 
     Returns:
-        The nonce (approval_id) if a matching pending approval exists, else None.
+        The approval_id of a matching pending approval, else None.
     """
     pending_list = get_pending_approvals_for_session(session_id)
     if not pending_list:
@@ -783,13 +783,13 @@ def find_pending_for_command(
         try:
             pending_sig = ApprovalSignature.from_dict(pending_sig_data)
             if matches_approval_signature(pending_sig, command):
-                nonce = pending_data.get("nonce")
-                if nonce:
+                approval_id = pending_data.get("nonce")
+                if approval_id:
                     logger.info(
-                        "Reusing existing pending approval nonce=%s for command: %s",
-                        nonce, command[:80],
+                        "Reusing existing pending approval %s for command: %s",
+                        approval_id, command[:80],
                     )
-                    return nonce
+                    return approval_id
         except Exception:
             continue
 

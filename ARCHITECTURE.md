@@ -69,7 +69,7 @@ Order is short-circuit -- first match wins:
 3. Commit message check   --> conventional commits format validation
 4. cloud_pipe_validator   --> block pipes/redirects/chains on cloud CLIs (exit 0, corrective)
 5. mutative_verbs.py      --> scan tokens 1-5 for MUTATIVE verbs
-   |                          If mutative + no active grant -> generate nonce, block
+   |                          If mutative + no active grant -> block with an approval_id
    |                          If mutative + active grant -> allow (T3)
    |                          If not mutative -> safe by elimination (T0)
 ```
@@ -90,27 +90,28 @@ Order is short-circuit -- first match wins:
                                 (gaia.contract.validator.AGENT_ID_PATTERN_TEXT,
                                  the single source of truth for every copy)
 2. Message presence check   --> non-empty message required
-3. Nonce approval check     --> detect APPROVE:{nonce}, activate pending grants
 ```
+
+Grant activation is not part of SendMessage validation: the user's answer to the
+approval question is read by the PostToolUse `AskUserQuestion` handler
+(`hooks/adapters/claude_code.py::_handle_ask_user_question_result`).
 
 ## Agent Completion Pipeline: subagent_stop.py
 
 Fires after every agent tool completes:
 
 ```
-1. Consume approval file    --> delete pending approval if matches agent
-2. Capture workflow metrics  --> duration, exit code, plan status -> metrics.jsonl
-3. Validate response contract
-   |  Parse AGENT_STATUS block (agent_state, agent_id, pending_steps, next_action)
-   |  Parse EVIDENCE_REPORT block (7 required fields)
-   |  Parse CONSOLIDATION_REPORT if multi-surface task
-   |  If invalid -> save pending-repair.json for pre_tool_use guard
-   |  If valid -> clear pending repair
-4. Detect anomalies          --> execution failures, consecutive failures
-   |  If anomalies found -> create needs_analysis.flag for Gaia
-5. Capture episodic memory   --> store episode via tools/memory/episodic.py
-6. Process context updates   --> apply update_contracts entries from the agent_contract_handoff envelope via context_writer.py (process_update_contracts)
+1. Validate the turn's own agent_contract_handoffs row
+   |  Found unfinalized, or no row at all -> reject the close (exit 2)
+   |  A rejected turn's substantive text is preserved and relayed back
+   |  (modules/agents/rejected_turn_relay.py)
+2. Record workflow metrics
+3. Store episodic memory
 ```
+
+The agent writes its contract during the turn with `gaia contract set|add|fill`
+and promotes it with `gaia contract finalize`; the hook validates that row and
+does not parse the final message. Details: `hooks/README.md`.
 
 ## Surface Routing: surface_router.py
 
@@ -122,13 +123,13 @@ Classifies user tasks into surfaces using whole-token signal matching against th
 | `gitops_desired_state` | gitops-operator | manifests, Flux, Helm, Kustomize |
 | `iac` | platform-architect | Terraform, Terragrunt, IAM, modules |
 | `app_ci_tooling` | developer | CI/CD, Docker, package tooling |
-| `planning_specs` | gaia-planner | briefs, plans (materializados cuando una conversación alcanza Cerrar) |
+| `planning_specs` | gaia-planner | briefs, plans |
 | `gaia_system` | gaia-system | hooks, skills, agents/, CLAUDE.md |
-| `workspace` | gaia-operator | memory, email, schedules, file transfers |
+| `workspace` | gaia-operator | memory, email, file transfers |
 
 **Classification algorithm:**
 1. Normalize task text
-2. Score each surface by keyword (1.0), command (1.5), and artifact (1.0) matches
+2. Score each surface by command (1.5) and artifact (1.0) matches
 3. Keep surfaces with score >= 1.0 and >= 55% of top score
 4. If no match and current agent maps to a surface, use agent-fallback (score 0.2)
 5. If still no match, dispatch reconnaissance agent
@@ -241,7 +242,7 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 |-----------|-------|
 | **File** | `hooks/pre_tool_use.py` |
 | **Hook event** | PreToolUse |
-| **What it does** | Security gate for all Bash, Task, and Agent tool invocations. Validates commands (blocked patterns, mutative verbs, nonce-based approval), injects project-context into agent prompts, guards pending contract repairs. |
+| **What it does** | Security gate for all Bash, Task, and Agent tool invocations. Validates commands (blocked patterns, mutative verbs, approval grants), injects project-context into agent prompts, guards pending contract repairs. |
 | **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_pre_tool_use()`, `ClaudeCodeAdapter.format_validation_response()` |
 | **Business logic modules** | `security/blocked_commands.py`, `security/mutative_verbs.py`, `security/approval_grants.py`, `tools/bash_validator.py`, `tools/task_validator.py`, `agents/response_contract.py`, `context/context_provider.py` |
 
@@ -261,7 +262,7 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 |-----------|-------|
 | **File** | `hooks/subagent_stop.py` |
 | **Hook event** | SubagentStop |
-| **What it does** | Fires after every agent completes. Consumes approval files, captures workflow metrics, validates the response contract (AGENT_STATUS, EVIDENCE_REPORT, CONSOLIDATION_REPORT), detects anomalies, stores episodic memory, and processes the update_contracts array from the agent_contract_handoff envelope. |
+| **What it does** | Fires after every agent completes. Validates the turn's own agent_contract_handoffs row, records workflow metrics, and stores episodic memory. |
 | **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_agent_completion()` |
 | **Business logic modules** | `agents/response_contract.py` (`validate_response_contract`, `save_pending_repair`, `clear_pending_repair`), `tools/memory/episodic.py` (`EpisodicMemory.store_episode`), `context/context_writer.py` (`process_update_contracts`) |
 
@@ -282,7 +283,7 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 | **File (plugin channel)** | `hooks/hooks.json` -- paths use `${CLAUDE_PLUGIN_ROOT}/hooks/` prefix |
 | **File (npm channel)** | `hooks/hooks.json` (symlinked into `.claude/hooks/`) |
 | **What it does** | Maps Claude Code hook events to handler scripts. Defines which events fire which entry points, the tool matchers (Bash, Task, Agent, `*`), and permissions (allow/deny lists). |
-| **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage), PostToolUse, SubagentStop, SessionStart, Stop, TaskCompleted, SubagentStart, UserPromptSubmit (routing injection) |
+| **Events configured** | PreToolUse (Bash, Task, Agent, SendMessage, AskUserQuestion, and the file and web tools), PostToolUse (Bash, Task, AskUserQuestion), PostToolUseFailure (Bash), SubagentStop, SubagentStart, SessionStart (`startup\|resume\|clear\|compact\|fork`), SessionEnd, PreCompact, PostCompact, Stop, TaskCompleted, UserPromptSubmit (sparse notices) |
 
 ### HookAdapter ABC Contract
 
@@ -338,7 +339,7 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | `hooks/modules/tools/task_validator.py` | Task/Agent invocation validator |
 | `hooks/modules/security/blocked_commands.py` | Permanently denied command patterns |
 | `hooks/modules/security/mutative_verbs.py` | CLI-agnostic mutative verb detector |
-| `hooks/modules/security/approval_grants.py` | Nonce grant lifecycle management |
+| `hooks/modules/security/approval_grants.py` | Approval grant lifecycle management |
 | `hooks/modules/agents/response_contract.py` | Agent response contract validator |
 | `hooks/modules/context/context_writer.py` | Progressive context enrichment |
 | `tools/context/context_provider.py` | Context payload assembly |

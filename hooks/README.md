@@ -4,7 +4,7 @@ Hooks are the event-driven spine of Gaia. Every significant moment in a Claude C
 
 Each hook is a Python script that reads a JSON event from stdin, processes it, and writes a JSON response to stdout. Claude Code calls these scripts synchronously before or after each tool execution, which means the hook can allow, modify, or block the operation. The hook cannot do complex async work — it runs inline, in the critical path, so every module it calls must complete quickly.
 
-The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` manifest (Environment, Projects, Contract Index, due notifications, workspace memory) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), it builds a different, lighter manifest — a post-compaction context refresh (agent roster + active anomalies) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`. The question itself is Gaia's: the orchestrator opens exactly what `gaia approvals question <approval_id>` printed -- one one-line question per command, opened by `[ GAIA-SECURITY ]`, at most four per signature (`gaia/approvals/surface.py`) -- and the PreToolUse `AskUserQuestion` matcher refuses any other shape.
+The hooks form a pipeline. A session opens at `session_start.py`, which hands the event to the host-agnostic `modules/session/session_lifecycle.py::start_session`; that core emits a one-shot `additionalContext` manifest (Environment, Projects, Contract Index, due notifications, workspace memory) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), it builds a different, lighter manifest — a post-compaction context refresh (an orchestrator identity line plus the recent session activity from `compact_context_builder.build_compact_context`) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`. The question itself is Gaia's: the orchestrator opens exactly what `gaia approvals question <approval_id>` printed -- one one-line question per command, opened by `[ GAIA-SECURITY ]`, at most four per signature (`gaia/approvals/surface.py`) -- and the PreToolUse `AskUserQuestion` matcher refuses any other shape.
 
 Every registered command runs through `hooks/launch.sh`, which picks the first of `python3`, `python` or `py -3` that is Python 3. OpenCode loads none of these entry points: `opencode/plugin.ts` forwards the host's events to `opencode/bridge.py`, and `adapters/opencode.py` maps them onto the same host-neutral cores (session lifecycle, tool policy, the SubagentStop close). There the plugin, not a hook, checks the `question` call, and only the orchestrator may open a signature question.
 
@@ -82,10 +82,11 @@ To add a new behavior to an existing hook: write a module in `modules/<package>/
 
 To add a new hook entry point: create `hooks/<event_name>.py`, register it in `build/gaia.manifest.json` under `hooks.entries` and `hooks.matchers`, then write the adapter method. The entry point pattern is always the same: read stdin JSON, call adapter, print response.
 
-## Qué hay aquí
+## What's here
 
 ```
 hooks/
+├── launch.sh              # Launcher every registered command runs through; picks the first Python 3 of python3, python, py -3
 ├── user_prompt_submit.py  # Sparse notices + heartbeat refresh
 ├── pre_tool_use.py        # Security gate + context injection (PreToolUse)
 ├── post_tool_use.py       # Audit logging (PostToolUse, PostToolUseFailure)
@@ -106,7 +107,7 @@ hooks/
 
 Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additionalContext`: Claude Code's hook-output validator has no `PreCompact`/`PostCompact` case in its discriminated union, and its response-consumption switch never applies their output even when the JSON is otherwise well-formed — so both now emit a schema-valid empty `{}` no-op. The real post-compaction context delivery happens via `session_start.py` when SessionStart fires with `source == "compact"` (see above). The pre-compaction window — injecting anything in the narrow moment *before* compaction erases context — remains a genuine platform limitation: no hook shape can inject there, which is why `pre_compact.py` is a registered no-op rather than a carrier.
 
-## Convenciones
+## Conventions
 
 **Security tiers enforced by pre_tool_use:**
 
@@ -137,7 +138,7 @@ rejected the emitted contract; its substantive output may have been preserved
 by `rejected_turn_relay.py` as described above. Both are warning-grade by
 default and can be isolated with `gaia defects --type=<event>`.
 
-## Ver también
+## See also
 
 - [`build/gaia.manifest.json`](../build/gaia.manifest.json) — hook registration and matchers
 - `surface_routing` table (`~/.gaia/gaia.db`) — DB-backed routing read by `tools/context/surface_router.py`; seeded from agent `routing:` frontmatter by `tools/scan/seed_surface_routing.py` (replaced `config/surface-routing.json`)
