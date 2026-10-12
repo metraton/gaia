@@ -32,6 +32,8 @@ class ToolCall:
     index: int  # 1-based position in the tool sequence
     tool_name: str
     arguments: Dict[str, Any]
+    # 0 before the first coordinator resume, +1 at each resume boundary.
+    segment: int = 0
 
 
 @dataclass(frozen=True)
@@ -165,6 +167,7 @@ def _extract_tool_calls_from_content(
     result: TranscriptAnalysis,
     tool_index_counter: List[int],
     hash_map: Dict[str, Dict[str, Any]],
+    segment: int = 0,
 ) -> None:
     """Extract tool_use blocks from a content list and update result in place."""
     if not isinstance(content, list):
@@ -184,7 +187,7 @@ def _extract_tool_calls_from_content(
         idx = tool_index_counter[0]
         tool_index_counter[0] += 1
 
-        tc = ToolCall(index=idx, tool_name=tool_name, arguments=arguments)
+        tc = ToolCall(index=idx, tool_name=tool_name, arguments=arguments, segment=segment)
         result.tool_sequence.append(tc)
         result.tool_call_count += 1
 
@@ -277,6 +280,7 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
     last_ts_dt: Optional[datetime] = None
     segment_start_dt: Optional[datetime] = None
     segment_durations_ms: List[int] = []
+    segment = 0
 
     for line in lines:
         line = line.strip()
@@ -291,6 +295,9 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
 
         if not isinstance(entry, dict):
             continue
+
+        if _is_resume_boundary(entry):
+            segment += 1
 
         # --- Timestamp tracking ---
         timestamp = entry.get("timestamp", "")
@@ -357,7 +364,7 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
 
         # --- Tool calls from all content lists ---
         _extract_tool_calls_from_content(
-            content, result, tool_index_counter, hash_map
+            content, result, tool_index_counter, hash_map, segment
         )
 
         # --- User messages: skill injection detection ---

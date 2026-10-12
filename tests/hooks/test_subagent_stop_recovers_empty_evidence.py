@@ -95,10 +95,21 @@ def _persisted_evidence(db: Path, contract_id: str) -> dict:
     return json.loads(raw)["evidence_report"]
 
 
+RESUME = object()
+
+
 def _transcript(tmp_path: Path, tool_calls: list) -> str:
     """A Claude Code subagent transcript: one assistant entry per tool_use block."""
     lines = [{"type": "user", "message": {"role": "user", "content": "do the task"}}]
-    for index, (name, tool_input) in enumerate(tool_calls):
+    for index, call in enumerate(tool_calls):
+        if call is RESUME:
+            lines.append({
+                "type": "user",
+                "origin": {"kind": "coordinator"},
+                "message": {"role": "user", "content": "continue the task"},
+            })
+            continue
+        name, tool_input = call
         lines.append({
             "type": "assistant",
             "message": {
@@ -164,6 +175,24 @@ def test_a_empty_lists_are_filled_from_the_transcript_and_marked(db, tmp_path):
     ]
     assert evidence["files_checked"] == [f"{RECOVERED_MARK}/repo/hooks/a.py"]
     assert evidence["verbatim_outputs"] == []
+
+
+def test_a_a_resumed_turn_recovers_only_the_calls_after_its_last_resume(db, tmp_path):
+    from modules.agents.evidence_recovery import RECOVERED_MARK
+
+    tool_calls = [
+        ("Bash", {"command": "git -C /repo log -1"}),
+        ("Read", {"file_path": "/repo/earlier.py"}),
+        RESUME,
+        ("Bash", {"command": "git -C /repo push origin HEAD:main"}),
+        ("Read", {"file_path": "/repo/later.py"}),
+    ]
+    contract_id, response = _claude_code_close(db, tmp_path, "abc6", {}, tool_calls)
+
+    assert response.exit_code == 0
+    evidence = _persisted_evidence(db, contract_id)
+    assert evidence["commands_run"] == [f"{RECOVERED_MARK}git -C /repo push origin HEAD:main"]
+    assert evidence["files_checked"] == [f"{RECOVERED_MARK}/repo/later.py"]
 
 
 def test_b_lists_the_agent_filled_stay_as_written(db, tmp_path):

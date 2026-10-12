@@ -13,10 +13,19 @@ _CONTRACT_BOOKKEEPING = re.compile(r"^\s*gaia\s+contract\b")
 
 def recovered_entries(tool_sequence: Iterable) -> Dict[str, List[str]]:
     """Marked ``commands_run`` and ``files_checked`` entries for the Bash
-    commands and Read paths in ``tool_sequence``; never ``verbatim_outputs``."""
+    commands and Read paths of the last segment in ``tool_sequence``; never
+    ``verbatim_outputs``.
+
+    A resumed agent's transcript holds every segment, and each earlier one
+    closed its own contract, so only the last segment belongs to this row.
+    """
+    calls = list(tool_sequence)
+    last_segment = max((call.segment for call in calls), default=0)
     commands: List[str] = []
     files: List[str] = []
-    for call in tool_sequence:
+    for call in calls:
+        if call.segment != last_segment:
+            continue
         if call.tool_name == "Bash":
             command = call.arguments.get("command")
             if isinstance(command, str) and command.strip() and not _CONTRACT_BOOKKEEPING.match(command):
