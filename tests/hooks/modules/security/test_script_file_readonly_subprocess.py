@@ -94,7 +94,26 @@ ASKING_TWINS = {
     "http-method-set-after-construction": HELPER_SHAPE.replace(
         "    with urllib.request.urlopen", '    req.method = "PUT"\n    with urllib.request.urlopen',
     ),
+    "http-request-from-partial": HELPER_SHAPE.replace(
+        "req = urllib.request.Request(url, ", 'req = functools.partial(urllib.request.Request, data=b"x")(url, ',
+    ).replace("import json", "import functools\nimport json"),
+    "http-request-data-by-setattr": HELPER_SHAPE.replace(
+        "    with urllib.request.urlopen", '    setattr(req, "data", b"x")\n    with urllib.request.urlopen',
+    ),
+    "http-request-from-unread-helper": HELPER_SHAPE.replace(
+        "req = urllib.request.Request(url, ", "req = make_request(url, ",
+    ).replace("import json", "from client import make_request\nimport json"),
 }
+
+for _program in (["sh"], ["bash", "-s"], ["python3"], ["node"]):
+    ASKING_TWINS["interpreter-without-program-" + "-".join(_program)] = HELPER_SHAPE.replace(
+        TOKEN_CALL, f"subprocess.run({_program!r}, capture_output=True, text=True, check=True)",
+    )
+
+for _keyword in ('env={"PATH": "/tmp/bin"}', 'cwd="/tmp/elsewhere"', 'executable="/tmp/bin/gcloud"'):
+    ASKING_TWINS["keyword-" + _keyword.split("=", 1)[0]] = HELPER_SHAPE.replace(
+        "capture_output=True, text=True, check=True)", f"capture_output=True, text=True, check=True, {_keyword})",
+    )
 
 
 @pytest.fixture
@@ -163,6 +182,9 @@ def test_cp_into_scratch_runs_free(validator, scratch, tmp_path):
     "cp -l {source} {scratch}/hard.py",
     "cp -t {outside} {source}",
     "cp {source} {scratch}/*",
+    "cp -T {source} {scratch}/copy.py",
+    "cp -x {source} {scratch}/copy.py",
+    "cp --sparse=always {source} {scratch}/copy.py",
 ])
 def test_cp_that_can_land_outside_scratch_keeps_its_verdict(validator, scratch, tmp_path, command):
     source = _write(tmp_path, "helper.py", HELPER_SHAPE)
@@ -172,6 +194,21 @@ def test_cp_that_can_land_outside_scratch_keeps_its_verdict(validator, scratch, 
 
     assert detect_mutative_command(rendered).is_mutative
     assert not _validate(validator, rendered).allowed
+
+
+@pytest.mark.parametrize("flag", ["-r", "-R", "-a", "--recursive", "--archive"])
+def test_recursive_cp_through_a_nested_symlink_in_scratch_asks(validator, scratch, tmp_path, flag):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (scratch / "tree").mkdir()
+    (scratch / "tree" / "sub").symlink_to(outside)
+    source = tmp_path / "src" / "tree"
+    (source / "sub").mkdir(parents=True)
+    (source / "sub" / "payload.txt").write_text("x")
+    command = f"cp {flag} {source} {scratch}"
+
+    assert detect_mutative_command(command).is_mutative
+    assert not _validate(validator, command).allowed
 
 
 def test_cp_over_a_durable_store_in_scratch_keeps_its_verdict(scratch, tmp_path):

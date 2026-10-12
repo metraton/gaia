@@ -71,7 +71,6 @@ from __future__ import annotations
 import ast
 import logging
 import re
-import shlex
 from dataclasses import dataclass
 from typing import Callable, FrozenSet, Optional, Set, Tuple
 
@@ -403,32 +402,82 @@ def _request_is_read(call: ast.Call) -> bool:
     return data_known and data is None and method_known and method in _READ_HTTP_METHODS
 
 
-def _module_builds_only_read_requests(tree: ast.AST, alias_map: "_AliasResolver") -> bool:
-    """True when no request in *tree* can carry a body or a non-read method.
+class _RequestProvenance:
+    """Decide whether the target handed to ``urlopen`` is provably a body-less read.
 
-    The request handed to ``urlopen`` is usually a variable, so the judgement is
-    made over every ``Request`` the module builds, plus every place a request's
-    ``data``/``method`` could be set after construction or by a subclass.
+    A target is provable only as a string literal, an f-string, a direct
+    ``Request(...)`` call that is a read, or a name whose every binding in the
+    module is one of those.  The whole module is disqualified when ``Request``
+    is ever referenced other than as a direct call (``partial``, an alias, a
+    subclass), when ``setattr`` is called, or when a ``data``/``method``
+    attribute is assigned, since each can give a request a body unseen.
     """
-    for node in ast.walk(tree):
+
+    _MAX_NAME_HOPS = 4
+
+    def __init__(self, tree: ast.AST, alias_map: "_AliasResolver") -> None:
+        self._alias_map = alias_map
+        self._assigned: dict = {}
+        self._stores: dict = {}
+        self._unprovable_names: Set[str] = set()
+        call_funcs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                call_funcs.add(id(node.func))
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if len(targets) == 1 and isinstance(targets[0], ast.Name) and node.value is not None:
+                    self._assigned[id(targets[0])] = node.value
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                self._stores.setdefault(node.id, []).append(node)
+            elif isinstance(node, ast.arg):
+                self._unprovable_names.add(node.arg)
+            elif isinstance(node, ast.alias):
+                self._unprovable_names.add(node.asname or node.name.split(".")[0])
+        self.tampered = any(self._tampers(node, call_funcs) for node in ast.walk(tree))
+
+    def _tampers(self, node: ast.AST, call_funcs: set) -> bool:
+        if isinstance(node, ast.Attribute) and node.attr == "__dict__":
+            return True
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+            return node.attr in ("data", "method")
         if isinstance(node, ast.Call):
-            if alias_map.resolve_call(node.func) == _URL_REQUEST and not _request_is_read(node):
+            return self._alias_map.resolve_call(node.func) in ("setattr", "vars")
+        # A locally assigned name resolves to Request when it holds an
+        # instance (the resolver binds call results); only the class itself is
+        # a reference that can be wrapped or subclassed.
+        if isinstance(node, ast.Name) and node.id in self._stores:
+            return False
+        if isinstance(node, (ast.Name, ast.Attribute)) and id(node) not in call_funcs:
+            return self._alias_map.resolve_call(node) == _URL_REQUEST
+        return False
+
+    def is_read(self, node: ast.AST, hops: int = 0) -> bool:
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str)
+        if isinstance(node, ast.JoinedStr):
+            return True
+        if isinstance(node, ast.Call):
+            return self._alias_map.resolve_call(node.func) == _URL_REQUEST and _request_is_read(node)
+        if isinstance(node, ast.Name) and hops < self._MAX_NAME_HOPS:
+            stores = self._stores.get(node.id, [])
+            if not stores or node.id in self._unprovable_names:
                 return False
-        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
-            if node.attr in ("data", "method"):
-                return False
-        elif isinstance(node, ast.ClassDef):
-            if any(alias_map.resolve_call(base) == _URL_REQUEST for base in node.bases):
-                return False
-    return True
+            return all(
+                id(store) in self._assigned and self.is_read(self._assigned[id(store)], hops + 1)
+                for store in stores
+            )
+        return False
 
 
-def _urlopen_is_read(call: ast.Call, only_read_requests: bool) -> bool:
-    """True when ``urlopen`` sends no body and every module request is a read."""
-    if any(kw.arg is None for kw in call.keywords) or len(call.args) != 1:
+def _urlopen_is_read(call: ast.Call, provenance: _RequestProvenance) -> bool:
+    """True when ``urlopen`` sends no body and its target is provably a read."""
+    if provenance.tampered or any(kw.arg is None for kw in call.keywords):
+        return False
+    if len(call.args) != 1:
         return False
     data_known, data = _literal_or_absent(call, "data", 1)
-    return data_known and data is None and only_read_requests
+    return data_known and data is None and provenance.is_read(call.args[0])
 
 
 # ============================================================================
@@ -437,7 +486,7 @@ def _urlopen_is_read(call: ast.Call, only_read_requests: bool) -> bool:
 
 def analyze_python_inline(
     code: str,
-    argv_is_mutative: Optional[Callable[[str], bool]] = None,
+    argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]] = None,
 ) -> InlineAstResult:
     """Classify a Python inline-code payload by invocation, not mention.
 
@@ -445,10 +494,10 @@ def analyze_python_inline(
         code: The Python source string extracted from ``python3 -c "..."``.
             Already unquoted; the caller is responsible for stripping the
             surrounding shell quotes before passing it in.
-        argv_is_mutative: Classifier for the shell-quoted command a literal
-            argv runs.  When given, a process call whose argv is provably
-            literal counts only if that command is mutative; when omitted,
-            every process call counts.
+        argv_is_mutative: Classifier for the argv a literal process call
+            runs.  When given, a process call whose argv is provably literal
+            counts only if that argv is mutative; when omitted, every process
+            call counts.
 
     Returns:
         :class:`InlineAstResult` with ``is_dangerous`` set when at least one
@@ -468,7 +517,7 @@ def analyze_python_inline(
     # ``import subprocess as sp`` both resolve correctly during call walk.
     alias_map = _AliasResolver()
     alias_map.collect(tree)
-    only_read_requests = _module_builds_only_read_requests(tree, alias_map)
+    provenance = _RequestProvenance(tree, alias_map)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -478,11 +527,11 @@ def analyze_python_inline(
         if dotted is None:
             continue
 
-        if dotted == _URLOPEN and _urlopen_is_read(node, only_read_requests):
+        if dotted == _URLOPEN and _urlopen_is_read(node, provenance):
             continue
         if argv_is_mutative is not None and dotted in _ARGV_PROCESS_CALLS:
             argv = _literal_argv(node)
-            if argv is not None and not argv_is_mutative(shlex.join(argv)):
+            if argv is not None and not argv_is_mutative(argv):
                 continue
 
         # Direct hit on full dotted name.  A mode/flag-gated opener can come

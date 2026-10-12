@@ -2513,14 +2513,16 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
     return _rm_scratch_confined_targets(tokens) is not None
 
 
-# Flags that only choose what is copied or how verbosely; ``-l``/``-s`` (a link
-# back to the source), ``-t``/``-T`` (destination named elsewhere) and every
-# unlisted option leave the command at its alias verdict.
-_CP_SCRATCH_SHORT_FLAGS: FrozenSet[str] = frozenset("rRapvfniuLHP")
+# Flags of a single-file copy that cannot move where it writes.  A recursive
+# copy (``-r``/``-R``/``-a``) is left out on purpose: it writes paths nested
+# under the destination, any of which may be a symlink already sitting in
+# scratch and pointing outside it.  ``-l``/``-s`` (a link back to the source),
+# ``-t``/``-T`` (destination named elsewhere) and every unlisted option also
+# keep the alias verdict.
+_CP_SCRATCH_SHORT_FLAGS: FrozenSet[str] = frozenset("pvfniuLHP")
 _CP_SCRATCH_LONG_FLAGS: FrozenSet[str] = frozenset({
-    "--recursive", "--archive", "--verbose", "--force", "--no-clobber",
-    "--interactive", "--update", "--dereference", "--no-dereference",
-    "--preserve",
+    "--verbose", "--force", "--no-clobber", "--interactive", "--update",
+    "--dereference", "--no-dereference", "--preserve",
 })
 
 
@@ -7034,8 +7036,8 @@ def _check_script_file(
     if lane == "python" and _analyze_python_inline is not None:
         ast_result = _analyze_python_inline(
             content,
-            argv_is_mutative=lambda argv_command: _argv_command_is_mutative(
-                argv_command, cwd=cwd, _depth=_depth + 1,
+            argv_is_mutative=lambda argv: _argv_command_is_mutative(
+                argv, cwd=cwd, _depth=_depth + 1,
             ),
         )
         if ast_result.is_dangerous:
@@ -7092,10 +7094,42 @@ def _check_script_file(
     )
 
 
+# A process inherits the script's stdin, so an interpreter started without a
+# program in its argv runs whatever arrives there: the argv names no effect to
+# judge.  The program is named by a script positional or by the interpreter's
+# own inline-code flag (``_INLINE_CODE_MAP``; ``-c`` for a shell).
+_ARGV_STDIN_PROGRAM_FLAGS: FrozenSet[str] = frozenset({"-", "-s", "--stdin"})
+_ARGV_PYTHON_RE = _re.compile(r"python\d*(\.\d+)?")
+
+
+def _argv_runs_unnamed_program(argv: Tuple[str, ...]) -> bool:
+    """True when *argv* starts an interpreter or shell with no program named in it."""
+    import os
+    from .shell_unwrapper import _SHELLS
+    base = os.path.basename(argv[0])
+    if _ARGV_PYTHON_RE.fullmatch(base):
+        program_flags = frozenset({"-c", "-m"})
+    elif base in _INLINE_CODE_MAP:
+        program_flags = _INLINE_CODE_MAP[base]
+    elif base in _SCRIPT_FILE_INTERPRETERS or base in _SHELLS:
+        program_flags = frozenset({"-c"})
+    else:
+        return False
+    for token in argv[1:]:
+        if token in _ARGV_STDIN_PROGRAM_FLAGS:
+            return True
+        if token in program_flags or not token.startswith("-"):
+            return False
+    return True
+
+
 def _argv_command_is_mutative(
-    command: str, cwd: "Optional[str]" = None, _depth: int = 0,
+    argv: Tuple[str, ...], cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> bool:
-    """Judge the command a script's literal argv runs, as the exec-sink lane does."""
+    """Judge what a script's literal argv runs, as the exec-sink lane does."""
+    if _argv_runs_unnamed_program(argv):
+        return True
+    command = shlex.join(argv)
     if _is_blocked_command is not None and _is_blocked_command(command).is_blocked:
         return True
     return detect_mutative_command(command, cwd=cwd, _depth=_depth).is_mutative
