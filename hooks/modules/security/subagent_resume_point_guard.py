@@ -10,7 +10,14 @@ a subagent writing it would speak for the orchestrator. Reads stay free:
 Categorical, not approvable, like `subagent_memory_write_guard`: the subagent's
 path is to report its state in its contract, which the orchestrator reads.
 
+The decision is made on the shell's words (shlex-unquoted per component), never
+on raw text: `resume-poin\\t`, `'resume'-point` and `resume""-point` are the
+word `resume-point` to the shell. A command word only the shell can resolve
+(`$G`, `${G}`, a substitution) that is followed by the write path is refused
+too, since nothing here can show it is not `gaia`.
+
 Public API:
+    SESSION_VERBS: every `gaia session` verb path and how it is classified
     is_resume_point_write(command: str) -> bool
     check(command, *, is_subagent) -> tuple[bool, str | None]
 """
@@ -18,10 +25,21 @@ Public API:
 from __future__ import annotations
 
 import shlex
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
-_WRITE_PATH = ("session", "resume-point", "set")
+# Every verb under `gaia session` (bin/cli/session.py). The group classifies
+# read-only in mutative_verbs.COMMAND_SUBCOMMAND_TIER_EXCEPTIONS, so a verb
+# must be declared here before it ships; test_subagent_resume_point_guard
+# fails on any verb the CLI registers that this map does not name.
+SESSION_VERBS: Dict[Tuple[str, ...], str] = {
+    ("preview",): "read",
+    ("snapshot",): "read",
+    ("resume-point", "set"): "orchestrator-write",
+}
+
+_WRITE_PATHS = tuple(("session",) + path for path, kind in SESSION_VERBS.items() if kind == "orchestrator-write")
 _HELP_FLAGS = frozenset({"--help", "-h", "-?", "--usage"})
+_SHELL_RESOLVED = ("$", "`", "(", ")")
 
 REJECTION_MESSAGE = (
     "The session's resume point is the orchestrator's to write; a subagent "
@@ -31,8 +49,8 @@ REJECTION_MESSAGE = (
 
 
 def is_resume_point_write(command: str) -> bool:
-    """True iff ``command`` invokes `gaia session resume-point set`, in any invocation form, outside a help-only call."""
-    if not command or "resume-point" not in command:
+    """True iff ``command`` runs `gaia session resume-point set`, in any spelling the shell rejoins, outside a help-only call."""
+    if not command:
         return False
 
     from ..tools.shell_parser import parse_command
@@ -47,22 +65,21 @@ def is_resume_point_write(command: str) -> bool:
 
 
 def _component_writes_resume_point(component: str, *, help_exempt: bool) -> bool:
-    """True iff one operator-free component invokes the resume-point write."""
+    """True iff one operator-free component's words run the resume-point write."""
     try:
-        tokens = shlex.split(component)
+        words = shlex.split(component)
     except ValueError:
-        tokens = component.split()
+        words = component.split()
+    if help_exempt and _HELP_FLAGS & set(words):
+        return False
 
-    for i, token in enumerate(tokens):
-        if token.rsplit("/", 1)[-1] != "gaia":
+    positional = [w for w in words if not w.startswith("-")]
+    for index in range(1, len(positional)):
+        if tuple(positional[index:index + 3]) not in _WRITE_PATHS:
             continue
-        rest = tokens[i + 1:]
-        path = tuple(t for t in rest if not t.startswith("-"))[: len(_WRITE_PATH)]
-        if path != _WRITE_PATH:
-            continue
-        if help_exempt and _HELP_FLAGS & set(rest):
-            continue
-        return True
+        command_word = positional[index - 1]
+        if command_word.rsplit("/", 1)[-1] == "gaia" or any(c in command_word for c in _SHELL_RESOLVED):
+            return True
     return False
 
 

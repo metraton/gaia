@@ -506,7 +506,8 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # and one session-local file replaced on every write; that write also
     # drops resume points older than 30 days, the store's own retention.
     # Without this, `resume-point` hyphen-splits onto the English verb `resume`.
-    # subagent_resume_point_guard keeps the write the orchestrator's.
+    # subagent_resume_point_guard keeps the write the orchestrator's, and its
+    # SESSION_VERBS must name every verb before it shares this tier.
     ("gaia", "session"): CATEGORY_READ_ONLY,
     # `gaia worktree <verb>` (create/list/show/release): the host-agnostic
     # door onto Gaia's own agentic-worktree machinery (gaia.worktree,
