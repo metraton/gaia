@@ -861,6 +861,29 @@ def salvage_truncated_draft(
         return None
 
 
+def _recover_empty_evidence(
+    contract_id: Optional[str], tool_sequence: Any, db_path: Optional[str],
+) -> Optional[dict]:
+    """The row's envelope after filling its empty evidence lists from
+    ``tool_sequence``, or None when nothing was filled."""
+    from gaia.store.writer import fill_empty_contract_evidence
+    from modules.agents.evidence_recovery import recovered_entries
+
+    try:
+        outcome = fill_empty_contract_evidence(
+            contract_id,
+            recovered_entries(tool_sequence),
+            db_path=Path(db_path) if db_path else None,
+        )
+    except Exception:
+        logger.warning("Evidence recovery failed for %s (non-fatal)", contract_id, exc_info=True)
+        return None
+    if outcome.get("status") != "applied":
+        return None
+    logger.info("Recovered empty evidence for %s: %s", contract_id, outcome["fields"])
+    return outcome["envelope"]
+
+
 def gaia_agent_roster() -> Set[str]:
     """Names of the Gaia-managed agents, unioned over every lane that resolves.
 
@@ -1213,6 +1236,19 @@ def run_subagent_stop(
             session_id=session_id,
             preserve_nonces=preserved_nonces if preserved_nonces else None,
         )
+
+        # Only an accepted close: a row returned for repair is the agent's to
+        # finish, and its own `fill` refuses a list that already holds entries.
+        if (
+            _gate_source == GATE_SOURCE_ROW
+            and not _rejection_latched
+            and transcript_analysis is not None
+        ):
+            _authoritative_envelope = _recover_empty_evidence(
+                (_bound_dispatch_row or {}).get("contract_id"),
+                transcript_analysis.tool_sequence,
+                task_info.get("db_path"),
+            ) or _authoritative_envelope
 
         # The row carries commands checkpointed during the turn, the fence what
         # the final message declared; each alone loses turns the other keeps.

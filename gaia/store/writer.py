@@ -10697,7 +10697,8 @@ def mirror_partial_contract_handoff(
                     -- is redundant with the SELECT above under this lock and is
                     -- kept as the statement-level restatement of the invariant:
                     -- a turn that already closed is never edited in place, by
-                    -- any writer.
+                    -- any writer but fill_empty_contract_evidence, which only
+                    -- fills lists the agent left empty.
                     UPDATE agent_contract_handoffs
                        SET raw_handoff_json = ?
                      WHERE contract_id = ?
@@ -10715,6 +10716,73 @@ def mirror_partial_contract_handoff(
                     "handoff_id": returned["id"],
                     "contract_id": contract_id,
                 }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def fill_empty_contract_evidence(
+    contract_id: "str | None",
+    entries: "dict[str, list[str]]",
+    *,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Write ``entries`` into the evidence lists a cleanly finalized row left empty.
+
+    The only in-place edit of a closed row: a list that holds anything stays as
+    the agent wrote it, and no column other than ``raw_handoff_json`` changes.
+
+    Returns ``{"status": "applied", "fields": [...], "envelope": dict}`` or
+    ``{"status": "skipped", "reason": ...}`` (``no_contract_id`` /
+    ``not_finalized`` / ``no_evidence_report`` / ``nothing_empty``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                row = con.execute(
+                    "SELECT raw_handoff_json FROM agent_contract_handoffs "
+                    "WHERE contract_id = ? AND agent_state != 'DISPATCHED' "
+                    "AND cut_reason IS NULL LIMIT 1",
+                    (contract_id,),
+                ).fetchone()
+                if row is None:
+                    con.commit()
+                    return {"status": "skipped", "reason": "not_finalized"}
+                try:
+                    envelope = json.loads(row["raw_handoff_json"] or "null")
+                except (TypeError, ValueError):
+                    envelope = None
+                evidence = envelope.get("evidence_report") if isinstance(envelope, dict) else None
+                if not isinstance(evidence, dict):
+                    con.commit()
+                    return {"status": "skipped", "reason": "no_evidence_report"}
+                fields = [
+                    field for field, values in entries.items()
+                    if values and not evidence.get(field)
+                ]
+                if not fields:
+                    con.commit()
+                    return {"status": "skipped", "reason": "nothing_empty"}
+                for field in fields:
+                    evidence[field] = list(entries[field])
+                con.execute(
+                    "UPDATE agent_contract_handoffs SET raw_handoff_json = ? "
+                    "WHERE contract_id = ?",
+                    (json.dumps(envelope), contract_id),
+                )
+                con.commit()
+                return {"status": "applied", "fields": fields, "envelope": envelope}
             except Exception:
                 con.rollback()
                 raise

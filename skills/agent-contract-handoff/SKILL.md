@@ -60,7 +60,10 @@ Every draft, including a mid-turn checkpoint, contains:
   non-empty `next_action`;
 - `evidence_report` with all seven keys: `patterns_checked`, `files_checked`,
   `commands_run`, `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, and
-  `open_gaps` (empty lists are valid);
+  `open_gaps` (empty lists are valid, though on Claude Code a finalized row
+  whose `commands_run` or `files_checked` is empty gets the turn's Bash
+  commands and Read paths written in at the close, each prefixed
+  `[recovered from transcript] `: the bare call, never what it showed);
 - `consolidation_report` and `approval_request`, normally `null`.
 
 `agent_id` matches `^a[0-9a-f]{16,}$`. The canonical states are
