@@ -782,7 +782,27 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                     return self._adapt_ask_user_question(tool_input, hook_data=event.payload)
             except Exception as e:
                 verdict = failure_verdict(e)
-        return self._format_pre_tool_verdict(verdict)
+        return self._format_pre_tool_verdict(self._with_ceiling_notice(event, verdict))
+
+    @staticmethod
+    def _with_ceiling_notice(event: HookEvent, verdict: PolicyVerdict) -> PolicyVerdict:
+        """Count a subagent's call the policy lets run, adding the ceiling notice when it is due.
+
+        Counted here rather than at PostToolUse because PreToolUse's matchers
+        cover Read, Edit, Write, Glob and Grep, which PostToolUse's do not.
+        """
+        from modules.agents.call_ceiling import record_call
+
+        if verdict.refusal is not None or verdict.consent is not None:
+            return verdict
+        if verdict.decision not in (None, "allow"):
+            return verdict
+        notice = record_call(event.payload.get("agent_id"))
+        if not notice:
+            return verdict
+        return replace(
+            verdict, context="\n\n".join(text for text in (verdict.context, notice) if text),
+        )
 
     def _format_pre_tool_verdict(self, verdict: PolicyVerdict) -> HookResponse:
         """Translate a policy verdict into Claude Code's PreToolUse response.
@@ -798,7 +818,14 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 self.request_consent(verdict.consent), approval_id=verdict.approval_id,
             )
         if verdict.decision is None:
-            return HookResponse(output={}, exit_code=0)
+            if not verdict.context:
+                return HookResponse(output={}, exit_code=0)
+            return HookResponse(
+                output={_HOOK_SPECIFIC_OUTPUT: {
+                    "hookEventName": "PreToolUse", "additionalContext": verdict.context,
+                }},
+                exit_code=0,
+            )
         specific: Dict[str, Any] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": verdict.decision,
@@ -1031,23 +1058,18 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         The call's outcome is read by this host's ``parse_post_tool_use``. A
         Task/Agent contract summary reaches the orchestrator as
-        ``additionalContext`` next to the tool result, as does the ceiling
-        notice of a subagent's call, counted by the payload's ``agent_id``.
+        ``additionalContext`` next to the tool result.
         """
-        from modules.agents.call_ceiling import record_call
-
         tool_result = self.parse_post_tool_use(event.payload)
         if tool_result.tool_name == "AskUserQuestion":
             return self._handle_ask_user_question_result(event.payload)
         verdict = self.post_tool_verdict(event, tool_result)
-        notice = record_call(event.payload.get("agent_id"))
-        context = "\n\n".join(text for text in (verdict.context, notice) if text)
-        if context:
+        if verdict.context:
             return HookResponse(
                 output={
                     _HOOK_SPECIFIC_OUTPUT: {
-                        "hookEventName": event.payload.get("hook_event_name") or "PostToolUse",
-                        "additionalContext": context,
+                        "hookEventName": "PostToolUse",
+                        "additionalContext": verdict.context,
                     }
                 },
                 exit_code=0,

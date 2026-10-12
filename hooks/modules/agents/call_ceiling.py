@@ -1,12 +1,14 @@
 """Tell a dispatched turn, once, that it is nearing its tool-call ceiling.
 
 A dispatch prompt may carry ``ceiling=<N>`` (``extract_dispatch_binding``), the
-tool calls the orchestrator budgets for the turn. Each host's PostToolUse
-adapter counts the subagent's calls here, keyed by the harness id its contract
-row was stamped with at SubagentStart, and on the call that reaches
-:data:`NOTICE_PERCENT` of the ceiling returns a notice the model reads on its
-next step. The orchestrator's own session has no harness id and is never
-counted.
+tool calls the orchestrator budgets for the turn. Each host counts the
+subagent's calls that are allowed to run -- Claude Code at PreToolUse, whose
+matchers reach Read, Edit, Write, Glob and Grep; OpenCode at
+``tool.execute.after``, which fires for every tool that ran -- keyed by the
+harness id its contract row was stamped with at SubagentStart. On the call that
+reaches :data:`NOTICE_PERCENT` of the ceiling it returns a notice the model
+reads with that call's result. The orchestrator's own session has no harness id
+and is never counted.
 
 Context use is not a fallback: no Claude Code hook input carries it, and
 OpenCode's ``tool.execute.after`` bridge payload does not either, so a dispatch

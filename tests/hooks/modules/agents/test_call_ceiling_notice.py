@@ -69,23 +69,43 @@ def _write_large_transcript(tmp_path: Path) -> str:
     return str(path)
 
 
-def _claude_code_call(n: int, *, agent_id: str | None, transcript_path: str = "") -> str:
+def _claude_code_payload(event: str, n: int, *, agent_id, transcript_path, tool) -> dict:
+    tool_input = (
+        {"command": "git status", "description": "status"} if tool == "Bash"
+        else {"file_path": str(_REPO_ROOT / "README.md")}
+    )
     payload = {
-        "hook_event_name": "PostToolUse",
+        "hook_event_name": event,
         "session_id": "cc-parent-session",
         "transcript_path": transcript_path,
         "cwd": str(_REPO_ROOT),
-        "tool_name": "Read",
+        "tool_name": tool,
         "tool_use_id": f"toolu_{n}",
-        "tool_input": {"file_path": str(_REPO_ROOT / "README.md")},
-        "tool_response": {"type": "text", "file": {"content": "x"}},
+        "tool_input": tool_input,
     }
+    if event == "PostToolUse":
+        payload["tool_response"] = {"stdout": "x", "stderr": "", "interrupted": False}
     if agent_id:
         payload.update({"agent_id": agent_id, "agent_type": "gaia-system"})
+    return payload
+
+
+def _claude_code_call(
+    n: int, *, agent_id: str | None, transcript_path: str = "", tool: str = "Read",
+) -> str:
+    """One call as the host fires it: PreToolUse, then PostToolUse when its matcher names the tool."""
     adapter = ClaudeCodeAdapter()
-    response = adapter.adapt_post_tool_use(adapter.parse_event(json.dumps(payload)))
-    specific = response.output.get("hookSpecificOutput") or {}
-    return specific.get("additionalContext") or ""
+    texts = []
+    events = ["PreToolUse", "PostToolUse"] if tool == "Bash" else ["PreToolUse"]
+    for event in events:
+        payload = _claude_code_payload(
+            event, n, agent_id=agent_id, transcript_path=transcript_path, tool=tool,
+        )
+        parsed = adapter.parse_event(json.dumps(payload))
+        handler = adapter.adapt_pre_tool_use if event == "PreToolUse" else adapter.adapt_post_tool_use
+        specific = handler(parsed).output.get("hookSpecificOutput") or {}
+        texts.append(specific.get("additionalContext") or "")
+    return "\n".join(texts)
 
 
 def _opencode_call(n: int, *, session_id: str, dispatch_handle: str | None) -> str:
@@ -140,6 +160,20 @@ def test_claude_code_notice_fires_once_at_threshold():
     _born_turn(CEILING_PROMPT, "cc-harness-1", "a1cc00001")
     contexts = _claude_code_turn(CEILING + 2, agent_id="cc-harness-1")
     assert not any(NOTICE_MARK in text for text in contexts[: THRESHOLD_CALL - 1])
+    _assert_single_notice_at_threshold(contexts)
+
+
+def test_claude_code_counts_a_read_call_at_pre_tool_use(tmp_path):
+    """Read has no PostToolUse matcher; its PreToolUse event alone is counted."""
+    _born_turn(CEILING_PROMPT, "cc-harness-5", "a1cc00005")
+    _claude_code_call(1, agent_id="cc-harness-5", tool="Read")
+    count = json.loads((tmp_path / "state" / "call_ceiling" / "cc-harness-5.json").read_text())
+    assert count["calls"] == 1
+
+
+def test_claude_code_bash_call_is_counted_once_across_pre_and_post():
+    _born_turn(CEILING_PROMPT, "cc-harness-6", "a1cc00006")
+    contexts = _claude_code_turn(CEILING + 2, agent_id="cc-harness-6", tool="Bash")
     _assert_single_notice_at_threshold(contexts)
 
 
