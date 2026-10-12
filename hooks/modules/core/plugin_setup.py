@@ -25,14 +25,15 @@ logger = logging.getLogger(__name__)
 
 MARKER_FILE = ".plugin-initialized"
 
-# ---------------------------------------------------------------------------
-# Deny list — shared across all modes.  Aligned with blocked_commands.py
-# (hook-level enforcement) for dual-barrier security.  These rules are
-# merged into settings.local.json so Claude Code's native permission system
-# blocks the commands BEFORE they even reach the hook layer.
-# ---------------------------------------------------------------------------
-_DENY_RULES = [
-    # AWS — networking / data infrastructure (irreversible)
+# Every deny rule a release up to 5.5 merged into settings.local.json. None is
+# written any more: a harness deny refuses a command before the hook can offer
+# it for consent, so it blocked commands the user could have approved. Matched
+# by exact string, never by tool name -- an install removes these and leaves any
+# other deny entry, which is the user's (see ARCHITECTURE.md, "Workspace
+# settings ownership").
+RETIRED_DENY_RULES = frozenset({
+    "Bash(terraform destroy:*)",
+    "Bash(terragrunt destroy:*)",
     "Bash(aws ec2 delete-vpc:*)",
     "Bash(aws ec2 delete-subnet:*)",
     "Bash(aws ec2 delete-internet-gateway:*)",
@@ -47,11 +48,9 @@ _DENY_RULES = [
     "Bash(aws elasticache delete-cache-cluster:*)",
     "Bash(aws elasticache delete-replication-group:*)",
     "Bash(aws eks delete-cluster:*)",
-    # AWS — KMS / Organizations / Route53
     "Bash(aws kms schedule-key-deletion:*)",
     "Bash(aws organizations delete-organization:*)",
     "Bash(aws route53 delete-hosted-zone:*)",
-    # AWS — IAM (mutative but denied at settings level too)
     "Bash(aws iam delete-user:*)",
     "Bash(aws iam delete-role:*)",
     "Bash(aws iam delete-access-key:*)",
@@ -65,7 +64,6 @@ _DENY_RULES = [
     "Bash(aws iam detach-role-policy:*)",
     "Bash(aws iam detach-group-policy:*)",
     "Bash(aws iam remove-user-from-group:*)",
-    # AWS — other destructive
     "Bash(aws backup delete:*::*)",
     "Bash(aws cloudformation delete-stack:*)",
     "Bash(aws dynamodb delete-item:*)",
@@ -82,7 +80,6 @@ _DENY_RULES = [
     "Bash(aws sqs delete-queue:*)",
     "Bash(aws eks delete-nodegroup:*)",
     "Bash(aws eks delete-addon:*)",
-    # Azure — resource group / networking / data (irreversible)
     "Bash(az group delete:*)",
     "Bash(az network vnet delete:*)",
     "Bash(az network vnet subnet delete:*)",
@@ -97,7 +94,6 @@ _DENY_RULES = [
     "Bash(az disk delete:*)",
     "Bash(az snapshot delete:*)",
     "Bash(az image delete:*)",
-    # Azure — databases / storage
     "Bash(az sql server delete:*)",
     "Bash(az sql db delete:*)",
     "Bash(az cosmosdb delete:*)",
@@ -105,11 +101,9 @@ _DENY_RULES = [
     "Bash(az storage account delete:*)",
     "Bash(az storage container delete:*)",
     "Bash(az storage blob delete-batch:*)",
-    # Azure — AKS / container
     "Bash(az aks delete:*)",
     "Bash(az aks nodepool delete:*)",
     "Bash(az acr delete:*)",
-    # Azure — IAM / key vault / functions
     "Bash(az role assignment delete:*)",
     "Bash(az role definition delete:*)",
     "Bash(az ad app delete:*)",
@@ -119,14 +113,12 @@ _DENY_RULES = [
     "Bash(az keyvault secret delete:*)",
     "Bash(az functionapp delete:*)",
     "Bash(az webapp delete:*)",
-    # Azure — messaging / monitoring
     "Bash(az servicebus namespace delete:*)",
     "Bash(az servicebus queue delete:*)",
     "Bash(az servicebus topic delete:*)",
     "Bash(az eventhubs namespace delete:*)",
     "Bash(az eventhubs eventhub delete:*)",
     "Bash(az monitor action-group delete:*)",
-    # GCP — project / cluster / database (irreversible)
     "Bash(gcloud projects delete:*)",
     "Bash(gcloud container clusters delete:*)",
     "Bash(gcloud container node-pools delete:*)",
@@ -135,7 +127,6 @@ _DENY_RULES = [
     "Bash(gcloud services disable:*)",
     "Bash(gsutil rb:*)",
     "Bash(gsutil rm -r:*)",
-    # GCP — compute / IAM / storage
     "Bash(gcloud compute firewall-rules delete:*)",
     "Bash(gcloud compute instances delete:*)",
     "Bash(gcloud compute networks delete:*)",
@@ -144,7 +135,6 @@ _DENY_RULES = [
     "Bash(gcloud compute snapshots delete:*)",
     "Bash(gcloud iam roles delete:*)",
     "Bash(gcloud storage rm:*)",
-    # Kubernetes — critical cluster operations
     "Bash(kubectl delete namespace:*)",
     "Bash(kubectl delete node:*)",
     "Bash(kubectl delete cluster:*)",
@@ -159,14 +149,11 @@ _DENY_RULES = [
     "Bash(kubectl delete clusterrole:*)",
     "Bash(kubectl delete clusterrolebinding:*)",
     "Bash(kubectl drain:*)",
-    # Flux
     "Bash(flux delete:*)",
-    # Git — force push (history rewrite)
     "Bash(git push --force:*)",
     "Bash(git push -f:*)",
     "Bash(git push origin --force:*)",
     "Bash(git push origin -f:*)",
-    # Disk / filesystem destruction
     "Bash(dd:*)",
     "Bash(fdisk:*)",
     "Bash(mkfs:*)",
@@ -174,51 +161,29 @@ _DENY_RULES = [
     "Bash(mkfs.ext3:*)",
     "Bash(mkfs.fat:*)",
     "Bash(mkfs.ntfs:*)",
-    # -------------------------------------------------------------------
-    # Generic wildcard rules — catch ALL present and future services.
-    # These complement the granular rules above; if a new cloud service
-    # is added, these patterns block its delete operations automatically.
-    # -------------------------------------------------------------------
-    # AWS — any "delete-*" subcommand across all services
     "Bash(aws * delete-*:*)",
     "Bash(aws * terminate-*:*)",
-    # Azure — any "delete" subcommand across all services
     "Bash(az * delete:*)",
-    # GCP — any "delete" subcommand across all services
     "Bash(gcloud * delete:*)",
-    "Bash(gsutil rb:*)",
     "Bash(gsutil rm:*)",
-    "Bash(gcloud storage rm:*)",
-    # Kubernetes — all delete and drain operations
     "Bash(kubectl delete:*)",
-    "Bash(kubectl drain:*)",
-    # Terragrunt — multi-module sweep destroy only.
-    #
-    # Single-module destroy (terraform/terragrunt) is intentionally absent:
-    # it is approvable T3, and a harness deny here would reject it before the
-    # hook could ever offer consent.  The hyphen-all form needs its OWN entry
-    # because these patterns match by PREFIX -- it used to be covered
-    # incidentally by the single-module wrapper entry that this change
-    # removes, so without the explicit line below it would silently stop
-    # being denied.
     "Bash(terragrunt run-all destroy:*)",
     "Bash(terragrunt destroy-all:*)",
-    # Helm — uninstall
     "Bash(helm uninstall:*)",
     "Bash(helm delete:*)",
-    # Flux — uninstall
     "Bash(flux uninstall:*)",
-    # Docker — bulk prune
     "Bash(docker system prune:*)",
     "Bash(docker volume prune:*)",
-    # Git — destructive history operations
     "Bash(git reset --hard:*)",
-    # Repo deletion
     "Bash(gh repo delete:*)",
     "Bash(glab project delete:*)",
-]
+})
 
-# Permissions for the single unified gaia plugin (full orchestrator surface).
+# Tool names earlier releases allowed that Claude Code no longer has: Task is
+# now Agent, BashOutput TaskOutput, KillShell TaskStop, and SlashCommand folded
+# into Skill (code.claude.com/docs/en/tools-reference).
+RETIRED_TOOL_NAMES = frozenset({"BashOutput", "KillShell", "SlashCommand", "Task"})
+
 PERMISSIONS = {
     "permissions": {
         "allow": [
@@ -226,12 +191,8 @@ PERMISSIONS = {
             "Read",
             "Glob",
             "Grep",
-            "BashOutput",
             "ExitPlanMode",
-            "KillShell",
             "Skill",
-            "SlashCommand",
-            "Task",
             "Agent",
             "SendMessage",
             "AskUserQuestion",
@@ -242,7 +203,6 @@ PERMISSIONS = {
             "Edit",
             "Write",
         ],
-        "deny": _DENY_RULES,
         "ask": [],
     }
 }
@@ -350,6 +310,25 @@ def _authoritative_merge(current: set[str], ours: set[str]) -> list[str]:
     return sorted(user_entries | ours)
 
 
+def merge_gaia_permissions(current: dict) -> dict:
+    """A copy of the settings ``permissions`` block *current* carrying Gaia's permissions.
+
+    ``allow`` is merged authoritatively and loses entries for retired tool
+    names; ``deny`` loses the retired Gaia rules, keeping the user's entries in
+    order, and is dropped when nothing is left. Other keys are kept.
+    """
+    merged = dict(current)
+    allow = {e for e in current.get("allow", []) if _tool_name(e) not in RETIRED_TOOL_NAMES}
+    merged["allow"] = _authoritative_merge(allow, set(PERMISSIONS["permissions"]["allow"]))
+    deny = [e for e in current.get("deny", []) if e not in RETIRED_DENY_RULES]
+    if deny:
+        merged["deny"] = deny
+    else:
+        merged.pop("deny", None)
+    merged.setdefault("ask", [])
+    return merged
+
+
 def setup_project_permissions() -> bool:
     """Merge gaia permissions into .claude/settings.local.json.
 
@@ -368,10 +347,6 @@ def setup_project_permissions() -> bool:
         return False
     settings_path = claude_dir / "settings.local.json"
 
-    our_perms = PERMISSIONS
-    our_allow = set(our_perms["permissions"]["allow"])
-    our_deny = set(our_perms["permissions"].get("deny", []))
-
     # Load existing settings.local.json (has enabledPlugins from install)
     existing = {}
     if settings_path.exists():
@@ -380,30 +355,20 @@ def setup_project_permissions() -> bool:
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Authoritative merge: Gaia's entries replace any existing entries for the
-    # same base tool name (removes stale scoped variants like Edit(/tmp/*) when
-    # Gaia now says Edit).  User entries for tools Gaia doesn't manage survive.
     perms = existing.get("permissions", {})
-    current_allow = set(perms.get("allow", []))
-    current_deny = set(perms.get("deny", []))
-
-    merged_allow = _authoritative_merge(current_allow, our_allow)
-    merged_deny = _authoritative_merge(current_deny, our_deny)
+    merged = merge_gaia_permissions(perms)
 
     attribution = existing.get("attribution")
     attribution = dict(attribution) if isinstance(attribution, dict) else {}
     attribution_current = all(attribution.get(k) == v for k, v in HIDDEN_ATTRIBUTION.items())
 
-    if current_allow == set(merged_allow) and current_deny == set(merged_deny) and attribution_current:
+    if merged == perms and attribution_current:
         logger.info("Project permissions already include gaia rules, skipping")
         return False
 
     # Update only permissions and attribution, preserve everything else (enabledPlugins, etc.)
     existing["attribution"] = {**attribution, **HIDDEN_ATTRIBUTION}
-    existing.setdefault("permissions", {})
-    existing["permissions"]["allow"] = merged_allow
-    existing["permissions"]["deny"] = merged_deny
-    existing["permissions"].setdefault("ask", [])
+    existing["permissions"] = merged
 
     claude_dir.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")

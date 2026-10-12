@@ -2714,10 +2714,16 @@ def check_agent_resolution(project_root: Path) -> dict:
 
 @register_check("Settings", order=70)
 def check_settings(project_root: Path) -> dict:
-    """Check settings.local.json for permissions and deny rules.
+    """Check settings.local.json for permissions and for entries a Gaia release retired.
 
     Hook registration is counted across every channel by check_hook_registrations.
     """
+    from modules.core.plugin_setup import (  # noqa: PLC0415
+        RETIRED_DENY_RULES,
+        RETIRED_TOOL_NAMES,
+        _tool_name,
+    )
+
     fix = f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`"
     local_path = project_root / ".claude" / "settings.local.json"
     if not local_path.is_file():
@@ -2728,24 +2734,18 @@ def check_settings(project_root: Path) -> dict:
         return _result("Settings", "error", "Invalid JSON in settings.local.json",
                        f"Fix or delete {local_path}, then {fix}")
 
-    issues = []
-    infos = []
-
     perms = data.get("permissions", {})
-    allow_count = len(perms.get("allow", []))
-    deny_count = len(perms.get("deny", []))
-    if allow_count == 0:
-        infos.append("No allow rules (tools will prompt for approval)")
-    if deny_count == 0:
-        issues.append("No deny rules (destructive commands not blocked)")
+    allow = perms.get("allow", [])
+    deny = perms.get("deny", [])
+    retired = [e for e in deny if e in RETIRED_DENY_RULES]
+    retired += [e for e in allow if _tool_name(e) in RETIRED_TOOL_NAMES]
+    if retired:
+        return _result("Settings", "warning",
+                       f"{len(retired)} permission entries a Gaia release retired remain", fix)
 
-    if issues:
-        return _result("Settings", "error", "; ".join(issues), fix)
-
-    perm_count = allow_count + deny_count
-
-    if infos:
-        return _result("Settings", "info", f"{perm_count} rules -- {'; '.join(infos)}")
+    perm_count = len(allow) + len(deny)
+    if not allow:
+        return _result("Settings", "info", f"{perm_count} rules -- No allow rules (tools will prompt for approval)")
     return _result("Settings", "pass", f"{perm_count} rules")
 
 

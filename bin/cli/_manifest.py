@@ -482,7 +482,7 @@ def _claude_footprint(workspace: Path) -> bool:
 
 
 def _holds_gaia_settings(local: dict) -> bool:
-    """True when *local* carries what the plugin session writes: Gaia's hidden attribution or its deny rules.
+    """True when *local* carries what a plugin session writes or wrote: Gaia's hidden attribution or a deny rule it retired.
 
     A plugin-only workspace has no link, marker or agent key in the workspace
     -- those live in the plugin's data directory -- so this footprint is the
@@ -499,7 +499,7 @@ def _holds_gaia_settings(local: dict) -> bool:
     permissions = local.get("permissions")
     deny = permissions.get("deny") if isinstance(permissions, dict) else None
     gaia_deny = cleanup._gaia_managed_permission_sets()[1]
-    return isinstance(deny, list) and bool(gaia_deny) and gaia_deny <= set(deny)
+    return isinstance(deny, list) and not gaia_deny.isdisjoint(deny)
 
 
 def _read_bytes(path: Path) -> bytes:

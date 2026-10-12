@@ -379,15 +379,23 @@ class TestCheckSettings:
         r = doctor_mod.check_settings(healthy_project)
         assert r["severity"] == "pass"
 
-    def test_no_deny_rules(self, healthy_project):
-        """Should error when deny rules are missing."""
+    def test_no_deny_list_passes(self, healthy_project):
         settings_path = healthy_project / ".claude" / "settings.local.json"
         data = json.loads(settings_path.read_text())
-        data["permissions"]["deny"] = []
+        del data["permissions"]["deny"]
         settings_path.write_text(json.dumps(data))
         r = doctor_mod.check_settings(healthy_project)
-        assert r["severity"] == "error"
-        assert "deny" in r["detail"].lower()
+        assert r["severity"] == "pass"
+
+    def test_retired_gaia_entries_warn(self, healthy_project):
+        settings_path = healthy_project / ".claude" / "settings.local.json"
+        data = json.loads(settings_path.read_text())
+        data["permissions"]["deny"] = ["Bash(kubectl delete:*)", "Bash(npm publish:*)"]
+        data["permissions"]["allow"] = ["Bash(*)", "BashOutput"]
+        settings_path.write_text(json.dumps(data))
+        r = doctor_mod.check_settings(healthy_project)
+        assert r["severity"] == "warning"
+        assert r["detail"].startswith("2 ")
 
 
 class TestCheckHookFiles:

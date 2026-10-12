@@ -238,6 +238,26 @@ advertises the one `gaia` plugin with a `source: npm` object
 package into its plugin cache and reads the inline-hooks `plugin.json` from the
 package root.
 
+### Workspace settings ownership
+`gaia install`/`gaia update` (`_install_helpers.merge_local_permissions`) and the
+plugin's session setup (`plugin_setup.setup_project_permissions`) write the
+workspace `.claude/settings.local.json` through one merge,
+`plugin_setup.merge_gaia_permissions`; `gaia uninstall` (`cleanup`) and
+`gaia doctor` (`check_settings`) read the same constants. Ownership is decided
+per key:
+
+- `permissions.allow` -- by tool name: every entry for a tool name Gaia allows,
+  or for one in `RETIRED_TOOL_NAMES`, is Gaia's; the rest are the user's.
+- `permissions.deny` -- by exact string: an entry in `RETIRED_DENY_RULES`, the
+  rules releases up to 5.5 wrote, is Gaia's and is removed; any other entry is
+  the user's and is kept in order. Gaia writes no deny rule, because a harness
+  deny refuses a command before the hook can offer it for consent; destructive
+  commands are refused or signed by the hook layer instead.
+- `hooks` -- by `plugin_setup.is_gaia_hook_command`.
+
+A value Gaia stops writing joins a frozen retired set rather than being
+dropped from the code, so a later install can still recognise and remove it.
+
 ## Adapter Coupling Points
 
 The adapter layer connects Claude Code's hook protocol to Gaia business logic through 5 coupling points. Each coupling point is a thin entry point that delegates to the adapter for JSON parsing/formatting and to business logic modules for decisions.

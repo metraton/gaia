@@ -215,48 +215,64 @@ class TestMergeLocalPermissions(unittest.TestCase):
             # Unrelated user env var preserved
             self.assertEqual(data["env"]["CUSTOM_VAR"], "x")
 
-    def test_writes_canonical_deny_rules(self):
-        """Regression (release-check gate 2): a fresh merge MUST write the
-        canonical deny rules into settings.local.json.
+    def _merged_local(self, workspace: Path) -> dict:
+        helpers.merge_local_permissions(workspace)
+        return json.loads((workspace / ".claude" / "settings.local.json").read_text())
 
-        Root cause of the original failure: _install_helpers imported
-        PERMISSIONS via the dotted `hooks.modules.core.plugin_setup` path, whose
-        package __init__ transitively does `from adapters.host_session import ...`
-        -- a top-level `adapters` import that only resolves with hooks/ on
-        sys.path. During `gaia install` hooks/ was NOT on the path, the import
-        raised, the `except` fallback fired, and PERMISSIONS became the
-        EMPTY-deny fallback. A fresh install then wrote NO deny rules and
-        `gaia doctor` errored (rc=2, "No deny rules"), failing gate 2. This
-        asserts the user-visible outcome: deny rules are present and non-empty.
-        """
+    def test_fresh_merge_writes_no_deny_list_and_passes_doctor(self):
+        from cli import doctor
+
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / ".claude").mkdir()
-            helpers.merge_local_permissions(workspace)
-            data = json.loads(
-                (workspace / ".claude" / "settings.local.json").read_text()
-            )
-            deny = data["permissions"]["deny"]
-            self.assertTrue(deny, "deny rules must not be empty (gate-2 regression)")
-            # A canonical destructive rule must be present -- proves the real
-            # _DENY_RULES set was merged, not the empty-deny fallback.
-            self.assertIn("Bash(kubectl delete:*)", deny)
+            data = self._merged_local(workspace)
+            settings_check = doctor.check_settings(workspace)
 
-    def test_permissions_is_not_empty_deny_fallback(self):
-        """Guard the ROOT cause directly: the module-level PERMISSIONS resolved
-        by _install_helpers must be the canonical set, never the empty-deny
-        fallback (allow==['Bash(*)'] and deny==[])."""
-        deny = helpers.PERMISSIONS["permissions"].get("deny", [])
-        allow = helpers.PERMISSIONS["permissions"].get("allow", [])
-        self.assertTrue(
-            deny,
-            "PERMISSIONS.deny is empty -- the plugin_setup import fell back to "
-            "the empty-deny fallback (hooks/ not on sys.path?)",
-        )
-        self.assertNotEqual(
-            allow, ["Bash(*)"],
-            "PERMISSIONS.allow is the 1-entry fallback, not the canonical set",
-        )
+        self.assertNotIn("deny", data["permissions"])
+        for entry in ("Bash(*)", "Read", "Glob", "Grep", "Edit", "Write", "WebFetch", "WebSearch"):
+            self.assertIn(entry, data["permissions"]["allow"])
+        self.assertEqual(data["agent"], "gaia-orchestrator")
+        self.assertEqual(data["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"], "1")
+        self.assertEqual(settings_check["severity"], "pass", settings_check)
+
+    def test_upgrade_removes_the_old_gaia_deny_list_and_keeps_the_users_entry(self):
+        from cli import doctor
+
+        old_gaia_deny = [
+            "Bash(kubectl delete:*)",
+            "Bash(aws * delete-*:*)",
+            "Bash(gh repo delete:*)",
+            "Bash(git reset --hard:*)",
+            "Bash(dd:*)",
+            "Bash(terraform destroy:*)",
+        ]
+        user_entry = "Bash(npm publish:*)"
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+                "permissions": {"allow": ["Bash(*)"], "deny": [*old_gaia_deny, user_entry]},
+            }))
+            data = self._merged_local(workspace)
+            settings_check = doctor.check_settings(workspace)
+
+        self.assertEqual(data["permissions"]["deny"], [user_entry])
+        self.assertEqual(settings_check["severity"], "pass", settings_check)
+
+    def test_retired_tool_names_are_neither_written_nor_kept(self):
+        retired = ["BashOutput", "KillShell", "SlashCommand", "Task"]
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+                "permissions": {"allow": [*retired, "mcp__user_server"]},
+            }))
+            allow = self._merged_local(workspace)["permissions"]["allow"]
+
+        for name in retired:
+            self.assertNotIn(name, allow)
+        self.assertIn("mcp__user_server", allow)
+        self.assertIn("Agent", allow)
 
 
 # ---------------------------------------------------------------------------

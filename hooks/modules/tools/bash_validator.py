@@ -2689,9 +2689,7 @@ def decide_t3_outcome(
 
             # ---- Deny-list re-assertion (defense-in-depth) -------------------
             # The Q3 degraded-allow must NEVER cover a deny-listed destructive
-            # command. Two prior barriers already guarantee this: the harness
-            # native deny-list (settings _DENY_RULES) blocks such commands
-            # BEFORE the hook runs, and validate() Phase 3a/3b (is_blocked_command)
+            # command. validate() Phase 3a/3b (is_blocked_command) already
             # blocks them BEFORE reaching decide_t3_outcome. We re-assert it here
             # so THIS branch is structurally incapable of allowing a blocked
             # command even if the upstream flow ever changed -- a blocked command
