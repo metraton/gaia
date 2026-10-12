@@ -25,6 +25,10 @@ Design:
   its integer flags, so a read-only open is classified safe while a
   write/append/truncate open is FILE_WRITE.  ``_MODE_ARG_INDEX`` and
   ``_OS_OPEN_WRITE_FLAGS`` hold the per-API argument positions.
+- ``urlopen`` is a read when it sends no body and no ``Request`` the module
+  builds carries a body or a non-GET/HEAD method, matching a ``curl`` GET.  A
+  process call with a literal argv is judged by the command it runs only when
+  the caller passes ``argv_is_mutative`` (the script-file lane does).
 - Call CHAINS are resolved through intermediate calls, because the idiomatic
   form of most mutating APIs is a chain, not a flat ``module.function(...)``:
   ``Path("/x").unlink()`` resolves to ``pathlib.Path.unlink`` and
@@ -67,8 +71,9 @@ from __future__ import annotations
 import ast
 import logging
 import re
+import shlex
 from dataclasses import dataclass
-from typing import FrozenSet, Optional, Set, Tuple
+from typing import Callable, FrozenSet, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -341,16 +346,109 @@ def _match_cloud_sdk(dotted: str) -> Optional[Tuple[str, str]]:
 
 
 # ============================================================================
+# Provable reads among catalogued calls
+# ============================================================================
+# A process call whose whole argv is literal strings runs exactly that command,
+# so it can be judged as the command it runs.  Every keyword outside this set is
+# refused because it can change what runs or what it reads: ``shell`` turns the
+# argv into a shell string, ``executable``/``env``/``cwd`` pick another binary or
+# script, ``input``/``stdin`` feed it a program.
+_ARGV_PROCESS_CALLS: FrozenSet[str] = frozenset({
+    "subprocess.run", "subprocess.call", "subprocess.check_call",
+    "subprocess.check_output", "subprocess.Popen",
+})
+_ARGV_PASSIVE_KEYWORDS: FrozenSet[str] = frozenset({
+    "capture_output", "text", "check", "timeout", "encoding", "errors",
+    "universal_newlines", "stdout", "stderr",
+})
+
+
+def _literal_argv(call: ast.Call) -> Optional[Tuple[str, ...]]:
+    """Return the argv of a process call when it is provably literal, else None."""
+    if len(call.args) != 1 or not isinstance(call.args[0], (ast.List, ast.Tuple)):
+        return None
+    if any(kw.arg not in _ARGV_PASSIVE_KEYWORDS for kw in call.keywords):
+        return None
+    argv = call.args[0].elts
+    if not argv or not all(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in argv
+    ):
+        return None
+    return tuple(item.value for item in argv)
+
+
+_URLOPEN = "urllib.request.urlopen"
+_URL_REQUEST = "urllib.request.Request"
+_READ_HTTP_METHODS: FrozenSet[Optional[str]] = frozenset({None, "GET", "HEAD"})
+
+
+def _literal_or_absent(call: ast.Call, name: str, index: int) -> Tuple[bool, object]:
+    """Return ``(known, value)`` for an argument given by keyword or position."""
+    node = next((kw.value for kw in call.keywords if kw.arg == name), None)
+    if node is None and len(call.args) > index:
+        node = call.args[index]
+    if node is None:
+        return True, None
+    if isinstance(node, ast.Constant):
+        return True, node.value
+    return False, None
+
+
+def _request_is_read(call: ast.Call) -> bool:
+    """True when a ``Request(...)`` provably carries no body and a read method."""
+    if any(kw.arg is None for kw in call.keywords):
+        return False
+    data_known, data = _literal_or_absent(call, "data", 1)
+    method_known, method = _literal_or_absent(call, "method", 5)
+    return data_known and data is None and method_known and method in _READ_HTTP_METHODS
+
+
+def _module_builds_only_read_requests(tree: ast.AST, alias_map: "_AliasResolver") -> bool:
+    """True when no request in *tree* can carry a body or a non-read method.
+
+    The request handed to ``urlopen`` is usually a variable, so the judgement is
+    made over every ``Request`` the module builds, plus every place a request's
+    ``data``/``method`` could be set after construction or by a subclass.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if alias_map.resolve_call(node.func) == _URL_REQUEST and not _request_is_read(node):
+                return False
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+            if node.attr in ("data", "method"):
+                return False
+        elif isinstance(node, ast.ClassDef):
+            if any(alias_map.resolve_call(base) == _URL_REQUEST for base in node.bases):
+                return False
+    return True
+
+
+def _urlopen_is_read(call: ast.Call, only_read_requests: bool) -> bool:
+    """True when ``urlopen`` sends no body and every module request is a read."""
+    if any(kw.arg is None for kw in call.keywords) or len(call.args) != 1:
+        return False
+    data_known, data = _literal_or_absent(call, "data", 1)
+    return data_known and data is None and only_read_requests
+
+
+# ============================================================================
 # Public entry point
 # ============================================================================
 
-def analyze_python_inline(code: str) -> InlineAstResult:
+def analyze_python_inline(
+    code: str,
+    argv_is_mutative: Optional[Callable[[str], bool]] = None,
+) -> InlineAstResult:
     """Classify a Python inline-code payload by invocation, not mention.
 
     Args:
         code: The Python source string extracted from ``python3 -c "..."``.
             Already unquoted; the caller is responsible for stripping the
             surrounding shell quotes before passing it in.
+        argv_is_mutative: Classifier for the shell-quoted command a literal
+            argv runs.  When given, a process call whose argv is provably
+            literal counts only if that command is mutative; when omitted,
+            every process call counts.
 
     Returns:
         :class:`InlineAstResult` with ``is_dangerous`` set when at least one
@@ -370,6 +468,7 @@ def analyze_python_inline(code: str) -> InlineAstResult:
     # ``import subprocess as sp`` both resolve correctly during call walk.
     alias_map = _AliasResolver()
     alias_map.collect(tree)
+    only_read_requests = _module_builds_only_read_requests(tree, alias_map)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -378,6 +477,13 @@ def analyze_python_inline(code: str) -> InlineAstResult:
         dotted = alias_map.resolve_call(node.func)
         if dotted is None:
             continue
+
+        if dotted == _URLOPEN and _urlopen_is_read(node, only_read_requests):
+            continue
+        if argv_is_mutative is not None and dotted in _ARGV_PROCESS_CALLS:
+            argv = _literal_argv(node)
+            if argv is not None and not argv_is_mutative(shlex.join(argv)):
+                continue
 
         # Direct hit on full dotted name.  A mode/flag-gated opener can come
         # back SAFE from the builder, so the walk continues instead of

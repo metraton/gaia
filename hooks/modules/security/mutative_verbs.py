@@ -2512,6 +2512,77 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
     return _rm_scratch_confined_targets(tokens) is not None
 
 
+# Flags that only choose what is copied or how verbosely; ``-l``/``-s`` (a link
+# back to the source), ``-t``/``-T`` (destination named elsewhere) and every
+# unlisted option leave the command at its alias verdict.
+_CP_SCRATCH_SHORT_FLAGS: FrozenSet[str] = frozenset("rRapvfniuLHP")
+_CP_SCRATCH_LONG_FLAGS: FrozenSet[str] = frozenset({
+    "--recursive", "--archive", "--verbose", "--force", "--no-clobber",
+    "--interactive", "--update", "--dereference", "--no-dereference",
+    "--preserve",
+})
+
+
+def _cp_scratch_written_paths(tokens: tuple) -> "Tuple[str, ...] | None":
+    """Return the canonical paths a ``cp`` writes when all lie inside scratch.
+
+    Separate from the rm predicate on purpose: cp has its own grammar and
+    writes only its destination, so the sources are never judged here.  A
+    destination that is an existing directory is written at
+    ``<dest>/<basename(source)>``; each such path is re-resolved so a symlink
+    already sitting in scratch cannot carry the write outside it.  Any
+    ambiguity returns None and the command keeps its T3 alias verdict.
+    """
+    import os
+    scratch_root = _gaia_scratch_root()
+    if not scratch_root:
+        return None
+
+    positionals = []
+    end_of_options = False
+    for token in tokens[1:]:
+        if not end_of_options and token == "--":
+            end_of_options = True
+        elif not end_of_options and token.startswith("--"):
+            if token.split("=", 1)[0] not in _CP_SCRATCH_LONG_FLAGS:
+                return None
+        elif not end_of_options and token.startswith("-") and token != "-":
+            if not set(token[1:]) <= _CP_SCRATCH_SHORT_FLAGS:
+                return None
+        else:
+            positionals.append(token)
+    if len(positionals) < 2:
+        return None
+
+    def confined(path: str) -> "str | None":
+        real = os.path.realpath(path)
+        inside = real == scratch_root or real.startswith(scratch_root + os.sep)
+        return real if inside else None
+
+    *sources, destination = positionals
+    if any(ch in _RM_GLOB_CHARS for ch in destination) or ".." in destination:
+        return None
+    expanded = os.path.expanduser(destination)
+    if expanded.startswith("~"):
+        return None
+    real_destination = confined(expanded)
+    if real_destination is None:
+        return None
+    if not os.path.isdir(real_destination):
+        return (real_destination,) if len(sources) == 1 else None
+
+    written = []
+    for source in sources:
+        name = os.path.basename(os.path.normpath(os.path.expanduser(source)))
+        if not name or name in (".", ".."):
+            return None
+        real = confined(os.path.join(real_destination, name))
+        if real is None:
+            return None
+        written.append(real)
+    return tuple(written)
+
+
 _DURABLE_STORE_SIGNATURES: Tuple[Tuple[bytes, str], ...] = (
     (b"SQLite format 3\x00", "SQLite database"),
 )
@@ -4369,6 +4440,23 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     reason=(
                         f"rm is confined to the Gaia scratch directory but "
                         f"reaches durable content: {valuable}"
+                    ),
+                )
+
+        # cp writes only its destination; into scratch it is free unless it
+        # would overwrite a durable store already parked there.
+        if base_cmd == "cp":
+            written = _cp_scratch_written_paths(tuple(tokens))
+            if written and _durable_store_under_scratch_targets(written) is None:
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb=base_cmd,
+                    cli_family="system",
+                    confidence="high",
+                    reason=(
+                        "cp writing only inside the Gaia scratch directory "
+                        "(~/.gaia/scratch) and overwriting no durable store"
                     ),
                 )
 
@@ -6943,7 +7031,12 @@ def _check_script_file(
         )
 
     if lane == "python" and _analyze_python_inline is not None:
-        ast_result = _analyze_python_inline(content)
+        ast_result = _analyze_python_inline(
+            content,
+            argv_is_mutative=lambda argv_command: _argv_command_is_mutative(
+                argv_command, cwd=cwd, _depth=_depth + 1,
+            ),
+        )
         if ast_result.is_dangerous:
             return MutativeResult(
                 is_mutative=True,
@@ -6996,6 +7089,15 @@ def _check_script_file(
         content, script_path, family, from_source_code=(lane == "code"),
         cwd=cwd, _depth=_depth + 1,
     )
+
+
+def _argv_command_is_mutative(
+    command: str, cwd: "Optional[str]" = None, _depth: int = 0,
+) -> bool:
+    """Judge the command a script's literal argv runs, as the exec-sink lane does."""
+    if _is_blocked_command is not None and _is_blocked_command(command).is_blocked:
+        return True
+    return detect_mutative_command(command, cwd=cwd, _depth=_depth).is_mutative
 
 
 def _classify_source_with_lexer(
