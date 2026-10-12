@@ -148,18 +148,25 @@ def _parse_timestamp(ts_str: str) -> Optional[datetime]:
 
 
 def _is_resume_boundary(entry: Dict[str, Any]) -> bool:
-    """True when *entry* is a coordinator-relayed resume of a cut turn.
+    """True when *entry* wakes a subagent whose previous segment had ended.
 
-    A subagent's resumed segments share one transcript file: after a
-    premature stop (an early harness relay, or a hook rejecting an
-    incomplete contract), the orchestrator resumes the SAME agent via
-    SendMessage, and the runtime injects that follow-up as a ``user``
-    entry carrying ``origin: {"kind": "coordinator"}``. That entry's own
-    timestamp is when work resumed; the wall-clock gap since the prior
-    entry is the agent sitting idle waiting to be resumed, not working.
+    A subagent's resumed segments share one transcript file. Two entries
+    open a new segment: the orchestrator's SendMessage follow-up, which the
+    runtime injects carrying ``origin: {"kind": "coordinator"}``, and a
+    top-level ``type: "user"`` entry with ``origin.kind ==
+    "task-notification"``, which wakes the finished agent when one of its
+    background tasks completes after its SubagentStop. An ``attachment``
+    entry with that same origin arrives mid-turn and is not a boundary.
+    The entry's own timestamp is when work resumed; the wall-clock gap
+    since the prior entry is idle waiting, not work.
     """
     origin = entry.get("origin")
-    return isinstance(origin, dict) and origin.get("kind") == "coordinator"
+    if not isinstance(origin, dict):
+        return False
+    kind = origin.get("kind")
+    return kind == "coordinator" or (
+        kind == "task-notification" and entry.get("type") == "user"
+    )
 
 
 def _extract_tool_calls_from_content(

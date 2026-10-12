@@ -109,6 +109,9 @@ def _transcript(tmp_path: Path, tool_calls: list) -> str:
                 "message": {"role": "user", "content": "continue the task"},
             })
             continue
+        if isinstance(call, dict):
+            lines.append(call)
+            continue
         name, tool_input = call
         lines.append({
             "type": "assistant",
@@ -193,6 +196,35 @@ def test_a_a_resumed_turn_recovers_only_the_calls_after_its_last_resume(db, tmp_
     evidence = _persisted_evidence(db, contract_id)
     assert evidence["commands_run"] == [f"{RECOVERED_MARK}git -C /repo push origin HEAD:main"]
     assert evidence["files_checked"] == [f"{RECOVERED_MARK}/repo/later.py"]
+
+
+def test_a_a_task_notification_wake_starts_a_segment_but_its_attachment_does_not(db, tmp_path):
+    from modules.agents.evidence_recovery import RECOVERED_MARK
+
+    notification = {"kind": "task-notification"}
+    tool_calls = [
+        ("Bash", {"command": "ghx pr checks 43 --watch"}),
+        {"type": "attachment", "origin": notification, "attachment": {"type": "queued_command"}},
+        ("Read", {"file_path": "/repo/before-close.py"}),
+        {
+            "type": "user",
+            "isMeta": True,
+            "origin": notification,
+            "message": {"role": "user", "content": "<task-notification>completed</task-notification>"},
+        },
+        ("Bash", {"command": "grep -c shard /tmp/checks.out"}),
+    ]
+    contract_id, response = _claude_code_close(db, tmp_path, "abc7", {}, tool_calls)
+
+    assert response.exit_code == 0
+    evidence = _persisted_evidence(db, contract_id)
+    assert evidence["commands_run"] == [f"{RECOVERED_MARK}grep -c shard /tmp/checks.out"]
+    assert evidence["files_checked"] == []
+
+    from modules.agents.transcript_analyzer import analyze
+
+    segments = [call.segment for call in analyze(str(tmp_path / "agent-transcript.jsonl")).tool_sequence]
+    assert segments == [0, 0, 1], "the mid-turn attachment must not open a segment"
 
 
 def test_b_lists_the_agent_filled_stay_as_written(db, tmp_path):
