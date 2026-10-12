@@ -3111,6 +3111,25 @@ import re as _re_help
 _SHELL_REDIRECT_RE = _re_help.compile(r"^(\d*[<>]&?\d*|[<>]{1,2}.*)$")
 
 
+def _program_asked_for_help(command: str, base_cmd: str) -> bool:
+    """True when the program's own argv carries a help flag that is not an option's value.
+
+    Read from shell_parser.program_argv, so a comment, a later command, a
+    redirect target or anything after `--` never counts; a help flag right
+    after a short option that takes a value (`-l --help`) is that option's
+    value, not a request.
+    """
+    from ..tools.shell_parser import program_argv
+
+    argv = program_argv(command)[1:]
+    if "--" in argv:
+        argv = argv[:argv.index("--")]
+    return any(
+        word in HELP_FLAGS and not (index and absorbs_next_token(base_cmd, argv[index - 1]))
+        for index, word in enumerate(argv)
+    )
+
+
 # ============================================================================
 # Dangerous Flags (context-sensitive)
 # ============================================================================
@@ -4682,7 +4701,6 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         base_cmd in HELP_IDEMPOTENT_BASE_CMDS
         or family in HELP_IDEMPOTENT_FAMILIES
     ):
-        flag_set = set(semantics.flag_tokens)
         # Count semantic non-flag tokens only. Shell redirect shorthands
         # like "2>&1", ">file", "<file" appear as non-flag tokens in shlex
         # output but carry no CLI semantic value -- filtering them keeps
@@ -4695,13 +4713,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # separator: tokens after `--` are a verbatim payload the CLI passes
         # through (gcloud compute ssh ... -- <remote command> --help runs the
         # remote command; the trailing --help is ssh's argument, not gcloud's).
-        if "--" in tokens:
-            separator_index = tokens.index("--")
-            help_requested = any(
-                t in HELP_FLAGS for t in tokens[:separator_index]
-            )
-        else:
-            help_requested = bool(flag_set & HELP_FLAGS)
+        help_requested = _program_asked_for_help(command, base_cmd)
         # The any-position whitelist must never outrank an explicitly
         # registered mutative command path: `terraform state rm ... --help` /
         # `gcloud billing projects unlink ... --help` stay gated even though

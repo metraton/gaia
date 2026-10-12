@@ -160,12 +160,15 @@ def tokenize_command(command: str) -> Tuple[str, ...]:
     they change the command's identity and are deliberately left intact so a
     decorated form re-triggers T3.
     """
-    if not command or not command.strip():
+    from ..tools.shell_parser import strip_comment
+
+    command = strip_comment(command or "").strip()
+    if not command:
         return ()
     try:
-        raw = list(shlex.split(command.strip()))
+        raw = list(shlex.split(command))
     except ValueError:
-        raw = list(_degraded_tokenize(command.strip()))
+        raw = list(_degraded_tokenize(command))
     return strip_redirect_tokens(raw)
 
 

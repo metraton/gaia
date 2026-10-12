@@ -271,6 +271,7 @@ The adapter layer connects Claude Code's hook protocol to Gaia business logic th
 | **What it does** | Security gate for all Bash, Task, and Agent tool invocations. Validates commands (blocked patterns, mutative verbs, approval grants), validates Task/Agent dispatches and births the contract row each dispatched turn claims. |
 | **Adapter methods called** | `ClaudeCodeAdapter.parse_event()`, `ClaudeCodeAdapter.parse_pre_tool_use()`, `ClaudeCodeAdapter.format_validation_response()` |
 | **Business logic modules** | `security/blocked_commands.py`, `security/mutative_verbs.py`, `security/approval_grants.py`, `tools/bash_validator.py`, `tools/task_validator.py`, `agents/dispatch_identity.py` (row birth) |
+| **Shell words** | `tools/shell_parser.py` is the single place shell words are decided, for the classifier (`command_semantics.tokenize_command`, the `--help` exemption) and every guard (`stage_decomposer`, `subagent_resume_point_guard`, `subagent_memory_write_guard`): an unquoted `#` at word start begins a comment (`strip_comment`), a lone `&` separates commands (`is_lone_ampersand`), and redirections with their targets are not argv (`drop_redirections`, `program_argv`). A `--help` counts only in the program's own argv and not as a short option's value. A change to how a word is read (Windows backslashes included) lands here once. |
 
 ### CP-2: `hooks/post_tool_use.py` -- Audit Logging Entry Point
 

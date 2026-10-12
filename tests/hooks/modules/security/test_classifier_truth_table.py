@@ -63,6 +63,11 @@ CLASSIFIER_TRUTH_TABLE = [
     ("gaia-session-variable-group-verb", GATED, "gaia session $R set --session-id s --text t", True, T3),
     ("gaia-session-variable-only", GATED, "gaia session $R", True, T3),
     ("gaia-deep-mutative-help", FREE, "gaia task gate remove 12 --help", False, T0),
+    # A `--help` bash never passes to the program frees nothing.
+    ("gaia-mutation-comment-help", GATED, "gaia task gate remove 12 # --help", True, T3),
+    ("gaia-mutation-background-help", GATED, "gaia task gate remove 12 & true --help", True, T3),
+    ("gaia-mutation-redirect-help", GATED, "gaia task gate remove 12 2> --help", True, T3),
+    ("kubectl-value-help", GATED, "kubectl delete -l --help", True, T3),
     ("gaia-deep-mutative-path", GATED, "gaia task gate remove 12", True, T3),
     ("git-push-help", FREE, "git push --help", False, T0),
     ("kubectl-delete-help", FREE, "kubectl delete --help", False, T0),
@@ -1494,7 +1499,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 186
+_MINIMUM_MEASURED_CASES = 190
 
 
 @pytest.mark.parametrize(

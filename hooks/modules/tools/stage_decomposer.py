@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .shell_parser import ShellCommandParser
+from .shell_parser import ShellCommandParser, is_lone_ampersand, strip_comment
 from ..security.shell_substitution import extract_substitutions, mask_quoted_text
 
 
@@ -107,7 +107,9 @@ class StageDecomposer:
         if not command or not command.strip():
             return DecomposedCommand(raw=command or "", stages=[], substitutions=[])
 
-        command = command.strip()
+        command = strip_comment(command).strip()
+        if not command:
+            return DecomposedCommand(raw="", stages=[], substitutions=[])
 
         # Extract command substitutions before splitting so they don't
         # interfere with operator detection.
@@ -223,8 +225,8 @@ class StageDecomposer:
                     i += 2
                     continue
 
-            # ---- single-character operators: |, ;, \n ----
-            if ch in ("|", ";", "\n"):
+            # ---- single-character operators: |, ;, \n, a lone & ----
+            if ch in ("|", ";", "\n") or (ch == "&" and is_lone_ampersand(command, i)):
                 segments.append(("".join(current), ch))
                 current = []
                 i += 1

@@ -30,7 +30,6 @@ Public API:
 from __future__ import annotations
 
 import os
-import shlex
 from typing import Dict, Optional, Sequence, Tuple
 
 # Every verb under `gaia session` (bin/cli/session.py), and the only source of
@@ -97,24 +96,32 @@ def is_resume_point_write(command: str) -> bool:
 
 
 def _component_writes_resume_point(component: str, *, help_exempt: bool) -> bool:
-    """True iff one operator-free component's words may run a session write: any session call not proven a declared read."""
-    try:
-        words = shlex.split(component)
-    except ValueError:
-        words = component.split()
-    if help_exempt and _HELP_FLAGS & set(words):
-        return False
+    """True iff one operator-free component's words may run a session write: any session call not proven a declared read.
 
-    positional = [w for w in words if not w.startswith("-")]
-    for index, word in enumerate(positional[:-1]):
-        group = positional[index + 1]
+    Help is read from the gaia program's own argv only (the words after its
+    command word), so a wrapper's option value such as `env -u --help` does
+    not exempt the call.
+    """
+    from ..tools.shell_parser import shell_words
+
+    words = shell_words(component)
+    for index, word in enumerate(words):
+        if word.startswith("-"):
+            continue
+        own_argv = words[index + 1:]
+        positional = [w for w in own_argv if not w.startswith("-")]
+        if not positional:
+            continue
+        group = positional[0]
         if group == "session":
             if not _runs_gaia(word):
                 continue
         elif not is_shell_resolved(group) or is_shell_resolved(word) or not _runs_gaia(word):
             continue
-        verb_words = positional[index + 2:]
+        verb_words = positional[1:]
         if group == "session" and not verb_words:
+            continue
+        if help_exempt and _HELP_FLAGS & set(own_argv):
             continue
         path = declared_session_verb(verb_words) if group == "session" else None
         if path is None or SESSION_VERBS[path] != "read":

@@ -13,10 +13,97 @@ Features:
 - Preserve quoted strings: echo 'a|b' -> ["echo 'a|b'"]
 
 Dependencies: Python stdlib only (shlex, re)
+
+This module is the one place shell words are decided, for the classifier and
+every guard alike: an unquoted `#` at word start begins a comment, a single
+`&` separates commands, and redirections with their targets are not argv
+(`program_argv`). A rule about what bash passes to a program belongs here, not
+in a caller's own split.
 """
 
+import re
+import shlex
 from typing import List, Optional
 from dataclasses import dataclass
+
+# Characters after which a `#` starts a word, and so a comment.
+_WORD_START_BEFORE = " \t\n;&|()"
+
+# A redirection operator alone (its target is the next word) and one with the
+# target attached (`2>/dev/null`, `<in`, `2>&1`).
+_REDIRECT_OPERATOR = re.compile(r"^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<)$")
+_REDIRECT_ATTACHED = re.compile(r"^(?:\d+|&)?(?:>>|>&|>\||>|<<<|<<-?|<&|<>|<).+$")
+
+
+def strip_comment(command: str) -> str:
+    """*command* without its comments: an unquoted `#` at word start, outside a substitution, through the end of its line."""
+    out: List[str] = []
+    i, n = 0, len(command)
+    in_single = in_double = False
+    depth = 0
+    while i < n:
+        ch = command[i]
+        if ch == "\\" and not in_single and i + 1 < n:
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if ch == "$" and i + 1 < n and command[i + 1] == "(":
+                depth += 1
+            elif ch == ")" and depth:
+                depth -= 1
+            elif ch == "#" and depth == 0 and (i == 0 or command[i - 1] in _WORD_START_BEFORE):
+                end = command.find("\n", i)
+                if end == -1:
+                    break
+                i = end
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def is_lone_ampersand(command: str, i: int) -> bool:
+    """True when the `&` at *i* separates commands: not `&&`, `&>`, or the `&` of `>&`, `<&` and `|&`."""
+    before = command[i - 1] if i > 0 else ""
+    after = command[i + 1] if i + 1 < len(command) else ""
+    return after not in ("&", ">") and before not in ("&", ">", "<", "|")
+
+
+def drop_redirections(words: List[str]) -> List[str]:
+    """*words* without redirection operators and their targets, which bash never passes to the program."""
+    out: List[str] = []
+    skip_next = False
+    for word in words:
+        if skip_next:
+            skip_next = False
+            continue
+        if _REDIRECT_OPERATOR.match(word):
+            skip_next = True
+            continue
+        if _REDIRECT_ATTACHED.match(word):
+            continue
+        out.append(word)
+    return out
+
+
+def shell_words(component: str) -> List[str]:
+    """The unquoted words of one operator-free component, redirections removed."""
+    try:
+        words = shlex.split(component)
+    except ValueError:
+        words = component.split()
+    return drop_redirections(words)
+
+
+def program_argv(command: str) -> List[str]:
+    """The words bash passes to the first program of *command*: comments, later commands and redirections removed."""
+    components = parse_command(command)
+    return shell_words(components[0]) if components else []
 
 
 @dataclass
@@ -77,8 +164,7 @@ class ShellCommandParser:
         if not command or not command.strip():
             return []
 
-        # Normalize whitespace
-        command = command.strip()
+        command = strip_comment(command).strip()
 
         # Split on operators while preserving quotes
         components = self._split_on_operators(command)
@@ -143,8 +229,8 @@ class ShellCommandParser:
                     i += 2
                     continue
 
-            # Check for single-character operators (|, ;)
-            if char in ['|', ';', '\n']:
+            # Check for single-character operators (|, ;, a lone &)
+            if char in ['|', ';', '\n'] or (char == '&' and is_lone_ampersand(command, i)):
                 # Found operator - save current component
                 if current:
                     components.append(''.join(current))
