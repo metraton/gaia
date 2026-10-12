@@ -1031,18 +1031,23 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
 
         The call's outcome is read by this host's ``parse_post_tool_use``. A
         Task/Agent contract summary reaches the orchestrator as
-        ``additionalContext`` next to the tool result.
+        ``additionalContext`` next to the tool result, as does the ceiling
+        notice of a subagent's call, counted by the payload's ``agent_id``.
         """
+        from modules.agents.call_ceiling import record_call
+
         tool_result = self.parse_post_tool_use(event.payload)
         if tool_result.tool_name == "AskUserQuestion":
             return self._handle_ask_user_question_result(event.payload)
         verdict = self.post_tool_verdict(event, tool_result)
-        if verdict.context:
+        notice = record_call(event.payload.get("agent_id"))
+        context = "\n\n".join(text for text in (verdict.context, notice) if text)
+        if context:
             return HookResponse(
                 output={
                     _HOOK_SPECIFIC_OUTPUT: {
-                        "hookEventName": "PostToolUse",
-                        "additionalContext": verdict.context,
+                        "hookEventName": event.payload.get("hook_event_name") or "PostToolUse",
+                        "additionalContext": context,
                     }
                 },
                 exit_code=0,

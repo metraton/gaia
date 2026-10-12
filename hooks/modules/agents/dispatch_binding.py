@@ -552,8 +552,8 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     must not introduce.
 
     Returns a dict with keys ``plan_id``, ``plan_task_id``, ``kind``,
-    ``turn_role``, ``parent_handoff_id``, ``project`` -- any of which may be
-    None.
+    ``turn_role``, ``parent_handoff_id``, ``project``, ``ceiling`` -- any of
+    which may be None.
     """
     import re as _re
 
@@ -593,6 +593,10 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     # can stamp the parent binding. Left None for a non-verifier dispatch, where
     # it is optional (and only existence-checked if present).
     parent_handoff_id = _int_token(r"parent_handoff_id\s*=\s*(\d+)")
+    # The tool calls the orchestrator budgets for the turn; read at PostToolUse
+    # by ``modules.agents.call_ceiling``. Dispatch data like ``project=``,
+    # never a binding coordinate.
+    ceiling = _int_token(r"\bceiling\s*=\s*(\d+)")
 
     is_verifier = "verifier" in agent.lower()
     turn_role = _VERIFIER_ROLE if is_verifier else None
@@ -626,4 +630,5 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
         "turn_role": turn_role,
         "parent_handoff_id": parent_handoff_id,
         "project": project,
+        "ceiling": ceiling,
     }

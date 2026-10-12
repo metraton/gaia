@@ -1276,8 +1276,11 @@ class OpenCodeAdapter(HookAdapter):
         withhold is a structured decision, from both containers it could ride
         in. The call's outcome is read by this adapter's own
         ``parse_post_tool_use``. A Task result's contract summary line returns
-        as ``additional_context``, which the plugin appends to the tool output.
+        as ``additional_context``, which the plugin appends to the tool output,
+        as does the ceiling notice of a child session's call: the child's
+        session id is the harness id its row was bound to.
         """
+        from modules.agents.call_ceiling import record_call
         from modules.agents.task_result_observer import TASK_TOOL_NAMES
 
         payload = self.build_policy_payload(event)
@@ -1309,8 +1312,10 @@ class OpenCodeAdapter(HookAdapter):
             policy_event, self.parse_post_tool_use(payload),
         )
         response = self._format_policy_verdict(verdict)
-        if verdict.context and response.output.get("action") == "allow":
-            response.output["additional_context"] = verdict.context
+        notice = record_call(event.session_id if event.host_agent_id else None)
+        context = "\n\n".join(text for text in (verdict.context, notice) if text)
+        if context and response.output.get("action") == "allow":
+            response.output["additional_context"] = context
         return response
 
     @staticmethod
