@@ -21,6 +21,7 @@ RESUME_POINT_MAX_CHARS = 2000
 _GOAL_MAX_CHARS = 160
 _MAX_LISTED = 10
 _UNBOUND_WINDOW_SECONDS = 24 * 3600
+_WAITING_STATES = frozenset({"NEEDS_INPUT", "APPROVAL_REQUEST", "BLOCKED"})
 _BLOCK_MAX_CHARS = 1500
 _TRUNCATED = "\n... (snapshot truncated; `gaia session snapshot --json` has the rest)"
 
@@ -62,20 +63,22 @@ def read_resume_point(session_id: str) -> str | None:
     return text or None
 
 
-def _open_contracts(con, session_id: str) -> tuple[list[dict[str, Any]], int]:
-    """This session's unsettled contracts, newest first, and how many unbound ones are too old to list.
+def _open_contracts(con, session_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """This session's unsettled contracts to list and the unbound ones gone quiet, both newest first.
 
     A row is settled when another row continues it or it is COMPLETE. A row
     bound to a plan task (its own binding, or a verifier's through its
     producer) stays open only while that task is pending and the row is the
     task's latest; the task's status, not the row, says whether the work is
-    done. An unbound row has no such authority, so it is listed for 24 hours
-    and counted after that.
+    done. An unbound row has no such authority: one waiting on the
+    orchestrator (input, approval, a block) is always listed, any other only
+    while its last recorded activity is under 24 hours old.
     """
     rows = [
         dict(r)
         for r in con.execute(
-            "SELECT h.id, h.contract_id, h.agent_id, h.agent_state, h.kind, h.created_at, "
+            "SELECT h.id, h.contract_id, h.agent_id, h.agent_state, h.kind, "
+            "MAX(h.created_at, COALESCE(h.claimed_at, h.created_at)) AS last_activity, "
             "h.continues_handoff_id, COALESCE(h.plan_task_id, parent.plan_task_id) AS plan_task_id, "
             "t.status AS task_status "
             "FROM agent_contract_handoffs h "
@@ -89,18 +92,21 @@ def _open_contracts(con, session_id: str) -> tuple[list[dict[str, Any]], int]:
     latest_of_task = {r["plan_task_id"]: r["id"] for r in rows if r["plan_task_id"] is not None}
     cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - _UNBOUND_WINDOW_SECONDS))
     open_rows: list[dict[str, Any]] = []
-    older_unresolved = 0
+    quiet_rows: list[dict[str, Any]] = []
     for row in rows:
         if row["id"] in continued or row["agent_state"] == "COMPLETE":
             continue
         if row["plan_task_id"] is not None:
             if row["task_status"] == "pending" and latest_of_task[row["plan_task_id"]] == row["id"]:
                 open_rows.append(row)
-        elif (row["created_at"] or "") >= cutoff:
+        elif row["agent_state"] in _WAITING_STATES or (row["last_activity"] or "") >= cutoff:
             open_rows.append(row)
         else:
-            older_unresolved += 1
-    return sorted(open_rows, key=lambda r: r["id"], reverse=True), older_unresolved
+            quiet_rows.append(row)
+    return (
+        sorted(open_rows, key=lambda r: r["id"], reverse=True),
+        sorted(quiet_rows, key=lambda r: r["id"], reverse=True),
+    )
 
 
 def _pending_signatures(con, session_id: str) -> list[dict[str, Any]]:
@@ -137,7 +143,7 @@ def build_snapshot(session_id: str) -> dict[str, Any]:
     snapshot: dict[str, Any] = {
         "session_id": session_id,
         "open_contracts": [],
-        "older_unresolved": 0,
+        "older_unbound": [],
         "pending_signatures": [],
         "active_task": None,
         "resume_point": read_resume_point(session_id),
@@ -152,7 +158,7 @@ def build_snapshot(session_id: str) -> dict[str, Any]:
         return snapshot
     try:
         try:
-            snapshot["open_contracts"], snapshot["older_unresolved"] = _open_contracts(con, session_id)
+            snapshot["open_contracts"], snapshot["older_unbound"] = _open_contracts(con, session_id)
         except Exception:
             pass
         for key, query in (
@@ -202,7 +208,8 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
     else:
         active = "Active: none"
     resume = snapshot["resume_point"]
-    older = snapshot.get("older_unresolved", 0)
+    quiet = len(snapshot.get("older_unbound", []))
+    waiting_first = sorted(snapshot["open_contracts"], key=lambda c: c["agent_state"] not in _WAITING_STATES)
     sections = [
         active,
         "Resume point:\n" + _clip(resume, _RESUME_MAX_CHARS) if resume else "Resume point: none",
@@ -214,10 +221,10 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
             f"- {c['contract_id'] or c['agent_id']} [{c['agent_state']}]"
             + (f" kind={c['kind']}" if c["kind"] else "")
             + (f" task={c['plan_task_id']}" if c.get("plan_task_id") else "")
-            for c in snapshot["open_contracts"]
+            for c in waiting_first
         ], trailer=(
-            f"+{older} unbound older than 24h (`gaia contract list --session {snapshot['session_id']}`)"
-            if older else ""
+            f"+{quiet} unbound, quiet for 24h (`gaia session snapshot --session-id {snapshot['session_id']} --json`)"
+            if quiet else ""
         )),
     ]
     block = "## Session Snapshot\n" + "\n\n".join(sections)

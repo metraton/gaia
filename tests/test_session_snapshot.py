@@ -10,6 +10,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -87,10 +88,11 @@ def _row(con, contract_id, session_id, state, created_at=None, **columns):
     cur = con.execute(
         "INSERT INTO agent_contract_handoffs "
         "(contract_id, agent_id, session_id, workspace, agent_state, raw_handoff_json, kind, "
-        "plan_task_id, parent_handoff_id, created_at) "
-        "VALUES (?, ?, ?, 'me', ?, '{}', ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
+        "plan_task_id, parent_handoff_id, created_at, claimed_at) "
+        "VALUES (?, ?, ?, 'me', ?, '{}', ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')), ?)",
         (contract_id, contract_id.split(".")[0], session_id, state, columns.get("kind"),
-         columns.get("plan_task_id"), columns.get("parent_handoff_id"), created_at),
+         columns.get("plan_task_id"), columns.get("parent_handoff_id"), created_at,
+         columns.get("claimed_at")),
     )
     return cur.lastrowid
 
@@ -116,8 +118,11 @@ def two_sessions(tmp_path, monkeypatch, bootstrapped_db_template):
     con.execute("INSERT INTO tasks (plan_id, order_num, goal) VALUES (2, 5, 'task of b')")
     done_producer = _row(con, "a00000000000000d1.t", SESSION_A, "NEEDS_VERIFICATION", plan_task_id=2)
     _row(con, "a00000000000000d2.t", SESSION_A, "BLOCKED", kind="verifier", parent_handoff_id=done_producer)
-    _row(con, "a00000000000000d3.t", SESSION_A, "NEEDS_INPUT", created_at=STALE, kind="investigation")
+    _row(con, "a0000000000000a03.t", SESSION_A, "NEEDS_INPUT", created_at=STALE, kind="investigation")
     _row(con, "a00000000000000d4.t", SESSION_A, "NEEDS_VERIFICATION", plan_task_id=1)
+    _row(con, "a00000000000000d5.t", SESSION_A, "IN_PROGRESS", created_at=STALE, kind="investigation")
+    _row(con, "a0000000000000a04.t", SESSION_A, "IN_PROGRESS", created_at=STALE, kind="investigation",
+         claimed_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     _row(con, "a0000000000000a01.t", SESSION_A, "DISPATCHED", plan_task_id=1, kind="task_execution")
     _row(con, "a0000000000000a02.t", SESSION_A, "NEEDS_INPUT", kind="investigation")
     _row(con, "b0000000000000b01.t", SESSION_B, "DISPATCHED", plan_task_id=3, kind="task_execution")
@@ -155,12 +160,16 @@ def test_a_long_lived_session_carries_only_its_live_work_and_nothing_from_anothe
     snapshot = build_snapshot(SESSION_A)
     rendered = render_snapshot(snapshot)
 
-    assert [c["contract_id"] for c in snapshot["open_contracts"]] == ["a0000000000000a02.t", "a0000000000000a01.t"]
-    assert snapshot["older_unresolved"] == 1
+    assert [c["contract_id"] for c in snapshot["open_contracts"]] == [
+        "a0000000000000a02.t", "a0000000000000a01.t", "a0000000000000a04.t", "a0000000000000a03.t",
+    ]
+    assert [c["contract_id"] for c in snapshot["older_unbound"]] == ["a00000000000000d5.t"]
+    assert f"gaia session snapshot --session-id {SESSION_A} --json" in rendered
     assert [a["id"] for a in snapshot["pending_signatures"]] == ["P-a"]
     assert (snapshot["active_task"]["brief"], snapshot["active_task"]["plan_id"], snapshot["active_task"]["task_id"]) == ("brief-a", 1, 1)
     _assert_only_session_a(rendered)
-    for settled in ("a00000000000000d1", "a00000000000000d2", "a00000000000000d3", "a00000000000000d4"):
+    assert "a0000000000000a03.t [NEEDS_INPUT]" in rendered
+    for settled in ("a00000000000000d1", "a00000000000000d2", "a00000000000000d4", "a00000000000000d5"):
         assert settled not in rendered
     _assert_cut_on_word_boundaries(rendered)
     assert len(rendered) <= 1500
@@ -170,7 +179,7 @@ def test_every_section_is_present_when_empty():
     from gaia.session_snapshot import render_snapshot
 
     rendered = render_snapshot({
-        "session_id": "s", "open_contracts": [], "older_unresolved": 0,
+        "session_id": "s", "open_contracts": [], "older_unbound": [],
         "pending_signatures": [], "active_task": None, "resume_point": None,
     })
 
@@ -209,16 +218,30 @@ def test_a_long_session_lists_ten_newest_contracts_and_caps_the_block(db):
     assert len(rendered) <= 1500
 
 
-def test_the_block_is_cut_to_the_cap_even_when_every_section_is_full(db):
+def test_the_block_is_cut_to_the_cap_on_a_whole_line_when_every_section_is_full(db, monkeypatch):
     from gaia.session_snapshot import build_snapshot, render_snapshot, write_resume_point
 
     _add_contracts(db, 12, "ses-full", kind="task_execution-" + "x" * 80)
     write_resume_point("ses-full", "r" * 2000)
 
-    rendered = render_snapshot(build_snapshot("ses-full"))
+    snapshot = build_snapshot("ses-full")
+    rendered = render_snapshot(snapshot)
+    monkeypatch.setattr("gaia.session_snapshot._BLOCK_MAX_CHARS", 10**6)
+    uncapped = render_snapshot(snapshot).splitlines()
 
     assert len(rendered) <= 1500
     assert rendered.startswith("## Session Snapshot")
+    *kept, marker = rendered.splitlines()
+    assert marker.startswith("... (snapshot truncated")
+    assert kept == uncapped[: len(kept)]
+
+
+def test_a_clip_ends_on_a_whole_word():
+    from gaia.session_snapshot import _clip
+
+    assert _clip("alpha beta gamma", 13) == "alpha beta..."
+    assert _clip("alpha beta gamma", 11) == "alpha beta..."
+    assert _clip("alpha beta gamma", 16) == "alpha beta gamma"
 
 
 def test_a_continued_chain_counts_once_and_a_complete_latest_link_closes_it(db):
