@@ -221,8 +221,9 @@ Curation looks for two kinds of inconsistency, and the CLI resolves neither.
 
 - `session-reflection` recovers decisions, live work, learnings, Gaia
   improvements and closures, then hands off the curation this skill governs.
-- `gaia-compact` runs after durable persistence and carries only transient
-  continuity plus references to what was saved.
+- A compaction, the last step of `session-reflection`, runs after durable
+  persistence and carries only transient continuity plus references to what
+  was saved.
 - The CLI is the other teaching surface: `gaia memory add --help` carries the
   claim vocabulary and the three owners, and every write warns on the form and
   closes with a pointer back here.

@@ -55,7 +55,8 @@ describe("compaction requested for the main session", () => {
   test("waits for idle, then summarizes off the idle event with the session's model", async () => {
     const { summarized, plugin } = await host([OK])
 
-    await request(plugin, "ses-main")
+    const reply = await request(plugin, "ses-main")
+    expect(reply).toContain("gaia session resume-point set --session-id ses-main")
     expect(summarized).toHaveLength(0)
 
     await idle(plugin, "ses-main")

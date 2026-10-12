@@ -1,4 +1,4 @@
-"""The compaction mod ships in the plugin build, only steers, and starts no process.
+"""The compaction mod ships in the plugin build, steers and starts compactions, and starts no process.
 
 The mod is a Claude Code hooks module (hooks/mods/compaction/). It reaches the
 host through hooks/hooks.json's `modules` key, generated from the manifest's
@@ -82,9 +82,15 @@ class TestBuildOutputShipsTheMod:
         assert guard.main() == 0, capsys.readouterr().err
 
 
-class TestModReachesNothingOutsideItsHook:
+class TestModReachesOnlyItsTriggerSurface:
+    """The mod may register its tool, read the session id, schedule and start a compaction; nothing else."""
+
     REACH = re.compile(
-        r"\$\.(process|tool|agent|network|fs|settings|env|clock)\b|\bimport\s*\(|\beval\s*\(|new Function|\bfetch\s*\("
+        r"\$\.(process|agent|network|fs|settings|env|http|store|state|prompt|model)\b"
+        r"|\$\.tool\.(?!register\b)"
+        r"|\$\.session\.(?!id\b|compact\b)"
+        r"|\$\.clock\.(?!after\b)"
+        r"|\bimport\s*\(|\beval\s*\(|new Function|\bfetch\s*\("
     )
 
     def test_mod_sources_exist(self):
@@ -93,6 +99,10 @@ class TestModReachesNothingOutsideItsHook:
     def test_mod_starts_no_process_and_reaches_nothing_else(self):
         for path in MOD_SOURCES:
             assert not self.REACH.search(path.read_text()), path.name
+
+    def test_the_reach_check_still_catches_a_process_or_an_append(self):
+        for reach in ("$.process.run(['gaia'])", "$.session.append({})", "$.fs.write('x', 'y')"):
+            assert self.REACH.search(reach), reach
 
 
 class TestTheRefreshDeliversTheSnapshotOnce:

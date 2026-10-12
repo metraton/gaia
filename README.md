@@ -54,7 +54,7 @@ Ask the orchestrator "what is Gaia?" or "what can you do for me?" and it explain
 | A review of a module, a branch or a PR | `code-review` |
 | Audit a Gaia component, live-check an area of Gaia, release it, verify the install | `gaia-audit`, `gaia-check`, `gaia-release`, `gaia-verify`, through the `gaia-system` agent |
 | Look at repositories for something Gaia could take | `gaia-research` |
-| Reflect on the session, or compact it | `session-reflection`, `gaia-compact` |
+| Reflect on the session, or compact it | `session-reflection` |
 | A reminder, or something offered routinely | `reminders`, recorded with `gaia notifications add`; nothing runs unattended, what is due waits for the next session |
 | See or act on pending approvals | `pending-approvals` |
 | Triage the mailbox, or connect a Google account | `gmail-triage`, `gws-setup` |

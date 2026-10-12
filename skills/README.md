@@ -84,7 +84,6 @@ skills/
 │   └── examples.md        # a two-writer wave onto one pull request, end to end
 ├── execution/             # Post-approval execution discipline
 ├── fast-queries/          # Project Context-first scoped diagnostics
-├── gaia-compact/          # Preserve transient continuity without duplicating durable state
 ├── gaia-check/            # Guided live certification of Gaia by area (first: approvals), both hosts
 ├── gaia-patterns/         # Gaia component patterns: hooks, agents, routing, CLI
 │   └── reference.md
@@ -109,7 +108,7 @@ skills/
 ├── reminders/             # Reminders and routines as notifications that come due when Gaia is next used
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
-├── session-reflection/    # Recover, reconcile, curate, and hand off session continuity
+├── session-reflection/    # Recover, reconcile, curate, and hand off session continuity; on request, record the resume point and start the compaction
 ├── skill-creation/        # How to design and write new skills
 ├── technical-explanation/ # Technique: the shared vocabulary for explaining a system, process, architecture or failure -- four decisions before writing, the fixed order, two registers, inline drawing rules, and the handoff into the render lanes
 │   ├── reference.md       # field-level correspondence into diagram-builder and artifact-diagramming; the form catalogue by criterion
@@ -145,7 +144,6 @@ needs it, even if also declared in frontmatter. The overlap is deliberate: listi
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
 - `orchestrator-present-approval` — T3 approval presentation: open the question Gaia builds (up to four signatures) without printing any of it, and resume the requester once the user decides
-- `gaia-compact` — compact transient continuity after durable state is persisted
 - `dispatch` — eight principles for dispatching turns that write, run in parallel or carry acceptance: the goal completes the kernel, acceptance is a command run directly or a named rubric, isolation by checkout and serialization by branch, waves bounded by shared files, verifier and CI as the last gates, the specialist owns its worktree, sizing, steering in flight; loaded by the orchestrator per its Dispatch section
 
 Workflow skills (loaded when applicable; some also appear in agent frontmatter):

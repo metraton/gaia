@@ -1,6 +1,6 @@
 ---
 name: session-reflection
-description: Use when the user asks to reflect on a session -- "reflexionemos sobre la sesión", "cerremos esto", "guardemos lo que aprendimos", "let's reflect on this session", "wrap up this session" -- or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, and reports what changed.
+description: Use when the user asks to reflect on a session or to compact it -- "reflexionemos sobre la sesión", "cerremos esto", "guardemos lo que aprendimos", "compactemos", "compacta", "let's reflect on this session", "wrap up this session", "compact the session" -- or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, reports what changed, and when asked to compact, records the resume point and starts the compaction.
 ---
 
 # Session Reflection
@@ -12,7 +12,9 @@ every item — settled or open — with an owner a later session can find.
 
 Upstream are the transcript, the specialist contracts, and the injected digest.
 Downstream is memory curation: reflection ends when the corpus is correct.
-Compaction is a separate act, performed only when the user asks for it.
+When the user asks to compact, compaction is the reflection's last step, never
+a step of its own: a compaction that skips the reflection loses whatever had
+no home yet.
 
 ## Process
 
@@ -102,8 +104,34 @@ working tables or raw verbs. Flag a `type=user` row first for its governed veto.
 
 ### Resume point
 
-Name what the next session picks up. If compacting, hand `gaia-compact` this
-pointer, never a copied container.
+Name what the next session picks up: a pointer, never a copied container.
+
+## Compacting
+
+After step 7, when the user asked to compact:
+
+1. **Start the compaction.** Call the host's compaction tool once:
+   `mcp__gaia__compact_when_idle` in Claude Code, `gaia_compact_when_idle` in
+   OpenCode. The compaction starts when the current turn ends, never mid-turn,
+   and the reply names the session id.
+2. **Write the resume point.** `gaia session resume-point set --session-id <id>
+   --text "<text>"`, at most 2000 characters, replacing any earlier one: the
+   step 7 pointer plus what the next turn needs and no row holds -- the exact
+   next action, blockers and approvals in flight, the active files. Durable
+   objects are named by id, never copied.
+3. **End the turn** with the post-curation report and a line saying the
+   session compacts now. The snapshot that arrives after compaction carries the
+   resume point; do not restate either in the turn.
+
+When the user insists on compacting before the reflection finishes, offer it
+once; if they decline, write the unsaved items into the resume point marked as
+not durable, rather than dropping them or saving memory unasked.
+
+**Without the tool** -- Claude Code with mods disabled or older than 2.1.287,
+or any host that does not list it -- nothing can start the compaction and no
+session id reaches the orchestrator. Say so: end with the resume point in the
+report and ask the user to type `/compact`. Never report a compaction you did
+not start.
 
 ## Ownership and consent
 
@@ -116,5 +144,4 @@ a new durable object.
 
 ## Handoffs
 - Load `memory` for curation and `reference.md` for detailed recovery mechanics.
-- Load `examples.md` for the integrated flow.
-- Load `gaia-compact` only when the user asks to compact.
+- Load `examples.md` for the integrated flow, compaction included.

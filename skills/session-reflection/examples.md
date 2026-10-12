@@ -74,6 +74,20 @@ actually sees is the report:
 - Saved feedback_seed_surface_routing_silent_keywords under gaia_system
 ```
 
-The same flow continues: after this review, the user then asks to compact.
-`gaia-compact` builds its own handoff from the resume point — every item above
-already has a home, so there is no unsaved transient context to carry.
+## Compacting, in Claude Code
+
+The user says "compactemos". The reflection above runs first; every item has a
+home, so the resume point carries only the pointer and the next action. The
+orchestrator calls `mcp__gaia__compact_when_idle`, which answers with session
+`3f9c...`, then writes:
+
+```text
+gaia session resume-point set --session-id 3f9c... --text "Next: fix the three agent files thread_routing_keywords_cleanup names, then re-run tests/routing. Plan 7 task 42 stays open; no approvals in flight."
+```
+
+It ends the turn with the report and "The session compacts now." The
+compaction starts as the turn ends, and the snapshot that follows shows that
+text under "Resume point".
+
+With mods disabled, no tool is listed: the same report ends with the resume
+point and "Type /compact to compact the session; I cannot start it here."

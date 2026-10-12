@@ -2106,7 +2106,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     // orchestrator calls tools, and task 'compactemos' needs the latter.
     tool: {
       gaia_compact_when_idle: {
-        description: "Request compaction of this session. It runs when the session next goes idle, never mid-turn; call it once and finish the turn.",
+        description: "Request compaction of this session. It runs when the session next goes idle, never mid-turn; call it once, write the resume point it names, then finish the turn.",
         args: {},
         execute: async (_args: unknown, context: { sessionID?: string }) => {
           const sessionID = context?.sessionID
@@ -2114,7 +2114,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             return "Compaction was not requested: only the main session can be compacted this way."
           }
           compactionRequested.add(sessionID)
-          return "Compaction requested; it will run when this session goes idle."
+          return `Compaction of session ${sessionID} requested; it will run when this session goes idle. Before finishing the turn, record the resume point: gaia session resume-point set --session-id ${sessionID} --text "<where the work stands and what comes next>"`
         },
       },
     },
