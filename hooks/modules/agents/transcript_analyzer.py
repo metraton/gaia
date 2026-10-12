@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,7 @@ class ToolCall:
     arguments: Dict[str, Any]
     # 0 before the first coordinator resume, +1 at each resume boundary.
     segment: int = 0
+    tool_use_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -74,6 +75,7 @@ class TranscriptAnalysis:
     duplicate_tool_calls: List[DuplicateCall] = field(default_factory=list)
     pipe_commands: List[str] = field(default_factory=list)
     first_tool_name: Optional[str] = None
+    failed_tool_use_ids: Set[str] = field(default_factory=set)
 
 
 # ============================================================================
@@ -194,7 +196,10 @@ def _extract_tool_calls_from_content(
         idx = tool_index_counter[0]
         tool_index_counter[0] += 1
 
-        tc = ToolCall(index=idx, tool_name=tool_name, arguments=arguments, segment=segment)
+        tc = ToolCall(
+            index=idx, tool_name=tool_name, arguments=arguments, segment=segment,
+            tool_use_id=str(block.get("id") or ""),
+        )
         result.tool_sequence.append(tc)
         result.tool_call_count += 1
 
@@ -377,6 +382,14 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
         # --- User messages: skill injection detection ---
         if role == "user":
             _extract_skills_from_content(content, result)
+            if isinstance(content, list):
+                result.failed_tool_use_ids.update(
+                    str(block.get("tool_use_id"))
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and block.get("is_error") is True
+                )
 
     # --- Duration computation ---
     if first_ts_dt is not None and last_ts_dt is not None and segment_start_dt is not None:

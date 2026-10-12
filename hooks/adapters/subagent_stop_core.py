@@ -862,17 +862,20 @@ def salvage_truncated_draft(
 
 
 def _recover_empty_evidence(
-    contract_id: Optional[str], tool_sequence: Any, db_path: Optional[str],
+    contract_id: Optional[str], transcript_analysis: Any, db_path: Optional[str],
 ) -> Optional[dict]:
     """The row's envelope after filling its empty evidence lists from
-    ``tool_sequence``, or None when nothing was filled."""
+    ``transcript_analysis``, or None when nothing was filled."""
     from gaia.store.writer import fill_empty_contract_evidence
     from modules.agents.evidence_recovery import recovered_entries
 
     try:
         outcome = fill_empty_contract_evidence(
             contract_id,
-            recovered_entries(tool_sequence),
+            recovered_entries(
+                transcript_analysis.tool_sequence,
+                transcript_analysis.failed_tool_use_ids,
+            ),
             db_path=Path(db_path) if db_path else None,
         )
     except Exception:
@@ -1246,7 +1249,7 @@ def run_subagent_stop(
         ):
             _authoritative_envelope = _recover_empty_evidence(
                 (_bound_dispatch_row or {}).get("contract_id"),
-                transcript_analysis.tool_sequence,
+                transcript_analysis,
                 task_info.get("db_path"),
             ) or _authoritative_envelope
 

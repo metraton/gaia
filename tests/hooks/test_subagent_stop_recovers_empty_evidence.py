@@ -186,9 +186,11 @@ def test_a_a_resumed_turn_recovers_only_the_calls_after_its_last_resume(db, tmp_
     tool_calls = [
         ("Bash", {"command": "git -C /repo log -1"}),
         ("Read", {"file_path": "/repo/earlier.py"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.earlier"}),
         RESUME,
         ("Bash", {"command": "git -C /repo push origin HEAD:main"}),
         ("Read", {"file_path": "/repo/later.py"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.earlier"}),
     ]
     contract_id, response = _claude_code_close(db, tmp_path, "abc6", {}, tool_calls)
 
@@ -206,6 +208,7 @@ def test_a_a_task_notification_wake_starts_a_segment_but_its_attachment_does_not
         ("Bash", {"command": "ghx pr checks 43 --watch"}),
         {"type": "attachment", "origin": notification, "attachment": {"type": "queued_command"}},
         ("Read", {"file_path": "/repo/before-close.py"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.closed"}),
         {
             "type": "user",
             "isMeta": True,
@@ -213,6 +216,7 @@ def test_a_a_task_notification_wake_starts_a_segment_but_its_attachment_does_not
             "message": {"role": "user", "content": "<task-notification>completed</task-notification>"},
         },
         ("Bash", {"command": "grep -c shard /tmp/checks.out"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.closed"}),
     ]
     contract_id, response = _claude_code_close(db, tmp_path, "abc7", {}, tool_calls)
 
@@ -224,7 +228,57 @@ def test_a_a_task_notification_wake_starts_a_segment_but_its_attachment_does_not
     from modules.agents.transcript_analyzer import analyze
 
     segments = [call.segment for call in analyze(str(tmp_path / "agent-transcript.jsonl")).tool_sequence]
-    assert segments == [0, 0, 1], "the mid-turn attachment must not open a segment"
+    assert segments == [0, 0, 0, 1, 1], "the mid-turn attachment must not open a segment"
+
+
+def test_a_a_wake_after_the_row_closed_does_not_add_its_calls_to_that_row(db, tmp_path):
+    from modules.agents.evidence_recovery import RECOVERED_MARK
+
+    tool_calls = [
+        ("Read", {"file_path": "/repo/closed.py"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.closed"}),
+        RESUME,
+        ("Bash", {"command": "grep -c shard /tmp/checks.out"}),
+    ]
+    contract_id, response = _claude_code_close(db, tmp_path, "abc9", {}, tool_calls)
+
+    assert response.exit_code == 0
+    evidence = _persisted_evidence(db, contract_id)
+    assert evidence["files_checked"] == [f"{RECOVERED_MARK}/repo/closed.py"]
+    assert evidence["commands_run"] == []
+
+
+def test_a_a_row_left_unfinalized_keeps_its_earlier_segment_after_a_resume(db, tmp_path):
+    """The probe of handoff 29429: reads, a refused finalize, a resume, then the SAME row finalized."""
+    from modules.agents.evidence_recovery import RECOVERED_MARK
+
+    tool_calls = [
+        ("Read", {"file_path": "/repo/one.py"}),
+        ("Read", {"file_path": "/repo/two.py"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.same"}),
+    ]
+    refused_finalize = {
+        "type": "user",
+        "message": {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": f"tu{len(tool_calls) - 1}",
+            "is_error": True, "content": "Exit code 1\nrefused: agent_state is IN_PROGRESS",
+        }]},
+    }
+    tool_calls += [
+        refused_finalize,
+        RESUME,
+        ("Bash", {"command": "gaia contract set --draft-id x.same agent_status.agent_state BLOCKED"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.same"}),
+    ]
+    contract_id, response = _claude_code_close(db, tmp_path, "abc8", {}, tool_calls)
+
+    assert response.exit_code == 0
+    evidence = _persisted_evidence(db, contract_id)
+    assert evidence["files_checked"] == [
+        f"{RECOVERED_MARK}/repo/one.py",
+        f"{RECOVERED_MARK}/repo/two.py",
+    ]
+    assert evidence["commands_run"] == []
 
 
 def test_b_lists_the_agent_filled_stay_as_written(db, tmp_path):
