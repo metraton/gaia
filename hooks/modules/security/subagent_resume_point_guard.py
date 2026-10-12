@@ -12,9 +12,14 @@ path is to report its state in its contract, which the orchestrator reads.
 
 The decision is made on the shell's words (shlex-unquoted per component), never
 on raw text: `resume-poin\\t`, `'resume'-point` and `resume""-point` are the
-word `resume-point` to the shell. A command word only the shell can resolve
-(`$G`, `${G}`, a substitution) that is followed by the write path is refused
-too, since nothing here can show it is not `gaia`.
+word `resume-point` to the shell. A subagent's session call is free only when
+its verb words are a read declared in SESSION_VERBS; anything else under
+`session` -- a shell-resolved verb (`$S`, a backtick, a glob), an undeclared
+verb -- is refused, as is `gaia <shell-resolved group>`. The command word
+counts as gaia by name, as a GAIA_CLI_ALIASES wrapper, by realpath to the
+trusted binary (a symlink), or when only the shell can resolve it before a
+literal `session`. A wrapper script nobody declared keeps its ordinary tier:
+nothing static sees inside it.
 
 Public API:
     SESSION_VERBS: every `gaia session` verb path and how it is classified
@@ -24,22 +29,49 @@ Public API:
 
 from __future__ import annotations
 
+import os
 import shlex
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
-# Every verb under `gaia session` (bin/cli/session.py). The group classifies
-# read-only in mutative_verbs.COMMAND_SUBCOMMAND_TIER_EXCEPTIONS, so a verb
-# must be declared here before it ships; test_subagent_resume_point_guard
-# fails on any verb the CLI registers that this map does not name.
+# Every verb under `gaia session` (bin/cli/session.py), and the only source of
+# its tier: mutative_verbs classifies a `gaia session` call read-only only when
+# its words are one of these paths, spelled literally. A verb must be declared
+# here before it ships; test_subagent_resume_point_guard fails on any verb the
+# CLI registers that this map does not name.
 SESSION_VERBS: Dict[Tuple[str, ...], str] = {
     ("preview",): "read",
     ("snapshot",): "read",
     ("resume-point", "set"): "orchestrator-write",
 }
 
-_WRITE_PATHS = tuple(("session",) + path for path, kind in SESSION_VERBS.items() if kind == "orchestrator-write")
 _HELP_FLAGS = frozenset({"--help", "-h", "-?", "--usage"})
-_SHELL_RESOLVED = ("$", "`", "(", ")")
+_SHELL_RESOLVED = ("$", "`", "(", ")", "*", "?", "[")
+
+
+def is_shell_resolved(word: str) -> bool:
+    """True when only the shell can say what *word* becomes: an expansion, a substitution or a glob."""
+    return any(c in word for c in _SHELL_RESOLVED)
+
+
+def declared_session_verb(words: Sequence[str]) -> Optional[Tuple[str, ...]]:
+    """The SESSION_VERBS path *words* begin with, literally, or None."""
+    for path in SESSION_VERBS:
+        if tuple(words[:len(path)]) == path:
+            return path
+    return None
+
+
+def _runs_gaia(word: str) -> bool:
+    """True when *word* runs the gaia CLI or cannot be shown not to: its name, a declared wrapper, the trusted binary, or a shell-resolved word."""
+    if is_shell_resolved(word):
+        return True
+    name = os.path.basename(word)
+    if name == "gaia":
+        return True
+    from .cli_aliases import aliased_cli
+    from .gaia_cli_only_guard import is_trusted_gaia_binary
+
+    return aliased_cli(name) == "gaia" or is_trusted_gaia_binary(word)
 
 REJECTION_MESSAGE = (
     "The session's resume point is the orchestrator's to write; a subagent "
@@ -49,7 +81,7 @@ REJECTION_MESSAGE = (
 
 
 def is_resume_point_write(command: str) -> bool:
-    """True iff ``command`` runs `gaia session resume-point set`, in any spelling the shell rejoins, outside a help-only call."""
+    """True iff ``command`` may run `gaia session resume-point set`: a gaia session call not proven a declared read, outside a help-only call."""
     if not command:
         return False
 
@@ -65,7 +97,7 @@ def is_resume_point_write(command: str) -> bool:
 
 
 def _component_writes_resume_point(component: str, *, help_exempt: bool) -> bool:
-    """True iff one operator-free component's words run the resume-point write."""
+    """True iff one operator-free component's words may run a session write: any session call not proven a declared read."""
     try:
         words = shlex.split(component)
     except ValueError:
@@ -74,11 +106,18 @@ def _component_writes_resume_point(component: str, *, help_exempt: bool) -> bool
         return False
 
     positional = [w for w in words if not w.startswith("-")]
-    for index in range(1, len(positional)):
-        if tuple(positional[index:index + 3]) not in _WRITE_PATHS:
+    for index, word in enumerate(positional[:-1]):
+        group = positional[index + 1]
+        if group == "session":
+            if not _runs_gaia(word):
+                continue
+        elif not is_shell_resolved(group) or is_shell_resolved(word) or not _runs_gaia(word):
             continue
-        command_word = positional[index - 1]
-        if command_word.rsplit("/", 1)[-1] == "gaia" or any(c in command_word for c in _SHELL_RESOLVED):
+        verb_words = positional[index + 2:]
+        if group == "session" and not verb_words:
+            continue
+        path = declared_session_verb(verb_words) if group == "session" else None
+        if path is None or SESSION_VERBS[path] != "read":
             return True
     return False
 

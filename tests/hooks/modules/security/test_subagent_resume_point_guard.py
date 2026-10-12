@@ -45,9 +45,58 @@ def _assert_categorical_refusal(result, case_id):
     assert result.block_response is None, case_id
 
 
-@pytest.mark.parametrize("case_id,command", SPELLINGS + VARIABLE_FORMS, ids=[c for c, _ in SPELLINGS + VARIABLE_FORMS])
+# Subcommand words only the shell can resolve, and session verbs the map does
+# not declare: nothing proves these are not the resume-point write.
+UNPROVEN_VERBS = [
+    ("variable-verb", "S=set; gaia session resume-point $S --session-id s --text t"),
+    ("variable-group-verb", "gaia session $R set --session-id s --text t"),
+    ("backtick-verb", "gaia session resume-point `printf set` --session-id s --text t"),
+    ("glob-verb", "gaia session resume-po?nt set --session-id s --text t"),
+    ("variable-group", "gaia $X resume-point set --session-id s --text t"),
+    ("undeclared-session-verb", "gaia session frobnicate --session-id s"),
+]
+
+# A shell-resolved word after `gaia` may spell a host consent verb, whose
+# categorical guard runs ahead of this one in the validator; both refuse with
+# no approval.
+REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD = {"variable-group", "variable-group-verb", "glob-verb"}
+
+
+@pytest.mark.parametrize(
+    "case_id,command",
+    SPELLINGS + VARIABLE_FORMS + UNPROVEN_VERBS,
+    ids=[c for c, _ in SPELLINGS + VARIABLE_FORMS + UNPROVEN_VERBS],
+)
 def test_a_subagent_resume_point_write_is_refused_outright(case_id, command):
-    _assert_categorical_refusal(_validate(command, is_subagent=True), case_id)
+    assert guard.check(command, is_subagent=True) == (False, guard.REJECTION_MESSAGE), case_id
+    result = _validate(command, is_subagent=True)
+    if case_id in REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD:
+        assert result.allowed is False and result.approval_id is None and result.block_response is None
+        assert "not approvable" in result.reason, result.reason
+    else:
+        _assert_categorical_refusal(result, case_id)
+
+
+@pytest.mark.parametrize("case_id,command", UNPROVEN_VERBS[:4], ids=[c for c, _ in UNPROVEN_VERBS[:4]])
+def test_an_unresolved_session_verb_is_not_free_for_the_orchestrator(case_id, command):
+    result = _validate(command, is_subagent=False)
+    assert not (result.allowed and result.tier == SecurityTier.T0_READ_ONLY), f"{case_id}: {result.reason}"
+
+
+def test_a_symlinked_gaia_binary_is_refused_for_a_subagent(monkeypatch):
+    from modules.security import gaia_cli_only_guard
+
+    monkeypatch.setattr(gaia_cli_only_guard, "is_trusted_gaia_binary", lambda token: token == "/opt/tools/g")
+    _assert_categorical_refusal(
+        _validate("/opt/tools/g session resume-point set --session-id s --text t", is_subagent=True), "symlink"
+    )
+
+
+def test_a_declared_gaia_wrapper_is_refused_for_a_subagent(monkeypatch):
+    monkeypatch.setenv("GAIA_CLI_ALIASES", "gx=gaia")
+    _assert_categorical_refusal(
+        _validate("gx session resume-point set --session-id s --text t", is_subagent=True), "alias"
+    )
 
 
 @pytest.mark.parametrize("case_id,command", SPELLINGS[:4], ids=[c for c, _ in SPELLINGS[:4]])

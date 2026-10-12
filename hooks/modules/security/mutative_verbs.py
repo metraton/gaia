@@ -502,13 +502,6 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # WRITES from a dispatched subagent regardless of tier -- this exception
     # changes the tier, never who is allowed to write.
     ("gaia", "memory"): CATEGORY_READ_ONLY,
-    # `gaia session <verb>` (preview, snapshot, resume-point set): two reads
-    # and one session-local file replaced on every write; that write also
-    # drops resume points older than 30 days, the store's own retention.
-    # Without this, `resume-point` hyphen-splits onto the English verb `resume`.
-    # subagent_resume_point_guard keeps the write the orchestrator's, and its
-    # SESSION_VERBS must name every verb before it shares this tier.
-    ("gaia", "session"): CATEGORY_READ_ONLY,
     # `gaia worktree <verb>` (create/list/show/release): the host-agnostic
     # door onto Gaia's own agentic-worktree machinery (gaia.worktree,
     # gaia.retention.worktree_reclaim/worktree_collector). Without this
@@ -4963,6 +4956,34 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             nested_verb.split("-", 1)[0] in _nested_deny
             or nested_verb in _nested_deny
         )
+        # `gaia session` is classified per verb, not as a group: a literal
+        # SESSION_VERBS path (two reads, and the resume-point file replaced on
+        # every write, which also drops points older than 30 days) is
+        # read-only; a word only the shell resolves is T3, since it may be the
+        # write; an undeclared verb falls to the ordinary scan.
+        if subcommand_key == ("gaia", "session"):
+            from .subagent_resume_point_guard import declared_session_verb, is_shell_resolved
+
+            session_path = declared_session_verb(semantics.non_flag_tokens[1:])
+            if session_path is not None:
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb=" ".join(session_path),
+                    cli_family=family,
+                    confidence="high",
+                    reason=f"'gaia session {' '.join(session_path)}' is declared in SESSION_VERBS",
+                )
+            unresolved = [t for t in semantics.non_flag_tokens[1:3] if is_shell_resolved(t)]
+            if unresolved:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=unresolved[0],
+                    cli_family=family,
+                    confidence="high",
+                    reason=f"'gaia session' verb '{unresolved[0]}' is resolved only by the shell",
+                )
         if subcommand_key in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS:
             if verb_is_destructive or nested_verb_is_destructive:
                 # Whole-record destruction (e.g. `gaia plan delete`, `gaia

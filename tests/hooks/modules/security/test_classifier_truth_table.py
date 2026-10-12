@@ -59,6 +59,9 @@ CLASSIFIER_TRUTH_TABLE = [
         T0,
     ),
     ("gaia-session-snapshot", FREE, "gaia session snapshot --session-id s --json", False, T0),
+    ("gaia-session-variable-verb", GATED, "gaia session resume-point $S --session-id s --text t", True, T3),
+    ("gaia-session-variable-group-verb", GATED, "gaia session $R set --session-id s --text t", True, T3),
+    ("gaia-session-variable-only", GATED, "gaia session $R", True, T3),
     ("gaia-deep-mutative-help", FREE, "gaia task gate remove 12 --help", False, T0),
     ("gaia-deep-mutative-path", GATED, "gaia task gate remove 12", True, T3),
     ("git-push-help", FREE, "git push --help", False, T0),
@@ -1491,7 +1494,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 183
+_MINIMUM_MEASURED_CASES = 186
 
 
 @pytest.mark.parametrize(
