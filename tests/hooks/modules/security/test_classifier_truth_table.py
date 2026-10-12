@@ -46,6 +46,25 @@ T3 = SecurityTier.T3_BLOCKED
 
 # (case_id, family, command, expected_is_mutative, expected_tier)
 CLASSIFIER_TRUTH_TABLE = [
+    # ---- Gaia's session group and --help on mutative commands ---------------
+    # `gaia session` (snapshot, resume-point set) is session-local coordination
+    # state, classified by Gaia's own group map; `resume-point` once hyphen-split
+    # onto the English verb `resume` and asked for a signature.
+    ("gaia-session-resume-point-help", FREE, "gaia session resume-point set --help", False, T0),
+    (
+        "gaia-session-resume-point-set",
+        FREE,
+        "gaia session resume-point set --session-id s --text t",
+        False,
+        T0,
+    ),
+    ("gaia-session-snapshot", FREE, "gaia session snapshot --session-id s --json", False, T0),
+    ("gaia-deep-mutative-help", FREE, "gaia task gate remove 12 --help", False, T0),
+    ("gaia-deep-mutative-path", GATED, "gaia task gate remove 12", True, T3),
+    ("git-push-help", FREE, "git push --help", False, T0),
+    ("kubectl-delete-help", FREE, "kubectl delete --help", False, T0),
+    ("git-push-branch", GATED, "git push origin x", True, T3),
+    ("kubectl-delete-namespace", GATED, "kubectl delete ns x", True, T3),
     # ---- CLOSED: granting capability is now gated exactly like removing it --
     # These four were recorded OPEN (False, T0): granting was gated on no
     # surface, because `add-iam-policy-binding` hyphen-splits onto `add`, which
@@ -1472,7 +1491,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 174
+_MINIMUM_MEASURED_CASES = 183
 
 
 @pytest.mark.parametrize(

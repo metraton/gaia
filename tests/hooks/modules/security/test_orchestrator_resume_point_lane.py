@@ -10,6 +10,7 @@ sys.path.insert(0, str(HOOKS))
 
 from gaia.session_snapshot import RESUME_POINT_MAX_CHARS, write_resume_point  # noqa: E402
 from modules.security import gaia_cli_only_guard as guard  # noqa: E402
+from modules.security.tiers import SecurityTier, classify_command_tier  # noqa: E402
 
 TRUSTED = "/trusted/node_modules/gaia/bin/gaia"
 VERB = "session resume-point set"
@@ -34,9 +35,17 @@ def test_the_guard_cap_equals_the_writer_cap():
     f"{VERB} --text 'x' --session-id=ses-1",
     f"{VERB} --session-id ses-1 --text '{'x' * 2000}'",
 ])
-def test_the_bounded_resume_point_shape_passes(run_guard, argline):
+def test_the_bounded_resume_point_shape_passes_with_no_signature(run_guard, argline):
     allowed, reason = run_guard(argline)
     assert allowed, reason
+    assert classify_command_tier(f"{TRUSTED} {argline}") == SecurityTier.T0_READ_ONLY
+
+
+def test_the_resume_point_help_is_free_for_the_orchestrator(run_guard):
+    argline = f"{VERB} --help"
+    allowed, reason = run_guard(argline)
+    assert allowed, reason
+    assert classify_command_tier(f"{TRUSTED} {argline}") == SecurityTier.T0_READ_ONLY
 
 
 @pytest.mark.parametrize("argline", [

@@ -502,6 +502,12 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # WRITES from a dispatched subagent regardless of tier -- this exception
     # changes the tier, never who is allowed to write.
     ("gaia", "memory"): CATEGORY_READ_ONLY,
+    # `gaia session <verb>` (preview, snapshot, resume-point set): two reads
+    # and one session-local file replaced on every write; that write also
+    # drops resume points older than 30 days, the store's own retention.
+    # Without this, `resume-point` hyphen-splits onto the English verb `resume`.
+    # subagent_resume_point_guard keeps the write the orchestrator's.
+    ("gaia", "session"): CATEGORY_READ_ONLY,
     # `gaia worktree <verb>` (create/list/show/release): the host-agnostic
     # door onto Gaia's own agentic-worktree machinery (gaia.worktree,
     # gaia.retention.worktree_reclaim/worktree_collector). Without this
@@ -3000,6 +3006,9 @@ HELP_IDEMPOTENT_BASE_CMDS: FrozenSet[str] = frozenset({
 HELP_ANY_POSITION_BASE_CMDS: FrozenSet[str] = frozenset({
     "gcloud",
     "terraform",
+    # argparse prints the deepest subparser's help and exits while parsing,
+    # before any handler runs, however many positionals precede the flag.
+    "gaia",
 })
 
 # State-changing command paths whose action verb is intentionally absent from

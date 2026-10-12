@@ -88,6 +88,7 @@ from ..security.program_heredoc import heredoc_program
 from ..security.shell_substitution import extract_substitutions, extract_substitutions_truncated
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
+from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
 )
@@ -832,6 +833,20 @@ class BashValidator:
                     "Write a `memorialize_suggestions` block into your "
                     "contract row with `gaia contract fill --json` instead.",
                 ],
+            )
+
+        resume_allowed, resume_reason = check_subagent_resume_point(
+            command, is_subagent=is_subagent,
+        )
+        if not resume_allowed:
+            logger.warning(
+                "BLOCKED subagent resume-point write (agent=%s): %s",
+                agent_type or "?", command[:100],
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=resume_reason,
             )
 
         # ================================================================
