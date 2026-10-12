@@ -315,6 +315,15 @@ def build_dispatch_kernel(
     if plan_task_id is not None:
         parts.append(f"plan_task_id: {plan_task_id}")
 
+    from modules.agents.call_ceiling import notice_threshold
+    from modules.agents.dispatch_binding import extract_dispatch_binding
+
+    ceiling = extract_dispatch_binding({"prompt": row.get("dispatch_prompt")})["ceiling"]
+    if ceiling:
+        parts.append(
+            f"ceiling: {ceiling} tool calls (close notice at call {notice_threshold(ceiling)})"
+        )
+
     parts.extend([
         "",
         f"can_read:  [{', '.join(str(s) for s in can_read)}]",

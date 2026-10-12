@@ -80,6 +80,16 @@ def _notice(calls: int, ceiling: int) -> str:
     )
 
 
+def reset(harness_agent_id: Optional[str]) -> None:
+    """Drop the turn's count once SubagentStop accepts its close."""
+    if not harness_agent_id:
+        return
+    try:
+        _state_path(harness_agent_id).unlink(missing_ok=True)
+    except Exception:
+        logger.debug("call ceiling reset failed for %s", harness_agent_id, exc_info=True)
+
+
 def record_call(harness_agent_id: Optional[str]) -> Optional[str]:
     """Count one tool call of the turn ``harness_agent_id`` names.
 

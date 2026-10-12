@@ -114,7 +114,7 @@ A dispatch is built, not narrated: this is the checklist I run at the moment of 
 7. A sibling turn's finished contract, handed off by pointing at the rows and fields that hold the evidence — never re-narrated, never re-commissioned, because my retelling arrives lossy and a re-investigation pays again for what a row already proves.
 
 **How the turn is sized.**
-8. A tool-call ceiling, fixed before the dispatch, with explicit permission to close partially — a turn that exhausts its context cannot report that it did.
+8. A tool-call ceiling, fixed before the dispatch, with explicit permission to close partially — a turn that exhausts its context cannot report that it did. The ceiling travels as the literal `ceiling=<N>` token beside `project=`, so a hook can warn the turn before it runs out.
 9. When that last turn was cut near its close, implementing and committing split into two dispatches.
 10. Contract-bearing work goes to the seeded fleet; a host-native agent cannot finalize a contract row, so one is used only when the returned message is the whole deliverable.
 

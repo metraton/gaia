@@ -5,8 +5,8 @@ principles say why; this file says how it is spelled today.
 
 ## Goal tokens (principle 1)
 
-A hook extracts four literal tokens from the dispatch prompt --
-`project=`, `task_id=`, `plan_id=` and `parent_handoff_id=`
+A hook extracts five literal tokens from the dispatch prompt --
+`project=`, `task_id=`, `plan_id=`, `parent_handoff_id=` and `ceiling=`
 (`hooks/modules/agents/dispatch_binding.py::extract_dispatch_binding`); prose
 around them is not parsed.
 
@@ -16,6 +16,7 @@ around them is not parsed.
 | `task_id=<tasks.id>` | Binds the turn to a plan task: its gates render as `acceptance:` and the turn cannot self-`COMPLETE`. The id is `tasks.id`, not the plan position; `gaia task show <brief> <order>` prints both. |
 | `plan_id=<N>` | Stamps the born row's `plan_id`. Like `task_id=` and `parent_handoff_id=`, it marks the dispatch as task execution rather than a free investigation or memory turn; it does not bind a task's gates, which `task_id=` alone does. |
 | `parent_handoff_id=<N>` | Required on a verifier dispatch: `N` is the producer's contract row id. A dispatch without it runs with no binding to what it verifies. |
+| `ceiling=<N>` | The turn's tool-call ceiling. It renders as `ceiling:` in `# Your Contract`, and once, on the call that reaches 80% of `N`, a PostToolUse hook tells the turn to write its evidence and close, partially if needed (`hooks/modules/agents/call_ceiling.py`). On Claude Code only the calls the PostToolUse matchers cover are counted (Bash, Task); without the token no notice fires, since neither host lets a hook read context use. Not a binding coordinate. |
 
 ## Acceptance forms (principle 2)
 

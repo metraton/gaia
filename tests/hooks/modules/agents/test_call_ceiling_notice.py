@@ -166,6 +166,28 @@ def test_no_token_gets_no_notice_on_opencode():
     assert not any(NOTICE_MARK in text for text in contexts)
 
 
+def test_kernel_names_the_ceiling_and_its_notice_call():
+    from modules.context.kernel_builder import build_dispatch_kernel
+
+    row = {"contract_id": "a1.tok", "agent_id": "a1", "dispatch_prompt": CEILING_PROMPT}
+    assert f"ceiling: {CEILING} tool calls (close notice at call {THRESHOLD_CALL})" in (
+        build_dispatch_kernel(row)
+    )
+    assert "ceiling:" not in build_dispatch_kernel({**row, "dispatch_prompt": FREE_PROMPT})
+
+
+def test_accepted_close_drops_the_count(tmp_path):
+    from modules.agents import call_ceiling
+
+    _born_turn(CEILING_PROMPT, "cc-harness-4", "a1cc00004")
+    _claude_code_turn(3, agent_id="cc-harness-4")
+    counts = list((tmp_path / "state" / "call_ceiling").glob("*.json"))
+    assert [path.name for path in counts] == ["cc-harness-4.json"]
+
+    call_ceiling.reset("cc-harness-4")
+    assert not counts[0].exists()
+
+
 def test_claude_code_orchestrator_session_is_never_counted():
     _born_turn(CEILING_PROMPT, "cc-parent-session", "a1cc00003")
     contexts = _claude_code_turn(CEILING + 2, agent_id=None)

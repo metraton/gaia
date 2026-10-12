@@ -1782,6 +1782,9 @@ def run_subagent_stop(
                 _closed = rejected_turn_relay.on_accepted(agent_output, key=_relay_key)
                 if _circuit_key:
                     rejection_circuit.reset(_circuit_key)
+                from modules.agents import call_ceiling
+
+                call_ceiling.reset(task_info.get("agent_id"))
                 if _closed:
                     result["preserved_output_relayed"] = _closed["relayed"]
                     result["preserved_output_chars"] = _closed["chars"]
