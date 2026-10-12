@@ -73,6 +73,111 @@ def test_snapshot_of_session_a_excludes_session_b(db):
     assert "ccccccccccccccccc" not in rendered and "P-done" not in rendered
 
 
+LONG_GOAL = (
+    "Carry the session snapshot through every compaction so the orchestrator resumes "
+    "exactly where it stopped, with its contracts, signatures and resume point intact "
+    "and nothing borrowed from another session"
+)
+LONG_RESUME = "Rebase the snapshot branch, rerun the compaction gate, then request the push. " * 12
+STALE = "2026-01-01T00:00:00Z"
+
+
+def _row(con, contract_id, session_id, state, created_at=None, **columns):
+    """Insert one handoff row and return its id."""
+    cur = con.execute(
+        "INSERT INTO agent_contract_handoffs "
+        "(contract_id, agent_id, session_id, workspace, agent_state, raw_handoff_json, kind, "
+        "plan_task_id, parent_handoff_id, created_at) "
+        "VALUES (?, ?, ?, 'me', ?, '{}', ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')))",
+        (contract_id, contract_id.split(".")[0], session_id, state, columns.get("kind"),
+         columns.get("plan_task_id"), columns.get("parent_handoff_id"), created_at),
+    )
+    return cur.lastrowid
+
+
+@pytest.fixture
+def two_sessions(tmp_path, monkeypatch, bootstrapped_db_template):
+    """A long-lived session A whose settled rows must drop out, beside a session B it must not see."""
+    data = tmp_path / "data"
+    path = copy_bootstrapped_db(bootstrapped_db_template, data / "gaia.db")
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data))
+    monkeypatch.setenv("GAIA_DB", str(path))
+    monkeypatch.chdir(tmp_path)
+    con = sqlite3.connect(path)
+    con.execute("INSERT INTO workspaces (name) VALUES ('me')")
+    con.execute("INSERT INTO briefs (workspace, name) VALUES ('me', 'brief-a')")
+    con.execute("INSERT INTO briefs (workspace, name) VALUES ('me', 'brief-b')")
+    con.execute("INSERT INTO plans (brief_id) VALUES (1)")
+    con.execute("INSERT INTO plans (brief_id) VALUES (2)")
+    con.execute("INSERT INTO tasks (plan_id, order_num, goal) VALUES (1, 20, ?)", (LONG_GOAL,))
+    con.execute("INSERT INTO tasks (plan_id, order_num, goal, status) VALUES (1, 19, 'settled', 'done')")
+    con.execute("INSERT INTO tasks (plan_id, order_num, goal) VALUES (2, 5, 'task of b')")
+    done_producer = _row(con, "a00000000000000d1.t", SESSION_A, "NEEDS_VERIFICATION", plan_task_id=2)
+    _row(con, "a00000000000000d2.t", SESSION_A, "BLOCKED", kind="verifier", parent_handoff_id=done_producer)
+    _row(con, "a00000000000000d3.t", SESSION_A, "NEEDS_INPUT", created_at=STALE, kind="investigation")
+    _row(con, "a00000000000000d4.t", SESSION_A, "NEEDS_VERIFICATION", plan_task_id=1)
+    _row(con, "a0000000000000a01.t", SESSION_A, "DISPATCHED", plan_task_id=1, kind="task_execution")
+    _row(con, "a0000000000000a02.t", SESSION_A, "NEEDS_INPUT", kind="investigation")
+    _row(con, "b0000000000000b01.t", SESSION_B, "DISPATCHED", plan_task_id=3, kind="task_execution")
+    con.execute("INSERT INTO approvals (id, agent_id, session_id, status) VALUES ('P-a', 'a0000000000000a01', ?, 'pending')", (SESSION_A,))
+    con.execute("INSERT INTO approvals (id, agent_id, session_id, status) VALUES ('P-done', 'a0000000000000a01', ?, 'approved')", (SESSION_A,))
+    con.execute("INSERT INTO approvals (id, agent_id, session_id, status) VALUES ('P-b', 'b0000000000000b01', ?, 'pending')", (SESSION_B,))
+    con.commit()
+    con.close()
+    from gaia.session_snapshot import write_resume_point
+
+    write_resume_point(SESSION_A, LONG_RESUME)
+    write_resume_point(SESSION_B, "resume b elsewhere")
+    return path
+
+
+def _assert_only_session_a(rendered):
+    assert "a0000000000000a01.t" in rendered and "a0000000000000a02.t" in rendered
+    assert "P-a" in rendered and "brief-a" in rendered and "plan 1" in rendered and "task 1 " in rendered
+    assert "Rebase the snapshot branch" in rendered
+    for foreign in ("b0000000000000b01", "P-b", "brief-b", "resume b elsewhere"):
+        assert foreign not in rendered
+
+
+def _assert_cut_on_word_boundaries(rendered):
+    goal_line = next(line for line in rendered.splitlines() if line.startswith("Active:"))
+    goal_part = goal_line.split(" -- ", 1)[1].removesuffix("...")
+    assert LONG_GOAL.startswith(goal_part) and LONG_GOAL[len(goal_part)] == " "
+    resume_part = rendered.split("Resume point:\n", 1)[1].split("\n\n", 1)[0].removesuffix("...")
+    assert LONG_RESUME.startswith(resume_part) and LONG_RESUME[len(resume_part)] == " "
+
+
+def test_a_long_lived_session_carries_only_its_live_work_and_nothing_from_another(two_sessions):
+    from gaia.session_snapshot import build_snapshot, render_snapshot
+
+    snapshot = build_snapshot(SESSION_A)
+    rendered = render_snapshot(snapshot)
+
+    assert [c["contract_id"] for c in snapshot["open_contracts"]] == ["a0000000000000a02.t", "a0000000000000a01.t"]
+    assert snapshot["older_unresolved"] == 1
+    assert [a["id"] for a in snapshot["pending_signatures"]] == ["P-a"]
+    assert (snapshot["active_task"]["brief"], snapshot["active_task"]["plan_id"], snapshot["active_task"]["task_id"]) == ("brief-a", 1, 1)
+    _assert_only_session_a(rendered)
+    for settled in ("a00000000000000d1", "a00000000000000d2", "a00000000000000d3", "a00000000000000d4"):
+        assert settled not in rendered
+    _assert_cut_on_word_boundaries(rendered)
+    assert len(rendered) <= 1500
+
+
+def test_every_section_is_present_when_empty():
+    from gaia.session_snapshot import render_snapshot
+
+    rendered = render_snapshot({
+        "session_id": "s", "open_contracts": [], "older_unresolved": 0,
+        "pending_signatures": [], "active_task": None, "resume_point": None,
+    })
+
+    for title in ("Active:", "Resume point:", "Pending signatures:", "Open contracts:"):
+        assert title in rendered
+
+
 def _add_contracts(path, count, session_id, state="NEEDS_VERIFICATION", **columns):
     con = sqlite3.connect(path)
     for n in range(count):
@@ -171,7 +276,7 @@ def test_empty_session_yields_a_minimal_block_not_an_error(db):
     rendered = render_snapshot(build_snapshot("ses-unknown"))
 
     assert rendered.startswith("## Session Snapshot")
-    assert "No open contracts" in rendered
+    assert "Open contracts: none" in rendered
 
 
 def test_session_snapshot_verb_prints_json_for_the_requested_session(db):
@@ -222,3 +327,26 @@ def test_opencode_compacting_for_the_primary_session_receives_the_snapshot(db, m
     assert "## Session Snapshot" in context
     assert "aaaaaaaaaaaaaaaaa.tokena" in context and "P-a" in context
     assert "bbbbbbbbbbbbbbbbb" not in context
+
+
+def test_both_hosts_deliver_the_same_session_scoped_snapshot(two_sessions, tmp_path, monkeypatch):
+    import bridge
+    from gaia.session_snapshot import build_snapshot, render_snapshot
+
+    expected = render_snapshot(build_snapshot(SESSION_A))
+    payload = json.dumps({"hook_event_name": "SessionStart", "session_id": SESSION_A, "source": "compact"})
+    proc = subprocess.run(
+        [sys.executable, str(_ROOT / "hooks" / "session_start.py")],
+        input=payload, capture_output=True, text=True, timeout=60, cwd=str(tmp_path),
+        env=os.environ.copy(),
+    )
+    monkeypatch.setenv("GAIA_HOST", "opencode")
+    opencode_context, _instructions = bridge.handle(
+        {"event": "session.compacting", "sessionID": SESSION_A, "main": True}
+    )["updated_input"]["context"]
+
+    assert proc.returncode == 0, proc.stderr
+    claude_context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    for context in (claude_context, opencode_context):
+        assert expected in context
+        _assert_only_session_a(context)

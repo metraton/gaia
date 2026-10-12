@@ -80,7 +80,7 @@ hooks/pre_tool_use.py              <- Entry point: stdin/stdout glue only
 
 To add a new behavior to an existing hook: write a module in `modules/<package>/`, import it in the adapter, and call it from the relevant adapter method. Modules receive parsed context as arguments and return results. They never read stdin or write stdout directly.
 
-`hooks/mods/` holds Claude Code mods, hooks modules the host loads in-process and that `hooks/hooks.json` names under its top-level `modules` key (generated from the build manifest's `host_mods` list); `mods/compaction/` adds Gaia's steering to every compaction's instructions and nothing else; the session snapshot after a compaction comes only from the SessionStart(compact) refresh.
+`hooks/mods/` holds Claude Code mods, hooks modules the host loads in-process and that `hooks/hooks.json` names under its top-level `modules` key (generated from the build manifest's `host_mods` list); `mods/compaction/` adds Gaia's steering to every compaction's instructions and nothing else; the session snapshot after a compaction comes only from the SessionStart(compact) refresh. OpenCode's `session.compacting` receives the same `gaia/session_snapshot.py` block from `adapters/opencode.py::adapt_pre_compact`; which contracts it lists and where the resume point is written are in ARCHITECTURE.md's Session snapshot and Resume point rows.
 
 To add a new hook entry point: create `hooks/<event_name>.py`, register it in `build/gaia.manifest.json` under `hooks.entries` and `hooks.matchers`, then write the adapter method. The entry point pattern is always the same: read stdin JSON, call adapter, print response.
 
