@@ -193,8 +193,9 @@ def _reconcile_install() -> tuple[str, str]:
 def start_context(source: str, alarms: list, session_id: str = "") -> str:
     """Return the birth block, or after compaction the refresh carrying ``session_id``'s snapshot; "" when building fails.
 
-    Compaction takes the refresh because the birth block's scan, memory and
-    environment were already delivered at the true start.
+    Compaction takes the refresh because the birth block's scan and memory
+    were already delivered at the true start; its environment comes back with
+    the refresh, since the compaction discarded the message that carried it.
     """
     try:
         if source == "compact":

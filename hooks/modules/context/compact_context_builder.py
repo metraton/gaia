@@ -9,18 +9,19 @@ logger = logging.getLogger(__name__)
 
 
 def build_compact_context(*, session_id: str = "") -> str:
-    """Build the orchestrator identity reminder plus the session's own snapshot.
+    """Build the orchestrator identity reminder, the session's Environment block and its own snapshot.
 
-    The snapshot is keyed by ``session_id``; the host event that triggers the
-    refresh carries the same id across compaction, so another session's
-    contracts and signatures never reach this one. This refresh is the
-    snapshot's only post-compaction delivery: the compaction mod only steers.
+    The Environment block is the birth block's own, so the trusted `gaia CLI:`
+    path the compaction discarded is published again. The snapshot is keyed
+    by ``session_id``; the host event that triggers the refresh carries the
+    same id across compaction, so another session's contracts and signatures
+    never reach this one. This refresh is the only post-compaction delivery
+    of both: the compaction mod only steers.
     """
-    blocks = [_build_identity_block()]
-    snapshot = _build_snapshot_block(session_id)
-    if snapshot:
-        blocks.append(snapshot)
-    return "\n\n".join(blocks)
+    from modules.session.session_manifest import build_environment_section
+
+    blocks = [_build_identity_block(), build_environment_section(), _build_snapshot_block(session_id)]
+    return "\n\n".join(b for b in blocks if b)
 
 
 def build_summary_instructions() -> str:

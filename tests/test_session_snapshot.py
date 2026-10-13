@@ -372,4 +372,30 @@ def test_both_hosts_deliver_the_same_session_scoped_snapshot(two_sessions, tmp_p
     claude_context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
     for context in (claude_context, opencode_context):
         assert expected in context
+        assert context.count("## Session Snapshot") == 1
         _assert_only_session_a(context)
+
+
+def test_both_hosts_carry_the_environment_block_once_after_compaction(two_sessions, tmp_path, monkeypatch):
+    import bridge
+    from modules.session.session_manifest import build_environment_section
+
+    environment = build_environment_section()
+    payload = json.dumps({"hook_event_name": "SessionStart", "session_id": SESSION_A, "source": "compact"})
+    proc = subprocess.run(
+        [sys.executable, str(_ROOT / "hooks" / "session_start.py")],
+        input=payload, capture_output=True, text=True, timeout=60, cwd=str(tmp_path),
+        env=os.environ.copy(),
+    )
+    monkeypatch.setenv("GAIA_HOST", "opencode")
+    opencode_context, _instructions = bridge.handle(
+        {"event": "session.compacting", "sessionID": SESSION_A, "main": True}
+    )["updated_input"]["context"]
+
+    assert proc.returncode == 0, proc.stderr
+    assert "- gaia CLI: " in environment
+    claude_context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    for context in (claude_context, opencode_context):
+        assert context.count(environment) == 1
+        assert context.count("## Environment") == 1
+        assert context.count("- gaia CLI: ") == 1
