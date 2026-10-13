@@ -85,9 +85,11 @@ orchestrator calls `mcp__gaia__compact_when_idle`, which answers with session
 gaia session resume-point set --session-id 3f9c... --text "Next: fix the three agent files thread_routing_keywords_cleanup names, then re-run tests/routing. Plan 7 task 42 stays open; no approvals in flight."
 ```
 
-It ends the turn with the report and "The session compacts now." The
-compaction starts as the turn ends, and the snapshot that follows shows that
-text under "Resume point".
+It ends the turn with the report and "I requested the compaction; it runs
+once this turn ends." When it runs, the snapshot that follows shows that text
+under "Resume point". If the host refuses, the user sees a notice and the next
+turn carries "[gaia] The compaction you requested did not start: ..."; the
+orchestrator then says it did not happen and asks the user to type /compact.
 
 With mods disabled, no tool is listed: the same report ends with the resume
 point and "Type /compact to compact the session; I cannot start it here."

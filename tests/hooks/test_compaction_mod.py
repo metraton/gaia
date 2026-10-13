@@ -83,13 +83,14 @@ class TestBuildOutputShipsTheMod:
 
 
 class TestModReachesOnlyItsTriggerSurface:
-    """The mod may register its tool, read the session id, schedule and start a compaction; nothing else."""
+    """The mod may register its tool, read the session id and the clock, schedule and start a compaction, and toast a refusal; nothing else."""
 
     REACH = re.compile(
         r"\$\.(process|agent|network|fs|settings|env|http|store|state|prompt|model)\b"
         r"|\$\.tool\.(?!register\b)"
         r"|\$\.session\.(?!id\b|compact\b)"
-        r"|\$\.clock\.(?!after\b)"
+        r"|\$\.clock\.(?!after\b|now\b)"
+        r"|\$\.ui\.(?!toast\b)"
         r"|\bimport\s*\(|\beval\s*\(|new Function|\bfetch\s*\("
     )
 

@@ -110,18 +110,22 @@ Name what the next session picks up: a pointer, never a copied container.
 
 After step 7, when the user asked to compact:
 
-1. **Start the compaction.** Call the host's compaction tool once:
+1. **Request the compaction.** Call the host's compaction tool once:
    `mcp__gaia__compact_when_idle` in Claude Code, `gaia_compact_when_idle` in
-   OpenCode. The compaction starts when the current turn ends, never mid-turn,
-   and the reply names the session id.
+   OpenCode. It schedules the compaction for when the current turn ends, never
+   mid-turn, and the reply names the session id. The host can still refuse it.
 2. **Write the resume point.** `gaia session resume-point set --session-id <id>
    --text "<text>"`, at most 2000 characters, replacing any earlier one: the
    step 7 pointer plus what the next turn needs and no row holds -- the exact
    next action, blockers and approvals in flight, the active files. Durable
    objects are named by id, never copied.
 3. **End the turn** with the post-curation report and a line saying the
-   session compacts now. The snapshot that arrives after compaction carries the
-   resume point; do not restate either in the turn.
+   compaction was requested -- not that it will happen. The snapshot that
+   arrives after compaction carries the resume point; do not restate either in
+   the turn.
+
+If the next turn carries a note that the compaction did not start, tell the
+user so, name the host's reason, and ask them to type `/compact`.
 
 When the user insists on compacting before the reflection finishes, offer it
 once; if they decline, write the unsaved items into the resume point marked as
