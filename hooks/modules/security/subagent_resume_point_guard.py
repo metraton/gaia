@@ -30,6 +30,7 @@ Public API:
 from __future__ import annotations
 
 import os
+import re
 from typing import Dict, Optional, Sequence, Tuple
 
 # Every verb under `gaia session` (bin/cli/session.py), and the only source of
@@ -44,6 +45,7 @@ SESSION_VERBS: Dict[Tuple[str, ...], str] = {
 }
 
 _HELP_FLAGS = frozenset({"--help", "-h", "-?", "--usage"})
+_PYTHON_INTERPRETER = re.compile(r"^python[0-9.]*$")
 _SHELL_RESOLVED = ("$", "`", "(", ")", "*", "?", "[")
 
 
@@ -98,35 +100,48 @@ def is_resume_point_write(command: str) -> bool:
 def _component_writes_resume_point(component: str, *, help_exempt: bool) -> bool:
     """True iff one operator-free component's words may run a session write: any session call not proven a declared read.
 
-    Help is read from the gaia program's own argv only (the words after its
-    command word), so a wrapper's option value such as `env -u --help` does
-    not exempt the call.
+    Only the command position is ever resolved as gaia: the first word once
+    wrappers and assignments are peeled, or the script a Python interpreter
+    runs. An argument that names a gaia path (`rg x /home/me/gaia --glob '*.py'`)
+    is data. Help is read from the gaia program's own argv only, so a wrapper's
+    option value such as `env -u --help` does not exempt the call.
     """
     from ..tools.shell_parser import shell_words
+    from .mutative_verbs import _peel_leading_command_wrappers
 
-    words = shell_words(component)
-    for index, word in enumerate(words):
-        if word.startswith("-"):
-            continue
-        own_argv = words[index + 1:]
-        positional = [w for w in own_argv if not w.startswith("-")]
-        if not positional:
-            continue
-        group = positional[0]
-        if group == "session":
-            if not _runs_gaia(word):
-                continue
-        elif not is_shell_resolved(group) or is_shell_resolved(word) or not _runs_gaia(word):
-            continue
-        verb_words = positional[1:]
-        if group == "session" and not verb_words:
-            continue
-        if help_exempt and _HELP_FLAGS & set(own_argv):
-            continue
-        path = declared_session_verb(verb_words) if group == "session" else None
-        if path is None or SESSION_VERBS[path] != "read":
-            return True
-    return False
+    words = shell_words(_peel_leading_command_wrappers(component)[0])
+    program = _program_index(words)
+    if program is None:
+        return False
+    word, own_argv = words[program], words[program + 1:]
+    positional = [w for w in own_argv if not w.startswith("-")]
+    if not positional:
+        return False
+    group = positional[0]
+    if group == "session":
+        if not _runs_gaia(word):
+            return False
+    elif not is_shell_resolved(group) or is_shell_resolved(word) or not _runs_gaia(word):
+        return False
+    verb_words = positional[1:]
+    if group == "session" and not verb_words:
+        return False
+    if help_exempt and _HELP_FLAGS & set(own_argv):
+        return False
+    path = declared_session_verb(verb_words) if group == "session" else None
+    return path is None or SESSION_VERBS[path] != "read"
+
+
+def _program_index(words: Sequence[str]) -> Optional[int]:
+    """Index of the program *words* run: the first word, or the script a Python interpreter is handed."""
+    if not words:
+        return None
+    if not _PYTHON_INTERPRETER.match(os.path.basename(words[0])):
+        return 0
+    for index in range(1, len(words)):
+        if not words[index].startswith("-"):
+            return index
+    return None
 
 
 def check(command: str, *, is_subagent: bool = False) -> Tuple[bool, Optional[str]]:

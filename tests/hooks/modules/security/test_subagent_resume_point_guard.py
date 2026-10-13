@@ -99,6 +99,35 @@ def test_a_declared_gaia_wrapper_is_refused_for_a_subagent(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("command", [
+    "sudo gaia session resume-point set --session-id s --text t",
+    "timeout 5 gaia session resume-point set --session-id s --text t",
+    "FOO=1 gaia session resume-point set --session-id s --text t",
+    "nice -n 5 python3 /x/bin/gaia session resume-point set --session-id s --text t",
+])
+def test_a_wrapped_resume_point_write_is_refused(command):
+    _assert_categorical_refusal(_validate(command, is_subagent=True), command)
+
+
+# A path that ends in `/gaia` is an argument, never the program: searches over
+# Gaia's own tree are reads, whatever words follow the path.
+SEARCHES_OVER_A_GAIA_PATH = [
+    "rg -n pattern /home/x/gaia --glob '*.py'",
+    "rg -n session /home/jorge/ws/me/gaia -g '*.md'",
+    "grep -rn pattern /home/x/gaia --include '*.py'",
+    "grep -rn resume-point /home/x/gaia session",
+    "find /home/x/gaia -name '*.py'",
+    "find /home/x/gaia -path '*/session/*' -name '*.py'",
+]
+
+
+@pytest.mark.parametrize("command", SEARCHES_OVER_A_GAIA_PATH)
+def test_a_search_over_a_gaia_path_is_free_for_a_subagent(command):
+    assert guard.check(command, is_subagent=True) == (True, None), command
+    result = _validate(command, is_subagent=True)
+    assert result.allowed and result.tier == SecurityTier.T0_READ_ONLY, f"{command}: {result.reason}"
+
+
 @pytest.mark.parametrize("case_id,command", SPELLINGS[:4], ids=[c for c, _ in SPELLINGS[:4]])
 def test_the_orchestrator_writes_its_resume_point_free(case_id, command):
     result = _validate(command, is_subagent=False)
