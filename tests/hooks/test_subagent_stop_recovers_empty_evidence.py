@@ -296,7 +296,7 @@ def test_a_a_contract_view_shows_the_recovered_row_while_the_draft_file_remains(
         sys.path.insert(0, str(_ROOT / "bin"))
     from cli import contract as contract_cli
 
-    reads = ["/home/jorge/ws/me/gaia/README.md", "/home/jorge/ws/me/gaia/package.json", "/home/jorge/ws/me/gaia/LICENSE"]
+    reads = ["/repo/README.md", "/repo/package.json", "/repo/LICENSE"]
     tool_calls = [("Read", {"file_path": path}) for path in reads] + [
         ("Bash", {"command": "gaia contract set agent_status.next_action done --draft-id x.probe"}),
         ("Bash", {"command": "gaia contract set agent_status.agent_state COMPLETE --draft-id x.probe"}),
