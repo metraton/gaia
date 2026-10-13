@@ -281,6 +281,40 @@ def test_a_a_row_left_unfinalized_keeps_its_earlier_segment_after_a_resume(db, t
     assert evidence["commands_run"] == []
 
 
+def test_a_a_contract_view_shows_the_recovered_row_while_the_draft_file_remains(db, tmp_path, capsys):
+    """The probe of handoff 29449: three Reads, contract writes, a finalize, no resume.
+
+    The recovery fills the row, but the agent's draft file still holds the
+    empty lists it finalized from, and `gaia contract view` is what a reader uses.
+    """
+    import argparse
+
+    from gaia.contract.drafts import save_draft
+    from modules.agents.evidence_recovery import RECOVERED_MARK
+
+    if str(_ROOT / "bin") not in sys.path:
+        sys.path.insert(0, str(_ROOT / "bin"))
+    from cli import contract as contract_cli
+
+    reads = ["/home/jorge/ws/me/gaia/README.md", "/home/jorge/ws/me/gaia/package.json", "/home/jorge/ws/me/gaia/LICENSE"]
+    tool_calls = [("Read", {"file_path": path}) for path in reads] + [
+        ("Bash", {"command": "gaia contract set agent_status.next_action done --draft-id x.probe"}),
+        ("Bash", {"command": "gaia contract set agent_status.agent_state COMPLETE --draft-id x.probe"}),
+        ("Bash", {"command": "gaia contract finalize --draft-id x.probe"}),
+    ]
+    contract_id, response = _claude_code_close(db, tmp_path, "abd0", {}, tool_calls)
+    assert response.exit_code == 0
+    save_draft(contract_id, _envelope(contract_id.split(".")[0]))
+
+    parser = argparse.ArgumentParser()
+    contract_cli.register(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["contract", "view", "--draft-id", contract_id, "--field", "evidence_report.files_checked"])
+    assert args.func(args) == 0
+    shown = json.loads(capsys.readouterr().out)
+
+    assert shown == [f"{RECOVERED_MARK}{path}" for path in reads]
+
+
 def test_b_lists_the_agent_filled_stay_as_written(db, tmp_path):
     written = {
         "commands_run": ["git status -> clean"],
