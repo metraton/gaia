@@ -95,16 +95,16 @@ def test_prompt_submit_bridge_returns_nothing_when_no_notification_is_due(isolat
     assert response == {"action": "allow", "additional_context": ""}
 
 
-def test_primary_compaction_bridge_returns_the_claude_code_compact_context(isolated):
+def test_primary_compaction_bridge_returns_the_claude_code_compact_context_but_the_environment(isolated):
     import bridge
-    from modules.session.session_lifecycle import start_context
+    from modules.context.compact_context_builder import build_compact_context
 
     response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
 
     context = response["updated_input"]["context"]
     assert response["action"] == "allow"
-    assert context[0] == start_context("compact", [], MAIN_SESSION)
-    assert context[0]
+    assert context[0] == build_compact_context(session_id=MAIN_SESSION, with_environment=False)
+    assert context[0] and "## Environment" not in context[0]
 
 
 def test_primary_compaction_carries_the_session_snapshot_and_the_summary_instructions(isolated):
@@ -127,7 +127,7 @@ def test_primary_compaction_carries_the_session_snapshot_and_the_summary_instruc
 def test_a_compaction_with_no_context_to_inject_adds_no_instructions(isolated, monkeypatch):
     import bridge
 
-    monkeypatch.setattr("modules.session.session_lifecycle.start_context", lambda *args: "")
+    monkeypatch.setattr("modules.context.compact_context_builder.build_compact_context", lambda **kwargs: "")
 
     response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
 

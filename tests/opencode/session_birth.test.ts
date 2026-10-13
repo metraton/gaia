@@ -156,6 +156,37 @@ describe("session birth on OpenCode", () => {
     expect(startsFor(sent, "ses-main")).toHaveLength(1)
   })
 
+  test("the first message after a main-session compaction carries the Environment block once, later ones do not", async () => {
+    const environment = "## Environment\n- gaia CLI: /opt/gaia/bin/gaia (after compaction)"
+    const { sent, plugin: pending } = host(async (event) => ({
+      action: "allow",
+      additional_context: event.source === "compact" ? environment : BIRTH_BLOCK,
+    }))
+    const plugin = await pending
+    await created(plugin, "ses-main")
+    await message(plugin, "ses-main")
+    await plugin["experimental.session.compacting"]({ sessionID: "ses-main" }, { context: [], prompt: undefined })
+    const resumed = await message(plugin, "ses-main")
+    const later = await message(plugin, "ses-main")
+
+    const attached = resumed.parts.filter((part: any) => part.synthetic).map((part: any) => part.text)
+    expect(attached).toEqual([environment])
+    expect(later.parts).toHaveLength(1)
+    expect(startsFor(sent, "ses-main").map((event) => event.source)).toEqual([undefined, "compact"])
+  })
+
+  test("a child session's compaction attaches nothing to its next message", async () => {
+    const { sent, plugin: pending } = host()
+    const plugin = await pending
+    await created(plugin, "ses-main")
+    await created(plugin, "ses-child", "ses-main")
+    await plugin["experimental.session.compacting"]({ sessionID: "ses-child" }, { context: [], prompt: undefined })
+    const child = await message(plugin, "ses-child", { agent: "developer" })
+
+    expect(child.parts).toHaveLength(1)
+    expect(startsFor(sent, "ses-child")).toHaveLength(0)
+  })
+
   test("a failed bridge leaves the user's message untouched and is not retried", async () => {
     const { sent, plugin: pending } = host(async () => {
       throw new Error("bridge down")

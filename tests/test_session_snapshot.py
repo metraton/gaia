@@ -388,13 +388,17 @@ def test_both_hosts_carry_the_environment_block_once_after_compaction(two_sessio
         env=os.environ.copy(),
     )
     monkeypatch.setenv("GAIA_HOST", "opencode")
-    opencode_context, _instructions = bridge.handle(
+    summary_context, _instructions = bridge.handle(
         {"event": "session.compacting", "sessionID": SESSION_A, "main": True}
     )["updated_input"]["context"]
+    next_message = bridge.handle({"event": "chat.message", "sessionID": SESSION_A, "source": "compact"})
 
     assert proc.returncode == 0, proc.stderr
     assert "- gaia CLI: " in environment
+    assert "## Environment" not in summary_context
+    assert next_message["additional_context"] == environment
     claude_context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    opencode_context = summary_context + "\n\n" + next_message["additional_context"]
     for context in (claude_context, opencode_context):
         assert context.count(environment) == 1
         assert context.count("## Environment") == 1

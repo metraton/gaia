@@ -385,23 +385,30 @@ class OpenCodeAdapter(HookAdapter):
         """Run Claude Code's start maintenance for a main session, then build its birth block.
 
         The plugin forwards ``chat.message`` once per session it or the host
-        records as parentless, so every call here is a start or a resume. The
+        records as parentless, so every call here is a start or a resume, and
+        again with ``source: compact`` on the first message after that
+        session's compaction, which gets back only the Environment block: the
+        compacting hook already gave the summary the rest of the refresh. The
         bridge runs from the session's workspace directory, which is the
         directory Claude Code's start sweeps too.
         """
         from modules.session import session_lifecycle
         from modules.session.session_lifecycle import SessionStart, start_context
+        from modules.session.session_manifest import build_environment_section
 
+        source = "compact" if raw.get("source") == "compact" else "startup"
         session_lifecycle.run_start_maintenance(SessionStart(
             session_id=str(raw.get("session_id") or ""),
-            source="startup",
+            source=source,
             is_headless=False,
             pinned_build=None,
             workspace_dir=Path.cwd(),
         ))
         return BootstrapResult(
-            session_type="startup",
-            additional_context=start_context("startup", []),
+            session_type=source,
+            additional_context=(
+                build_environment_section() if source == "compact" else start_context("startup", [])
+            ),
         )
 
     def adapt_user_prompt_submit(self, event: HookEvent) -> HookResponse:
@@ -1469,8 +1476,9 @@ class OpenCodeAdapter(HookAdapter):
         whose context survives the summary that discards the session's prior
         messages. A dispatched child gets back the kernel its row was born
         with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
-        what Claude Code's SessionStart(compact) delivers, from the same
-        ``start_context``, followed by the instructions that steer the summary.
+        what Claude Code's SessionStart(compact) delivers but the Environment
+        block, which the plugin attaches to the next user message instead,
+        followed by the instructions that steer the summary.
         Both travel as ``context`` entries, which the host appends to its own
         summary prompt; replacing the prompt (``output.prompt``) would discard
         the host's summary template, which Gaia has no stake in owning.
@@ -1485,10 +1493,12 @@ class OpenCodeAdapter(HookAdapter):
                 output={"action": "allow", "updated_input": {"context": [kernel]}}
             )
         if event.payload.get("main") is True:
-            from modules.context.compact_context_builder import build_summary_instructions
-            from modules.session.session_lifecycle import start_context
+            from modules.context.compact_context_builder import (
+                build_compact_context,
+                build_summary_instructions,
+            )
 
-            context = start_context("compact", [], event.session_id)
+            context = build_compact_context(session_id=event.session_id, with_environment=False)
             if context:
                 return HookResponse(
                     output={

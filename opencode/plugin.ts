@@ -1227,6 +1227,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // Main sessions whose birth block was asked for, so each asks once however
   // many messages chat.message reports for it.
   const birthSettled = new Set<string>()
+  // Main sessions compacted since their last user message. The summary is a
+  // model's text and may drop the Environment block the birth message carried,
+  // so the next message carries it again.
+  const environmentDue = new Set<string>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
   // One issuance per session even when two edges reach it at once. Without it a
@@ -1375,9 +1379,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   }
 
   /** The context Gaia returns for one main-session message event, or "" when it returns none or fails. */
-  async function mainMessageContext(event: "chat.message" | "chat.prompt", sessionID: string): Promise<string> {
+  async function mainMessageContext(
+    event: "chat.message" | "chat.prompt", sessionID: string, source?: "compact",
+  ): Promise<string> {
     try {
-      const response = await send({ event, sessionID })
+      const response = await send(source ? { event, sessionID, source } : { event, sessionID })
       return response.action === "allow" && response.additional_context ? response.additional_context : ""
     } catch (error) {
       console.error(`[gaia-opencode:${event}] session ${sessionID} message went without its context: ${error}`)
@@ -2280,7 +2286,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       const contexts: string[] = []
       if (!birthSettled.has(sessionID)) {
         birthSettled.add(sessionID)
+        environmentDue.delete(sessionID)
         contexts.push(await mainMessageContext("chat.message", sessionID))
+      } else if (environmentDue.delete(sessionID)) {
+        contexts.push(await mainMessageContext("chat.message", sessionID, "compact"))
       }
       contexts.push(await mainMessageContext("chat.prompt", sessionID))
       const context = contexts.filter(Boolean).join("\n\n")
@@ -2513,10 +2522,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     "experimental.session.compacting": async (compacting: any, output: any) => {
       const sessionID = compacting?.sessionID
       if (typeof sessionID !== "string") return
+      const main = await hostRecordsMain(sessionID) === true
+      if (main) environmentDue.add(sessionID)
       const response = await send({
         event: "session.compacting",
         sessionID,
-        main: await hostRecordsMain(sessionID) === true,
+        main,
         agentID: dispatchHandle(sessionID),
         agent: agentBySession.get(sessionID),
         roleContext: roleContext(sessionID),
