@@ -113,7 +113,7 @@ def test_a_wrapped_resume_point_write_is_refused(command):
 # Gaia's own tree are reads, whatever words follow the path.
 SEARCHES_OVER_A_GAIA_PATH = [
     "rg -n pattern /home/x/gaia --glob '*.py'",
-    "rg -n session /home/jorge/ws/me/gaia -g '*.md'",
+    "rg -n session /home/x/ws/me/gaia -g '*.md'",
     "grep -rn pattern /home/x/gaia --include '*.py'",
     "grep -rn resume-point /home/x/gaia session",
     "find /home/x/gaia -name '*.py'",
