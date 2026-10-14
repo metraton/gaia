@@ -1264,8 +1264,8 @@ def check_workspace_roots() -> dict:
     return _result(
         "Workspace roots",
         "info",
-        f"no recorded root for {', '.join(missing)}; "
-        "`gaia worktree create` refuses their repositories",
+        f"no recorded root for {', '.join(missing)}; `gaia install` records none, only "
+        "`gaia workspace declare` does, and until then `gaia worktree create` refuses their repositories",
         "; ".join(
             f"gaia workspace declare {command_arg(name)} <workspace root>" for name in missing
         ),

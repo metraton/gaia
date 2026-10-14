@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -210,7 +211,30 @@ def _seed_legacy_workspace(workspace: Path) -> None:
     (claude / "session" / "active").mkdir(parents=True)
     (claude / "session" / "active" / "s1.json").write_text("{}\n")
     (claude / "cache" / "approvals").mkdir(parents=True)
-    (claude / "cache" / "approvals" / "grant-abc.json").write_text("{}\n")
+    (claude / "cache" / "approvals" / "grant-s1-1718000000000-abcd1234.json").write_text(json.dumps({
+        "session_id": "s1", "approved_verbs": ["push"], "approved_scope": "git push",
+        "scope_type": "semantic_signature", "scope_signature": {}, "granted_at": 1718000000.0,
+        "ttl_minutes": 5, "used": True, "confirmed": True, "multi_use": False,
+    }))
+
+
+def test_only_files_shaped_like_5x_grants_are_removed_from_the_grant_cache(tmp_path):
+    from cli import _legacy_cleanup
+
+    workspace = tmp_path / "ws"
+    _seed_legacy_workspace(workspace)
+    cache = workspace / ".claude" / "cache" / "approvals"
+    (cache / "pending-n1.json").write_text(json.dumps(
+        {"nonce": "n1", "session_id": "s1", "command": "git push", "scope_signature": {}, "timestamp": 1.0}))
+    (cache / "pending-index-s1.json").write_text(json.dumps({"session_id": "s1", "latest_nonce": "n1", "entries": []}))
+    kept = {"grant-mine.json": "{}", "pending-notes.json": '{"nonce": "n2"}', "settings.json": '{"a": 1}'}
+    for name, body in kept.items():
+        (cache / name).write_text(body)
+
+    result = _legacy_cleanup.remove_stale_grant_cache(workspace)
+
+    assert "removed 3 " in result["details"]
+    assert sorted(p.name for p in cache.iterdir()) == sorted(kept)
 
 
 def test_bare_install_merges_5x_data_dirs_and_drops_the_grant_cache(tmp_path):

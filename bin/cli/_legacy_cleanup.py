@@ -9,6 +9,7 @@ dir and grants in gaia.db, so install merges the first and drops the second.
 from __future__ import annotations
 
 import filecmp
+import json
 import shutil
 from pathlib import Path
 
@@ -70,14 +71,40 @@ def merge_legacy_data_dirs(workspace: Path, data_dir: Path) -> dict:
     return {"action": "migrated", "details": details}
 
 
+# Name prefix -> keys every record of that kind carried, as the last filesystem
+# grant writer wrote them (hooks/modules/security/approval_grants.py before
+# 24afac13 moved grants into gaia.db). "pending-index-" precedes "pending-",
+# whose prefix it shares.
+LEGACY_GRANT_SHAPES = (
+    ("grant-", frozenset({"session_id", "approved_scope", "scope_type", "scope_signature",
+                          "granted_at", "ttl_minutes", "used"})),
+    ("pending-index-", frozenset({"session_id", "latest_nonce", "entries"})),
+    ("pending-", frozenset({"nonce", "session_id", "command", "scope_signature", "timestamp"})),
+)
+
+
+def is_legacy_grant_file(path: Path) -> bool:
+    """True when *path* is named and shaped like a record the 5.x filesystem grant plane wrote."""
+    if path.suffix != ".json" or not path.is_file() or path.is_symlink():
+        return False
+    keys = next((keys for prefix, keys in LEGACY_GRANT_SHAPES if path.name.startswith(prefix)), None)
+    if keys is None:
+        return False
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and keys <= record.keys()
+
+
 def remove_stale_grant_cache(workspace: Path) -> dict:
-    """Delete the 5.x JSON approval grants, superseded by gaia.db and long expired."""
+    """Delete the 5.x JSON approval grants, superseded by gaia.db and long expired; any other file stays."""
     cache = workspace / LEGACY_GRANT_CACHE
     if not cache.is_dir() or cache.is_symlink():
         return {"action": "noop", "details": "no 5.x grant cache"}
     removed = 0
     for grant in cache.glob("*.json"):
-        if grant.is_file() and not grant.is_symlink():
+        if is_legacy_grant_file(grant):
             grant.unlink()
             removed += 1
     _prune_empty(cache, workspace / ".claude")

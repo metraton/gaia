@@ -119,6 +119,7 @@ class PipeViolation:
     rule: str            # e.g. "pipe", "redirect", "chaining"
     pattern: str         # the literal character(s) that triggered it
     correction: str      # human-readable corrected approach
+    cloud: bool = False  # True when a cloud/infra-only rule fired, False for a universal one
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +248,7 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
                     rule=rule_name,
                     pattern=match.group(0),
                     correction=correction,
+                    cloud=True,
                 )
 
     # All commands (cloud and non-cloud): check universal rules
@@ -309,9 +311,10 @@ def build_block_response(violation: PipeViolation, command: str) -> dict:
         Dict suitable for json.dumps() and print() in the hook entry point.
     """
     truncated = command[:120] + ('...' if len(command) > 120 else '')
+    scope = " in cloud/infra commands" if violation.cloud else ""
 
     reason = (
-        f"Command-execution rule violated: no {violation.rule}s in cloud/infra commands.\n\n"
+        f"Command-execution rule violated: no {violation.rule}s{scope}.\n\n"
         f"Violating pattern: '{violation.pattern}' detected in:\n"
         f"  {truncated}\n\n"
         f"Corrected approach:\n"
