@@ -146,7 +146,7 @@ def test_approval_live_fixes_claude_code_refuses_the_host_consent_verbs(db_env, 
     if payload is CLAUDE_CODE_SUBAGENT:
         # The orchestrator's own lane refuses first with its own words; a
         # subagent reaches this guard, whose refusal carries nothing to sign.
-        assert verdict.reason == REJECTION_MESSAGE, verdict.reason
+        assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
     assert verdict.block_response is None, "a categorical refusal carries no approval to sign"
 
 
@@ -174,7 +174,7 @@ def test_approval_live_fixes_the_fence_reads_as_deep_as_the_validator(db_env):
 
     assert read.allowed is True, read.reason
     assert hidden.allowed is False
-    assert hidden.reason == REJECTION_MESSAGE, hidden.reason
+    assert hidden.reason.endswith(REJECTION_MESSAGE), hidden.reason
 
 
 # One obfuscated spelling proves the plugin reaches the shared guard; the guard's

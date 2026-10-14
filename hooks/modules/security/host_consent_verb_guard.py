@@ -30,7 +30,9 @@ only known at run time (a variable, a substitution, brace or glob expansion);
 when ``xargs`` builds a Gaia CLI call whose verb comes from its input; or when
 code run by an interpreter, or a shell reading its program from input, spells
 a consent verb. A reader that merely mentions the verb (``grep``, ``cat``,
-``git log``) is left alone.
+``git log``) is left alone, and so is a shell run with ``-n``, which parses its
+program and executes none of it. The refusal names the rule that fired, and
+the script it was read from.
 
 What remains open: a program that assembles the verb from fragments at run
 time and runs it through a channel no word here names -- a script written and
@@ -56,6 +58,16 @@ REJECTION_MESSAGE = (
     "the usual way (`gaia approvals request-set`, then close APPROVAL_REQUEST). "
     "Do NOT retry -- this is not approvable."
 )
+
+_RECEIVES_VERB = "a command receives the consent verb as a word"
+_RUNTIME_GAIA_WORD = "a Gaia CLI call's group or verb is only known at run time"
+_RUNTIME_APPROVALS_VERB = "the word after `approvals` is only known at run time"
+_RUNTIME_PROGRAM = "a program and its first argument are only known at run time"
+_XARGS_VERB = "xargs builds a Gaia CLI call whose verb comes from its input"
+_CODE_SPELLS_VERB = "code run by an interpreter spells a consent verb"
+_INPUT_SPELLS_VERB = "a program read from standard input spells a consent verb"
+_TOO_DEEP = "the command nests deeper than this guard reads"
+_NO_EXEC_OPTION = re.compile(r"^-[A-Za-z]*n[A-Za-z]*$")
 
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "ash", "mksh", "fish"})
 _INTERPRETER_RE = re.compile(r"^(python[\d.]*|node|nodejs|bun|deno|perl|ruby|php|lua|tclsh)$")
@@ -317,7 +329,9 @@ def _parse(command: str) -> _Parsed:
             i += 1
             continue
         target = ensure_word()
-        if char == "$" or char in "*?[" or (char == "{" and re.match(r"\{[^{}\s]*(,|\.\.)[^{}\s]*\}", command[i:])):
+        # A ``[`` is a glob only when a ``]`` closes it within the word; alone it
+        # is the ``test`` builtin, a program every script names literally.
+        if char == "$" or char in "*?" or (char == "[" and re.match(r"\[\]?[^\]\s]*\]", command[i:])) or (char == "{" and re.match(r"\{[^{}\s]*(,|\.\.)[^{}\s]*\}", command[i:])):
             target.dynamic = True
         target.text += char
         i += 1
@@ -398,23 +412,50 @@ def _is_reader(words: List[_Word]) -> bool:
     return False
 
 
-def _gaia_call_refused(args: List[_Word], *, verb_from_input: bool) -> bool:
-    """A Gaia CLI call whose group or verb is a consent verb or unknown until it runs."""
+def _gaia_call_refused(args: List[_Word], *, verb_from_input: bool) -> Optional[str]:
+    """Why a Gaia CLI call reaches a consent verb, or ``None`` when it does not."""
     positional = _non_flags(args)
     if any(word.dynamic for word in positional[:2]):
-        return True
+        return _RUNTIME_GAIA_WORD
     if verb_from_input and (
         len(positional) < 2
         or not _PLAIN_VERB.match(positional[1].text)
     ):
-        return True
-    return any(word.text in CONSENT_VERBS for word in positional[:2])
+        return _XARGS_VERB
+    if any(word.text in CONSENT_VERBS for word in positional[:2]):
+        return _RECEIVES_VERB
+    return None
 
 
-def _command_refused(words: List[_Word], command: _Command, cwd: Optional[str], depth: int) -> bool:
+def _script_refused(path: str, cwd: Optional[str], depth: int) -> Optional[str]:
+    """Why the shell program in ``path`` reaches a consent verb, naming the script."""
+    body = _read_script(path, cwd)
+    reason = _refused(body, cwd, depth + 1) if body is not None else None
+    return f"{reason} (in {path})" if reason else None
+
+
+def _interpreter_program(
+    words: List[_Word], command: _Command, cwd: Optional[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """The code an interpreter call runs and the file it came from, as far as its words show."""
+    for index, word in enumerate(words[1:], start=1):
+        if word.text in _INTERPRETER_CODE_FLAGS and index + 1 < len(words):
+            return words[index + 1].text, None
+        if word.text == "-m":
+            break
+        if not word.text.startswith("-"):
+            return _read_script(word.text, cwd), word.text
+    if command.heredoc is not None:
+        return command.heredoc, None
+    if command.stdin_file:
+        return _read_script(command.stdin_file, cwd), command.stdin_file
+    return None, None
+
+
+def _command_refused(words: List[_Word], command: _Command, cwd: Optional[str], depth: int) -> Optional[str]:
     words = _peel(words)
     if not words:
-        return False
+        return None
     program = _basename(words[0])
 
     if program == "xargs":
@@ -423,9 +464,10 @@ def _command_refused(words: List[_Word], command: _Command, cwd: Optional[str], 
             i += 2 if inner[i].text in _XARGS_VALUE_FLAGS else 1
         inner = _peel(inner[i:])
         gaia_args = _is_gaia(inner)
-        if gaia_args is not None and _gaia_call_refused(gaia_args, verb_from_input=True):
-            return True
-        return bool(inner) and _command_refused(inner, _Command(words=inner), cwd, depth)
+        reason = _gaia_call_refused(gaia_args, verb_from_input=True) if gaia_args is not None else None
+        if reason or not inner:
+            return reason
+        return _command_refused(inner, _Command(words=inner), cwd, depth)
 
     if program == "find":
         for index, word in enumerate(words):
@@ -435,62 +477,57 @@ def _command_refused(words: List[_Word], command: _Command, cwd: Optional[str], 
                     if candidate.text in {";", "+"}:
                         break
                     inner.append(candidate)
-                if inner and _command_refused(inner, _Command(words=inner), cwd, depth):
-                    return True
-        return False
+                reason = _command_refused(inner, _Command(words=inner), cwd, depth) if inner else None
+                if reason:
+                    return reason
+        return None
 
-    if program == "eval" or program in {"source", "."}:
-        if program == "eval":
-            payload = " ".join(word.text for word in words[1:])
-        else:
-            payload = _read_script(words[1].text, cwd) if len(words) > 1 else None
-        return payload is not None and _refused(payload, cwd, depth + 1)
+    if program == "eval":
+        return _refused(" ".join(word.text for word in words[1:]), cwd, depth + 1)
+    if program in {"source", "."}:
+        return _script_refused(words[1].text, cwd, depth) if len(words) > 1 else None
 
     if program in _SHELLS:
+        for word in words[1:]:
+            if not word.text.startswith("-"):
+                break
+            if _NO_EXEC_OPTION.match(word.text):
+                return None
         for index, word in enumerate(words[1:-1], start=1):
             if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", word.text):
                 return _refused(words[index + 1].text, cwd, depth + 1)
         positional = _non_flags(words[1:])
-        program_text = None
         if positional:
-            program_text = _read_script(positional[0].text, cwd)
-        elif command.heredoc is not None:
-            program_text = command.heredoc
-        elif command.stdin_file:
-            program_text = _read_script(command.stdin_file, cwd)
-        return program_text is not None and _refused(program_text, cwd, depth + 1)
+            return _script_refused(positional[0].text, cwd, depth)
+        if command.heredoc is not None:
+            return _refused(command.heredoc, cwd, depth + 1)
+        if command.stdin_file:
+            return _script_refused(command.stdin_file, cwd, depth)
+        return None
 
     gaia_args = _is_gaia(words)
     if gaia_args is not None:
         return _gaia_call_refused(gaia_args, verb_from_input=False)
 
     if _INTERPRETER_RE.match(program):
-        for index, word in enumerate(words[1:], start=1):
-            if word.text in _INTERPRETER_CODE_FLAGS and index + 1 < len(words):
-                return _code_spells_verb(words[index + 1].text)
-            if word.text == "-m":
-                break
-            if not word.text.startswith("-"):
-                script = _read_script(word.text, cwd)
-                return script is not None and _code_spells_verb(script)
-        code = command.heredoc
-        if code is None and command.stdin_file:
-            code = _read_script(command.stdin_file, cwd)
-        return code is not None and _code_spells_verb(code)
+        code, source = _interpreter_program(words, command, cwd)
+        if code is None or not _code_spells_verb(code):
+            return None
+        return f"{_CODE_SPELLS_VERB} (in {source})" if source else _CODE_SPELLS_VERB
 
     if _is_reader(words):
-        return False
+        return None
     arguments = _non_flags(words[1:])
     if words[0].dynamic and arguments and arguments[0].dynamic:
-        return True
+        return _RUNTIME_PROGRAM
     for index, word in enumerate(words):
         if word.text in CONSENT_VERBS:
-            return True
+            return _RECEIVES_VERB
         if word.text == "approvals":
             following = _non_flags(words[index + 1:])
             if following and following[0].dynamic:
-                return True
-    return False
+                return _RUNTIME_APPROVALS_VERB
+    return None
 
 
 def _feeds_a_program_from_input(commands: List[_Command]) -> bool:
@@ -510,19 +547,26 @@ def _feeds_a_program_from_input(commands: List[_Command]) -> bool:
     return False
 
 
-def _refused(command: str, cwd: Optional[str], depth: int) -> bool:
+def _refused(command: str, cwd: Optional[str], depth: int) -> Optional[str]:
     if depth > _MAX_DEPTH:
-        return True
+        return _TOO_DEEP
     parsed = _parse(command)
-    if any(_refused(inner, cwd, depth + 1) for inner in parsed.substitutions):
-        return True
-    if any(_command_refused(c.words, c, cwd, depth) for c in parsed.commands):
-        return True
-    return _feeds_a_program_from_input(parsed.commands) and _code_spells_verb(command)
+    for inner in parsed.substitutions:
+        reason = _refused(inner, cwd, depth + 1)
+        if reason:
+            return reason
+    for simple in parsed.commands:
+        reason = _command_refused(simple.words, simple, cwd, depth)
+        if reason:
+            return reason
+    if _feeds_a_program_from_input(parsed.commands) and _code_spells_verb(command):
+        return _INPUT_SPELLS_VERB
+    return None
 
 
 def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]:
-    """Refuse a shell command that reaches a host consent verb; allow anything else."""
-    if command and _refused(command, cwd, 0):
-        return False, REJECTION_MESSAGE
+    """Refuse a shell command that reaches a host consent verb, naming the rule that fired."""
+    reason = _refused(command, cwd, 0) if command else None
+    if reason:
+        return False, f"Refused: {reason}. {REJECTION_MESSAGE}"
     return True, None
