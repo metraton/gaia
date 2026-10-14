@@ -832,7 +832,7 @@ def check_path_gaia() -> dict:
 
     winner = shutil.which("gaia")
     if not winner:
-        return _result("PATH gaia", "info", "no `gaia` on PATH", "Run `gaia install --path` from your workspace")
+        return _result("PATH gaia", "info", "no `gaia` on PATH", "Run `gaia install --channel npm --path` from your workspace")
     package, here = launcher_package(Path(winner)), _package_root()
     if package is not None and package.resolve() == here.resolve():
         return _result("PATH gaia", "pass", f"`gaia` on PATH is {winner} (this package)")
@@ -860,7 +860,7 @@ def check_launcher_python() -> dict:
         text = launcher.read_text(errors="replace")
     except OSError:
         return _result("Launcher Python", "pass", "no Windows launcher to check")
-    fix = "Re-run `gaia install --path` from your workspace to pin the Python you run now"
+    fix = "Re-run `gaia install --channel npm --path` from your workspace to pin the Python you run now"
     pinned = re.search(r'^"([^"]+)" "[^"]+" %\*$', text, re.MULTILINE)
     if pinned is None:
         return _result("Launcher Python", "warning", f"{launcher} pins no Python (written by an older Gaia)", fix)

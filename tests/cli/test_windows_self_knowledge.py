@@ -23,8 +23,8 @@ from cli import _converge, doctor, install  # noqa: E402
 import gaia.hook_shell as hook_shell  # noqa: E402
 
 PACKAGE_VERSION = "9.9.9"
-STORE_STUB = r"C:\Users\jorge\AppData\Local\Microsoft\WindowsApps\python3.exe"
-REAL_PYTHON = r"C:\Users\jorge\AppData\Local\Programs\Python\Python313\python.exe"
+STORE_STUB = r"C:\Users\user\AppData\Local\Microsoft\WindowsApps\python3.exe"
+REAL_PYTHON = r"C:\Users\user\AppData\Local\Programs\Python\Python313\python.exe"
 
 
 def _npm_prefix(tmp_path: Path) -> Path:
@@ -196,12 +196,12 @@ def test_doctor_warns_when_the_launcher_python_was_removed(tmp_path, monkeypatch
 
     assert result["severity"] == "warning", result
     assert removed in result["detail"]
-    assert "gaia install --path" in result["fix"]
+    assert "gaia install --channel npm --path" in result["fix"]
 
 
 def test_doctor_fix_commands_quote_paths_for_windows_shells(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
-    workspace = Path(r"C:\Users\Jorge Aguilar\ws")
+    workspace = Path(r"C:\Users\user\My Projects\ws")
 
     fix = doctor._hook_fix(workspace, {"plugin": False, "npm": workspace / "node_modules"})
 
