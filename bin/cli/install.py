@@ -1366,8 +1366,8 @@ def add_install_arguments(p: argparse.ArgumentParser) -> None:
         choices=tuple(PACKAGE_CHANNELS),
         default=None,
         help=(
-            "Channel to wire, required unless --skip-workspace: npm wires Claude Code through this package, "
-            "opencode wires OpenCode. npm refuses while the Claude Code plugin is "
+            "Channel to wire, overriding the choice a bare install makes: npm wires Claude Code through "
+            "this package, opencode wires OpenCode. npm refuses while the Claude Code plugin is "
             "enabled for the workspace and names how to remove it; opencode joins "
             "either. The Claude Code plugin itself is installed with `claude plugin "
             "install gaia@gaia-marketplace`."

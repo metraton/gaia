@@ -500,13 +500,15 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                 )
             try:
                 _apply_chain(con, state, start, chain, now_utc)
-            except sqlite3.Error as exc:
+            except BaseException as exc:
                 _err(f"ERROR: migration chain {label} failed and was rolled back. ({exc})")
                 if state == UNSEALED:
                     con.close()
                     _restore(backup)
                     _err(f"the journal mode changed before the chain; {GAIA_DB} restored from {backup}.")
                 _err(f"schema_version ledger remains at v{ledger}; no object changed.")
+                if not isinstance(exc, sqlite3.Error):
+                    raise
                 return 1
             _log(f"chain {label}: applied and sealed at v{expected}")
 
