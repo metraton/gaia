@@ -26,6 +26,7 @@ _DRIVE = re.compile(r"^[A-Za-z]:")
 _DRIVE_ROOT = re.compile(r"^[A-Za-z]:(?:/|$)")
 _SHORT_NAME = re.compile(r"^([^~./]{1,6})~\d{1,6}(?:\.([^.]{1,3}))?$")
 _EXECUTABLE_SUFFIXES = (".exe", ".com", ".cmd", ".bat")
+_INTERPRETER_LAUNCHERS = {"py": "python3"}
 
 
 def git_bash_to_windows(path: str) -> str:
@@ -109,3 +110,14 @@ def command_name(token: str) -> str:
         if name.endswith(suffix) and len(name) > len(suffix):
             return name[: -len(suffix)]
     return name
+
+
+def program_identity(token: str) -> str:
+    """The program a command word starts: its :func:`command_name`, a launcher (``py``) as the interpreter it runs."""
+    name = command_name(token)
+    return _INTERPRETER_LAUNCHERS.get(name, name)
+
+
+def is_launcher(token: str) -> bool:
+    """True when *token* names a launcher that :func:`program_identity` maps to an interpreter."""
+    return command_name(token) in _INTERPRETER_LAUNCHERS

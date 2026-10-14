@@ -24,6 +24,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
+from .canonical_path import is_launcher, program_identity
 from .cli_aliases import as_wrapped_cli
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
@@ -6103,11 +6104,17 @@ class _WrapperGrammar:
     ``value_flags`` consume the following word as their argument; any other
     flag -- boolean, clustered (``-oL``, ``-c3``) or ``--long=value`` -- is one
     word. ``positionals`` counts the wrapper's own operands before the wrapped
-    command (``timeout``'s duration).
+    command (``timeout``'s duration). A Windows wrapper takes ``/x`` switches,
+    matched in any case; one of its ``terminators`` (``cmd /c``) ends its
+    arguments, and ``window_title`` lets a leading quoted word be the title
+    ``start`` gives the window rather than the command.
     """
 
     value_flags: FrozenSet[str] = frozenset()
     positionals: int = 0
+    windows_switches: bool = False
+    terminators: FrozenSet[str] = frozenset()
+    window_title: bool = False
 
 
 # Wrappers that run the command after them with the same effect it has alone.
@@ -6141,7 +6148,19 @@ _COMMAND_WRAPPERS: Dict[str, _WrapperGrammar] = {
     "time": _WrapperGrammar(value_flags=frozenset({
         "-f", "-o", "--format", "--output",
     })),
+    "cmd": _WrapperGrammar(windows_switches=True, terminators=frozenset({"/c", "/k", "/r"})),
+    "start": _WrapperGrammar(
+        windows_switches=True,
+        value_flags=frozenset({"/d", "/node", "/affinity"}),
+        window_title=True,
+    ),
 }
+
+# A switch is one word: ``/b`` or ``/e:on``. A path such as ``/usr/bin/rm``
+# carries a second slash and is the wrapped command, not a switch.
+_WINDOWS_SWITCH_RE = _re.compile(r"/[A-Za-z?]+(?::\S*)?")
+_STRING_PAYLOAD_SWITCH_RE = _re.compile(r"(?:^|\s)/[ckr]\s*$", _re.IGNORECASE)
+_PY_LAUNCHER_SELECTOR_RE = _re.compile(r"-(?:\d+(?:\.\d+)?(?:-(?:32|64|arm64))?|V:\S+)")
 
 
 def _consume_shell_word(s: str, i: int) -> int:
@@ -6222,6 +6241,7 @@ def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
     """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
     positionals = grammar.positionals
+    title_allowed = grammar.window_title
     while i < n:
         while i < n and s[i].isspace():
             i += 1
@@ -6229,9 +6249,21 @@ def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
             break
         tok_end = _consume_shell_word(s, i)
         tok = s[i:tok_end]
-        if tok == "--":
+        if grammar.windows_switches:
+            tok = tok.lower()
+        if tok == "--" or tok in grammar.terminators:
             return tok_end
-        if tok.startswith("-"):
+        if title_allowed:
+            title_allowed = False
+            if tok.startswith('"'):
+                i = tok_end
+                continue
+        is_switch = (
+            _WINDOWS_SWITCH_RE.fullmatch(tok) is not None
+            if grammar.windows_switches
+            else tok.startswith("-")
+        )
+        if is_switch:
             i = tok_end
             if tok in grammar.value_flags or _short_bundle_ends_in_value_flag(
                 tok, grammar.value_flags,
@@ -6262,7 +6294,7 @@ def _skip_command_wrappers(s: str, i: int) -> int:
         while i < n and s[i].isspace():
             i += 1
         word_end = _consume_shell_word(s, i)
-        grammar = _COMMAND_WRAPPERS.get(s[i:word_end].rsplit("/", 1)[-1])
+        grammar = _COMMAND_WRAPPERS.get(program_identity(s[i:word_end].strip("\"'")))
         if grammar is None:
             return i
         i = _skip_wrapper_arguments(s, word_end, grammar)
@@ -6271,7 +6303,8 @@ def _skip_command_wrappers(s: str, i: int) -> int:
 def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
     """Peel leading wrappers (``_COMMAND_WRAPPERS``) and ``NAME=value`` assignments off *command*.
 
-    Returns ``(remainder, peeled)``. The wrapped command runs with the effect
+    Returns ``(remainder, peeled)``, the remainder's head respelled by
+    ``_name_program_head``. The wrapped command runs with the effect
     it has alone, but the token-0 scans land on the wrapper or the assignment
     and never see its verb. The block floor and the T3 detector both call this
     one function (DP1), so ``sudo``/``timeout``/``nice`` in front of a floor
@@ -6298,7 +6331,42 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
         if i == start:
             break
 
-    return s[i:].strip(), i > 0
+    remainder = s[i:].strip()
+    if _STRING_PAYLOAD_SWITCH_RE.search(s[:i]):
+        remainder = _unquote_single_word(remainder)
+    remainder, renamed = _name_program_head(remainder)
+    return remainder, i > 0 or renamed
+
+
+def _unquote_single_word(command: str) -> str:
+    """Return the text of *command* when it is one quoted word (``cmd /c "del x"``)."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return command
+    return words[0] if len(words) == 1 and words[0] != command else command
+
+
+def _name_program_head(command: str) -> "Tuple[str, bool]":
+    """Respell the head of *command* as the program Windows starts for it.
+
+    Returns ``(command, renamed)``. Only a head Windows resolves differently
+    from POSIX is respelled -- a backslash path, a PATHEXT suffix, the ``py``
+    launcher -- so a ``./script`` path and a PascalCase cmdlet keep the
+    spelling their lanes key on. ``py``'s version selector (``-3``,
+    ``-3.12-64``, ``-V:3.12``) picks an interpreter and is dropped with it.
+    """
+    head_end = _consume_shell_word(command, 0)
+    word = command[:head_end].strip("\"'")
+    program = program_identity(word)
+    if "\\" not in word and program == word.rsplit("/", 1)[-1].lower():
+        return command, False
+    if is_launcher(word):
+        selector_start = len(command) - len(command[head_end:].lstrip())
+        selector_end = _consume_shell_word(command, selector_start)
+        if _PY_LAUNCHER_SELECTOR_RE.fullmatch(command[selector_start:selector_end]):
+            head_end = selector_end
+    return program + command[head_end:], True
 
 
 _PACKAGE_CONFIG_ENV_RE = _re.compile(
