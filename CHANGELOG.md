@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Briefs.** `gaia brief close` verifies first and writes nothing when it refuses; the orchestrator's `brief/plan set-status closed` points at `brief close`.
 - `gaia migrate` honors `GAIA_DATA_DIR`; `gaia defects --count` ignores `--limit`; `gaia query` accepts `--workspace all`; `gaia metrics` labels commands past the dispatch prefix.
 
+## [5.6.0-rc.1] - 2026-10-14
+
 ## [5.5.0] - 2026-10-06
 
 ### Upgrading from 5.4
