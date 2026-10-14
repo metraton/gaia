@@ -8,12 +8,9 @@ mangles accented argv, stdin, settings and git output.
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 TEXT = "Decisión: Área → ok"
@@ -41,7 +38,6 @@ def _assert_round_trip(result: subprocess.CompletedProcess) -> None:
     assert payload == {"utf8": 1, "text": TEXT}
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX sh")
 def test_hook_launcher_runs_python_in_utf8_mode(tmp_path):
     result = subprocess.run(["sh", str(ROOT / "hooks" / "launch.sh"), str(_echo_probe(tmp_path))],
                             input=TEXT.encode("utf-8"), capture_output=True,
