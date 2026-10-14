@@ -397,9 +397,10 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"^fdisk\s+", re.IGNORECASE),
         re.compile(r"^mkfs(\.(ext[34]|fat|ntfs))?\s+", re.IGNORECASE),
         # Windows volume, partition and shadow-copy destruction (D140)
-        re.compile(r"^format(\.com)?\s+[a-z]:", re.IGNORECASE),
+        # format takes its switches before or after the drive, which may be quoted
+        re.compile(r"""^format(\.com)?\s(.*\s)?["']?[a-z]:["']?(\s|$)""", re.IGNORECASE),
         re.compile(r"^diskpart(\.exe)?(\s|$)", re.IGNORECASE),
-        re.compile(r"^vssadmin(\.exe)?\s+delete\s+shadows\b", re.IGNORECASE),
+        re.compile(r"^vssadmin(\.exe)?\s(.*\s)?delete\s+shadows\b", re.IGNORECASE),
         re.compile(r"^format-volume\b", re.IGNORECASE),
         re.compile(r"^clear-disk\b", re.IGNORECASE),
     ],

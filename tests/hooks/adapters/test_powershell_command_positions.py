@@ -154,3 +154,46 @@ def test_read_only_pipeline_stays_free(tool_name, command):
 ])
 def test_foreach_invoking_a_member_by_name_asks_like_rm(tool_name, command, twin):
     assert verdict(tool_name, command) == verdict("Bash", twin) != "free"
+
+
+def _in_every_context(command: str) -> list:
+    return [
+        ("Bash", command),
+        ("Bash", f"cmd /c {command}"),
+        ("Bash", f"powershell -Command '{command}'"),
+        ("Bash", f"pwsh -NoProfile -c '{command}'"),
+        ("PowerShell", command),
+    ]
+
+
+SWITCH_FIRST_FORMAT = ["format /q C:", "format /fs:ntfs D: /q", 'format "C:"', "format.com /y C:"]
+
+ALREADY_BLOCKED_ON_BASE = [
+    "FORMAT C: /X",
+    "vssadmin delete shadows /all /quiet",
+    "Format-Volume -FileSystem NTFS -DriveLetter D",
+    "Clear-Disk -RemoveData -Number 1",
+    "diskpart /s wipe.txt",
+]
+
+
+@pytest.mark.parametrize("tool_name,command", [
+    *(row for command in SWITCH_FIRST_FORMAT for row in _in_every_context(command)),
+    *(
+        pytest.param(*row, id=f"guard-already-blocked-on-base-{row[0]}-{row[1]}")
+        for command in ALREADY_BLOCKED_ON_BASE for row in _in_every_context(command)
+    ),
+])
+def test_drive_argument_anywhere_is_blocked_like_mkfs(tool_name, command):
+    assert verdict(tool_name, command) == verdict("Bash", "mkfs.ext4 /dev/sdb") == "blocked"
+
+
+@pytest.mark.parametrize("tool_name,command", [
+    ("Bash", "git log --format=%H"),
+    ("Bash", "echo format"),
+    ("Bash", "format"),
+    ("PowerShell", "Get-Date -Format yyyy"),
+    ("Bash", "pwsh -c 'Get-Date -Format C:'"),
+])
+def test_format_as_a_plain_word_is_not_blocked(tool_name, command):
+    assert verdict(tool_name, command) != "blocked"
