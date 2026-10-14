@@ -196,7 +196,7 @@ def test_doctor_warns_when_the_launcher_python_was_removed(tmp_path, monkeypatch
 
     assert result["severity"] == "warning", result
     assert removed in result["detail"]
-    assert "gaia install --channel npm --path" in result["fix"]
+    assert "`gaia install --path`" in result["fix"]
 
 
 def test_doctor_fix_commands_quote_paths_for_windows_shells(monkeypatch):

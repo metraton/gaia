@@ -62,13 +62,21 @@ minimum is installed. SessionStart names the fix in either direction.
 """
 
 
-def engine_command(action: str, consent_chain: str | None = None) -> list[str]:
-    """The engine invocation for ``action`` ('plan' or 'apply')."""
+def engine_command(
+    action: str, consent_chain: str | None = None, after_backup: bool = False
+) -> list[str]:
+    """The engine invocation for ``action`` ('plan' or 'apply').
+
+    *after_backup* lets a verified backup stand in for the chain consent; only
+    `gaia install` passes it (D140).
+    """
     cmd = [sys.executable or "python3", str(ENGINE)]
     if action == "plan":
         cmd.append("--plan")
     if consent_chain:
         cmd += ["--consent-chain", consent_chain]
+    if after_backup:
+        cmd.append("--apply-after-backup")
     return cmd
 
 
@@ -77,6 +85,7 @@ def run(
     consent_chain: str | None = None,
     db_path: str | None = None,
     capture: bool = False,
+    after_backup: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run the engine on ``db_path``, else on the database every gaia call resolves.
 
@@ -88,7 +97,7 @@ def run(
         str(Path(db_path).expanduser().resolve()) if db_path else str(_resolved_db_path())
     )
     return subprocess.run(
-        engine_command(action, consent_chain),
+        engine_command(action, consent_chain, after_backup),
         env=env,
         capture_output=capture,
         text=True,

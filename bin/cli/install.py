@@ -862,7 +862,7 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
         return {"rc": 1, "detail": msg}
 
     try:
-        result = migrate.run("apply", db_path=db_path, capture=True)
+        result = migrate.run("apply", db_path=db_path, capture=True, after_backup=True)
     except OSError as exc:
         msg = f"failed to invoke python bootstrapper -- {exc}"
         print(f"gaia install: {msg}", file=sys.stderr)
@@ -1249,10 +1249,14 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "schema migrations, re-seeds permissions, and repairs broken symlinks\n"
             "without destroying user state.\n"
             "\n"
-            "The database step runs `gaia migrate apply`: a backup first, the\n"
-            "whole chain in one transaction, structure-only chains on their own.\n"
-            "A chain that reaches existing rows stops here and names the\n"
-            "`gaia migrate apply --consent-chain vA..vB` command that continues.\n"
+            "Without --channel it reuses the channels this workspace recorded,\n"
+            "defers Claude Code to the Gaia plugin when one is enabled (removing\n"
+            "the npm hook wiring it would duplicate), and otherwise wires npm.\n"
+            "\n"
+            "The database step backs the database up, verifies the copy, then\n"
+            "applies the whole chain in one transaction -- including a chain\n"
+            "that reaches existing rows. A database newer than this package is\n"
+            "refused untouched. One install runs at a time (install.lock).\n"
             "\n"
             "Install declares no workspace and scans nothing. It reports the\n"
             "declared workspace holding the folder (or --workspace), or, when\n"
@@ -1359,11 +1363,37 @@ def recorded_channels(workspace: Path) -> tuple[str, ...]:
     return tuple(channel for channel in PACKAGE_CHANNELS if channel in recorded)
 
 
+def detect_channels(workspace: Path) -> tuple[str, ...]:
+    """The package channels a bare `gaia install` wires in *workspace*, decided without asking.
+
+    The recorded channels are reused; an enabled Gaia plugin owns Claude Code,
+    so npm is dropped there; a workspace with nothing recorded gets npm, plus
+    opencode when it carries an opencode.json.
+    """
+    from modules.core.plugin_setup import enabled_gaia_plugins  # type: ignore
+
+    channels = set(recorded_channels(workspace)) or {"npm"}
+    if (workspace / "opencode.json").is_file():
+        channels.add("opencode")
+    if enabled_gaia_plugins(workspace):
+        channels.discard("npm")
+    return tuple(channel for channel in PACKAGE_CHANNELS if channel in channels)
+
+
+def _install_workspace(args: argparse.Namespace) -> Path:
+    workspace_arg = getattr(args, "workspace", None)
+    if workspace_arg:
+        return Path(workspace_arg).expanduser().resolve()
+    return Path(os.environ.get("INIT_CWD", os.getcwd())).resolve()
+
+
 def cmd_install(args: argparse.Namespace) -> int:
-    """Execute the install subcommand; --skip-workspace alone needs no channel, since it wires nothing."""
+    """Execute the install subcommand; without --channel the workspace decides (detect_channels)."""
     no_channel = getattr(args, "channel", None) is None and getattr(args, "host", None) is None
     if no_channel and getattr(args, "skip_workspace", False):
         return install_channels(args, ())
+    if no_channel:
+        return install_channels(args, detect_channels(_install_workspace(args)))
     try:
         channel = resolve_channel(getattr(args, "channel", None), getattr(args, "host", None),
                                   tuple(PACKAGE_CHANNELS))
@@ -1373,9 +1403,28 @@ def cmd_install(args: argparse.Namespace) -> int:
     return install_channels(args, (channel,))
 
 
+INSTALL_LOCK_NAME = "install.lock"
+INSTALL_LOCK_TIMEOUT_SECONDS = 30.0
+
+
 def install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str = "gaia install") -> int:
+    """Run `_install_channels` holding the install lock beside the database, so concurrent runs never interleave."""
+    from modules.core.filelock import LockTimeout, exclusive_file_lock  # type: ignore
+
+    lock_path = Path(_install_db_path(getattr(args, "db_path", None))).parent / INSTALL_LOCK_NAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with exclusive_file_lock(lock_path, timeout=INSTALL_LOCK_TIMEOUT_SECONDS):
+            return _install_channels(args, channels, command=command)
+    except LockTimeout:
+        print(f"{command}: refused, another install holds {lock_path}; nothing changed", file=sys.stderr)
+        return 1
+
+
+def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str) -> int:
     """Bootstrap the DB once, then wire each of *channels* into the workspace and record them."""
     from gaia.hook_shell import claude_code_version_finding, missing_hook_shell
+    from modules.core.plugin_setup import enabled_gaia_plugins, sync_workspace_hooks  # type: ignore
 
     hosts = tuple(PACKAGE_CHANNELS[channel] for channel in channels)
     shell_problem = missing_hook_shell()
@@ -1394,13 +1443,7 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
     skip_workspace = bool(getattr(args, "skip_workspace", False))
     opt_path = bool(getattr(args, "path", False))
     strict_wiring = bool(getattr(args, "strict_wiring", False))
-    workspace_arg = getattr(args, "workspace", None)
-
-    workspace = (
-        Path(workspace_arg).expanduser().resolve()
-        if workspace_arg
-        else Path(os.environ.get("INIT_CWD", os.getcwd())).resolve()
-    )
+    workspace = _install_workspace(args)
     if not skip_workspace:
         for channel in channels:
             conflict = channel_conflict(workspace, channel)
@@ -1474,6 +1517,14 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
         )
         (wired if configured else failed).append(channel)
 
+    plugin_owns_claude_code = "npm" not in channels and bool(enabled_gaia_plugins(workspace))
+    if plugin_owns_claude_code:
+        action, details = sync_workspace_hooks(workspace, "plugin")
+        _report_step(name="npm hook wiring", result={"action": action, "details": details},
+                     quiet=quiet, verbose=verbose)
+        if action == "error":
+            failed.append("plugin")
+
     if failed and not quiet:
         print(f"  [!] channel configuration failed: {', '.join(failed)}", file=sys.stderr)
 
@@ -1481,6 +1532,8 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
         return 1
 
     if not wired:
+        if plugin_owns_claude_code and not failed:
+            return 0
         # postinstall stays fail-soft: a non-zero exit aborts the consumer's package install.
         return 0 if postinstall else 1
 

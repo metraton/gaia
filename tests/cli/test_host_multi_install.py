@@ -67,7 +67,7 @@ def isolated_host_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     monkeypatch.setattr("gaia.hook_shell.missing_hook_shell", lambda: None)
 
 
-@pytest.mark.parametrize("host", ["codex", "unknown", "all", None])
+@pytest.mark.parametrize("host", ["codex", "unknown", "all"])
 def test_internal_invalid_host_fails_before_bootstrap(host):
     with patch.object(install_mod, "_run_bootstrap") as bootstrap:
         with redirect_stderr(io.StringIO()):

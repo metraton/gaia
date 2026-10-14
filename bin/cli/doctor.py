@@ -860,7 +860,7 @@ def check_launcher_python() -> dict:
         text = launcher.read_text(errors="replace")
     except OSError:
         return _result("Launcher Python", "pass", "no Windows launcher to check")
-    fix = "Re-run `gaia install --channel npm --path` from your workspace to pin the Python you run now"
+    fix = "Re-run `gaia install --path` from your workspace to pin the Python you run now"
     pinned = re.search(r'^"([^"]+)" "[^"]+" %\*$', text, re.MULTILINE)
     if pinned is None:
         return _result("Launcher Python", "warning", f"{launcher} pins no Python (written by an older Gaia)", fix)

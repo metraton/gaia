@@ -28,7 +28,10 @@ as they were. Before that transaction opens on an existing database, a copy is
 written with SQLite's backup API to ``<database dir>/backups/``. A chain that
 only adds structure then applies on its own; a chain in which any migration
 reaches rows that already exist is refused until ``--consent-chain vA..vB``
-names that exact chain (D68: one consent for the whole chain).
+names that exact chain (D68: one consent for the whole chain), or until
+``--apply-after-backup`` -- what ``gaia install`` passes (D140) -- lets the
+verified backup stand in for it. A backup that fails integrity_check or does
+not hold the counted rows stops the run before any write.
 
 Configuration:
   - GAIA_DB    -- path of the DB. Default ~/.gaia/gaia.db.
@@ -69,6 +72,10 @@ DOCTOR_PY = _SCRIPT_DIR.parent / "bin" / "cli" / "doctor.py"
 SCHEMA_FLOOR = 18
 
 FRESH, SEALED, UNSEALED = "fresh", "sealed", "unsealed"
+
+# gaia install applies data-reaching chains itself once the backup verifies
+# (D140); `gaia migrate apply` keeps asking for --consent-chain.
+AFTER_BACKUP_FLAG = "--apply-after-backup"
 
 
 def _log(msg: str) -> None:
@@ -239,8 +246,14 @@ def _stamp(
     )
 
 
-def _backup(con: sqlite3.Connection, ledger: int, now: datetime) -> Path:
-    """Copy the whole database, beside it, before anything writes to it."""
+def _backup(
+    con: sqlite3.Connection, ledger: int, now: datetime, census: dict[str, int]
+) -> Path:
+    """Copy the whole database beside it and prove the copy restores it.
+
+    Raises sqlite3.DatabaseError unless the copy passes integrity_check and
+    holds exactly the rows *census* counted, so no chain runs without one.
+    """
     backup_dir = GAIA_DB.parent / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     target = backup_dir / (
@@ -249,8 +262,15 @@ def _backup(con: sqlite3.Connection, ledger: int, now: datetime) -> Path:
     dest = sqlite3.connect(str(target))
     try:
         con.backup(dest)
+        verdict = dest.execute("PRAGMA integrity_check").fetchone()[0]
+        copied = migration_guard.take_census(dest)
     finally:
         dest.close()
+    if verdict != "ok" or copied != census:
+        raise sqlite3.DatabaseError(
+            f"backup {target} did not verify (integrity_check={verdict!r}, "
+            f"rows match={copied == census})"
+        )
     return target
 
 
@@ -369,7 +389,7 @@ def _plan(expected: int) -> int:
     return 0
 
 
-def _apply(expected: int, consent_chain: str | None) -> int:
+def _apply(expected: int, consent_chain: str | None, after_backup: bool = False) -> int:
     if not SCHEMA_FILE.is_file():
         _err(f"ERROR: schema.sql no encontrado en {SCHEMA_FILE}")
         return 1
@@ -443,7 +463,8 @@ def _apply(expected: int, consent_chain: str | None) -> int:
         else:
             label = migration_guard.chain_label(start, expected)
             reaching = [v for v in _assess_chain(chain, census) if v.reaches]
-            if reaching and consent_chain != label:
+            consented = consent_chain == label
+            if reaching and not consented and not after_backup:
                 if consent_chain:
                     _err(
                         f"consent was given for {consent_chain}, but the pending "
@@ -452,9 +473,17 @@ def _apply(expected: int, consent_chain: str | None) -> int:
                 _err(migration_guard.format_chain_block(reaching, label, GAIA_DB, ledger))
                 return 1
             if state != FRESH:
-                _log(f"backup written: {_backup(con, ledger, now)}")
+                try:
+                    backup = _backup(con, ledger, now, census)
+                except sqlite3.Error as exc:
+                    _err(f"ERROR: {exc}. Nothing was migrated; the DB is unchanged.")
+                    return 1
+                _log(f"backup written and verified: {backup}")
             if reaching:
-                _log(f"chain {label}: reaches existing data; applying under consent")
+                _log(
+                    f"chain {label}: reaches existing data; applying "
+                    + ("under consent" if consented else "after the verified backup")
+                )
             try:
                 _apply_chain(con, state, start, chain, now_utc)
             except sqlite3.Error as exc:
@@ -578,6 +607,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         metavar="vA..vB",
         help="consent, once, to a chain that reaches existing data",
     )
+    parser.add_argument(
+        AFTER_BACKUP_FLAG,
+        dest="after_backup",
+        action="store_true",
+        help="apply a chain that reaches existing data once its backup verifies (gaia install)",
+    )
     return parser.parse_args(argv)
 
 
@@ -588,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
     expected = _read_expected_schema_version()
     if args.plan:
         return _plan(expected)
-    return _apply(expected, args.consent_chain)
+    return _apply(expected, args.consent_chain, args.after_backup)
 
 
 if __name__ == "__main__":
