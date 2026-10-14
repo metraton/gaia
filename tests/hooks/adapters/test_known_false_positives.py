@@ -81,12 +81,26 @@ def test_node_test_over_a_directory_or_glob_is_free(project, command):
     assert verdict("Bash", {"command": command}, cwd=str(project)) == "free"
 
 
-@pytest.mark.parametrize("command", ["node --test deploy.test.js", "node deploy.test.js"])
-def test_node_on_a_mutating_script_still_asks(project, command):
+@pytest.mark.parametrize("command", [
+    "node --test deploy.test.js",
+    "node deploy.test.js",
+    "node --test tests/ ./deploy.js",
+    "node --test 'tests/*.test.js' ./deploy.js",
+    "node --test --import=./deploy.js tests/",
+    "node --test --require ./deploy.js tests/",
+    "node --test -r ./deploy.js 'tests/*.test.js'",
+])
+def test_node_on_a_named_or_preloaded_script_still_asks(project, command):
     assert verdict("Bash", {"command": command}, cwd=str(project)) == "approval"
 
 
-WIPERS = ["format C:/q", "format /fs:ntfs D:/q", "vssadmin resize shadowstorage /for=C: /on=C: /maxsize=1MB"]
+WIPERS = [
+    "format C:/q",
+    "format /fs:ntfs D:/q",
+    "vssadmin resize shadowstorage /for=C: /on=C: /maxsize=1MB",
+    "C:/Windows/System32/format.com C:/q",
+    "C:\\Windows\\System32\\vssadmin.exe delete shadows /all",
+]
 
 
 def _in_every_context(command: str) -> list:

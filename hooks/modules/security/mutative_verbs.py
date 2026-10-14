@@ -1578,7 +1578,8 @@ def _powershell_floor_readings(command: str) -> "Tuple[str, ...]":
     ):
         return ()
     return tuple(
-        _PS_CALL_OPERATOR_RE.sub("", position) for position in _ps_command_positions(command)
+        _name_program_head(_PS_CALL_OPERATOR_RE.sub("", position))[0]
+        for position in _ps_command_positions(command)
     )
 
 # Obfuscation / non-inspectable-execution markers -> T3 regardless of the
@@ -7199,6 +7200,40 @@ def _script_honored_simulation_flag(
     return None
 
 
+_NODE_PRELOAD_FLAGS: FrozenSet[str] = frozenset({"-r", "--require", "--import"})
+
+
+def _node_preload_values(args: "List[str]") -> "List[str]":
+    """The modules node loads before its entry point (``-r x``, ``--require=x``, ``--import x``)."""
+    values = []
+    for index, token in enumerate(args):
+        flag, attached, value = token.partition("=")
+        if flag not in _NODE_PRELOAD_FLAGS:
+            continue
+        if attached:
+            values.append(value)
+        elif index + 1 < len(args):
+            values.append(args[index + 1])
+    return values
+
+
+def _is_node_test_suite_run(args: "List[str]", cwd: "Optional[str]") -> bool:
+    """True when ``node --test`` is given only directories or globs and preloads nothing.
+
+    That run is the project's test suite, the same act as ``pytest tests/``
+    or an ``npm test`` body. A named file or a preload among the arguments is
+    a script node runs, so the invocation stays in the script-file lane.
+    """
+    if "--test" not in args or _node_preload_values(args):
+        return False
+    positionals = [token for token in args if not token.startswith("-")]
+    return bool(positionals) and all(
+        re.search(r"[*?\[]", token)
+        or Path(cwd or Path.cwd(), Path(token).expanduser()).is_dir()
+        for token in positionals
+    )
+
+
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -7222,6 +7257,13 @@ def _check_script_file(
     """
     if heredoc_program(command) is not None:
         return None
+    if base_cmd == "node":
+        for preload in _node_preload_values(semantics.tokens[1:]):
+            result = detect_mutative_command(
+                f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1,
+            )
+            if result.is_mutative:
+                return result
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
@@ -7264,16 +7306,7 @@ def _check_script_file(
                     ),
                 )
 
-    # `node --test` given a directory or glob runs the project's test suite,
-    # the same act as `pytest tests/` or an `npm test` body, so it is not
-    # held to the single-script reading; a named test file still is.
-    if (
-        base_cmd == "node"
-        and "--test" in semantics.tokens[1:]
-        and (re.search(r"[*?\[]", script_path) or Path(
-            cwd or Path.cwd(), Path(script_path).expanduser()
-        ).is_dir())
-    ):
+    if base_cmd == "node" and _is_node_test_suite_run(semantics.tokens[1:], cwd):
         return MutativeResult(
             is_mutative=False,
             category=CATEGORY_READ_ONLY,
