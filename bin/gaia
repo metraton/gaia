@@ -13,8 +13,10 @@ Usage:
 """
 
 import argparse
+import codecs
 import importlib
 import importlib.util
+import locale
 import os
 import subprocess
 import sys
@@ -559,5 +561,26 @@ def main(argv=None):
     return _run_with_plugins(raw_argv, plugins)
 
 
+def _ensure_utf8_mode():
+    """Restart this CLI under Python's UTF-8 mode when its text codec is not UTF-8.
+
+    npm's shim and a bare ``python bin/gaia`` start the interpreter with the
+    locale codec, which decodes UTF-8 argv, stdin, files and git output as
+    mojibake on cp1252 Windows. A UTF-8 locale already decodes correctly and is
+    left alone: the orchestrator runs this CLI hundreds of times a session.
+    Windows has no exec, so there the child is awaited and its exit code relayed.
+    """
+    if sys.flags.utf8_mode or not sys.executable:
+        return
+    if codecs.lookup(locale.getpreferredencoding(False)).name == "utf-8":
+        return
+    os.environ["PYTHONUTF8"] = "1"
+    argv = [sys.executable, "-X", "utf8", *sys.orig_argv[1:]]
+    if os.name == "nt":
+        sys.exit(subprocess.call(argv))
+    os.execv(sys.executable, argv)
+
+
 if __name__ == "__main__":
+    _ensure_utf8_mode()
     sys.exit(main())

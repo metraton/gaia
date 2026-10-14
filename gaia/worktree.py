@@ -43,6 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional
 
+from gaia.subprocess_text import run_text
 from gaia.paths import db_path, worktrees_dir
 from gaia.project import git_common_dir
 
@@ -94,9 +95,7 @@ class WorktreeMetadata:
 
 def _git_value(repo_path: Path, *args: str) -> str:
     """Read one required identity value from git, failing closed on ambiguity."""
-    result = subprocess.run(
-        ["git", "-C", str(repo_path), *args], capture_output=True, text=True, check=True
-    )
+    result = run_text(["git", "-C", str(repo_path), *args], capture_output=True, check=True)
     value = result.stdout.strip()
     if not value:
         raise WorktreePathError(f"git returned no value for {' '.join(args)}")

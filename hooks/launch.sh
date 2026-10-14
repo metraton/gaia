@@ -3,6 +3,9 @@
 # The python.org Windows installer provides `python` and `py`, not `python3`,
 # and Windows' App Execution Alias answers `python3` without being Python --
 # so each candidate is probed before it is trusted.
+# UTF-8 mode, inherited by every child Python: the locale codec (cp1252 on
+# Windows) would mangle non-ASCII payloads, paths and git output.
+export PYTHONUTF8=1
 for candidate in python3 python; do
   if command -v "$candidate" >/dev/null 2>&1 &&
      "$candidate" -c 'import sys; sys.exit(sys.version_info[0] != 3)' >/dev/null 2>&1; then

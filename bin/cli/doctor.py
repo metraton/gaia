@@ -3152,7 +3152,7 @@ def _apply_agent_fix(project_root: Path) -> dict:
         }
 
     try:
-        with open(settings_path, "r") as f:
+        with open(settings_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as exc:
         return {
@@ -3171,8 +3171,8 @@ def _apply_agent_fix(project_root: Path) -> dict:
     data["agent"] = "gaia-orchestrator"
 
     try:
-        with open(settings_path, "w") as f:
-            json.dump(data, f, indent=2)
+        with open(settings_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
             f.write("\n")
     except Exception as exc:
         return {

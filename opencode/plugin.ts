@@ -600,7 +600,7 @@ async function bridge(event: Record<string, unknown>, cwd: string | undefined): 
   }
   const child = Bun.spawn([...pythonCommand(), bridgePath, "--shell-env-v1"], {
     cwd,
-    env: { ...process.env, GAIA_HOST: "opencode" },
+    env: { ...process.env, GAIA_HOST: "opencode", PYTHONUTF8: "1" },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -630,7 +630,7 @@ async function gaiaCapture(
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const child = Bun.spawn([...pythonCommand(), gaiaPath, ...args], {
     cwd,
-    env: { ...process.env, GAIA_HOST: "opencode" },
+    env: { ...process.env, GAIA_HOST: "opencode", PYTHONUTF8: "1" },
     stdout: "pipe",
     stderr: "pipe",
   })

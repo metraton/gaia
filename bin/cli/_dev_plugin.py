@@ -85,7 +85,7 @@ def extract_plugin(tarball: Path, destination: Path) -> dict[str, Any]:
         if missing:
             raise ValueError(f"packed plugin cannot start the host as the orchestrator: {missing}")
         (package / ".claude-plugin" / "marketplace.json").write_text(
-            json.dumps(_marketplace(package), indent=2) + "\n")
+            json.dumps(_marketplace(package), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         retired = parent / f".retired-{uuid.uuid4().hex}"
         if destination.exists():
             os.rename(destination, retired)
@@ -170,7 +170,7 @@ def select_dev_plugin(workspace: Path) -> dict[str, Any]:
     try:
         if path.is_symlink():
             raise ValueError("refusing redirected local settings")
-        settings = json.loads(path.read_text()) if path.exists() else {}
+        settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         plugins = settings.setdefault("enabledPlugins", {}) if isinstance(settings, dict) else None
         if not isinstance(plugins, dict):
             raise ValueError("local settings have no enabledPlugins object")
@@ -184,7 +184,7 @@ def select_dev_plugin(workspace: Path) -> dict[str, Any]:
                                           "value": plugins.get(PUBLISHED_PLUGIN_ID)}) + "\n")
         plugins.update(wanted)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(settings, indent=2) + "\n")
+        path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     except (OSError, ValueError) as exc:
         return {"action": "error", "path": str(path), "details": f"{exc}; plugins left as they are"}
     return {"action": "updated", "path": str(path),
@@ -221,7 +221,7 @@ def deselect_dev_plugin(workspace: Path) -> None:
     if path.is_symlink():
         raise ValueError("refusing redirected local settings")
     prior = _prior_published_entry(workspace)
-    settings = json.loads(path.read_text())
+    settings = json.loads(path.read_text(encoding="utf-8"))
     plugins = settings.get("enabledPlugins") if isinstance(settings, dict) else None
     if not isinstance(plugins, dict):
         return
@@ -233,7 +233,7 @@ def deselect_dev_plugin(workspace: Path) -> None:
             del plugins[PUBLISHED_PLUGIN_ID]
     if not plugins:
         del settings["enabledPlugins"]
-    path.write_text(json.dumps(settings, indent=2) + "\n")
+    path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _prior_published_entry(workspace: Path) -> dict | None:
