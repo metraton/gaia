@@ -821,8 +821,14 @@ def _path_first_fix(directory: Path) -> str:
 
 @register_check("PATH gaia", order=28)
 def check_path_gaia() -> dict:
-    """Report the `gaia` that wins on PATH and warn when it runs a package other than this one."""
-    from cli._converge import launcher_package  # noqa: PLC0415
+    """Report the `gaia` that wins on PATH and warn when it runs a different Gaia version than this doctor.
+
+    A source checkout beside its installed copy at the same version is the
+    normal `gaia dev` state and is only info: a warning there would fire on
+    every dev run. Build drift between two copies of one version is the
+    Source parity check's to report.
+    """
+    from cli._converge import _package_version, launcher_package  # noqa: PLC0415
 
     winner = shutil.which("gaia")
     if not winner:
@@ -830,6 +836,10 @@ def check_path_gaia() -> dict:
     package, here = launcher_package(Path(winner)), _package_root()
     if package is not None and package.resolve() == here.resolve():
         return _result("PATH gaia", "pass", f"`gaia` on PATH is {winner} (this package)")
+    version = _package_version(package)
+    if version is not None and version == _package_version(here):
+        return _result("PATH gaia", "info", f"`gaia` on PATH is {winner}, which runs {package}: "
+                       f"the same v{version} as this doctor ({here})")
     runs = package or "a package Gaia cannot identify"
     return _result("PATH gaia", "warning", f"`gaia` on PATH is {winner}, which runs {runs}, not {here}",
                    _path_first_fix(_LAUNCHER_DIR.expanduser()))

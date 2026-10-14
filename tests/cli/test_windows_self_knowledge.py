@@ -145,6 +145,34 @@ def test_doctor_warns_when_another_gaia_wins_on_path_with_a_windows_fix(tmp_path
     assert "[Environment]::SetEnvironmentVariable" in result["fix"]
 
 
+def _checkout(tmp_path: Path, version: str) -> Path:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": version}))
+    return checkout
+
+
+def test_doctor_reports_a_checkout_beside_its_installed_copy_as_info(tmp_path, monkeypatch):
+    prefix = _npm_prefix(tmp_path)
+    checkout = _checkout(tmp_path, PACKAGE_VERSION)
+    monkeypatch.setattr(_converge.shutil, "which", lambda name: str(prefix / "gaia.cmd"))
+    monkeypatch.setattr(doctor, "_package_root", lambda: checkout)
+
+    result = doctor.check_path_gaia()
+
+    assert result["severity"] == "info", result
+    assert PACKAGE_VERSION in result["detail"]
+
+
+def test_doctor_warns_when_the_path_gaia_is_another_version(tmp_path, monkeypatch):
+    prefix = _npm_prefix(tmp_path)
+    checkout = _checkout(tmp_path, "10.0.0")
+    monkeypatch.setattr(_converge.shutil, "which", lambda name: str(prefix / "gaia.cmd"))
+    monkeypatch.setattr(doctor, "_package_root", lambda: checkout)
+
+    assert doctor.check_path_gaia()["severity"] == "warning"
+
+
 def _write_launcher(tmp_path, monkeypatch, python: str) -> Path:
     monkeypatch.setattr(install, "_is_windows", lambda: True)
     monkeypatch.setattr(install.sys, "executable", python)
