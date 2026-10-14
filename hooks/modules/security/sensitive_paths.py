@@ -10,16 +10,20 @@ keeps a private copy that can drift from the others.
 
 Matching is by path shape, never by the file existing: a credential directory
 or file name is recognized wherever it sits, and the account entries are the
-ones meaningful only under ``$HOME``.
+ones meaningful only under ``$HOME``. Every path is matched in its
+``canonical_path`` form, so a Windows spelling gets its POSIX twin's verdict.
 """
 
 from __future__ import annotations
 
 import fnmatch
 import os
+import posixpath
 import re
 import shlex
 from typing import Iterable, List, Optional
+
+from .canonical_path import canonical_path, is_absolute
 
 # Directories whose whole content is credentials, wherever they sit.
 CREDENTIAL_DIR_NAMES = frozenset({".ssh", ".gnupg", ".aws", ".azure"})
@@ -64,6 +68,27 @@ HOME_ENTRIES = {
     ".zshenv": _WRITE_ONLY,
 }
 
+# The Windows homes of the same uses, marked like HOME_ENTRIES and matched
+# anywhere in an absolute path: a profile may sit on any drive or under
+# OneDrive, so $HOME does not locate it. The PowerShell folders and Startup
+# run code at the next session start and stay readable.
+PROFILE_ENTRIES = {
+    "appdata/roaming/github cli": _BOTH, "appdata/roaming/gcloud": _BOTH,
+    "appdata/roaming/gnupg": _BOTH,
+    "documents/powershell": _WRITE_ONLY, "documents/windowspowershell": _WRITE_ONLY,
+    "appdata/roaming/microsoft/windows/start menu/programs/startup": _WRITE_ONLY,
+}
+
+# The long names an 8.3 alias in a path may stand for. Env variants are listed
+# because an alias keeps only the first three letters of the last extension.
+_SHORT_NAMES = tuple(sorted(
+    CREDENTIAL_DIR_NAMES | CREDENTIAL_FILE_NAMES | PRIVATE_KEY_STEMS | READABLE_ENV_TEMPLATES
+    | {".env", ".env.local", ".env.development", ".env.production", ".env.staging",
+       ".env.test", "credentials", "credentials.json", ".config", ".docker", ".kube",
+       ".npmrc", "github cli", "start menu", "windowspowershell", "powershell",
+       "documents", "microsoft"}
+))
+
 # Names a file-name glob is tested against: a glob that would select one of
 # them selects a sensitive file.
 _SENSITIVE_NAME_SAMPLES = (
@@ -76,35 +101,54 @@ _TOKEN_SPLIT = re.compile(r"[\s=]+")
 _TOKEN_LEADING = "@<>&|(\"'"
 _TOKEN_TRAILING = ")\"';,"
 
+# Unexpanded spellings of the home and the Windows profile folders, each with
+# the folder it names below $HOME.
+_HOME_SPELLINGS = (
+    (re.compile(r"^(?:~|\$\{?home\}?|%userprofile%|\$env:userprofile)(?=[/\\]|$)", re.I), ""),
+    (re.compile(r"^(?:%appdata%|\$env:appdata)(?=[/\\]|$)", re.I), "/AppData/Roaming"),
+    (re.compile(r"^(?:%localappdata%|\$env:localappdata)(?=[/\\]|$)", re.I), "/AppData/Local"),
+)
+
 
 def _expand_home(path: str) -> str:
-    """Expand the three spellings of $HOME a command may carry unexpanded."""
-    home = os.path.expanduser("~")
-    if path == "~":
-        return home
-    for prefix in ("~/", "$HOME/", "${HOME}/"):
-        if path.startswith(prefix):
-            return os.path.join(home, path[len(prefix):])
+    """Expand the spellings of $HOME and the Windows profile folders a command may carry unexpanded."""
+    for spelling, below_home in _HOME_SPELLINGS:
+        match = spelling.match(path)
+        if match:
+            home = os.path.expanduser("~").rstrip("/\\")
+            return home + below_home + path[match.end():]
     return path
 
 
-def _home_relative(path: str) -> str:
-    """The part of an absolute *path* under $HOME, or "" when it lands elsewhere."""
-    if not os.path.isabs(path):
+def _canonical(path: str) -> str:
+    return canonical_path(_expand_home(path.strip()), _SHORT_NAMES)
+
+
+def _home_relative(candidate: str) -> str:
+    """The part of a canonical absolute *candidate* under $HOME, or "" when it lands elsewhere."""
+    if not is_absolute(candidate):
         return ""
-    home = os.path.normpath(os.path.expanduser("~"))
-    norm = os.path.normpath(path)
-    if norm != home and not norm.startswith(home + os.sep):
+    home = posixpath.normpath(canonical_path(os.path.expanduser("~")))
+    norm = posixpath.normpath(candidate)
+    if norm == home:
+        return "."
+    if not norm.startswith(home.rstrip("/") + "/"):
         return ""
-    return os.path.relpath(norm, home)
+    return norm[len(home.rstrip("/")) + 1:]
 
 
 def _home_entry_marks(path: str) -> frozenset:
-    """The uses the home entries covering *path* guard; empty outside them."""
-    relative = _home_relative(_expand_home(path))
-    if not relative or relative == ".":
-        return frozenset()
+    """The uses the home and profile entries covering *path* guard; empty outside them."""
+    candidate = _canonical(path)
     marks: frozenset = frozenset()
+    if is_absolute(candidate):
+        wrapped = posixpath.normpath(candidate) + "/"
+        for entry, uses in PROFILE_ENTRIES.items():
+            if "/" + entry + "/" in wrapped:
+                marks = marks | uses
+    relative = _home_relative(candidate)
+    if not relative or relative == ".":
+        return marks
     for entry, uses in HOME_ENTRIES.items():
         if relative == entry or relative.startswith(entry + "/"):
             marks = marks | uses
@@ -146,11 +190,11 @@ def sensitive_path_label(path: str, cwd: Optional[str] = None) -> str:
     """
     if not path:
         return ""
-    candidate = _expand_home(path.strip())
-    if cwd and not os.path.isabs(candidate):
-        candidate = os.path.join(cwd, candidate)
-    if os.path.isabs(candidate):
-        candidate = os.path.normpath(candidate)
+    candidate = _canonical(path)
+    if cwd and not is_absolute(candidate):
+        candidate = canonical_path(cwd) + "/" + candidate
+    if is_absolute(candidate):
+        candidate = posixpath.normpath(candidate)
         if candidate in SYSTEM_SECRET_FILES:
             return "system credentials file"
         if any(candidate == d or candidate.startswith(d + "/") for d in SYSTEM_SECRET_DIRS):
@@ -169,7 +213,7 @@ def glob_selects_sensitive_name(pattern: str) -> bool:
     A bare wildcard (``*``, ``**/*``) selects everything and names nothing, so
     it is left to the directory it runs in rather than refused on its own.
     """
-    name = pattern.rstrip("/").rsplit("/", 1)[-1]
+    name = pattern.rstrip("/").rsplit("/", 1)[-1].lower()
     if not name or not re.search(r"[^*?/.]", name):
         return False
     return any(fnmatch.fnmatchcase(sample, name) for sample in _SENSITIVE_NAME_SAMPLES)
@@ -201,8 +245,12 @@ def pattern_reaches_sensitive_path(pattern: str, base: str = "") -> str:
 
 
 def _path_candidates(token: str) -> Iterable[str]:
-    """The path-like pieces of one shell token (``--in=x``, ``@x``, ``<x``)."""
-    for piece in _TOKEN_SPLIT.split(token):
+    """The path-like pieces of one shell token (``--in=x``, ``@x``, ``<x``), the whole token first.
+
+    The whole token is a candidate because a quoted path may hold a space
+    (``GitHub CLI``) that the split would cut through.
+    """
+    for piece in (token, *_TOKEN_SPLIT.split(token)):
         piece = piece.lstrip(_TOKEN_LEADING).rstrip(_TOKEN_TRAILING)
         if piece and not piece.startswith("-"):
             yield piece

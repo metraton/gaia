@@ -17,7 +17,6 @@ directory (``grep -r x ~``, Grep over the home directory).
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 from typing import Any, List, Mapping, Optional, Tuple
@@ -30,6 +29,7 @@ from .sensitive_paths import (
     sensitive_path_label,
     sensitive_read_denial,
 )
+from .canonical_path import command_name
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
 
@@ -41,11 +41,19 @@ _READER_COMMANDS = frozenset({
     "awk", "gawk", "mawk", "nawk", "sed",
     "grep", "egrep", "fgrep", "rg", "ag", "ack",
     "diff", "cmp", "comm", "jq", "yq", "openssl",
+    "type", "gc", "get-content", "findstr", "certutil", "select-string", "sls",
+    "import-csv", "ipcsv", "format-hex", "fhx",
 })
 _LISTER_COMMANDS = frozenset({
     "ls", "dir", "vdir", "tree", "find", "du", "exa", "eza", "lsd",
+    "get-childitem", "gci",
 })
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# Windows shells and the flag after which the rest of the command line is the
+# command they run.
+_WINDOWS_SHELL_INLINE_FLAGS = {
+    "cmd": ("/c", "/k"), "powershell": ("-c", "-command"), "pwsh": ("-c", "-command"),
+}
 
 # A sed that edits in place is a write; its verdict belongs to the write
 # route, which asks for a signature on an account path.
@@ -72,11 +80,17 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     tokens = _strip_transparent_prefixes(_tokenize(strip_grouping_wrappers(component)))
     if not tokens:
         return ""
-    base = os.path.basename(tokens[0])
+    base = command_name(tokens[0])
     arguments = tokens[1:]
     if base in _SHELLS and "-c" in arguments:
         inline = arguments[arguments.index("-c") + 1:]
         return reads_sensitive_path(inline[0], cwd) if inline else ""
+    inline_flags = _WINDOWS_SHELL_INLINE_FLAGS.get(base, ())
+    flag_index = next(
+        (index for index, arg in enumerate(arguments) if arg.lower() in inline_flags), None,
+    )
+    if flag_index is not None:
+        return reads_sensitive_path(" ".join(arguments[flag_index + 1:]), cwd)
     if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
         return ""
     if base == "sed" and any(_SED_IN_PLACE.match(arg) for arg in arguments):

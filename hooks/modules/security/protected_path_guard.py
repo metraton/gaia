@@ -56,11 +56,11 @@ Public API:
 
 from __future__ import annotations
 
-import os
 import re
 import shlex
 from typing import List, Optional, Tuple
 
+from .canonical_path import command_name
 from .protected_paths import is_protected_hook_path
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -88,6 +88,11 @@ _GIT_WRITE_SUBCOMMANDS = frozenset({
 _FILESYSTEM_WRITE_COMMANDS = frozenset({
     "mv", "cp", "install", "dd", "tee", "ln", "rsync", "touch", "truncate",
     "mkdir", "sed", "chmod", "chown", "chgrp", "shred", "unlink", "rm",
+    # cmd.exe builtins and PowerShell cmdlets with their aliases.
+    "copy", "xcopy", "robocopy", "copy-item", "cpi", "move", "move-item", "mi",
+    "ren", "rename", "rename-item", "rni", "del", "erase", "rd", "rmdir",
+    "remove-item", "ri", "new-item", "ni", "set-content", "sc", "add-content", "ac",
+    "out-file", "clear-content", "clc", "icacls", "attrib",
 })
 
 # Shell operators that separate independent command components. Splitting on
@@ -146,7 +151,7 @@ def _component_writes_protected_path(component: str) -> Optional[str]:
     if not protected_tokens:
         return None
 
-    base = os.path.basename(tokens[0])
+    base = command_name(tokens[0])
 
     # Redirect into a protected path: ">"/">>" token or an unspaced ">file".
     for tok in tokens:
