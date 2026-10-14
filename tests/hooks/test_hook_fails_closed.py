@@ -175,12 +175,62 @@ def cli_on_path(monkeypatch):
             monkeypatch.syspath_prepend(str(path))
 
 
-def test_doctor_minimum_matches_the_declared_engine(cli_on_path):
-    from cli import doctor
+def test_host_minimum_matches_the_declared_engine_and_its_validator(cli_on_path):
+    from gaia.hook_shell import MIN_CLAUDE_CODE_VERSION
 
+    engine = ">=" + ".".join(map(str, MIN_CLAUDE_CODE_VERSION))
     plugin = json.loads((REPO_ROOT / ".claude-plugin" / "plugin.json").read_text())
-    minimum = ".".join(map(str, doctor.MIN_CLAUDE_CODE_VERSION))
-    assert plugin["engines"]["claude-code"] == f">={minimum}"
+    assert plugin["engines"]["claude-code"] == engine
+    assert f"claudeCodeEngine !== '{engine}'" in (REPO_ROOT / "bin" / "pre-publish-validate.js").read_text()
+
+
+def _claude_reports(monkeypatch, version_line: str) -> None:
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda cmd, *a, **k: "/usr/bin/claude" if cmd == "claude" else real_which(cmd, *a, **k))
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=version_line, stderr="")
+    )
+
+
+def test_install_refuses_a_claude_code_older_than_the_minimum(cli_on_path, tmp_path, monkeypatch, capsys):
+    from cli import install
+
+    def _bootstrap_reached(**_kwargs):
+        raise AssertionError("install proceeded on a host that ignores onFailure")
+
+    monkeypatch.setattr(install, "_run_bootstrap", _bootstrap_reached)
+    _claude_reports(monkeypatch, "2.1.294 (Claude Code)\n")
+    args = Namespace(workspace=str(tmp_path), db_path=str(tmp_path / "gaia.db"), quiet=True, skip_workspace=True)
+
+    assert install.install_channels(args, ("npm",)) == 1
+    assert "claude update" in capsys.readouterr().err
+
+
+def test_unreadable_claude_code_version_does_not_refuse(cli_on_path, monkeypatch):
+    from gaia.hook_shell import outdated_claude_code
+
+    _claude_reports(monkeypatch, "garbled\n")
+
+    assert outdated_claude_code() is None
+
+
+def test_keyboard_interrupt_at_import_denies_the_tool_call(tmp_path):
+    hooks = _hook_tree(tmp_path, "modules/core/stdin.py", "raise KeyboardInterrupt\n")
+
+    _assert_denied(_run_entry(hooks, tmp_path))
+
+
+def test_settings_local_render_keeps_on_failure():
+    hooks_dir = REPO_ROOT / "hooks"
+    if str(hooks_dir) not in sys.path:
+        sys.path.insert(0, str(hooks_dir))
+    from modules.core.plugin_setup import render_gaia_hooks
+
+    shipped = json.loads((hooks_dir / "hooks.json").read_text())["hooks"]
+    rendered = render_gaia_hooks(shipped, hooks_dir)
+
+    handlers = [h for entry in rendered["PreToolUse"] for h in entry["hooks"]]
+    assert handlers and all(h.get("onFailure") == "block" for h in handlers), handlers
 
 
 def test_doctor_flags_a_claude_code_older_than_the_minimum(cli_on_path, monkeypatch):

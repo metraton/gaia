@@ -1359,11 +1359,14 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 def install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str = "gaia install") -> int:
     """Bootstrap the DB once, then wire each of *channels* into the workspace and record them."""
-    from gaia.hook_shell import missing_hook_shell
+    from gaia.hook_shell import missing_hook_shell, outdated_claude_code
 
-    shell_problem = missing_hook_shell()
-    if shell_problem:
-        print(f"{command}: refused, {shell_problem}", file=sys.stderr)
+    hosts = tuple(PACKAGE_CHANNELS[channel] for channel in channels)
+    host_problem = missing_hook_shell()
+    if not host_problem and "claude_code" in hosts:
+        host_problem = outdated_claude_code()
+    if host_problem:
+        print(f"{command}: refused, {host_problem}", file=sys.stderr)
         return 1
     postinstall = bool(getattr(args, "postinstall", False))
     quiet = bool(getattr(args, "quiet", False))
@@ -1373,7 +1376,6 @@ def install_channels(args: argparse.Namespace, channels: Sequence[str], *, comma
     opt_path = bool(getattr(args, "path", False))
     strict_wiring = bool(getattr(args, "strict_wiring", False))
     workspace_arg = getattr(args, "workspace", None)
-    hosts = tuple(PACKAGE_CHANNELS[channel] for channel in channels)
 
     workspace = (
         Path(workspace_arg).expanduser().resolve()

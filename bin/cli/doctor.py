@@ -70,7 +70,6 @@ References:
 import argparse
 import json
 import os
-import re
 import shlex
 import shutil
 import sqlite3
@@ -731,13 +730,11 @@ def check_last_install_error() -> dict:
     )
 
 
-# Must match the claude-code engine scripts/build-plugin.py writes into plugin.json.
-MIN_CLAUDE_CODE_VERSION = (2, 1, 295)
-
-
 @register_check("Claude Code", order=20)
 def check_claude_code() -> dict:
-    """Check if Claude Code CLI is installed."""
+    """Check that Claude Code is installed and new enough to honour onFailure."""
+    from gaia.hook_shell import outdated_claude_code  # noqa: PLC0415
+
     for cmd in ("claude", "claude-code"):
         if shutil.which(cmd):
             try:
@@ -748,15 +745,9 @@ def check_claude_code() -> dict:
                     timeout=10,
                 )
                 version_line = proc.stdout.strip().split("\n")[0] if proc.stdout else cmd
-                found = re.match(r"(\d+)\.(\d+)\.(\d+)", version_line)
-                if found and tuple(map(int, found.groups())) < MIN_CLAUDE_CODE_VERSION:
-                    minimum = ".".join(map(str, MIN_CLAUDE_CODE_VERSION))
-                    return _result(
-                        "Claude Code", "error",
-                        f"{version_line} is older than {minimum}: PreToolUse hooks lack "
-                        "onFailure, so a hook that cannot start lets the tool run",
-                        "claude update",
-                    )
+                outdated = outdated_claude_code()
+                if outdated:
+                    return _result("Claude Code", "error", outdated, "claude update")
                 return _result("Claude Code", "pass", version_line)
             except Exception:
                 return _result("Claude Code", "pass", cmd)

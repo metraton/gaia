@@ -510,11 +510,11 @@ class PrePublishValidator {
 
     // 3. Engines field
     const claudeCodeEngine = pluginData.engines && pluginData.engines['claude-code'];
-    if (!claudeCodeEngine || claudeCodeEngine !== '>=2.1.0') {
-      this.log(`✗ plugin.json engines["claude-code"] must be ">=2.1.0", got "${claudeCodeEngine || 'missing'}"`, 'error');
-      throw new Error(`Plugin manifest missing or invalid engines["claude-code"]: expected ">=2.1.0", got "${claudeCodeEngine || 'missing'}"`);
+    if (!claudeCodeEngine || claudeCodeEngine !== '>=2.1.295') {
+      this.log(`✗ plugin.json engines["claude-code"] must be ">=2.1.295", got "${claudeCodeEngine || 'missing'}"`, 'error');
+      throw new Error(`Plugin manifest missing or invalid engines["claude-code"]: expected ">=2.1.295", got "${claudeCodeEngine || 'missing'}"`);
     }
-    this.log('✓ plugin.json engines["claude-code"] is ">=2.1.0"', 'success');
+    this.log('✓ plugin.json engines["claude-code"] is ">=2.1.295"', 'success');
 
     // 4. Categories field
     const requiredCategories = ['devops', 'security', 'orchestration'];

@@ -64,7 +64,7 @@ try:
     from adapters.utils import warn_if_dual_channel
 
     configure_hook_logging("pre_tool_use")
-except Exception as _startup_error:
+except BaseException as _startup_error:
     if __name__ != "__main__":
         raise
     # The audit sink is part of what failed to load, so no event is recorded.

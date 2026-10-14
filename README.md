@@ -90,7 +90,7 @@ Gaia interacts with three things outside itself: the host, which loads the hooks
 
 ## Requirements
 
-- One host: Claude Code >= 2.1.0 (the floor declared in [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)) or OpenCode. No OpenCode floor is declared or checked; the plugin was measured on OpenCode 1.18.32, which runs subagents in the background only with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` in its environment ([INSTALL.md](./INSTALL.md), Surface 3).
+- One host: Claude Code >= 2.1.295 (the floor declared in [`.claude-plugin/plugin.json`](./.claude-plugin/plugin.json)) or OpenCode. No OpenCode floor is declared or checked; the plugin was measured on OpenCode 1.18.32, which runs subagents in the background only with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` in its environment ([INSTALL.md](./INSTALL.md), Surface 3).
 - Python >= 3.12 on `PATH` (the `engines` in [`package.json`](./package.json)); the CLI and the hooks are Python. On the plugin the hooks start through [`hooks/launch.sh`](./hooks/launch.sh), which needs `sh` and takes the first of `python3`, `python` or `py -3` that is really Python 3, so the python.org Windows install, which has no `python3`, works too.
 - Node.js >= 18 and npm or pnpm, only for the package channels below.
 - git, for the per-turn worktrees.
