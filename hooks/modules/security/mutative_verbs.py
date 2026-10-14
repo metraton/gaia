@@ -4323,15 +4323,20 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # follow the prefix, but ``analyze_command`` keys off ``tokens[0]``. Peel and
     # re-classify -- SAME command minus an inert prefix, so ``_depth`` is carried
     # through unchanged (mirrors the ``cd`` peel above).
-    env_remainder, env_peeled = _peel_leading_command_wrappers(command)
+    readings, env_peeled = _peel_wrapper_readings(command)
+    env_remainder = readings[0]
     if env_peeled and env_remainder and env_remainder != command.strip():
         config_result = _check_package_config_environment(command, env_remainder)
         if config_result is not None:
             return config_result
-        return detect_mutative_command(
-            env_remainder, from_source_code=from_source_code, cwd=cwd,
-            _depth=_depth,
-        )
+        for reading in readings:
+            result = detect_mutative_command(
+                reading, from_source_code=from_source_code, cwd=cwd,
+                _depth=_depth,
+            )
+            if result.is_mutative:
+                break
+        return result
 
     # --- Honor a release-track prefix (`gcloud alpha ...`, `gcloud beta ...`) ---
     # A track word between the tool and the command names a different API track
@@ -6289,14 +6294,21 @@ def _skip_command_wrappers(s: str, i: int) -> int:
     ``env NAME=$(mutative) cmd`` form would have its substitution discarded
     without ever being classified.
     """
+    return _wrapper_chain(s, i)[0]
+
+
+def _wrapper_chain(s: str, i: int) -> "Tuple[int, Tuple[_WrapperGrammar, ...]]":
+    """Return the index past the leading wrappers at ``s[i]`` and their grammars, outermost first."""
     n = len(s)
+    chain: List[_WrapperGrammar] = []
     while True:
         while i < n and s[i].isspace():
             i += 1
         word_end = _consume_shell_word(s, i)
         grammar = _COMMAND_WRAPPERS.get(program_identity(s[i:word_end].strip("\"'")))
         if grammar is None:
-            return i
+            return i, tuple(chain)
+        chain.append(grammar)
         i = _skip_wrapper_arguments(s, word_end, grammar)
 
 
@@ -6315,12 +6327,28 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
     ``=`` inside a later argument (``echo A=B terragrunt apply``) is never
     taken for a leading assignment.
     """
+    readings, peeled = _peel_wrapper_readings(command)
+    return readings[0], peeled
+
+
+def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
+    """Return ``(readings, peeled)``: every command the wrapped remainder may run, the remainder first.
+
+    A quoted ``cmd /c`` payload is one word to the shell and a chain to cmd,
+    so each of its stages (``shell_parser.parse_command``) is a reading. An
+    unquoted first word after ``start`` is the program to Windows but reads
+    as a title to anyone expecting ``start "title"``; the words after it are
+    a reading too, so either spelling classifies at the stricter verdict.
+    """
     s = command.strip() if command else ""
     n = len(s)
     i = 0
+    innermost: "Optional[_WrapperGrammar]" = None
     while True:
         start = i
-        i = _skip_command_wrappers(s, i)
+        i, chain = _wrapper_chain(s, i)
+        if chain:
+            innermost = chain[-1]
         while True:
             while i < n and s[i].isspace():
                 i += 1
@@ -6332,10 +6360,21 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
             break
 
     remainder = s[i:].strip()
-    if _STRING_PAYLOAD_SWITCH_RE.search(s[:i]):
-        remainder = _unquote_single_word(remainder)
-    remainder, renamed = _name_program_head(remainder)
-    return remainder, i > 0 or renamed
+    readings = [remainder]
+    if innermost is not None and innermost.terminators and _STRING_PAYLOAD_SWITCH_RE.search(s[:i]):
+        payload = _unquote_single_word(remainder)
+        from ..tools.shell_parser import parse_command
+
+        stages = parse_command(payload)
+        readings = [payload, *stages] if len(stages) > 1 else [payload]
+    elif innermost is not None and innermost.window_title:
+        words_end = _consume_shell_word(remainder, 0)
+        after_title = remainder[words_end:].strip()
+        if after_title:
+            readings.append(after_title)
+    named = [_name_program_head(reading) for reading in readings]
+    renamed = any(was_renamed for _, was_renamed in named)
+    return tuple(reading for reading, _ in named), i > 0 or renamed
 
 
 def _unquote_single_word(command: str) -> str:

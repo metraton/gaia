@@ -78,20 +78,21 @@ def _read_only_base_cmds() -> "frozenset[str]":
         return frozenset()
 
 
-def _peel_command_wrappers(command: str) -> Tuple[str, bool]:
-    """Peel leading wrappers (``sudo``, ``timeout``, ``env``...) and assignments off *command*.
+def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
+    """Peel leading wrappers (``sudo``, ``timeout``, ``cmd /c``...) and assignments off *command*.
 
-    Delegates to ``mutative_verbs._peel_leading_command_wrappers`` -- the ONE
-    peel the T3 detector also uses (DP1) -- so this floor matches the REAL
-    command. Lazy import avoids the declared import cycle with mutative_verbs.
-    On failure the command is returned unchanged; the un-peeled form is still
-    fully classified by the caller.
+    Returns every reading of the wrapped command, as
+    ``mutative_verbs._peel_wrapper_readings`` -- the ONE peel the T3 detector
+    also uses (DP1) -- gives them, so this floor matches the REAL command. Lazy
+    import avoids the declared import cycle with mutative_verbs. On failure the
+    command is returned unchanged; the un-peeled form is still fully
+    classified by the caller.
     """
     try:
-        from .mutative_verbs import _peel_leading_command_wrappers
-        return _peel_leading_command_wrappers(command)
+        from .mutative_verbs import _peel_wrapper_readings
+        return _peel_wrapper_readings(command)
     except ImportError:
-        return command, False
+        return (command,), False
 
 
 def _rm_confined_to_scratch(command: str) -> bool:
@@ -727,11 +728,12 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
     # command then falls to an approvable T3 or runs free. Peel and classify
     # the REAL command. Strictly additive: the un-peeled form was already
     # classified above, so this can only ADD a block, never remove one.
-    remainder, peeled = _peel_command_wrappers(command)
-    if peeled and remainder and remainder != command:
-        peeled_result = _classify_stripped_command(remainder)
-        if peeled_result.is_blocked:
-            return peeled_result
+    readings, peeled = _peel_command_wrappers(command)
+    for remainder in readings if peeled else ():
+        if remainder and remainder != command:
+            peeled_result = _classify_stripped_command(remainder)
+            if peeled_result.is_blocked:
+                return peeled_result
 
     # ------------------------------------------------------------------
     # Grouping / substitution wrapper guard.

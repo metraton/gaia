@@ -16,6 +16,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.blocked_commands import is_blocked_command
 from modules.security.mutative_verbs import detect_mutative_command
 from modules.security.tiers import SecurityTier, classify_command_tier
+from modules.tools.bash_validator import BashValidator
 
 T0 = SecurityTier.T0_READ_ONLY
 T3 = SecurityTier.T3_BLOCKED
@@ -43,6 +44,9 @@ TWINS = [
     ("cmd /c \"del x.txt\"", "del x.txt", T3),
     ("\"C:\\Program Files\\Git\\bin\\git.exe\" push --force", "git push --force", T3),
     ("py -3.12-64 deploy.py", "python3 deploy.py", T3),
+    # Windows runs an unquoted first word as the program; the stricter
+    # reading, the words after it as the command, is what classifies.
+    ("start Build del x.txt", "del x.txt", T3),
 ]
 
 # Read-only twins: the respelling must not turn a free command into a gated one.
@@ -52,6 +56,24 @@ FREE_TWINS = [
     ("py -c \"print(1)\"", "python3 -c \"print(1)\"", T0),
     ("cmd /c dir", "dir", T0),
 ]
+
+
+# A quoted cmd /c payload is one shell word and a chain to cmd; the POSIX twin
+# is split into stages by the Bash validator, so both go through it.
+CHAIN_TWINS = [
+    ("cmd /c \"dir && del x.txt\"", "ls && rm x.txt"),
+    ("cmd.exe /c \"dir & del.exe x.txt\"", "ls && rm x.txt"),
+    ("cmd /c \"echo hi && rm -rf /\"", "echo hi && rm -rf /"),
+]
+
+
+@pytest.mark.parametrize("windows, posix", CHAIN_TWINS, ids=[row[0] for row in CHAIN_TWINS])
+def test_quoted_cmd_chain_matches_posix_chain(windows, posix):
+    validator = BashValidator()
+    posix_result = validator.validate(posix)
+    windows_result = validator.validate(windows)
+    assert posix_result.tier == T3 or not posix_result.allowed
+    assert (windows_result.allowed, windows_result.tier) == (posix_result.allowed, posix_result.tier)
 
 
 def _verdict(command):
