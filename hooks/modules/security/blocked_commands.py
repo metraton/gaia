@@ -397,10 +397,13 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"^fdisk\s+", re.IGNORECASE),
         re.compile(r"^mkfs(\.(ext[34]|fat|ntfs))?\s+", re.IGNORECASE),
         # Windows volume, partition and shadow-copy destruction (D140)
-        # format takes its switches before or after the drive, which may be quoted
-        re.compile(r"""^format(\.com)?\s(.*\s)?["']?[a-z]:["']?(\s|$)""", re.IGNORECASE),
+        # format takes its switches before or after the drive, which may be
+        # quoted or have a switch glued to it (C:/q)
+        re.compile(r"""^format(\.com)?\s(.*\s)?["']?[a-z]:["']?(\s|/|$)""", re.IGNORECASE),
         re.compile(r"^diskpart(\.exe)?(\s|$)", re.IGNORECASE),
         re.compile(r"^vssadmin(\.exe)?\s(.*\s)?delete\s+shadows\b", re.IGNORECASE),
+        # shrinking the storage area below what the copies use deletes them
+        re.compile(r"^vssadmin(\.exe)?\s(.*\s)?resize\s+shadowstorage\b", re.IGNORECASE),
         re.compile(r"^format-volume\b", re.IGNORECASE),
         re.compile(r"^clear-disk\b", re.IGNORECASE),
     ],
@@ -524,6 +527,7 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "clear-disk": "[BLOCKED] Clearing a disk destroys every partition and all data on it",
     "diskpart": "[BLOCKED] Disk partitioning can destroy data",
     "vssadmin delete shadows": "[BLOCKED] Deleting shadow copies removes the restore points recovery depends on",
+    "vssadmin resize shadowstorage": "[BLOCKED] Shrinking shadow storage deletes the shadow copies that no longer fit",
 
     # rm critical
     "rm -rf /": "[BLOCKED] Filesystem destruction is irreversible",

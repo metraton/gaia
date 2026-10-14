@@ -21,6 +21,7 @@ import logging
 import re
 import shlex
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
@@ -7262,6 +7263,25 @@ def _check_script_file(
                         f"without executing the script body (non-mutative)"
                     ),
                 )
+
+    # `node --test` given a directory or glob runs the project's test suite,
+    # the same act as `pytest tests/` or an `npm test` body, so it is not
+    # held to the single-script reading; a named test file still is.
+    if (
+        base_cmd == "node"
+        and "--test" in semantics.tokens[1:]
+        and (re.search(r"[*?\[]", script_path) or Path(
+            cwd or Path.cwd(), Path(script_path).expanduser()
+        ).is_dir())
+    ):
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="node-test-runner",
+            cli_family=family,
+            confidence="medium",
+            reason=f"node --test runs the test suite under '{script_path}'",
+        )
 
     content = _read_script_content(script_path, cwd=cwd)
     if content is None:

@@ -579,6 +579,27 @@ def test_contract_fill_json_file_reads_patch_from_disk(cli_env, tmp_path):
     ]
 
 
+def test_contract_fill_json_file_dash_reads_a_full_envelope_from_stdin(cli_env):
+    """`--json-file -` fills a whole envelope from stdin in one call."""
+    db_path = _cli_db(cli_env)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _seed_binding_targets(db_path)
+    cid = f"{AGENT_ID}.cli-json-stdin"
+    _born(db_path, cid)
+    assert _run(["init", "--agent-id", AGENT_ID, "--draft-id", cid], cli_env).returncode == 0
+
+    patch = _partial_envelope(files=["a.py"], key_outputs=["it's from stdin"])
+    fillc = subprocess.run(
+        [sys.executable, str(CONTRACT_CLI), "fill", "--draft-id", cid, "--json-file", "-"],
+        input=json.dumps(patch), capture_output=True, text=True, env=cli_env, timeout=30,
+    )
+    assert fillc.returncode == 0, fillc.stderr
+
+    envelope = json.loads(_run(["view", "--draft-id", cid], cli_env).stdout)["envelope"]
+    assert envelope["evidence_report"]["files_checked"] == ["a.py"]
+    assert envelope["evidence_report"]["key_outputs"] == ["it's from stdin"]
+
+
 def test_contract_fill_json_file_survives_report_prose_with_apostrophes(cli_env, tmp_path):
     """The exact hazard --json-file exists to avoid: prose with apostrophes and
     the words 'resume'/'grant' embedded in report text, not as commands."""

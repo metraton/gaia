@@ -90,11 +90,15 @@ _SHORT_NAMES = tuple(sorted(
 ))
 
 # Names a file-name glob is tested against: a glob that would select one of
-# them selects a sensitive file.
-_SENSITIVE_NAME_SAMPLES = (
-    ".env", ".env.local", "id_rsa", "id_ed25519", "server.pem", "server.key",
-    "credentials", "credentials.json", ".netrc", ".pgpass", ".git-credentials",
-)
+# them selects a sensitive file. A sample sensitive by its stem alone is paired
+# with an ordinary file of the same type; a glob selecting both filters by type
+# (*.json) rather than naming the credential.
+_SENSITIVE_NAME_SAMPLES = {
+    ".env": None, ".env.local": None, "id_rsa": None, "id_ed25519": None,
+    "server.pem": None, "server.key": None, "credentials": None,
+    "credentials.json": "package.json", ".netrc": None, ".pgpass": None,
+    ".git-credentials": None,
+}
 
 _GLOB_CHARS = re.compile(r"[*?\[]")
 _TOKEN_SPLIT = re.compile(r"[\s=]+")
@@ -216,7 +220,11 @@ def glob_selects_sensitive_name(pattern: str) -> bool:
     name = pattern.rstrip("/").rsplit("/", 1)[-1].lower()
     if not name or not re.search(r"[^*?/.]", name):
         return False
-    return any(fnmatch.fnmatchcase(sample, name) for sample in _SENSITIVE_NAME_SAMPLES)
+    return any(
+        fnmatch.fnmatchcase(sample, name)
+        and not (ordinary and fnmatch.fnmatchcase(ordinary, name))
+        for sample, ordinary in _SENSITIVE_NAME_SAMPLES.items()
+    )
 
 
 def pattern_reaches_sensitive_path(pattern: str, base: str = "") -> str:

@@ -35,7 +35,7 @@ Subcommands (the 6 draft verbs + the ``fill --json`` batch mode, plus
     validate                      [--draft-id ID]  Validate the draft WITHOUT mutating it
     finalize                      [--draft-id ID]  Validate and persist/converge the handoff row
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
-             --json-file PATH                      ... or read the patch from a file (avoids shell
+             --json-file PATH|-                    ... or read the patch from a file or stdin (avoids shell
                                                      quoting a payload that carries report prose --
                                                      the channel for the top-level `report_prose`
                                                      narrative, read back with
@@ -2069,17 +2069,11 @@ def cmd_fill(args) -> int:
     )
     if envelope is None:
         return 1
-    # --json-file reads the patch from disk instead of a shell argument.
-    # A patch built from report prose (open_gaps, key_outputs, verification
-    # notes) routinely carries apostrophes and embedded quotes; surviving
-    # that text through shell quoting is a hazard the caller should not have
-    # to manage by hand -- an unescaped apostrophe inside a single-quoted
-    # --json value breaks the shell's own quoting, and everything after the
-    # break is re-tokenized as bare words, no longer recognizable as the
-    # `gaia contract fill` invocation it was part of. Writing the patch to a
-    # file with the Write tool sidesteps shell quoting entirely, the same
-    # discipline already used for a long approval `exact_content`.
-    if args.json_file is not None:
+    # Report prose carries apostrophes that break a single-quoted --json
+    # value, so the patch can come from a file or, as `-`, a quoted heredoc.
+    if args.json_file == "-":
+        raw_patch = sys.stdin.read()
+    elif args.json_file is not None:
         try:
             with open(args.json_file, "r", encoding="utf-8") as fh:
                 raw_patch = fh.read()
@@ -2681,10 +2675,11 @@ def _build_subcommands(sub) -> None:
         dest="json_file",
         metavar="PATH",
         help=(
-            "Read the JSON patch from PATH instead of a shell argument -- "
-            "write it with the Write tool first when the patch carries "
-            "report prose (apostrophes, embedded quotes) that is fragile "
-            "to pass as a single shell-quoted --json value. This is the "
+            "Read the JSON patch from PATH, or from stdin when PATH is '-' "
+            "(a quoted heredoc: one call, no temporary file), instead of a "
+            "shell argument -- for a patch carrying report prose "
+            "(apostrophes, embedded quotes) that is fragile to pass as a "
+            "single shell-quoted --json value. This is the "
             "channel for the top-level 'report_prose' field, whose whole "
             "point is a multi-paragraph narrative: newlines, accents and "
             "quotes survive a file untouched, and are read back verbatim "
