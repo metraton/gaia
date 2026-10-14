@@ -76,7 +76,13 @@ def test_grep_glob_naming_a_secret_is_still_refused(project, include):
     assert verdict("Grep", {"pattern": "x", "glob": include, "path": str(project)}) == "denied"
 
 
-@pytest.mark.parametrize("command", ["node --test tests/", "node --test 'tests/**/*.test.js'"])
+@pytest.mark.parametrize("command", [
+    "node --test tests/",
+    "node --test 'tests/**/*.test.js'",
+    "node --test --test-reporter=spec tests/",
+    "node --test --test-reporter dot --test-concurrency 2 'tests/**/*.test.js'",
+    "node --test --test-name-pattern=a --test-reporter-destination=stdout tests/",
+])
 def test_node_test_over_a_directory_or_glob_is_free(project, command):
     assert verdict("Bash", {"command": command}, cwd=str(project)) == "free"
 
@@ -89,6 +95,14 @@ def test_node_test_over_a_directory_or_glob_is_free(project, command):
     "node --test --import=./deploy.js tests/",
     "node --test --require ./deploy.js tests/",
     "node --test -r ./deploy.js 'tests/*.test.js'",
+    "node --test --experimental-loader=./deploy.mjs tests/",
+    "node --test --loader=./deploy.mjs tests/",
+    "node --test --loader ./deploy.mjs tests/",
+    "node --test --test-global-setup=./deploy.mjs tests/",
+    "node --test --test-foo=./x.js tests/",
+    "node --test --test-reporter=./reporter.mjs tests/",
+    "node --test --test-reporter-destination=./out.txt tests/",
+    "node --import=./deploy.js --test tests/",
 ])
 def test_node_on_a_named_or_preloaded_script_still_asks(project, command):
     assert verdict("Bash", {"command": command}, cwd=str(project)) == "approval"

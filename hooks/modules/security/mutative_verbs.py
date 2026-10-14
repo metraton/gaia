@@ -7217,16 +7217,50 @@ def _node_preload_values(args: "List[str]") -> "List[str]":
     return values
 
 
+# Test-runner options that load no code, checked against the Node CLI and
+# test-runner docs. node's flag set grows every release, so this is an
+# allowlist: a loader, preload, --test-global-setup or any flag not named here
+# keeps the script-file lane. --test-reporter also accepts a module specifier
+# and --test-reporter-destination a file path, so only the built-in reporters
+# and the standard streams qualify.
+_NODE_TEST_SAFE_SWITCHES: FrozenSet[str] = frozenset({
+    "--test", "--test-only", "--test-force-exit", "--watch", "--experimental-test-coverage",
+})
+_NODE_TEST_SAFE_VALUE_FLAGS: FrozenSet[str] = frozenset({
+    "--test-name-pattern", "--test-skip-pattern", "--test-concurrency", "--test-timeout",
+    "--test-shard", "--test-isolation", "--test-coverage-include", "--test-coverage-exclude",
+    "--test-coverage-lines", "--test-coverage-branches", "--test-coverage-functions",
+})
+_NODE_TEST_CHECKED_VALUES: Dict[str, FrozenSet[str]] = {
+    "--test-reporter": frozenset({"spec", "tap", "dot", "junit", "lcov"}),
+    "--test-reporter-destination": frozenset({"stdout", "stderr"}),
+}
+
+
 def _is_node_test_suite_run(args: "List[str]", cwd: "Optional[str]") -> bool:
-    """True when ``node --test`` is given only directories or globs and preloads nothing.
+    """True when ``node --test`` carries only directories, globs and allowlisted test options.
 
     That run is the project's test suite, the same act as ``pytest tests/``
-    or an ``npm test`` body. A named file or a preload among the arguments is
-    a script node runs, so the invocation stays in the script-file lane.
+    or an ``npm test`` body. Any other argument may be code node runs, so the
+    invocation stays in the script-file lane.
     """
-    if "--test" not in args or _node_preload_values(args):
+    if "--test" not in args:
         return False
-    positionals = [token for token in args if not token.startswith("-")]
+    positionals = []
+    remaining = iter(args)
+    for token in remaining:
+        if not token.startswith("-"):
+            positionals.append(token)
+            continue
+        flag, attached, value = token.partition("=")
+        if flag in _NODE_TEST_SAFE_SWITCHES and not attached:
+            continue
+        if flag not in _NODE_TEST_SAFE_VALUE_FLAGS and flag not in _NODE_TEST_CHECKED_VALUES:
+            return False
+        if not attached:
+            value = next(remaining, None)
+        if value is None or value not in _NODE_TEST_CHECKED_VALUES.get(flag, {value}):
+            return False
     return bool(positionals) and all(
         re.search(r"[*?\[]", token)
         or Path(cwd or Path.cwd(), Path(token).expanduser()).is_dir()
