@@ -1189,7 +1189,7 @@ class OpenCodeAdapter(HookAdapter):
     def _policy_tool_name(tool_name: object) -> str:
         """Map OpenCode's lowercase built-ins to Gaia's policy tool names."""
         names = {
-            "bash": "Bash", "task": "Task", "write": "Write", "edit": "Edit",
+            "bash": "Bash", "shell": "Bash", "task": "Task", "write": "Write", "edit": "Edit",
             "apply_patch": "Edit", "read": "Read", "glob": "Glob", "grep": "Grep",
             "list": "LS",
         }

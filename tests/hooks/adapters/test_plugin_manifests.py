@@ -123,22 +123,24 @@ class TestHooksJson:
         assert "SubagentStop" in data["hooks"]
 
     def test_pre_tool_use_matchers(self):
-        """PreToolUse must have Bash, Task, Agent, SendMessage, AskUserQuestion, and file-tool matchers."""
+        """PreToolUse must have Task, Agent, SendMessage, AskUserQuestion, file-tool and command-gate matchers."""
         data = json.loads(self.hooks_path.read_text())
         matchers = {entry["matcher"] for entry in data["hooks"]["PreToolUse"]}
         expected = {
-            "Bash", "Task", "Agent", "SendMessage", "AskUserQuestion",
+            "Task", "Agent", "SendMessage", "AskUserQuestion",
             "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit",
         }
-        assert matchers == expected, (
+        assert expected < matchers, (
             f"Expected matchers {expected}, got {matchers}"
         )
+        (command_gate,) = matchers - expected
+        assert command_gate.startswith("^(?!"), command_gate
 
     def test_post_tool_use_matchers(self):
-        """PostToolUse must have Bash matcher."""
+        """PostToolUse must match every shell channel."""
         data = json.loads(self.hooks_path.read_text())
         matchers = {entry["matcher"] for entry in data["hooks"]["PostToolUse"]}
-        assert "Bash" in matchers
+        assert "Bash|PowerShell|Monitor" in matchers
 
     def test_subagent_stop_matchers(self):
         """SubagentStop must have wildcard matcher."""

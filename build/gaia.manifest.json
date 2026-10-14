@@ -18,19 +18,19 @@
     ],
     "matchers": {
       "PreToolUse": [
-        {"matcher": "Bash"},
         {"matcher": "Task"},
         {"matcher": "Agent"},
         {"matcher": "SendMessage"},
         {"matcher": "AskUserQuestion"},
-        {"matcher": "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit"}
+        {"matcher": "Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit"},
+        {"matcher": "^(?!Agent$)(?!Artifact$)(?!AskUserQuestion$)(?!CronCreate$)(?!CronDelete$)(?!CronList$)(?!Edit$)(?!EndConversation$)(?!EnterPlanMode$)(?!EnterWorktree$)(?!ExitPlanMode$)(?!ExitWorktree$)(?!Glob$)(?!Grep$)(?!ListAgents$)(?!ListMcpResourcesTool$)(?!LSP$)(?!NotebookEdit$)(?!PushNotification$)(?!Read$)(?!ReadMcpResourceTool$)(?!ReportFindings$)(?!ScheduleWakeup$)(?!SendFeedback$)(?!SendMessage$)(?!SendUserFile$)(?!ShareOnboardingGuide$)(?!Skill$)(?!SubagentHandback$)(?!Task$)(?!TaskCreate$)(?!TaskGet$)(?!TaskList$)(?!TaskOutput$)(?!TaskStop$)(?!TaskUpdate$)(?!TodoWrite$)(?!ToolSearch$)(?!WaitForMcpServers$)(?!WebFetch$)(?!WebSearch$)(?!Write$)"}
       ],
       "PostToolUse": [
-        {"matcher": "Bash"},
+        {"matcher": "Bash|PowerShell|Monitor"},
         {"matcher": "Task"},
         {"matcher": "AskUserQuestion"}
       ],
-      "PostToolUseFailure": [{"matcher": "Bash"}],
+      "PostToolUseFailure": [{"matcher": "Bash|PowerShell|Monitor"}],
       "SubagentStop": [{"matcher": "*"}],
       "SessionStart": [{"matcher": "startup|resume|clear|compact|fork"}],
       "SessionEnd": [{}],

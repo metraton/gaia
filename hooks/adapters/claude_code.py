@@ -102,6 +102,14 @@ _HOST_REFUSAL = re.compile(
 # key names (AC-2: hookSpecificOutput lives only in adapters/).
 _HOOK_SPECIFIC_OUTPUT = "hookSpecificOutput"
 
+# PreToolUse also reaches MCP tools and any tool its matcher does not exclude, so that a
+# command-carrying tool nobody named is refused. Only the tools listed here go through the full
+# policy (delegate mode, call ceiling). No hook ran for the others before, so they keep the verdict they had.
+_POLICY_TOOLS = frozenset({
+    "bash", "powershell", "monitor", "task", "agent", "sendmessage", "askuserquestion",
+    "read", "edit", "write", "glob", "grep", "websearch", "webfetch", "notebookedit",
+})
+
 # Claude Code's two distribution channels and the env var that distinguishes
 # them. These host-specific names are OWNED by this adapter (Gap 2 / brief #88):
 # the core carries an opaque HostDistribution and never enumerates these values
@@ -767,10 +775,16 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         decided here once the shared policy (delegate-mode gate, grant cleanup,
         input shape) has left the call to the host.
         """
+        tool_name = event.payload.get("tool_name") or ""
+        if str(tool_name).lower() not in _POLICY_TOOLS:
+            from .tool_policy import ungated_command_verdict
+
+            return self._format_pre_tool_verdict(
+                ungated_command_verdict(tool_name, event.payload.get("tool_input")),
+            )
         verdict = self.pre_tool_verdict(
             event, dispatch_identity_in_env=_dispatch_identity_in_env,
         )
-        tool_name = event.payload.get("tool_name") or ""
         if verdict.is_silent and isinstance(tool_name, str):
             tool_input = event.payload.get("tool_input", {})
             try:

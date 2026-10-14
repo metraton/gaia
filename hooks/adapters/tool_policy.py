@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import time
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ logger = logging.getLogger(__name__)
 # agent (gaia.store.writer, gaia.state.permissions, gaia.evidence.store,
 # gaia.briefs.store). Defined here as the single injection-side constant.
 GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
+
+SHELL_TOOLS = frozenset({"bash", "powershell", "monitor"})
 
 # Dotted event category written to harness_events when a nascent-row birth is
 # rejected for an ANOMALOUS reason (see _is_anomalous_dispatch_binding_rejection).
@@ -138,6 +141,34 @@ def build_dispatch_identity_command(command: str, agent_type: str, tmpdir: str =
     if tmpdir:
         exports += f" TMPDIR={shlex.quote(tmpdir)}"
     return f"export {exports}; {command}"
+
+
+def build_powershell_identity_command(command: str, agent_type: str, tmpdir: str = "") -> str:
+    """Prefix a subagent PowerShell command with the same exports ``build_dispatch_identity_command`` makes."""
+    agent = (agent_type or "").strip()
+    if not agent:
+        return command
+    assignments = [(GAIA_DISPATCH_AGENT_ENV, agent)] + ([("TMPDIR", tmpdir)] if tmpdir else [])
+    exports = "; ".join(f"$env:{name}={_powershell_literal(value)}" for name, value in assignments)
+    return f"{exports}; {command}"
+
+
+def _powershell_literal(value: str) -> str:
+    # PowerShell ends a single-quoted string on any of these four marks, and a doubled mark is literal.
+    return "'" + re.sub("['‘’‚‛]", lambda mark: mark.group() * 2, value) + "'"
+
+
+def ungated_command_verdict(tool_name: str, tool_input: object) -> "PolicyVerdict":
+    """Refuse a tool outside ``SHELL_TOOLS`` whose input carries a command; leave any other call alone."""
+    if isinstance(tool_input, dict) and isinstance(tool_input.get("command"), str):
+        return PolicyVerdict(
+            decision="deny",
+            reason=(
+                f"[UNGATED_SHELL] {tool_name} carries a command but is not a shell tool "
+                "Gaia classifies. Run the command through Bash or PowerShell."
+            ),
+        )
+    return PolicyVerdict()
 
 
 def _is_anomalous_dispatch_binding_rejection(
@@ -281,7 +312,7 @@ class ToolPolicy:
                 return PolicyVerdict(refusal="Error: Invalid parameters")
 
             lowered = tool_name.lower()
-            if lowered == "bash":
+            if lowered in SHELL_TOOLS:
                 return self._bash_verdict(
                     tool_name, tool_input, hook_data=hook_data,
                     dispatch_identity_in_env=dispatch_identity_in_env,
@@ -309,7 +340,7 @@ class ToolPolicy:
                 )
                 if refusal:
                     return PolicyVerdict(decision="deny", reason=refusal)
-            return PolicyVerdict()
+            return ungated_command_verdict(tool_name, tool_input)
         except Exception as e:
             return failure_verdict(e)
 
@@ -334,6 +365,14 @@ class ToolPolicy:
         command = parameters.get("command", "")
         if not command:
             return PolicyVerdict(refusal="Error: Bash tool requires a command")
+        if tool_name.lower() == "powershell" and redaction_profile(command) is not None:
+            return PolicyVerdict(
+                decision="deny",
+                reason=(
+                    "[SECRET_OUTPUT] This command prints secret values, and only the Bash tool "
+                    "redacts a command's output. Run it through the Bash tool."
+                ),
+            )
 
         is_subagent = bool(hook_data and hook_data.get("agent_id"))
         session_id = (hook_data or {}).get("session_id", "")
@@ -404,7 +443,11 @@ class ToolPolicy:
         if profile is not None:
             final_command = redacted_command(effective_command, profile)
         if is_subagent and not dispatch_identity_in_env:
-            final_command = build_dispatch_identity_command(
+            build_identity = (
+                build_powershell_identity_command if tool_name.lower() == "powershell"
+                else build_dispatch_identity_command
+            )
+            final_command = build_identity(
                 final_command, agent_type,
                 tmpdir=dispatch_tmpdir(hook_data["agent_id"]),
             )
@@ -940,7 +983,7 @@ class ToolPolicy:
             # The grant was already CONSUMED at the match in PreToolUse;
             # confirming marks it so later retries in the same session are
             # recognized.
-            if tool_name == "Bash" and success:
+            if str(tool_name).lower() in SHELL_TOOLS and success:
                 command = parameters.get("command", "")
                 session_id = hook_data.get("session_id", "")
                 if command:
@@ -959,7 +1002,7 @@ class ToolPolicy:
             consumed_approval_id = (
                 pre_state.metadata.get("consumed_approval_id") if pre_state else None
             )
-            if tool_name == "Bash" and consumed_approval_id:
+            if str(tool_name).lower() in SHELL_TOOLS and consumed_approval_id:
                 reservation = pre_state.metadata.get("command_set_reservation") or {}
                 if hook_data.get("is_interrupt") is True:
                     logger.info(
@@ -1000,7 +1043,7 @@ class ToolPolicy:
                 for evt in events:
                     writer.update_context(evt.to_dict())
 
-            if tool_name == "Bash" and tier in ("T2", "T3"):
+            if str(tool_name).lower() in SHELL_TOOLS and tier in ("T2", "T3"):
                 try:
                     from modules.events.event_writer import EventWriter, COMMAND_EXECUTED
                     cmd = parameters.get("command", "")

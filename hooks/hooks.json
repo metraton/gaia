@@ -2,15 +2,6 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
-          }
-        ]
-      },
-      {
         "matcher": "Task",
         "hooks": [
           {
@@ -54,11 +45,20 @@
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
           }
         ]
+      },
+      {
+        "matcher": "^(?!Agent$)(?!Artifact$)(?!AskUserQuestion$)(?!CronCreate$)(?!CronDelete$)(?!CronList$)(?!Edit$)(?!EndConversation$)(?!EnterPlanMode$)(?!EnterWorktree$)(?!ExitPlanMode$)(?!ExitWorktree$)(?!Glob$)(?!Grep$)(?!ListAgents$)(?!ListMcpResourcesTool$)(?!LSP$)(?!NotebookEdit$)(?!PushNotification$)(?!Read$)(?!ReadMcpResourceTool$)(?!ReportFindings$)(?!ScheduleWakeup$)(?!SendFeedback$)(?!SendMessage$)(?!SendUserFile$)(?!ShareOnboardingGuide$)(?!Skill$)(?!SubagentHandback$)(?!Task$)(?!TaskCreate$)(?!TaskGet$)(?!TaskList$)(?!TaskOutput$)(?!TaskStop$)(?!TaskUpdate$)(?!TodoWrite$)(?!ToolSearch$)(?!WaitForMcpServers$)(?!WebFetch$)(?!WebSearch$)(?!Write$)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell|Monitor",
         "hooks": [
           {
             "type": "command",
@@ -87,7 +87,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell|Monitor",
         "hooks": [
           {
             "type": "command",

@@ -39,11 +39,26 @@ def _registrations(event: str, *tokens: str) -> FrozenSet[Registration]:
 
 _SESSION_SOURCES = ("startup", "resume", "clear", "compact", "fork")
 
+# The PreToolUse matcher in build/gaia.manifest.json that sends Bash, PowerShell, Monitor, MCP and
+# unknown tools to the hook. It must be the same string as the manifest, or this registration goes
+# unclaimed. The tools it excludes either have their own entry or carry no command.
+COMMAND_GATE_MATCHER = (
+    "^(?!Agent$)(?!Artifact$)(?!AskUserQuestion$)(?!CronCreate$)(?!CronDelete$)(?!CronList$)"
+    "(?!Edit$)(?!EndConversation$)(?!EnterPlanMode$)(?!EnterWorktree$)(?!ExitPlanMode$)"
+    "(?!ExitWorktree$)(?!Glob$)(?!Grep$)(?!ListAgents$)(?!ListMcpResourcesTool$)(?!LSP$)"
+    "(?!NotebookEdit$)(?!PushNotification$)(?!Read$)(?!ReadMcpResourceTool$)(?!ReportFindings$)"
+    "(?!ScheduleWakeup$)(?!SendFeedback$)(?!SendMessage$)(?!SendUserFile$)(?!ShareOnboardingGuide$)"
+    "(?!Skill$)(?!SubagentHandback$)(?!Task$)(?!TaskCreate$)(?!TaskGet$)(?!TaskList$)(?!TaskOutput$)"
+    "(?!TaskStop$)(?!TaskUpdate$)(?!TodoWrite$)(?!ToolSearch$)(?!WaitForMcpServers$)(?!WebFetch$)"
+    "(?!WebSearch$)(?!Write$)"
+)
+
 CAPABILITIES: Tuple[Capability, ...] = (
     Capability(
         name="tool policy",
         claude_code=_registrations(
-            "PreToolUse", "Bash", "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit",
+            "PreToolUse", COMMAND_GATE_MATCHER,
+            "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit",
         ),
         opencode_event="tool.execute.before",
     ),
@@ -66,8 +81,8 @@ CAPABILITIES: Tuple[Capability, ...] = (
     ),
     Capability(
         name="post-tool audit",
-        claude_code=_registrations("PostToolUse", "Bash")
-        | _registrations("PostToolUseFailure", "Bash"),
+        claude_code=_registrations("PostToolUse", "Bash", "PowerShell", "Monitor")
+        | _registrations("PostToolUseFailure", "Bash", "PowerShell", "Monitor"),
         opencode_event="tool.execute.after",
     ),
     Capability(
