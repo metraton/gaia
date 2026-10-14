@@ -113,7 +113,7 @@ def test_birth_builds_the_manifest_with_the_notices_as_alarms(calls, tmp_path):
     outcome = session_lifecycle.start_session(_start(tmp_path))
 
     birth = [kwargs for name, _, kwargs in calls if name == "build_session_context"]
-    assert birth == [{"alarms": ["## Data home\nhome moved"], "record_injection": True}]
+    assert birth == [{"alarms": ["## Data home\nhome moved"], "record_injection": True, "session_id": "explicit-sid"}]
     assert outcome.context == "BIRTH"
     assert outcome.notices == {"## Data home": "home moved"}
     assert outcome.setup_message == "setup done"

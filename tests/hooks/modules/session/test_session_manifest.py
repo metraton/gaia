@@ -447,7 +447,7 @@ class TestBuildSessionContext:
 
     def test_alarms_lead_and_empty_sections_leave_no_gap(self, monkeypatch):
         monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "")
-        monkeypatch.setattr(session_manifest, "build_environment_section", lambda: "ENV")
+        monkeypatch.setattr(session_manifest, "build_environment_section", lambda session_id="": "ENV")
 
         result = build_session_context(alarms=["ALARM"])
 
@@ -464,7 +464,7 @@ class TestBuildSessionContext:
 
     def test_returns_empty_when_there_is_nothing_to_say(self, monkeypatch):
         monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "")
-        monkeypatch.setattr(session_manifest, "build_environment_section", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_environment_section", lambda session_id="": "")
 
         assert build_session_context() == ""
 

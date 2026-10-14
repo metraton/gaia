@@ -20,7 +20,7 @@ def build_compact_context(*, session_id: str = "") -> str:
     """
     from modules.session.session_manifest import build_environment_section
 
-    blocks = [_build_identity_block(), build_environment_section(), _build_snapshot_block(session_id)]
+    blocks = [_build_identity_block(), build_environment_section(session_id), _build_snapshot_block(session_id)]
     return "\n\n".join(b for b in blocks if b)
 
 

@@ -202,7 +202,7 @@ def start_context(source: str, alarms: list, session_id: str = "") -> str:
             from modules.context.compact_context_builder import build_compact_context
             return "\n\n".join(b for b in (*alarms, build_compact_context(session_id=session_id)) if b)
         from modules.session.session_manifest import build_session_context
-        return build_session_context(alarms=alarms, record_injection=True)
+        return build_session_context(alarms=alarms, record_injection=True, session_id=session_id)
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)
         return ""

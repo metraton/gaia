@@ -108,12 +108,14 @@ Name what the next session picks up: a pointer, never a copied container.
 
 ## Compacting
 
-After step 7, when the user asked to compact:
+After step 7, when the user asked to compact. The session id is the
+`- Session id:` line of the `## Environment` block, which arrives at birth and
+after every compaction on both hosts.
 
 1. **Request the compaction.** Call the host's compaction tool once:
    `mcp__gaia__compact_when_idle` in Claude Code, `gaia_compact_when_idle` in
    OpenCode. It schedules the compaction for when the current turn ends, never
-   mid-turn, and the reply names the session id. The host can still refuse it.
+   mid-turn. The host can still refuse it.
 2. **Write the resume point.** `gaia session resume-point set --session-id <id>
    --text "<text>"`, at most 2000 characters, replacing any earlier one: the
    step 7 pointer plus what the next turn needs and no row holds -- the exact
@@ -134,10 +136,15 @@ not durable, rather than dropping them or saving memory unasked.
 **Without the tool** -- a headless Claude Code session (the desktop app, `-p`,
 the SDK), where the host cannot compact from a mod, Claude Code with mods
 disabled or older than 2.1.287, or any host that does not list it -- nothing
-can start the compaction and no
-session id reaches the orchestrator. Say so: end with the resume point in the
-report and ask the user to type `/compact`. Never report a compaction you did
+the orchestrator runs can start the compaction. Skip step 1, still write the
+resume point (step 2) with the Environment block's session id, and end the
+turn asking the user to type `/compact`: the report itself is summarized away,
+the resume point survives into the snapshot. Never report a compaction you did
 not start.
+
+When the user types `/compact` without asking to compact first, nothing above
+runs: the snapshot carries the last resume point written, however old, or
+none.
 
 ## Ownership and consent
 

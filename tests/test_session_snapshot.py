@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -366,6 +367,43 @@ def test_opencode_compacting_feeds_the_summarizer_the_steering_and_no_snapshot(d
     assert "## Session Snapshot" not in build_summary_instructions()
 
 
+def _claude_start_context(source: str, cwd) -> str:
+    payload = json.dumps({"hook_event_name": "SessionStart", "session_id": SESSION_A, "source": source})
+    proc = subprocess.run(
+        [sys.executable, str(_ROOT / "hooks" / "session_start.py")],
+        input=payload, capture_output=True, text=True, timeout=60, cwd=str(cwd), env=os.environ.copy(),
+    )
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def _published_session_id(context: str) -> str:
+    environment = context[context.index("## Environment"):]
+    match = re.search(r"^- Session id: (\S+)", environment, re.MULTILINE)
+    assert match, environment
+    return match.group(1)
+
+
+def test_both_hosts_publish_the_session_id_the_snapshot_reads_at_start_and_after_compaction(
+    db, tmp_path, monkeypatch,
+):
+    import bridge
+    from gaia.session_snapshot import build_snapshot, write_resume_point
+
+    claude = [_claude_start_context(source, tmp_path) for source in ("startup", "compact")]
+    monkeypatch.setenv("GAIA_HOST", "opencode")
+    opencode = [
+        bridge.handle({"event": "chat.message", "sessionID": SESSION_A})["additional_context"],
+        bridge.handle({"event": "chat.message", "sessionID": SESSION_A, "source": "compact"})["additional_context"],
+    ]
+
+    for context in (*claude, *opencode):
+        published = _published_session_id(context)
+        assert published == SESSION_A
+        write_resume_point(published, f"resume from {len(context)}")
+        assert build_snapshot(SESSION_A)["resume_point"] == f"resume from {len(context)}"
+
+
 def test_both_hosts_deliver_the_refresh_with_the_whole_resume_point_once_after_compaction(
     two_sessions, tmp_path, monkeypatch,
 ):
@@ -376,7 +414,7 @@ def test_both_hosts_deliver_the_refresh_with_the_whole_resume_point_once_after_c
     tail = " Then dispatch gaia-verifier to close task 890."
     resume = ("next " * RESUME_POINT_MAX_CHARS)[: RESUME_POINT_MAX_CHARS - len(tail)] + tail
     write_resume_point(SESSION_A, resume)
-    environment = build_environment_section()
+    environment = build_environment_section(SESSION_A)
     expected = render_snapshot(build_snapshot(SESSION_A))
     payload = json.dumps({"hook_event_name": "SessionStart", "session_id": SESSION_A, "source": "compact"})
     proc = subprocess.run(

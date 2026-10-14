@@ -73,7 +73,8 @@ def test_session_birth_bridge_returns_the_claude_code_block_and_marks_user_rows(
 
     assert response["action"] == "allow"
     assert USER_BODY in response["additional_context"]
-    assert response["additional_context"] == build_session_context()
+    assert response["additional_context"] == build_session_context(session_id=session_id)
+    assert f"- Session id: {session_id}" in response["additional_context"]
     assert _injection_count(seeded_db) == 1
 
 
