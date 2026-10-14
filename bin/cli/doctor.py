@@ -732,11 +732,15 @@ def check_last_install_error() -> dict:
 
 @register_check("Claude Code", order=20)
 def check_claude_code() -> dict:
-    """Check that Claude Code is installed and new enough to honour onFailure."""
-    from gaia.hook_shell import outdated_claude_code  # noqa: PLC0415
+    """Check that the Claude Code running this session is new enough to honour onFailure."""
+    from gaia.hook_shell import claude_code_version_finding, running_host_binary  # noqa: PLC0415
 
-    for cmd in ("claude", "claude-code"):
-        if shutil.which(cmd):
+    finding = claude_code_version_finding()
+    if finding:
+        return _result("Claude Code", finding.severity, finding.message, "claude update")
+    host = running_host_binary()
+    for cmd in ([host] if host else []) + ["claude", "claude-code"]:
+        if os.path.isabs(cmd) or shutil.which(cmd):
             try:
                 proc = subprocess.run(
                     [cmd, "--version"],
@@ -745,9 +749,6 @@ def check_claude_code() -> dict:
                     timeout=10,
                 )
                 version_line = proc.stdout.strip().split("\n")[0] if proc.stdout else cmd
-                outdated = outdated_claude_code()
-                if outdated:
-                    return _result("Claude Code", "error", outdated, "claude update")
                 return _result("Claude Code", "pass", version_line)
             except Exception:
                 return _result("Claude Code", "pass", cmd)

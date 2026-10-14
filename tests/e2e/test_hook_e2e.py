@@ -368,14 +368,14 @@ class TestErrorHandlingE2E:
         assert result.returncode != 0, "Expected non-zero exit for malformed JSON"
 
     def test_missing_event_name_exits_nonzero(self):
-        """Missing hook_event_name should cause exit 1."""
+        """Missing hook_event_name is a gate failure, so the call is denied with exit 2."""
         code, response, stderr = run_hook(self.HOOK, MALFORMED_MISSING_EVENT_NAME)
-        assert code == 1, f"Expected exit 1 for missing event name, got {code}"
+        assert code == 2, f"Expected the blocking exit 2 for missing event name, got {code}"
 
     def test_unknown_event_exits_nonzero(self):
-        """Unknown hook event type should cause exit 1."""
+        """An unknown hook event is a gate failure, so the call is denied with exit 2."""
         code, response, stderr = run_hook(self.HOOK, MALFORMED_UNKNOWN_EVENT)
-        assert code == 1, f"Expected exit 1 for unknown event, got {code}"
+        assert code == 2, f"Expected the blocking exit 2 for unknown event, got {code}"
 
     def test_empty_stdin_exits_nonzero(self):
         """Empty stdin should cause a non-zero exit."""
@@ -388,8 +388,6 @@ class TestErrorHandlingE2E:
             timeout=15,
             cwd=str(WORKTREE),
         )
-        # Empty stdin: has_stdin_data returns False when stdin is empty string,
-        # so the hook falls through to "no args and no stdin" -> exit 1
         assert result.returncode != 0, "Expected non-zero exit for empty stdin"
 
 

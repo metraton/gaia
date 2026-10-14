@@ -145,6 +145,40 @@ def test_opencode_bridge_denies_when_the_gate_cannot_load(tmp_path):
         assert json.loads(result.stdout)["action"] == "deny", result.stdout
 
 
+def test_only_pre_tool_use_registrations_reach_the_fail_closed_entry():
+    spec = importlib.util.spec_from_file_location("build_plugin", REPO_ROOT / "scripts" / "build-plugin.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    manifest = json.loads((REPO_ROOT / "build" / "gaia.manifest.json").read_text())
+    hooks = module.generate_hooks_json(manifest)["hooks"]
+
+    reaching = {
+        event for event, entries in hooks.items()
+        for entry in entries for handler in entry["hooks"] if "pre_tool_use.py" in handler["command"]
+    }
+    assert reaching == {"PreToolUse"}, reaching
+
+
+@pytest.mark.parametrize("event, entry", [
+    ("Stop", "stop_hook.py"),
+    ("UserPromptSubmit", "user_prompt_submit.py"),
+    ("SessionStart", "session_start.py"),
+    ("PostToolUse", "post_tool_use.py"),
+])
+def test_a_broken_gate_does_not_make_other_events_block(tmp_path, event, entry):
+    """Exit 2 traps Stop and erases a UserPromptSubmit prompt, so these entries must never use it on failure."""
+    env = {
+        "PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path), "GAIA_DATA_DIR": str(tmp_path / "data"),
+        "GAIA_HOST": "no-such-host-adapter", "GAIA_HOOK_STDIN_TIMEOUT": "5",
+    }
+    for payload in ({"hook_event_name": event, "session_id": "probe"}, {"session_id": "probe"}):
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "hooks" / entry)],
+            cwd=tmp_path, env=env, input=json.dumps(payload), capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode != 2, (event, payload, result.stderr[-400:])
+
+
 @pytest.fixture
 def windows_without_sh(monkeypatch):
     real_which = shutil.which
@@ -184,34 +218,71 @@ def test_host_minimum_matches_the_declared_engine_and_its_validator(cli_on_path)
     assert f"claudeCodeEngine !== '{engine}'" in (REPO_ROOT / "bin" / "pre-publish-validate.js").read_text()
 
 
-def _claude_reports(monkeypatch, version_line: str) -> None:
+HOST_BINARY = "/opt/desktop/ccd-cli/claude"
+
+
+def _claude_binaries(monkeypatch, *, on_path: str, host: str | None) -> None:
+    """A `claude` on PATH reporting *on_path*, and a running host reporting *host* (None: no host session)."""
+    if host is None:
+        monkeypatch.delenv("CLAUDE_CODE_CHILD_SESSION", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_EXECPATH", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+        monkeypatch.setenv("CLAUDE_CODE_EXECPATH", HOST_BINARY)
     real_which = shutil.which
     monkeypatch.setattr(shutil, "which", lambda cmd, *a, **k: "/usr/bin/claude" if cmd == "claude" else real_which(cmd, *a, **k))
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=version_line, stderr="")
-    )
+
+    def _version(argv, *a, **k):
+        reported = host if argv[0] == HOST_BINARY else on_path
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{reported}\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _version)
 
 
-def test_install_refuses_a_claude_code_older_than_the_minimum(cli_on_path, tmp_path, monkeypatch, capsys):
-    from cli import install
+class _BootstrapReached(Exception):
+    pass
 
-    def _bootstrap_reached(**_kwargs):
-        raise AssertionError("install proceeded on a host that ignores onFailure")
 
-    monkeypatch.setattr(install, "_run_bootstrap", _bootstrap_reached)
-    _claude_reports(monkeypatch, "2.1.294 (Claude Code)\n")
+def _install_until_bootstrap(install, tmp_path, monkeypatch):
+    def _bootstrap(**_kwargs):
+        raise _BootstrapReached
+
+    monkeypatch.setattr(install, "_run_bootstrap", _bootstrap)
     args = Namespace(workspace=str(tmp_path), db_path=str(tmp_path / "gaia.db"), quiet=True, skip_workspace=True)
+    with pytest.raises(_BootstrapReached):
+        install.install_channels(args, ("npm",))
 
-    assert install.install_channels(args, ("npm",)) == 1
-    assert "claude update" in capsys.readouterr().err
+
+def test_old_path_claude_with_a_new_running_host_installs_and_only_warns(cli_on_path, tmp_path, monkeypatch, capsys):
+    from cli import doctor, install
+
+    _claude_binaries(monkeypatch, on_path="2.1.87 (Claude Code)", host="2.1.296 (Claude Code)")
+
+    _install_until_bootstrap(install, tmp_path, monkeypatch)
+    assert "/usr/bin/claude" in capsys.readouterr().err
+    result = doctor.check_claude_code()
+    assert result["severity"] == "warning", result
+    assert "/usr/bin/claude" in result["detail"] and "not the host running this session" in result["detail"]
 
 
-def test_unreadable_claude_code_version_does_not_refuse(cli_on_path, monkeypatch):
-    from gaia.hook_shell import outdated_claude_code
+def test_old_running_host_is_a_doctor_error_and_an_install_warning(cli_on_path, tmp_path, monkeypatch, capsys):
+    from cli import doctor, install
 
-    _claude_reports(monkeypatch, "garbled\n")
+    _claude_binaries(monkeypatch, on_path="2.1.296 (Claude Code)", host="2.1.294 (Claude Code)")
 
-    assert outdated_claude_code() is None
+    result = doctor.check_claude_code()
+    assert result["severity"] == "error" and result["fix"] == "claude update", result
+    assert HOST_BINARY in result["detail"]
+    _install_until_bootstrap(install, tmp_path, monkeypatch)
+    assert HOST_BINARY in capsys.readouterr().err
+
+
+def test_unreadable_claude_code_version_reports_nothing(cli_on_path, monkeypatch):
+    from gaia.hook_shell import claude_code_version_finding
+
+    _claude_binaries(monkeypatch, on_path="garbled", host="garbled")
+
+    assert claude_code_version_finding() is None
 
 
 def test_keyboard_interrupt_at_import_denies_the_tool_call(tmp_path):
@@ -233,18 +304,15 @@ def test_settings_local_render_keeps_on_failure():
     assert handlers and all(h.get("onFailure") == "block" for h in handlers), handlers
 
 
-def test_doctor_flags_a_claude_code_older_than_the_minimum(cli_on_path, monkeypatch):
+def test_old_path_claude_outside_a_host_session_is_only_a_warning(cli_on_path, monkeypatch):
     from cli import doctor
 
-    monkeypatch.setattr(doctor.shutil, "which", lambda cmd, *a, **k: "/usr/bin/claude" if cmd == "claude" else None)
-    monkeypatch.setattr(
-        doctor.subprocess, "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout="2.1.294 (Claude Code)\n", stderr=""),
-    )
+    _claude_binaries(monkeypatch, on_path="2.1.294 (Claude Code)", host=None)
 
     result = doctor.check_claude_code()
 
-    assert result["severity"] == "error" and result["fix"] == "claude update", result
+    assert result["severity"] == "warning" and result["fix"] == "claude update", result
+    assert "/usr/bin/claude" in result["detail"]
 
 
 def test_doctor_flags_a_windows_host_without_sh(windows_without_sh):
