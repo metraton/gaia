@@ -28,6 +28,22 @@ security-tiers classifies every operation into four tiers so an agent knows whet
 
 **A fifth verdict exists OUTSIDE this ladder: the categorical denial** -- blocked commands, the `.claude`/hooks tree targeted through *Bash* (`hooks/modules/security/protected_path_guard.py::check`), the DB-write guards (SQL through the SQL shell, and any shell writer -- copy, move, redirect, `tee`, `dd of=`, `truncate`, a mutative inline interpreter -- whose destination is the `gaia.db` file, `hooks/modules/security/gaia_db_write_guard.py::check`), a file write into a git working tree whose author is the SHELL (`hooks/modules/security/shell_write_guard.py::check`), and reading or listing a path where secrets live -- credential directories and files, `.env` files, the key patterns -- through Bash (`hooks/modules/security/sensitive_read_guard.py::check`) or Read, Glob, Grep and OpenCode's list (`check_file_tool` in the same module). It is not a tier, it is not approvable, and no grant lifts it. The secret-read refusal is categorical because a signature would only put the credential's contents into a transcript.
 
+**Every one of those path guards judges a file, not its spelling.** They all go through a single canonical-path step, `hooks/modules/security/canonical_path.py::canonical_path`. It covers both the Bash guards and the file-tool checks (`is_protected_hook_path`, `is_account_path`, `check_file_tool`).
+
+- **Translation comes first.** The step opens with `git_bash_to_windows`, which turns a Git Bash `/c/Users` into `C:/Users`. Python's `ntpath` does not do this: it reads `/c/Users` as a folder named `c` on the current drive.
+- **The rest of the step.** It then normalizes backslashes, removes long-path and local admin-share prefixes (`\\?\C:\`, `\\localhost\C$\`), strips alternate data streams (`.env::$DATA`) and trailing dots and spaces, and expands 8.3 aliases (`SSH~1`). Last, it folds case, so `.ENV` gets the same verdict as `.env`, on Linux too.
+- **8.3 names are matched by shape, never looked up on disk.** An alias whose stem Windows replaced with a hash is not recognized.
+- **Resolution uses a narrower form.** Guards that resolve a path on disk use `native_path` instead. It drops only what Windows drops, and only on Windows.
+
+The sensitive-path table `HOME_ENTRIES` has a Windows counterpart, `PROFILE_ENTRIES` in `sensitive_paths.py`, matched anywhere in an absolute path:
+
+- **Read-refused:** the APPDATA `GitHub CLI`, `gcloud` and `gnupg` folders.
+- **Readable but write-signed:** the PowerShell profile folders and the Startup folder.
+
+Unexpanded `%APPDATA%`, `$env:APPDATA` and `%USERPROFILE%` expand like `~`.
+
+The guards also recognize Windows commands. The secret-read guard knows the Windows readers (`type`, `gc`, `Get-Content`, `findstr`, `certutil`, `Select-String`, `Get-ChildItem`) and checks what runs inside `cmd /c` and `powershell -Command`. The protected-path and gaia.db guards know the cmd and PowerShell writers (`copy`, `Copy-Item`, `Set-Content`, `Out-File` and their aliases). `canonical_path.py::command_name` matches a command word with no directory, in any case, and without `.exe`.
+
 **The indirect-execution verdict** (`hooks/modules/tools/bash_validator.py::_detect_indirect_execution`): a subagent's shell wrapper (the `-c` of any sh-family shell in `hooks/modules/security/shell_unwrapper.py::_SHELLS` -- `bash`, `sh`, `dash`, `zsh`, `ksh`, `fish` and the rest -- or `eval`) is refused with the correct form -- run the command directly, or commit a script file -- and carries no `approval_id`; the orchestrator gets an ask dialog for the same command. Behind a chain (`cd X && bash -c ...`) a mutative wrapper takes the compound-T3 deny, whose message names the same form.
 
 Writing an account path is the opposite case: T3-approvable, not categorical. A path that decides who may log in or what runs on the next shell or git invocation (`hooks/modules/security/sensitive_paths.py::is_account_path` -- shell start-up files and git config included, though they stay readable) asks the same signature through Bash, Write, Edit and apply_patch. Which paths are read-refused and which are write-signed is one table, `HOME_ENTRIES` in `sensitive_paths.py`, each entry marked by use.
