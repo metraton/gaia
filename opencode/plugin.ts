@@ -1228,8 +1228,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // many messages chat.message reports for it.
   const birthSettled = new Set<string>()
   // Main sessions compacted since their last user message. The summary is a
-  // model's text and may drop the Environment block the birth message carried,
-  // so the next message carries it again.
+  // model's text and may drop or paraphrase the Environment block and the
+  // session snapshot, so the next message carries the refresh with both.
   const environmentDue = new Set<string>()
   // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()

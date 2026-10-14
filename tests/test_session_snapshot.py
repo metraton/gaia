@@ -146,12 +146,11 @@ def _assert_only_session_a(rendered):
         assert foreign not in rendered
 
 
-def _assert_cut_on_word_boundaries(rendered):
+def _assert_goal_cut_and_resume_whole(rendered):
     goal_line = next(line for line in rendered.splitlines() if line.startswith("Active:"))
     goal_part = goal_line.split(" -- ", 1)[1].removesuffix("...")
     assert LONG_GOAL.startswith(goal_part) and LONG_GOAL[len(goal_part)] == " "
-    resume_part = rendered.split("Resume point:\n", 1)[1].split("\n\n", 1)[0].removesuffix("...")
-    assert LONG_RESUME.startswith(resume_part) and LONG_RESUME[len(resume_part)] == " "
+    assert f"Resume point:\n{LONG_RESUME.strip()}\n\n" in rendered
 
 
 def test_a_long_lived_session_carries_only_its_live_work_and_nothing_from_another(two_sessions):
@@ -171,8 +170,22 @@ def test_a_long_lived_session_carries_only_its_live_work_and_nothing_from_anothe
     assert "a0000000000000a03.t [NEEDS_INPUT]" in rendered
     for settled in ("a00000000000000d1", "a00000000000000d2", "a00000000000000d4", "a00000000000000d5"):
         assert settled not in rendered
-    _assert_cut_on_word_boundaries(rendered)
-    assert len(rendered) <= 1500
+    _assert_goal_cut_and_resume_whole(rendered)
+    assert len(rendered) <= 1500 + len(LONG_RESUME)
+
+
+def test_a_resume_point_at_the_setter_limit_reaches_the_snapshot_whole(db):
+    from gaia.session_snapshot import RESUME_POINT_MAX_CHARS, build_snapshot, render_snapshot, write_resume_point
+
+    tail = " Then dispatch gaia-verifier to close task 890."
+    resume = ("step " * RESUME_POINT_MAX_CHARS)[: RESUME_POINT_MAX_CHARS - len(tail)] + tail
+    write_resume_point("ses-full-resume", resume)
+
+    rendered = render_snapshot(build_snapshot("ses-full-resume"))
+
+    assert len(resume) == RESUME_POINT_MAX_CHARS
+    assert f"Resume point:\n{resume}\n\n" in rendered
+    assert "snapshot truncated" not in rendered
 
 
 def test_every_section_is_present_when_empty():
@@ -205,7 +218,8 @@ def test_a_long_session_lists_ten_newest_contracts_and_caps_the_block(db):
     from gaia.session_snapshot import build_snapshot, render_snapshot, write_resume_point
 
     _add_contracts(db, 40, "ses-long")
-    write_resume_point("ses-long", "resume here " * 100)
+    resume = ("resume here " * 100).strip()
+    write_resume_point("ses-long", resume)
 
     snapshot = build_snapshot("ses-long")
     rendered = render_snapshot(snapshot)
@@ -214,14 +228,14 @@ def test_a_long_session_lists_ten_newest_contracts_and_caps_the_block(db):
     assert "ses-long-NEEDS_VERIFICATION-39" in rendered and "ses-long-NEEDS_VERIFICATION-30" in rendered
     assert "ses-long-NEEDS_VERIFICATION-29" not in rendered
     assert "+30 more" in rendered
-    assert "resume here" in rendered
-    assert len(rendered) <= 1500
+    assert resume in rendered
+    assert len(rendered) <= 1500 + len(resume)
 
 
-def test_the_block_is_cut_to_the_cap_on_a_whole_line_when_every_section_is_full(db, monkeypatch):
+def test_the_block_is_cut_on_a_whole_line_past_the_resume_point_when_every_section_is_full(db, monkeypatch):
     from gaia.session_snapshot import build_snapshot, render_snapshot, write_resume_point
 
-    _add_contracts(db, 12, "ses-full", kind="task_execution-" + "x" * 80)
+    _add_contracts(db, 12, "ses-full", kind="task_execution-" + "x" * 200)
     write_resume_point("ses-full", "r" * 2000)
 
     snapshot = build_snapshot("ses-full")
@@ -229,7 +243,8 @@ def test_the_block_is_cut_to_the_cap_on_a_whole_line_when_every_section_is_full(
     monkeypatch.setattr("gaia.session_snapshot._BLOCK_MAX_CHARS", 10**6)
     uncapped = render_snapshot(snapshot).splitlines()
 
-    assert len(rendered) <= 1500
+    assert len(rendered) <= 1500 + 2000
+    assert "r" * 2000 in rendered
     assert rendered.startswith("## Session Snapshot")
     *kept, marker = rendered.splitlines()
     assert marker.startswith("... (snapshot truncated")
@@ -340,22 +355,28 @@ def test_session_start_compact_output_contains_the_snapshot(db, tmp_path):
     assert "bbbbbbbbbbbbbbbbb" not in context and "P-b" not in context
 
 
-def test_opencode_compacting_for_the_primary_session_receives_the_snapshot(db, monkeypatch):
+def test_opencode_compacting_feeds_the_summarizer_the_steering_and_no_snapshot(db, monkeypatch):
     import bridge
+    from modules.context.compact_context_builder import build_summary_instructions
 
     monkeypatch.setenv("GAIA_HOST", "opencode")
     response = bridge.handle({"event": "session.compacting", "sessionID": SESSION_A, "main": True})
 
-    context, _instructions = response["updated_input"]["context"]
-    assert "## Session Snapshot" in context
-    assert "aaaaaaaaaaaaaaaaa.tokena" in context and "P-a" in context
-    assert "bbbbbbbbbbbbbbbbb" not in context
+    assert response["updated_input"]["context"] == [build_summary_instructions()]
+    assert "## Session Snapshot" not in build_summary_instructions()
 
 
-def test_both_hosts_deliver_the_same_session_scoped_snapshot(two_sessions, tmp_path, monkeypatch):
+def test_both_hosts_deliver_the_refresh_with_the_whole_resume_point_once_after_compaction(
+    two_sessions, tmp_path, monkeypatch,
+):
     import bridge
-    from gaia.session_snapshot import build_snapshot, render_snapshot
+    from gaia.session_snapshot import RESUME_POINT_MAX_CHARS, build_snapshot, render_snapshot, write_resume_point
+    from modules.session.session_manifest import build_environment_section
 
+    tail = " Then dispatch gaia-verifier to close task 890."
+    resume = ("next " * RESUME_POINT_MAX_CHARS)[: RESUME_POINT_MAX_CHARS - len(tail)] + tail
+    write_resume_point(SESSION_A, resume)
+    environment = build_environment_section()
     expected = render_snapshot(build_snapshot(SESSION_A))
     payload = json.dumps({"hook_event_name": "SessionStart", "session_id": SESSION_A, "source": "compact"})
     proc = subprocess.run(
@@ -364,42 +385,20 @@ def test_both_hosts_deliver_the_same_session_scoped_snapshot(two_sessions, tmp_p
         env=os.environ.copy(),
     )
     monkeypatch.setenv("GAIA_HOST", "opencode")
-    opencode_context, _instructions = bridge.handle(
-        {"event": "session.compacting", "sessionID": SESSION_A, "main": True}
-    )["updated_input"]["context"]
-
-    assert proc.returncode == 0, proc.stderr
-    claude_context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    for context in (claude_context, opencode_context):
-        assert expected in context
-        assert context.count("## Session Snapshot") == 1
-        _assert_only_session_a(context)
-
-
-def test_both_hosts_carry_the_environment_block_once_after_compaction(two_sessions, tmp_path, monkeypatch):
-    import bridge
-    from modules.session.session_manifest import build_environment_section
-
-    environment = build_environment_section()
-    payload = json.dumps({"hook_event_name": "SessionStart", "session_id": SESSION_A, "source": "compact"})
-    proc = subprocess.run(
-        [sys.executable, str(_ROOT / "hooks" / "session_start.py")],
-        input=payload, capture_output=True, text=True, timeout=60, cwd=str(tmp_path),
-        env=os.environ.copy(),
-    )
-    monkeypatch.setenv("GAIA_HOST", "opencode")
-    summary_context, _instructions = bridge.handle(
+    summary_context = bridge.handle(
         {"event": "session.compacting", "sessionID": SESSION_A, "main": True}
     )["updated_input"]["context"]
     next_message = bridge.handle({"event": "chat.message", "sessionID": SESSION_A, "source": "compact"})
 
     assert proc.returncode == 0, proc.stderr
     assert "- gaia CLI: " in environment
-    assert "## Environment" not in summary_context
-    assert next_message["additional_context"] == environment
     claude_context = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    opencode_context = summary_context + "\n\n" + next_message["additional_context"]
+    opencode_context = "\n\n".join([*summary_context, next_message["additional_context"]])
     for context in (claude_context, opencode_context):
+        assert expected in context
+        assert resume in context
+        assert context.count("## Session Snapshot") == 1
         assert context.count(environment) == 1
-        assert context.count("## Environment") == 1
         assert context.count("- gaia CLI: ") == 1
+        for foreign in ("b0000000000000b01", "P-b", "resume b elsewhere"):
+            assert foreign not in context

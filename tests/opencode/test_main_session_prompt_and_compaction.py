@@ -95,43 +95,34 @@ def test_prompt_submit_bridge_returns_nothing_when_no_notification_is_due(isolat
     assert response == {"action": "allow", "additional_context": ""}
 
 
-def test_primary_compaction_bridge_returns_the_claude_code_compact_context_but_the_environment(isolated):
-    import bridge
-    from modules.context.compact_context_builder import build_compact_context
-
-    response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
-
-    context = response["updated_input"]["context"]
-    assert response["action"] == "allow"
-    assert context[0] == build_compact_context(session_id=MAIN_SESSION, with_environment=False)
-    assert context[0] and "## Environment" not in context[0]
-
-
-def test_primary_compaction_carries_the_session_snapshot_and_the_summary_instructions(isolated):
+def test_primary_compaction_gives_the_summarizer_only_the_summary_instructions(isolated):
     import bridge
     from gaia.session_snapshot import write_resume_point
     from modules.context.compact_context_builder import build_summary_instructions
 
     write_resume_point(MAIN_SESSION, "finish task 892, then run its gate")
+
+    response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
+
+    assert response == {"action": "allow", "updated_input": {"context": [build_summary_instructions()]}}
+    assert "finish task 892" not in build_summary_instructions()
+
+
+def test_first_message_after_compaction_carries_claude_codes_refresh_for_that_session(isolated):
+    import bridge
+    from gaia.session_snapshot import write_resume_point
+    from modules.context.compact_context_builder import build_compact_context
+
+    write_resume_point(MAIN_SESSION, "finish task 892, then run its gate")
     write_resume_point(CHILD_SESSION, "another session's resume point")
 
-    response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
+    response = bridge.handle({"event": "chat.message", "sessionID": MAIN_SESSION, "source": "compact"})
 
-    snapshot, instructions = response["updated_input"]["context"]
-    assert "finish task 892, then run its gate" in snapshot
-    assert "another session's resume point" not in snapshot
-    assert instructions == build_summary_instructions()
-    assert "verbatim" in instructions and "never copy their bodies" in instructions
-
-
-def test_a_compaction_with_no_context_to_inject_adds_no_instructions(isolated, monkeypatch):
-    import bridge
-
-    monkeypatch.setattr("modules.context.compact_context_builder.build_compact_context", lambda **kwargs: "")
-
-    response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
-
-    assert response == {"action": "allow"}
+    context = response["additional_context"]
+    assert context == build_compact_context(session_id=MAIN_SESSION)
+    assert "## Environment" in context and "## Session Snapshot" in context
+    assert "finish task 892, then run its gate" in context
+    assert "another session's resume point" not in context
 
 
 def test_primary_compaction_is_not_injected_into_an_unbound_non_main_session(isolated):

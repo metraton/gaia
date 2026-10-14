@@ -8,24 +8,19 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def build_compact_context(*, session_id: str = "", with_environment: bool = True) -> str:
-    """Build the orchestrator identity reminder, the session's Environment block unless excluded, and its own snapshot.
+def build_compact_context(*, session_id: str = "") -> str:
+    """Build the orchestrator identity reminder, the session's Environment block, and its own snapshot.
 
     The Environment block is the birth block's own, so the trusted `gaia CLI:`
-    path the compaction discarded is published again; OpenCode excludes it
-    here and attaches it to the next user message, where no summarizer can
-    drop it. The snapshot is keyed by ``session_id``; the host event that
-    triggers the refresh carries the same id across compaction, so another
-    session's contracts and signatures never reach this one. On Claude Code
-    this refresh is the only post-compaction delivery: the compaction mod
-    only steers.
+    path the compaction discarded is published again. The snapshot is keyed by
+    ``session_id``; the host event that triggers the refresh carries the same
+    id across compaction, so another session's contracts and signatures never
+    reach this one. On both hosts this refresh is the only post-compaction
+    delivery, outside any summary: the summarizer is only steered.
     """
-    environment = ""
-    if with_environment:
-        from modules.session.session_manifest import build_environment_section
+    from modules.session.session_manifest import build_environment_section
 
-        environment = build_environment_section()
-    blocks = [_build_identity_block(), environment, _build_snapshot_block(session_id)]
+    blocks = [_build_identity_block(), build_environment_section(), _build_snapshot_block(session_id)]
     return "\n\n".join(b for b in blocks if b)
 
 
@@ -38,9 +33,8 @@ def build_summary_instructions() -> str:
     return (
         "# Compaction Instructions\n\n"
         "Write the summary so the next turn can resume without re-deriving anything:\n"
-        "- Keep the session snapshot above (resume point, open contracts, pending "
-        "signatures, active brief/plan/task) verbatim; it is the source of truth for "
-        "where work stands.\n"
+        "- Do not restate the session snapshot (resume point, open contracts, pending "
+        "signatures, active brief/plan/task); it is delivered verbatim to the next turn.\n"
         "- State the active objective and the exact next action.\n"
         "- Refer to durable work by identifier (memory slugs, brief/plan/task ids, "
         "contract ids); never copy their bodies.\n"

@@ -387,29 +387,24 @@ class OpenCodeAdapter(HookAdapter):
         The plugin forwards ``chat.message`` once per session it or the host
         records as parentless, so every call here is a start or a resume, and
         again with ``source: compact`` on the first message after that
-        session's compaction, which gets back only the Environment block: the
-        compacting hook already gave the summary the rest of the refresh. The
+        session's compaction, which gets back Claude Code's SessionStart(compact)
+        refresh: the Environment block and that session's snapshot, whole. The
         bridge runs from the session's workspace directory, which is the
         directory Claude Code's start sweeps too.
         """
         from modules.session import session_lifecycle
         from modules.session.session_lifecycle import SessionStart, start_context
-        from modules.session.session_manifest import build_environment_section
 
         source = "compact" if raw.get("source") == "compact" else "startup"
+        session_id = str(raw.get("session_id") or "")
         session_lifecycle.run_start_maintenance(SessionStart(
-            session_id=str(raw.get("session_id") or ""),
+            session_id=session_id,
             source=source,
             is_headless=False,
             pinned_build=None,
             workspace_dir=Path.cwd(),
         ))
-        return BootstrapResult(
-            session_type=source,
-            additional_context=(
-                build_environment_section() if source == "compact" else start_context("startup", [])
-            ),
-        )
+        return BootstrapResult(session_type=source, additional_context=start_context(source, [], session_id))
 
     def adapt_user_prompt_submit(self, event: HookEvent) -> HookResponse:
         """Run Claude Code's per-prompt core for one main-session message: heartbeat, then the due-notifications line.
@@ -1470,22 +1465,18 @@ class OpenCodeAdapter(HookAdapter):
         ) or {"status": "error"}
 
     def adapt_pre_compact(self, event: HookEvent) -> HookResponse:
-        """Return what OpenCode's compaction must carry forward: a bound child's kernel, or a main session's compaction context.
+        """Return what OpenCode's compaction must carry forward: a bound child's kernel, or a main session's summary instructions.
 
         Answers the experimental ``experimental.session.compacting`` hook,
         whose context survives the summary that discards the session's prior
         messages. A dispatched child gets back the kernel its row was born
         with (plan 65, task 12; AC-7). A session the plugin marks ``main`` gets
-        what Claude Code's SessionStart(compact) delivers but the Environment
-        block, which the plugin attaches to the next user message instead,
-        followed by the instructions that steer the summary.
+        only the instructions that steer the summary: its snapshot reaches the
+        next turn through adapt_session_start's refresh, so it is never
+        paraphrased by the summarizer nor delivered twice.
         Both travel as ``context`` entries, which the host appends to its own
         summary prompt; replacing the prompt (``output.prompt``) would discard
         the host's summary template, which Gaia has no stake in owning.
-
-        Degrades to a plain allow whenever there is nothing to inject or
-        building it fails: a compaction must never be blocked by injection,
-        the rule _adapt_task_with_kernel applies to a Task dispatch.
         """
         kernel = self._bound_child_kernel(event.session_id, str(event.payload.get("agent") or ""))
         if kernel:
@@ -1493,19 +1484,11 @@ class OpenCodeAdapter(HookAdapter):
                 output={"action": "allow", "updated_input": {"context": [kernel]}}
             )
         if event.payload.get("main") is True:
-            from modules.context.compact_context_builder import (
-                build_compact_context,
-                build_summary_instructions,
-            )
+            from modules.context.compact_context_builder import build_summary_instructions
 
-            context = build_compact_context(session_id=event.session_id, with_environment=False)
-            if context:
-                return HookResponse(
-                    output={
-                        "action": "allow",
-                        "updated_input": {"context": [context, build_summary_instructions()]},
-                    }
-                )
+            return HookResponse(
+                output={"action": "allow", "updated_input": {"context": [build_summary_instructions()]}}
+            )
         return HookResponse(output={"action": "allow"})
 
     @staticmethod

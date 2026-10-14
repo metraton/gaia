@@ -16,7 +16,6 @@ from gaia.paths.resolver import data_dir
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _RESUME_DIR = "session_resume"
 _RESUME_MAX_AGE_SECONDS = 30 * 24 * 3600
-_RESUME_MAX_CHARS = 600
 RESUME_POINT_MAX_CHARS = 2000
 _GOAL_MAX_CHARS = 160
 _MAX_LISTED = 10
@@ -196,7 +195,7 @@ def _listed(title: str, lines: list[str], trailer: str = "") -> str:
 
 
 def render_snapshot(snapshot: dict[str, Any]) -> str:
-    """The markdown block a compaction delivers: every section, 'none' when empty, at most 1500 characters cut on line boundaries."""
+    """The markdown block a compaction delivers: every section, 'none' when empty, the resume point whole, and at most 1500 further characters cut on line boundaries."""
     task = snapshot["active_task"]
     if task:
         goal = (task["goal"] or "").strip().splitlines()
@@ -212,7 +211,7 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
     waiting_first = sorted(snapshot["open_contracts"], key=lambda c: c["agent_state"] not in _WAITING_STATES)
     sections = [
         active,
-        "Resume point:\n" + _clip(resume, _RESUME_MAX_CHARS) if resume else "Resume point: none",
+        "Resume point:\n" + resume if resume else "Resume point: none",
         _listed("Pending signatures", [
             f"- {a['id']} (agent {a['agent_id'] or 'unknown'}, {a['created_at']})"
             for a in snapshot["pending_signatures"]
@@ -228,6 +227,7 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
         )),
     ]
     block = "## Session Snapshot\n" + "\n\n".join(sections)
-    if len(block) > _BLOCK_MAX_CHARS:
-        block = block[: _BLOCK_MAX_CHARS - len(_TRUNCATED)].rsplit("\n", 1)[0] + _TRUNCATED
+    limit = _BLOCK_MAX_CHARS + len(resume or "")
+    if len(block) > limit:
+        block = block[: limit - len(_TRUNCATED)].rsplit("\n", 1)[0] + _TRUNCATED
     return block

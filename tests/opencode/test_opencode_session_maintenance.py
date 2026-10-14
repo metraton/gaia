@@ -38,7 +38,7 @@ def db(tmp_path, monkeypatch):
     monkeypatch.setenv("GAIA_DB", str(tmp_path / "data" / "gaia.db"))
     monkeypatch.setenv("GAIA_HOST", "opencode")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("modules.session.session_lifecycle.start_context", lambda source, alarms: "birth")
+    monkeypatch.setattr("modules.session.session_lifecycle.start_context", lambda source, alarms, session_id="": "birth")
     return tmp_path / "data" / "gaia.db"
 
 
