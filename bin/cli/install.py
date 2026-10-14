@@ -106,6 +106,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
 from cli import _install_helpers  # type: ignore  # noqa: E402
 from cli import migrate  # type: ignore  # noqa: E402
 from cli import _manifest  # type: ignore  # noqa: E402
+from cli import _legacy_cleanup  # type: ignore  # noqa: E402
 from gaia.paths import db_path as _resolved_db_path  # noqa: E402
 
 _BOOTSTRAP_SCRIPT = migrate.ENGINE
@@ -301,6 +302,17 @@ def _render_launcher(workspace: Path) -> str:
     paths with spaces remain a single argument to ``exec``.
     """
     return _LAUNCHER_TEMPLATE.format(workspace_path=str(workspace))
+
+
+def _legacy_posix_launcher(workspace: Path, link: str = "~/.local/bin/gaia") -> bool:
+    """True when *link* is the wrapper a 5.x install wrote for *workspace*; install migrates it even without --path."""
+    path = Path(link).expanduser()
+    if _is_windows() or path.is_symlink() or not path.is_file():
+        return False
+    try:
+        return path.read_text(encoding="utf-8") == _render_launcher(workspace)
+    except (OSError, UnicodeDecodeError):
+        return False
 
 
 def _render_cmd_launcher(workspace: Path, gaia_bin: Path) -> str:
@@ -1499,6 +1511,7 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
             print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
         return 0
 
+    opt_path = opt_path or _legacy_posix_launcher(workspace)
     outside = _launcher_manifest_paths() if opt_path else []
     baseline, baseline_source = _manifest.baseline_for(workspace, outside)
     if baseline_source == "adopted" and not quiet:
@@ -1524,6 +1537,13 @@ def _install_channels(args: argparse.Namespace, channels: Sequence[str], *, comm
                      quiet=quiet, verbose=verbose)
         if action == "error":
             failed.append("plugin")
+
+    from gaia.paths.resolver import data_dir
+
+    _report_step(name="5.x data dirs", result=_legacy_cleanup.merge_legacy_data_dirs(workspace, data_dir()),
+                 quiet=quiet, verbose=verbose)
+    _report_step(name="5.x grant cache", result=_legacy_cleanup.remove_stale_grant_cache(workspace),
+                 quiet=quiet, verbose=verbose)
 
     if failed and not quiet:
         print(f"  [!] channel configuration failed: {', '.join(failed)}", file=sys.stderr)

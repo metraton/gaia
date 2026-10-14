@@ -124,6 +124,7 @@ def test_a_failure_mid_chain_leaves_the_original_after_the_backup(tmp_path, monk
     db = tmp_path / "gaia.db"
     load_base(51, db)
     before, ledger = _census(db), _ledger(db)
+    digest = hashlib.sha256(db.read_bytes()).hexdigest()
     migrations = tmp_path / "migrations"
     shutil.copytree(bootstrap_database.MIG_DIR, migrations)
     expected = _expected_version()
@@ -139,6 +140,73 @@ def test_a_failure_mid_chain_leaves_the_original_after_the_backup(tmp_path, monk
     assert Path(_BACKUP_LINE.search(out.out).group(1)).is_file()
     assert _ledger(db) == ledger
     assert _census(db) == before
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == digest
+
+
+def _seed_legacy_workspace(workspace: Path) -> None:
+    claude = workspace / ".claude"
+    (claude / "logs").mkdir(parents=True)
+    (claude / "logs" / "hooks.log").write_text("5.4 log\n")
+    (claude / "session" / "active").mkdir(parents=True)
+    (claude / "session" / "active" / "s1.json").write_text("{}\n")
+    (claude / "cache" / "approvals").mkdir(parents=True)
+    (claude / "cache" / "approvals" / "grant-abc.json").write_text("{}\n")
+
+
+def test_bare_install_merges_5x_data_dirs_and_drops_the_grant_cache(tmp_path):
+    db = tmp_path / "data" / "gaia.db"
+    db.parent.mkdir()
+    load_base(51, db)
+    workspace = tmp_path / "ws"
+    _seed_legacy_workspace(workspace)
+
+    result = _bare_install(tmp_path, db, workspace)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (tmp_path / "data" / "logs" / "hooks.log").read_text() == "5.4 log\n"
+    assert (tmp_path / "data" / "session" / "active" / "s1.json").is_file()
+    for gone in ("logs", "session", "cache"):
+        assert not (workspace / ".claude" / gone).exists(), gone
+
+
+def test_a_conflicting_legacy_file_is_kept_and_its_dir_survives(tmp_path):
+    from cli import _legacy_cleanup
+
+    workspace, data = tmp_path / "ws", tmp_path / "data"
+    _seed_legacy_workspace(workspace)
+    (data / "logs").mkdir(parents=True)
+    (data / "logs" / "hooks.log").write_text("current log\n")
+
+    result = _legacy_cleanup.merge_legacy_data_dirs(workspace, data)
+
+    assert "1 conflicting" in result["details"]
+    assert (workspace / ".claude" / "logs" / "hooks.log").read_text() == "5.4 log\n"
+    assert (data / "logs" / "hooks.log").read_text() == "current log\n"
+    assert _legacy_cleanup.merge_legacy_data_dirs(workspace, data)["action"] == "migrated"
+    unknown = workspace / ".claude" / "cache" / "approvals" / "notes.txt"
+    unknown.write_text("user file\n")
+    _legacy_cleanup.remove_stale_grant_cache(workspace)
+    assert unknown.is_file()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the 5.x wrapper is the POSIX launcher")
+def test_bare_install_migrates_the_5x_launcher_and_leaves_a_foreign_one(tmp_path):
+    db = tmp_path / "data" / "gaia.db"
+    db.parent.mkdir()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    launcher = tmp_path / "home" / ".local" / "bin" / "gaia"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(install._render_launcher(workspace.resolve()))
+
+    result = _bare_install(tmp_path, db, workspace)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert launcher.is_symlink()
+    launcher.unlink()
+    launcher.write_text("#!/bin/sh\necho mine\n")
+    _bare_install(tmp_path, db, workspace)
+    assert launcher.read_text() == "#!/bin/sh\necho mine\n"
 
 
 def test_a_second_concurrent_install_is_refused_while_the_lock_is_held(tmp_path, monkeypatch, capsys):

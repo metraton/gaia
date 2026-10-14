@@ -14,7 +14,15 @@ Gaia ships as a **single, unified plugin** named `gaia` — one artifact carryin
 
 Gaia reaches an install folder through **three channels**, the same three [README.md](./README.md) lists: the npm/pnpm package wired into Claude Code with `gaia install` (Surface 1), the Claude Code plugin from `gaia-marketplace` (Surface 2), and OpenCode on the same package (Surface 3). Pick the one that matches the host you run.
 
-`gaia install` and `gaia dev` take the channel explicitly with `--channel`; there is no default and no `all`, and run without one they fail listing the channels. The package channel (`npm`) and the plugin exclude each other in one install folder, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package, with `--channel npm` when OpenCode is recorded beside it). OpenCode joins either, and `gaia uninstall --channel opencode` removes it on its own.
+`gaia install` run without `--channel` picks the channel itself and never asks. It reuses the channels `.claude/gaia-manifest.json` recorded. If none are recorded it wires `npm`, plus `opencode` when the folder has an `opencode.json`. When the Gaia plugin is enabled for the folder, the plugin owns Claude Code: install wires no `npm` channel and removes the npm hook entries left in `.claude/settings.local.json`. `gaia dev` still takes `--channel` explicitly, and an explicit `--channel` overrides the choice above. The package channel (`npm`) and the plugin exclude each other in one install folder, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package, with `--channel npm` when OpenCode is recorded beside it). OpenCode joins either, and `gaia uninstall --channel opencode` removes it on its own.
+
+**Upgrading from 5.3 or 5.4.** Install the new package version, then run `gaia install` once with no options. It does everything in that one run:
+
+- **Database.** It backs up the database to `backups/` beside it and checks the copy: `integrity_check` must pass and every table must hold the same row count. It prints the backup's path, then applies the pending migrations in one transaction, including the ones that rewrite existing rows. No consent command is needed. If the backup does not check out, nothing is migrated. If a migration fails, the transaction rolls back and the database stays exactly as it was. A database newer than the package is refused and left untouched.
+- **Old data.** Files 5.x kept under `.claude/logs`, `.claude/events`, `.claude/memory` and `.claude/session` move into the Gaia data dir. A file that already exists there with different content stays where it is, and so does its folder. The 5.x JSON grants under `.claude/cache/approvals/` are deleted; other files in that folder are kept.
+- **Old launcher.** A `~/.local/bin/gaia` wrapper that a 5.x install wrote for this folder becomes the current launcher link. A file there that Gaia did not write is left alone.
+
+Your shell profile is never edited, and only one install runs at a time (`install.lock` beside the database). Running `gaia install` again changes nothing. `gaia migrate apply` on its own still asks for `--consent-chain` before a migration that rewrites existing rows.
 
 ### Surface 1: npm / pnpm
 
@@ -171,7 +179,7 @@ Example: Install + scan in a project with GitOps and Terraform
 The options each command accepts are the ones its `--help` prints; the ones this guide uses:
 
 ```
-gaia install --channel {npm,opencode} [--path] [--workspace W]
+gaia install [--channel {npm,opencode}] [--path] [--workspace W]
                                  # bootstrap DB + wire the install folder (no postinstall)
 gaia update                      # re-wires the recorded channels after a package upgrade
 gaia workspace declare NAME PATH # declare a workspace rooted at PATH
