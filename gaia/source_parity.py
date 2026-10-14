@@ -15,9 +15,10 @@ can hide in. Deriving the list instead of restating it means adding a tree to
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
+
+from gaia.text_digest import text_sha256
 
 # Present in a checkout, absent from every packed artifact (``build/`` is not in
 # npm's ``files``), which is what makes it a decisive source-tree marker.
@@ -84,14 +85,6 @@ def _listing(root: Path, tree: str) -> "dict[str, Path]":
     return found
 
 
-def _digest(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def compare(source_root: Path, installed_root: Path, trees: "list[str]") -> dict:
     """Compare every shipped file under *trees* between the two roots.
 
@@ -110,7 +103,7 @@ def compare(source_root: Path, installed_root: Path, trees: "list[str]") -> dict
                 divergent.append((coordinate, MISSING))
             elif rel not in source:
                 divergent.append((coordinate, EXTRA))
-            elif _digest(source[rel]) != _digest(installed[rel]):
+            elif text_sha256(source[rel]) != text_sha256(installed[rel]):
                 divergent.append((coordinate, DIFFERS))
     return {"compared": compared, "divergent": sorted(divergent)}
 

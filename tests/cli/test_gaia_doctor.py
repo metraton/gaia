@@ -1136,8 +1136,9 @@ class TestCmdDoctorJson:
         # 1 workspace-registry (order 63 -- what `gaia workspace curate` fixes) +
         # 3 channel checks (install-channel 36, hook-registrations 72,
         #   hook-commands 74 -- hooks counted across plugin and every settings file) +
-        # 1 hook-shell (order 25 -- Windows without a resolvable sh).
-        assert len(data["checks"]) == 40
+        # 1 hook-shell (order 25 -- Windows without a resolvable sh) +
+        # 1 git-long-paths (order 26 -- Windows git with core.longpaths off).
+        assert len(data["checks"]) == 41
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

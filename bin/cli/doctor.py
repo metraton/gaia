@@ -767,6 +767,17 @@ def check_hook_shell() -> dict:
     return _result("Hook shell", "pass", "sh resolvable or not required")
 
 
+@register_check("Git long paths", order=26)
+def check_git_long_paths() -> dict:
+    """Warn on Windows when the user's git leaves core.longpaths off; the command is the user's to run."""
+    from gaia.subprocess_text import ENABLE_LONG_PATHS_COMMAND, long_paths_disabled  # noqa: PLC0415
+
+    problem = long_paths_disabled()
+    if problem:
+        return _result("Git long paths", "warn", problem, f"If you want it, run: {ENABLE_LONG_PATHS_COMMAND}")
+    return _result("Git long paths", "pass", "core.longpaths enabled or not required")
+
+
 @register_check("Python", order=30)
 def check_python() -> dict:
     """Check Python version >= 3.9."""

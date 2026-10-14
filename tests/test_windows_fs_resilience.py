@@ -126,26 +126,61 @@ def test_lock_wait_is_bounded_and_fails_closed(tmp_path):
     assert entered == [True]
 
 
-def test_worktree_add_enables_long_paths(monkeypatch, tmp_path):
-    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
-    repo = _init_repo(tmp_path / "repo")
-    _git(repo, "commit", "-q", "--allow-empty", "-m", "init")
-    from gaia import worktree
-
+def _record_runs(monkeypatch) -> list:
     real_run = subprocess.run
     seen = []
 
     def recording_run(args, *rest, **kwargs):
-        seen.append(list(args))
+        seen.append(args if isinstance(args, str) else list(args))
         return real_run(args, *rest, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", recording_run)
+    return seen
+
+
+def test_every_git_run_on_windows_enables_long_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr("gaia.subprocess_text._ON_WINDOWS", True)
+    from gaia.subprocess_text import run_text as runner
+
+    seen = _record_runs(monkeypatch)
+    runner(["git", "--version"], check=True, capture_output=True)
+    runner([sys.executable, "-c", "pass"], check=True)
+
+    assert seen == [["git", "-c", "core.longpaths=true", "--version"], [sys.executable, "-c", "pass"]]
+
+
+def test_worktree_add_on_windows_enables_long_paths(monkeypatch, tmp_path):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
+    repo = _init_repo(tmp_path / "repo")
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "init")
+    monkeypatch.setattr("gaia.subprocess_text._ON_WINDOWS", True)
+    from gaia import worktree
+
+    seen = _record_runs(monkeypatch)
     target = worktree.create_agentic_worktree(repo, CONTRACT_ID, AGENT_ID)
 
-    add = next(cmd for cmd in seen if "worktree" in cmd and cmd[cmd.index("worktree") + 1] == "add")
-    position = add.index("worktree")
-    assert add[position - 2:position] == ["-c", "core.longpaths=true"]
+    git_runs = [cmd for cmd in seen if cmd[0] == "git"]
+    assert git_runs and all(cmd[1:3] == ["-c", "core.longpaths=true"] for cmd in git_runs)
     assert target.is_dir()
+
+
+@pytest.mark.parametrize("configured, warned", [("", True), ("false", True), ("true", False)])
+def test_long_paths_check_reads_user_config_and_never_writes_it(monkeypatch, configured, warned):
+    monkeypatch.setattr("gaia.subprocess_text._ON_WINDOWS", True)
+    from gaia import subprocess_text
+
+    seen = []
+
+    def fake_run(args, *rest, **kwargs):
+        seen.append(list(args))
+        return subprocess.CompletedProcess(args, 0 if configured else 1, stdout=configured + "\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    problem = subprocess_text.long_paths_disabled()
+
+    assert (problem is not None) is warned
+    assert seen == [["git", "config", "--type=bool", "--get", "core.longpaths"]]
+    assert subprocess_text.ENABLE_LONG_PATHS_COMMAND == "git config --global core.longpaths true"
 
 
 def test_windows_checkout_is_not_modified_for_a_linux_reader(tmp_path):

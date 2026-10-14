@@ -202,7 +202,7 @@ def managed_root_containing(path: Path | str) -> Optional[Path]:
 
 def _default_remote(repo: Path) -> str:
     """Return ``origin`` when present, else the only remote, else fail closed."""
-    remotes = subprocess.run(
+    remotes = run_text(
         ["git", "-C", str(repo), "remote"], capture_output=True, text=True, check=True
     ).stdout.split()
     if "origin" in remotes:
@@ -226,7 +226,7 @@ def resolve_default_base(repo_path: Path | str) -> str:
             f"remote {remote!r} advertises no default branch; pass an explicit base"
         )
     tracking = f"refs/remotes/{remote}/{default}"
-    subprocess.run(
+    run_text(
         ["git", "-C", str(repo), "fetch", "--quiet", remote, f"+refs/heads/{default}:{tracking}"],
         check=True, capture_output=True, text=True,
     )
@@ -281,12 +281,12 @@ def create_canonical_worktree(
         "-b", branch or worktree_id, str(target), base_commit,
     ]
     try:
-        subprocess.run(add_cmd, check=True, capture_output=True, text=True)
+        run_text(add_cmd, check=True, capture_output=True, text=True)
     except Exception:
         _remove_created_worktree(repo, target)
         raise
     try:
-        subprocess.run(
+        run_text(
             ["git", "-C", str(repo), "worktree", "lock", str(target), "--reason", lock_reason(contract_id, agent_id)],
             check=True, capture_output=True, text=True,
         )
@@ -315,11 +315,11 @@ def create_canonical_worktree(
 def _remove_created_worktree(repo: Path, target: Path) -> None:
     """Best-effort rollback for a worktree that never reached dispatch."""
     try:
-        subprocess.run(
+        run_text(
             ["git", "-C", str(repo), "worktree", "unlock", str(target)],
             check=False, capture_output=True, text=True,
         )
-        subprocess.run(
+        run_text(
             ["git", "-C", str(repo), "worktree", "remove", "--force", str(target)],
             check=False, capture_output=True, text=True,
         )
@@ -448,10 +448,10 @@ def create_agentic_worktree(
     add_cmd = ["git", "-C", str(repo_path), "worktree", "add", "--quiet", str(target)]
     if branch:
         add_cmd += ["-b", branch]
-    subprocess.run(add_cmd, check=True, capture_output=True, text=True)
+    run_text(add_cmd, check=True, capture_output=True, text=True)
 
     reason = lock_reason(contract_id, agent_id)
-    subprocess.run(
+    run_text(
         [
             "git", "-C", str(repo_path),
             "worktree", "lock", str(target),

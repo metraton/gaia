@@ -23,9 +23,11 @@ import time
 from pathlib import Path
 from typing import List, Tuple
 
+from gaia.atomic_replace import replace_retrying
 from gaia.install_root import owning_root, registered_roots
 from gaia.paths import data_dir, db_path, scratch_dir
 from gaia.retention.worktree_reclaim import _remote_default_branch
+from gaia.subprocess_text import run_text
 
 MAX_REPOS_LISTED = 5
 
@@ -63,9 +65,7 @@ def workspace_repos(start: Path) -> List[Path]:
 
 
 def _git_lines(repo: Path, *args: str) -> List[str]:
-    out = subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
-    ).stdout
+    out = run_text(["git", "-C", str(repo), *args], check=True, capture_output=True).stdout
     return out.splitlines()
 
 
@@ -130,7 +130,7 @@ def _write_entry(key: str, entry: dict) -> None:
     target = _cache_path()
     scratch = target.with_name(f"{target.name}.{os.getpid()}")
     scratch.write_text(json.dumps(cache), encoding="utf-8")
-    os.replace(scratch, target)
+    replace_retrying(scratch, target)
 
 
 def _spawn_refresh(start: Path) -> None:
