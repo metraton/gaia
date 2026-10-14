@@ -20,11 +20,19 @@ never from the checkout; the checkout only supplies the committed base dump
      nothing left to revert
 
 Every path the package sees contains a space. Exit 0 only when all six hold.
+
+With ``--from-release`` the cell is instead a user's global upgrade, run in the
+runner's real home and npm prefix: the published release is installed with
+``npm install -g`` and wired by its own ``gaia install``, the branch tarball
+replaces it, and a bare ``gaia install`` with no input must converge, change
+nothing on a second run, leave doctor without hook, shim or old-data warnings,
+and leave neither manifest nor shim behind ``npm uninstall -g``.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -109,13 +117,92 @@ def _uninstall_leaves_nothing(gaia: list[str], workspace: Path, env: dict) -> No
     print(f"uninstall: manifest empty in {workspace.name}")
 
 
+# The doctor checks that speak for hooks, shims and data an older release left.
+UPGRADE_DOCTOR_CHECKS = frozenset({
+    "Hook shell", "Hook Python", "Hook registrations", "Hook commands", "Hook files", "hooks-importable",
+    "PATH gaia", "Launcher Python", "Global CLI alignment", "Symlinks", "Symlinks freshness",
+    "Schema version", "Memory store", "Last install error",
+})
+LAUNCHERS = ("gaia", "gaia.cmd", "gaia.ps1")
+
+
+def _footprint(workspace: Path, home: Path, db: Path) -> dict[str, str]:
+    """Digest of what an install writes: the workspace's .claude tree, the launchers and the ledger."""
+    seen: dict[str, str] = {}
+
+    def walk(path: Path, key: str) -> None:
+        if path.is_symlink() or os.path.isjunction(path):
+            seen[key] = "link:" + os.readlink(path)
+        elif path.is_dir():
+            for child in sorted(path.iterdir()):
+                if child.name != "logs":
+                    walk(child, f"{key}/{child.name}")
+        elif path.is_file():
+            seen[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    walk(workspace / ".claude", ".claude")
+    for name in LAUNCHERS:
+        walk(home / ".local" / "bin" / name, f"~/.local/bin/{name}")
+    seen["schema_version"] = str(_schema_version(db))
+    return seen
+
+
+def global_upgrade(release: str, pack_dir: Path, root: Path) -> int:
+    """Upgrade a global ``npm install -g`` of *release* to the packed tarball with a bare install."""
+    workspace = root / "user workspace"
+    workspace.mkdir(parents=True)
+    home, db = Path.home(), Path.home() / ".gaia" / "gaia.db"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GAIA_") and k not in ("CLAUDE_PROJECT_DIR", "INIT_CWD")}
+    npm = shutil.which("npm")
+    _require(npm is not None, "npm is not on PATH")
+    tarballs = sorted(pack_dir.resolve().glob("*.tgz"))
+    _require(len(tarballs) == 1, f"expected one tarball in {pack_dir}, found {tarballs}")
+    print(f"python3 on PATH: {shutil.which('python3') or 'absent'}")
+
+    _require(_run([npm, "install", "-g", f"{PACKAGE_NAME}@{release}"], env=env, cwd=workspace).returncode == 0,
+             f"npm install -g {PACKAGE_NAME}@{release} failed")
+    gaia = shutil.which("gaia", path=env["PATH"])
+    _require(gaia is not None, "npm install -g left no gaia shim on PATH")
+    old = _run([gaia, "install"], env=env, cwd=workspace, stdin="")
+    _require(old.returncode == 0, f"gaia {release} install failed")
+    print(f"{release} footprint: {sorted(_footprint(workspace, home, db))}")
+
+    _require(_run([npm, "install", "-g", str(tarballs[0])], env=env, cwd=workspace).returncode == 0,
+             "npm install -g of the branch tarball failed")
+    first = _run([gaia, "install"], env=env, cwd=workspace, stdin="")
+    _require(first.returncode == 0, f"bare gaia install over {release} exited {first.returncode}")
+    converged = _footprint(workspace, home, db)
+    second = _run([gaia, "install"], env=env, cwd=workspace, stdin="")
+    _require(second.returncode == 0, f"second bare gaia install exited {second.returncode}")
+    after = _footprint(workspace, home, db)
+    changed = sorted(k for k in converged.keys() | after.keys() if converged.get(k) != after.get(k))
+    _require(not changed, f"the second bare install changed {changed}")
+
+    doctor = _run([gaia, "doctor", "--json"], env=env, cwd=workspace)
+    checks = json.loads(doctor.stdout)["checks"]
+    flagged = [f"{c['name']} [{c['severity']}]: {c.get('detail', '')}" for c in checks
+               if c.get("name") in UPGRADE_DOCTOR_CHECKS and c.get("severity") in ("warning", "error")]
+    _require(not flagged, f"doctor flags the upgrade: {flagged}")
+
+    _require(_run([npm, "uninstall", "-g", PACKAGE_NAME], env=env, cwd=workspace).returncode == 0, "npm uninstall -g failed")
+    left = [str(p) for p in [workspace / ".claude" / "gaia-manifest.json", *(home / ".local" / "bin" / n for n in LAUNCHERS)] if p.exists()]
+    _require(not left, f"npm uninstall -g left {left}")
+    _require(shutil.which("gaia", path=env["PATH"]) is None, f"a gaia shim survived npm uninstall -g: {shutil.which('gaia', path=env['PATH'])}")
+    print(f"PASS global {release} -> {tarballs[0].name}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--base", type=int, required=True, help="published schema version (21, 26, 33, 37, 51, 57)")
+    origin = parser.add_mutually_exclusive_group(required=True)
+    origin.add_argument("--base", type=int, help="published schema version (21, 26, 33, 37, 51, 57)")
+    origin.add_argument("--from-release", help="published version installed with npm install -g, then upgraded")
     parser.add_argument("--pack-dir", type=Path, required=True, help="directory holding the one npm pack tarball")
     parser.add_argument("--root", type=Path, required=True, help="empty scratch directory for this cell")
     args = parser.parse_args()
 
+    if args.from_release:
+        return global_upgrade(args.from_release, args.pack_dir, args.root.resolve())
     root = args.root.resolve()
     data, home, project = root / "gaia data", root / "home dir", root / "npm project"
     npm_ws, plugin_ws, plugin_data = root / "npm workspace", root / "plugin workspace", root / "plugin data"
