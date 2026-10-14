@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 from pathlib import Path
@@ -73,6 +74,38 @@ def _read_json(path: Path):
         return None
 
 
+def launcher_package(launcher: Path) -> "Path | None":
+    """The @jaguilar87/gaia package directory a `gaia` launcher runs, or None when it cannot be told.
+
+    A POSIX shim is a symlink into the package's bin/. npm's Windows shims are
+    plain files beside the node_modules/ that holds the package, and Gaia's own
+    gaia.cmd names the package's bin\\gaia between double quotes.
+    """
+    launcher = Path(launcher)
+    try:
+        resolved = launcher.resolve(strict=True)
+    except OSError:
+        return None
+    candidates = [resolved.parent.parent, launcher.parent / "node_modules" / "@jaguilar87" / "gaia"]
+    if launcher.suffix.lower() == ".cmd":
+        try:
+            baked = re.search(r'"([^"]+)[\\/]bin[\\/]gaia"', launcher.read_text(errors="replace"))
+        except OSError:
+            baked = None
+        if baked:
+            candidates.append(Path(baked.group(1)))
+    for candidate in candidates:
+        pkg = _read_json(candidate / "package.json")
+        if isinstance(pkg, dict) and pkg.get("name") == _NPM_PACKAGE:
+            return candidate
+    return None
+
+
+def _package_version(package: "Path | None") -> "str | None":
+    pkg = _read_json(package / "package.json") if package is not None else None
+    return pkg.get("version") if isinstance(pkg, dict) else None
+
+
 def _surface(surface: str, state: str, detail: str, **extra) -> dict:
     r = {"surface": surface, "state": state, "detail": detail}
     r.update(extra)
@@ -99,8 +132,7 @@ def inspect_path_gaia(origin_version: "str | None") -> dict:
         resolved = Path(which).resolve(strict=True)
     except OSError:
         return _surface(SURFACE_PATH_GAIA, STATE_UNKNOWN, f"`gaia` on PATH does not resolve ({which})")
-    pkg = _read_json(resolved.parent.parent / "package.json")
-    version = pkg.get("version") if pkg else None
+    version = _package_version(launcher_package(Path(which)))
     if version is None:
         return _surface(SURFACE_PATH_GAIA, STATE_UNKNOWN, f"PATH gaia at {resolved} (version unknown)")
     if origin_version is None or version == origin_version:
@@ -119,13 +151,15 @@ def inspect_path_gaia(origin_version: "str | None") -> dict:
 # Surface 2 -- hooks in .claude/settings.local.json
 # ---------------------------------------------------------------------------
 
-def inspect_hooks_settings(workspace: Path) -> dict:
+def inspect_hooks_settings(workspace: Path, plugin_channel: bool = False) -> dict:
     """Classify the workspace's wired-hooks surface.
 
     ABSENT  -- no settings.local.json.
     STALE   -- settings.local.json exists but carries no `hooks` section
                (present-but-unwired -> reconcile merges hooks in).
-    ALIGNED -- settings.local.json carries a non-empty `hooks` section.
+    ALIGNED -- settings.local.json carries a non-empty `hooks` section, or
+               *plugin_channel* is on: the plugin registers the hooks through
+               its own hooks.json, so the file is not where they belong.
     UNKNOWN -- settings.local.json is unreadable/invalid JSON.
     """
     settings = Path(workspace) / ".claude" / "settings.local.json"
@@ -140,6 +174,8 @@ def inspect_hooks_settings(workspace: Path) -> dict:
             SURFACE_HOOKS_SETTINGS, STATE_ALIGNED,
             f"{len(hooks)} hook event(s) wired",
         )
+    if plugin_channel:
+        return _surface(SURFACE_HOOKS_SETTINGS, STATE_ALIGNED, "hooks registered by the gaia plugin")
     return _surface(SURFACE_HOOKS_SETTINGS, STATE_STALE, "settings.local.json present but no hooks wired")
 
 
@@ -191,15 +227,15 @@ def inspect_global_npm(npm_global_bin: "Path | None", origin_version: "str | Non
     """
     if npm_global_bin is None:
         return _surface(SURFACE_GLOBAL_NPM, STATE_ABSENT, "npm global bin dir not resolved")
-    shim = Path(npm_global_bin) / "gaia"
-    if not shim.exists():
+    shims = [Path(npm_global_bin) / name for name in ("gaia", "gaia.cmd")]
+    shim = next((s for s in shims if s.exists() or s.is_symlink()), None)
+    if shim is None:
         return _surface(SURFACE_GLOBAL_NPM, STATE_ABSENT, "no global `gaia` shim in npm bin")
     try:
         resolved = shim.resolve(strict=True)
     except OSError:
         return _surface(SURFACE_GLOBAL_NPM, STATE_UNKNOWN, "global `gaia` shim does not resolve")
-    pkg = _read_json(resolved.parent.parent / "package.json")
-    version = pkg.get("version") if pkg else None
+    version = _package_version(launcher_package(shim))
     if version is None:
         return _surface(SURFACE_GLOBAL_NPM, STATE_UNKNOWN, f"global gaia at {resolved} (version unknown)")
     if origin_version is None or version == origin_version:
@@ -286,6 +322,7 @@ def converge_report(
     expected_version: int,
     db_path: Path,
     npm_global_bin: "Path | None",
+    plugin_channel: bool = False,
 ) -> dict:
     """Inspect all 5 surfaces of *workspace* against the origin and aggregate.
 
@@ -301,7 +338,7 @@ def converge_report(
     """
     surfaces = [
         inspect_path_gaia(origin_version),
-        inspect_hooks_settings(workspace),
+        inspect_hooks_settings(workspace, plugin_channel),
         inspect_workspace_node_modules(workspace, origin_version),
         inspect_global_npm(npm_global_bin, origin_version),
         inspect_db_schema(expected_version, db_path),
@@ -368,6 +405,7 @@ def run_convergence_report(
     expected_version: int,
     db_path: Path,
     npm_global_bin: "Path | None",
+    plugin_channel: bool = False,
     quiet: bool = False,
     emit=print,
 ) -> dict:
@@ -389,6 +427,7 @@ def run_convergence_report(
             expected_version=expected_version,
             db_path=db_path,
             npm_global_bin=npm_global_bin,
+            plugin_channel=plugin_channel,
         )
     except Exception as exc:  # never let inspection break the caller
         if not quiet:

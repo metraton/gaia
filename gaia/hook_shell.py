@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from typing import Optional
 
+from gaia.subprocess_text import run_text
+
 # Claude Code 2.1.295 added `onFailure: "block"`. Must equal the claude-code
 # engine scripts/build-plugin.py writes into plugin.json and the one
 # bin/pre-publish-validate.js requires; tests/hooks/test_hook_fails_closed.py
@@ -38,6 +40,37 @@ def missing_hook_shell() -> Optional[str]:
         "every gated tool call would be blocked. Install Git for Windows "
         "(https://git-scm.com/download/win) and make its `sh` resolvable on PATH."
     )
+
+
+def hook_shell_path() -> Optional[str]:
+    """The `sh` every hook command starts with, as PATH resolves it, or None."""
+    return shutil.which("sh")
+
+
+# hooks/launch.sh tries these in this order. Windows' App Execution Alias for
+# python3 (and python) under WindowsApps opens the Microsoft Store when no
+# Python is installed and exits 9009, so a name that resolves proves nothing
+# until it runs.
+_HOOK_PYTHON_CANDIDATES = (("python3",), ("python",), ("py", "-3"))
+
+
+def runs_python3(argv: list[str]) -> bool:
+    """True when *argv* starts and exits as Python 3; a missing file or the Store stub is False."""
+    try:
+        proc = run_text([*argv, "-c", "import sys; sys.exit(sys.version_info[0] != 3)"],
+                        capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+def hook_python() -> Optional[list[str]]:
+    """The resolved argv of the first candidate that runs as Python 3, or None when none does."""
+    for name, *flags in _HOOK_PYTHON_CANDIDATES:
+        found = shutil.which(name)
+        if found and runs_python3([found, *flags]):
+            return [found, *flags]
+    return None
 
 
 def running_host_binary() -> Optional[str]:

@@ -1208,7 +1208,8 @@ class TestNpmGlobalPrefixResolution(unittest.TestCase):
 
     def test_windows_prefix_from_appdata(self):
         with patch.object(install_mod.sys, "platform", "win32"):
-            with patch.dict(os.environ, {"APPDATA": "C:/Users/u/AppData/Roaming"}, clear=False):
+            with patch.dict(os.environ, {"APPDATA": "C:/Users/u/AppData/Roaming"}, clear=False), \
+                    patch.object(install_mod, "_npm_config_prefix_posix", return_value=None):
                 self.assertEqual(
                     _npm_global_prefix(), Path("C:/Users/u/AppData/Roaming") / "npm"
                 )

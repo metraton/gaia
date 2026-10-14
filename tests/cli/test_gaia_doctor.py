@@ -1137,8 +1137,9 @@ class TestCmdDoctorJson:
         # 3 channel checks (install-channel 36, hook-registrations 72,
         #   hook-commands 74 -- hooks counted across plugin and every settings file) +
         # 1 hook-shell (order 25 -- Windows without a resolvable sh) +
-        # 1 git-long-paths (order 26 -- Windows git with core.longpaths off).
-        assert len(data["checks"]) == 41
+        # 1 git-long-paths (order 26 -- Windows git with core.longpaths off) +
+        # 3 self-location checks (hook-python 27, path-gaia 28, launcher-python 29).
+        assert len(data["checks"]) == 44
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

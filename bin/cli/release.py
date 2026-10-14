@@ -585,7 +585,7 @@ def gate_convergence(repo_root: Path, *, workspace: Path | None = None) -> dict[
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         origin_version = None
 
-    from cli.doctor import EXPECTED_SCHEMA_VERSION  # noqa: PLC0415
+    from cli.doctor import EXPECTED_SCHEMA_VERSION, _active_channels  # noqa: PLC0415
     from cli import install as install_mod  # noqa: PLC0415
 
     report = _converge.run_convergence_report(
@@ -594,6 +594,7 @@ def gate_convergence(repo_root: Path, *, workspace: Path | None = None) -> dict[
         expected_version=EXPECTED_SCHEMA_VERSION,
         db_path=_converge.default_db_path(),
         npm_global_bin=install_mod._npm_global_prefix(),
+        plugin_channel=_active_channels(Path(ws))["plugin"],
         quiet=True,  # capture, don't print inline -- the gate report owns the sink
     )
     duration = _now_ms() - t0

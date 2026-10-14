@@ -1,6 +1,7 @@
 """Text-mode subprocess runs whose codec does not depend on the locale."""
 
 import os
+import shlex
 import subprocess
 import sys
 
@@ -32,6 +33,18 @@ def run_text(args, **kwargs) -> subprocess.CompletedProcess:
     A git argv on Windows also gets core.longpaths enabled (``with_long_paths``).
     """
     return subprocess.run(with_long_paths(args), encoding="utf-8", **kwargs)
+
+
+def command_arg(value) -> str:
+    """*value* quoted as one argument for the shell a user of this platform types a printed command into.
+
+    cmd.exe treats single quotes as literal characters, so on Windows an
+    argument is double-quoted the way CreateProcess parses it; elsewhere POSIX
+    quoting applies.
+    """
+    if sys.platform == "win32":
+        return subprocess.list2cmdline([str(value)])
+    return shlex.quote(str(value))
 
 
 def long_paths_disabled():

@@ -70,12 +70,24 @@ References:
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+
+
+def command_arg(value) -> str:
+    """*value* quoted as one argument for this platform's shell.
+
+    gaia/ is imported here, not at module top, because doctor is also loaded
+    with only bin/ on sys.path.
+    """
+    from gaia.subprocess_text import command_arg as quote  # noqa: PLC0415
+
+    return quote(value)
 
 
 # ============================================================================
@@ -573,7 +585,7 @@ def _hook_fix(project_root: Path, channels: dict) -> str:
     """The command that leaves exactly one channel registering Gaia's hooks."""
     from cli import _manifest  # noqa: PLC0415
 
-    ws = shlex.quote(str(project_root))
+    ws = command_arg(str(project_root))
     uninstall_npm = _manifest.uninstall_command(project_root, "npm")
     if channels["plugin"] and channels["npm"]:
         return (
@@ -771,12 +783,82 @@ def check_claude_code() -> dict:
 @register_check("Hook shell", order=25)
 def check_hook_shell() -> dict:
     """Error when the host cannot resolve the `sh` every hook command starts with."""
-    from gaia.hook_shell import missing_hook_shell  # noqa: PLC0415
+    from gaia.hook_shell import hook_shell_path, missing_hook_shell  # noqa: PLC0415
 
     problem = missing_hook_shell()
     if problem:
         return _result("Hook shell", "error", problem, "Install Git for Windows so `sh` resolves on PATH")
-    return _result("Hook shell", "pass", "sh resolvable or not required")
+    sh = hook_shell_path()
+    return _result("Hook shell", "pass", f"hooks start with {sh}" if sh else "sh not required")
+
+
+@register_check("Hook Python", order=27)
+def check_hook_python() -> dict:
+    """Error when none of the names hooks/launch.sh tries runs as Python 3."""
+    from gaia.hook_shell import hook_python  # noqa: PLC0415
+
+    argv = hook_python()
+    if argv:
+        return _result("Hook Python", "pass", f"hooks run {' '.join(argv)}")
+    if sys.platform == "win32":
+        fix = ("Install Python from https://www.python.org/downloads/windows/ and turn off the python.exe "
+               "and python3.exe entries in Settings > Apps > Advanced app settings > App execution aliases")
+    else:
+        fix = "Install Python 3.12+ and put it on PATH as python3"
+    return _result("Hook Python", "error", "no Python 3 runs as python3, python or py -3 on PATH", fix)
+
+
+_LAUNCHER_DIR = Path("~/.local/bin")
+
+
+def _path_first_fix(directory: Path) -> str:
+    """The command that puts *directory* first on the user's PATH, in the syntax of this platform's shell."""
+    if sys.platform == "win32":
+        return (f"[Environment]::SetEnvironmentVariable('Path', '{directory};' + "
+                f"[Environment]::GetEnvironmentVariable('Path', 'User'), 'User'), then open a new terminal")
+    return f"export PATH={command_arg(str(directory))}:\"$PATH\" in your shell profile"
+
+
+@register_check("PATH gaia", order=28)
+def check_path_gaia() -> dict:
+    """Report the `gaia` that wins on PATH and warn when it runs a package other than this one."""
+    from cli._converge import launcher_package  # noqa: PLC0415
+
+    winner = shutil.which("gaia")
+    if not winner:
+        return _result("PATH gaia", "info", "no `gaia` on PATH", "Run `gaia install --path` from your workspace")
+    package, here = launcher_package(Path(winner)), _package_root()
+    if package is not None and package.resolve() == here.resolve():
+        return _result("PATH gaia", "pass", f"`gaia` on PATH is {winner} (this package)")
+    runs = package or "a package Gaia cannot identify"
+    return _result("PATH gaia", "warning", f"`gaia` on PATH is {winner}, which runs {runs}, not {here}",
+                   _path_first_fix(_LAUNCHER_DIR.expanduser()))
+
+
+# The Windows launcher pins the Python that ran `gaia install`; uninstalling or
+# upgrading that Python leaves the launcher pointing at nothing.
+_WINDOWS_LAUNCHER = _LAUNCHER_DIR / "gaia.cmd"
+
+
+@register_check("Launcher Python", order=29)
+def check_launcher_python() -> dict:
+    """Warn when the Python the Windows gaia.cmd launcher pins no longer runs."""
+    from gaia.hook_shell import runs_python3  # noqa: PLC0415
+
+    launcher = _WINDOWS_LAUNCHER.expanduser()
+    try:
+        text = launcher.read_text(errors="replace")
+    except OSError:
+        return _result("Launcher Python", "pass", "no Windows launcher to check")
+    fix = "Re-run `gaia install --path` from your workspace to pin the Python you run now"
+    pinned = re.search(r'^"([^"]+)" "[^"]+" %\*$', text, re.MULTILINE)
+    if pinned is None:
+        return _result("Launcher Python", "warning", f"{launcher} pins no Python (written by an older Gaia)", fix)
+    python = pinned.group(1)
+    if runs_python3([python]):
+        return _result("Launcher Python", "pass", f"{launcher} runs {python}")
+    return _result("Launcher Python", "warning",
+                   f"{launcher} runs {python}, which no longer runs as Python 3 (removed or upgraded)", fix)
 
 
 @register_check("Git long paths", order=26)
@@ -909,7 +991,7 @@ def check_plugin_mode(project_root: Path) -> dict:
     registry_path = project_root / ".claude" / "plugin-registry.json"
     if not registry_path.is_file():
         return _result("Plugin registered", "warning", "No plugin-registry.json",
-                       f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}` or restart Claude Code")
+                       f"`gaia install --channel npm --workspace {command_arg(str(project_root))}` or restart Claude Code")
 
     data = _read_json(registry_path)
     if not data:
@@ -1158,7 +1240,7 @@ def check_workspace_roots() -> dict:
         f"no recorded root for {', '.join(missing)}; "
         "`gaia worktree create` refuses their repositories",
         "; ".join(
-            f"gaia workspace declare {shlex.quote(name)} <workspace root>" for name in missing
+            f"gaia workspace declare {command_arg(name)} <workspace root>" for name in missing
         ),
     )
 
@@ -1570,7 +1652,7 @@ def check_symlinks(project_root: Path) -> dict:
 
     severity = "error" if has_critical_missing else "warning"
     return _result("Symlinks", severity, f"{valid}/{total} valid",
-                   f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`")
+                   f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`")
 
 
 def _semver_tuple(v) -> tuple:
@@ -2764,7 +2846,7 @@ def check_settings(project_root: Path) -> dict:
         _tool_name,
     )
 
-    fix = f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`"
+    fix = f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`"
     local_path = project_root / ".claude" / "settings.local.json"
     if not local_path.is_file():
         return _result("Settings", "error", "settings.local.json missing", fix)
@@ -2834,7 +2916,7 @@ def check_hook_commands(project_root: Path) -> dict:
     channels = _active_channels(project_root)
     registrations = _gaia_registrations(project_root, channels, _shipped_hooks(channels))
     commands = sorted({(source, command) for source, _, _, command in registrations})
-    ws = shlex.quote(str(project_root))
+    ws = command_arg(str(project_root))
     if channels["npm"] or (project_root / ".claude" / "hooks").exists():
         fix = f"`gaia install --channel npm --workspace {ws}`"
     else:
@@ -2894,13 +2976,13 @@ def check_hook_files(project_root: Path) -> dict:
 
     if errors:
         return _result("Hook files", "error", "; ".join(errors),
-                       f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`")
+                       f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`")
     if warnings:
         return _result(
             "Hook files",
             "warning",
             f"{valid}/{total} found (missing: {', '.join(warnings)})",
-            f"`gaia install --channel npm --workspace {shlex.quote(str(project_root))}`",
+            f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`",
         )
     return _result("Hook files", "pass", f"{valid}/{total} found")
 

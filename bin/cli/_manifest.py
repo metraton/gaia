@@ -686,7 +686,9 @@ def uninstall_command(workspace: Path, channel: str) -> str:
     """The `gaia uninstall` that takes back *channel*, scoped with --channel while another channel is recorded."""
     recorded = recorded_channels(load(workspace))
     scope = f" --channel {channel}" if channel in recorded and len(recorded) > 1 else ""
-    return f"gaia uninstall{scope} --workspace {shlex.quote(str(workspace))}"
+    from gaia.subprocess_text import command_arg  # noqa: PLC0415
+
+    return f"gaia uninstall{scope} --workspace {command_arg(str(workspace))}"
 
 
 def entry_channel(manifest: dict, key: str) -> str | None:

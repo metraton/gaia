@@ -563,7 +563,7 @@ def _print_convergence_report(workspace: Path, origin_version: str | None, quiet
     written once, not duplicated between the two commands. Best-effort and
     read-only: never raises, prints only when not quiet, returns the raw report.
     """
-    from cli.doctor import EXPECTED_SCHEMA_VERSION  # noqa: PLC0415
+    from cli.doctor import EXPECTED_SCHEMA_VERSION, _active_channels  # noqa: PLC0415
 
     return _converge.run_convergence_report(
         workspace,
@@ -571,6 +571,7 @@ def _print_convergence_report(workspace: Path, origin_version: str | None, quiet
         expected_version=EXPECTED_SCHEMA_VERSION,
         db_path=_converge.default_db_path(),
         npm_global_bin=install_mod._npm_global_prefix(),
+        plugin_channel=_active_channels(Path(workspace))["plugin"],
         quiet=quiet,
     )
 
