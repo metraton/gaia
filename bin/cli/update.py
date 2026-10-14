@@ -319,7 +319,7 @@ def cmd_update(args) -> int:
     channels = install.recorded_channels(workspace)
     if not channels:
         print(f"gaia update: no install channel is recorded for {workspace}; install one first: "
-              f"gaia install --channel npm|opencode --workspace {workspace}", file=sys.stderr)
+              f"gaia install --workspace {workspace}", file=sys.stderr)
         return 1
     return install.install_channels(args, channels, command="gaia update")
 

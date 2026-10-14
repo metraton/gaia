@@ -595,9 +595,9 @@ def _hook_fix(project_root: Path, channels: dict) -> str:
     if channels["plugin"]:
         return f"`{uninstall_npm}` (the plugin registers the hooks itself)"
     if channels["npm"]:
-        return f"`gaia install --channel npm --workspace {ws}`"
+        return f"`gaia install --workspace {ws}`"
     return (
-        f"`gaia install --channel npm --workspace {ws}` from the Gaia you run, or "
+        f"`gaia install --workspace {ws}` from the Gaia you run, or "
         f"`claude plugin install gaia@gaia-marketplace` to use the plugin"
     )
 
@@ -832,7 +832,7 @@ def check_path_gaia() -> dict:
 
     winner = shutil.which("gaia")
     if not winner:
-        return _result("PATH gaia", "info", "no `gaia` on PATH", "Run `gaia install --channel npm --path` from your workspace")
+        return _result("PATH gaia", "info", "no `gaia` on PATH", "Run `gaia install --path` from your workspace")
     package, here = launcher_package(Path(winner)), _package_root()
     if package is not None and package.resolve() == here.resolve():
         return _result("PATH gaia", "pass", f"`gaia` on PATH is {winner} (this package)")
@@ -942,7 +942,7 @@ def check_workspace_initialized(project_root: Path) -> dict:
             "Workspace initialized",
             "error",
             f"missing: {', '.join(missing)}",
-            f"Run: `gaia install --channel npm --workspace {project_root}`",
+            f"Run: `gaia install --workspace {project_root}`",
         )
     return _result("Workspace initialized", "pass", "Gaia-aware workspace")
 
@@ -1001,7 +1001,7 @@ def check_plugin_mode(project_root: Path) -> dict:
     registry_path = project_root / ".claude" / "plugin-registry.json"
     if not registry_path.is_file():
         return _result("Plugin registered", "warning", "No plugin-registry.json",
-                       f"`gaia install --channel npm --workspace {command_arg(str(project_root))}` or restart Claude Code")
+                       f"`gaia install --workspace {command_arg(str(project_root))}` or restart Claude Code")
 
     data = _read_json(registry_path)
     if not data:
@@ -1662,7 +1662,7 @@ def check_symlinks(project_root: Path) -> dict:
 
     severity = "error" if has_critical_missing else "warning"
     return _result("Symlinks", severity, f"{valid}/{total} valid",
-                   f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`")
+                   f"`gaia install --workspace {command_arg(str(project_root))}`")
 
 
 def _semver_tuple(v) -> tuple:
@@ -2856,7 +2856,7 @@ def check_settings(project_root: Path) -> dict:
         _tool_name,
     )
 
-    fix = f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`"
+    fix = f"`gaia install --workspace {command_arg(str(project_root))}`"
     local_path = project_root / ".claude" / "settings.local.json"
     if not local_path.is_file():
         return _result("Settings", "error", "settings.local.json missing", fix)
@@ -2928,7 +2928,7 @@ def check_hook_commands(project_root: Path) -> dict:
     commands = sorted({(source, command) for source, _, _, command in registrations})
     ws = command_arg(str(project_root))
     if channels["npm"] or (project_root / ".claude" / "hooks").exists():
-        fix = f"`gaia install --channel npm --workspace {ws}`"
+        fix = f"`gaia install --workspace {ws}`"
     else:
         fix = f"`gaia uninstall --workspace {ws}` (removes registrations whose package is gone)"
     if not commands:
@@ -2986,13 +2986,13 @@ def check_hook_files(project_root: Path) -> dict:
 
     if errors:
         return _result("Hook files", "error", "; ".join(errors),
-                       f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`")
+                       f"`gaia install --workspace {command_arg(str(project_root))}`")
     if warnings:
         return _result(
             "Hook files",
             "warning",
             f"{valid}/{total} found (missing: {', '.join(warnings)})",
-            f"`gaia install --channel npm --workspace {command_arg(str(project_root))}`",
+            f"`gaia install --workspace {command_arg(str(project_root))}`",
         )
     return _result("Hook files", "pass", f"{valid}/{total} found")
 

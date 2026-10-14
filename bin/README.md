@@ -27,7 +27,7 @@ npm|pnpm install @jaguilar87/gaia
         |
 First `gaia <cmd>` -> _ensure_db_bootstrapped() seeds ~/.gaia/gaia.db (lazy)
         |
-gaia install --channel npm|opencode -> gaia migrate apply, merges permissions/hooks,
+gaia install [--channel npm|opencode] -> backup + migrate, merges permissions/hooks,
                                        recreates symlinks, writes registry + .claude/gaia-manifest.json
 ```
 

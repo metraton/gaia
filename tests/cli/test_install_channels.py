@@ -84,14 +84,6 @@ def _record_settled(monkeypatch, module, name, calls):
     monkeypatch.setattr(module, name, settled)
 
 
-def test_install_without_a_channel_fails_listing_the_channels(tmp_path, capsys):
-    rc, err = _install(["--workspace", str(_empty_workspace(tmp_path))], capsys)
-    assert rc == 1
-    assert "--channel" in err
-    assert "npm" in err and "opencode" in err
-    assert "claude plugin install gaia@gaia-marketplace" in err
-
-
 def test_dev_without_a_channel_fails_listing_the_channels(tmp_path, capsys):
     rc, err = _dev(["--workspace", str(_empty_workspace(tmp_path))], capsys)
     assert rc == 1
@@ -181,7 +173,7 @@ def test_update_without_a_recorded_channel_fails_naming_install(tmp_path, capsys
     rc, err = _update(["--workspace", str(workspace)], capsys)
     assert rc == 1
     assert "no install channel is recorded" in err
-    assert "gaia install --channel npm|opencode" in err
+    assert "install one first: gaia install --workspace" in err
 
 
 def test_update_rewires_the_recorded_channels(tmp_path, capsys, monkeypatch):
@@ -231,7 +223,10 @@ def test_doctor_hints_name_a_channel_and_hold_no_pipe():
     assert commands
     for command in commands:
         assert "|" not in command, command
-        assert any(flag in command for flag in ("--channel", "--skip-workspace", "--help")), command
+        if command.startswith("gaia install"):
+            assert "--channel" not in command, command
+        else:
+            assert any(flag in command for flag in ("--channel", "--help")), command
 
 
 def test_doctor_dev_hint_is_one_runnable_line_per_recorded_channel(tmp_path):

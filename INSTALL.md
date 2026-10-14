@@ -83,7 +83,7 @@ npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
 npx gaia install --channel opencode
 ```
 
-`--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can be added beside either Claude Code channel. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update`, which re-wires every channel `gaia install` recorded in `.claude/gaia-manifest.json` and fails naming `gaia install --channel` when none is recorded.
+`--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can be added beside either Claude Code channel. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update`, which re-wires every channel `gaia install` recorded in `.claude/gaia-manifest.json` and fails naming `gaia install` when none is recorded. Running `gaia install` itself instead also works: it reuses the recorded channels and picks one when none is recorded.
 
 OpenCode 1.18.32 runs subagents in the background only when its environment carries `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (or the `OPENCODE_EXPERIMENTAL=true` umbrella); there is no `opencode.json` key for it. Gaia does not edit your shell profile, so add this line to your shell profile (`~/.bashrc`, `~/.zshrc`) and open a new shell before starting OpenCode:
 
@@ -316,7 +316,7 @@ npm install @jaguilar87/gaia@latest   # or: pnpm add @jaguilar87/gaia@latest
 npx gaia update                       # or: pnpm exec gaia update
 #    - Refreshes DB schema, config, and symlinks after the version bump
 #    - Re-wires every channel recorded in .claude/gaia-manifest.json;
-#      fails naming gaia install --channel when none is recorded
+#      fails naming gaia install when none is recorded
 ```
 
 ---

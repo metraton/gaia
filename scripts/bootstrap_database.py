@@ -46,12 +46,14 @@ import argparse
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(1, str(Path(__file__).resolve().parent.parent))
 import migration_guard  # noqa: E402
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -274,6 +276,18 @@ def _backup(
     return target
 
 
+def _restore(backup: Path) -> None:
+    """Put the verified *backup* back in place of GAIA_DB through a staged copy, so the backup itself survives."""
+    # Imported here: tests stage this engine alone, without the gaia package beside it.
+    from gaia.atomic_replace import replace_retrying
+
+    staged = GAIA_DB.with_name(GAIA_DB.name + ".restore")
+    shutil.copyfile(backup, staged)
+    for sidecar in ("-wal", "-shm"):
+        GAIA_DB.with_name(GAIA_DB.name + sidecar).unlink(missing_ok=True)
+    replace_retrying(staged, GAIA_DB)
+
+
 def _apply_chain(
     con: sqlite3.Connection,
     state: str,
@@ -488,6 +502,10 @@ def _apply(expected: int, consent_chain: str | None, after_backup: bool = False)
                 _apply_chain(con, state, start, chain, now_utc)
             except sqlite3.Error as exc:
                 _err(f"ERROR: migration chain {label} failed and was rolled back. ({exc})")
+                if state == UNSEALED:
+                    con.close()
+                    _restore(backup)
+                    _err(f"the journal mode changed before the chain; {GAIA_DB} restored from {backup}.")
                 _err(f"schema_version ledger remains at v{ledger}; no object changed.")
                 return 1
             _log(f"chain {label}: applied and sealed at v{expected}")
