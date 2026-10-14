@@ -65,6 +65,10 @@ export const register: Register = on => {
   let undelivered: string | undefined
 
   on('session.start', async ($, e, next) => {
+    // A headless session (-p, or the SDK the desktop app drives) cannot be
+    // compacted from a mod: the host refuses $.session.compact() there, so the
+    // tool is not offered and the orchestrator asks the user for /compact.
+    if (!e.isInteractive) return next(e)
     compactTool = (
       await $.tool.register({
         name: COMPACT_TOOL,

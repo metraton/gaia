@@ -131,8 +131,10 @@ When the user insists on compacting before the reflection finishes, offer it
 once; if they decline, write the unsaved items into the resume point marked as
 not durable, rather than dropping them or saving memory unasked.
 
-**Without the tool** -- Claude Code with mods disabled or older than 2.1.287,
-or any host that does not list it -- nothing can start the compaction and no
+**Without the tool** -- a headless Claude Code session (the desktop app, `-p`,
+the SDK), where the host cannot compact from a mod, Claude Code with mods
+disabled or older than 2.1.287, or any host that does not list it -- nothing
+can start the compaction and no
 session id reaches the orchestrator. Say so: end with the resume point in the
 report and ask the user to type `/compact`. Never report a compaction you did
 not start.

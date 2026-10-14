@@ -159,6 +159,33 @@ test('a refused compaction is reported once to the user and once to the orchestr
   expect(reports.context[1]).toEqual([])
 })
 
+// The desktop app drives Claude Code as a headless SDK session, where the host
+// answers $.session.compact() with this refusal.
+const HEADLESS = 'gaia: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on.'
+
+test('a headless session is not offered the compaction tool', async ($, on) => {
+  const clock = mock.clock(on)
+  const compactions = countCompactions(on)
+  const registered: string[] = []
+  on('tool.register', (_$, e) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__gaia__${e.name}` } }
+  })
+  on('session.start', (_$, e) => ({ cwd: e.cwd }))
+  on('turn.complete', (_$, e) => ({ text: e.answer }))
+
+  await $.session.start({ cwd: '/work', surface: null, isInteractive: false })
+  await $.turn.complete(TURN as never)
+  await clock.advance(60_000)
+
+  expect(registered).toEqual([])
+  expect(compactions.count).toBe(0)
+})
+
+test('the headless refusal is final, should a headless session reach the host anyway', () => {
+  expect(afterAttempt(new Error(HEADLESS), 1)).toEqual({ kind: 'failed', reason: HEADLESS })
+})
+
 test('only a running turn is retried, with growing waits, then left for the next turn end', () => {
   expect(afterAttempt(new Error(TURN_RUNNING), 1)).toEqual({ kind: 'retry', waitMs: RETRY_DELAY_MS })
   expect(afterAttempt(new Error(TURN_RUNNING), 2)).toEqual({ kind: 'retry', waitMs: RETRY_DELAY_MS * 2 })
