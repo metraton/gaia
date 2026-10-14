@@ -2429,13 +2429,21 @@ def initiative_from_project_ref(project_ref: str | None) -> str | None:
     """
     if not project_ref:
         return None
-    ref = str(project_ref).strip().rstrip("/")
+    return normalize_initiative(project_ref_name(project_ref))
+
+
+def project_ref_name(project_ref: str | None) -> str:
+    """The last segment of a ``project_ref``, a trailing ``.git`` removed, or "".
+
+    A Windows git-common-dir (``C:\\code\\gaia\\.git``) names the same project
+    as its forward-slash spelling, so both separators split segments.
+    """
+    ref = str(project_ref or "").strip().replace("\\", "/").rstrip("/")
     if ref.endswith("/.git"):
         ref = ref[:-len("/.git")]
     elif ref.endswith(".git"):
         ref = ref[:-len(".git")].rstrip("/")
-    base = ref.rsplit("/", 1)[-1]
-    return normalize_initiative(base)
+    return ref.rsplit("/", 1)[-1]
 
 
 def canonical_project_key(

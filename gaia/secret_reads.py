@@ -8,11 +8,14 @@ original command, redacts what it printed and exits with the original code.
 
 from __future__ import annotations
 
+import ntpath
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Mapping
 
 PROFILE_TEXT = "text"
 PROFILE_SECRET_STORE = "secret-store"
@@ -158,6 +161,25 @@ def _positionals(args: list[str], flags_with_values: frozenset[str] = frozenset(
     return positionals
 
 
+def _bash_program(windows: bool, environ: Mapping[str, str]) -> str | None:
+    """The bash the command was written for, or None; on Windows never the WSL launcher.
+
+    CreateProcess searches the system directory before PATH, so a bare
+    ``bash`` resolves to System32's ``bash.exe``, which starts WSL.
+    """
+    if not windows:
+        return "bash"
+    configured = environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if configured:
+        return configured
+    system_root = ntpath.normcase(environ.get("SystemRoot", r"C:\Windows")).rstrip("\\") + "\\"
+    outside = [
+        entry for entry in environ.get("PATH", "").split(";")
+        if entry and not (ntpath.normcase(entry).rstrip("\\") + "\\").startswith(system_root)
+    ]
+    return shutil.which("bash", path=";".join(outside))
+
+
 def _run(profile: str, command: str) -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from gaia.redaction import redact_secret_store_output, redact_secret_value_output, redact_text
@@ -166,7 +188,11 @@ def _run(profile: str, command: str) -> int:
         PROFILE_SECRET_VALUE: redact_secret_value_output,
         PROFILE_SECRET_STORE: redact_secret_store_output,
     }.get(profile, redact_text)
-    completed = subprocess.run(["bash", "-c", command], capture_output=True)
+    bash = _bash_program(os.name == "nt", os.environ)
+    if bash is None:
+        sys.stderr.write("secret_reads: no Git Bash found; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe\n")
+        return 127
+    completed = subprocess.run([bash, "-c", command], capture_output=True)
     for stream, data in ((sys.stdout, completed.stdout), (sys.stderr, completed.stderr)):
         stream.write(redact(data.decode("utf-8", errors="replace")))
         stream.flush()

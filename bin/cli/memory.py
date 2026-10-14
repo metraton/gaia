@@ -1436,15 +1436,9 @@ def _project_tag(project_ref) -> str:
     (e.g. ``id/p1``). Reduce it to the trailing component: ``gaia``, ``p1``.
     Returns "" when there is nothing to tag.
     """
-    if not project_ref:
-        return ""
-    ref = str(project_ref).strip().rstrip("/")
-    if ref.endswith("/.git"):
-        ref = ref[: -len("/.git")]
-    elif ref.endswith(".git"):
-        ref = ref[: -len(".git")].rstrip("/")
-    tag = ref.rsplit("/", 1)[-1]
-    return tag or ""
+    from gaia.store.writer import project_ref_name
+
+    return project_ref_name(project_ref)
 
 # P2a recoverable-pointer footer, extended (T8) into a read/write-axis CLI
 # guide. The audience is the orchestrator, which -- unlike a dispatched

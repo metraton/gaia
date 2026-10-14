@@ -590,6 +590,18 @@ def _hook_fix(project_root: Path, channels: dict) -> str:
     )
 
 
+def _hook_command_words(command: str) -> "list[str]":
+    """The words of a hook command, quotes honored and every backslash kept.
+
+    On Windows the host may hand a hook command to CMD, where a backslash is
+    the path separator and never an escape.
+    """
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    return list(lexer)
+
+
 def _command_problems(command: str, project_root: Path, plugin_root: "Path | None") -> "list[str] | None":
     """What keeps *command* from running, [] when it resolves, None when unverifiable.
 
@@ -602,7 +614,7 @@ def _command_problems(command: str, project_root: Path, plugin_root: "Path | Non
             return None
         command = command.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root.as_posix())
     try:
-        tokens = shlex.split(command)
+        tokens = _hook_command_words(command)
     except ValueError:
         return [f"unparseable command `{command}`"]
     if not tokens:

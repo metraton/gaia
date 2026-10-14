@@ -43,12 +43,15 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
+
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 
 MANIFEST_NAME = "gaia-manifest.json"
 MANIFEST_VERSION = 1
@@ -428,6 +431,20 @@ def _gaia_opencode_root(item: object) -> str | None:
     return str(path.parents[1]) if named or path.as_posix().endswith("/@jaguilar87/gaia/opencode/plugin.ts") else None
 
 
+def _as_path(text: str) -> PurePath:
+    """*text* as the path it names: a drive path compares as Windows does, any separator, any case."""
+    return PureWindowsPath(text) if _DRIVE_PATH.match(text) else PurePosixPath(text)
+
+
+def _prompt_inside(prompt: object, roots: Iterable[str]) -> bool:
+    """True when an OpenCode ``{file:...}`` prompt is a file under one of *roots*."""
+    match = re.fullmatch(r"\{file:(.+)\}", prompt) if isinstance(prompt, str) else None
+    if not match:
+        return False
+    target = _as_path(match.group(1))
+    return any(_as_path(root) in target.parents for root in roots)
+
+
 def _strip_opencode(workspace: Path, current: dict[str, dict]) -> dict[str, dict]:
     """The OpenCode entries of *current* that carry Gaia's footprint, each as it was before Gaia.
 
@@ -449,8 +466,7 @@ def _strip_opencode(workspace: Path, current: dict[str, dict]) -> dict[str, dict
     if isinstance(agents, dict):
         doc["agent"] = {
             name: agent for name, agent in agents.items()
-            if not (isinstance(agent, dict) and any(
-                str(agent.get("prompt", "")).startswith(f"{{file:{root}/") for root in roots))
+            if not (isinstance(agent, dict) and _prompt_inside(agent.get("prompt"), roots))
         }
     if doc.get("default_agent") == "gaia-orchestrator":
         del doc["default_agent"]
