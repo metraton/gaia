@@ -82,6 +82,7 @@ def test_grep_glob_naming_a_secret_is_still_refused(project, include):
     "node --test --test-reporter=spec tests/",
     "node --test --test-reporter dot --test-concurrency 2 'tests/**/*.test.js'",
     "node --test --test-name-pattern=a --test-reporter-destination=stdout tests/",
+    "NODE_ENV=test node --test tests/",
 ])
 def test_node_test_over_a_directory_or_glob_is_free(project, command):
     assert verdict("Bash", {"command": command}, cwd=str(project)) == "free"
@@ -103,9 +104,22 @@ def test_node_test_over_a_directory_or_glob_is_free(project, command):
     "node --test --test-reporter=./reporter.mjs tests/",
     "node --test --test-reporter-destination=./out.txt tests/",
     "node --import=./deploy.js --test tests/",
+    "NODE_OPTIONS=--import=./deploy.js node --test tests/",
+    "NODE_OPTIONS='--require ./deploy.js' node --test tests/",
+    "env NODE_OPTIONS=--import=./deploy.js node --test tests/",
 ])
 def test_node_on_a_named_or_preloaded_script_still_asks(project, command):
     assert verdict("Bash", {"command": command}, cwd=str(project)) == "approval"
+
+
+@pytest.mark.parametrize("export,run", [
+    ("export NODE_OPTIONS=--import=./deploy.js", "; node --test tests/"),
+    ("export NODE_OPTIONS='--require ./deploy.js'", " && node --test 'tests/*.test.js'"),
+])
+def test_node_test_after_exporting_node_options_is_refused_like_an_unreadable_script(project, export, run):
+    chain = verdict("Bash", {"command": export + run}, cwd=str(project))
+    assert chain == verdict("Bash", {"command": export + " && node ./deploy.js"}, cwd=str(project)) == "denied"
+    assert verdict("Bash", {"command": "export NODE_ENV=test" + run}, cwd=str(project)) == "free"
 
 
 WIPERS = [

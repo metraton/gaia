@@ -60,6 +60,8 @@ from ..security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
     cwd_after_component,
+    node_test_under_node_options,
+    sets_node_options,
 )
 from ..security.flag_classifiers import (
     classify_by_flags,
@@ -1675,8 +1677,13 @@ class BashValidator:
         # against where the user actually ran it.
         has_t3 = False
         scan_cwd: Optional[str] = cwd
+        # A NODE_OPTIONS set by an earlier component reaches every later node.
+        node_options_set = False
         for comp in components:
             detected = detect_mutative_command(comp, cwd=scan_cwd)
+            if node_options_set and not detected.is_mutative:
+                detected = node_test_under_node_options(comp, scan_cwd) or detected
+            node_options_set = node_options_set or sets_node_options(comp)
             flagged = classify_by_flags(comp)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (

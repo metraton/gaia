@@ -4421,6 +4421,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         config_result = _check_package_config_environment(command, env_remainder)
         if config_result is not None:
             return config_result
+        if sets_node_options(command):
+            node_options_result = node_test_under_node_options(env_remainder, cwd)
+            if node_options_result is not None:
+                return node_options_result
         for reading in readings:
             result = detect_mutative_command(
                 reading, from_source_code=from_source_code, cwd=cwd,
@@ -7265,6 +7269,43 @@ def _is_node_test_suite_run(args: "List[str]", cwd: "Optional[str]") -> bool:
         re.search(r"[*?\[]", token)
         or Path(cwd or Path.cwd(), Path(token).expanduser()).is_dir()
         for token in positionals
+    )
+
+
+_NODE_OPTIONS_ASSIGNMENT_RE = re.compile(r"(?<![\w-])NODE_OPTIONS=")
+
+
+def sets_node_options(command: str) -> bool:
+    """True when *command* assigns NODE_OPTIONS anywhere, inline, under ``env`` or by ``export``."""
+    return bool(_NODE_OPTIONS_ASSIGNMENT_RE.search(command))
+
+
+def node_test_under_node_options(command: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    """The T3 verdict for a ``node --test`` suite run that NODE_OPTIONS reaches, or None.
+
+    NODE_OPTIONS can carry ``--import``/``--require`` out of sight of the
+    command line, so the suite exemption does not apply; the script-file lane
+    cannot read a directory, so the run asks as it did before the exemption.
+    A NODE_OPTIONS exported by an earlier, separate call is not visible here.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens or program_identity(tokens[0]) != "node":
+        return None
+    if not _is_node_test_suite_run(tokens[1:], cwd):
+        return None
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="node-options-test-run",
+        cli_family="interpreter",
+        confidence="medium",
+        reason=(
+            "node --test runs under NODE_OPTIONS, which can preload code the "
+            "command line does not show -- requiring approval"
+        ),
     )
 
 
