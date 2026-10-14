@@ -1381,6 +1381,27 @@ class TestDeriveWorkspace:
 
         assert doctor_mod._derive_workspace() == workspace
 
+    @pytest.mark.parametrize("wired", (True, False), ids=("wired-cwd", "unwired-cwd"))
+    def test_global_prefix_gives_way_to_a_cwd_gaia_wired(self, tmp_path, monkeypatch, wired):
+        """A bare `gaia install` declares no workspace; doctor run from the folder it
+        wired checks that folder, and an unwired cwd keeps the derived prefix."""
+        prefix = tmp_path / "npm" / "prefix"
+        script_path = prefix / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        workspace = tmp_path / "user workspace"
+        (workspace / ".claude").mkdir(parents=True)
+        if wired:
+            (workspace / ".claude" / "gaia-manifest.json").write_text("{}")
+        monkeypatch.delenv("GAIA_WORKSPACE_PATH", raising=False)
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+        monkeypatch.chdir(workspace)
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+        monkeypatch.setattr(doctor_mod, "_recorded_workspace", lambda: None)
+
+        expected = workspace.resolve() if wired else prefix
+        assert doctor_mod._derive_workspace() == expected
+
     def test_global_install_exits_with_error(self, tmp_path, monkeypatch, capsys):
         """Script NOT inside any node_modules/@jaguilar87/gaia/ tree, run from a
         folder no recorded workspace root contains, exits with the explicit

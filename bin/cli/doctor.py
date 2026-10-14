@@ -146,8 +146,10 @@ def _derive_workspace(override: str = None) -> Path:
        the ``__file__`` derivation (it is a hint, not an override).
     2. Resolve Path(__file__) to its realpath and find the FIRST (leftmost)
        ``node_modules`` path segment; the workspace is everything before it.
-       When that has no ``.claude/`` -- a global install, where it is the npm
-       prefix -- the recorded root holding the cwd (step 5) wins if any.
+       When that has neither ``package.json`` nor ``.claude/`` -- a global
+       install, where it is the npm prefix -- the recorded root holding the
+       cwd (step 5) wins, else the cwd itself when its install manifest shows
+       Gaia wired it.
     3. Sanity-check that ``@jaguilar87`` and ``gaia`` both appear somewhere
        after that ``node_modules`` segment, confirming the script really is
        running from inside the gaia package tree.
@@ -238,12 +240,13 @@ def _derive_workspace(override: str = None) -> Path:
             if parent_nm.is_dir():
                 return parent
             # No consumer found above the source repo -- fall through to error.
-        elif (workspace / ".claude").is_dir():
+        elif pkg_json.is_file() or (workspace / ".claude").is_dir():
             return workspace
         else:
-            # A global install derives the npm prefix, which no install wires;
-            # the recorded workspace holding the cwd is the one being checked.
-            return _recorded_workspace() or workspace
+            # A folder with no package.json is npm's global prefix, which no
+            # install wires. A bare `gaia install` wires the cwd and declares
+            # no workspace, so the cwd counts when its manifest says Gaia wired it.
+            return _recorded_workspace() or _wired_start() or workspace
 
     recorded = _recorded_workspace()
     if recorded is not None:
@@ -269,6 +272,14 @@ def _workspace_start() -> Path:
     """Where the session stands: the host's project dir when it sets one, else the cwd."""
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
     return Path(project_dir).expanduser().resolve() if project_dir else Path.cwd().resolve()
+
+
+def _wired_start() -> "Path | None":
+    """:func:`_workspace_start` when a Gaia install manifest wires it, else None."""
+    from cli._manifest import manifest_path  # noqa: PLC0415
+
+    start = _workspace_start()
+    return start if manifest_path(start).is_file() else None
 
 
 def _recorded_workspace() -> "Path | None":
