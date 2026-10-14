@@ -148,7 +148,7 @@ def test_worktree_add_enables_long_paths(monkeypatch, tmp_path):
     assert target.is_dir()
 
 
-def test_crlf_rewrite_of_a_checkout_is_not_modified(tmp_path):
+def test_windows_checkout_is_not_modified_for_a_linux_reader(tmp_path):
     attributes = REPO_ROOT / ".gitattributes"
     assert attributes.is_file()
     repo = _init_repo(tmp_path / "repo")
@@ -157,8 +157,12 @@ def test_crlf_rewrite_of_a_checkout_is_not_modified(tmp_path):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "init")
 
-    (repo / "module.py").write_bytes(b"a = 1\r\nb = 2\r\n")
+    _git(repo, "config", "core.autocrlf", "true")
+    (repo / "module.py").unlink()
+    _git(repo, "checkout", "--", "module.py")
+    _git(repo, "config", "core.autocrlf", "false")
 
+    assert (repo / "module.py").read_bytes() == b"a = 1\nb = 2\n"
     assert _git(repo, "status", "--porcelain") == ""
     assert _git(repo, "check-attr", "eol", "--", "module.py").strip() == "module.py: eol: lf"
 
