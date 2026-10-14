@@ -1496,43 +1496,89 @@ _PS_ALL_VERBS: FrozenSet[str] = (
 # a letter immediately BEFORE the hyphen, and flags start with the hyphen.
 _PS_CMDLET_RE = _re.compile(r"\b([A-Za-z][A-Za-z]*)-([A-Za-z][A-Za-z0-9]*)\b")
 
-# Composition operators that separate pipeline / statement stages:  ';', '|',
-# '&&', '||'.  The cmdlet/verb classification runs PER STAGE on the FIRST
-# cmdlet-shaped token only (the command position); a Verb-Noun-shaped PATH or
-# FLAG argument ('C:\x\my-folder', 'a-b\file.txt') sits in an ARGUMENT position
-# -- AFTER the command in its stage -- so it must not be read as a cmdlet.
-# Two-char operators are listed first in the alternation so '||'/'&&' win over
-# the single-char '|'.
-_PS_STAGE_SPLIT_RE = _re.compile(r"\|\||&&|[;|]")
+# Operators after which PowerShell starts a new command: statement and pipeline
+# separators, and the opening or closing of a script block or (sub)expression,
+# whose body runs as commands of its own -- ``{ Remove-Item $_ }`` and
+# ``"$(Remove-Item x)"`` included. Two-char operators come first so they win.
+_PS_POSITION_SEPARATORS: Tuple[str, ...] = ("||", "&&", ";", "|", "{", "}", "(", ")", "\n")
+
+# A word starting with one of these is a value, variable, operator or comment,
+# never a command PowerShell starts.
+_PS_EXPRESSION_LEADS = frozenset("$'\"@[-#,=+*!<>0123456789")
+
+# Language keywords: a position they lead is a statement header, and the body
+# it governs is split off as positions of its own.
+_PS_KEYWORDS: FrozenSet[str] = frozenset({
+    "if", "elseif", "else", "for", "while", "do", "until", "switch", "try",
+    "catch", "finally", "trap", "function", "filter", "param", "begin",
+    "process", "end", "return", "break", "continue", "throw", "exit", "data",
+    "dynamicparam",
+})
+
+# ForEach-Object runs its script blocks, which are classified as positions of
+# their own; given a member NAME instead (``% Delete``, ``-MemberName``) it
+# calls that method on every input, an effect no name list can judge.
+_PS_SCRIPTBLOCK_INVOKERS: FrozenSet[str] = frozenset({"foreach-object", "foreach", "%"})
+_PS_INVOKER_BLOCK_FLAGS: FrozenSet[str] = frozenset({"-process", "-begin", "-end", "-parallel"})
 
 
-def _ps_stage_command_cmdlets(payload: str) -> "List[Tuple[str, str]]":
-    """Split a PowerShell payload into composition stages and return the
-    command-position cmdlet ``(verb, noun)`` of each stage that has one.
+def _ps_command_positions(payload: str) -> "List[str]":
+    """Return the text of every command position in a PowerShell payload, in order.
 
-    Stages split on ';', '|', '&&', '||' (reusing the composition taxonomy).
-    Within a stage, ONLY the FIRST Verb-Noun-shaped token is the command; any
-    later Verb-Noun token is an ARGUMENT (a hyphenated path such as 'my-folder'
-    or a cmdlet name embedded in a file path) and is intentionally ignored, so
-    it can never be misread as a cmdlet.  Taking the first *match* rather than
-    the literal first whitespace token also transparently skips a leading
-    interpreter wrapper / flags ('powershell.exe -Command "..."') without a
-    fragile payload-extraction step.  A stage with no cmdlet-shaped token
-    contributes nothing (it is an alias / path / builtin command position).
-
-    Obfuscation / arbitrary-execution markers are NOT filtered here -- they are
-    scanned across the WHOLE payload by the caller (``_PS_OBFUSCATION_RES``)
-    before this per-stage scan runs.
+    Single-quoted text is literal in PowerShell and never splits; double-quoted
+    text does, because a ``$(...)`` inside it runs.
     """
-    cmdlets: "List[Tuple[str, str]]" = []
-    for stage in _PS_STAGE_SPLIT_RE.split(payload):
-        stage = stage.strip()
-        if not stage:
-            continue
-        m = _PS_CMDLET_RE.search(stage)  # FIRST cmdlet in the stage = the command
-        if m:
-            cmdlets.append((m.group(1), m.group(2)))
-    return cmdlets
+    positions: "List[str]" = []
+    start = i = 0
+    in_single = in_double = False
+    while i < len(payload):
+        ch = payload[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single:
+            separator = next(
+                (s for s in _PS_POSITION_SEPARATORS if payload.startswith(s, i)), None,
+            )
+            if separator:
+                positions.append(payload[start:i].strip())
+                i += len(separator)
+                start = i
+                continue
+        i += 1
+    positions.append(payload[start:].strip())
+    return [position for position in positions if position]
+
+
+# A ``.Name(`` or ``::Name(`` call invokes a .NET method, and a method can
+# mutate (``.Delete()``, ``[IO.File]::Delete(x)``) under any name; a property
+# read carries no call parentheses.
+_PS_METHOD_CALL_RE = _re.compile(r"(?:\.|::)[A-Za-z_]\w*\(")
+
+# A call operator (``&``) or dot-source (``. ``) in front of a command word.
+_PS_CALL_OPERATOR_RE = _re.compile(r"^(?:&|\.(?=\s))\s*")
+
+
+def _powershell_floor_readings(command: str) -> "Tuple[str, ...]":
+    """Return every command position a PowerShell command line runs, for the block floor.
+
+    Empty unless *command* is a ``powershell``/``pwsh`` invocation, whose
+    ``-Command`` script is split, or is itself PowerShell-shaped: led by a
+    cmdlet, a keyword, a script-block invoker, a call operator or an expression.
+    """
+    head = command[:_consume_shell_word(command, 0)].strip("\"'")
+    if program_identity(head) in _POWERSHELL_INTERPRETERS:
+        command = _powershell_payload(command)[1]
+    elif not (
+        _PS_CMDLET_RE.fullmatch(head)
+        or head.lower() in _PS_KEYWORDS | _PS_SCRIPTBLOCK_INVOKERS
+        or head[:1] in ("&", "$", "(")
+    ):
+        return ()
+    return tuple(
+        _PS_CALL_OPERATOR_RE.sub("", position) for position in _ps_command_positions(command)
+    )
 
 # Obfuscation / non-inspectable-execution markers -> T3 regardless of the
 # surrounding cmdlets.  These run BEFORE the cmdlet allowlist so a benign read
@@ -1560,6 +1606,37 @@ def _is_ps_encoded_flag(flag: str) -> bool:
     if body == "ec":
         return True
     return len(body) >= 2 and "encodedcommand".startswith(body)
+
+
+# PowerShell interpreter options that consume the following word.
+_PS_INTERPRETER_VALUE_FLAGS: FrozenSet[str] = frozenset({
+    "-executionpolicy", "-ep", "-ex", "-windowstyle", "-w", "-workingdirectory",
+    "-wd", "-configurationname", "-config", "-inputformat", "-if",
+    "-outputformat", "-of", "-version", "-v", "-psconsolefile",
+    "-settingsfile", "-file", "-f", "-custompipename",
+})
+
+
+def _powershell_payload(command: str) -> "Tuple[bool, str]":
+    """Return ``(has_command_flag, script)`` for a ``powershell``/``pwsh`` command line.
+
+    The script is every word after ``-Command`` (any prefix of it, ``-c``
+    included), which PowerShell joins and runs; without that flag it is the
+    words after the interpreter's own options.
+    """
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    i = 1
+    while i < len(words):
+        flag = words[i].lower()
+        if len(flag) >= 2 and "-command".startswith(flag):
+            return True, " ".join(words[i + 1:])
+        if not flag.startswith("-"):
+            break
+        i += 2 if flag in _PS_INTERPRETER_VALUE_FLAGS else 1
+    return False, " ".join(words[i:])
 
 
 # ---------------------------------------------------------------------------
@@ -1641,6 +1718,19 @@ _PS_ALIASES: "Dict[str, Tuple[str, str]]" = {
     "chdir": ("read", "Set-Location"),
     "cls": ("read", "Clear-Host"), "clear": ("read", "Clear-Host"),
     "write": ("read", "Write-Output"), "echo": ("read", "Write-Output"),
+    "ri": ("change", "Remove-Item"), "rp": ("change", "Remove-ItemProperty"),
+    "clc": ("change", "Clear-Content"), "cli": ("change", "Clear-Item"),
+    "clp": ("change", "Clear-ItemProperty"), "si": ("change", "Set-Item"),
+    "sp": ("change", "Set-ItemProperty"), "spps": ("change", "Stop-Process"),
+    "spsv": ("change", "Stop-Service"), "sasv": ("change", "Start-Service"),
+    "irm": ("change", "Invoke-RestMethod"),
+    "gi": ("read", "Get-Item"), "gp": ("read", "Get-ItemProperty"),
+    "gl": ("read", "Get-Location"), "gcm": ("read", "Get-Command"),
+    "gal": ("read", "Get-Alias"), "ghy": ("read", "Get-History"),
+    "gps": ("read", "Get-Process"), "gsv": ("read", "Get-Service"),
+    "sls": ("read", "Select-String"), "ft": ("read", "Format-Table"),
+    "fl": ("read", "Format-List"), "fw": ("read", "Format-Wide"),
+    "?": ("read", "Where-Object"), "where": ("read", "Where-Object"),
 }
 
 # Bare PowerShell execution aliases: recognizing them enters this lane so the
@@ -6605,32 +6695,21 @@ def _classify_powershell_verb(verb: str, noun: str) -> str:
 
 def _classify_powershell_payload(
     payload: str, family: str, source: str,
+    cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> MutativeResult:
-    """Classify a PowerShell script payload by cmdlet verb taxonomy.
+    """Classify a PowerShell script payload at the verdict of its most mutative command position.
 
-    ``payload`` is the raw text of a ``-Command`` string or a ``.ps1`` file.
-    Two concerns are kept separate:
-
-      COMPOSITION / OBFUSCATION (whole-payload scan).  Obfuscation and
-      arbitrary-execution markers (``iex``/``iwr``/``icm``,
-      ``Invoke-Expression``, a ``&``/``.`` call operator) escalate to T3 FIRST
-      -- before the cmdlet scan -- so a read cmdlet piped into ``iex`` cannot
-      launder the payload.  These markers may appear as a stage of their own OR
-      embedded mid-stage, so they are matched across the ENTIRE payload, not per
-      first token.
-
-      CMDLET / VERB (per-stage FIRST-token scan).  The payload is split into
-      composition stages ('; | && ||') and ONLY the leading token of each stage
-      -- the command position -- is classified by its Verb-Noun verb.  Path and
-      flag ARGUMENTS ('C:\\x\\my-folder', 'a-b\\file.txt') sit in argument
-      positions and are NOT read as cmdlets, so a hyphenated path no longer
-      forces a false T3.  Rules (conservative / positive-allowlist):
-        * ANY change or unknown verb at a command position escalates the WHOLE
-          payload to T3 (tier = MAX across stages).
-        * To drop BELOW T3 at least one command-position cmdlet must be present
-          AND every command-position cmdlet must be a read verb -- a payload
-          with no recognizable command-position cmdlet is T3 (cannot prove it is
-          read-only; no safe-by-elimination here).
+    ``payload`` is the raw text of a ``-Command`` string, a ``.ps1`` file or a
+    bare PowerShell command. Obfuscation markers (``iex``, ``Invoke-Expression``,
+    a call operator) are matched across the whole payload first, so a read
+    cmdlet piped into ``iex`` cannot launder it. Then every command position
+    (``_ps_command_positions``) is judged by what leads it: a cmdlet by its
+    Verb-Noun verb, an alias as the cmdlet it names, a native command as its
+    POSIX twin (``detect_mutative_command``). Only the leading word of a
+    position is a command, so a hyphenated path argument is never read as a
+    cmdlet. The payload is free only when no position mutates and at least one
+    is a recognized read cmdlet or alias; otherwise it cannot be proven
+    read-only and is T3.
     """
     # 1. Obfuscation / non-inspectable execution -- whole-payload scan (NOT
     #    restricted to first tokens: a marker may hide mid-stage).
@@ -6649,18 +6728,84 @@ def _classify_powershell_payload(
                 ),
             )
 
-    # 2. Per-stage cmdlet scan: classify ONLY the FIRST cmdlet (the command) of
-    #    each composition stage.  A Verb-Noun-shaped path/flag argument
-    #    ('my-folder', 'a-b') follows the command in its stage, so it is skipped.
+    if _PS_METHOD_CALL_RE.search(payload):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="powershell-method-call",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"PowerShell {source} calls a .NET method, which may mutate "
+                f"whatever its name -- requires approval"
+            ),
+        )
+
     saw_read_cmdlet = False
-    for verb, noun in _ps_stage_command_cmdlets(payload):
-        v, n = verb.lower(), noun.lower()
-        kind = _classify_powershell_verb(v, n)
+    for position in _ps_command_positions(payload):
+        position = _PS_CALL_OPERATOR_RE.sub("", position)
+        words = position.split()
+        if not words:
+            continue
+        head = words[0].lower()
+        if head.strip("\"'").endswith(".ps1"):
+            position, head = f"pwsh -File {position}", "pwsh"
+        elif head[0] in _PS_EXPRESSION_LEADS or head in _PS_KEYWORDS:
+            continue
+        if head in _PS_SCRIPTBLOCK_INVOKERS:
+            if all(word.lower() in _PS_INVOKER_BLOCK_FLAGS for word in words[1:]):
+                saw_read_cmdlet = True
+                continue
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="powershell-member-invocation",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"PowerShell {source} runs '{position}', which calls a named "
+                    f"member on every input -- requires approval"
+                ),
+            )
+        if head in _PS_ALIASES:
+            kind, cmdlet = _PS_ALIASES[head]
+            if kind == "change":
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=cmdlet,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"PowerShell {source} runs alias '{head}' -> {cmdlet} "
+                        f"(mutative) -- requires approval"
+                    ),
+                )
+            saw_read_cmdlet = True
+            continue
+        cmdlet = _PS_CMDLET_RE.fullmatch(head)
+        if cmdlet is None:
+            if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+                native = MutativeResult(
+                    is_mutative=True, category=CATEGORY_MUTATIVE,
+                    verb="powershell-recursion-limit", cli_family=family,
+                    confidence="medium", reason="nesting too deep to inspect",
+                )
+            else:
+                native = detect_mutative_command(position, cwd=cwd, _depth=_depth + 1)
+            if native.is_mutative:
+                return replace(
+                    native,
+                    reason=f"PowerShell {source} runs '{position}': {native.reason}",
+                )
+            continue
+        verb, noun = cmdlet.groups()
+        kind = _classify_powershell_verb(verb, noun)
         if kind == "change":
             return MutativeResult(
                 is_mutative=True,
                 category=CATEGORY_MUTATIVE,
-                verb=f"{v}-{n}",
+                verb=f"{verb}-{noun}",
                 cli_family=family,
                 confidence="high",
                 reason=(
@@ -6672,7 +6817,7 @@ def _classify_powershell_payload(
             return MutativeResult(
                 is_mutative=True,
                 category=CATEGORY_MUTATIVE,
-                verb=f"{v}-{n}",
+                verb=f"{verb}-{noun}",
                 cli_family=family,
                 confidence="medium",
                 reason=(
@@ -6683,7 +6828,6 @@ def _classify_powershell_payload(
             )
         saw_read_cmdlet = True
 
-    # 3a. No recognizable command-position cmdlet -> cannot prove read-only.
     if not saw_read_cmdlet:
         return MutativeResult(
             is_mutative=True,
@@ -6692,13 +6836,12 @@ def _classify_powershell_payload(
             cli_family=family,
             confidence="medium",
             reason=(
-                f"PowerShell {source} has no recognizable Verb-Noun cmdlet at a "
-                f"command position -- cannot prove it is read-only "
+                f"PowerShell {source} has no recognized read cmdlet or alias at "
+                f"a command position -- cannot prove it is read-only "
                 f"(conservative default)"
             ),
         )
 
-    # 3b. Every command-position cmdlet is a read verb.
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
@@ -6723,10 +6866,9 @@ def _check_powershell_command(
       * ``-EncodedCommand <base64>`` -> T3 immediately (non-inspectable).
       * ``-File <script.ps1>``       -> read the file and classify its contents
         (unreadable -> conservative T3, mirroring the script-file lane).
-      * ``-Command``/``-c`` inline   -> classify the raw command text (the
-        interpreter flags carry no Verb-Noun cmdlet, so scanning the whole
-        string is safe and captures the payload regardless of quoting).
-      * no explicit payload flag      -> scan the whole command text anyway; a
+      * ``-Command``/``-c`` inline   -> classify the script it runs
+        (``_powershell_payload``).
+      * no explicit payload flag      -> classify the words after the options; a
         bare interactive ``powershell`` with no cmdlet falls to conservative T3.
 
     Returns ``None`` when ``base_cmd`` is not a PowerShell interpreter.
@@ -6759,7 +6901,8 @@ def _check_powershell_command(
     ps_files = [
         t for t in semantics.non_flag_tokens if t.lower().endswith(".ps1")
     ]
-    if ps_files:
+    has_command_flag, payload = _powershell_payload(command)
+    if ps_files and not has_command_flag:
         content = _read_script_content(ps_files[0], cwd=cwd)
         if content is None:
             return MutativeResult(
@@ -6773,10 +6916,13 @@ def _check_powershell_command(
                     f"-- cannot verify the payload (conservative default)"
                 ),
             )
-        return _classify_powershell_payload(content, family, "script file")
+        return _classify_powershell_payload(
+            content, family, "script file", cwd=cwd, _depth=_depth,
+        )
 
-    # -Command / -c inline, or no explicit payload flag: scan the command text.
-    return _classify_powershell_payload(command, family, "-Command payload")
+    return _classify_powershell_payload(
+        payload, family, "-Command payload", cwd=cwd, _depth=_depth,
+    )
 
 
 def _check_windows_native_command(
@@ -6825,6 +6971,7 @@ def _check_windows_native_command(
         or base_cmd in _CMD_READ_BUILTINS
         or base_cmd in _PS_ALIASES
         or base_cmd in _PS_BARE_OBFUSCATION_ALIASES
+        or base_cmd in _PS_SCRIPTBLOCK_INVOKERS
         or is_bare_cmdlet
     )
     if not recognized:
@@ -6882,9 +7029,8 @@ def _check_windows_native_command(
     if base_cmd in _PS_ALIASES:
         kind, cmdlet = _PS_ALIASES[base_cmd]
         if kind == "read":
-            return _read(
-                base_cmd,
-                f"PowerShell alias '{base_cmd}' -> {cmdlet} (read-only)",
+            return _classify_powershell_payload(
+                command, "powershell", "bare alias", cwd=cwd, _depth=_depth,
             )
         return _change(
             cmdlet,
@@ -6900,10 +7046,11 @@ def _check_windows_native_command(
             f"-- requires approval",
         )
 
-    # 5. Bare Verb-Noun cmdlet: classify the WHOLE command via the shared
-    #    payload classifier (handles composition ';'/'|', ambiguous nouns, and
-    #    obfuscation identically to the wrapped -Command lane).
-    return _classify_powershell_payload(command, "powershell", "bare cmdlet")
+    # 5. Bare cmdlet or script-block invoker: classify the WHOLE command via the
+    #    shared payload classifier, identically to the wrapped -Command lane.
+    return _classify_powershell_payload(
+        command, "powershell", "bare cmdlet", cwd=cwd, _depth=_depth,
+    )
 
 
 def _read_script_content(

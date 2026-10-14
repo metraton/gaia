@@ -95,6 +95,15 @@ def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
         return (command,), False
 
 
+def _powershell_positions(command: str) -> Tuple[str, ...]:
+    """Return the command positions a PowerShell command line runs (``mutative_verbs._powershell_floor_readings``)."""
+    try:
+        from .mutative_verbs import _powershell_floor_readings
+        return _powershell_floor_readings(command)
+    except ImportError:
+        return ()
+
+
 def _rm_confined_to_scratch(command: str) -> bool:
     """Return True if an ``rm`` command is textually confined to Gaia scratch.
 
@@ -387,6 +396,12 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"^dd\s+", re.IGNORECASE),
         re.compile(r"^fdisk\s+", re.IGNORECASE),
         re.compile(r"^mkfs(\.(ext[34]|fat|ntfs))?\s+", re.IGNORECASE),
+        # Windows volume, partition and shadow-copy destruction (D140)
+        re.compile(r"^format(\.com)?\s+[a-z]:", re.IGNORECASE),
+        re.compile(r"^diskpart(\.exe)?(\s|$)", re.IGNORECASE),
+        re.compile(r"^vssadmin(\.exe)?\s+delete\s+shadows\b", re.IGNORECASE),
+        re.compile(r"^format-volume\b", re.IGNORECASE),
+        re.compile(r"^clear-disk\b", re.IGNORECASE),
     ],
 
     # rm -rf / and rm -rf ~ (catastrophic filesystem destruction)
@@ -504,6 +519,10 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "dd": "[BLOCKED] Low-level disk operations can destroy data",
     "fdisk": "[BLOCKED] Disk partitioning can destroy data",
     "mkfs": "[BLOCKED] Filesystem creation destroys all data on target",
+    "format-volume": "[BLOCKED] Formatting a volume destroys all data on it",
+    "clear-disk": "[BLOCKED] Clearing a disk destroys every partition and all data on it",
+    "diskpart": "[BLOCKED] Disk partitioning can destroy data",
+    "vssadmin delete shadows": "[BLOCKED] Deleting shadow copies removes the restore points recovery depends on",
 
     # rm critical
     "rm -rf /": "[BLOCKED] Filesystem destruction is irreversible",
@@ -734,6 +753,15 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
             peeled_result = _classify_stripped_command(remainder)
             if peeled_result.is_blocked:
                 return peeled_result
+
+    # A PowerShell script is one word to the shell and many commands to
+    # PowerShell, so ``pwsh -c "Get-Disk 1 | Clear-Disk"`` or a script block
+    # puts the floor command off position 0. Strictly additive, like the peel.
+    for reading in (command, *readings):
+        for position in _powershell_positions(reading):
+            position_result = _classify_stripped_command(position)
+            if position_result.is_blocked:
+                return position_result
 
     # ------------------------------------------------------------------
     # Grouping / substitution wrapper guard.
