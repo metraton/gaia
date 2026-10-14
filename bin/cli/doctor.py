@@ -70,6 +70,7 @@ References:
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -730,6 +731,10 @@ def check_last_install_error() -> dict:
     )
 
 
+# Must match the claude-code engine scripts/build-plugin.py writes into plugin.json.
+MIN_CLAUDE_CODE_VERSION = (2, 1, 295)
+
+
 @register_check("Claude Code", order=20)
 def check_claude_code() -> dict:
     """Check if Claude Code CLI is installed."""
@@ -743,11 +748,31 @@ def check_claude_code() -> dict:
                     timeout=10,
                 )
                 version_line = proc.stdout.strip().split("\n")[0] if proc.stdout else cmd
+                found = re.match(r"(\d+)\.(\d+)\.(\d+)", version_line)
+                if found and tuple(map(int, found.groups())) < MIN_CLAUDE_CODE_VERSION:
+                    minimum = ".".join(map(str, MIN_CLAUDE_CODE_VERSION))
+                    return _result(
+                        "Claude Code", "error",
+                        f"{version_line} is older than {minimum}: PreToolUse hooks lack "
+                        "onFailure, so a hook that cannot start lets the tool run",
+                        "claude update",
+                    )
                 return _result("Claude Code", "pass", version_line)
             except Exception:
                 return _result("Claude Code", "pass", cmd)
 
     return _result("Claude Code", "info", "Not installed", "npm install -g @anthropic-ai/claude-code")
+
+
+@register_check("Hook shell", order=25)
+def check_hook_shell() -> dict:
+    """Error when the host cannot resolve the `sh` every hook command starts with."""
+    from gaia.hook_shell import missing_hook_shell  # noqa: PLC0415
+
+    problem = missing_hook_shell()
+    if problem:
+        return _result("Hook shell", "error", problem, "Install Git for Windows so `sh` resolves on PATH")
+    return _result("Hook shell", "pass", "sh resolvable or not required")
 
 
 @register_check("Python", order=30)

@@ -1359,6 +1359,12 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 def install_channels(args: argparse.Namespace, channels: Sequence[str], *, command: str = "gaia install") -> int:
     """Bootstrap the DB once, then wire each of *channels* into the workspace and record them."""
+    from gaia.hook_shell import missing_hook_shell
+
+    shell_problem = missing_hook_shell()
+    if shell_problem:
+        print(f"{command}: refused, {shell_problem}", file=sys.stderr)
+        return 1
     postinstall = bool(getattr(args, "postinstall", False))
     quiet = bool(getattr(args, "quiet", False))
     verbose = bool(getattr(args, "verbose", False))

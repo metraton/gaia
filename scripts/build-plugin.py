@@ -210,15 +210,20 @@ def generate_hooks_json(manifest: dict) -> dict:
             # working tree's file modes) and no `python3` (the launcher picks
             # python3, python or `py -3`); both paths are quoted because a
             # plugin root or workspace can hold a space.
-            entry["hooks"] = [
-                {
-                    "type": "command",
-                    "command": (
-                        f'sh "${{CLAUDE_PLUGIN_ROOT}}/{HOOK_LAUNCHER}" '
-                        f'"${{CLAUDE_PLUGIN_ROOT}}/{entry_point}"'
-                    ),
-                }
-            ]
+            handler: dict = {
+                "type": "command",
+                "command": (
+                    f'sh "${{CLAUDE_PLUGIN_ROOT}}/{HOOK_LAUNCHER}" '
+                    f'"${{CLAUDE_PLUGIN_ROOT}}/{entry_point}"'
+                ),
+            }
+            # The host runs the tool when a hook cannot start or exits other
+            # than 0/2 (missing sh or Python, crash before a verdict); "block"
+            # makes those failures deny. Only the gate gets it: on Stop or
+            # SessionStart a blocking failure would trap the session.
+            if event_name == "PreToolUse":
+                handler["onFailure"] = "block"
+            entry["hooks"] = [handler]
             entries.append(entry)
 
         hooks_json["hooks"][event_name] = entries
@@ -297,7 +302,7 @@ def generate_plugin_json(manifest: dict) -> dict:
         "repository": "https://github.com/metraton/gaia",
         "license": "MIT",
         "keywords": ["security", "devops"],
-        "engines": {"claude-code": ">=2.1.0"},
+        "engines": {"claude-code": ">=2.1.295"},
         "categories": ["devops", "security", "orchestration"],
     }
 

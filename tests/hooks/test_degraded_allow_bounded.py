@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """A degraded gate never hands over what it had already decided to withhold.
 
-The gate is allowed to fail open so its own crash cannot brick a session. That
-policy has one boundary: it applies to commands whose verdict was never
-reached. When the gate had ALREADY classified a command as state-mutating and
-then failed, letting it through is not losing a verdict -- the verdict existed,
-and it was going to demand consent. Degrading it into a permission grants
-exactly what the gate was holding back.
+A gate failure blocks every command. When the gate had already classified the
+command as state-mutating, the denial also names that verb.
 
-Two contrasting cases over the same degradation mechanism:
+Two cases over the same degradation mechanism:
 
 1. An already-classified mutating command hitting the failure is BLOCKED with a
    reason (the historical shape here is a push to a remote, which is the one
    that actually reached remote state in the recorded degradations).
-2. A command with no such classification hitting the same failure still PASSES,
-   which is what keeps the bounded exception from bricking a session.
+2. A command with no such classification hitting the same failure is BLOCKED
+   too: no verdict was reached, so the call would otherwise run unchecked.
 
 Both assert the failure was recorded, because a decision the audit sink cannot
 show is not reviewable either way.
@@ -194,12 +190,8 @@ def test_degraded_allow_leaves_the_deny_list_permanent(audit_sink, persistence_f
     assert _decision(result) != "allow"
 
 
-def test_degraded_allow_still_passes_a_non_mutating_command(tmp_path):
-    """The same failure on an unclassified command still lets it through.
-
-    This is what bounds the exception: it reaches only commands that were
-    already going to stop and ask, so a crashing gate cannot brick a session.
-    """
+def test_gate_failure_blocks_a_non_mutating_command(tmp_path):
+    """The same failure on an unclassified command blocks it as well."""
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_DATA"] = str(tmp_path)
     env["GAIA_DATA_DIR"] = str(tmp_path)
@@ -221,15 +213,14 @@ def test_degraded_allow_still_passes_a_non_mutating_command(tmp_path):
         env=env,
     )
 
-    assert proc.returncode != 2, (
-        "a non-mutating command must still pass a degraded gate -- blocking it "
-        f"would brick the session (stdout={proc.stdout!r}, stderr={proc.stderr!r})"
+    assert proc.returncode == 2, (
+        f"a degraded gate let an unclassified command run (stdout={proc.stdout!r}, stderr={proc.stderr!r})"
     )
     assert FAIL_OPEN_MARKER in proc.stdout + proc.stderr
     events = [
         r for r in _audit_records(tmp_path) if r.get("event") == FAIL_OPEN_EVENT
     ]
-    assert events, "the pass-through was not recorded"
+    assert events, "the block was not recorded"
 
 
 def test_degraded_allow_blocks_when_the_breadcrumb_says_mutating(audit_sink):

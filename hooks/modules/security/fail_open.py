@@ -1,35 +1,26 @@
-"""Instrumentation for a security gate that fails open.
+"""Handling for a security gate that fails before reaching a verdict.
 
-Only exit 2 or an explicit deny decision stops an operation; every other exit
-lets it run. So an exception raised while the gate is still deciding does not
-merely lose the verdict -- it grants the operation. Failing CLOSED instead was
-weighed and rejected: a gate that denies everything the moment it crashes can
-brick a session, and the crash is usually in the gate, not in the command.
+Only exit 2 or an explicit deny stops an operation; every other exit lets it
+run, so a gate that crashes mid-decision would grant what it never classified.
+The gate therefore fails CLOSED: every failure blocks with exit 2. Failing open
+was the earlier policy, retired because an unclassified tool call is the one
+outcome the gate exists to prevent; a gate broken for every call is visible
+and fixed, while one silently passing calls is not.
 
-What is not acceptable is failing open SILENTLY. An allow with no record is
-indistinguishable, after the fact, from a gate that read the command and
-decided it was safe -- which is precisely the reading an operator must never be
-led into. So every fail-open leaves two traces:
+Every failure leaves two traces:
 
 - a record in the always-on audit sink (``audit-*.jsonl``, written regardless
-  of GAIA_DEBUG, unlike the ``logging`` module which hook code routes through a
-  NullHandler by default), tagged with :data:`FAIL_OPEN_EVENT` so it is
-  queryable by event and grouped by its reason;
-- :data:`FAIL_OPEN_MARKER` in the text returned to the user, so the degradation
-  is visible in the turn it happened rather than only in a log nobody opens.
+  of GAIA_DEBUG), tagged :data:`FAIL_OPEN_EVENT` with its reason and the
+  outcome. The tag predates the fail-closed policy and is kept so existing
+  metrics queries still group on it; the ``outcome`` field is what says the
+  call was blocked;
+- :data:`FAIL_OPEN_MARKER` in the text returned to the user.
 
-Both emissions are best-effort by construction: a failure in the diagnostic
-path must never be able to change the outcome of the operation it is
-describing.
+Both emissions are best-effort: a failure in the diagnostic path must never
+change the outcome of the operation it describes.
 
-There is ONE bounded exception to passing. If the command had already been
-classified as mutating BEFORE the failure, letting it through is not "losing a
-verdict" -- the verdict existed, and it was going to demand consent. Degrading
-that into a permission hands over exactly what the gate was holding back, which
-is worse than any outcome the fail-open policy was protecting against. So a
-fail-open that finds such a classification blocks instead, and says why. The
-exception cannot brick a session, because it reaches only commands that were
-already going to stop and ask.
+When the command had already been classified as mutating before the failure,
+the denial names that verb, since the call was going to stop and ask anyway.
 """
 from __future__ import annotations
 
@@ -98,19 +89,15 @@ CAUSE_NO_INPUT = "never received the tool call payload on stdin, so it never ran
 
 
 def build_fail_open_message(reason: str, detail: str, cause: str = CAUSE_ERROR) -> str:
-    """Return the user-visible notice for a gate that failed open.
-
-    States the three things a reader needs and cannot infer: that the gate did
-    not reach a verdict, that the operation proceeded anyway, and that this is
-    not an approval.
-    """
+    """Return the user-visible denial for a gate that reached no verdict."""
     return (
         f"{FAIL_OPEN_MARKER} The security gate {cause} "
-        f"and the operation was allowed to proceed unvalidated.\n"
+        f"and the operation was blocked unvalidated.\n"
         f"Reason: {reason}\n"
         f"Detail: {detail}\n"
-        f"This is NOT an approval: the command was never classified. A "
-        f"'{FAIL_OPEN_EVENT}' audit event was recorded."
+        f"The command was never classified. Run `gaia doctor` to find the "
+        f"failing component, then retry. A '{FAIL_OPEN_EVENT}' audit event "
+        f"was recorded."
     )
 
 
@@ -207,29 +194,23 @@ def clear_classification() -> None:
 def decide_fail_open(
     reason: str, detail: str, cause: str = CAUSE_ERROR
 ) -> FailOpenOutcome:
-    """Record a gate failure and decide whether the operation still proceeds.
-
-    Blocks only when a mutating classification was already reached; otherwise
-    the operation passes, instrumented. Recording happens on both branches, so
-    the audit sink carries the failure regardless of which way it resolved.
+    """Record a gate failure and block the operation.
 
     Args:
         reason: Short machine tag for the lane that failed.
         detail: Underlying exception text or human-readable detail.
         cause: How the gate came to have no verdict -- see CAUSE_ERROR /
-            CAUSE_NO_INPUT. Affects only the wording of the notice, never the
-            outcome: a gate that never ran and a gate that crashed mid-decision
-            leave the operation equally unvalidated.
+            CAUSE_NO_INPUT. Affects only the wording of the notice.
     """
     known = known_mutative_classification()
     if known is None:
         record_fail_open(
-            reason=reason, detail=detail, context={"outcome": "allowed"}
+            reason=reason, detail=detail, context={"outcome": "blocked"}
         )
         return FailOpenOutcome(
             message=build_fail_open_message(reason, detail, cause),
-            exit_code=1,
-            blocked=False,
+            exit_code=2,
+            blocked=True,
         )
 
     record_fail_open(

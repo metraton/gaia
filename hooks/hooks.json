@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -15,7 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -24,7 +26,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -33,7 +36,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -42,7 +46,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "onFailure": "block"
           }
         ]
       },
@@ -51,7 +56,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\""
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py\"",
+            "onFailure": "block"
           }
         ]
       }
