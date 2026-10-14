@@ -52,7 +52,7 @@ bash bin/validate-sandbox.sh \
 ```
 
 **What `gaia install` does** (the wiring step -- there is no npm postinstall):
-1. Runs `gaia migrate apply` on `~/.gaia/gaia.db` (engine `scripts/bootstrap_database.py`; `bootstrap_database.sh` is a shell/test reference only) -- a fresh DB is built from `schema.sql`; an existing one is backed up to `<db dir>/backups/` and moved along its pending chain in one transaction; then `agent_permissions` seed, project registration, FTS5 backfill, invariant checks. A chain that reaches existing rows stops install and names `gaia migrate apply --consent-chain vA..vB`.
+1. Runs `gaia migrate apply` on `~/.gaia/gaia.db` (engine `scripts/bootstrap_database.py`; `bootstrap_database.sh` is a shell/test reference only) -- a fresh DB is built from `schema.sql`; an existing one is backed up to `<db dir>/backups/` and moved along its pending chain in one transaction; then `agent_permissions` seed, project registration, FTS5 backfill, invariant checks. A chain that reaches existing rows applies once the backup verifies (`--apply-after-backup`, D140); only `gaia migrate apply` on its own asks for `--consent-chain vA..vB`.
 2. Seeds `agent_contract_permissions` from agent frontmatters.
 3. Configures `.claude/settings.json` and merges gaia permissions + hook events into `.claude/settings.local.json` (npm-surface hooks path).
 4. Creates/repairs the `.claude/{agents,tools,hooks,config,skills,opencode}` symlinks (+ a `CHANGELOG.md` link) pointing at the installed package.

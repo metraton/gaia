@@ -293,6 +293,67 @@ def test_bare_install_migrates_the_5x_launcher_and_leaves_a_foreign_one(tmp_path
     assert launcher.read_text() == "#!/bin/sh\necho mine\n"
 
 
+def test_install_help_describes_channel_as_an_override_of_the_bare_choice():
+    shown = subprocess.run([sys.executable, str(_GAIA), "install", "--help"],
+                           capture_output=True, text=True, check=True).stdout
+    flat = " ".join(shown.split())
+
+    assert "required unless" not in flat
+    assert "Channel to wire, overriding the choice a bare install makes" in flat
+
+
+def test_a_non_sqlite_failure_on_an_unversioned_database_still_restores_the_backup(tmp_path, monkeypatch):
+    db = tmp_path / "gaia.db"
+    load_base(51, db)
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA journal_mode = DELETE")
+    con.execute("DELETE FROM schema_version")
+    con.commit()
+    con.close()
+    before = _census(db)
+    monkeypatch.setattr(bootstrap_database, "GAIA_DB", db)
+
+    def _fail(*_args, **_kwargs):
+        raise RuntimeError("not a sqlite error")
+
+    monkeypatch.setattr(bootstrap_database, "_run_script", _fail)
+
+    with pytest.raises(RuntimeError):
+        bootstrap_database.main(["--apply-after-backup"])
+
+    assert _census(db) == before
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        con.close()
+
+
+def test_bare_install_where_the_plugin_owns_claude_code_removes_the_npm_hook_wiring(tmp_path):
+    from modules.core.plugin_setup import workspace_registers_gaia_hooks
+
+    db = tmp_path / "data" / "gaia.db"
+    db.parent.mkdir()
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    first = _bare_install(tmp_path, db, workspace)
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert workspace_registers_gaia_hooks(workspace)
+    settings_path = workspace / ".claude" / "settings.local.json"
+    settings = json.loads(settings_path.read_text())
+    settings["enabledPlugins"] = {"gaia@gaia-marketplace": True}
+    settings["userKey"] = "kept"
+    settings_path.write_text(json.dumps(settings))
+
+    second = _bare_install(tmp_path, db, workspace)
+
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert not workspace_registers_gaia_hooks(workspace)
+    after = json.loads(settings_path.read_text())
+    assert after["enabledPlugins"] == {"gaia@gaia-marketplace": True}
+    assert after["userKey"] == "kept"
+
+
 def test_a_second_concurrent_install_is_refused_while_the_lock_is_held(tmp_path, monkeypatch, capsys):
     db = tmp_path / "data" / "gaia.db"
     db.parent.mkdir()
