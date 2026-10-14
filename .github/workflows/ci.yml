@@ -648,12 +648,8 @@ jobs:
   # beside them otherwise, so the cells add no wall time as long as each one
   # finishes before the slowest shard. tests/ci/upgrade_smoke.py holds the
   # steps and their assertions.
-  #
-  # The include cell is a user's global upgrade on Windows: 5.3.0 installed
-  # with npm -g and wired by its own install, then the tarball and a bare
-  # `gaia install` (upgrade_smoke.py --from-release).
   upgrade:
-    name: ${{ matrix.release && format('Upgrade global {0}', matrix.release) || format('Upgrade v{0}', matrix.base) }} (${{ matrix.os }})
+    name: Upgrade v${{ matrix.base }} (${{ matrix.os }})
     needs: [decide, pack]
     if: ${{ needs.decide.outputs.reusable != 'true' }}
     runs-on: ${{ matrix.os }}
@@ -662,12 +658,6 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest]
         base: [21, 26, 33, 37, 51, 57]
-        # base is overwritten so the entry becomes its own cell instead of
-        # adding release to every windows-latest cell.
-        include:
-          - os: windows-latest
-            base: global
-            release: "5.3.0"
     steps:
       - uses: actions/checkout@v7
 
@@ -684,8 +674,8 @@ jobs:
           name: package
           path: pack-out
 
-      - name: Upgrade, install, run the hooks, uninstall
-        run: python tests/ci/upgrade_smoke.py ${{ matrix.release && format('--from-release {0}', matrix.release) || format('--base {0}', matrix.base) }} --pack-dir pack-out --root "${{ runner.temp }}/gaia upgrade"
+      - name: Upgrade v${{ matrix.base }}, install both channels, run the hooks, uninstall
+        run: python tests/ci/upgrade_smoke.py --base ${{ matrix.base }} --pack-dir pack-out --root "${{ runner.temp }}/gaia upgrade"
 
   # The one check that summarizes the tree: green only when every job it
   # needs succeeded or was skipped by its own condition (l2-ci-subset outside

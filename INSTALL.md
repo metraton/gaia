@@ -319,6 +319,17 @@ npx gaia update                       # or: pnpm exec gaia update
 #      fails naming gaia install when none is recorded
 ```
 
+### Upgrading from an older Gaia
+
+Moving from an older release, take it out cleanly and install the new one fresh. Your memory, briefs and plans live in the database and carry over.
+
+1. Copy the database, `~/.gaia/gaia.db`, somewhere safe.
+2. In each folder Gaia is wired into, run `gaia uninstall`. Then remove the old package with `npm uninstall -g @jaguilar87/gaia` (or `npm uninstall @jaguilar87/gaia` in the folder where you installed it). On the plugin, run `claude plugin uninstall gaia@gaia-marketplace` instead.
+3. Install the new version: `npm install -g @jaguilar87/gaia@latest`, or `claude plugin install gaia@gaia-marketplace` on the plugin.
+4. In each folder, run `gaia install`. It backs up the database, checks the backup, updates the database to the new version and prints where the backup is (`backup written and verified: <path>`).
+
+To go back, put your copy of `gaia.db` back in `~/.gaia/`, install the old version (`npm install -g @jaguilar87/gaia@<old version>`) and run `gaia install` in the folder.
+
 ---
 
 ## 🛠️ Claude Code Management
