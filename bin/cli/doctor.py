@@ -146,6 +146,8 @@ def _derive_workspace(override: str = None) -> Path:
        the ``__file__`` derivation (it is a hint, not an override).
     2. Resolve Path(__file__) to its realpath and find the FIRST (leftmost)
        ``node_modules`` path segment; the workspace is everything before it.
+       When that has no ``.claude/`` -- a global install, where it is the npm
+       prefix -- the recorded root holding the cwd (step 5) wins if any.
     3. Sanity-check that ``@jaguilar87`` and ``gaia`` both appear somewhere
        after that ``node_modules`` segment, confirming the script really is
        running from inside the gaia package tree.
@@ -236,8 +238,12 @@ def _derive_workspace(override: str = None) -> Path:
             if parent_nm.is_dir():
                 return parent
             # No consumer found above the source repo -- fall through to error.
-        else:
+        elif (workspace / ".claude").is_dir():
             return workspace
+        else:
+            # A global install derives the npm prefix, which no install wires;
+            # the recorded workspace holding the cwd is the one being checked.
+            return _recorded_workspace() or workspace
 
     recorded = _recorded_workspace()
     if recorded is not None:
@@ -2045,7 +2051,12 @@ def _resolve_global_gaia() -> "dict | None":
     except OSError:
         return None
 
+    # npm on Windows writes copied shims (gaia, gaia.cmd, gaia.ps1) into the
+    # global prefix beside its node_modules instead of a link into bin/.
     pkg_root = resolved.parent.parent
+    shim_package = resolved.parent / "node_modules" / "@jaguilar87" / "gaia"
+    if resolved.parent.name != "bin" and shim_package.is_dir():
+        pkg_root = shim_package
     pkg_json = _read_json(pkg_root / "package.json")
     version = pkg_json.get("version") if pkg_json else None
 

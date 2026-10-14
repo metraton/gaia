@@ -1366,6 +1366,21 @@ class TestDeriveWorkspace:
         result = doctor_mod._derive_workspace()
         assert result == consumer.resolve()
 
+    def test_global_prefix_gives_way_to_the_recorded_workspace(self, tmp_path, monkeypatch):
+        """A Windows global install runs from <prefix>/node_modules/@jaguilar87/gaia,
+        so the derivation lands on the npm prefix; the recorded workspace wins."""
+        prefix = tmp_path / "npm" / "prefix"
+        script_path = prefix / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        workspace = tmp_path / "user workspace"
+        (workspace / ".claude").mkdir(parents=True)
+        monkeypatch.delenv("GAIA_WORKSPACE_PATH", raising=False)
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+        monkeypatch.setattr(doctor_mod, "_recorded_workspace", lambda: workspace)
+
+        assert doctor_mod._derive_workspace() == workspace
+
     def test_global_install_exits_with_error(self, tmp_path, monkeypatch, capsys):
         """Script NOT inside any node_modules/@jaguilar87/gaia/ tree, run from a
         folder no recorded workspace root contains, exits with the explicit
@@ -2129,6 +2144,19 @@ class TestCheckGlobalCliAlignment:
         r = doctor_mod.check_global_cli_alignment(tmp_path)
         assert r["severity"] == "info"
         assert "no `gaia` resolvable on PATH" in r["detail"]
+
+    def test_windows_npm_shim_resolves_to_the_package_beside_it(self, tmp_path, monkeypatch):
+        prefix = tmp_path / "npm" / "prefix"
+        package = prefix / "node_modules" / "@jaguilar87" / "gaia"
+        _mk_global_gaia(package, "5.6.0", "# build\n")
+        shim = prefix / "gaia.cmd"
+        shim.write_text("@ECHO off\n")
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: str(shim))
+
+        found = doctor_mod._resolve_global_gaia()
+
+        assert found["root"] == package.resolve()
+        assert found["version"] == "5.6.0"
 
     def test_no_workspace_install_is_info(self, tmp_path, monkeypatch):
         global_bin = _mk_global_gaia(tmp_path / "global", "5.2.0", "# build\n")

@@ -4,8 +4,10 @@ Windows opens one file under many spellings: a Git Bash drive (``/c/...``),
 backslashes, any letter case, an alternate data stream, trailing dots and
 spaces, a long-path or local admin-share prefix and an 8.3 short name. Each
 probe here is Windows-shaped input judged on Linux, and asserts that the
-spelling and its canonical twin are both refused, or both free. HOME is a
-Windows profile so Git Bash paths under it reach the home entries.
+spelling and its canonical twin are both refused, or both free. The home is
+a Windows profile so Git Bash paths under it reach the home entries; it is
+set in USERPROFILE as well as HOME because Python on Windows expands ``~``
+from USERPROFILE alone.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from modules.security.sensitive_paths import is_account_path  # noqa: E402
 @pytest.fixture(autouse=True)
 def windows_home(monkeypatch):
     monkeypatch.setenv("HOME", "C:/Users/x")
+    monkeypatch.setenv("USERPROFILE", "C:/Users/x")
 
 
 def bash_read_refused(command: str) -> bool:
