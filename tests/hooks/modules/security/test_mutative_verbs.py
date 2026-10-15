@@ -4656,25 +4656,30 @@ class TestNounFirstGroupVerbExceptions:
     `label`) must not gate the read-only action under it, while every action
     that writes keeps its gate."""
 
+    MIGRATE_ACTION_WRITES = {"plan": False, "apply": True}
+
     def test_every_migrate_action_is_classified_by_whether_it_writes(self):
-        from modules.security.mutative_verbs import SUBCOMMAND_VERB_TIER_EXCEPTIONS
         from modules.security.tiers import classify_command_tier
 
-        actions = _registered_migrate_actions()
-        read_only = set(SUBCOMMAND_VERB_TIER_EXCEPTIONS[("gaia", "migrate")])
-        assert read_only <= actions, f"table names unregistered actions: {read_only - actions}"
-        assert "apply" in actions - read_only
-
-        for action in sorted(actions):
+        assert set(self.MIGRATE_ACTION_WRITES) == _registered_migrate_actions()
+        for action, writes in self.MIGRATE_ACTION_WRITES.items():
             command = f"gaia migrate {action}"
             result = detect_mutative_command(command)
             tier = classify_command_tier(command)
-            if action in read_only:
-                assert result.is_mutative is False, f"{command}: {result.reason}"
-                assert tier != SecurityTier.T3_BLOCKED, command
-            else:
-                assert result.is_mutative is True, f"{command}: {result.reason}"
-                assert tier == SecurityTier.T3_BLOCKED, command
+            assert result.is_mutative is writes, f"{command}: {result.reason}"
+            assert (tier == SecurityTier.T3_BLOCKED) is writes, f"{command}: {tier}"
+
+    def test_dispatcher_path_form_from_the_issue(self):
+        gaia_bin = HOOKS_DIR.parent / "bin" / "gaia"
+        assert detect_mutative_command(f"{gaia_bin} migrate plan").is_mutative is False
+        assert detect_mutative_command(f"{gaia_bin} migrate apply").is_mutative is True
+
+    def test_tiers(self):
+        from modules.security.tiers import classify_command_tier
+
+        assert classify_command_tier("gaia migrate plan") == SecurityTier.T2_DRY_RUN
+        assert classify_command_tier("gh label list") == SecurityTier.T0_READ_ONLY
+        assert classify_command_tier("gh label create bug") == SecurityTier.T3_BLOCKED
 
     @pytest.mark.parametrize("command,mutative", [
         ("gaia migrate plan --db /tmp/scratch.db", False),
@@ -4693,6 +4698,7 @@ class TestNounFirstGroupVerbExceptions:
 
     @pytest.mark.parametrize("key,command", [
         (("gaia", "migrate"), "gaia migrate plan"),
+        (("gaia", "migrate"), f"{HOOKS_DIR.parent / 'bin' / 'gaia'} migrate plan"),
         (("gh", "label"), "gh label list"),
     ])
     def test_the_table_entry_is_what_produces_the_verdict(self, key, command, monkeypatch):
