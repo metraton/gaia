@@ -874,7 +874,14 @@ def build_schema_direction_block() -> str:
 # Assembler
 # ---------------------------------------------------------------------------
 
-def _record_user_rows_injected(rows: list[dict]) -> None:
+def orchestrator_user_rows() -> list[dict]:
+    """The user rows the orchestrator's context renders: every standing user row with a body."""
+    from gaia.store.reader import user_anchor_rows
+
+    return [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
+
+
+def record_user_rows_injected(rows: list[dict]) -> None:
     """Count one injection on each user row the block carried; best-effort."""
     try:
         from gaia.store.writer import record_memory_access
@@ -901,11 +908,9 @@ def build_session_context(
     the session-start hook does and ``gaia session preview`` does not.
     """
     try:
-        from gaia.store.reader import user_anchor_rows
-
         from ..context.user_sections import render_user_sections
 
-        user_rows = [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
+        user_rows = orchestrator_user_rows()
         prefix = [a for a in (*alarms, build_schema_direction_block()) if a]
         environment = build_environment_section(session_id)
         user = render_user_sections(user_rows)
@@ -914,7 +919,7 @@ def build_session_context(
         projects = build_projects_section(max(0, roster_budget))
         text = "\n\n".join(b for b in (*prefix, projects, environment, user) if b)
         if record_injection:
-            _record_user_rows_injected(user_rows)
+            record_user_rows_injected(user_rows)
         return text
     except Exception as exc:
         logger.debug("build_session_context failed (non-fatal): %s", exc)
