@@ -40,12 +40,19 @@ through the agent, and the user's active account never changes unless he asks.
      the account.
 2. **Close the turn on the link.** Close `NEEDS_INPUT`. Put the `url` as a
    markdown link in `user_facing_summary` with one line: open it, sign in, and
-   reply when done. Record the `login_id` in `key_outputs`.
+   reply when done. Tell him to open it in a browser profile, or an incognito
+   window, that holds only the target account: each link allows exactly one
+   sign-in attempt, because gcloud stops listening after the browser's first
+   answer. Record the `login_id` in `key_outputs`.
 3. **On resume, confirm.** `gaia login status <login_id>` reports `pending`,
    `complete` or `failed`. `complete` means gcloud exited cleanly and `gcloud
    auth list` shows the account. Then continue the task with `--account <email>`
    on the commands that need it.
-4. **On `failed` or a refused start, report it.** A start that reports the
+4. **Wrong account.** If he signs in with another account, gcloud refuses it
+   with "the received credentials were for account [...]" and status goes to
+   `failed`. The link is spent; recover with a fresh `gaia login start gcloud
+   --account <email> --force`.
+5. **On `failed` or a refused start, report it.** A start that reports the
    copy-code flow means gcloud found no browser it could launch; that machine
    needs the live interop check, not a retry.
 
