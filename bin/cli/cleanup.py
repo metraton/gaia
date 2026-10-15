@@ -839,21 +839,23 @@ _GAIA_ENV_KEYS = {
 
 
 def _gaia_managed_permission_sets():
-    """Return (managed_tool_names, deny_entries) Gaia injects into settings.
+    """Return (managed_tool_names, deny_entries) a Gaia install has written into settings.
 
-    Pulled from the canonical PERMISSIONS constant in plugin_setup.py (the
-    same source install merges from). Falls back to a minimal set if the
-    hooks package cannot be imported (partial install).
+    Pulled from plugin_setup.py, the source install merges from: the tool
+    names it allows plus those it retired, and the deny rules it retired.
+    Falls back to a minimal set if the hooks package cannot be imported
+    (partial install).
     """
     try:
         from hooks.modules.core.plugin_setup import (  # type: ignore
             PERMISSIONS,
+            RETIRED_DENY_RULES,
+            RETIRED_TOOL_NAMES,
             _tool_name,
         )
         allow = set(PERMISSIONS["permissions"]["allow"])
-        deny = set(PERMISSIONS["permissions"]["deny"])
-        managed_names = {_tool_name(e) for e in allow}
-        return managed_names, deny
+        managed_names = {_tool_name(e) for e in allow} | RETIRED_TOOL_NAMES
+        return managed_names, set(RETIRED_DENY_RULES)
     except Exception:  # noqa: BLE001
         return {"Bash"}, set()
 

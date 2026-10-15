@@ -384,6 +384,56 @@ class TestCalculateTopCommands(unittest.TestCase):
         self.assertIsNone(result[0]["avg_duration_ms"])
 
 
+DISPATCH_PREFIX = "export GAIA_DISPATCH_AGENT=gaia-system TMPDIR=/home/u/.gaia/tmp/abc123; "
+
+
+class TestDispatchPrefixDoesNotDecideTheLabel(unittest.TestCase):
+    """Every subagent command arrives behind the dispatch export prefix."""
+
+    def test_label_is_the_command_not_the_export(self):
+        self.assertEqual(
+            _extract_command_label(DISPATCH_PREFIX + "gaia contract set --draft-id x"),
+            "gaia contract set",
+        )
+
+    def test_label_survives_export_then_cd_then_command(self):
+        self.assertEqual(
+            _extract_command_label(DISPATCH_PREFIX + "cd /repo && kubectl get pods"),
+            "kubectl get pods",
+        )
+
+    def test_export_joined_by_and_is_stripped_too(self):
+        self.assertEqual(
+            _extract_command_label("export A=1 && git status"), "git status",
+        )
+
+    def test_type_is_decided_by_the_command(self):
+        self.assertEqual(_classify_command(DISPATCH_PREFIX + "kubectl get pods"), "kubernetes")
+        self.assertEqual(_classify_command(DISPATCH_PREFIX + "git status"), "git")
+
+    def test_gaia_commands_are_their_own_type(self):
+        self.assertEqual(_classify_command(DISPATCH_PREFIX + "gaia memory show x"), "gaia")
+        self.assertEqual(_classify_command("gaia metrics"), "gaia")
+        self.assertEqual(_classify_command("gaiafoo run"), "general")
+
+    def test_top_commands_do_not_collapse_under_the_prefix(self):
+        logs = [
+            {"command": DISPATCH_PREFIX + "gaia contract set a"},
+            {"command": DISPATCH_PREFIX + "gaia contract set b"},
+            {"command": DISPATCH_PREFIX + "git status"},
+        ]
+        labels = {r["label"]: r["count"] for r in _calculate_top_commands(logs)}
+        self.assertEqual(labels, {"gaia contract set": 2, "git status": 1})
+
+    def test_breakdown_is_not_one_hundred_percent_general(self):
+        logs = [
+            {"command": DISPATCH_PREFIX + "gaia contract set a"},
+            {"command": DISPATCH_PREFIX + "git status"},
+        ]
+        types = {b["type"] for b in _calculate_command_type_breakdown(logs)["breakdown"]}
+        self.assertEqual(types, {"gaia", "git"})
+
+
 class TestFormatDuration(unittest.TestCase):
     def test_none_is_na(self):
         self.assertEqual(_format_duration_ms(None), "n/a")

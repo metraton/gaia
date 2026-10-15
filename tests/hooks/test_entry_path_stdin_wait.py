@@ -23,9 +23,9 @@ Two properties are pinned:
 1. The verdict does not depend on WHEN the payload arrives -- a mutating
    command is stopped whether the write lands before the process starts or a
    second later.
-2. No non-blocking exit of the entry point happens without a trace. This
-   includes the genuine absence of input, which must still leave the same
-   degradation record as any other gate failure instead of exiting mute.
+2. A gate failure blocks and leaves a trace at every delay. This includes the
+   genuine absence of input: no verdict was reached, so the call is denied
+   with the same degradation record as any other gate failure.
 
 The event tag and the marker are written here as literals, not imported from
 the module under test: they are the external contract an operator greps for,
@@ -73,9 +73,7 @@ BENIGN_PAYLOAD = {
 }
 
 # Selects an adapter key that is not in the registry, so the gate fails inside
-# its own try block. Used to hold the run on the fail-open lane at every delay,
-# so the trace property is asserted on a genuinely non-blocking exit rather
-# than on a vacuous one.
+# its own try block, so the run takes the gate-failure lane at every delay.
 UNRESOLVABLE_ADAPTER_ENV = {"GAIA_HOST": "no-such-host-adapter"}
 
 
@@ -212,30 +210,24 @@ def test_mutating_command_is_stopped_whenever_the_payload_arrives(tmp_path, dela
 
 
 @pytest.mark.parametrize("delay", DELAYS)
-def test_no_nonblocking_exit_without_a_trace(tmp_path, delay):
-    """A gate that lets the operation through leaves a record, at every delay.
-
-    Run on the injected-failure lane so the exit is non-blocking at every
-    delay; otherwise the property would be satisfied vacuously by a deny.
-    """
+def test_gate_failure_blocks_with_a_trace(tmp_path, delay):
+    """A gate failure on a benign command blocks and leaves a record, at every delay."""
     returncode, stdout, stderr = _run_with_delay(
         BENIGN_PAYLOAD, tmp_path, delay, UNRESOLVABLE_ADAPTER_ENV
     )
     combined = stdout + stderr
 
-    assert not _blocked(returncode, stdout), (
-        "this lane is supposed to fail open; a blocking exit makes the trace "
-        f"assertion vacuous (rc={returncode}, stdout={stdout!r})"
+    assert returncode == 2 and _decision(stdout) == "deny", (
+        f"a gate that reached no verdict let the call run (rc={returncode}, stdout={stdout!r})"
     )
     assert FAIL_OPEN_MARKER in combined, (
-        f"the operation was allowed through with no marker at {delay}s delay; "
+        f"the call was blocked with no marker at {delay}s delay; "
         f"stdout={stdout!r} stderr={stderr!r}"
     )
     events = [r for r in _audit_records(tmp_path) if r.get("event") == FAIL_OPEN_EVENT]
-    assert events, (
-        f"no {FAIL_OPEN_EVENT!r} record at {delay}s delay -- an allow with no "
-        "event is indistinguishable from a gate that decided the command was "
-        f"safe; records={_audit_records(tmp_path)!r}"
+    assert events and all(e.get("context", {}).get("outcome") == "blocked" for e in events), (
+        f"no blocked {FAIL_OPEN_EVENT!r} record at {delay}s delay; "
+        f"records={_audit_records(tmp_path)!r}"
     )
     traces = [r for r in _trace_records(tmp_path) if r.get("hook") == "pre_tool_use"]
     assert traces, (
@@ -245,21 +237,14 @@ def test_no_nonblocking_exit_without_a_trace(tmp_path, delay):
 
 
 def test_genuine_absence_of_input_is_not_silent(tmp_path):
-    """No payload ever arriving is still a gate failure, and says so.
-
-    Waiting for the payload narrows the race but cannot close it: the host may
-    genuinely never write. That case must degrade like every other gate
-    failure -- recorded, marked, and non-blocking -- instead of exiting mute.
-    """
+    """No payload ever arriving is a gate failure: the call is denied and says so."""
     returncode, stdout, stderr = _run_without_input(
         tmp_path, {"GAIA_HOOK_STDIN_TIMEOUT": "0.5"}
     )
     combined = stdout + stderr
 
-    assert returncode != 2, (
-        "a missing payload must not brick the session -- the product posture is "
-        f"to keep failing open, instrumented (rc={returncode})"
-    )
+    assert returncode == 2, f"a gate that never saw its input let the call run (rc={returncode})"
+    assert "gaia doctor" in combined, f"the denial names no next step: {combined!r}"
     assert FAIL_OPEN_MARKER in combined, (
         f"the gate exited without a payload and said nothing; stdout={stdout!r} "
         f"stderr={stderr!r}"
@@ -283,7 +268,7 @@ def test_waiting_for_input_is_bounded(tmp_path):
     returncode, _, _ = _run_without_input(tmp_path, {"GAIA_HOOK_STDIN_TIMEOUT": "0.5"})
     elapsed = time.monotonic() - started
 
-    assert returncode != 2
+    assert returncode == 2
     assert elapsed < 30, (
         f"the entry point waited {elapsed:.1f}s for input that never came -- "
         "the wait is not bounded by the configured deadline"

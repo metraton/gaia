@@ -600,26 +600,23 @@ def _cmd_list(args) -> int:
 
 
 def _cmd_close(args) -> int:
-    from gaia.briefs import close_brief
-    from gaia.briefs.store import verify_brief
+    from gaia.briefs.store import close_brief_verified
+    from gaia.state.permissions import StateTransitionForbidden
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
-    if close_brief(workspace, name):
-        print(f"Closed brief '{name}'")
-        # AC-3 advisory: run invariant checker and surface any inconsistencies
-        # as non-blocking stderr warnings (mirrors D11 pattern in plan CLI).
-        # Close always succeeds (exit 0); warnings never gate the operation.
-        try:
-            result = verify_brief(workspace, name)
-            for issue in result.get("inconsistencies", []):
-                print(
-                    f"Warning: [{issue['kind']}] {issue['detail']}",
-                    file=sys.stderr,
-                )
-        except Exception:
-            pass  # advisory failure must never abort the close
+    try:
+        result = close_brief_verified(workspace, name)
+    except (ValueError, StateTransitionForbidden) as exc:
+        return _err(str(exc))
+    for ac_id in result["synced"]:
+        print(f"Synced AC '{ac_id}' to done (computed from its tasks and evidence)")
+    if result["closed"]:
+        print(f"Closed brief '{name}' and its plan")
         return 0
-    return _err(f"brief '{name}' not found in workspace '{workspace}'")
+    for issue in result["inconsistencies"]:
+        print(f"[{issue['kind']}] {issue['detail']}", file=sys.stderr)
+    print(f"Brief '{name}' not closed: resolve the inconsistencies above", file=sys.stderr)
+    return 2
 
 
 def _cmd_deps(args) -> int:
@@ -900,13 +897,13 @@ def register(subparsers) -> None:
     # -- close --------------------------------------------------------------
     close_p = actions.add_parser(
         "close",
-        help="Set brief status to closed (advisory verify, no cascade)",
+        help="Close a finished brief and its active plan if verify passes",
         description=(
-            "Set the brief's status to 'closed', then run verify_brief and "
-            "print any inconsistencies as warnings. ADVISORY ONLY: it does NOT "
-            "change AC, milestone, or plan status, and performs no cascade. A "
-            "flagged AC is settled by its owning agent: done on positive "
-            "evidence, or descoped."
+            "Sync each pending AC that computes done, run verify_brief against "
+            "the closed state, and close the brief and its active plan only if "
+            "it finds no inconsistencies (exit 2 otherwise, nothing closed). "
+            "Curator only. A flagged AC is settled by its owning agent: done "
+            "on positive evidence, or descoped."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia brief close <name>\n  gaia brief close my-feature --workspace=me\n",

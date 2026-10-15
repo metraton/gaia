@@ -23,8 +23,10 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .shell_parser import ShellCommandParser
+from .shell_parser import ShellCommandParser, is_lone_ampersand, strip_comment
 from ..security.shell_substitution import extract_substitutions, mask_quoted_text
+
+_DOUBLE_QUOTE_ESCAPABLE = frozenset('$`"\\\n')
 
 
 @dataclass
@@ -107,7 +109,9 @@ class StageDecomposer:
         if not command or not command.strip():
             return DecomposedCommand(raw=command or "", stages=[], substitutions=[])
 
-        command = command.strip()
+        command = strip_comment(command).strip()
+        if not command:
+            return DecomposedCommand(raw="", stages=[], substitutions=[])
 
         # Extract command substitutions before splitting so they don't
         # interfere with operator detection.
@@ -223,8 +227,8 @@ class StageDecomposer:
                     i += 2
                     continue
 
-            # ---- single-character operators: |, ;, \n ----
-            if ch in ("|", ";", "\n"):
+            # ---- single-character operators: |, ;, \n, a lone & ----
+            if ch in ("|", ";", "\n") or (ch == "&" and is_lone_ampersand(command, i)):
                 segments.append(("".join(current), ch))
                 current = []
                 i += 1
@@ -247,8 +251,9 @@ class StageDecomposer:
         """
         Split *command_text* into tokens (command + args).
 
-        Uses a simple quote-aware tokeniser -- does NOT invoke shlex so we
-        stay dependency-free and avoid locale issues.
+        The words are the ones bash runs: inside double quotes a backslash
+        escapes only ``$``, a backtick, ``"``, ``\\`` and a newline, so the
+        quoted Windows path ``"C:\\Users\\x"`` keeps its separators.
 
         Returns a list where element 0 is the executable and the remainder
         are arguments.
@@ -262,6 +267,11 @@ class StageDecomposer:
 
         while i < n:
             ch = command_text[i]
+
+            if ch == "\\" and in_double and i + 1 < n and command_text[i + 1] not in _DOUBLE_QUOTE_ESCAPABLE:
+                current.append(ch)
+                i += 1
+                continue
 
             if ch == "\\" and not in_single and i + 1 < n:
                 current.append(command_text[i + 1])

@@ -60,6 +60,8 @@ import os
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
+from .canonical_path import canonical_path, native_path
+
 # The npm package name Gaia ships under. It identifies a Gaia root in the
 # source checkout and in every installed materialisation alike, because the
 # same package.json travels into the artifact.
@@ -77,6 +79,8 @@ _HARNESS_DIR = ".claude"
 _HOOKS_DIR = "hooks"
 
 _SETTINGS_BASENAMES = frozenset({"settings.json", "settings.local.json"})
+# Long names an 8.3 alias may stand for (``CLAUDE~1``, ``SETTIN~1.JSO``).
+_PROTECTED_SHORT_NAMES = (_HARNESS_DIR, "settings.json", "settings.local.json")
 
 # Resolved once per process: PreToolUse runs on every tool call, and the
 # registry read and the marker stat would otherwise repeat per call.
@@ -187,7 +191,7 @@ def _candidates(path_str: str) -> Tuple[Path, ...]:
     absolute form gives a relative shell token a root to be judged against; the
     resolved form is where a symlink actually lands.
     """
-    literal = Path(os.path.normpath(os.path.expanduser(path_str)))
+    literal = Path(os.path.normpath(os.path.expanduser(native_path(path_str))))
     forms = [literal]
 
     absolute = Path(os.path.abspath(literal))
@@ -241,7 +245,11 @@ def is_protected_hook_path(path_str: str) -> bool:
     if not path_str:
         return False
 
-    candidates = _candidates(path_str)
+    # The canonical form is judged as one more spelling, never bound to: a
+    # grant names the resolved file (resolved_write_target).
+    candidates = _candidates(path_str) + (
+        Path(canonical_path(path_str, _PROTECTED_SHORT_NAMES)),
+    )
 
     for candidate in candidates:
         if _shape_hit(candidate.parts):

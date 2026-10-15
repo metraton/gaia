@@ -449,7 +449,6 @@ def test_the_link_inherits_identity_and_nothing_that_describes_the_old_assignmen
         "dispatch_description",     # its description
         "dispatch_prompt_id",       # the prompt correlation key
         "dispatch_tool_use_id",     # the Task call correlation key
-        "dispatch_project",         # the project it ran from
         "brief_id",
         "context_anchors",
         "kernel_sections",
@@ -461,7 +460,9 @@ def test_the_link_inherits_identity_and_nothing_that_describes_the_old_assignmen
         )
 
     # What a link legitimately carries: who it is, where it runs, and its origin.
-    for column in ("agent_id", "workspace", "session_id", "harness_agent_id"):
+    for column in (
+        "agent_id", "workspace", "session_id", "harness_agent_id", "dispatch_project",
+    ):
         assert link[column] == parent[column], (
             f"{column} identifies the agent and its run, which the resumption "
             f"does not change"

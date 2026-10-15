@@ -111,7 +111,9 @@ from __future__ import annotations
 import hashlib
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Iterable, List, Optional, Set
+
+from gaia.retention.branch_disposition import branch_is_deletable, unintegrated_commits
 
 
 # ---------------------------------------------------------------------------
@@ -140,40 +142,20 @@ def _current_branch(worktree_path: Path) -> Optional[str]:
     return None if name == "HEAD" else name
 
 
-def _other_local_branches(worktree_path: Path, current_branch: Optional[str]) -> List[str]:
-    """Every local branch name except *current_branch*."""
-    out = _run_git(worktree_path, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
-    return [name for name in out.splitlines() if name and name != current_branch]
+def _unintegrated_commits(worktree_path: Path) -> List[str]:
+    """Commits that survive only through this checkout's HEAD.
 
-
-def _unpushed_revision_args(worktree_path: Path) -> List[str]:
-    """Revision-walk arguments selecting commits unique to this checkout.
-
-    "Unique" means: reachable from HEAD but from no OTHER ref in the
-    repository -- no other local branch, no remote-tracking branch.
-    Removing a worktree never deletes the branch it had checked out, so a
-    commit reachable from some OTHER ref survives regardless; only a commit
-    reachable ONLY through this exact HEAD is at risk if that branch is ever
-    discarded too, which is the case this exists to cover.
-
-    Every OTHER local branch is named explicitly and negated (``--not
-    <branch> ...``) rather than negating ``--branches`` as a whole with the
-    current branch excluded via ``--exclude=<glob>``. Both forms work in
-    git 2.43.0 when spelled correctly -- ``git rev-list --exclude=<name>
-    --branches`` DOES drop that ref (verified), provided the glob carries no
-    ``refs/heads/`` prefix, which the documented grammar forbids when the
-    pattern is paired with ``--branches``/``--tags``/``--remotes``. Naming
-    the other branches directly avoids that prefix pitfall entirely and
-    needs no glob-matching semantics to reason about.
+    A commit counts as surviving elsewhere when another ref reaches it OR
+    carries a verbatim patch-id twin of it (a cherry-pick keeps the content
+    under a new hash); see ``branch_disposition.unintegrated_commits``.
     """
     branch = _current_branch(worktree_path)
-    others = _other_local_branches(worktree_path, branch)
-    return ["HEAD", "--not", *others, "--remotes"]
+    own_ref = f"refs/heads/{branch}" if branch else None
+    return unintegrated_commits(worktree_path, "HEAD", own_ref=own_ref)
 
 
 def _has_unpushed_commits(worktree_path: Path) -> bool:
-    out = _run_git(worktree_path, ["rev-list", *_unpushed_revision_args(worktree_path)])
-    return bool(out.strip())
+    return bool(_unintegrated_commits(worktree_path))
 
 
 def _exempt_metadata_filename(worktree_path: Path) -> Optional[str]:
@@ -286,11 +268,9 @@ def capture_worktree_diff(worktree_path: Path) -> Optional[str]:
     exempt = _exempt_metadata_filename(worktree_path)
     parts: List[str] = []
 
-    unpushed = _run_git(
-        worktree_path, ["log", "-p", "--reverse", *_unpushed_revision_args(worktree_path)]
-    )
-    if unpushed.strip():
-        parts.append(unpushed)
+    commits = _unintegrated_commits(worktree_path)
+    if commits:
+        parts.append(_run_git(worktree_path, ["log", "-p", "--no-walk=unsorted", *commits]))
 
     uncommitted = _run_git(worktree_path, ["diff", "HEAD"])
     if uncommitted.strip():
@@ -474,6 +454,81 @@ def _remove_worktree(repo_path: Path, worktree_path: Path, *, exempt: Optional[s
     subprocess.run(remove_cmd, check=True, capture_output=True, text=True)
 
 
+def _remote_default_branch(repo_path: Path) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo_path), "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+        capture_output=True, text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "origin/main"
+
+
+def _checked_out_branches(repo_path: Path) -> Set[str]:
+    """Branches checked out in the main checkout or any linked worktree."""
+    listing = _run_git(repo_path, ["worktree", "list", "--porcelain"])
+    prefix = "branch refs/heads/"
+    return {line[len(prefix):] for line in listing.splitlines() if line.startswith(prefix)}
+
+
+def _dispose_branch(
+    repo_path: Path, branch: Optional[str], keep: Iterable[str] = (), *, dry_run: bool = False
+) -> dict:
+    """Delete the branch a recycled worktree had checked out, but only when
+    ``branch_deletion_verdict`` proves its content survives elsewhere.
+    With *dry_run* a deletable branch is reported as ``would_delete`` and kept.
+
+    The forced ``git branch -D`` is what a cherry-picked branch needs (git's
+    own ``-d`` judges by SHA) and is safe only because the verdict has
+    established that no commit exists solely on the branch. A branch named
+    in *keep* (the accumulating branch, which no ref records), the remote's
+    default branch, and any branch checked out somewhere are never deleted.
+    Any failure or a negative verdict keeps the branch and reports why.
+    """
+    if branch is None:
+        return {"branch": None, "branch_deleted": False,
+                "branch_kept_reason": "worktree HEAD was detached"}
+    remote_main = _remote_default_branch(repo_path)
+    if branch == remote_main.split("/", 1)[-1]:
+        return {"branch": branch, "branch_deleted": False,
+                "branch_kept_reason": "it is the remote's default branch"}
+    if branch in set(keep):
+        return {"branch": branch, "branch_deleted": False,
+                "branch_kept_reason": "it was declared to keep"}
+    if branch in _checked_out_branches(repo_path):
+        return {"branch": branch, "branch_deleted": False,
+                "branch_kept_reason": "it is checked out in a worktree"}
+    try:
+        if not branch_is_deletable(repo_path, branch, remote_main=remote_main):
+            return {"branch": branch, "branch_deleted": False,
+                    "branch_kept_reason": "it carries commits found nowhere else"}
+        if dry_run:
+            return {"branch": branch, "branch_deleted": False, "would_delete": True,
+                    "branch_kept_reason": None}
+        subprocess.run(
+            ["git", "-C", str(repo_path), "branch", "-D", branch],
+            check=True, capture_output=True, text=True,
+        )
+    except Exception as exc:  # noqa: BLE001 -- the worktree is gone; report, keep the branch
+        return {"branch": branch, "branch_deleted": False,
+                "branch_kept_reason": f"branch deletion failed: {exc}"}
+    return {"branch": branch, "branch_deleted": True, "branch_kept_reason": None}
+
+
+def remove_integrated_branches(
+    repo_path: Path, *, keep: Iterable[str] = (), dry_run: bool = False
+) -> List[dict]:
+    """Post-merge pass: delete every local branch whose content the default
+    branch (as last fetched) or another ref already holds; one result per
+    branch, in ``_dispose_branch``'s shape. A branch that carries commits
+    found nowhere else is never touched here: removing it stays a forced
+    ``git branch -D``, which asks for a signature.
+
+    A fast-forward merge leaves the branch on the default branch's tip, which
+    is indistinguishable from a branch just created there, so both go.
+    """
+    branches = _run_git(repo_path, ["for-each-ref", "--format=%(refname:short)", "refs/heads"])
+    return [_dispose_branch(repo_path, branch, keep, dry_run=dry_run) for branch in branches.split()]
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -489,6 +544,8 @@ def reclaim_worktree(
     task_id: Optional[str] = None,
     created_by_agent: Optional[str] = None,
     db_path=None,
+    delete_branch: bool = False,
+    keep_branches: Iterable[str] = (),
 ) -> dict:
     """Recycle a clean worktree; capture and STOP for a dirty one.
 
@@ -534,6 +591,16 @@ def reclaim_worktree(
          "recycled": bool, "captured": bool,
          "evidence_id": int | None, "reason": str | None}
 
+    With ``delete_branch=True`` (the explicit release path; the SessionStart
+    and ``gaia cleanup`` collector leave it False and never delete a branch),
+    a ``recycled`` result of a worktree that was present also carries
+    ``branch``, ``branch_deleted`` and ``branch_kept_reason``: the branch is
+    deleted when ``branch_deletion_verdict`` finds its content elsewhere
+    (including as cherry-picked twins) and it is not in ``keep_branches``,
+    and kept with the reason otherwise.
+    Commits count as "unpushed" only when no other ref reaches them or
+    carries a patch-id twin of them.
+
     ``recycled`` is True only for ``status == "recycled"``. ``reason`` is
     set on every non-recycled status, naming what stopped it or, for
     ``captured_pending_removal``, why removal was deliberately withheld. On
@@ -564,6 +631,7 @@ def reclaim_worktree(
         }
 
     if diff_text is None:
+        branch = _current_branch(worktree_path)
         try:
             _remove_worktree(
                 repo_path, worktree_path,
@@ -583,6 +651,7 @@ def reclaim_worktree(
             "captured": False,
             "evidence_id": None,
             "reason": None,
+            **(_dispose_branch(repo_path, branch, keep_branches) if delete_branch else {}),
         }
 
     have_brief_triple = bool(workspace and brief_slug and ac_id)

@@ -81,7 +81,7 @@ class TestNoPendingSurfacingBuilderRemains:
 
         monkeypatch.setattr(reader, "user_anchor_rows", lambda *a, **kw: [])
         monkeypatch.setattr(session_manifest, "build_schema_direction_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_environment_section", lambda: "ENV")
+        monkeypatch.setattr(session_manifest, "build_environment_section", lambda session_id="": "ENV")
         monkeypatch.setattr(session_manifest, "build_projects_section", lambda _max: "PROJ")
 
         result = session_manifest.build_session_context()

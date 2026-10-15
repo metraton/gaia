@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrading from 5.5
+
+1. **Hooks fail closed and need Claude Code 2.1.295 or later.** PreToolUse registrations carry `onFailure: "block"`, so a gate that cannot start (no `sh`, no Python, a broken import) or crashes denies the call and names `gaia doctor` instead of letting it run unchecked. The plugin declares `claude-code >=2.1.295`; `gaia install` warns when the `claude` it reads is older, and `gaia doctor` reports an older running host as an error with the fix `claude update`. On Windows without a resolvable `sh`, `gaia install` refuses and doctor's Hook shell check errors.
+2. **One bare `gaia install` upgrades a 5.3 or 5.4 install.** Without `--channel`, install takes the channels its manifest recorded, else npm, plus OpenCode when `opencode.json` is present; with the Gaia plugin enabled it drops npm and prunes the npm hook wiring from `settings.local.json`. A migration chain that reaches existing rows is applied after a verified backup (integrity check and per-table row counts) instead of stopping for `--consent-chain`; `gaia migrate apply` on its own still asks. Runtime data 5.3/5.4 kept under `.claude/{logs,events,memory,session}` is merged into the data dir, their grant files under `.claude/cache/approvals` are removed, and their launchers (the `~/.local/bin/gaia` wrapper, Windows `gaia.cmd`/`gaia.ps1`) are replaced; files of any other shape are left alone. `INSTALL.md` describes upgrading from an older Gaia and going back.
+3. **Install writes no deny list.** The ~140 `Bash(...)` deny rules earlier releases merged into `.claude/settings.local.json`, and the retired tool names `BashOutput`, `KillShell`, `SlashCommand` and `Task`, are removed on the next install or plugin session; deny rules the user added are kept. Commands those rules refused before any hook ran now reach the hook layer, which asks for a signature or blocks them permanently.
+4. **PowerShell, Monitor and any other command-carrying tool are gated.** Claude Code's PowerShell and Monitor tools and OpenCode's `shell` tool go through the same validator as Bash, so expect signatures where PowerShell ran ungated. Any other tool whose input carries a command string is refused (`[UNGATED_SHELL]`), and a PowerShell command whose output needs secret redaction is refused and routed to Bash (`[SECRET_OUTPUT]`).
+5. **Windows disk wipers are permanently blocked.** `format`, `diskpart`, `vssadmin delete shadows`, `vssadmin resize shadowstorage`, `Format-Volume` and `Clear-Disk` join `mkfs` and `dd` in the never-approvable floor, bare, under `cmd /c`, `powershell -Command`, `pwsh -c` and in the PowerShell tool.
+6. **Compaction runs from `session-reflection`.** Skill `gaia-compact` is removed. `session-reflection` records the resume point and starts the compaction through the host's tool, or asks the user to type `/compact` where the tool is withheld.
+
+### Added
+
+- **Session snapshot and resume point.** `gaia session snapshot` shows one session's open contracts, pending signatures, active brief, plan and task, and resume point; `gaia session resume-point set --session-id <id> --text <text>` writes the resume point (orchestrator only, at most 2000 characters, pruned after 30 days). It replaces the unfiltered workspace episodes block after a compaction.
+- **Session id in the Environment block.** `## Environment` carries `- Session id:` at session start and after every compaction on both hosts. In a headless session (the desktop app, `-p`, the SDK), where the compaction tool is withheld, the orchestrator writes the resume point under that id before asking for `/compact`, so the next snapshot carries it.
+- **Claude Code compaction mod** (`hooks/mods/compaction`). It adds Gaia's instructions to every compaction summary and, in interactive sessions only, registers `mcp__gaia__compact_when_idle`, which starts the compaction when the turn ends. It retries only while a turn is still running and reports any other refusal as a toast and on the next prompt, naming `/compact`. `hooks/hooks.json` gains a top-level `modules` key.
+- **OpenCode compaction.** `gaia_compact_when_idle` summarizes the session on its next idle, retrying a busy session; the main orchestrator is allowed the tool.
+- **Tool-call ceiling.** A dispatch may carry `ceiling=<N>`; the kernel renders it, and at 80% of it the turn is told once to write its evidence and finalize. Claude Code counts at PreToolUse, file tools included; OpenCode at `tool.execute.after`.
+- **Evidence recovery at close.** When a turn finalizes with `commands_run` or `files_checked` empty, SubagentStop fills them from the transcript's Bash calls and Read paths, prefixed `[recovered from transcript]`, reading only the segments that belong to the closing row. OpenCode's stop path carries no transcript, so nothing is recovered there.
+- **Measurement provenance (schema v67).** `gaia memory add --measured-at <date> --method <text>`; `memory show` and `get-relevant --initiative` print both, and a description opening with Measured/Medido warns when either is missing.
+- **Worktree leftovers.** SessionStart reports each declared-workspace repo's linked worktrees, idle branches and scratch entries in one line, from a count refreshed in the background. `gaia worktree prune-branches [--keep-branch <name>] [--dry-run]` deletes local branches whose content is already integrated. `gaia worktree release` counts a commit as integrated when another ref reaches it or carries a patch-id twin of it, and deletes the integrated branch.
+- **Approvals.** A signature shows the exits declared with `--expect-exit` (`ALLOWED EXIT`), and codes declared twice for one position accumulate. The Details of a forced worktree removal show the captured diff.
+- `gaia contract fill --json-file -` reads the patch from stdin.
+- `bin/plugin-dryrun.sh --marketplace <tag>` installs `gaia@gaia-marketplace` from a published tag into a throwaway config and checks its version.
+
+### Changed
+
+- **Windows executable identity.** A program is recognized by its name with any directory, separator, case or PATHEXT suffix, and `py` as Python; `cmd`, `cmd.exe` and `start` are transparent wrappers, and every stage of a quoted `cmd /c` payload is classified. `RM.EXE -rf /`, `C:\tools\git.exe push --force` and `cmd /c "dir && del x"` get the verdict of their POSIX twins.
+- **PowerShell lane.** Every command position of a payload is judged: statements, pipeline stages, script blocks and subexpressions. A cmdlet is judged by its verb, an alias as its cmdlet, a `.ps1` through the script lane, any other word as its POSIX twin, and a .NET method call asks. A read cmdlet no longer frees a payload that also deletes.
+- **Canonical paths.** Every path guard compares one canonical form (`hooks/modules/security/canonical_path.py`): Git Bash `/c/...`, backslashes, `\\?\` and `\\localhost\C$\` prefixes, alternate data streams, trailing dots and spaces, 8.3 aliases by shape, and case. Windows profile entries (APPDATA GitHub CLI, gcloud and gnupg read-refused; the PowerShell profiles and Startup folder write-signed) and the Windows readers and writers (`type`, `Get-Content`, `findstr`, `certutil`, `copy`, `Set-Content`, `Out-File`, ...) are recognized.
+- **UTF-8 in every Python Gaia starts.** `hooks/launch.sh`, the Windows launchers and OpenCode's spawns set `PYTHONUTF8=1`; `bin/gaia` restarts in UTF-8 mode under a non-UTF-8 locale; `gaia.ps1` is written with a BOM. Accented approval questions, settings files with non-ASCII text and `gaia dev` work under cp1252.
+- **Windows files and git.** Atomic replaces retry while another process holds the target (`gaia.atomic_replace.replace_retrying`); file locks give up after 10 s instead of waiting forever; every git call passes `core.longpaths=true` on Windows and doctor warns when the user's config leaves it off; `.gitattributes` pins LF and the source-parity and hooks-build hashes fold CRLF.
+- **Install self-knowledge on Windows.** The launchers pin the Python that ran the install instead of a bare `python` the Store alias can answer, and doctor checks that it still starts. Doctor resolves npm's copied shims and global prefix (`NPM_CONFIG_PREFIX`, `npm config get prefix`), checks the folder a bare install wired when run from a global install, names the `sh`, Python and PATH `gaia` the hooks run with, and quotes its fixes for cmd.exe and PowerShell. A PATH `gaia` of the same version is info, not a warning.
+- **Remote triggers by shape.** `<workflow|pipeline|ci> run`, `<cli> run rerun|cancel`, `config <write verb>` and `auth switch|logout` ask for a signature for any binary; `gcloud secrets versions add` asks; a Gmail modify that removes INBOX or reads its payload from a file or stdin asks.
+- `gaia session` is classified per verb; a subagent's session write is refused categorically, and `gaia ... --help` is a read at any depth.
+- A single-command grant whose command fails returns to PENDING for one byte-identical retry; a terminal grant stays terminal.
+- `node --test` over directories or globs runs free when every option is on a test-runner allowlist and nothing is preloaded or set through `NODE_OPTIONS`.
+- CI pins Linux runners to ubuntu-24.04 and moves the artifact actions to Node 24; a parent CI verdict is reused only when the bump commit changes version lines alone.
+
+### Removed
+
+- Skill `gaia-compact`, folded into `session-reflection`.
+- The harness deny list and the retired tool names in workspace settings.
+
+### Fixed
+
+- **Bash-script consent guard.** A subagent holding an approved grant could not run `bash <script>` or `bash -n <script>` when the script used `[ "$VAR" = value ]`: the guard read `[` as a glob and refused it as an unknown program. `[` is a glob only when a `]` closes it in the same word, a shell run with `-n` reads no program, and each refusal names the rule that fired.
+- **Security.**
+  - Shell words are read as bash passes them, through one parser: an unquoted `# --help`, a `--help` after a lone `&`, a redirect target or a wrapper's option value no longer frees a mutation.
+  - The resume-point guard decides on the shell's words and resolves `gaia` only at the command position: `resume""-point` is refused, and `rg pattern /x/gaia` runs free.
+  - A literal argv that starts a shell or interpreter without naming its program, an unprovable `urlopen` request and a recursive `cp` into scratch ask. A Python script's literal-argv `subprocess.run` and body-less GET are judged by what they do, and a single-file `cp`, `rmdir` and `tar -x` inside scratch run free.
+  - `format` is blocked with its drive anywhere among its arguments, quoted, or with a switch glued to it (`format C:/q`).
+  - False positives: `Grep --glob '*.json'` is no longer a secret read; `git show/log/diff -M` and `gh repo deploy-key list` are free; a refused redirect in a `gaia` call no longer calls it a cloud command.
+- **Compaction.**
+  - The snapshot reaches the next turn once and whole: from SessionStart(compact) on Claude Code and on the first user message after an OpenCode compaction, never through the summarizer. The resume point is no longer cut at 600 characters.
+  - The Environment block, with the trusted `gaia CLI:` path, returns after a compaction on both hosts.
+  - The snapshot lists only live work: a task-bound row while its task is pending, other unbound rows for 24 hours, and unbound rows waiting on the orchestrator (NEEDS_INPUT, APPROVAL_REQUEST, BLOCKED) always.
+- **Contracts.** `gaia contract view` shows a closed turn from its row; a resumed turn keeps its dispatch project, so `update_contracts` lands in the project's workspace; a `project=` token no longer takes a sentence's closing period; a write to another turn's contract is refused at the attempt on both hosts.
+- **OpenCode.** One contract block per dispatched prompt; a `task_id` resume links to the row it continues; a background run and a Reject resume the same specialist; the host agent is read with the v1 request shape.
+- **Windows paths.** Backslashes inside double quotes survive tokenizing (#44), doctor's hook-command check keeps them, project names come out right from a Windows git dir, OpenCode uninstall removes backslash prompts, and the secret-read runner starts Git Bash instead of System32's WSL launcher.
+- **Install.** A failed chain on an unversioned database restores the verified backup; `install.lock` keeps two installs from migrating or wiring one database at once.
+- **Briefs.** `gaia brief close` verifies first and writes nothing when it refuses; the orchestrator's `brief/plan set-status closed` points at `brief close`.
+- `gaia migrate` honors `GAIA_DATA_DIR`; `gaia defects --count` ignores `--limit`; `gaia query` accepts `--workspace all`; `gaia metrics` labels commands past the dispatch prefix.
+
+## [5.6.0-rc.1] - 2026-10-14
+
 ## [5.5.0] - 2026-10-06
 
 ### Upgrading from 5.4

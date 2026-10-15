@@ -980,6 +980,8 @@ class TestPersistWorkspaceEnv(unittest.TestCase):
                 patch("cli.install._install_path_launcher", return_value=noop),
                 patch("cli.install._warn_launcher_shadowed", return_value=None),
                 patch("cli.install._warn_launcher_dir_absent", return_value=None),
+                patch("gaia.hook_shell.missing_hook_shell", return_value=None),
+                patch("gaia.hook_shell.claude_code_version_finding", return_value=None),
                 patch.object(install_mod.sys, "platform", "win32"),
             ]
             for p in patches:
@@ -1206,7 +1208,8 @@ class TestNpmGlobalPrefixResolution(unittest.TestCase):
 
     def test_windows_prefix_from_appdata(self):
         with patch.object(install_mod.sys, "platform", "win32"):
-            with patch.dict(os.environ, {"APPDATA": "C:/Users/u/AppData/Roaming"}, clear=False):
+            with patch.dict(os.environ, {"APPDATA": "C:/Users/u/AppData/Roaming"}, clear=False), \
+                    patch.object(install_mod, "_npm_config_prefix_posix", return_value=None):
                 self.assertEqual(
                     _npm_global_prefix(), Path("C:/Users/u/AppData/Roaming") / "npm"
                 )

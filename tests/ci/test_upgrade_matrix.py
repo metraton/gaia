@@ -13,7 +13,7 @@ def test_every_committed_base_dump_has_a_cell_on_both_platforms():
     dumps = sorted(int(p.stem[1:]) for p in (ROOT / "tests" / "fixtures" / "published_bases").glob("v*.sql"))
     matrix = JOBS["upgrade"]["strategy"]["matrix"]
     assert sorted(matrix["base"]) == dumps
-    assert set(matrix["os"]) == {"ubuntu-latest", "windows-latest"}
+    assert set(matrix["os"]) == {"ubuntu-24.04", "windows-latest"}
     assert JOBS["upgrade"]["strategy"]["fail-fast"] is False
 
 

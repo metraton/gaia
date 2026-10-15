@@ -202,10 +202,23 @@ def _details_folder(payload: Mapping[str, Any], item: Mapping[str, Any]) -> Opti
     return None
 
 
+def _allowed_exit(item: Mapping[str, Any]) -> list[str]:
+    """The ``ALLOWED EXIT`` field of a command that declared non-zero exits it may end with, else none."""
+    codes = item.get("expect_exit") or []
+    return [f"[ ALLOWED EXIT: {','.join(str(code) for code in codes)} ]"] if codes else []
+
+
 def _steps_text(payload: Mapping[str, Any], steps: Sequence[Mapping[str, Any]]) -> str:
-    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37)."""
+    """Who asks and each exact step in order, a signed one as ``COMMAND`` and any other as ``UNSIGNED STEP`` (D37).
+
+    A signed command that declared exits it may end with non-zero shows them
+    after its text, so the user signs what the set tolerates as well as what it runs.
+    """
     fields = (
-        f"[ {'COMMAND' if is_signed(step) else 'UNSIGNED STEP'} ] [ {_target(step)} ]"
+        " ".join([
+            f"[ {'COMMAND' if is_signed(step) else 'UNSIGNED STEP'} ] [ {_target(step)} ]",
+            *(_allowed_exit(step) if is_signed(step) else []),
+        ])
         for step in steps
     )
     return " ".join([f"{_PREFIX} [ AGENT-REQUEST ] [ {_agent(payload)} ]", *fields])
@@ -229,23 +242,79 @@ def _question_texts(payload: Mapping[str, Any], items: Sequence[Mapping[str, Any
     return [_steps_text(payload, group) for group in groups]
 
 
+def _forced_worktree_removal(command: str) -> Optional[str]:
+    """The worktree path a ``git worktree remove --force`` command deletes, else ``None``."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    for position in range(len(tokens) - 1):
+        if tokens[position:position + 2] != ["worktree", "remove"]:
+            continue
+        rest = tokens[position + 2:]
+        forced = any(
+            token == "--force" or (re.fullmatch(r"-[A-Za-z]*f[A-Za-z]*", token) is not None)
+            for token in rest
+        )
+        paths = [token for token in rest if not token.startswith("-")]
+        return paths[-1] if forced and paths else None
+    return None
+
+
+def _diff_summary(diff_text: str) -> str:
+    """``N file(s), +added -removed`` counted from a unified diff."""
+    files = diff_text.count("\ndiff --git ") + diff_text.startswith("diff --git ")
+    lines = diff_text.splitlines()
+    added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    return f"{files} file{'' if files == 1 else 's'}, +{added} -{removed}"
+
+
+def _captured_work(command: Optional[str]) -> Optional[str]:
+    """What a forced worktree removal would destroy that ``gaia worktree release`` already captured.
+
+    Names the deposited diff, its size and a summary of it, or states that no
+    capture is recorded, so a ``--force`` is never signed over contents the
+    signer cannot see.
+    """
+    worktree_path = _forced_worktree_removal(command or "")
+    if worktree_path is None:
+        return None
+    from gaia import worktree
+    from gaia.evidence.fs import read_blob
+    from gaia.store import writer
+
+    metadata = worktree.read_worktree_metadata(worktree_path)
+    capture = writer.get_contract_worktree_capture(metadata.contract_id) if metadata else None
+    if not capture:
+        return "none recorded for this worktree; its uncommitted work is not preserved"
+    artifact = capture.get("artifact_path", "")
+    payload = read_blob(artifact)
+    summary = _diff_summary(payload.decode("utf-8", errors="replace")) if payload is not None else "diff unreadable"
+    return f"{artifact} ({capture.get('size_bytes')} bytes, {summary})"
+
+
 def _details_text(payload: Mapping[str, Any], item: Mapping[str, Any]) -> str:
     """One command's Details question (D37).
 
     The command, what it does, its impact, how the result is verified, whether
-    it rewrites shared state, the rollback, and its folder when it matters.
+    it rewrites shared state, the rollback, its folder when it matters, and
+    for a forced worktree removal the diff already captured from it.
     """
     folder = _details_folder(payload, item)
+    captured = _captured_work(item.get("command"))
     fields = [
         "[ DETAILS ]",
         f"[ {_agent(payload)} ]",
         f"[ COMMAND: {_target(item)} ]",
+        *_allowed_exit(item),
         f"[ DOES: {_one_line(item.get('does') or _NO_DOES)} ]",
         f"[ IMPACT: {_one_line(item.get('impact') or _NO_IMPACT)} ]",
         f"[ VERIFICATION: {_one_line(payload.get('verification') or _NO_VERIFICATION)} ]",
         f"[ SHARED-STATE: {_one_line(payload.get('shared_state') or _NO_SHARED_STATE)} ]",
         f"[ ROLLBACK: {_one_line(payload.get('rollback_hint') or _NO_ROLLBACK)} ]",
         *([f"[ CWD: {_one_line(folder)} ]"] if folder else []),
+        *([f"[ CAPTURED: {_one_line(captured)} ]"] if captured else []),
     ]
     return " ".join([_PREFIX, *fields])
 

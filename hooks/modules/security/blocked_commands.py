@@ -78,20 +78,30 @@ def _read_only_base_cmds() -> "frozenset[str]":
         return frozenset()
 
 
-def _peel_command_wrappers(command: str) -> Tuple[str, bool]:
-    """Peel leading wrappers (``sudo``, ``timeout``, ``env``...) and assignments off *command*.
+def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
+    """Peel leading wrappers (``sudo``, ``timeout``, ``cmd /c``...) and assignments off *command*.
 
-    Delegates to ``mutative_verbs._peel_leading_command_wrappers`` -- the ONE
-    peel the T3 detector also uses (DP1) -- so this floor matches the REAL
-    command. Lazy import avoids the declared import cycle with mutative_verbs.
-    On failure the command is returned unchanged; the un-peeled form is still
-    fully classified by the caller.
+    Returns every reading of the wrapped command, as
+    ``mutative_verbs._peel_wrapper_readings`` -- the ONE peel the T3 detector
+    also uses (DP1) -- gives them, so this floor matches the REAL command. Lazy
+    import avoids the declared import cycle with mutative_verbs. On failure the
+    command is returned unchanged; the un-peeled form is still fully
+    classified by the caller.
     """
     try:
-        from .mutative_verbs import _peel_leading_command_wrappers
-        return _peel_leading_command_wrappers(command)
+        from .mutative_verbs import _peel_wrapper_readings
+        return _peel_wrapper_readings(command)
     except ImportError:
-        return command, False
+        return (command,), False
+
+
+def _powershell_positions(command: str) -> Tuple[str, ...]:
+    """Return the command positions a PowerShell command line runs (``mutative_verbs._powershell_floor_readings``)."""
+    try:
+        from .mutative_verbs import _powershell_floor_readings
+        return _powershell_floor_readings(command)
+    except ImportError:
+        return ()
 
 
 def _rm_confined_to_scratch(command: str) -> bool:
@@ -386,6 +396,16 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"^dd\s+", re.IGNORECASE),
         re.compile(r"^fdisk\s+", re.IGNORECASE),
         re.compile(r"^mkfs(\.(ext[34]|fat|ntfs))?\s+", re.IGNORECASE),
+        # Windows volume, partition and shadow-copy destruction (D140)
+        # format takes its switches before or after the drive, which may be
+        # quoted or have a switch glued to it (C:/q)
+        re.compile(r"""^format(\.com)?\s(.*\s)?["']?[a-z]:["']?(\s|/|$)""", re.IGNORECASE),
+        re.compile(r"^diskpart(\.exe)?(\s|$)", re.IGNORECASE),
+        re.compile(r"^vssadmin(\.exe)?\s(.*\s)?delete\s+shadows\b", re.IGNORECASE),
+        # shrinking the storage area below what the copies use deletes them
+        re.compile(r"^vssadmin(\.exe)?\s(.*\s)?resize\s+shadowstorage\b", re.IGNORECASE),
+        re.compile(r"^format-volume\b", re.IGNORECASE),
+        re.compile(r"^clear-disk\b", re.IGNORECASE),
     ],
 
     # rm -rf / and rm -rf ~ (catastrophic filesystem destruction)
@@ -503,6 +523,11 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "dd": "[BLOCKED] Low-level disk operations can destroy data",
     "fdisk": "[BLOCKED] Disk partitioning can destroy data",
     "mkfs": "[BLOCKED] Filesystem creation destroys all data on target",
+    "format-volume": "[BLOCKED] Formatting a volume destroys all data on it",
+    "clear-disk": "[BLOCKED] Clearing a disk destroys every partition and all data on it",
+    "diskpart": "[BLOCKED] Disk partitioning can destroy data",
+    "vssadmin delete shadows": "[BLOCKED] Deleting shadow copies removes the restore points recovery depends on",
+    "vssadmin resize shadowstorage": "[BLOCKED] Shrinking shadow storage deletes the shadow copies that no longer fit",
 
     # rm critical
     "rm -rf /": "[BLOCKED] Filesystem destruction is irreversible",
@@ -727,11 +752,21 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
     # command then falls to an approvable T3 or runs free. Peel and classify
     # the REAL command. Strictly additive: the un-peeled form was already
     # classified above, so this can only ADD a block, never remove one.
-    remainder, peeled = _peel_command_wrappers(command)
-    if peeled and remainder and remainder != command:
-        peeled_result = _classify_stripped_command(remainder)
-        if peeled_result.is_blocked:
-            return peeled_result
+    readings, peeled = _peel_command_wrappers(command)
+    for remainder in readings if peeled else ():
+        if remainder and remainder != command:
+            peeled_result = _classify_stripped_command(remainder)
+            if peeled_result.is_blocked:
+                return peeled_result
+
+    # A PowerShell script is one word to the shell and many commands to
+    # PowerShell, so ``pwsh -c "Get-Disk 1 | Clear-Disk"`` or a script block
+    # puts the floor command off position 0. Strictly additive, like the peel.
+    for reading in (command, *readings):
+        for position in _powershell_positions(reading):
+            position_result = _classify_stripped_command(position)
+            if position_result.is_blocked:
+                return position_result
 
     # ------------------------------------------------------------------
     # Grouping / substitution wrapper guard.

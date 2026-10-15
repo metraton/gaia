@@ -29,6 +29,7 @@ CONTRACT_ID = f"{MINTED_AGENT_ID}.feedc0de"
 AGENT = "gaia-system"
 SUMMARY = "The parity gate now returns unfinished turns to the specialist."
 DRIVER = _ROOT / "tests" / "opencode" / "subagent_stop_gate_driver.ts"
+RESUME_DRIVER = _ROOT / "tests" / "opencode" / "resume_continuity_driver.ts"
 
 _EVIDENCE_KEYS = (
     "patterns_checked", "files_checked", "commands_run", "key_outputs",
@@ -216,6 +217,31 @@ def test_subagent_stop_gate_plugin_reprompts_the_child_and_relays_to_the_parent(
     assert "continue task_id ses-child-1" in driven["firstTaskOutput"]
     assert "Summary for the user" in driven["secondTaskOutput"]
     assert "continue task_id" not in driven["secondTaskOutput"]
+
+
+def _drive_resume(tmp_path) -> dict:
+    env = IsolatedRuntimeEnv(tmp_path)
+    env.prepare_hook_workspace()
+    result = subprocess.run(
+        ["bun", str(RESUME_DRIVER)], cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_background_child_is_resumable_by_task_id_once_it_goes_idle(tmp_path):
+    driven = _drive_resume(tmp_path)
+
+    assert driven["stages"]["backgroundLaunch"] is None
+    assert driven["stages"]["resumeAfterBackgroundIdle"] is None
+
+
+def test_rejected_signature_notice_hands_the_orchestrator_the_requester_to_resume(tmp_path):
+    notice = _drive_resume(tmp_path)["rejectedNotice"]
+
+    assert "is rejected; nothing runs" in notice
+    assert "Resume developer (task_id ses-child-bg)" in notice
+    assert "do not dispatch a new specialist" in notice
 
 
 def test_subagent_stop_gate_plugin_does_not_loop_on_its_own_repair_part(tmp_path):

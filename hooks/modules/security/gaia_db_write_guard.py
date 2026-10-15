@@ -32,6 +32,7 @@ import os
 import re
 from typing import Optional, Tuple
 
+from .canonical_path import canonical_path, command_name
 from .data_heredoc import data_heredoc_header
 from .mutative_verbs import _peel_leading_command_wrappers, detect_mutative_command
 from .shell_substitution import extract_substitutions
@@ -73,10 +74,17 @@ FILE_WRITE_REJECTION_MESSAGE = (
 _GAIA_DB_FILE_NAMES = frozenset({
     "gaia.db", "gaia.db-wal", "gaia.db-shm", "gaia.db-journal",
 })
-_GAIA_DB_NAME_RE = re.compile(r"gaia\.db\b")
+_GAIA_DB_NAME_RE = re.compile(r"gaia\.db\b", re.IGNORECASE)
 # The last operand is the destination.
-_COPY_WRITERS = frozenset({"cp", "mv", "install", "ln", "rsync"})
-_TRUNCATORS = frozenset({"truncate"})
+_COPY_WRITERS = frozenset({
+    "cp", "mv", "install", "ln", "rsync",
+    "copy", "xcopy", "copy-item", "cpi", "move", "move-item", "mi",
+})
+# Every operand may be the file written.
+_TRUNCATORS = frozenset({
+    "truncate", "set-content", "sc", "add-content", "ac", "out-file", "clear-content",
+    "clc", "new-item", "ni",
+})
 _INTERPRETERS = frozenset({"python", "node", "perl", "ruby", "php"})
 
 
@@ -108,7 +116,8 @@ def is_db_write_attempt(command: str) -> bool:
 
 
 def _is_gaia_db_file(token: str) -> bool:
-    return os.path.basename(token.strip("'\"")) in _GAIA_DB_FILE_NAMES
+    canonical = canonical_path(token.strip("'\""), _GAIA_DB_FILE_NAMES)
+    return canonical.rsplit("/", 1)[-1] in _GAIA_DB_FILE_NAMES
 
 
 def _component_writes_db(component: str) -> bool:
@@ -124,8 +133,8 @@ def _component_writes_db(component: str) -> bool:
     tokens = _tokenize(peeled)
     if not tokens:
         return False
-    base = os.path.basename(tokens[0])
-    operands = [t for t in tokens[1:] if not t.startswith("-")]
+    base = command_name(tokens[0])
+    operands =[t for t in tokens[1:] if not t.startswith("-")]
     if base in _COPY_WRITERS:
         return bool(operands) and _is_gaia_db_file(operands[-1])
     if base in _TRUNCATORS:

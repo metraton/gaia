@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,9 @@ class ToolCall:
     index: int  # 1-based position in the tool sequence
     tool_name: str
     arguments: Dict[str, Any]
+    # 0 before the first coordinator resume, +1 at each resume boundary.
+    segment: int = 0
+    tool_use_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,6 +75,7 @@ class TranscriptAnalysis:
     duplicate_tool_calls: List[DuplicateCall] = field(default_factory=list)
     pipe_commands: List[str] = field(default_factory=list)
     first_tool_name: Optional[str] = None
+    failed_tool_use_ids: Set[str] = field(default_factory=set)
 
 
 # ============================================================================
@@ -146,18 +150,25 @@ def _parse_timestamp(ts_str: str) -> Optional[datetime]:
 
 
 def _is_resume_boundary(entry: Dict[str, Any]) -> bool:
-    """True when *entry* is a coordinator-relayed resume of a cut turn.
+    """True when *entry* wakes a subagent whose previous segment had ended.
 
-    A subagent's resumed segments share one transcript file: after a
-    premature stop (an early harness relay, or a hook rejecting an
-    incomplete contract), the orchestrator resumes the SAME agent via
-    SendMessage, and the runtime injects that follow-up as a ``user``
-    entry carrying ``origin: {"kind": "coordinator"}``. That entry's own
-    timestamp is when work resumed; the wall-clock gap since the prior
-    entry is the agent sitting idle waiting to be resumed, not working.
+    A subagent's resumed segments share one transcript file. Two entries
+    open a new segment: the orchestrator's SendMessage follow-up, which the
+    runtime injects carrying ``origin: {"kind": "coordinator"}``, and a
+    top-level ``type: "user"`` entry with ``origin.kind ==
+    "task-notification"``, which wakes the finished agent when one of its
+    background tasks completes after its SubagentStop. An ``attachment``
+    entry with that same origin arrives mid-turn and is not a boundary.
+    The entry's own timestamp is when work resumed; the wall-clock gap
+    since the prior entry is idle waiting, not work.
     """
     origin = entry.get("origin")
-    return isinstance(origin, dict) and origin.get("kind") == "coordinator"
+    if not isinstance(origin, dict):
+        return False
+    kind = origin.get("kind")
+    return kind == "coordinator" or (
+        kind == "task-notification" and entry.get("type") == "user"
+    )
 
 
 def _extract_tool_calls_from_content(
@@ -165,6 +176,7 @@ def _extract_tool_calls_from_content(
     result: TranscriptAnalysis,
     tool_index_counter: List[int],
     hash_map: Dict[str, Dict[str, Any]],
+    segment: int = 0,
 ) -> None:
     """Extract tool_use blocks from a content list and update result in place."""
     if not isinstance(content, list):
@@ -184,7 +196,10 @@ def _extract_tool_calls_from_content(
         idx = tool_index_counter[0]
         tool_index_counter[0] += 1
 
-        tc = ToolCall(index=idx, tool_name=tool_name, arguments=arguments)
+        tc = ToolCall(
+            index=idx, tool_name=tool_name, arguments=arguments, segment=segment,
+            tool_use_id=str(block.get("id") or ""),
+        )
         result.tool_sequence.append(tc)
         result.tool_call_count += 1
 
@@ -277,6 +292,7 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
     last_ts_dt: Optional[datetime] = None
     segment_start_dt: Optional[datetime] = None
     segment_durations_ms: List[int] = []
+    segment = 0
 
     for line in lines:
         line = line.strip()
@@ -291,6 +307,9 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
 
         if not isinstance(entry, dict):
             continue
+
+        if _is_resume_boundary(entry):
+            segment += 1
 
         # --- Timestamp tracking ---
         timestamp = entry.get("timestamp", "")
@@ -357,12 +376,20 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
 
         # --- Tool calls from all content lists ---
         _extract_tool_calls_from_content(
-            content, result, tool_index_counter, hash_map
+            content, result, tool_index_counter, hash_map, segment
         )
 
         # --- User messages: skill injection detection ---
         if role == "user":
             _extract_skills_from_content(content, result)
+            if isinstance(content, list):
+                result.failed_tool_use_ids.update(
+                    str(block.get("tool_use_id"))
+                    for block in content
+                    if isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and block.get("is_error") is True
+                )
 
     # --- Duration computation ---
     if first_ts_dt is not None and last_ts_dt is not None and segment_start_dt is not None:

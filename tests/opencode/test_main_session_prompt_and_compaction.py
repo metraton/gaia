@@ -95,16 +95,34 @@ def test_prompt_submit_bridge_returns_nothing_when_no_notification_is_due(isolat
     assert response == {"action": "allow", "additional_context": ""}
 
 
-def test_primary_compaction_bridge_returns_the_claude_code_compact_context(isolated):
+def test_primary_compaction_gives_the_summarizer_only_the_summary_instructions(isolated):
     import bridge
-    from modules.session.session_lifecycle import start_context
+    from gaia.session_snapshot import write_resume_point
+    from modules.context.compact_context_builder import build_summary_instructions
+
+    write_resume_point(MAIN_SESSION, "finish task 892, then run its gate")
 
     response = bridge.handle({"event": "session.compacting", "sessionID": MAIN_SESSION, "main": True})
 
-    context = response["updated_input"]["context"]
-    assert response["action"] == "allow"
-    assert context == [start_context("compact", [])]
-    assert context[0]
+    assert response == {"action": "allow", "updated_input": {"context": [build_summary_instructions()]}}
+    assert "finish task 892" not in build_summary_instructions()
+
+
+def test_first_message_after_compaction_carries_claude_codes_refresh_for_that_session(isolated):
+    import bridge
+    from gaia.session_snapshot import write_resume_point
+    from modules.context.compact_context_builder import build_compact_context
+
+    write_resume_point(MAIN_SESSION, "finish task 892, then run its gate")
+    write_resume_point(CHILD_SESSION, "another session's resume point")
+
+    response = bridge.handle({"event": "chat.message", "sessionID": MAIN_SESSION, "source": "compact"})
+
+    context = response["additional_context"]
+    assert context == build_compact_context(session_id=MAIN_SESSION)
+    assert "## Environment" in context and "## Session Snapshot" in context
+    assert "finish task 892, then run its gate" in context
+    assert "another session's resume point" not in context
 
 
 def test_primary_compaction_is_not_injected_into_an_unbound_non_main_session(isolated):
@@ -148,5 +166,16 @@ def test_prompt_submit_and_primary_compaction_plugin_ask_only_for_the_main_sessi
         capture_output=True,
         text=True,
         timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_requested_compaction_runs_when_idle_off_the_event_and_retries_a_busy_session():
+    result = subprocess.run(
+        ["bun", "test", str(_ROOT / "tests/opencode/compaction_when_idle.test.ts")],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr

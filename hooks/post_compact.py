@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """PostCompact hook — logging stub; real re-injection happens elsewhere.
 
-PLATFORM LIMITATION: Claude Code's hook-output schema does not accept
-``hookSpecificOutput.hookEventName == "PostCompact"`` (same discriminated
-union as PreCompact -- see pre_compact.py's docstring for the full list of
-accepted values), and the runtime's response-consumption switch has no
-``"PostCompact"`` case either, so ``additionalContext`` is unreachable for
-this event even when the JSON is otherwise well-formed. The previous
-version of this hook built the compact-context refresh (agent roster +
-active anomalies) and shipped it under this unsupported shape, so every
-``/compact`` failed Claude Code's JSON validation with "(root): Invalid
-input" and the refresh was silently dropped -- never delivered.
+The event input carries the ``compact_summary`` the compaction produced, which
+this hook does not read. PLATFORM LIMITATION: Claude Code's hook-output schema
+does not accept ``hookSpecificOutput.hookEventName == "PostCompact"`` (same
+discriminated union as PreCompact -- see pre_compact.py's docstring for the
+full list of accepted values), and the runtime's response-consumption switch
+has no ``"PostCompact"`` case either, so ``additionalContext`` is unreachable
+for this event even when the JSON is otherwise well-formed. The previous
+version of this hook built the compact-context refresh and shipped it under
+this unsupported shape, so every ``/compact`` failed Claude Code's JSON
+validation with "(root): Invalid input" and the refresh was silently dropped
+-- never delivered.
 
 The real, valid delivery mechanism is ``SessionStart`` with
 ``source == "compact"``: Claude Code's SessionStart matcherMetadata lists

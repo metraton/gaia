@@ -252,9 +252,10 @@ def _load_build_plugin():
 
 
 def test_terminal_event_close_hooks_json_registers_bash_failure_from_the_manifest():
-    hooks = json.loads((_REPO_ROOT / "hooks" / "hooks.json").read_text())["hooks"]
+    tracked = json.loads((_REPO_ROOT / "hooks" / "hooks.json").read_text())
+    hooks = tracked["hooks"]
     assert hooks.get("PostToolUseFailure") == [{
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell|Monitor",
         "hooks": [{
             "type": "command",
             "command": 'sh "${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh" "${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"',
@@ -262,6 +263,6 @@ def test_terminal_event_close_hooks_json_registers_bash_failure_from_the_manifes
     }]
 
     build_plugin = _load_build_plugin()
-    assert build_plugin.generate_hooks_json(build_plugin.load_manifest("gaia")) == {"hooks": hooks}, (
+    assert build_plugin.generate_hooks_json(build_plugin.load_manifest("gaia")) == tracked, (
         "the pack-time regeneration must produce the tracked hooks.json"
     )

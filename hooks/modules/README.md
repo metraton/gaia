@@ -40,7 +40,7 @@ modules/
 │   ├── __init__.py
 │   ├── tiers.py          # SecurityTier enum (T0-T3)
 │   ├── blocked_commands.py # Blocked patterns by category
-│   ├── mutative_verbs.py   # CLI-agnostic verb detector, nonce-based deny
+│   ├── mutative_verbs.py   # CLI-agnostic verb detector, approval_id-gated deny
 │   ├── subagent_memory_write_guard.py # Blocks `gaia memory` writes from subagents (non-operator)
 │   ├── gaia_db_write_guard.py # Blocks direct sqlite3 writes to gaia.db (categorical)
 │   ├── protected_path_guard.py # Blocks Bash writes into the .claude/ tree (hooks/settings) (categorical)

@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
-"""The pre-tool entry path may fail open, but never silently.
+"""The pre-tool entry path fails closed, and never silently.
 
-Only exit 2 or an explicit deny decision stops an operation. Every other exit
-lets the tool call proceed. So an unhandled exception raised while the security
-gate is still deciding ends the turn with exit 1: the operation runs, and
-nothing records that the gate never reached a verdict.
-
-The product decision is to keep passing -- a gate that bricks the session on its
-own crash is worse than one that lets a command through -- so what these tests
-pin is the other half: the pass leaves a trace. The failure is INJECTED at a
-real seam (an unresolvable host adapter, which raises inside the entry point's
-try block) and driven through the actual entry-point process, not through a
-stand-in for it.
+Only exit 2 or an explicit deny decision stops an operation, so a gate that
+crashes before a verdict must deny rather than exit 1 and let the call run
+unchecked. These tests pin both halves: the block and its trace. The failure is
+INJECTED at a real seam (an unresolvable host adapter, which raises inside the
+entry point's try block) and driven through the actual entry-point process.
 
 The event tag and the user-facing marker are written here as literals rather
 than imported from the module under test. They are the external contract --
@@ -107,13 +101,13 @@ def degraded_run(tmp_path):
     return proc, tmp_path
 
 
-def test_entry_path_fail_open_does_not_block(degraded_run):
-    """An unhandled gate exception still lets the operation through."""
+def test_entry_path_gate_failure_blocks(degraded_run):
+    """An unhandled gate exception denies the operation and says what to do."""
     proc, _ = degraded_run
-    assert not _blocked(proc), (
-        "the entry path must keep failing OPEN -- a crashing gate must not be "
-        f"able to brick the session (rc={proc.returncode}, stdout={proc.stdout!r})"
+    assert proc.returncode == 2 and _blocked(proc), (
+        f"a crashing gate let the call run unchecked (rc={proc.returncode}, stdout={proc.stdout!r})"
     )
+    assert "gaia doctor" in proc.stderr, proc.stderr
 
 
 def test_entry_path_fail_open_emits_queryable_event(degraded_run):
@@ -142,9 +136,9 @@ def test_entry_path_fail_open_warns_the_user(degraded_run):
 
 
 def test_entry_path_fail_open_holds_on_one_invocation(degraded_run):
-    """Not-blocked, event emitted and user warned all hold for the SAME run."""
+    """Blocked, event emitted and user warned all hold for the SAME run."""
     proc, data_dir = degraded_run
     events = [r for r in _audit_records(data_dir) if r.get("event") == FAIL_OPEN_EVENT]
-    assert not _blocked(proc)
+    assert _blocked(proc)
     assert events
     assert FAIL_OPEN_MARKER in proc.stdout + proc.stderr

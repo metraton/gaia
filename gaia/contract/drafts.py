@@ -146,6 +146,7 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set
 
+from gaia.atomic_replace import replace_retrying
 from gaia.state import CLOSED_TURN_PLAN_STATUSES
 
 _DRAFT_SUFFIX = ".json"
@@ -520,7 +521,7 @@ def save_draft(draft_id: str, envelope: dict) -> None:
     """Atomically persist ``envelope`` as the draft ``draft_id``.
 
     Writes to a unique temp file in the drafts directory, flushes+fsyncs it,
-    then ``os.replace``s it over the target -- an atomic rename on POSIX so a
+    then ``replace_retrying``s it over the target -- an atomic rename so a
     concurrent reader never sees a partially-written or cross-contaminated
     file. The temp name carries the pid and a random suffix so two writers
     (even for the same draft id) never share a temp path.
@@ -534,7 +535,7 @@ def save_draft(draft_id: str, envelope: dict) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        replace_retrying(tmp, target)
     finally:
         # Best-effort cleanup if the replace never happened (e.g. an error
         # between write and rename); the target is untouched in that case.

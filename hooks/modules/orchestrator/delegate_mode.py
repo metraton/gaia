@@ -103,6 +103,9 @@ ORCHESTRATOR_ALLOWED_TOOLS = frozenset({
     # User interaction (built-in, may not always trigger hooks)
     "askuserquestion",
 
+    # OpenCode plugin tool that flags the main session for compaction on idle.
+    "gaiacompactwhenidle",
+
     # Direct evidence reading (read-only, T0). Lets the orchestrator
     # triangulate with the user -- validate a document or an image
     # (e.g. a Playwright screenshot) against a specialist's contract.

@@ -13,8 +13,10 @@ Usage:
 """
 
 import argparse
+import codecs
 import importlib
 import importlib.util
+import locale
 import os
 import subprocess
 import sys
@@ -300,16 +302,19 @@ READ -- changes nothing. The orchestrator runs these itself.
                  inspect a specialist's own isolated git worktree (never
                  create or release it -- those are the specialist's own
                  governed writes, below).
-  session        preview
+  session        preview | snapshot
                  render the SessionStart manifest in-process.
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
-  brief          new | edit | set-status | set-project | ac add|edit|remove |
-                 decision add
-  plan           set-status | pause | resume | change request|approve
+  brief          new | edit | set-status (not closed) | close | set-project |
+                 ac add|edit|remove | decision add
+                 close verifies first, syncs the ACs that compute done and
+                 closes the plan and the brief, or refuses and writes nothing.
+  plan           set-status (not closed) | pause | resume | change request|approve
                  steer the plan without judging or authoring it: the planner
                  proposes and applies a change, a verifier records verdicts.
   task           set-status (no --override) | gate reverify
+  session        resume-point set
   notifications  ack | add | snooze | cancel
                  add is a reminder or routine only (--at, --cron or --every);
                  snooze and cancel take ONE id.
@@ -344,8 +349,9 @@ WRITE a specialist owns -- DELEGATE; do not run it here.
                  task add|remove|reorder|cover|depend (planner) |
                  task gate add|remove|set-status |
                  contract set|add|fill|finalize |
-                 worktree create|release -- create/release its OWN isolated
-                 git worktree (T0 at the tier layer -- see
+                 worktree create|release|prune-branches -- create/release its
+                 OWN isolated git worktree, or prune the branches whose content
+                 is already integrated (T0 at the tier layer -- see
                  COMMAND_SUBCOMMAND_TIER_EXCEPTIONS in mutative_verbs.py --
                  but still outside the orchestrator's bare CLI lane)
 
@@ -555,5 +561,26 @@ def main(argv=None):
     return _run_with_plugins(raw_argv, plugins)
 
 
+def _ensure_utf8_mode():
+    """Restart this CLI under Python's UTF-8 mode when its text codec is not UTF-8.
+
+    npm's shim and a bare ``python bin/gaia`` start the interpreter with the
+    locale codec, which decodes UTF-8 argv, stdin, files and git output as
+    mojibake on cp1252 Windows. A UTF-8 locale already decodes correctly and is
+    left alone: the orchestrator runs this CLI hundreds of times a session.
+    Windows has no exec, so there the child is awaited and its exit code relayed.
+    """
+    if sys.flags.utf8_mode or not sys.executable:
+        return
+    if codecs.lookup(locale.getpreferredencoding(False)).name == "utf-8":
+        return
+    os.environ["PYTHONUTF8"] = "1"
+    argv = [sys.executable, "-X", "utf8", *sys.orig_argv[1:]]
+    if os.name == "nt":
+        sys.exit(subprocess.call(argv))
+    os.execv(sys.executable, argv)
+
+
 if __name__ == "__main__":
+    _ensure_utf8_mode()
     sys.exit(main())

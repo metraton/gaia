@@ -102,6 +102,14 @@ _HOST_REFUSAL = re.compile(
 # key names (AC-2: hookSpecificOutput lives only in adapters/).
 _HOOK_SPECIFIC_OUTPUT = "hookSpecificOutput"
 
+# PreToolUse also reaches MCP tools and any tool its matcher does not exclude, so that a
+# command-carrying tool nobody named is refused. Only the tools listed here go through the full
+# policy (delegate mode, call ceiling). No hook ran for the others before, so they keep the verdict they had.
+_POLICY_TOOLS = frozenset({
+    "bash", "powershell", "monitor", "task", "agent", "sendmessage", "askuserquestion",
+    "read", "edit", "write", "glob", "grep", "websearch", "webfetch", "notebookedit",
+})
+
 # Claude Code's two distribution channels and the env var that distinguishes
 # them. These host-specific names are OWNED by this adapter (Gap 2 / brief #88):
 # the core carries an opaque HostDistribution and never enumerates these values
@@ -767,10 +775,16 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
         decided here once the shared policy (delegate-mode gate, grant cleanup,
         input shape) has left the call to the host.
         """
+        tool_name = event.payload.get("tool_name") or ""
+        if str(tool_name).lower() not in _POLICY_TOOLS:
+            from .tool_policy import ungated_command_verdict
+
+            return self._format_pre_tool_verdict(
+                ungated_command_verdict(tool_name, event.payload.get("tool_input")),
+            )
         verdict = self.pre_tool_verdict(
             event, dispatch_identity_in_env=_dispatch_identity_in_env,
         )
-        tool_name = event.payload.get("tool_name") or ""
         if verdict.is_silent and isinstance(tool_name, str):
             tool_input = event.payload.get("tool_input", {})
             try:
@@ -782,7 +796,27 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                     return self._adapt_ask_user_question(tool_input, hook_data=event.payload)
             except Exception as e:
                 verdict = failure_verdict(e)
-        return self._format_pre_tool_verdict(verdict)
+        return self._format_pre_tool_verdict(self._with_ceiling_notice(event, verdict))
+
+    @staticmethod
+    def _with_ceiling_notice(event: HookEvent, verdict: PolicyVerdict) -> PolicyVerdict:
+        """Count a subagent's call the policy lets run, adding the ceiling notice when it is due.
+
+        Counted here rather than at PostToolUse because PreToolUse's matchers
+        cover Read, Edit, Write, Glob and Grep, which PostToolUse's do not.
+        """
+        from modules.agents.call_ceiling import record_call
+
+        if verdict.refusal is not None or verdict.consent is not None:
+            return verdict
+        if verdict.decision not in (None, "allow"):
+            return verdict
+        notice = record_call(event.payload.get("agent_id"))
+        if not notice:
+            return verdict
+        return replace(
+            verdict, context="\n\n".join(text for text in (verdict.context, notice) if text),
+        )
 
     def _format_pre_tool_verdict(self, verdict: PolicyVerdict) -> HookResponse:
         """Translate a policy verdict into Claude Code's PreToolUse response.
@@ -798,7 +832,14 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
                 self.request_consent(verdict.consent), approval_id=verdict.approval_id,
             )
         if verdict.decision is None:
-            return HookResponse(output={}, exit_code=0)
+            if not verdict.context:
+                return HookResponse(output={}, exit_code=0)
+            return HookResponse(
+                output={_HOOK_SPECIFIC_OUTPUT: {
+                    "hookEventName": "PreToolUse", "additionalContext": verdict.context,
+                }},
+                exit_code=0,
+            )
         specific: Dict[str, Any] = {
             "hookEventName": "PreToolUse",
             "permissionDecision": verdict.decision,
@@ -1553,11 +1594,31 @@ class ClaudeCodeAdapter(ToolPolicy, HookAdapter):
             # omitted; the agent still addresses its own draft by --draft-id.
             return None
         if not draft_id:
-            return None
+            return self._closed_contract_hint(agent_id)
         envelope = load_draft(draft_id)
         if not envelope:
-            return None
+            return self._closed_contract_hint(agent_id)
         return render_resume_hint(draft_id, envelope)
+
+    @staticmethod
+    def _closed_contract_hint(agent_id: str) -> Optional[str]:
+        """The hint for a resumed agent whose newest contract already closed, or None.
+
+        A closed contract leaves no live draft, so the resumed turn would
+        otherwise start with no contract and learn of it from a denied ``init``.
+        """
+        try:
+            from gaia.state import CLOSED_TURN_PLAN_STATUSES
+            from gaia.contract.view import render_closed_contract_hint
+            from gaia.store.writer import list_agent_contract_handoffs
+
+            rows = list_agent_contract_handoffs(agent_id=agent_id, limit=50)
+            newest = max(rows, key=lambda row: row.get("id") or 0) if rows else None
+            if newest is None or newest.get("agent_state") not in CLOSED_TURN_PLAN_STATUSES:
+                return None
+            return render_closed_contract_hint(newest["contract_id"], newest["agent_state"])
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------ #
     # v43 dispatch kernel: claim the born row, render the kernel blocks

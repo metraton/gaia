@@ -1,6 +1,6 @@
 {
   "name": "gaia",
-  "version": "5.5.0",
+  "version": "5.6.0-rc.1",
   "description": "GAIA \u2014 Generative AI Interface for Agents. Security-first multi-agent orchestration for Claude Code and OpenCode: reads run free, state changes need approval, irreversible ops blocked.",
   "author": {
     "name": "jaguilar87"
@@ -13,7 +13,7 @@
     "devops"
   ],
   "engines": {
-    "claude-code": ">=2.1.0"
+    "claude-code": ">=2.1.295"
   },
   "categories": [
     "devops",

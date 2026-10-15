@@ -79,22 +79,21 @@ def test_a_read_after_a_mutation_does_not_inherit_the_mark():
 
 
 def test_a_gate_failure_on_that_read_does_not_deny_it():
-    """The consequence, stated as the outcome rather than as the mark.
+    """A gate failure on the read is denied on its own account, not as the push.
 
-    A stale breadcrumb is only a problem because of what it makes the fail-open
-    path decide. Measured before the fix: the read was DENIED on the strength
-    of the push before it.
+    Every gate failure blocks, so a stale breadcrumb shows in the denial it
+    produces: the read's denial must not name the verb of the push before it.
     """
     _validate(MUTATING_COMMAND)
     _validate(READ_COMMAND)
 
     outcome = fail_open.decide_fail_open("unhandled_exception", "RuntimeError: probe")
 
-    assert outcome.blocked is False, (
-        "a gate failure on a plain read was turned into a denial by a mutation "
-        "that had already been gated -- the bounded exception escaped its bound"
+    assert outcome.blocked is True and outcome.exit_code == 2
+    assert "Verb:" not in outcome.message, (
+        "a gate failure on a plain read was denied as the mutation that had "
+        f"already been gated: {outcome.message!r}"
     )
-    assert outcome.exit_code != 2
 
 
 def test_the_bounded_exception_still_fires_for_the_mutation_itself():

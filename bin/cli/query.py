@@ -41,6 +41,9 @@ UNCAPPED_ROWS = -1
 
 
 def _resolve_workspace(explicit: str | None) -> str | None:
+    """Resolve workspace; ``None`` means 'no workspace filter'."""
+    if explicit == "all":
+        return None
     from gaia.project import cli_workspace
     return cli_workspace(explicit)
 
@@ -303,7 +306,11 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--workspace", default=None,
-        help="Workspace identity. Default: gaia.project.cli_workspace() (env, then the project containing the cwd, else 'global').",
+        help=(
+            "Workspace identity, or 'all' for every workspace. "
+            "Default: gaia.project.cli_workspace() (env, then the project "
+            "containing the cwd, else 'global')."
+        ),
     )
     p.add_argument(
         "--since", default=None, metavar="DUR_OR_DATE",

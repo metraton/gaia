@@ -126,6 +126,7 @@ both.
 | `no_owner` | a non-user row with neither a project nor an initiative | a workspace is a container, not an owner |
 | `rewrite_in_place` | `add --replace` with another body | a change is a new row plus `link <new> <old> --kind=supersedes` |
 | `preference_or_bug` | a `type=user` row whose description's kind is `Preference` (or the Spanish-era `Preferencia`) | asks whether it would hold if Gaia worked perfectly |
+| `measurement_unstamped` | a description whose first word is `Measured` (or `Medido`; `gaia/store/memory_claims.py::claims_measurement`) written without both `--measured-at` and `--method` | a measured fact says when and how it was measured; the two columns are shown by `show` and `get-relevant --initiative` |
 | `supersedes_reversed` | `link --kind=supersedes` whose dst was born after its src | the arrow goes from the new row to the old |
 
 Every text-mode write (`add`, `append`, `reclassify`, `link`) closes

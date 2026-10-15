@@ -379,15 +379,23 @@ class TestCheckSettings:
         r = doctor_mod.check_settings(healthy_project)
         assert r["severity"] == "pass"
 
-    def test_no_deny_rules(self, healthy_project):
-        """Should error when deny rules are missing."""
+    def test_no_deny_list_passes(self, healthy_project):
         settings_path = healthy_project / ".claude" / "settings.local.json"
         data = json.loads(settings_path.read_text())
-        data["permissions"]["deny"] = []
+        del data["permissions"]["deny"]
         settings_path.write_text(json.dumps(data))
         r = doctor_mod.check_settings(healthy_project)
-        assert r["severity"] == "error"
-        assert "deny" in r["detail"].lower()
+        assert r["severity"] == "pass"
+
+    def test_retired_gaia_entries_warn(self, healthy_project):
+        settings_path = healthy_project / ".claude" / "settings.local.json"
+        data = json.loads(settings_path.read_text())
+        data["permissions"]["deny"] = ["Bash(kubectl delete:*)", "Bash(npm publish:*)"]
+        data["permissions"]["allow"] = ["Bash(*)", "BashOutput"]
+        settings_path.write_text(json.dumps(data))
+        r = doctor_mod.check_settings(healthy_project)
+        assert r["severity"] == "warning"
+        assert r["detail"].startswith("2 ")
 
 
 class TestCheckHookFiles:
@@ -1127,8 +1135,11 @@ class TestCmdDoctorJson:
         # 1 project-copies (order 51 -- second clones the scan recorded as copies) +
         # 1 workspace-registry (order 63 -- what `gaia workspace curate` fixes) +
         # 3 channel checks (install-channel 36, hook-registrations 72,
-        #   hook-commands 74 -- hooks counted across plugin and every settings file).
-        assert len(data["checks"]) == 39
+        #   hook-commands 74 -- hooks counted across plugin and every settings file) +
+        # 1 hook-shell (order 25 -- Windows without a resolvable sh) +
+        # 1 git-long-paths (order 26 -- Windows git with core.longpaths off) +
+        # 3 self-location checks (hook-python 27, path-gaia 28, launcher-python 29).
+        assert len(data["checks"]) == 44
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1354,6 +1365,42 @@ class TestDeriveWorkspace:
 
         result = doctor_mod._derive_workspace()
         assert result == consumer.resolve()
+
+    def test_global_prefix_gives_way_to_the_recorded_workspace(self, tmp_path, monkeypatch):
+        """A Windows global install runs from <prefix>/node_modules/@jaguilar87/gaia,
+        so the derivation lands on the npm prefix; the recorded workspace wins."""
+        prefix = tmp_path / "npm" / "prefix"
+        script_path = prefix / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        workspace = tmp_path / "user workspace"
+        (workspace / ".claude").mkdir(parents=True)
+        monkeypatch.delenv("GAIA_WORKSPACE_PATH", raising=False)
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+        monkeypatch.setattr(doctor_mod, "_recorded_workspace", lambda: workspace)
+
+        assert doctor_mod._derive_workspace() == workspace
+
+    @pytest.mark.parametrize("wired", (True, False), ids=("wired-cwd", "unwired-cwd"))
+    def test_global_prefix_gives_way_to_a_cwd_gaia_wired(self, tmp_path, monkeypatch, wired):
+        """A bare `gaia install` declares no workspace; doctor run from the folder it
+        wired checks that folder, and an unwired cwd keeps the derived prefix."""
+        prefix = tmp_path / "npm" / "prefix"
+        script_path = prefix / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        workspace = tmp_path / "user workspace"
+        (workspace / ".claude").mkdir(parents=True)
+        if wired:
+            (workspace / ".claude" / "gaia-manifest.json").write_text("{}")
+        monkeypatch.delenv("GAIA_WORKSPACE_PATH", raising=False)
+        monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+        monkeypatch.chdir(workspace)
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+        monkeypatch.setattr(doctor_mod, "_recorded_workspace", lambda: None)
+
+        expected = workspace.resolve() if wired else prefix
+        assert doctor_mod._derive_workspace() == expected
 
     def test_global_install_exits_with_error(self, tmp_path, monkeypatch, capsys):
         """Script NOT inside any node_modules/@jaguilar87/gaia/ tree, run from a
@@ -2118,6 +2165,19 @@ class TestCheckGlobalCliAlignment:
         r = doctor_mod.check_global_cli_alignment(tmp_path)
         assert r["severity"] == "info"
         assert "no `gaia` resolvable on PATH" in r["detail"]
+
+    def test_windows_npm_shim_resolves_to_the_package_beside_it(self, tmp_path, monkeypatch):
+        prefix = tmp_path / "npm" / "prefix"
+        package = prefix / "node_modules" / "@jaguilar87" / "gaia"
+        _mk_global_gaia(package, "5.6.0", "# build\n")
+        shim = prefix / "gaia.cmd"
+        shim.write_text("@ECHO off\n")
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: str(shim))
+
+        found = doctor_mod._resolve_global_gaia()
+
+        assert found["root"] == package.resolve()
+        assert found["version"] == "5.6.0"
 
     def test_no_workspace_install_is_info(self, tmp_path, monkeypatch):
         global_bin = _mk_global_gaia(tmp_path / "global", "5.2.0", "# build\n")

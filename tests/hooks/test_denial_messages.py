@@ -199,7 +199,7 @@ def test_gh_auth_switch_denial_suggestions_classify_free():
     )
 
     suggested = re.findall(r"`([^`]+)`", message)
-    assert any(c.startswith("ghx ") for c in suggested), f"message names no per-process form: {message!r}"
+    assert any(c.startswith("GH_TOKEN=") for c in suggested), f"message names no per-process form: {message!r}"
 
     for command in suggested:
         assert classify_command_tier(command) == SecurityTier.T0_READ_ONLY, (

@@ -43,12 +43,15 @@ import copy
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
+
+_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 
 MANIFEST_NAME = "gaia-manifest.json"
 MANIFEST_VERSION = 1
@@ -428,6 +431,20 @@ def _gaia_opencode_root(item: object) -> str | None:
     return str(path.parents[1]) if named or path.as_posix().endswith("/@jaguilar87/gaia/opencode/plugin.ts") else None
 
 
+def _as_path(text: str) -> PurePath:
+    """*text* as the path it names: a drive path compares as Windows does, any separator, any case."""
+    return PureWindowsPath(text) if _DRIVE_PATH.match(text) else PurePosixPath(text)
+
+
+def _prompt_inside(prompt: object, roots: Iterable[str]) -> bool:
+    """True when an OpenCode ``{file:...}`` prompt is a file under one of *roots*."""
+    match = re.fullmatch(r"\{file:(.+)\}", prompt) if isinstance(prompt, str) else None
+    if not match:
+        return False
+    target = _as_path(match.group(1))
+    return any(_as_path(root) in target.parents for root in roots)
+
+
 def _strip_opencode(workspace: Path, current: dict[str, dict]) -> dict[str, dict]:
     """The OpenCode entries of *current* that carry Gaia's footprint, each as it was before Gaia.
 
@@ -449,8 +466,7 @@ def _strip_opencode(workspace: Path, current: dict[str, dict]) -> dict[str, dict
     if isinstance(agents, dict):
         doc["agent"] = {
             name: agent for name, agent in agents.items()
-            if not (isinstance(agent, dict) and any(
-                str(agent.get("prompt", "")).startswith(f"{{file:{root}/") for root in roots))
+            if not (isinstance(agent, dict) and _prompt_inside(agent.get("prompt"), roots))
         }
     if doc.get("default_agent") == "gaia-orchestrator":
         del doc["default_agent"]
@@ -482,7 +498,7 @@ def _claude_footprint(workspace: Path) -> bool:
 
 
 def _holds_gaia_settings(local: dict) -> bool:
-    """True when *local* carries what the plugin session writes: Gaia's hidden attribution or its deny rules.
+    """True when *local* carries what a plugin session writes or wrote: Gaia's hidden attribution or a deny rule it retired.
 
     A plugin-only workspace has no link, marker or agent key in the workspace
     -- those live in the plugin's data directory -- so this footprint is the
@@ -499,7 +515,7 @@ def _holds_gaia_settings(local: dict) -> bool:
     permissions = local.get("permissions")
     deny = permissions.get("deny") if isinstance(permissions, dict) else None
     gaia_deny = cleanup._gaia_managed_permission_sets()[1]
-    return isinstance(deny, list) and bool(gaia_deny) and gaia_deny <= set(deny)
+    return isinstance(deny, list) and not gaia_deny.isdisjoint(deny)
 
 
 def _read_bytes(path: Path) -> bytes:
@@ -670,7 +686,9 @@ def uninstall_command(workspace: Path, channel: str) -> str:
     """The `gaia uninstall` that takes back *channel*, scoped with --channel while another channel is recorded."""
     recorded = recorded_channels(load(workspace))
     scope = f" --channel {channel}" if channel in recorded and len(recorded) > 1 else ""
-    return f"gaia uninstall{scope} --workspace {shlex.quote(str(workspace))}"
+    from gaia.subprocess_text import command_arg  # noqa: PLC0415
+
+    return f"gaia uninstall{scope} --workspace {command_arg(str(workspace))}"
 
 
 def entry_channel(manifest: dict, key: str) -> str | None:

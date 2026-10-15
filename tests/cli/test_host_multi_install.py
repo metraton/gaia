@@ -62,9 +62,12 @@ def isolated_host_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     monkeypatch.setenv("GAIA_DB", str(tmp_path / "data" / "gaia.db"))
     monkeypatch.setattr(install_mod.subprocess, "run",
                         lambda *a, **k: pytest.fail("unexpected external runner"))
+    # The host preconditions read the developer's own claude and sh; they have their own probes.
+    monkeypatch.setattr("gaia.hook_shell.claude_code_version_finding", lambda: None)
+    monkeypatch.setattr("gaia.hook_shell.missing_hook_shell", lambda: None)
 
 
-@pytest.mark.parametrize("host", ["codex", "unknown", "all", None])
+@pytest.mark.parametrize("host", ["codex", "unknown", "all"])
 def test_internal_invalid_host_fails_before_bootstrap(host):
     with patch.object(install_mod, "_run_bootstrap") as bootstrap:
         with redirect_stderr(io.StringIO()):

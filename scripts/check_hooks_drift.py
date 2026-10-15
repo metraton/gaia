@@ -67,8 +67,12 @@ def main() -> int:
     try:
         generate_hooks_json = _load_generate_hooks_json()
         manifest = json.loads(MANIFEST.read_text())
-        expected = generate_hooks_json(manifest).get("hooks", {})
-        hooks_json = json.loads(HOOKS_JSON.read_text()).get("hooks", {})
+        generated = generate_hooks_json(manifest)
+        expected = generated.get("hooks", {})
+        expected_mods = generated.get("modules", [])
+        committed = json.loads(HOOKS_JSON.read_text())
+        hooks_json = committed.get("hooks", {})
+        committed_mods = committed.get("modules", [])
         plugin_hooks = json.loads(PLUGIN_JSON.read_text()).get("hooks", {})
     except Exception as exc:  # pragma: no cover - defensive
         print(f"hooks-drift guard: error while loading artifacts: {exc}", file=sys.stderr)
@@ -83,6 +87,14 @@ def main() -> int:
             file=sys.stderr,
         )
         _report_diff("hooks/hooks.json", expected, hooks_json)
+
+    if committed_mods != expected_mods:
+        drift = True
+        print(
+            "hooks-drift guard: hooks/hooks.json 'modules' != the manifest's "
+            f"'host_mods' (expected {expected_mods}, found {committed_mods})",
+            file=sys.stderr,
+        )
 
     if plugin_hooks:
         drift = True
@@ -100,7 +112,10 @@ def main() -> int:
         )
         return 1
 
-    print(f"hook artifacts in sync with manifest ({len(expected)} events)")
+    print(
+        f"hook artifacts in sync with manifest "
+        f"({len(expected)} events, {len(expected_mods)} mods)"
+    )
     return 0
 
 

@@ -5,8 +5,8 @@ principles say why; this file says how it is spelled today.
 
 ## Goal tokens (principle 1)
 
-A hook extracts four literal tokens from the dispatch prompt --
-`project=`, `task_id=`, `plan_id=` and `parent_handoff_id=`
+A hook extracts five literal tokens from the dispatch prompt --
+`project=`, `task_id=`, `plan_id=`, `parent_handoff_id=` and `ceiling=`
 (`hooks/modules/agents/dispatch_binding.py::extract_dispatch_binding`); prose
 around them is not parsed.
 
@@ -16,6 +16,7 @@ around them is not parsed.
 | `task_id=<tasks.id>` | Binds the turn to a plan task: its gates render as `acceptance:` and the turn cannot self-`COMPLETE`. The id is `tasks.id`, not the plan position; `gaia task show <brief> <order>` prints both. |
 | `plan_id=<N>` | Stamps the born row's `plan_id`. Like `task_id=` and `parent_handoff_id=`, it marks the dispatch as task execution rather than a free investigation or memory turn; it does not bind a task's gates, which `task_id=` alone does. |
 | `parent_handoff_id=<N>` | Required on a verifier dispatch: `N` is the producer's contract row id. A dispatch without it runs with no binding to what it verifies. |
+| `ceiling=<N>` | The turn's tool-call ceiling. It renders as `ceiling:` in `# Your Contract`, and once, on the call that reaches 80% of `N`, a hook tells the turn to write its evidence and close, partially if needed (`hooks/modules/agents/call_ceiling.py`). Counted: every call allowed to run -- on Claude Code at PreToolUse (Bash, Task, Agent, SendMessage, Read, Edit, Write, Glob, Grep, WebSearch, WebFetch, NotebookEdit; not Skill, TodoWrite or MCP tools, which no matcher names), on OpenCode every tool that ran. Without the token no notice fires, since neither host lets a hook read context use. Not a binding coordinate. |
 
 ## Acceptance forms (principle 2)
 
@@ -41,9 +42,16 @@ The specialist runs both verbs itself, inside its turn.
   feature branch, fetch that branch and pass `--base origin/<branch>`.
 - Location: `<workspace>/.project-worktrees/<project>/<id>`, the workspace
   being the declared workspace that holds the project.
-- Release: `gaia worktree release <path>`. A clean tree is unlocked and
-  removed; a dirty one has its diff deposited as evidence (`--brief --ac
-  --workspace`, or `--contract-id` for a turn with no brief) and stays in place.
+- Release: `gaia worktree release <path> [--keep-branch <accumulating>]`. A
+  tree with nothing only it holds is unlocked and removed, and its branch is
+  deleted when every commit on it is reachable from another ref or has an
+  identical change (verbatim patch-id) in one, which is how a cherry-pick
+  integration counts. A branch checked out anywhere, the remote's default
+  branch and each `--keep-branch` survive. A tree with uncommitted work or a
+  commit found nowhere else has its diff deposited as evidence (`--brief --ac
+  --workspace`, or `--contract-id` for a turn with no brief) and stays in
+  place, branch included. The SessionStart sweep and `gaia cleanup` recycle
+  worktrees but never delete a branch.
 - Inspect: `gaia worktree list --repo <path>`, `gaia worktree show <path>`.
 
 The orchestrator's frontmatter withholds `EnterWorktree` and `ExitWorktree`.
@@ -57,6 +65,18 @@ One ordered set per integrating turn, run from the turn's worktree:
 3. every command gate of the task, re-run on the rebased tree
 4. the tests that guard the touched area
 5. `git -C <wt> push origin HEAD:<branch>` -- never `--force`
+
+Moments of cleanup: integrating a task is followed by its turn's `gaia worktree
+release`, which deletes the task branch. After the user merges the PR, fetch the
+default branch and run the post-merge pass, which removes every local branch
+whose content the fetched default branch or another ref already holds:
+`gaia worktree prune-branches --repo <path>`, which fetches first, takes
+`--keep-branch` (repeatable, for the accumulating branch) and lists what would
+go under `--dry-run`. It is a specialist's verb, outside the orchestrator's lane,
+and it never touches a branch carrying commits found nowhere else; that stays a
+forced `git branch -D`, which takes a signature. A session started at a
+workspace root shows the leftover counts of every repo of the declared workspace
+and deletes none of them.
 
 Only the push leaves the machine, so it is the step that takes the user's
 signature, named by branch (`subagent-request-approval`). A rejected push means

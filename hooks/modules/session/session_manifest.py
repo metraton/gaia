@@ -367,8 +367,14 @@ def _local_zone_line() -> str:
     return f"- Local zone: {zone}; read the current time with `gaia now`"
 
 
-def build_environment_section() -> str:
-    """Render the Environment section: where this session stands, or "" on failure."""
+def build_environment_section(session_id: str = "") -> str:
+    """Render the Environment section: where this session stands, or "" on failure.
+
+    ``session_id`` is the host's id for the session, the one
+    `gaia session resume-point set --session-id` writes under and the
+    compaction snapshot reads; the block publishes it at birth and after every
+    compaction, so the orchestrator can name its own session on any host.
+    """
     try:
         from gaia.paths import data_dir, db_path
         from gaia.project import current
@@ -381,6 +387,8 @@ def build_environment_section() -> str:
             lines.append(f"- Gaia: {installation}")
         lines.append(f"- Folder: {folder} (workspace {workspace})" if workspace
                      else f"- Folder: {folder} (not inside a declared workspace)")
+        if session_id:
+            lines.append(f"- Session id: {session_id}")
         lines.append(_local_zone_line())
         # The orchestrator invokes `gaia` by this absolute path: the trust
         # guard rejects the bare token.
@@ -880,7 +888,7 @@ def _record_user_rows_injected(rows: list[dict]) -> None:
 
 
 def build_session_context(
-    *, alarms: Sequence[str] = (), record_injection: bool = False,
+    *, alarms: Sequence[str] = (), record_injection: bool = False, session_id: str = "",
 ) -> str:
     """Assemble the session birth block; "" when every part is empty. Never raises.
 
@@ -899,7 +907,7 @@ def build_session_context(
 
         user_rows = [r for r in user_anchor_rows() if (r.get("body") or "").strip()]
         prefix = [a for a in (*alarms, build_schema_direction_block()) if a]
-        environment = build_environment_section()
+        environment = build_environment_section(session_id)
         user = render_user_sections(user_rows)
         fixed = [b for b in (*prefix, environment, user) if b]
         roster_budget = BIRTH_BUDGET - sum(len(b) + 2 for b in fixed)

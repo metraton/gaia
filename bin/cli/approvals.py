@@ -1721,9 +1721,12 @@ def _request_set_items(args) -> list[dict]:
 
     One --cwd applies to every command; N --cwd flags align with N commands,
     and each must be an existing directory, or no call could ever run there.
-    --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions.
+    --expect-exit takes ``POSITION=CODE[,CODE]`` with 1-based positions; a
+    position named twice accumulates its codes.
     --does and --impact, when given, come once per command.
     """
+    from gaia.approvals.core import _MAX_EXIT_CODE
+
     commands = list(args.command)
     cwds = [os.path.abspath(cwd) for cwd in getattr(args, "cwd", None) or [os.getcwd()]]
     if len(cwds) == 1:
@@ -1733,6 +1736,9 @@ def _request_set_items(args) -> list[dict]:
     missing = [cwd for cwd in cwds if not os.path.isdir(cwd)]
     if missing:
         raise ValueError(f"--cwd {missing[0]} is not an existing directory")
+    unenterable = [cwd for cwd in cwds if not os.access(cwd, os.X_OK)]
+    if unenterable:
+        raise ValueError(f"--cwd {unenterable[0]} cannot be entered by this shell")
     does = _per_command(args, "does", commands)
     impacts = _per_command(args, "impact", commands)
     expected: dict[int, list[int]] = {}
@@ -1740,7 +1746,12 @@ def _request_set_items(args) -> list[dict]:
         position, _, codes = spec.partition("=")
         if not position.isdigit() or not 1 <= int(position) <= len(commands) or not codes:
             raise ValueError(f"--expect-exit {spec!r} must be POSITION=CODE[,CODE] for a listed command")
-        expected[int(position) - 1] = [int(code) for code in codes.split(",")]
+        listed = codes.split(",")
+        if not all(code.isdecimal() and 1 <= int(code) <= _MAX_EXIT_CODE for code in listed):
+            raise ValueError(
+                f"--expect-exit {spec!r}: every code must be a non-zero integer 1-{_MAX_EXIT_CODE}"
+            )
+        expected.setdefault(int(position) - 1, []).extend(int(code) for code in listed)
     return [
         {
             "command": command, "cwd": cwd,

@@ -18,11 +18,14 @@ Categories retained internally for verb classification:
 
 import functools
 import logging
+import re
 import shlex
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
+from .canonical_path import is_launcher, program_identity
 from .cli_aliases import as_wrapped_cli
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
@@ -175,6 +178,10 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     # still short-circuits to non-mutative via the SIMULATION_FLAGS check in
     # Step 3, which runs before this table is ever consulted.
     "exec", "execute", "invoke", "trigger", "send", "reply", "replay",
+    # Remote execution entry points: re-run a finished run, fire a dispatch
+    # event, stop a run in flight. `run` itself stays out (see above); these
+    # three name the effect, so they need no per-binary anchor.
+    "rerun", "dispatch", "cancel",
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
     # NOTE: "commit" removed -- local-only operation, trust system
@@ -419,7 +426,8 @@ def _classify_git_tag(semantics: CommandSemantics) -> str:
 
 CLI_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # Gmail API: "modify" only changes labels/flags on messages — it cannot
-    # alter message content, send mail, or delete anything.  Safe as T0.
+    # alter message content, send mail, or delete anything.  Safe as T0 unless
+    # it may remove INBOX (archive), which _may_archive_gmail carves back out.
     ("workspace", "modify"): CATEGORY_READ_ONLY,
 }
 
@@ -626,15 +634,85 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 # here. This dict lives inside the hooks directory and is itself T3-protected.
 
 
-# Shared by the two `gh auth` anchors below: one account slot, two ways to
-# disturb it, one replacement for both.
-_GH_ACCOUNT_GUIDANCE = (
-    "The active gh account is global state shared with every other session on "
-    "this machine -- choose the account per process instead of switching it: "
-    "run gh through a wrapper that sets GH_TOKEN for its own process only, "
-    "e.g. `ghx pr list` (ghx maps the origin owner to an account). "
-    "`gh auth status` lists the accounts; `gh auth login` adds a missing one."
+# Carried by `<cli> auth switch|logout` (see _check_generic_cli_shape): one
+# account slot, two ways to disturb it, one replacement for both.
+_ACCOUNT_SLOT_GUIDANCE = (
+    "The active account of a CLI is global state shared with every other "
+    "session on this machine -- choose the account per process instead of "
+    "switching it: set the CLI's token variable for that one process, e.g. "
+    "`GH_TOKEN=$ACCOUNT_TOKEN gh pr list`, or run it through a wrapper that "
+    "does the same. `gh auth status` lists the accounts; `gh auth login` adds "
+    "a missing one."
 )
+
+_REMOTE_RUN_NOUNS: FrozenSet[str] = frozenset({
+    "workflow", "workflows", "pipeline", "pipelines", "ci",
+})
+_ACCOUNT_SLOT_ACTIONS: FrozenSet[str] = frozenset({"switch", "logout"})
+_GMAIL_ARCHIVE_RE = re.compile(r"removelabelids\W[^\]]*\binbox\b", re.DOTALL)
+_GMAIL_HIDDEN_PAYLOAD_RE = re.compile(
+    r"--[\w-]*file\b"
+    r"|--[\w-]*(?:json|body|data|params)[\w-]*(?:=|\s+)@"
+    r"|--[\w-]*(?:json|body|data)(?:=|\s+)-(?:\s|$)"
+    r"|<\s*[^\s<]"
+    r"|<<"
+)
+
+
+def _may_archive_gmail(semantics: CommandSemantics) -> bool:
+    """Can this Gmail `modify` remove INBOX, i.e. archive the message?
+
+    Yes when the inline label payload removes INBOX, and also when the payload
+    comes from a file or stdin: the command text cannot show what it removes,
+    so it asks. An inline payload that names labels without removing INBOX
+    stays free.
+    """
+    text = semantics.raw_command.lower()
+    if _GMAIL_ARCHIVE_RE.search(text):
+        return True
+    if "labelids" in text:
+        return False
+    return bool(_GMAIL_HIDDEN_PAYLOAD_RE.search(text))
+
+
+def _check_generic_cli_shape(
+    base_cmd: str, family: str, semantics: CommandSemantics
+) -> Optional["MutativeResult"]:
+    """T3 for command shapes whose effect does not depend on the binary's name.
+
+    `<noun> run` for a remote-run noun triggers a remote execution, `config
+    <write verb>` rewrites where every later command points, and `auth
+    switch|logout` rewrites the shared account slot. `config` heads the read
+    forms people run all day, so only a write verb after it decides; `use-context`
+    and `activate` carry none and stay out. Only the leading path is read, so
+    `docker run ci run`, `npm run test` and `gh run list` are untouched.
+    """
+    path = semantics.non_flag_tokens
+    if len(path) < 2:
+        return None
+    head, action = path[0], path[1]
+    guidance = ""
+    if head in _REMOTE_RUN_NOUNS and action == "run":
+        pass
+    elif head == "config" and action.split("-", 1)[0] in MUTATIVE_VERBS:
+        pass
+    elif head == "auth" and action in _ACCOUNT_SLOT_ACTIONS:
+        guidance = _ACCOUNT_SLOT_GUIDANCE
+    else:
+        return None
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb=action,
+        cli_family=family,
+        confidence="high",
+        reason=(
+            f"State-mutating command shape '{base_cmd} {head} {action}' "
+            f"is MUTATIVE (T3) for any binary"
+            + (f". {guidance}" if guidance else "")
+        ),
+        guidance=guidance,
+    )
 
 
 @dataclass(frozen=True)
@@ -824,43 +902,19 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # shallow compound-verb scan, so paths and arguments containing cheap
         # tier words must not leave a real credential mutation ungated.
         MutativeAnchor(path=("sql", "users", "set-password")),
-        # `config` is a READ_ONLY_VERBS entry, so the Step 4 scan stops at it
-        # and returns before it ever reads the verb behind it: `gcloud config
-        # set project other-project` and `gcloud config set account
-        # someone@else.com` redirect every later command onto another project
-        # and another identity, and both were T0. Measured directly -- withdraw
-        # `config` from the read-only table and the same commands come back
-        # MUTATIVE on `set`. The noun is not wrong; deciding alone is.
-        #
-        # Anchored per path rather than by dropping `config` from the read-only
-        # table: that noun heads the read forms this user runs dozens of times a
-        # day (`gcloud config list`, `gcloud config get-value project`), and
-        # those must keep costing nothing. An anchor fires on the exact write
-        # paths and leaves every sibling read where it was.
-        MutativeAnchor(path=("config", "set")),
+        # `config set` is covered by _check_generic_cli_shape; the nested
+        # `configurations` group sits one token deeper than that rule reads.
         MutativeAnchor(path=("config", "configurations", "create")),
         MutativeAnchor(path=("config", "configurations", "delete")),
+        # `add` is kept out of MUTATIVE_VERBS so `git add` stays free; this one
+        # publishes a new secret value to every consumer of `latest`.
+        MutativeAnchor(path=("secrets", "versions", "add")),
     ),
-    # The same noun shadows the same class of write in three more CLIs, each
-    # measured the same way. `kubectl config set-context` repoints the cluster
-    # and namespace every later kubectl reaches; `npm config set registry`
-    # repoints where every later install downloads from. Anchored per CLI so
-    # closing one cannot tax another.
-    #
-    # NOT anchored, and left open on purpose: `kubectl config use-context` and
-    # `gcloud config configurations activate` hide no mutative verb -- `use` and
-    # `activate` are absent from the verb taxonomy, so the shadow is not what
-    # holds them at T0 and removing it would not move them. They redirect as
-    # hard as the forms above and need their own decision.
+    # `config <write verb>` is generic (_check_generic_cli_shape). NOT gated,
+    # and left open on purpose: `kubectl config use-context` and `gcloud config
+    # configurations activate` carry no write verb -- `use` and `activate` are
+    # absent from the verb taxonomy -- and need their own decision.
     "kubectl": (
-        MutativeAnchor(path=("config", "set")),
-        MutativeAnchor(path=("config", "set-cluster")),
-        MutativeAnchor(path=("config", "set-context")),
-        MutativeAnchor(path=("config", "set-credentials")),
-        MutativeAnchor(path=("config", "delete-cluster")),
-        MutativeAnchor(path=("config", "delete-context")),
-        MutativeAnchor(path=("config", "delete-user")),
-        MutativeAnchor(path=("config", "rename-context")),
         # `run` is deliberately absent from MUTATIVE_VERBS ("safe by
         # elimination" -- a global entry would gate every `docker run` and
         # similar dev-workflow invocation), so `kubectl run` fell through to
@@ -874,52 +928,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("run",), flags=frozenset({"--image"})),
     ),
     "gh": (
-        MutativeAnchor(path=("config", "set")),
-        # Three more forms hidden the same way `add-iam-policy-binding` was:
-        # no verb in MUTATIVE_VERBS sits behind them, so all three fell
-        # through to Step 4 and classified READ_ONLY by elimination.
-        #
-        # `gh workflow run` dispatches a `workflow_dispatch` run against
-        # whatever ref is given -- a remote trigger indistinguishable in
-        # effect from pushing the commit that would have triggered it.
-        # `gh run rerun` re-dispatches a COMPLETED run, which is the same
-        # remote-execution effect reached from a different entry point.
-        # `gh run cancel` was not in the original brief -- observed while
-        # closing the other two as the same property from the other
-        # direction: it reaches into a run that is CURRENTLY EXECUTING and
-        # changes its outcome, which is exactly the "provoke or reach into a
-        # remote execution" property the anchor exists to gate, not merely
-        # its trigger half.
-        MutativeAnchor(path=("workflow", "run")),
-        MutativeAnchor(path=("run", "rerun")),
-        MutativeAnchor(path=("run", "cancel")),
         # Merges or rebases the base branch into the PR's REMOTE head: a push
         # to someone's branch, and a CI trigger besides. Today the verb scan
         # reaches it only by splitting `update-branch`; the anchor names it.
         MutativeAnchor(path=("pr", "update-branch")),
-        # `gh` keeps ONE active account per host, so switching or logging out
-        # rewrites a slot every concurrent session and agent on the machine
-        # reads -- a mutation whose blast radius is other people's work, not
-        # this command's repository. Neither `switch` nor `logout` carries a
-        # verb in MUTATIVE_VERBS, so both fell through to Step 4 and classified
-        # READ_ONLY by elimination.
-        #
-        # `login` is deliberately NOT anchored: it ADDS an account without
-        # displacing the active one, and it is the only way out when the
-        # account a command needs is absent. `status` and `token` only read.
-        MutativeAnchor(
-            path=("auth", "switch"),
-            guidance=_GH_ACCOUNT_GUIDANCE,
-        ),
-        MutativeAnchor(
-            path=("auth", "logout"),
-            guidance=_GH_ACCOUNT_GUIDANCE,
-        ),
-    ),
-    "npm": (
-        MutativeAnchor(path=("config", "set")),
-        MutativeAnchor(path=("config", "delete")),
-        MutativeAnchor(path=("config", "edit")),
     ),
     # `git remote add` creates a NEW remote destination the repository will
     # push to and fetch from thereafter -- the same "grants a new capability"
@@ -1485,43 +1497,90 @@ _PS_ALL_VERBS: FrozenSet[str] = (
 # a letter immediately BEFORE the hyphen, and flags start with the hyphen.
 _PS_CMDLET_RE = _re.compile(r"\b([A-Za-z][A-Za-z]*)-([A-Za-z][A-Za-z0-9]*)\b")
 
-# Composition operators that separate pipeline / statement stages:  ';', '|',
-# '&&', '||'.  The cmdlet/verb classification runs PER STAGE on the FIRST
-# cmdlet-shaped token only (the command position); a Verb-Noun-shaped PATH or
-# FLAG argument ('C:\x\my-folder', 'a-b\file.txt') sits in an ARGUMENT position
-# -- AFTER the command in its stage -- so it must not be read as a cmdlet.
-# Two-char operators are listed first in the alternation so '||'/'&&' win over
-# the single-char '|'.
-_PS_STAGE_SPLIT_RE = _re.compile(r"\|\||&&|[;|]")
+# Operators after which PowerShell starts a new command: statement and pipeline
+# separators, and the opening or closing of a script block or (sub)expression,
+# whose body runs as commands of its own -- ``{ Remove-Item $_ }`` and
+# ``"$(Remove-Item x)"`` included. Two-char operators come first so they win.
+_PS_POSITION_SEPARATORS: Tuple[str, ...] = ("||", "&&", ";", "|", "{", "}", "(", ")", "\n")
+
+# A word starting with one of these is a value, variable, operator or comment,
+# never a command PowerShell starts.
+_PS_EXPRESSION_LEADS = frozenset("$'\"@[-#,=+*!<>0123456789")
+
+# Language keywords: a position they lead is a statement header, and the body
+# it governs is split off as positions of its own.
+_PS_KEYWORDS: FrozenSet[str] = frozenset({
+    "if", "elseif", "else", "for", "while", "do", "until", "switch", "try",
+    "catch", "finally", "trap", "function", "filter", "param", "begin",
+    "process", "end", "return", "break", "continue", "throw", "exit", "data",
+    "dynamicparam",
+})
+
+# ForEach-Object runs its script blocks, which are classified as positions of
+# their own; given a member NAME instead (``% Delete``, ``-MemberName``) it
+# calls that method on every input, an effect no name list can judge.
+_PS_SCRIPTBLOCK_INVOKERS: FrozenSet[str] = frozenset({"foreach-object", "foreach", "%"})
+_PS_INVOKER_BLOCK_FLAGS: FrozenSet[str] = frozenset({"-process", "-begin", "-end", "-parallel"})
 
 
-def _ps_stage_command_cmdlets(payload: str) -> "List[Tuple[str, str]]":
-    """Split a PowerShell payload into composition stages and return the
-    command-position cmdlet ``(verb, noun)`` of each stage that has one.
+def _ps_command_positions(payload: str) -> "List[str]":
+    """Return the text of every command position in a PowerShell payload, in order.
 
-    Stages split on ';', '|', '&&', '||' (reusing the composition taxonomy).
-    Within a stage, ONLY the FIRST Verb-Noun-shaped token is the command; any
-    later Verb-Noun token is an ARGUMENT (a hyphenated path such as 'my-folder'
-    or a cmdlet name embedded in a file path) and is intentionally ignored, so
-    it can never be misread as a cmdlet.  Taking the first *match* rather than
-    the literal first whitespace token also transparently skips a leading
-    interpreter wrapper / flags ('powershell.exe -Command "..."') without a
-    fragile payload-extraction step.  A stage with no cmdlet-shaped token
-    contributes nothing (it is an alias / path / builtin command position).
-
-    Obfuscation / arbitrary-execution markers are NOT filtered here -- they are
-    scanned across the WHOLE payload by the caller (``_PS_OBFUSCATION_RES``)
-    before this per-stage scan runs.
+    Single-quoted text is literal in PowerShell and never splits; double-quoted
+    text does, because a ``$(...)`` inside it runs.
     """
-    cmdlets: "List[Tuple[str, str]]" = []
-    for stage in _PS_STAGE_SPLIT_RE.split(payload):
-        stage = stage.strip()
-        if not stage:
-            continue
-        m = _PS_CMDLET_RE.search(stage)  # FIRST cmdlet in the stage = the command
-        if m:
-            cmdlets.append((m.group(1), m.group(2)))
-    return cmdlets
+    positions: "List[str]" = []
+    start = i = 0
+    in_single = in_double = False
+    while i < len(payload):
+        ch = payload[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single:
+            separator = next(
+                (s for s in _PS_POSITION_SEPARATORS if payload.startswith(s, i)), None,
+            )
+            if separator:
+                positions.append(payload[start:i].strip())
+                i += len(separator)
+                start = i
+                continue
+        i += 1
+    positions.append(payload[start:].strip())
+    return [position for position in positions if position]
+
+
+# A ``.Name(`` or ``::Name(`` call invokes a .NET method, and a method can
+# mutate (``.Delete()``, ``[IO.File]::Delete(x)``) under any name; a property
+# read carries no call parentheses.
+_PS_METHOD_CALL_RE = _re.compile(r"(?:\.|::)[A-Za-z_]\w*\(")
+
+# A call operator (``&``) or dot-source (``. ``) in front of a command word.
+_PS_CALL_OPERATOR_RE = _re.compile(r"^(?:&|\.(?=\s))\s*")
+
+
+def _powershell_floor_readings(command: str) -> "Tuple[str, ...]":
+    """Return every command position a PowerShell command line runs, for the block floor.
+
+    Empty unless *command* is a ``powershell``/``pwsh`` invocation, whose
+    ``-Command`` script is split, or is itself PowerShell-shaped: led by a
+    cmdlet, a keyword, a script-block invoker, a call operator or an expression.
+    """
+    head = command[:_consume_shell_word(command, 0)].strip("\"'")
+    if program_identity(head) in _POWERSHELL_INTERPRETERS:
+        command = _powershell_payload(command)[1]
+    elif not (
+        _PS_CMDLET_RE.fullmatch(head)
+        or head.lower() in _PS_KEYWORDS | _PS_SCRIPTBLOCK_INVOKERS
+        or head[:1] in ("&", "$", "(")
+    ):
+        return ()
+    return tuple(
+        _name_program_head(_PS_CALL_OPERATOR_RE.sub("", position))[0]
+        for position in _ps_command_positions(command)
+    )
 
 # Obfuscation / non-inspectable-execution markers -> T3 regardless of the
 # surrounding cmdlets.  These run BEFORE the cmdlet allowlist so a benign read
@@ -1549,6 +1608,37 @@ def _is_ps_encoded_flag(flag: str) -> bool:
     if body == "ec":
         return True
     return len(body) >= 2 and "encodedcommand".startswith(body)
+
+
+# PowerShell interpreter options that consume the following word.
+_PS_INTERPRETER_VALUE_FLAGS: FrozenSet[str] = frozenset({
+    "-executionpolicy", "-ep", "-ex", "-windowstyle", "-w", "-workingdirectory",
+    "-wd", "-configurationname", "-config", "-inputformat", "-if",
+    "-outputformat", "-of", "-version", "-v", "-psconsolefile",
+    "-settingsfile", "-file", "-f", "-custompipename",
+})
+
+
+def _powershell_payload(command: str) -> "Tuple[bool, str]":
+    """Return ``(has_command_flag, script)`` for a ``powershell``/``pwsh`` command line.
+
+    The script is every word after ``-Command`` (any prefix of it, ``-c``
+    included), which PowerShell joins and runs; without that flag it is the
+    words after the interpreter's own options.
+    """
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    i = 1
+    while i < len(words):
+        flag = words[i].lower()
+        if len(flag) >= 2 and "-command".startswith(flag):
+            return True, " ".join(words[i + 1:])
+        if not flag.startswith("-"):
+            break
+        i += 2 if flag in _PS_INTERPRETER_VALUE_FLAGS else 1
+    return False, " ".join(words[i:])
 
 
 # ---------------------------------------------------------------------------
@@ -1630,6 +1720,19 @@ _PS_ALIASES: "Dict[str, Tuple[str, str]]" = {
     "chdir": ("read", "Set-Location"),
     "cls": ("read", "Clear-Host"), "clear": ("read", "Clear-Host"),
     "write": ("read", "Write-Output"), "echo": ("read", "Write-Output"),
+    "ri": ("change", "Remove-Item"), "rp": ("change", "Remove-ItemProperty"),
+    "clc": ("change", "Clear-Content"), "cli": ("change", "Clear-Item"),
+    "clp": ("change", "Clear-ItemProperty"), "si": ("change", "Set-Item"),
+    "sp": ("change", "Set-ItemProperty"), "spps": ("change", "Stop-Process"),
+    "spsv": ("change", "Stop-Service"), "sasv": ("change", "Start-Service"),
+    "irm": ("change", "Invoke-RestMethod"),
+    "gi": ("read", "Get-Item"), "gp": ("read", "Get-ItemProperty"),
+    "gl": ("read", "Get-Location"), "gcm": ("read", "Get-Command"),
+    "gal": ("read", "Get-Alias"), "ghy": ("read", "Get-History"),
+    "gps": ("read", "Get-Process"), "gsv": ("read", "Get-Service"),
+    "sls": ("read", "Select-String"), "ft": ("read", "Format-Table"),
+    "fl": ("read", "Format-List"), "fw": ("read", "Format-Wide"),
+    "?": ("read", "Where-Object"), "where": ("read", "Where-Object"),
 }
 
 # Bare PowerShell execution aliases: recognizing them enters this lane so the
@@ -2496,6 +2599,79 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
     return _rm_scratch_confined_targets(tokens) is not None
 
 
+# Flags of a single-file copy that cannot move where it writes.  A recursive
+# copy (``-r``/``-R``/``-a``) is left out on purpose: it writes paths nested
+# under the destination, any of which may be a symlink already sitting in
+# scratch and pointing outside it.  ``-l``/``-s`` (a link back to the source),
+# ``-t``/``-T`` (destination named elsewhere) and every unlisted option also
+# keep the alias verdict.
+_CP_SCRATCH_SHORT_FLAGS: FrozenSet[str] = frozenset("pvfniuLHP")
+_CP_SCRATCH_LONG_FLAGS: FrozenSet[str] = frozenset({
+    "--verbose", "--force", "--no-clobber", "--interactive", "--update",
+    "--dereference", "--no-dereference", "--preserve",
+})
+
+
+def _cp_scratch_written_paths(tokens: tuple) -> "Tuple[str, ...] | None":
+    """Return the canonical paths a ``cp`` writes when all lie inside scratch.
+
+    Separate from the rm predicate on purpose: cp has its own grammar and
+    writes only its destination, so the sources are never judged here.  A
+    destination that is an existing directory is written at
+    ``<dest>/<basename(source)>``; each such path is re-resolved so a symlink
+    already sitting in scratch cannot carry the write outside it.  Any
+    ambiguity returns None and the command keeps its T3 alias verdict.
+    """
+    import os
+    scratch_root = _gaia_scratch_root()
+    if not scratch_root:
+        return None
+
+    positionals = []
+    end_of_options = False
+    for token in tokens[1:]:
+        if not end_of_options and token == "--":
+            end_of_options = True
+        elif not end_of_options and token.startswith("--"):
+            if token.split("=", 1)[0] not in _CP_SCRATCH_LONG_FLAGS:
+                return None
+        elif not end_of_options and token.startswith("-") and token != "-":
+            if not set(token[1:]) <= _CP_SCRATCH_SHORT_FLAGS:
+                return None
+        else:
+            positionals.append(token)
+    if len(positionals) < 2:
+        return None
+
+    def confined(path: str) -> "str | None":
+        real = os.path.realpath(path)
+        inside = real == scratch_root or real.startswith(scratch_root + os.sep)
+        return real if inside else None
+
+    *sources, destination = positionals
+    if any(ch in _RM_GLOB_CHARS for ch in destination) or ".." in destination:
+        return None
+    expanded = os.path.expanduser(destination)
+    if expanded.startswith("~"):
+        return None
+    real_destination = confined(expanded)
+    if real_destination is None:
+        return None
+    if not os.path.isdir(real_destination):
+        return (real_destination,) if len(sources) == 1 else None
+
+    written = []
+    for source in sources:
+        name = os.path.basename(os.path.normpath(os.path.expanduser(source)))
+        if not name or name in (".", ".."):
+            return None
+        real = confined(os.path.join(real_destination, name))
+        if real is None:
+            return None
+        written.append(real)
+    return tuple(written)
+
+
 _DURABLE_STORE_SIGNATURES: Tuple[Tuple[bytes, str], ...] = (
     (b"SQLite format 3\x00", "SQLite database"),
 )
@@ -2990,6 +3166,9 @@ HELP_IDEMPOTENT_BASE_CMDS: FrozenSet[str] = frozenset({
 HELP_ANY_POSITION_BASE_CMDS: FrozenSet[str] = frozenset({
     "gcloud",
     "terraform",
+    # argparse prints the deepest subparser's help and exits while parsing,
+    # before any handler runs, however many positionals precede the flag.
+    "gaia",
 })
 
 # State-changing command paths whose action verb is intentionally absent from
@@ -3023,6 +3202,25 @@ CLI_MUTATIVE_PATH_PREFIXES: Dict[str, Tuple[Tuple[str, ...], ...]] = {
 # exemption to count only real positional args.
 import re as _re_help
 _SHELL_REDIRECT_RE = _re_help.compile(r"^(\d*[<>]&?\d*|[<>]{1,2}.*)$")
+
+
+def _program_asked_for_help(command: str, base_cmd: str) -> bool:
+    """True when the program's own argv carries a help flag that is not an option's value.
+
+    Read from shell_parser.program_argv, so a comment, a later command, a
+    redirect target or anything after `--` never counts; a help flag right
+    after a short option that takes a value (`-l --help`) is that option's
+    value, not a request.
+    """
+    from ..tools.shell_parser import program_argv
+
+    argv = program_argv(command)[1:]
+    if "--" in argv:
+        argv = argv[:argv.index("--")]
+    return any(
+        word in HELP_FLAGS and not (index and absorbs_next_token(base_cmd, argv[index - 1]))
+        for index, word in enumerate(argv)
+    )
 
 
 # ============================================================================
@@ -3342,7 +3540,7 @@ def _scan_dangerous_flags(
     """
     found: List[str] = []
 
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if not token.startswith("-"):
             continue
 
@@ -3365,7 +3563,11 @@ def _scan_dangerous_flags(
                 if cli in D_FLAG_MEANS_FORCE_DELETE:
                     found.append(token)
             elif token == "-M":
-                if cli in M_FLAG_MEANS_FORCE_MOVE:
+                # On git, -M is --find-renames for show/log/diff and a forced
+                # rename only after `branch`.
+                if cli in M_FLAG_MEANS_FORCE_MOVE and (
+                    cli != "git" or "branch" in tokens[:index]
+                ):
                     found.append(token)
             elif token == "--delete":
                 if cli in DELETE_FLAG_IS_DESTRUCTIVE:
@@ -4213,15 +4415,24 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # follow the prefix, but ``analyze_command`` keys off ``tokens[0]``. Peel and
     # re-classify -- SAME command minus an inert prefix, so ``_depth`` is carried
     # through unchanged (mirrors the ``cd`` peel above).
-    env_remainder, env_peeled = _peel_leading_command_wrappers(command)
+    readings, env_peeled = _peel_wrapper_readings(command)
+    env_remainder = readings[0]
     if env_peeled and env_remainder and env_remainder != command.strip():
         config_result = _check_package_config_environment(command, env_remainder)
         if config_result is not None:
             return config_result
-        return detect_mutative_command(
-            env_remainder, from_source_code=from_source_code, cwd=cwd,
-            _depth=_depth,
-        )
+        if sets_node_options(command):
+            node_options_result = node_test_under_node_options(env_remainder, cwd)
+            if node_options_result is not None:
+                return node_options_result
+        for reading in readings:
+            result = detect_mutative_command(
+                reading, from_source_code=from_source_code, cwd=cwd,
+                _depth=_depth,
+            )
+            if result.is_mutative:
+                break
+        return result
 
     # --- Honor a release-track prefix (`gcloud alpha ...`, `gcloud beta ...`) ---
     # A track word between the tool and the command names a different API track
@@ -4318,7 +4529,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # its deletion consentable at all.  The catastrophic floor (rm -rf /,
         # /*, ~) still runs first in blocked_commands.py, which defers to this
         # detector only for scratch-confined rm commands.
-        if base_cmd == "rm":
+        if base_cmd in ("rm", "rmdir"):
             scratch_targets = _rm_scratch_confined_targets(tuple(tokens))
             if scratch_targets:
                 valuable = _durable_store_under_scratch_targets(scratch_targets)
@@ -4346,6 +4557,23 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     reason=(
                         f"rm is confined to the Gaia scratch directory but "
                         f"reaches durable content: {valuable}"
+                    ),
+                )
+
+        # cp writes only its destination; into scratch it is free unless it
+        # would overwrite a durable store already parked there.
+        if base_cmd == "cp":
+            written = _cp_scratch_written_paths(tuple(tokens))
+            if written and _durable_store_under_scratch_targets(written) is None:
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb=base_cmd,
+                    cli_family="system",
+                    confidence="high",
+                    reason=(
+                        "cp writing only inside the Gaia scratch directory "
+                        "(~/.gaia/scratch) and overwriting no durable store"
                     ),
                 )
 
@@ -4575,7 +4803,6 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         base_cmd in HELP_IDEMPOTENT_BASE_CMDS
         or family in HELP_IDEMPOTENT_FAMILIES
     ):
-        flag_set = set(semantics.flag_tokens)
         # Count semantic non-flag tokens only. Shell redirect shorthands
         # like "2>&1", ">file", "<file" appear as non-flag tokens in shlex
         # output but carry no CLI semantic value -- filtering them keeps
@@ -4588,13 +4815,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         # separator: tokens after `--` are a verbatim payload the CLI passes
         # through (gcloud compute ssh ... -- <remote command> --help runs the
         # remote command; the trailing --help is ssh's argument, not gcloud's).
-        if "--" in tokens:
-            separator_index = tokens.index("--")
-            help_requested = any(
-                t in HELP_FLAGS for t in tokens[:separator_index]
-            )
-        else:
-            help_requested = bool(flag_set & HELP_FLAGS)
+        help_requested = _program_asked_for_help(command, base_cmd)
         # The any-position whitelist must never outrank an explicitly
         # registered mutative command path: `terraform state rm ... --help` /
         # `gcloud billing projects unlink ... --help` stay gated even though
@@ -4802,6 +5023,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 guidance=anchor.guidance,
             )
 
+    shape_result = _check_generic_cli_shape(base_cmd, family, semantics)
+    if shape_result is not None:
+        return shape_result
+
     # --- Step 3e: Command+subcommand tier exception (anchored) ---
     # Some project-CLI subcommand groups (e.g., `gaia brief`, `gaia ac`) are
     # local-only planning bookkeeping: edit/set-status/add/remove only touch a
@@ -4845,6 +5070,34 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             nested_verb.split("-", 1)[0] in _nested_deny
             or nested_verb in _nested_deny
         )
+        # `gaia session` is classified per verb, not as a group: a literal
+        # SESSION_VERBS path (two reads, and the resume-point file replaced on
+        # every write, which also drops points older than 30 days) is
+        # read-only; a word only the shell resolves is T3, since it may be the
+        # write; an undeclared verb falls to the ordinary scan.
+        if subcommand_key == ("gaia", "session"):
+            from .subagent_resume_point_guard import declared_session_verb, is_shell_resolved
+
+            session_path = declared_session_verb(semantics.non_flag_tokens[1:])
+            if session_path is not None:
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb=" ".join(session_path),
+                    cli_family=family,
+                    confidence="high",
+                    reason=f"'gaia session {' '.join(session_path)}' is declared in SESSION_VERBS",
+                )
+            unresolved = [t for t in semantics.non_flag_tokens[1:3] if is_shell_resolved(t)]
+            if unresolved:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=unresolved[0],
+                    cli_family=family,
+                    confidence="high",
+                    reason=f"'gaia session' verb '{unresolved[0]}' is resolved only by the shell",
+                )
         if subcommand_key in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS:
             if verb_is_destructive or nested_verb_is_destructive:
                 # Whole-record destruction (e.g. `gaia plan delete`, `gaia
@@ -4934,6 +5187,20 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # --- Step 4: Scan semantic non-flag tokens near the command head ---
     # Priority order: SIMULATION > MUTATIVE > READ_ONLY > ALIASES
     for semantic_index, token in enumerate(semantics.semantic_head_tokens[1:], start=1):
+        # `deploy-key` is a noun, so hyphen-splitting it onto `deploy` reads a
+        # listing as a deployment; add/delete still reach the split below.
+        if token == "deploy-key" and tuple(
+            semantics.semantic_head_tokens[semantic_index + 1:semantic_index + 2]
+        ) == ("list",):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb="list",
+                cli_family=family,
+                confidence="high",
+                reason="Listing deploy keys is read-only",
+            )
+
         # Check compound read-only subcommands BEFORE hyphen-split.
         # Without this, "merge-base" would be split to "merge" -> MUTATIVE.
         if token in COMPOUND_READ_ONLY_SUBCOMMANDS:
@@ -5048,7 +5315,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             # combos are safe despite the verb being in MUTATIVE_VERBS.
             # Example: Gmail API "modify" only changes labels/flags.
             exception_key = (family, verb)
-            if exception_key in CLI_VERB_TIER_EXCEPTIONS:
+            if exception_key in CLI_VERB_TIER_EXCEPTIONS and not _may_archive_gmail(semantics):
                 target_category = CLI_VERB_TIER_EXCEPTIONS[exception_key]
                 return MutativeResult(
                     is_mutative=False,
@@ -5129,7 +5396,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                                 confidence="high",
                                 reason=f"CamelCase verb '{part}' (from '{raw_token}') overridden to read-only by flag",
                             )
-                    if (family, part) in CLI_VERB_TIER_EXCEPTIONS:
+                    if (family, part) in CLI_VERB_TIER_EXCEPTIONS and not _may_archive_gmail(semantics):
                         target_category = CLI_VERB_TIER_EXCEPTIONS[(family, part)]
                         return MutativeResult(
                             is_mutative=False,
@@ -5938,11 +6205,17 @@ class _WrapperGrammar:
     ``value_flags`` consume the following word as their argument; any other
     flag -- boolean, clustered (``-oL``, ``-c3``) or ``--long=value`` -- is one
     word. ``positionals`` counts the wrapper's own operands before the wrapped
-    command (``timeout``'s duration).
+    command (``timeout``'s duration). A Windows wrapper takes ``/x`` switches,
+    matched in any case; one of its ``terminators`` (``cmd /c``) ends its
+    arguments, and ``window_title`` lets a leading quoted word be the title
+    ``start`` gives the window rather than the command.
     """
 
     value_flags: FrozenSet[str] = frozenset()
     positionals: int = 0
+    windows_switches: bool = False
+    terminators: FrozenSet[str] = frozenset()
+    window_title: bool = False
 
 
 # Wrappers that run the command after them with the same effect it has alone.
@@ -5976,7 +6249,19 @@ _COMMAND_WRAPPERS: Dict[str, _WrapperGrammar] = {
     "time": _WrapperGrammar(value_flags=frozenset({
         "-f", "-o", "--format", "--output",
     })),
+    "cmd": _WrapperGrammar(windows_switches=True, terminators=frozenset({"/c", "/k", "/r"})),
+    "start": _WrapperGrammar(
+        windows_switches=True,
+        value_flags=frozenset({"/d", "/node", "/affinity"}),
+        window_title=True,
+    ),
 }
+
+# A switch is one word: ``/b`` or ``/e:on``. A path such as ``/usr/bin/rm``
+# carries a second slash and is the wrapped command, not a switch.
+_WINDOWS_SWITCH_RE = _re.compile(r"/[A-Za-z?]+(?::\S*)?")
+_STRING_PAYLOAD_SWITCH_RE = _re.compile(r"(?:^|\s)/[ckr]\s*$", _re.IGNORECASE)
+_PY_LAUNCHER_SELECTOR_RE = _re.compile(r"-(?:\d+(?:\.\d+)?(?:-(?:32|64|arm64))?|V:\S+)")
 
 
 def _consume_shell_word(s: str, i: int) -> int:
@@ -6057,6 +6342,7 @@ def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
     """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
     positionals = grammar.positionals
+    title_allowed = grammar.window_title
     while i < n:
         while i < n and s[i].isspace():
             i += 1
@@ -6064,9 +6350,21 @@ def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
             break
         tok_end = _consume_shell_word(s, i)
         tok = s[i:tok_end]
-        if tok == "--":
+        if grammar.windows_switches:
+            tok = tok.lower()
+        if tok == "--" or tok in grammar.terminators:
             return tok_end
-        if tok.startswith("-"):
+        if title_allowed:
+            title_allowed = False
+            if tok.startswith('"'):
+                i = tok_end
+                continue
+        is_switch = (
+            _WINDOWS_SWITCH_RE.fullmatch(tok) is not None
+            if grammar.windows_switches
+            else tok.startswith("-")
+        )
+        if is_switch:
             i = tok_end
             if tok in grammar.value_flags or _short_bundle_ends_in_value_flag(
                 tok, grammar.value_flags,
@@ -6092,21 +6390,29 @@ def _skip_command_wrappers(s: str, i: int) -> int:
     ``env NAME=$(mutative) cmd`` form would have its substitution discarded
     without ever being classified.
     """
+    return _wrapper_chain(s, i)[0]
+
+
+def _wrapper_chain(s: str, i: int) -> "Tuple[int, Tuple[_WrapperGrammar, ...]]":
+    """Return the index past the leading wrappers at ``s[i]`` and their grammars, outermost first."""
     n = len(s)
+    chain: List[_WrapperGrammar] = []
     while True:
         while i < n and s[i].isspace():
             i += 1
         word_end = _consume_shell_word(s, i)
-        grammar = _COMMAND_WRAPPERS.get(s[i:word_end].rsplit("/", 1)[-1])
+        grammar = _COMMAND_WRAPPERS.get(program_identity(s[i:word_end].strip("\"'")))
         if grammar is None:
-            return i
+            return i, tuple(chain)
+        chain.append(grammar)
         i = _skip_wrapper_arguments(s, word_end, grammar)
 
 
 def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
     """Peel leading wrappers (``_COMMAND_WRAPPERS``) and ``NAME=value`` assignments off *command*.
 
-    Returns ``(remainder, peeled)``. The wrapped command runs with the effect
+    Returns ``(remainder, peeled)``, the remainder's head respelled by
+    ``_name_program_head``. The wrapped command runs with the effect
     it has alone, but the token-0 scans land on the wrapper or the assignment
     and never see its verb. The block floor and the T3 detector both call this
     one function (DP1), so ``sudo``/``timeout``/``nice`` in front of a floor
@@ -6117,12 +6423,28 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
     ``=`` inside a later argument (``echo A=B terragrunt apply``) is never
     taken for a leading assignment.
     """
+    readings, peeled = _peel_wrapper_readings(command)
+    return readings[0], peeled
+
+
+def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
+    """Return ``(readings, peeled)``: every command the wrapped remainder may run, the remainder first.
+
+    A quoted ``cmd /c`` payload is one word to the shell and a chain to cmd,
+    so each of its stages (``shell_parser.parse_command``) is a reading. An
+    unquoted first word after ``start`` is the program to Windows but reads
+    as a title to anyone expecting ``start "title"``; the words after it are
+    a reading too, so either spelling classifies at the stricter verdict.
+    """
     s = command.strip() if command else ""
     n = len(s)
     i = 0
+    innermost: "Optional[_WrapperGrammar]" = None
     while True:
         start = i
-        i = _skip_command_wrappers(s, i)
+        i, chain = _wrapper_chain(s, i)
+        if chain:
+            innermost = chain[-1]
         while True:
             while i < n and s[i].isspace():
                 i += 1
@@ -6133,7 +6455,53 @@ def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
         if i == start:
             break
 
-    return s[i:].strip(), i > 0
+    remainder = s[i:].strip()
+    readings = [remainder]
+    if innermost is not None and innermost.terminators and _STRING_PAYLOAD_SWITCH_RE.search(s[:i]):
+        payload = _unquote_single_word(remainder)
+        from ..tools.shell_parser import parse_command
+
+        stages = parse_command(payload)
+        readings = [payload, *stages] if len(stages) > 1 else [payload]
+    elif innermost is not None and innermost.window_title:
+        words_end = _consume_shell_word(remainder, 0)
+        after_title = remainder[words_end:].strip()
+        if after_title:
+            readings.append(after_title)
+    named = [_name_program_head(reading) for reading in readings]
+    renamed = any(was_renamed for _, was_renamed in named)
+    return tuple(reading for reading, _ in named), i > 0 or renamed
+
+
+def _unquote_single_word(command: str) -> str:
+    """Return the text of *command* when it is one quoted word (``cmd /c "del x"``)."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return command
+    return words[0] if len(words) == 1 and words[0] != command else command
+
+
+def _name_program_head(command: str) -> "Tuple[str, bool]":
+    """Respell the head of *command* as the program Windows starts for it.
+
+    Returns ``(command, renamed)``. Only a head Windows resolves differently
+    from POSIX is respelled -- a backslash path, a PATHEXT suffix, the ``py``
+    launcher -- so a ``./script`` path and a PascalCase cmdlet keep the
+    spelling their lanes key on. ``py``'s version selector (``-3``,
+    ``-3.12-64``, ``-V:3.12``) picks an interpreter and is dropped with it.
+    """
+    head_end = _consume_shell_word(command, 0)
+    word = command[:head_end].strip("\"'")
+    program = program_identity(word)
+    if "\\" not in word and program == word.rsplit("/", 1)[-1].lower():
+        return command, False
+    if is_launcher(word):
+        selector_start = len(command) - len(command[head_end:].lstrip())
+        selector_end = _consume_shell_word(command, selector_start)
+        if _PY_LAUNCHER_SELECTOR_RE.fullmatch(command[selector_start:selector_end]):
+            head_end = selector_end
+    return program + command[head_end:], True
 
 
 _PACKAGE_CONFIG_ENV_RE = _re.compile(
@@ -6333,32 +6701,21 @@ def _classify_powershell_verb(verb: str, noun: str) -> str:
 
 def _classify_powershell_payload(
     payload: str, family: str, source: str,
+    cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> MutativeResult:
-    """Classify a PowerShell script payload by cmdlet verb taxonomy.
+    """Classify a PowerShell script payload at the verdict of its most mutative command position.
 
-    ``payload`` is the raw text of a ``-Command`` string or a ``.ps1`` file.
-    Two concerns are kept separate:
-
-      COMPOSITION / OBFUSCATION (whole-payload scan).  Obfuscation and
-      arbitrary-execution markers (``iex``/``iwr``/``icm``,
-      ``Invoke-Expression``, a ``&``/``.`` call operator) escalate to T3 FIRST
-      -- before the cmdlet scan -- so a read cmdlet piped into ``iex`` cannot
-      launder the payload.  These markers may appear as a stage of their own OR
-      embedded mid-stage, so they are matched across the ENTIRE payload, not per
-      first token.
-
-      CMDLET / VERB (per-stage FIRST-token scan).  The payload is split into
-      composition stages ('; | && ||') and ONLY the leading token of each stage
-      -- the command position -- is classified by its Verb-Noun verb.  Path and
-      flag ARGUMENTS ('C:\\x\\my-folder', 'a-b\\file.txt') sit in argument
-      positions and are NOT read as cmdlets, so a hyphenated path no longer
-      forces a false T3.  Rules (conservative / positive-allowlist):
-        * ANY change or unknown verb at a command position escalates the WHOLE
-          payload to T3 (tier = MAX across stages).
-        * To drop BELOW T3 at least one command-position cmdlet must be present
-          AND every command-position cmdlet must be a read verb -- a payload
-          with no recognizable command-position cmdlet is T3 (cannot prove it is
-          read-only; no safe-by-elimination here).
+    ``payload`` is the raw text of a ``-Command`` string, a ``.ps1`` file or a
+    bare PowerShell command. Obfuscation markers (``iex``, ``Invoke-Expression``,
+    a call operator) are matched across the whole payload first, so a read
+    cmdlet piped into ``iex`` cannot launder it. Then every command position
+    (``_ps_command_positions``) is judged by what leads it: a cmdlet by its
+    Verb-Noun verb, an alias as the cmdlet it names, a native command as its
+    POSIX twin (``detect_mutative_command``). Only the leading word of a
+    position is a command, so a hyphenated path argument is never read as a
+    cmdlet. The payload is free only when no position mutates and at least one
+    is a recognized read cmdlet or alias; otherwise it cannot be proven
+    read-only and is T3.
     """
     # 1. Obfuscation / non-inspectable execution -- whole-payload scan (NOT
     #    restricted to first tokens: a marker may hide mid-stage).
@@ -6377,18 +6734,84 @@ def _classify_powershell_payload(
                 ),
             )
 
-    # 2. Per-stage cmdlet scan: classify ONLY the FIRST cmdlet (the command) of
-    #    each composition stage.  A Verb-Noun-shaped path/flag argument
-    #    ('my-folder', 'a-b') follows the command in its stage, so it is skipped.
+    if _PS_METHOD_CALL_RE.search(payload):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="powershell-method-call",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"PowerShell {source} calls a .NET method, which may mutate "
+                f"whatever its name -- requires approval"
+            ),
+        )
+
     saw_read_cmdlet = False
-    for verb, noun in _ps_stage_command_cmdlets(payload):
-        v, n = verb.lower(), noun.lower()
-        kind = _classify_powershell_verb(v, n)
+    for position in _ps_command_positions(payload):
+        position = _PS_CALL_OPERATOR_RE.sub("", position)
+        words = position.split()
+        if not words:
+            continue
+        head = words[0].lower()
+        if head.strip("\"'").endswith(".ps1"):
+            position, head = f"pwsh -File {position}", "pwsh"
+        elif head[0] in _PS_EXPRESSION_LEADS or head in _PS_KEYWORDS:
+            continue
+        if head in _PS_SCRIPTBLOCK_INVOKERS:
+            if all(word.lower() in _PS_INVOKER_BLOCK_FLAGS for word in words[1:]):
+                saw_read_cmdlet = True
+                continue
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="powershell-member-invocation",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"PowerShell {source} runs '{position}', which calls a named "
+                    f"member on every input -- requires approval"
+                ),
+            )
+        if head in _PS_ALIASES:
+            kind, cmdlet = _PS_ALIASES[head]
+            if kind == "change":
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=cmdlet,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"PowerShell {source} runs alias '{head}' -> {cmdlet} "
+                        f"(mutative) -- requires approval"
+                    ),
+                )
+            saw_read_cmdlet = True
+            continue
+        cmdlet = _PS_CMDLET_RE.fullmatch(head)
+        if cmdlet is None:
+            if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+                native = MutativeResult(
+                    is_mutative=True, category=CATEGORY_MUTATIVE,
+                    verb="powershell-recursion-limit", cli_family=family,
+                    confidence="medium", reason="nesting too deep to inspect",
+                )
+            else:
+                native = detect_mutative_command(position, cwd=cwd, _depth=_depth + 1)
+            if native.is_mutative:
+                return replace(
+                    native,
+                    reason=f"PowerShell {source} runs '{position}': {native.reason}",
+                )
+            continue
+        verb, noun = cmdlet.groups()
+        kind = _classify_powershell_verb(verb, noun)
         if kind == "change":
             return MutativeResult(
                 is_mutative=True,
                 category=CATEGORY_MUTATIVE,
-                verb=f"{v}-{n}",
+                verb=f"{verb}-{noun}",
                 cli_family=family,
                 confidence="high",
                 reason=(
@@ -6400,7 +6823,7 @@ def _classify_powershell_payload(
             return MutativeResult(
                 is_mutative=True,
                 category=CATEGORY_MUTATIVE,
-                verb=f"{v}-{n}",
+                verb=f"{verb}-{noun}",
                 cli_family=family,
                 confidence="medium",
                 reason=(
@@ -6411,7 +6834,6 @@ def _classify_powershell_payload(
             )
         saw_read_cmdlet = True
 
-    # 3a. No recognizable command-position cmdlet -> cannot prove read-only.
     if not saw_read_cmdlet:
         return MutativeResult(
             is_mutative=True,
@@ -6420,13 +6842,12 @@ def _classify_powershell_payload(
             cli_family=family,
             confidence="medium",
             reason=(
-                f"PowerShell {source} has no recognizable Verb-Noun cmdlet at a "
-                f"command position -- cannot prove it is read-only "
+                f"PowerShell {source} has no recognized read cmdlet or alias at "
+                f"a command position -- cannot prove it is read-only "
                 f"(conservative default)"
             ),
         )
 
-    # 3b. Every command-position cmdlet is a read verb.
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
@@ -6451,10 +6872,9 @@ def _check_powershell_command(
       * ``-EncodedCommand <base64>`` -> T3 immediately (non-inspectable).
       * ``-File <script.ps1>``       -> read the file and classify its contents
         (unreadable -> conservative T3, mirroring the script-file lane).
-      * ``-Command``/``-c`` inline   -> classify the raw command text (the
-        interpreter flags carry no Verb-Noun cmdlet, so scanning the whole
-        string is safe and captures the payload regardless of quoting).
-      * no explicit payload flag      -> scan the whole command text anyway; a
+      * ``-Command``/``-c`` inline   -> classify the script it runs
+        (``_powershell_payload``).
+      * no explicit payload flag      -> classify the words after the options; a
         bare interactive ``powershell`` with no cmdlet falls to conservative T3.
 
     Returns ``None`` when ``base_cmd`` is not a PowerShell interpreter.
@@ -6487,7 +6907,8 @@ def _check_powershell_command(
     ps_files = [
         t for t in semantics.non_flag_tokens if t.lower().endswith(".ps1")
     ]
-    if ps_files:
+    has_command_flag, payload = _powershell_payload(command)
+    if ps_files and not has_command_flag:
         content = _read_script_content(ps_files[0], cwd=cwd)
         if content is None:
             return MutativeResult(
@@ -6501,10 +6922,13 @@ def _check_powershell_command(
                     f"-- cannot verify the payload (conservative default)"
                 ),
             )
-        return _classify_powershell_payload(content, family, "script file")
+        return _classify_powershell_payload(
+            content, family, "script file", cwd=cwd, _depth=_depth,
+        )
 
-    # -Command / -c inline, or no explicit payload flag: scan the command text.
-    return _classify_powershell_payload(command, family, "-Command payload")
+    return _classify_powershell_payload(
+        payload, family, "-Command payload", cwd=cwd, _depth=_depth,
+    )
 
 
 def _check_windows_native_command(
@@ -6553,6 +6977,7 @@ def _check_windows_native_command(
         or base_cmd in _CMD_READ_BUILTINS
         or base_cmd in _PS_ALIASES
         or base_cmd in _PS_BARE_OBFUSCATION_ALIASES
+        or base_cmd in _PS_SCRIPTBLOCK_INVOKERS
         or is_bare_cmdlet
     )
     if not recognized:
@@ -6610,9 +7035,8 @@ def _check_windows_native_command(
     if base_cmd in _PS_ALIASES:
         kind, cmdlet = _PS_ALIASES[base_cmd]
         if kind == "read":
-            return _read(
-                base_cmd,
-                f"PowerShell alias '{base_cmd}' -> {cmdlet} (read-only)",
+            return _classify_powershell_payload(
+                command, "powershell", "bare alias", cwd=cwd, _depth=_depth,
             )
         return _change(
             cmdlet,
@@ -6628,10 +7052,11 @@ def _check_windows_native_command(
             f"-- requires approval",
         )
 
-    # 5. Bare Verb-Noun cmdlet: classify the WHOLE command via the shared
-    #    payload classifier (handles composition ';'/'|', ambiguous nouns, and
-    #    obfuscation identically to the wrapped -Command lane).
-    return _classify_powershell_payload(command, "powershell", "bare cmdlet")
+    # 5. Bare cmdlet or script-block invoker: classify the WHOLE command via the
+    #    shared payload classifier, identically to the wrapped -Command lane.
+    return _classify_powershell_payload(
+        command, "powershell", "bare cmdlet", cwd=cwd, _depth=_depth,
+    )
 
 
 def _read_script_content(
@@ -6779,6 +7204,111 @@ def _script_honored_simulation_flag(
     return None
 
 
+_NODE_PRELOAD_FLAGS: FrozenSet[str] = frozenset({"-r", "--require", "--import"})
+
+
+def _node_preload_values(args: "List[str]") -> "List[str]":
+    """The modules node loads before its entry point (``-r x``, ``--require=x``, ``--import x``)."""
+    values = []
+    for index, token in enumerate(args):
+        flag, attached, value = token.partition("=")
+        if flag not in _NODE_PRELOAD_FLAGS:
+            continue
+        if attached:
+            values.append(value)
+        elif index + 1 < len(args):
+            values.append(args[index + 1])
+    return values
+
+
+# Test-runner options that load no code, checked against the Node CLI and
+# test-runner docs. node's flag set grows every release, so this is an
+# allowlist: a loader, preload, --test-global-setup or any flag not named here
+# keeps the script-file lane. --test-reporter also accepts a module specifier
+# and --test-reporter-destination a file path, so only the built-in reporters
+# and the standard streams qualify.
+_NODE_TEST_SAFE_SWITCHES: FrozenSet[str] = frozenset({
+    "--test", "--test-only", "--test-force-exit", "--watch", "--experimental-test-coverage",
+})
+_NODE_TEST_SAFE_VALUE_FLAGS: FrozenSet[str] = frozenset({
+    "--test-name-pattern", "--test-skip-pattern", "--test-concurrency", "--test-timeout",
+    "--test-shard", "--test-isolation", "--test-coverage-include", "--test-coverage-exclude",
+    "--test-coverage-lines", "--test-coverage-branches", "--test-coverage-functions",
+})
+_NODE_TEST_CHECKED_VALUES: Dict[str, FrozenSet[str]] = {
+    "--test-reporter": frozenset({"spec", "tap", "dot", "junit", "lcov"}),
+    "--test-reporter-destination": frozenset({"stdout", "stderr"}),
+}
+
+
+def _is_node_test_suite_run(args: "List[str]", cwd: "Optional[str]") -> bool:
+    """True when ``node --test`` carries only directories, globs and allowlisted test options.
+
+    That run is the project's test suite, the same act as ``pytest tests/``
+    or an ``npm test`` body. Any other argument may be code node runs, so the
+    invocation stays in the script-file lane.
+    """
+    if "--test" not in args:
+        return False
+    positionals = []
+    remaining = iter(args)
+    for token in remaining:
+        if not token.startswith("-"):
+            positionals.append(token)
+            continue
+        flag, attached, value = token.partition("=")
+        if flag in _NODE_TEST_SAFE_SWITCHES and not attached:
+            continue
+        if flag not in _NODE_TEST_SAFE_VALUE_FLAGS and flag not in _NODE_TEST_CHECKED_VALUES:
+            return False
+        if not attached:
+            value = next(remaining, None)
+        if value is None or value not in _NODE_TEST_CHECKED_VALUES.get(flag, {value}):
+            return False
+    return bool(positionals) and all(
+        re.search(r"[*?\[]", token)
+        or Path(cwd or Path.cwd(), Path(token).expanduser()).is_dir()
+        for token in positionals
+    )
+
+
+_NODE_OPTIONS_ASSIGNMENT_RE = re.compile(r"(?<![\w-])NODE_OPTIONS=")
+
+
+def sets_node_options(command: str) -> bool:
+    """True when *command* assigns NODE_OPTIONS anywhere, inline, under ``env`` or by ``export``."""
+    return bool(_NODE_OPTIONS_ASSIGNMENT_RE.search(command))
+
+
+def node_test_under_node_options(command: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
+    """The T3 verdict for a ``node --test`` suite run that NODE_OPTIONS reaches, or None.
+
+    NODE_OPTIONS can carry ``--import``/``--require`` out of sight of the
+    command line, so the suite exemption does not apply; the script-file lane
+    cannot read a directory, so the run asks as it did before the exemption.
+    A NODE_OPTIONS exported by an earlier, separate call is not visible here.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens or program_identity(tokens[0]) != "node":
+        return None
+    if not _is_node_test_suite_run(tokens[1:], cwd):
+        return None
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="node-options-test-run",
+        cli_family="interpreter",
+        confidence="medium",
+        reason=(
+            "node --test runs under NODE_OPTIONS, which can preload code the "
+            "command line does not show -- requiring approval"
+        ),
+    )
+
+
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -6802,6 +7332,13 @@ def _check_script_file(
     """
     if heredoc_program(command) is not None:
         return None
+    if base_cmd == "node":
+        for preload in _node_preload_values(semantics.tokens[1:]):
+            result = detect_mutative_command(
+                f"node {shlex.quote(preload)}", cwd=cwd, _depth=_depth + 1,
+            )
+            if result.is_mutative:
+                return result
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
@@ -6843,6 +7380,16 @@ def _check_script_file(
                         f"without executing the script body (non-mutative)"
                     ),
                 )
+
+    if base_cmd == "node" and _is_node_test_suite_run(semantics.tokens[1:], cwd):
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="node-test-runner",
+            cli_family=family,
+            confidence="medium",
+            reason=f"node --test runs the test suite under '{script_path}'",
+        )
 
     content = _read_script_content(script_path, cwd=cwd)
     if content is None:
@@ -6902,7 +7449,12 @@ def _check_script_file(
         )
 
     if lane == "python" and _analyze_python_inline is not None:
-        ast_result = _analyze_python_inline(content)
+        ast_result = _analyze_python_inline(
+            content,
+            argv_is_mutative=lambda argv: _argv_command_is_mutative(
+                argv, cwd=cwd, _depth=_depth + 1,
+            ),
+        )
         if ast_result.is_dangerous:
             return MutativeResult(
                 is_mutative=True,
@@ -6955,6 +7507,47 @@ def _check_script_file(
         content, script_path, family, from_source_code=(lane == "code"),
         cwd=cwd, _depth=_depth + 1,
     )
+
+
+# A process inherits the script's stdin, so an interpreter started without a
+# program in its argv runs whatever arrives there: the argv names no effect to
+# judge.  The program is named by a script positional or by the interpreter's
+# own inline-code flag (``_INLINE_CODE_MAP``; ``-c`` for a shell).
+_ARGV_STDIN_PROGRAM_FLAGS: FrozenSet[str] = frozenset({"-", "-s", "--stdin"})
+_ARGV_PYTHON_RE = _re.compile(r"python\d*(\.\d+)?")
+
+
+def _argv_runs_unnamed_program(argv: Tuple[str, ...]) -> bool:
+    """True when *argv* starts an interpreter or shell with no program named in it."""
+    import os
+    from .shell_unwrapper import _SHELLS
+    base = os.path.basename(argv[0])
+    if _ARGV_PYTHON_RE.fullmatch(base):
+        program_flags = frozenset({"-c", "-m"})
+    elif base in _INLINE_CODE_MAP:
+        program_flags = _INLINE_CODE_MAP[base]
+    elif base in _SCRIPT_FILE_INTERPRETERS or base in _SHELLS:
+        program_flags = frozenset({"-c"})
+    else:
+        return False
+    for token in argv[1:]:
+        if token in _ARGV_STDIN_PROGRAM_FLAGS:
+            return True
+        if token in program_flags or not token.startswith("-"):
+            return False
+    return True
+
+
+def _argv_command_is_mutative(
+    argv: Tuple[str, ...], cwd: "Optional[str]" = None, _depth: int = 0,
+) -> bool:
+    """Judge what a script's literal argv runs, as the exec-sink lane does."""
+    if _argv_runs_unnamed_program(argv):
+        return True
+    command = shlex.join(argv)
+    if _is_blocked_command is not None and _is_blocked_command(command).is_blocked:
+        return True
+    return detect_mutative_command(command, cwd=cwd, _depth=_depth).is_mutative
 
 
 def _classify_source_with_lexer(
@@ -7824,7 +8417,7 @@ def build_t3_block_response(
     Args:
         command: The original shell command.
         danger: MutativeResult from detect_mutative_command.
-        nonce: Cryptographic nonce for this pending approval. When provided,
+        nonce: The approval_id this block asks the user to approve. When provided,
             the block message includes the approval code that the agent must
             present to the user.
 

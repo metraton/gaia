@@ -45,58 +45,30 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Reuse the canonical permission/hook merge logic from plugin_setup.py.
-# That module is the SINGLE SOURCE OF TRUTH for PERMISSIONS, deny rules,
-# the authoritative-merge algorithm, and the single hook writer. Permissions
-# are orchestrated here to return the {action, path, details} contract; hooks
-# are delegated whole, so install/update and the session setup cannot diverge.
+# plugin_setup.py owns the permission merge and the single hook writer; they
+# are orchestrated here to return the {action, path, details} contract, so
+# install/update and the session setup cannot diverge.
 # ---------------------------------------------------------------------------
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent  # bin/cli -> bin -> pkg/
 _HOOKS_ROOT = _PACKAGE_ROOT / "hooks"
 
-# The hooks/ dir must be on sys.path to pull PERMISSIONS from plugin_setup.
-# plugin_setup lives at hooks/modules/core/plugin_setup.py, and importing it
-# runs hooks/modules/core/__init__.py, which transitively does
-# `from adapters.host_session import ...` -- a TOP-LEVEL `adapters` import that
-# only resolves when hooks/ itself is on sys.path (that is how the hook
-# entrypoints set it up at runtime, and why the runtime import form is
-# `modules.core.plugin_setup`, NOT the dotted `hooks.modules.core...`).
-# During `gaia install` only the package root was on the path, so BOTH the
-# transitive `adapters` import AND the dotted-package form failed, the `except`
-# fallback below fired, and PERMISSIONS silently became the EMPTY-deny fallback
-# -- a fresh install then wrote settings.local.json with NO deny rules, which
-# `gaia doctor` correctly flags as an error (release-check gate 2). Putting
-# hooks/ on the path and importing via the runtime form makes the canonical
-# import succeed so the full _DENY_RULES set is merged in.
+# plugin_setup's package __init__ imports the top-level `adapters` package,
+# which resolves only with hooks/ itself on sys.path -- hence the runtime form
+# `modules.core.plugin_setup`, not `hooks.modules.core...`.
 if str(_HOOKS_ROOT) not in sys.path:
     sys.path.insert(0, str(_HOOKS_ROOT))
 
 try:
     from modules.core.plugin_setup import (  # type: ignore  # noqa: E402
-        PERMISSIONS,
-        _authoritative_merge,
-        _tool_name,
+        merge_gaia_permissions,
         resolve_hook_channel,
         sync_workspace_hooks,
     )
 except Exception:  # noqa: BLE001
+    merge_gaia_permissions = None  # type: ignore[assignment]
     resolve_hook_channel = None  # type: ignore[assignment]
     sync_workspace_hooks = None  # type: ignore[assignment]
-    # Fallback constants if the hooks package cannot be imported (e.g. partial
-    # install). These mirror the canonical values in plugin_setup.py at the
-    # time of writing -- if those drift, this fallback becomes stale, but the
-    # primary path is the import above. Tests pin the import path.
-    PERMISSIONS = {"permissions": {"allow": ["Bash(*)"], "deny": [], "ask": []}}
-
-    def _tool_name(entry: str) -> str:  # type: ignore[no-redef]
-        paren = entry.find("(")
-        return entry[:paren] if paren != -1 else entry
-
-    def _authoritative_merge(current, ours):  # type: ignore[no-redef]
-        gaia_tools = {_tool_name(e) for e in ours}
-        kept = {e for e in current if _tool_name(e) not in gaia_tools}
-        return sorted(kept | ours)
 
 
 # The permission mode Gaia pins in every workspace it installs into. It is
@@ -375,6 +347,11 @@ def _remove_tree_or_link(target: Path) -> None:
         shutil.rmtree(target)
 
 
+# Each name must equal a key of `tool` in opencode/plugin.ts: the wildcard deny
+# hides any plugin tool the frontmatter translation does not name.
+_OPENCODE_ORCHESTRATOR_PLUGIN_TOOLS = ("gaia_compact_when_idle",)
+
+
 def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict:
     """Derive OpenCode agent entries from Gaia's canonical Markdown sources."""
     agents = dict(existing) if isinstance(existing, dict) else {}
@@ -422,6 +399,7 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
                 **{specialist: "allow" for specialist in specialist_names},
             }
             permission.update(_opencode_orchestrator_paths(package_root))
+            permission.update(dict.fromkeys(_OPENCODE_ORCHESTRATOR_PLUGIN_TOOLS, "allow"))
         if permission:
             agent["permission"] = permission
         agents[name] = agent
@@ -608,9 +586,9 @@ def merge_local_permissions(
 ) -> dict[str, Any]:
     """Merge gaia permissions, env vars, agent identity, and hidden attribution into settings.local.json.
 
-    Authoritative merge -- Gaia owns its tool entries (Bash, Edit, Write,
-    etc.) and replaces stale scoped variants. User-added entries for tools
-    Gaia does NOT manage are preserved.
+    Permissions go through ``plugin_setup.merge_gaia_permissions``, the merge
+    the session setup runs: Gaia's allow entries are authoritative, and the
+    deny rules and tool names it retired are removed while the user's stay.
 
     Args:
         workspace: directory containing .claude/.
@@ -621,10 +599,8 @@ def merge_local_permissions(
 
     if not claude_dir.exists():
         return _result("skipped", local_path, ".claude/ not found")
-
-    our_perms = PERMISSIONS
-    our_allow = set(our_perms["permissions"].get("allow", []))
-    our_deny = set(our_perms["permissions"].get("deny", []))
+    if merge_gaia_permissions is None:
+        return _result("error", local_path, "permission merge unavailable: hooks package not importable")
 
     existing = _read_json(local_path) if local_path.exists() else {}
     if existing is None:
@@ -643,23 +619,13 @@ def merge_local_permissions(
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         changed_fields.append("env.CLAUDE_CODE_DISABLE_AUTO_MEMORY")
 
-    # Permissions: authoritative merge
     perms = existing.get("permissions", {})
-    current_allow = set(perms.get("allow", []))
-    current_deny = set(perms.get("deny", []))
-
-    merged_allow = _authoritative_merge(current_allow, our_allow)
-    merged_deny = _authoritative_merge(current_deny, our_deny)
-
-    if current_allow != set(merged_allow):
+    merged = merge_gaia_permissions(perms)
+    if set(perms.get("allow", [])) != set(merged["allow"]):
         changed_fields.append("permissions.allow")
-    if current_deny != set(merged_deny):
+    if perms.get("deny") != merged.get("deny"):
         changed_fields.append("permissions.deny")
-
-    existing.setdefault("permissions", {})
-    existing["permissions"]["allow"] = merged_allow
-    existing["permissions"]["deny"] = merged_deny
-    existing["permissions"].setdefault("ask", [])
+    existing["permissions"] = merged
 
     # Supplied only when absent -- a mode the user chose is theirs to keep,
     # matching how the env vars above are merged.

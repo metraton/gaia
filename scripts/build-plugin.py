@@ -120,6 +120,9 @@ def resolve_file_list(manifest: dict) -> list[Path]:
     for entry in manifest["hooks"]["entries"]:
         files.append(REPO_ROOT / entry)
 
+    for mod in manifest.get("host_mods", []):
+        _collect_paths((REPO_ROOT / "hooks" / mod).parent, files)
+
     # Modules
     modules = manifest.get("modules", [])
     if modules == "all":
@@ -207,18 +210,30 @@ def generate_hooks_json(manifest: dict) -> dict:
             # working tree's file modes) and no `python3` (the launcher picks
             # python3, python or `py -3`); both paths are quoted because a
             # plugin root or workspace can hold a space.
-            entry["hooks"] = [
-                {
-                    "type": "command",
-                    "command": (
-                        f'sh "${{CLAUDE_PLUGIN_ROOT}}/{HOOK_LAUNCHER}" '
-                        f'"${{CLAUDE_PLUGIN_ROOT}}/{entry_point}"'
-                    ),
-                }
-            ]
+            handler: dict = {
+                "type": "command",
+                "command": (
+                    f'sh "${{CLAUDE_PLUGIN_ROOT}}/{HOOK_LAUNCHER}" '
+                    f'"${{CLAUDE_PLUGIN_ROOT}}/{entry_point}"'
+                ),
+            }
+            # The host runs the tool when a hook cannot start or exits other
+            # than 0/2 (missing sh or Python, crash before a verdict); "block"
+            # makes those failures deny. Only the gate gets it: on Stop or
+            # SessionStart a blocking failure would trap the session.
+            if event_name == "PreToolUse":
+                handler["onFailure"] = "block"
+            entry["hooks"] = [handler]
             entries.append(entry)
 
         hooks_json["hooks"][event_name] = entries
+
+    # Claude Code mods: hooks modules the host loads in-process, relative to
+    # hooks/hooks.json. Not the manifest's `modules` key, which lists Python
+    # hook-module directories.
+    mods = manifest.get("host_mods", [])
+    if mods:
+        hooks_json["modules"] = list(mods)
 
     return hooks_json
 
@@ -287,7 +302,7 @@ def generate_plugin_json(manifest: dict) -> dict:
         "repository": "https://github.com/metraton/gaia",
         "license": "MIT",
         "keywords": ["security", "devops"],
-        "engines": {"claude-code": ">=2.1.0"},
+        "engines": {"claude-code": ">=2.1.295"},
         "categories": ["devops", "security", "orchestration"],
     }
 
@@ -433,7 +448,8 @@ def write_root_manifests(plugin_name: str, output_dir: Path, *, force: bool = Fa
         force=force,
     )
     print(
-        f"  hooks/hooks.json: {outcome} ({len(hooks_json['hooks'])} events)",
+        f"  hooks/hooks.json: {outcome} ({len(hooks_json['hooks'])} events, "
+        f"{len(hooks_json.get('modules', []))} mods)",
         file=sys.stderr,
     )
 

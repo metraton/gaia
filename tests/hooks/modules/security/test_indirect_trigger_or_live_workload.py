@@ -74,9 +74,11 @@ CLOSED = [
 # withdraw precisely these entries for the counterfactual, and nothing a
 # sibling task anchored under the same base command.
 _ANCHORED_PATHS_BY_BASE_CMD = {
-    "gh": {("workflow", "run"), ("run", "rerun"), ("run", "cancel")},
     "kubectl": {("run",)},
 }
+
+# The gh forms are held by the any-binary shape rule plus the three verbs.
+_SHAPE_VERBS = frozenset({"rerun", "dispatch", "cancel"})
 
 # --- Face (b): reads of the same flows, runs, and cluster stay free ---------
 READS = [
@@ -112,8 +114,21 @@ def without_the_trigger_anchors(monkeypatch):
 
     Filters by the exact path this work declared, so an anchor a sibling task
     placed under the same base command (e.g. gcloud/kubectl/gh `config`)
-    survives and the counterfactual measures this entry, not the fixture.
+    survives and the counterfactual measures this entry, not the fixture. Also
+    stands down the any-binary shape rule and withdraws the three trigger verbs.
     """
+    from modules.security import mutative_verbs as mutative_verbs_module
+
+    monkeypatch.setattr(
+        mutative_verbs_module,
+        "_check_generic_cli_shape",
+        lambda base_cmd, family, semantics: None,
+    )
+    monkeypatch.setattr(
+        mutative_verbs_module,
+        "MUTATIVE_VERBS",
+        mutative_verbs_module.MUTATIVE_VERBS - _SHAPE_VERBS,
+    )
     for base_cmd, paths in _ANCHORED_PATHS_BY_BASE_CMD.items():
         anchors = COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ())
         survivors = tuple(a for a in anchors if a.path not in paths)

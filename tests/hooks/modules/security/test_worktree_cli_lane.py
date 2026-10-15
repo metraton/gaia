@@ -138,7 +138,7 @@ def test_worktree_lane_is_fully_classified_in_the_catalog():
     leaves = set(wt_subparsers.choices)
     assert leaves, "gaia worktree registers no actions -- the plugin regressed"
 
-    known_specialist_writes = {"create", "release"}
+    known_specialist_writes = {"create", "release", "prune-branches"}
     for leaf in leaves:
         phrase = ("worktree", leaf)
         if phrase in guard.ALLOWED_READ_PHRASES:

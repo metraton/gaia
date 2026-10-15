@@ -38,6 +38,7 @@ import re
 import shlex
 from typing import List, Optional, Tuple
 
+from .canonical_path import command_name, native_path
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
 
@@ -188,7 +189,7 @@ def _writer_targets(component: str) -> List[str]:
     if not tokens:
         return targets
 
-    base = os.path.basename(tokens[0])
+    base = command_name(tokens[0])
 
     if base == _TEE:
         targets.extend(_operand_targets(tokens))
@@ -252,7 +253,7 @@ def _classify_target(token: str, cwd: Optional[str]) -> Optional[str]:
     if cleaned.startswith("/dev/") or cleaned.startswith("/proc/"):
         return None
 
-    expanded = os.path.expanduser(cleaned)
+    expanded = os.path.expanduser(native_path(cleaned))
     if not os.path.isabs(expanded):
         expanded = os.path.join(cwd or os.getcwd(), expanded)
     resolved = os.path.normpath(expanded)

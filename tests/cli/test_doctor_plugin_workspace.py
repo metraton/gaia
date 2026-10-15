@@ -66,8 +66,13 @@ def plugin_workspace(tmp_path, bootstrapped_db_template):
     home = tmp_path / "home"
     home.mkdir()
     env = {k: v for k, v in os.environ.items() if k not in _HOST_ENV}
-    # A PATH without the developer's own `gaia`, which Global CLI alignment would compare against.
-    path = os.pathsep.join(dict.fromkeys([str(Path(sys.executable).parent), "/usr/bin", "/bin"]))
+    # A PATH without the developer's own `gaia`, which Global CLI alignment would compare against,
+    # and with a `claude` at the supported minimum, so the host's own Claude Code version is not graded.
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir()
+    (stub_bin / "claude").write_text("#!/bin/sh\necho '2.1.295 (Claude Code)'\n")
+    (stub_bin / "claude").chmod(0o755)
+    path = os.pathsep.join(dict.fromkeys([str(stub_bin), str(Path(sys.executable).parent), "/usr/bin", "/bin"]))
     env.update(HOME=str(home), PATH=path, GAIA_DB=str(database), CLAUDE_PLUGIN_ROOT=str(plugin))
     return {"plugin": plugin, "workspace": workspace, "env": env, "tmp": tmp_path}
 

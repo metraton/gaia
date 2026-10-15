@@ -124,6 +124,7 @@ is pulled with exactly one verb.
 | `gaia notifications show <id>` | One report, reminder or routine in full. |
 | `gaia notifications list` | Reports, reminders and routines: what is due now, and with `--upcoming` what is coming. |
 | `gaia session preview` | The SessionStart injection manifest — what the orchestrator receives at session start, built read-only with no side effects. |
+| `gaia session snapshot --session-id <id>` | One session's open contracts, pending signatures, active brief/plan/task and resume point -- the block compaction carries forward. `--json` returns it structured. Never writes. |
 | `gaia workspace current` / `gaia workspace info` | Which workspace a read will resolve against, and where its storage actually is. |
 
 ## Where the membership of this lane is enforced, and the one asymmetry

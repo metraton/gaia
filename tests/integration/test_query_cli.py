@@ -736,6 +736,42 @@ def test_query_json_group_by_memory_does_not_bump_telemetry(tmp_db, tmp_path,
     assert after[1] == 0
 
 
+def _seed_metric_episodes_in_two_workspaces(tmp_db) -> None:
+    for episode_id, workspace in (("ep_in_me", "me"), ("ep_in_ws", "ws")):
+        _seed_episode(
+            tmp_db, episode_id, agent="developer", workspace=workspace,
+            context_metrics=_metrics_blob(compliance_total=80, grade="B",
+                                          input_tokens=10, output_real=5),
+        )
+
+
+def test_query_metrics_workspace_all_spans_every_workspace(tmp_db, tmp_path,
+                                                           monkeypatch, capsys):
+    """'all' is not a workspace name: it lifts the workspace filter."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_metric_episodes_in_two_workspaces(tmp_db)
+
+    rc = cmd_query(_make_args(metrics=True, format="json", workspace="all"))
+    assert rc == 0, capsys.readouterr()
+    ids = {r["raw"]["episode_id"] for r in json.loads(capsys.readouterr().out)}
+    assert ids == {"ep_in_me", "ep_in_ws"}
+
+
+def test_query_metrics_named_workspace_still_filters(tmp_db, tmp_path,
+                                                     monkeypatch, capsys):
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_metric_episodes_in_two_workspaces(tmp_db)
+
+    rc = cmd_query(_make_args(metrics=True, format="json", workspace="ws"))
+    assert rc == 0, capsys.readouterr()
+    ids = {r["raw"]["episode_id"] for r in json.loads(capsys.readouterr().out)}
+    assert ids == {"ep_in_ws"}
+
+
 def test_query_registers_subcommand_choice():
     """``gaia query`` is wired into the argparse tree."""
     import cli.query as query_mod

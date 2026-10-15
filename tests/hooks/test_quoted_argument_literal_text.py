@@ -122,7 +122,7 @@ def test_git_grep_that_opens_a_pager_is_not_a_reader(pager_flag):
     verdict = _verdict(f"git -C {REPO} grep {pager_flag} opencode-present", SUBAGENT)
 
     assert verdict.allowed is False
-    assert verdict.reason == REJECTION_MESSAGE, verdict.reason
+    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
 
 
 def test_mutation_inside_double_quoted_substitution_stays_t3():
@@ -140,11 +140,11 @@ def test_consent_verb_run_through_a_shell_wrapper_is_refused():
     verdict = _verdict(f"bash -c 'git -C {REPO} grep x; gaia approvals opencode-present P-1'", SUBAGENT)
 
     assert verdict.allowed is False
-    assert verdict.reason == REJECTION_MESSAGE, verdict.reason
+    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
 
 
 def test_git_config_flag_does_not_make_git_a_reader():
     verdict = _verdict("git -c core.pager=less grep opencode-decide", SUBAGENT)
 
     assert verdict.allowed is False
-    assert verdict.reason == REJECTION_MESSAGE, verdict.reason
+    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason

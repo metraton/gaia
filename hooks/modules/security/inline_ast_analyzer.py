@@ -25,6 +25,10 @@ Design:
   its integer flags, so a read-only open is classified safe while a
   write/append/truncate open is FILE_WRITE.  ``_MODE_ARG_INDEX`` and
   ``_OS_OPEN_WRITE_FLAGS`` hold the per-API argument positions.
+- ``urlopen`` is a read when it sends no body and no ``Request`` the module
+  builds carries a body or a non-GET/HEAD method, matching a ``curl`` GET.  A
+  process call with a literal argv is judged by the command it runs only when
+  the caller passes ``argv_is_mutative`` (the script-file lane does).
 - Call CHAINS are resolved through intermediate calls, because the idiomatic
   form of most mutating APIs is a chain, not a flat ``module.function(...)``:
   ``Path("/x").unlink()`` resolves to ``pathlib.Path.unlink`` and
@@ -68,7 +72,7 @@ import ast
 import logging
 import re
 from dataclasses import dataclass
-from typing import FrozenSet, Optional, Set, Tuple
+from typing import Callable, FrozenSet, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -341,16 +345,159 @@ def _match_cloud_sdk(dotted: str) -> Optional[Tuple[str, str]]:
 
 
 # ============================================================================
+# Provable reads among catalogued calls
+# ============================================================================
+# A process call whose whole argv is literal strings runs exactly that command,
+# so it can be judged as the command it runs.  Every keyword outside this set is
+# refused because it can change what runs or what it reads: ``shell`` turns the
+# argv into a shell string, ``executable``/``env``/``cwd`` pick another binary or
+# script, ``input``/``stdin`` feed it a program.
+_ARGV_PROCESS_CALLS: FrozenSet[str] = frozenset({
+    "subprocess.run", "subprocess.call", "subprocess.check_call",
+    "subprocess.check_output", "subprocess.Popen",
+})
+_ARGV_PASSIVE_KEYWORDS: FrozenSet[str] = frozenset({
+    "capture_output", "text", "check", "timeout", "encoding", "errors",
+    "universal_newlines", "stdout", "stderr",
+})
+
+
+def _literal_argv(call: ast.Call) -> Optional[Tuple[str, ...]]:
+    """Return the argv of a process call when it is provably literal, else None."""
+    if len(call.args) != 1 or not isinstance(call.args[0], (ast.List, ast.Tuple)):
+        return None
+    if any(kw.arg not in _ARGV_PASSIVE_KEYWORDS for kw in call.keywords):
+        return None
+    argv = call.args[0].elts
+    if not argv or not all(
+        isinstance(item, ast.Constant) and isinstance(item.value, str) for item in argv
+    ):
+        return None
+    return tuple(item.value for item in argv)
+
+
+_URLOPEN = "urllib.request.urlopen"
+_URL_REQUEST = "urllib.request.Request"
+_READ_HTTP_METHODS: FrozenSet[Optional[str]] = frozenset({None, "GET", "HEAD"})
+
+
+def _literal_or_absent(call: ast.Call, name: str, index: int) -> Tuple[bool, object]:
+    """Return ``(known, value)`` for an argument given by keyword or position."""
+    node = next((kw.value for kw in call.keywords if kw.arg == name), None)
+    if node is None and len(call.args) > index:
+        node = call.args[index]
+    if node is None:
+        return True, None
+    if isinstance(node, ast.Constant):
+        return True, node.value
+    return False, None
+
+
+def _request_is_read(call: ast.Call) -> bool:
+    """True when a ``Request(...)`` provably carries no body and a read method."""
+    if any(kw.arg is None for kw in call.keywords):
+        return False
+    data_known, data = _literal_or_absent(call, "data", 1)
+    method_known, method = _literal_or_absent(call, "method", 5)
+    return data_known and data is None and method_known and method in _READ_HTTP_METHODS
+
+
+class _RequestProvenance:
+    """Decide whether the target handed to ``urlopen`` is provably a body-less read.
+
+    A target is provable only as a string literal, an f-string, a direct
+    ``Request(...)`` call that is a read, or a name whose every binding in the
+    module is one of those.  The whole module is disqualified when ``Request``
+    is ever referenced other than as a direct call (``partial``, an alias, a
+    subclass), when ``setattr`` is called, or when a ``data``/``method``
+    attribute is assigned, since each can give a request a body unseen.
+    """
+
+    _MAX_NAME_HOPS = 4
+
+    def __init__(self, tree: ast.AST, alias_map: "_AliasResolver") -> None:
+        self._alias_map = alias_map
+        self._assigned: dict = {}
+        self._stores: dict = {}
+        self._unprovable_names: Set[str] = set()
+        call_funcs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                call_funcs.add(id(node.func))
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if len(targets) == 1 and isinstance(targets[0], ast.Name) and node.value is not None:
+                    self._assigned[id(targets[0])] = node.value
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                self._stores.setdefault(node.id, []).append(node)
+            elif isinstance(node, ast.arg):
+                self._unprovable_names.add(node.arg)
+            elif isinstance(node, ast.alias):
+                self._unprovable_names.add(node.asname or node.name.split(".")[0])
+        self.tampered = any(self._tampers(node, call_funcs) for node in ast.walk(tree))
+
+    def _tampers(self, node: ast.AST, call_funcs: set) -> bool:
+        if isinstance(node, ast.Attribute) and node.attr == "__dict__":
+            return True
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+            return node.attr in ("data", "method")
+        if isinstance(node, ast.Call):
+            return self._alias_map.resolve_call(node.func) in ("setattr", "vars")
+        # A locally assigned name resolves to Request when it holds an
+        # instance (the resolver binds call results); only the class itself is
+        # a reference that can be wrapped or subclassed.
+        if isinstance(node, ast.Name) and node.id in self._stores:
+            return False
+        if isinstance(node, (ast.Name, ast.Attribute)) and id(node) not in call_funcs:
+            return self._alias_map.resolve_call(node) == _URL_REQUEST
+        return False
+
+    def is_read(self, node: ast.AST, hops: int = 0) -> bool:
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str)
+        if isinstance(node, ast.JoinedStr):
+            return True
+        if isinstance(node, ast.Call):
+            return self._alias_map.resolve_call(node.func) == _URL_REQUEST and _request_is_read(node)
+        if isinstance(node, ast.Name) and hops < self._MAX_NAME_HOPS:
+            stores = self._stores.get(node.id, [])
+            if not stores or node.id in self._unprovable_names:
+                return False
+            return all(
+                id(store) in self._assigned and self.is_read(self._assigned[id(store)], hops + 1)
+                for store in stores
+            )
+        return False
+
+
+def _urlopen_is_read(call: ast.Call, provenance: _RequestProvenance) -> bool:
+    """True when ``urlopen`` sends no body and its target is provably a read."""
+    if provenance.tampered or any(kw.arg is None for kw in call.keywords):
+        return False
+    if len(call.args) != 1:
+        return False
+    data_known, data = _literal_or_absent(call, "data", 1)
+    return data_known and data is None and provenance.is_read(call.args[0])
+
+
+# ============================================================================
 # Public entry point
 # ============================================================================
 
-def analyze_python_inline(code: str) -> InlineAstResult:
+def analyze_python_inline(
+    code: str,
+    argv_is_mutative: Optional[Callable[[Tuple[str, ...]], bool]] = None,
+) -> InlineAstResult:
     """Classify a Python inline-code payload by invocation, not mention.
 
     Args:
         code: The Python source string extracted from ``python3 -c "..."``.
             Already unquoted; the caller is responsible for stripping the
             surrounding shell quotes before passing it in.
+        argv_is_mutative: Classifier for the argv a literal process call
+            runs.  When given, a process call whose argv is provably literal
+            counts only if that argv is mutative; when omitted, every process
+            call counts.
 
     Returns:
         :class:`InlineAstResult` with ``is_dangerous`` set when at least one
@@ -370,6 +517,7 @@ def analyze_python_inline(code: str) -> InlineAstResult:
     # ``import subprocess as sp`` both resolve correctly during call walk.
     alias_map = _AliasResolver()
     alias_map.collect(tree)
+    provenance = _RequestProvenance(tree, alias_map)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -378,6 +526,13 @@ def analyze_python_inline(code: str) -> InlineAstResult:
         dotted = alias_map.resolve_call(node.func)
         if dotted is None:
             continue
+
+        if dotted == _URLOPEN and _urlopen_is_read(node, provenance):
+            continue
+        if argv_is_mutative is not None and dotted in _ARGV_PROCESS_CALLS:
+            argv = _literal_argv(node)
+            if argv is not None and not argv_is_mutative(argv):
+                continue
 
         # Direct hit on full dotted name.  A mode/flag-gated opener can come
         # back SAFE from the builder, so the walk continues instead of

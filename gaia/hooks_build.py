@@ -27,6 +27,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from gaia.text_digest import text_sha256
+
 # File suffixes that constitute the executable identity of a hooks tree. The
 # hooks tree is Python entry points + modules plus the generated hooks.json /
 # any config JSON; compiled artefacts (``.pyc`` under ``__pycache__``) are
@@ -35,25 +37,12 @@ from pathlib import Path
 _HASHED_SUFFIXES = frozenset({".py", ".json"})
 
 
-def _sha256_file(path: Path) -> str:
-    """Full SHA-256 hex of *path*'s bytes, streamed in 64 KiB chunks.
-
-    Mirrors ``_pack_helpers.content_hash8``'s streaming read (that helper
-    truncates to 8 hex for a single file; here the per-file full digest feeds
-    an outer aggregate that is itself truncated to 8 hex).
-    """
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def hooks_content_hash(hooks_dir: Path) -> str:
     """Return an 8-hex content digest of the hooks tree rooted at *hooks_dir*.
 
     Deterministic across processes and machines: the aggregate SHA-256 folds
-    each ``*.py`` / ``*.json`` file's POSIX-relative path and full SHA-256, in
+    each ``*.py`` / ``*.json`` file's POSIX-relative path and its SHA-256 with
+    CRLF folded to LF (``gaia.text_digest.text_sha256``), in
     sorted-path order, so the result depends only on the tree's content and
     layout -- not on filesystem iteration order or absolute location. The first
     8 hex chars are returned, matching ``content_hash8``'s convention.
@@ -77,7 +66,7 @@ def hooks_content_hash(hooks_dir: Path) -> str:
         rel = p.relative_to(hooks_dir).as_posix()
         agg.update(rel.encode("utf-8"))
         agg.update(b"\0")
-        agg.update(_sha256_file(p).encode("ascii"))
+        agg.update(text_sha256(p).encode("ascii"))
         agg.update(b"\n")
     return agg.hexdigest()[:8]
 

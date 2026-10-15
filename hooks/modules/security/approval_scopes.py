@@ -1,5 +1,5 @@
 """
-Approval scope builders and matching for nonce-based T3 grants.
+Approval scope builders and matching for T3 grants.
 
 The approval system supports two explicit scope shapes:
 

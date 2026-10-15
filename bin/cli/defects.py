@@ -39,6 +39,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
+UNCAPPED_ROWS = -1  # SQLite reads a negative LIMIT as no limit
+
+
 def _resolve_workspace(explicit: str | None) -> str | None:
     """Resolve workspace; ``None`` means 'no workspace filter'."""
     if explicit == "all":
@@ -97,6 +100,8 @@ def cmd_defects(args) -> int:
     as_json = bool(getattr(args, "json", False))
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
+    count_only = bool(getattr(args, "count", False))
+
     try:
         rows = read_defects(
             origin=getattr(args, "origin", None) or "all",
@@ -106,12 +111,12 @@ def cmd_defects(args) -> int:
             type=getattr(args, "type", None),
             severity=getattr(args, "severity", None),
             agent=getattr(args, "agent", None),
-            limit=getattr(args, "limit", 20),
+            limit=UNCAPPED_ROWS if count_only else getattr(args, "limit", 20),
         )
     except ValueError as exc:
         return _err(str(exc), as_json=as_json)
 
-    if getattr(args, "count", False):
+    if count_only:
         print(json.dumps({"count": len(rows)}) if as_json else len(rows))
         return 0
     if as_json:
@@ -189,7 +194,8 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--count", action="store_true", default=False,
-        help="Print the number of matching defects instead of the rows.",
+        help="Print the number of matching defects instead of the rows. "
+             "Counts every match; --limit does not apply.",
     )
     p.add_argument(
         "--json", action="store_true", default=False,

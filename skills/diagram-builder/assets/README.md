@@ -56,7 +56,7 @@ assets/
 │   │                        and start cell, colours and chip scope, by authored id
 │   ├── test-guards.mjs      the negative-test suite (`npm test`) — fabricates one
 │   │                        broken deck per case in a temp dir and asserts the
-│   │                        guard FAILS as claimed
+│   │                        check FAILS on the defect it names
 │   ├── contrast-audit.cjs   the WCAG 2.1 contrast check of the swappable palettes
 │   │                        (`npm run contrast`), reading the tokens out of
 │   │                        index.html so a palette edit is checked by construction

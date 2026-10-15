@@ -162,6 +162,28 @@ def test_signature_surface_same_template_for_n_commands():
     assert rendered.text.splitlines() == [q["question"] for q in rendered.questions]
 
 
+def test_signature_surface_shows_the_exits_a_command_may_end_with_only_when_declared():
+    from gaia.approvals import surface
+
+    rebase, push = "git rebase origin/main", "git push --force-with-lease origin feat/x"
+    payload = _seal(
+        [
+            {"command": rebase, "expect_exit": [1, 128], "does": "Rebasa la rama.", "impact": "Reescribe la rama."},
+            {"command": push, "does": "Sube la rama.", "impact": "La rama queda publicada."},
+        ],
+        question="¿Publico la rama?", rollback=None,
+    )
+
+    rendered = surface.render(payload, APPROVAL_ID)
+
+    assert [q["question"] for q in rendered.questions] == [
+        f"{_asks(rebase)} [ ALLOWED EXIT: 1,128 ]",
+        _asks(push),
+    ]
+    assert " [ COMMAND: " + rebase + " ] [ ALLOWED EXIT: 1,128 ] [ DOES: " in rendered.details_questions[0]["question"]
+    assert "ALLOWED EXIT" not in rendered.details_questions[1]["question"]
+
+
 def test_signature_surface_undeclared_phrases_are_stated_not_invented():
     """A reactive block seals no per-command phrases; its Details says so."""
     from gaia.approvals import surface
@@ -379,6 +401,21 @@ def test_signature_surface_request_set_rejects_before_persisting(db, tmp_path):
     )
 
     assert code == 1
+    con = sqlite3.connect(db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("spec", ["1=a", "1=0", "1=256", "1=1,x", "1=", "1", "2=1", "x=1"])
+def test_signature_surface_request_set_names_the_flag_of_a_bad_expect_exit(db, tmp_path, spec):
+    from bin.cli.approvals import cmd_request_set
+
+    code, out = _run(cmd_request_set, _request_set_args(cwd=[str(tmp_path)], expect_exit=[spec]))
+
+    assert code == 1
+    assert f"--expect-exit {spec!r}" in out, out
     con = sqlite3.connect(db)
     try:
         assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0

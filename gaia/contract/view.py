@@ -157,6 +157,18 @@ def render_resume_hint_volatile(envelope: dict) -> str:
     )
 
 
+def render_closed_contract_hint(contract_id: str, agent_state: str) -> str:
+    """The hint for a resumed turn whose contract already closed: name it, and say the next write continues it."""
+    return "\n".join(
+        [
+            "# Contract (closed)",
+            f"Your contract {contract_id} is closed ({agent_state}) and is never modified.",
+            "Do NOT run `gaia contract init`. Your next write opens a linked continuation:",
+            f"  gaia contract set --draft-id {contract_id} FIELD VALUE",
+        ]
+    )
+
+
 def render_resume_hint(draft_id: str, envelope: dict) -> str:
     """The complete resume hint: byte-stable invariant prefix, then the one
     volatile status line last (cache-optimal ordering).

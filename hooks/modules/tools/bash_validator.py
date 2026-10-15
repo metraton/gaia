@@ -60,6 +60,8 @@ from ..security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
     cwd_after_component,
+    node_test_under_node_options,
+    sets_node_options,
 )
 from ..security.flag_classifiers import (
     classify_by_flags,
@@ -70,8 +72,8 @@ from ..security.approval_grants import (
     check_approval_grant,
     confirm_grant,
     last_check_found_expired,
-    # DEPRECATED (T2.1 cutover): generate_nonce, write_pending_approval,
-    # find_pending_for_command are no longer used in the T3 subagent intercept
+    # DEPRECATED (T2.1 cutover): the filesystem pending-file helpers
+    # (write_pending_approval, find_pending_for_command, generate_nonce) are no longer used in the T3 subagent intercept
     # path. They remain in approval_grants.py for M3/M4 consumers (e.g.,
     # filesystem-based activation in pre_tool_use) until those layers are
     # migrated. Do not re-introduce these calls in _validate_atomic_command.
@@ -88,9 +90,11 @@ from ..security.program_heredoc import heredoc_program
 from ..security.shell_substitution import extract_substitutions, extract_substitutions_truncated
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
+from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
 )
+from ..security.contract_ownership_guard import check as check_contract_ownership
 from ..security.protected_path_guard import (
     check as check_protected_path_write,
 )
@@ -830,6 +834,45 @@ class BashValidator:
                 suggestions=[
                     "Write a `memorialize_suggestions` block into your "
                     "contract row with `gaia contract fill --json` instead.",
+                ],
+            )
+
+        resume_allowed, resume_reason = check_subagent_resume_point(
+            command, is_subagent=is_subagent,
+        )
+        if not resume_allowed:
+            logger.warning(
+                "BLOCKED subagent resume-point write (agent=%s): %s",
+                agent_type or "?", command[:100],
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=resume_reason,
+            )
+
+        # ================================================================
+        # CONTRACT OWNERSHIP GUARD
+        # A subagent that runs `gaia contract init` while it already owns a
+        # row, or writes a contract adopted by another turn, is told at the
+        # attempt and given the owner, not when the stop gate rejects its
+        # close. Categorical, no approval_id.
+        # ================================================================
+        ownership_allowed, ownership_reason = check_contract_ownership(
+            command, (hook_payload or {}).get("agent_id") or "",
+            (hook_payload or {}).get("session_id") or "",
+        )
+        if not ownership_allowed:
+            logger.warning(
+                "BLOCKED contract ownership (agent=%s): %s",
+                agent_type or "?", command[:100],
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=ownership_reason,
+                suggestions=[
+                    "Address your own contract with --draft-id <contract_id>.",
                 ],
             )
 
@@ -1634,8 +1677,13 @@ class BashValidator:
         # against where the user actually ran it.
         has_t3 = False
         scan_cwd: Optional[str] = cwd
+        # A NODE_OPTIONS set by an earlier component reaches every later node.
+        node_options_set = False
         for comp in components:
             detected = detect_mutative_command(comp, cwd=scan_cwd)
+            if node_options_set and not detected.is_mutative:
+                detected = node_test_under_node_options(comp, scan_cwd) or detected
+            node_options_set = node_options_set or sets_node_options(comp)
             flagged = classify_by_flags(comp)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (
@@ -2663,9 +2711,7 @@ def decide_t3_outcome(
 
             # ---- Deny-list re-assertion (defense-in-depth) -------------------
             # The Q3 degraded-allow must NEVER cover a deny-listed destructive
-            # command. Two prior barriers already guarantee this: the harness
-            # native deny-list (settings _DENY_RULES) blocks such commands
-            # BEFORE the hook runs, and validate() Phase 3a/3b (is_blocked_command)
+            # command. validate() Phase 3a/3b (is_blocked_command) already
             # blocks them BEFORE reaching decide_t3_outcome. We re-assert it here
             # so THIS branch is structurally incapable of allowing a blocked
             # command even if the upstream flow ever changed -- a blocked command

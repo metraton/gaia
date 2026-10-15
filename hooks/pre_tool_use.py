@@ -35,23 +35,45 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping, NoReturn, Optional
 
-_hooks_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(_hooks_dir))
-_pkg_root = str(_hooks_dir.parent)
-if _pkg_root not in sys.path:
-    sys.path.insert(0, _pkg_root)
-from modules.core.hook_trace import record_hook_invocation
-from modules.core.logging_setup import configure_hook_logging
+def _deny_and_exit(message: str) -> NoReturn:
+    """Deny the tool call with exit 2, using nothing outside the stdlib."""
+    print(message, file=sys.stderr)
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": message,
+        }
+    }))
+    sys.exit(2)
 
-# Adapter layer -- get_adapter() is the single construction point (registry),
-# so this entry point never names the concrete host class.
-from adapters.registry import get_adapter
-from modules.core.stdin import has_stdin_data
-from adapters.utils import warn_if_dual_channel
 
-# Configure logging -- file handler only when GAIA_DEBUG is set (see
-# modules.core.logging_setup); no hooks-*.log is written by default.
-configure_hook_logging("pre_tool_use")
+try:
+    _hooks_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(_hooks_dir))
+    _pkg_root = str(_hooks_dir.parent)
+    if _pkg_root not in sys.path:
+        sys.path.insert(0, _pkg_root)
+    from modules.core.hook_trace import record_hook_invocation
+    from modules.core.logging_setup import configure_hook_logging
+
+    # get_adapter() is the single construction point (registry), so this
+    # entry point never names the concrete host class.
+    from adapters.registry import get_adapter
+    from modules.core.stdin import has_stdin_data
+    from adapters.utils import warn_if_dual_channel
+
+    configure_hook_logging("pre_tool_use")
+except BaseException as _startup_error:
+    if __name__ != "__main__":
+        raise
+    # The audit sink is part of what failed to load, so no event is recorded.
+    _deny_and_exit(
+        "[SECURITY GATE DEGRADED] The security gate failed to start and the "
+        f"operation was blocked unvalidated.\nDetail: "
+        f"{type(_startup_error).__name__}: {_startup_error}\n"
+        "Run `gaia doctor` to find the broken component, or reinstall Gaia, then retry."
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -137,39 +159,29 @@ def _fail_open_exit(
     payload: Optional[Mapping[str, Any]] = None,
     cause: Optional[str] = None,
 ) -> NoReturn:
-    """Deliver a gate failure to the user and the record, then exit.
+    """Record a gate failure and deny the tool call (modules.security.fail_open).
 
     Every exit of this entry point that is not a delivered verdict is a gate
-    failure: the hook returns without having decided. Routing them all through
-    here is what keeps that from being silent, and what applies the one case
-    where the operation is stopped instead -- a command the gate had already
-    classified as mutating. See modules.security.fail_open. Imported lazily so
-    an ordinary invocation, which never reaches this path, does not pay for the
-    import.
+    failure. Imported lazily so an ordinary invocation does not pay for it.
     """
     from modules.security.fail_open import CAUSE_ERROR, decide_fail_open
 
     outcome = decide_fail_open(reason, detail, cause or CAUSE_ERROR)
-    print(outcome.message, file=sys.stderr)
-    print(outcome.message)
     _trace(
         outcome.exit_code,
         payload=payload,
         blocked=outcome.blocked,
         extra={"fail_open": reason},
     )
-    sys.exit(outcome.exit_code)
+    _deny_and_exit(outcome.message)
 
 
 def _exit_without_input() -> NoReturn:
     """Handle the case where no payload arrived before the deadline.
 
     Waiting narrows the race but cannot close it: the host may genuinely never
-    write. That leaves the same situation as any other gate failure -- the
-    operation proceeds and no verdict was reached -- so it degrades the same
-    way, recorded and marked, rather than exiting mute. It stays NON-blocking
-    on purpose: refusing every tool call whose payload went missing would brick
-    the session, which the product posture rules out.
+    write. No verdict was reached, so it is handled as any other gate failure
+    and the call is denied.
 
     An interactive stdin is the one exception, and not a gate failure at all:
     nobody dispatched a tool call, so a degradation notice would be a false

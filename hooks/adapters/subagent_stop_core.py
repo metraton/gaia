@@ -545,6 +545,35 @@ def resolve_subagent_stop_gate(
     return verdict, source
 
 
+def _project_owner_workspace(
+    workspace: Optional[str],
+    dispatch_project: Optional[str],
+    db_path: Optional[str],
+) -> Optional[str]:
+    """``workspace``, or the workspace owning the project the dispatch named.
+
+    Unchanged for a dispatch that named no project, one the substrate does not
+    know, or a lookup that fails.
+    """
+    if not workspace or not dispatch_project:
+        return workspace
+    try:
+        from modules.core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from tools.context.context_provider import dispatch_project_workspace
+
+        return dispatch_project_workspace(
+            workspace, dispatch_project, Path(db_path) if db_path else None,
+        ) or workspace
+    except Exception:
+        logger.warning(
+            "Project workspace lookup failed for %r; keeping workspace %s",
+            dispatch_project, workspace, exc_info=True,
+        )
+        return workspace
+
+
 def resolve_dispatch_row(
     *,
     session_id: str,
@@ -830,6 +859,32 @@ def salvage_truncated_draft(
     except Exception as exc:
         logger.warning("T11 salvage: rescue failed (non-fatal): %s", exc)
         return None
+
+
+def _recover_empty_evidence(
+    contract_id: Optional[str], transcript_analysis: Any, db_path: Optional[str],
+) -> Optional[dict]:
+    """The row's envelope after filling its empty evidence lists from
+    ``transcript_analysis``, or None when nothing was filled."""
+    from gaia.store.writer import fill_empty_contract_evidence
+    from modules.agents.evidence_recovery import recovered_entries
+
+    try:
+        outcome = fill_empty_contract_evidence(
+            contract_id,
+            recovered_entries(
+                transcript_analysis.tool_sequence,
+                transcript_analysis.failed_tool_use_ids,
+            ),
+            db_path=Path(db_path) if db_path else None,
+        )
+    except Exception:
+        logger.warning("Evidence recovery failed for %s (non-fatal)", contract_id, exc_info=True)
+        return None
+    if outcome.get("status") != "applied":
+        return None
+    logger.info("Recovered empty evidence for %s: %s", contract_id, outcome["fields"])
+    return outcome["envelope"]
 
 
 def gaia_agent_roster() -> Set[str]:
@@ -1185,6 +1240,19 @@ def run_subagent_stop(
             preserve_nonces=preserved_nonces if preserved_nonces else None,
         )
 
+        # Only an accepted close: a row returned for repair is the agent's to
+        # finish, and its own `fill` refuses a list that already holds entries.
+        if (
+            _gate_source == GATE_SOURCE_ROW
+            and not _rejection_latched
+            and transcript_analysis is not None
+        ):
+            _authoritative_envelope = _recover_empty_evidence(
+                (_bound_dispatch_row or {}).get("contract_id"),
+                transcript_analysis,
+                task_info.get("db_path"),
+            ) or _authoritative_envelope
+
         # The row carries commands checkpointed during the turn, the fence what
         # the final message declared; each alone loses turns the other keeps.
         commands_executed = extract_commands_executed(
@@ -1194,16 +1262,23 @@ def run_subagent_stop(
         context_update_result = None
         _update_contracts_refused: list = []
         if isinstance(parsed_contract, dict):
+            # The hook's cwd can resolve to a workspace other than the
+            # dispatch's, so the born row's column decides -- unless the row
+            # names a project that another workspace owns.
+            _update_contracts_workspace = (
+                (_bound_dispatch_row or {}).get("workspace")
+                or task_info.get("workspace")
+            )
+            _update_contracts_workspace = _project_owner_workspace(
+                _update_contracts_workspace,
+                (_bound_dispatch_row or {}).get("dispatch_project"),
+                task_info.get("db_path"),
+            )
             _update_contracts_task_info = {
                 "agent": agent_type,
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
-                # The hook's cwd can resolve to a workspace other than the
-                # dispatch's, so the born row's column decides.
-                "workspace": (
-                    (_bound_dispatch_row or {}).get("workspace")
-                    or task_info.get("workspace")
-                ),
+                "workspace": _update_contracts_workspace,
             }
             _update_contracts_result = process_update_contracts(
                 parsed_contract, _update_contracts_task_info
@@ -1710,6 +1785,9 @@ def run_subagent_stop(
                 _closed = rejected_turn_relay.on_accepted(agent_output, key=_relay_key)
                 if _circuit_key:
                     rejection_circuit.reset(_circuit_key)
+                from modules.agents import call_ceiling
+
+                call_ceiling.reset(task_info.get("agent_id"))
                 if _closed:
                     result["preserved_output_relayed"] = _closed["relayed"]
                     result["preserved_output_chars"] = _closed["chars"]

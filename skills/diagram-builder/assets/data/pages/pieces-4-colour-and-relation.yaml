@@ -149,7 +149,7 @@ sections:
             kicker: "YAML"
             title: "treatment: [centered]"
             description: ["treatment: [vertical]"]
-            detail: "<code>- { id: centred, title: Centred, treatment: [centered] }</code><br><code>- { id: vertical, title: Vertical, treatment: [vertical] }</code><br>The others: <code>outside</code> (dashed frame), <code>plain</code> (frameless wrapper, which holds every entry on these pages), <code>compact</code> (short-row staircase)."
+            detail: "<code>- { id: centred, title: Centred, treatment: [centered] }</code><br><code>- { id: vertical, title: Vertical, treatment: [vertical] }</code><br>The others: <code>outside</code> (dashed frame), <code>plain</code> (frameless wrapper, which holds every entry on these pages), <code>compact</code> (short rows, so stepped rowspans end level)."
           - id: piece-treatment-says
             kicker: "WHAT IT SAYS"
             title: "How it is drawn"

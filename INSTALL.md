@@ -14,7 +14,15 @@ Gaia ships as a **single, unified plugin** named `gaia` — one artifact carryin
 
 Gaia reaches an install folder through **three channels**, the same three [README.md](./README.md) lists: the npm/pnpm package wired into Claude Code with `gaia install` (Surface 1), the Claude Code plugin from `gaia-marketplace` (Surface 2), and OpenCode on the same package (Surface 3). Pick the one that matches the host you run.
 
-`gaia install` and `gaia dev` take the channel explicitly with `--channel`; there is no default and no `all`, and run without one they fail listing the channels. The package channel (`npm`) and the plugin exclude each other in one install folder, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package, with `--channel npm` when OpenCode is recorded beside it). OpenCode joins either, and `gaia uninstall --channel opencode` removes it on its own.
+`gaia install` run without `--channel` picks the channel itself and never asks. It reuses the channels `.claude/gaia-manifest.json` recorded. If none are recorded it wires `npm`, plus `opencode` when the folder has an `opencode.json`. When the Gaia plugin is enabled for the folder, the plugin owns Claude Code: install wires no `npm` channel and removes the npm hook entries left in `.claude/settings.local.json`. `gaia dev` still takes `--channel` explicitly, and an explicit `--channel` overrides the choice above. The package channel (`npm`) and the plugin exclude each other in one install folder, because each registers Gaia's hooks with Claude Code: installing one where the other is present fails, naming the channel it found and the command that removes it (`claude plugin uninstall <plugin> --scope <scope>` for the plugin, `gaia uninstall --workspace <folder>` for the package, with `--channel npm` when OpenCode is recorded beside it). OpenCode joins either, and `gaia uninstall --channel opencode` removes it on its own.
+
+**Upgrading from 5.3 or 5.4.** Install the new package version, then run `gaia install` once with no options. It does everything in that one run:
+
+- **Database.** It backs up the database to `backups/` beside it and checks the copy: `integrity_check` must pass and every table must hold the same row count. It prints the backup's path, then applies the pending migrations in one transaction, including the ones that rewrite existing rows. No consent command is needed. If the backup does not check out, nothing is migrated. If a migration fails, the transaction rolls back and the database stays exactly as it was. A database newer than the package is refused and left untouched.
+- **Old data.** Files 5.x kept under `.claude/logs`, `.claude/events`, `.claude/memory` and `.claude/session` move into the Gaia data dir. A file that already exists there with different content stays where it is, and so does its folder. The 5.x JSON grants under `.claude/cache/approvals/` are deleted; other files in that folder are kept.
+- **Old launcher.** A `~/.local/bin/gaia` wrapper that a 5.x install wrote for this folder becomes the current launcher link. A file there that Gaia did not write is left alone.
+
+Your shell profile is never edited, and only one install runs at a time (`install.lock` beside the database). Running `gaia install` again changes nothing. `gaia migrate apply` on its own still asks for `--consent-chain` before a migration that rewrites existing rows.
 
 ### Surface 1: npm / pnpm
 
@@ -75,7 +83,7 @@ npm install @jaguilar87/gaia      # or: pnpm add @jaguilar87/gaia
 npx gaia install --channel opencode
 ```
 
-`--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can be added beside either Claude Code channel. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update`, which re-wires every channel `gaia install` recorded in `.claude/gaia-manifest.json` and fails naming `gaia install --channel` when none is recorded.
+`--channel opencode` writes `opencode.json` pointing at the packaged `opencode/plugin.ts` instead of touching `.claude/`, so it can be added beside either Claude Code channel. A new release arrives the same way as on Surface 1: install the new package version, then `npx gaia update`, which re-wires every channel `gaia install` recorded in `.claude/gaia-manifest.json` and fails naming `gaia install` when none is recorded. Running `gaia install` itself instead also works: it reuses the recorded channels and picks one when none is recorded.
 
 OpenCode 1.18.32 runs subagents in the background only when its environment carries `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` (or the `OPENCODE_EXPERIMENTAL=true` umbrella); there is no `opencode.json` key for it. Gaia does not edit your shell profile, so add this line to your shell profile (`~/.bashrc`, `~/.zshrc`) and open a new shell before starting OpenCode:
 
@@ -171,7 +179,7 @@ Example: Install + scan in a project with GitOps and Terraform
 The options each command accepts are the ones its `--help` prints; the ones this guide uses:
 
 ```
-gaia install --channel {npm,opencode} [--path] [--workspace W]
+gaia install [--channel {npm,opencode}] [--path] [--workspace W]
                                  # bootstrap DB + wire the install folder (no postinstall)
 gaia update                      # re-wires the recorded channels after a package upgrade
 gaia workspace declare NAME PATH # declare a workspace rooted at PATH
@@ -308,8 +316,19 @@ npm install @jaguilar87/gaia@latest   # or: pnpm add @jaguilar87/gaia@latest
 npx gaia update                       # or: pnpm exec gaia update
 #    - Refreshes DB schema, config, and symlinks after the version bump
 #    - Re-wires every channel recorded in .claude/gaia-manifest.json;
-#      fails naming gaia install --channel when none is recorded
+#      fails naming gaia install when none is recorded
 ```
+
+### Upgrading from an older Gaia
+
+Moving from an older release, take it out cleanly and install the new one fresh. Your memory, briefs and plans live in the database and carry over.
+
+1. Copy the database, `~/.gaia/gaia.db`, somewhere safe.
+2. In each folder Gaia is wired into, run `gaia uninstall`. Then remove the old package with `npm uninstall -g @jaguilar87/gaia` (or `npm uninstall @jaguilar87/gaia` in the folder where you installed it). On the plugin, run `claude plugin uninstall gaia@gaia-marketplace` instead.
+3. Install the new version: `npm install -g @jaguilar87/gaia@latest`, or `claude plugin install gaia@gaia-marketplace` on the plugin.
+4. In each folder, run `gaia install`. It backs up the database, checks the backup, updates the database to the new version and prints where the backup is (`backup written and verified: <path>`).
+
+To go back, put your copy of `gaia.db` back in `~/.gaia/`, install the old version (`npm install -g @jaguilar87/gaia@<old version>`) and run `gaia install` in the folder.
 
 ---
 

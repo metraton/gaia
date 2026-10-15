@@ -35,7 +35,7 @@ Subcommands (the 6 draft verbs + the ``fill --json`` batch mode, plus
     validate                      [--draft-id ID]  Validate the draft WITHOUT mutating it
     finalize                      [--draft-id ID]  Validate and persist/converge the handoff row
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
-             --json-file PATH                      ... or read the patch from a file (avoids shell
+             --json-file PATH|-                    ... or read the patch from a file or stdin (avoids shell
                                                      quoting a payload that carries report prose --
                                                      the channel for the top-level `report_prose`
                                                      narrative, read back with
@@ -1263,11 +1263,14 @@ def _freshest_envelope(contract_id: Optional[str], row: dict) -> "tuple[Optional
     """The freshest recoverable envelope for an ALREADY-RESOLVED row, without
     ever writing anything itself.
 
-    Reads the SAME two sources in the SAME priority (on-disk draft first, it
-    may carry writes newer than the last DB mirror; else the row's own
-    ``raw_handoff_json``, populated by ``gaia contract set/add/fill``'s
-    best-effort mirror -- see ``gaia.store.writer.mirror_partial_contract_handoff``)
-    and returns whichever is real, or ``None`` when neither is. This function
+    Reads the SAME two sources: for a turn still open, the on-disk draft first,
+    since it may carry writes newer than the last DB mirror, else the row's
+    own ``raw_handoff_json``, populated by ``gaia contract set/add/fill``'s
+    best-effort mirror -- see ``gaia.store.writer.mirror_partial_contract_handoff``.
+    For a closed turn the row comes first: finalize persisted the draft into
+    it, and only the row receives what the close adds afterwards, such as
+    ``gaia.store.writer.fill_empty_contract_evidence``'s recovered lists.
+    Returns whichever is real, or ``None`` when neither is. This function
     never touches disk or the DB either way -- it is a pure read used by two
     callers with different obligations once they have the result: ``cmd_view``
     only ever prints what this returns (a read verb may never materialize a
@@ -1280,14 +1283,23 @@ def _freshest_envelope(contract_id: Optional[str], row: dict) -> "tuple[Optional
     ``"db_row"`` -- labelled even when ``envelope`` comes back None, so a
     caller can still report WHICH source it looked at and found empty.
     """
+    try:
+        row_envelope = json.loads(row.get("raw_handoff_json") or "null")
+    except (TypeError, ValueError):
+        row_envelope = None
+    if row_envelope is not None and _turn_closed(row):
+        return row_envelope, "db_row"
     envelope = _load_draft(contract_id) if contract_id else None
     if envelope is not None:
         return envelope, "draft"
-    try:
-        envelope = json.loads(row.get("raw_handoff_json") or "null")
-    except (TypeError, ValueError):
-        envelope = None
-    return envelope, "db_row"
+    return row_envelope, "db_row"
+
+
+def _turn_closed(row: dict) -> bool:
+    """True when the row's turn already declared its end."""
+    from gaia.state import CLOSED_TURN_PLAN_STATUSES
+
+    return row.get("agent_state") in CLOSED_TURN_PLAN_STATUSES
 
 
 _HINT_ROWS_PER_COLUMN = 5
@@ -1449,9 +1461,15 @@ def cmd_view(args) -> int:
         return 1
 
     source = "draft"
-    row = None
+    envelope = None
+    row = _lookup_handoff_row_by_contract_id(draft_id)
+    if row is not None and _turn_closed(row):
+        envelope, source = _freshest_envelope(draft_id, row)
+    else:
+        row = None
     draft_file_present = _draft_exists(draft_id)
-    envelope = _load_draft(draft_id) if draft_file_present else None
+    if envelope is None and draft_file_present:
+        envelope = _load_draft(draft_id)
     if envelope is None:
         if draft_file_present:
             # The draft file exists but failed to PARSE -- distinct from "no
@@ -2051,17 +2069,11 @@ def cmd_fill(args) -> int:
     )
     if envelope is None:
         return 1
-    # --json-file reads the patch from disk instead of a shell argument.
-    # A patch built from report prose (open_gaps, key_outputs, verification
-    # notes) routinely carries apostrophes and embedded quotes; surviving
-    # that text through shell quoting is a hazard the caller should not have
-    # to manage by hand -- an unescaped apostrophe inside a single-quoted
-    # --json value breaks the shell's own quoting, and everything after the
-    # break is re-tokenized as bare words, no longer recognizable as the
-    # `gaia contract fill` invocation it was part of. Writing the patch to a
-    # file with the Write tool sidesteps shell quoting entirely, the same
-    # discipline already used for a long approval `exact_content`.
-    if args.json_file is not None:
+    # Report prose carries apostrophes that break a single-quoted --json
+    # value, so the patch can come from a file or, as `-`, a quoted heredoc.
+    if args.json_file == "-":
+        raw_patch = sys.stdin.read()
+    elif args.json_file is not None:
         try:
             with open(args.json_file, "r", encoding="utf-8") as fh:
                 raw_patch = fh.read()
@@ -2663,10 +2675,11 @@ def _build_subcommands(sub) -> None:
         dest="json_file",
         metavar="PATH",
         help=(
-            "Read the JSON patch from PATH instead of a shell argument -- "
-            "write it with the Write tool first when the patch carries "
-            "report prose (apostrophes, embedded quotes) that is fragile "
-            "to pass as a single shell-quoted --json value. This is the "
+            "Read the JSON patch from PATH, or from stdin when PATH is '-' "
+            "(a quoted heredoc: one call, no temporary file), instead of a "
+            "shell argument -- for a patch carrying report prose "
+            "(apostrophes, embedded quotes) that is fragile to pass as a "
+            "single shell-quoted --json value. This is the "
             "channel for the top-level 'report_prose' field, whose whole "
             "point is a multi-paragraph narrative: newlines, accents and "
             "quotes survive a file untouched, and are read back verbatim "

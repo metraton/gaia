@@ -198,22 +198,67 @@ def test_contract_like_goal_is_nested_once_without_multiplication(monkeypatch):
     assert _obsolete_appended_size(prompt) - len(updated_prompt) == len(prompt) + 2
 
 
-def test_task_id_resume_adds_one_kernel_layer_without_goal_amplification(monkeypatch):
-    original = "OBJECTIVE_RESUME_5aa9 " + ("bounded-context " * 20)
-    first = _inject(monkeypatch, original).output["updated_input"]["prompt"]
-    second = _inject(
-        monkeypatch, first, task_id="ses_existing_child"
-    ).output["updated_input"]["prompt"]
+def _inject_birthing_what_policy_saw(monkeypatch, prompt: str, *, task_id: str | None = None):
+    """Claim a row whose dispatch_prompt is the prompt the shared policy was given, as the real birth stores it."""
+    _bypass_control_plane_attestation(monkeypatch)
+    seen = {}
 
-    assert first.count("OBJECTIVE_RESUME_5aa9") == 1
-    assert second.count("OBJECTIVE_RESUME_5aa9") == 1
-    assert second.count("# Your Contract") == first.count("# Your Contract") + 1
-    assert second.count("# Closing this turn") == (
-        first.count("# Closing this turn") + 1
+    def fake_policy(_self, event, **_kwargs):
+        seen["prompt"] = event.payload["tool_input"]["prompt"]
+        return PolicyVerdict()
+
+    monkeypatch.setattr(ToolPolicy, "pre_tool_verdict", fake_policy)
+    monkeypatch.setattr(
+        "gaia.store.writer.claim_dispatch_row",
+        lambda **kwargs: _claimed_row(seen["prompt"]),
     )
-    assert len(second) == _expected_injected_size(first)
-    assert _obsolete_appended_size(first) - len(second) == len(first) + 2
-    assert len(second) < 2 * len(first)
+    response = OpenCodeAdapter().adapt_pre_tool_use(_task_event(prompt=prompt, task_id=task_id))
+    return response.output["updated_input"]["prompt"], seen["prompt"]
+
+
+def test_prompt_already_carrying_a_kernel_is_reinjected_as_one_contract_block(monkeypatch):
+    original = "OBJECTIVE_RESUME_5aa9 " + ("bounded-context " * 20)
+    first, _ = _inject_birthing_what_policy_saw(monkeypatch, original)
+    second, born_with = _inject_birthing_what_policy_saw(
+        monkeypatch, first, task_id="ses_existing_child"
+    )
+
+    assert "OBJECTIVE_RESUME_5aa9" in born_with
+    assert "# Your Contract" not in born_with
+    for injected in (first, second):
+        assert injected.count("# Your Contract") == 1
+        assert injected.count("# Closing this turn") == 1
+        assert injected.count("OBJECTIVE_RESUME_5aa9") == 1
+    assert len(second) == len(first)
+
+
+def test_resume_by_task_id_links_the_born_row_to_the_one_that_session_last_held(monkeypatch):
+    linked = {}
+    monkeypatch.setattr(
+        "gaia.store.writer.find_dispatch_row_by_harness_agent_id",
+        lambda session_id, **_kw: {"id": 41, "contract_id": "a9.old", "session": session_id},
+    )
+    monkeypatch.setattr(
+        "gaia.store.writer.link_dispatch_continuation",
+        lambda contract_id, **kwargs: linked.update(contract_id=contract_id, **kwargs),
+    )
+
+    _inject_birthing_what_policy_saw(monkeypatch, "continue the work", task_id="ses_existing_child")
+
+    assert linked == {
+        "contract_id": "a0123456789abcdef.beefcafe0123",
+        "continues_handoff_id": 41,
+        "harness_agent_id": "ses_existing_child",
+    }
+
+
+def test_fresh_dispatch_is_not_linked(monkeypatch):
+    def fail_if_called(*_a, **_kw):
+        raise AssertionError("a dispatch without task_id has nothing to continue")
+
+    monkeypatch.setattr("gaia.store.writer.find_dispatch_row_by_harness_agent_id", fail_if_called)
+
+    _inject_birthing_what_policy_saw(monkeypatch, "fresh work")
 
 
 def test_task_dispatch_degrades_to_plain_allow_when_claim_finds_nothing(monkeypatch):

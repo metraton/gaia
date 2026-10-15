@@ -79,7 +79,7 @@ sections:
         description:
           - "write a spacer; the taper"
           - "of a chart is the one exception"
-        detail: "Write a <code>spacer</code> where the gap is meant, as the band at the bottom of this page does. One asymmetry needs no spacer: the rows a <code>rowspan</code> box touches are allowed to taper, because a ladder of bars 1·2·3·4 tapers by design and the taper IS the chart. Any other gap is closed or declared."
+        detail: "Write a <code>spacer</code> where the gap is meant, as the band at the bottom of this page does. One asymmetry needs no spacer: the rows a <code>rowspan</code> box touches are allowed to taper, because a row of bars 1·2·3·4 tapers by design and the taper IS the chart. Any other gap is closed or declared."
         variant: warn
 
   # ── ROW 2 · TWO LANES AND THE ROW THEY SHARE ──────────────────────────────

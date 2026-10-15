@@ -47,7 +47,10 @@ two-writer wave, end to end, is in `examples.md`.
    share a tree or an index. What still serializes is the shared branch:
    integrations queue one at a time, each composed against the branch as it
    stands when it runs, because a base fixed at dispatch is stale the moment a
-   sibling lands.
+   sibling lands. Cleanup follows the same two moments: integrating a task
+   releases its worktree and deletes its branch, and once the PR merges, a
+   post-merge pass removes the branches it integrated. Both decide by content,
+   not by hash, since a cherry-pick keeps the change under a new hash.
 
 4. **Parallelism is bounded by shared files and integration cost, never by the
    count of tasks.** A wave groups turns whose blast radii do not overlap; two

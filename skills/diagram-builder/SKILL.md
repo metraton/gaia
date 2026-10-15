@@ -48,8 +48,9 @@ needs its code touched.
    kicker carries, how chips are phrased, what each colour means) and keeps
    them on every page; a reader who learns them on page one reads the rest for
    free.
-6. **The face is for a beginner, the detail for the expert.** Titles and
-   subtitles in everyday words; the real name and the why behind the click.
+6. **The face is for a beginner, the detail for the expert.** Write titles
+   and subtitles in everyday words, and keep the real name and the why behind
+   the click for the detail.
 7. **Decide cheap, fix expensive.** A row changed in a table costs minutes; a
    page changed after the build costs a loop. Every phase closes on the
    person's yes, and a requested change touches only what was asked.
