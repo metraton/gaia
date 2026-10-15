@@ -23,9 +23,10 @@ for _path in (str(_ROOT), str(_ROOT / "hooks"), str(_ROOT / "opencode")):
 
 SESSION = "ses-compacted"
 USER_SCOPE = "_gaia_user"
+PREFERENCE_BODY = "Always answer the user in Spanish."
 ROWS = {
-    "user_profile": ("Jorge runs DevOps for a consultancy.", "any"),
-    "user_pref_language": ("Always answer the user in Spanish.", "orchestrator"),
+    "user_profile": ("Jorge runs DevOps for a consultancy.", "Jorge runs DevOps for a consultancy.", "any"),
+    "user_pref_language": ("Preference: the answer language.", PREFERENCE_BODY, "orchestrator"),
 }
 
 
@@ -42,11 +43,11 @@ def db(tmp_path, monkeypatch, bootstrapped_db_template):
     try:
         con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
                     (USER_SCOPE, USER_SCOPE))
-        for name, (body, audience) in ROWS.items():
+        for name, (description, body, audience) in ROWS.items():
             con.execute(
                 "INSERT INTO memory (workspace, name, type, description, body, class, audience, "
                 "updated_at) VALUES (?, ?, 'user', ?, ?, 'anchor', ?, '2026-09-01T00:00:00Z')",
-                (USER_SCOPE, name, body, body, audience),
+                (USER_SCOPE, name, description, body, audience),
             )
         con.commit()
     finally:
@@ -69,8 +70,20 @@ def _expected_user_sections() -> str:
     from modules.context.user_sections import render_user_sections
 
     sections = render_user_sections(user_anchor_rows())
-    assert "Always answer the user in Spanish." in sections
+    assert f"## User preferences\n\n{PREFERENCE_BODY}" in sections
+    assert "## The user\n\nJorge runs DevOps for a consultancy." in sections
     return sections
+
+
+def _assert_one_injection_per_delivery(db: Path, deliver_birth, deliver_refresh) -> tuple[str, str]:
+    before = _injections(db)
+    birth = deliver_birth()
+    after_birth = _injections(db)
+    refresh = deliver_refresh()
+
+    assert after_birth == {name: count + 1 for name, count in before.items()}
+    assert _injections(db) == {name: count + 1 for name, count in after_birth.items()}
+    return birth, refresh
 
 
 def _claude_start_context(source: str, cwd: Path) -> str:
@@ -95,25 +108,27 @@ def _opencode_start_context(source: str) -> str:
 def test_claude_code_compaction_refresh_carries_the_birth_user_sections_and_counts_them(db, tmp_path):
     sections = _expected_user_sections()
 
-    birth = _claude_start_context("startup", tmp_path)
-    after_birth = _injections(db)
-    refresh = _claude_start_context("compact", tmp_path)
+    birth, refresh = _assert_one_injection_per_delivery(
+        db,
+        lambda: _claude_start_context("startup", tmp_path),
+        lambda: _claude_start_context("compact", tmp_path),
+    )
 
     assert sections in birth
     assert "# Post-Compaction Context Refresh" in refresh
     assert sections in refresh
-    assert _injections(db) == {name: count + 1 for name, count in after_birth.items()}
 
 
 def test_opencode_compaction_refresh_carries_the_birth_user_sections_and_counts_them(db, monkeypatch):
     monkeypatch.setenv("GAIA_HOST", "opencode")
     sections = _expected_user_sections()
 
-    birth = _opencode_start_context("startup")
-    after_birth = _injections(db)
-    refresh = _opencode_start_context("compact")
+    birth, refresh = _assert_one_injection_per_delivery(
+        db,
+        lambda: _opencode_start_context("startup"),
+        lambda: _opencode_start_context("compact"),
+    )
 
     assert sections in birth
     assert "# Post-Compaction Context Refresh" in refresh
     assert sections in refresh
-    assert _injections(db) == {name: count + 1 for name, count in after_birth.items()}
