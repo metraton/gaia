@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.0] - 2026-10-15
+
 ### Upgrading from 5.5
 
 1. **Hooks fail closed and need Claude Code 2.1.295 or later.** PreToolUse registrations carry `onFailure: "block"`, so a gate that cannot start (no `sh`, no Python, a broken import) or crashes denies the call and names `gaia doctor` instead of letting it run unchecked. The plugin declares `claude-code >=2.1.295`; `gaia install` warns when the `claude` it reads is older, and `gaia doctor` reports an older running host as an error with the fix `claude update`. On Windows without a resolvable `sh`, `gaia install` refuses and doctor's Hook shell check errors.
@@ -68,8 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Install.** A failed chain on an unversioned database restores the verified backup; `install.lock` keeps two installs from migrating or wiring one database at once.
 - **Briefs.** `gaia brief close` verifies first and writes nothing when it refuses; the orchestrator's `brief/plan set-status closed` points at `brief close`.
 - `gaia migrate` honors `GAIA_DATA_DIR`; `gaia defects --count` ignores `--limit`; `gaia query` accepts `--workspace all`; `gaia metrics` labels commands past the dispatch prefix.
-
-## [5.6.0-rc.1] - 2026-10-14
 
 ## [5.5.0] - 2026-10-06
 
