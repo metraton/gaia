@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`gaia install` fails on a workspace folder that does not exist.** `gaia install --workspace <missing>` (and `gaia update --channel ... --workspace <missing>`) exits 1 naming the folder, before the database is bootstrapped or the install lock is taken, with or without `--strict-wiring`. Before, it bootstrapped the database, printed a skip line and exited 0. `--postinstall` keeps exiting 0 with the skip warning, unless `--strict-wiring` is also set; `--skip-workspace` needs no workspace (#46).
+
 ## [5.6.0] - 2026-10-15
 
 ### Upgrading from 5.5
