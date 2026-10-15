@@ -46,9 +46,9 @@ is enabled. The login stops on its own after 10 minutes.
 ## Other CLIs
 
 Not wired yet. `gh auth login` makes the new account the active one, so adding
-a GitHub account goes through an isolated gh config that `ghx` reads (next
-slice). gws and Microsoft 365 follow the same start, link, confirm cycle once
-their launchers exist.
+a GitHub account goes through an isolated gh config directory (next slice). gws
+and Microsoft 365 follow the same start, link, confirm cycle once their
+launchers exist.
 
 ## Anti-patterns
 

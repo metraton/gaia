@@ -762,6 +762,11 @@ class MutativeAnchor:
     "no" to a command with a safe equivalent teaches nothing, and leaves the
     agent hunting for a spelling that passes.
 
+    ``exempt_flags`` stand the anchor down, unless a flag in
+    ``exempt_cancelled_by`` comes after them: CLIs such as gcloud let the last
+    of ``--no-activate``/``--activate`` win, so presence alone would let
+    ``--no-activate --activate`` through.
+
     An empty ``path`` is refused. It would anchor a whole CLI on a flag alone —
     the global behaviour this model exists to replace; a CLI-wide condition is
     spelled out as one anchor per subcommand that warrants it. Tokens and flags
@@ -774,6 +779,7 @@ class MutativeAnchor:
     flags: FrozenSet[str] = frozenset()
     guidance: str = ""
     exempt_flags: FrozenSet[str] = frozenset()
+    exempt_cancelled_by: FrozenSet[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.path:
@@ -785,7 +791,7 @@ class MutativeAnchor:
                 raise ValueError(
                     f"MutativeAnchor.path token {token!r} must be non-empty lowercase"
                 )
-        for flag in self.flags | self.exempt_flags:
+        for flag in self.flags | self.exempt_flags | self.exempt_cancelled_by:
             if not flag or flag != flag.lower():
                 raise ValueError(
                     f"MutativeAnchor flag {flag!r} must be non-empty lowercase"
@@ -799,7 +805,11 @@ class MutativeAnchor:
         """
         if semantics.non_flag_tokens[:len(self.path)] != self.path:
             return None
-        if self.exempt_flags.intersection(semantics.flag_tokens):
+        toggles = [
+            flag for flag in semantics.flag_tokens
+            if flag in self.exempt_flags or flag in self.exempt_cancelled_by
+        ]
+        if toggles and toggles[-1] in self.exempt_flags:
             return None
         if not self.flags:
             return ()
@@ -816,8 +826,9 @@ def _anchor_shadows(earlier: MutativeAnchor, later: MutativeAnchor) -> bool:
 
     * ``earlier``'s path is a prefix of ``later``'s -- matching is by prefix,
       and an equal path is a prefix of itself;
-    * every flag that stands ``earlier`` down also stands ``later`` down,
-      otherwise ``later`` still answers the commands carrying that flag; and
+    * ``earlier`` has no exemption, or exactly the same exemption as
+      ``later``, otherwise ``later`` may still answer a command ``earlier``
+      stands down for; and
     * ``earlier``'s condition is no narrower. An unflagged ``earlier`` fires on
       the path alone, so it swallows everything beneath it. A flagged one
       swallows ``later`` only when every flag that could fire ``later`` also
@@ -826,7 +837,9 @@ def _anchor_shadows(earlier: MutativeAnchor, later: MutativeAnchor) -> bool:
     """
     if later.path[:len(earlier.path)] != earlier.path:
         return False
-    if not earlier.exempt_flags <= later.exempt_flags:
+    if earlier.exempt_flags and (earlier.exempt_flags, earlier.exempt_cancelled_by) != (
+        later.exempt_flags, later.exempt_cancelled_by
+    ):
         return False
     if not earlier.flags:
         return True
@@ -941,9 +954,13 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # `add` is kept out of MUTATIVE_VERBS so `git add` stays free; this one
         # publishes a new secret value to every consumer of `latest`.
         MutativeAnchor(path=("secrets", "versions", "add")),
+        # `--update-adc` rewrites the application default credentials that
+        # client libraries read, whatever the active account does.
+        MutativeAnchor(path=("auth", "login"), flags=frozenset({"--update-adc"})),
         MutativeAnchor(
             path=("auth", "login"),
             exempt_flags=frozenset({"--no-activate"}),
+            exempt_cancelled_by=frozenset({"--activate"}),
             guidance=_GCLOUD_LOGIN_GUIDANCE,
         ),
     ),

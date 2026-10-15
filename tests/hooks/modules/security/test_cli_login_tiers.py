@@ -28,10 +28,14 @@ SWITCHES_ACTIVE_ACCOUNT = [
     ("gcloud-login-account", "gcloud auth login someone@example.com"),
     ("gcloud-login-explicit-activate", "gcloud auth login someone@example.com --activate"),
     ("gcloud-login-no-launch-browser", "gcloud auth login --no-launch-browser"),
+    ("gcloud-login-activate-wins-last", "gcloud auth login someone@example.com --no-activate --activate"),
+    ("gcloud-login-update-adc-after", "gcloud auth login someone@example.com --no-activate --update-adc"),
+    ("gcloud-login-update-adc-before", "gcloud auth login someone@example.com --update-adc --no-activate"),
 ]
 
 FREE = [
     ("gcloud-login-no-activate", "gcloud auth login someone@example.com --no-activate"),
+    ("gcloud-login-no-activate-wins-last", "gcloud auth login someone@example.com --activate --no-activate"),
     ("gcloud-login-no-activate-first", "gcloud auth login --no-activate someone@example.com"),
     ("gcloud-auth-list", "gcloud auth list --filter=account:someone@example.com --format=value(account)"),
     ("gaia-login-start", "gaia login start gcloud --account someone@example.com"),

@@ -32,7 +32,8 @@ if args[:2] == ["auth", "login"]:
           "&redirect_uri=" + redirect + "&state=abc\\n", file=sys.stderr, flush=True)
     while not (state / "click").exists():
         time.sleep(0.05)
-    (state / "accounts").write_text(args[2] + "\\n")
+    if not os.environ.get("FAKE_GCLOUD_SKIP_ACCOUNT"):
+        (state / "accounts").write_text(args[2] + "\\n")
     sys.exit(0)
 if args[:2] == ["auth", "list"]:
     accounts = state / "accounts"
@@ -110,6 +111,57 @@ def test_start_returns_the_link_and_the_login_outlives_it(login_env):
 
     assert _state_of(env, started_login["login_id"]) == "complete"
     assert not _alive(started_login["pid"])
+
+
+def _logins_dir(env):
+    return Path(env["GAIA_DATA_DIR"]) / "state" / "logins"
+
+
+def _wait_until_finished(env, login_id):
+    deadline = time.monotonic() + 15
+    while _state_of(env, login_id) == "pending" and time.monotonic() < deadline:
+        time.sleep(0.2)
+    return _state_of(env, login_id)
+
+
+def test_login_files_are_owner_only(login_env):
+    env, state, started = login_env
+
+    started_login = json.loads(_gaia(env, "start", "gcloud", "--account", ACCOUNT).stdout)
+    started.append(started_login["pid"])
+    (state / "click").touch()
+    _wait_until_finished(env, started_login["login_id"])
+
+    logins = _logins_dir(env)
+    assert logins.stat().st_mode & 0o777 == 0o700
+    for suffix in (".json", ".log", ".result"):
+        assert (logins / f"{started_login['login_id']}{suffix}").stat().st_mode & 0o777 == 0o600, suffix
+
+
+def test_a_clean_exit_without_the_account_listed_is_not_complete(login_env):
+    env, state, started = login_env
+    env["FAKE_GCLOUD_SKIP_ACCOUNT"] = "1"
+
+    started_login = json.loads(_gaia(env, "start", "gcloud", "--account", ACCOUNT).stdout)
+    started.append(started_login["pid"])
+    (state / "click").touch()
+
+    assert _wait_until_finished(env, started_login["login_id"]) == "failed"
+
+
+@pytest.mark.parametrize("pid", [os.getpid(), 1], ids=["reused-by-own-process", "owned-by-another-user"])
+def test_a_pid_now_held_by_another_process_is_not_pending(login_env, pid):
+    env, _state, _started = login_env
+    logins = _logins_dir(env)
+    logins.mkdir(parents=True)
+    login_id = "0123456789ab"
+    (logins / f"{login_id}.json").write_text(json.dumps({
+        "login_id": login_id, "cli": "gcloud", "account": ACCOUNT, "pid": pid,
+        "pid_start_time": "0", "log": str(logins / f"{login_id}.log"),
+        "result": str(logins / f"{login_id}.result"), "started_at": 0,
+    }))
+
+    assert _state_of(env, login_id) == "failed"
 
 
 def test_start_refuses_the_copy_code_flow_and_stops_it(login_env):

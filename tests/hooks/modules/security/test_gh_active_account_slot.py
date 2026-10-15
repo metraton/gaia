@@ -13,8 +13,8 @@ running with no friction at all.
 The read surface of the same subcommand group must keep costing nothing, and
 ``gh auth login`` stays free with it for now, although it makes the new account
 the active one (gh's multiple-accounts doc). Keeping the active account in
-place while adding one belongs to an isolated gh config that ``ghx`` reads, not
-to a signature on login.
+place while adding one belongs to an isolated gh config directory, not to a
+signature on login.
 
 Every closed form carries its counterfactual: withdraw the anchor, drop the
 memoized verdicts, and the form must return to exactly what it classified

@@ -8,7 +8,8 @@ Subcommands:
 
 The login runs under a supervisor in a new session, so it outlives the turn that
 started it. The user opens the link in a browser and gcloud receives the answer
-on its localhost redirect; the active account is never switched.
+on its localhost redirect; the active account is never switched. Linux only: the
+supervisor is identified through /proc.
 """
 
 import json
@@ -34,16 +35,37 @@ _GOOGLE_AUTH_URL_RE = re.compile(r"https://accounts\.google\.com/\S+")
 
 
 def _logins_dir() -> Path:
+    """Return the logins directory, created owner-only whatever the data root's mode."""
     from gaia.paths import state_dir
-    return state_dir() / "logins"
+    logins = state_dir() / "logins"
+    logins.mkdir(parents=True, exist_ok=True)
+    os.chmod(logins, 0o700)
+    return logins
 
 
-def _alive(pid: int) -> bool:
+def _open_private(path) -> int:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+def _write_private(path, text: str) -> None:
+    with os.fdopen(_open_private(path), "w") as handle:
+        handle.write(text)
+
+
+def _process_start_time(pid: int):
+    """Return the kernel start time of ``pid``, or None when no such process exists."""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    return stat.rsplit(")", 1)[1].split()[19]
+
+
+def _supervisor_running(record: dict) -> bool:
+    """Is the recorded supervisor still running, and not a later process reusing its pid?"""
+    return _process_start_time(record["pid"]) == record["pid_start_time"]
 
 
 def _redirects_to_localhost(url: str) -> bool:
@@ -87,7 +109,6 @@ def _cmd_start(args) -> int:
         print(f"gaia login: --account must be an email address, got {args.account!r}", file=sys.stderr)
         return 2
     logins = _logins_dir()
-    logins.mkdir(parents=True, exist_ok=True)
     login_id = uuid.uuid4().hex[:12]
     log_path = logins / f"{login_id}.log"
     result_path = logins / f"{login_id}.result"
@@ -103,11 +124,12 @@ def _cmd_start(args) -> int:
         "cli": args.cli,
         "account": args.account,
         "pid": supervisor.pid,
+        "pid_start_time": _process_start_time(supervisor.pid),
         "log": str(log_path),
         "result": str(result_path),
         "started_at": time.time(),
     }
-    (logins / f"{login_id}.json").write_text(json.dumps(record))
+    _write_private(logins / f"{login_id}.json", json.dumps(record))
 
     url = _wait_for_link(log_path, supervisor)
     if url is None:
@@ -127,13 +149,16 @@ def _cmd_start(args) -> int:
 
 
 def _cmd_status(args) -> int:
+    if not _LOGIN_ID_RE.match(args.login_id):
+        print(f"gaia login: no login {args.login_id!r}", file=sys.stderr)
+        return 1
     record_path = _logins_dir() / f"{args.login_id}.json"
-    if not _LOGIN_ID_RE.match(args.login_id) or not record_path.exists():
+    if not record_path.exists():
         print(f"gaia login: no login {args.login_id!r}", file=sys.stderr)
         return 1
     record = json.loads(record_path.read_text())
     result_path = Path(record["result"])
-    if _alive(record["pid"]):
+    if _supervisor_running(record):
         state = "pending"
     elif result_path.exists() and json.loads(result_path.read_text())["returncode"] == 0 \
             and _credentialed(record["account"]):
@@ -152,7 +177,7 @@ def _supervise(log_path: str, result_path: str, command: list) -> None:
     env = dict(os.environ, BROWSER="true")
     timed_out = False
     returncode = None
-    with open(log_path, "w") as log:
+    with os.fdopen(_open_private(log_path), "w") as log:
         try:
             returncode = subprocess.run(
                 command, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -160,7 +185,7 @@ def _supervise(log_path: str, result_path: str, command: list) -> None:
             ).returncode
         except subprocess.TimeoutExpired:
             timed_out = True
-    Path(result_path).write_text(json.dumps({"returncode": returncode, "timed_out": timed_out}))
+    _write_private(result_path, json.dumps({"returncode": returncode, "timed_out": timed_out}))
 
 
 def cmd_login(args) -> int:

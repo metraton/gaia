@@ -327,7 +327,10 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         }
 
     def test_only_the_reviewed_shipped_anchors_carry_a_flag_condition(self):
-        """The flag half of the seam has five shipped users.
+        """The flag half of the seam has six shipped users.
+
+        ``gcloud auth login --update-adc`` rewrites the application default
+        credentials, so it is gated even when ``--no-activate`` frees the login.
 
         ``kubectl run`` -- a bare invocation names no form that actually
         starts a workload, so the condition is carried by the flag that does:
@@ -354,6 +357,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("terragrunt", "init"): state_flags,
             ("gaia", "memory", "add"): frozenset({"--replace"}),
             ("gaia", "memory", "link"): frozenset({"--delete"}),
+            ("gcloud", "auth", "login"): frozenset({"--update-adc"}),
         }
 
 
