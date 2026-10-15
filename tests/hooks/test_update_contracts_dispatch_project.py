@@ -37,6 +37,7 @@ from tests.hooks.test_update_contracts_on_close import (
     db_path,  # noqa: F401  (fixture)
 )
 from adapters.claude_code import ClaudeCodeAdapter
+from modules.context import context_writer
 
 AGENT = "gaia-operator"
 
@@ -177,24 +178,49 @@ def test_every_dispatch_row_lane_returns_the_project_and_workspace(tmp_path):
         assert row["dispatch_project"] == f"{PROJECT} (/repos/{PROJECT})", lane
 
 
-def test_update_contracts_dispatch_project_absent_keeps_the_born_workspace(
-    db_path, monkeypatch, session_at_workspace_root,
+def _row_envelope() -> dict:
+    shown = _cli([str(_REPO_ROOT / "bin" / "gaia"), "contract", "view",
+                  "--harness-id", HARNESS_AGENT_ID])
+    assert shown.returncode == 0, shown.stderr
+    return json.loads(shown.stdout)["envelope"]
+
+
+@pytest.mark.parametrize("prompt", [
+    "declare the project's workflow",
+    "project=not-a-known-project declare the project's workflow",
+])
+def test_a_project_identity_key_lands_in_the_workspace_owning_that_project(
+    db_path, monkeypatch, session_at_workspace_root, prompt,
 ):
-    response = _close_turn(db_path, monkeypatch, AGENT, "NEEDS_VERIFICATION")
+    """The 2026-10-09 stray: no dispatch project to follow, so the write took ``ws``."""
+    response = _close_turn(db_path, monkeypatch, AGENT, "NEEDS_VERIFICATION", prompt=prompt)
 
     assert response.exit_code == 0, response.output
-    assert WORKFLOW in _stored_in(HOOK_CWD_WORKSPACE)
-    assert WORKFLOW not in json.dumps(_project_view(db_path))
+    assert WORKFLOW in json.dumps(_project_view(db_path)), (
+        f"`gaia context project {PROJECT}` of {DISPATCH_WORKSPACE} must read the workflow back"
+    )
+    assert WORKFLOW not in _stored_in(HOOK_CWD_WORKSPACE), (
+        f"no stray {PROJECT} entry may be left in the session's workspace"
+    )
+    applied = [{"contract": "project_identity", "workspace": DISPATCH_WORKSPACE}]
+    assert response.output.get("update_contracts_applied") == applied, response.output
+    assert _row_envelope().get("update_contracts_applied") == applied
 
 
-def test_update_contracts_dispatch_project_unknown_keeps_the_born_workspace(
-    db_path, monkeypatch, session_at_workspace_root,
-):
-    response = _close_turn(
-        db_path, monkeypatch, AGENT, "NEEDS_VERIFICATION",
-        prompt="project=not-a-known-project declare the project's workflow",
+def test_a_project_identity_key_no_workspace_owns_stays_in_the_given_workspace(db_path):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, AGENT, "sess-boot")
+    _seed_project(db_path, AGENT)
+
+    result = context_writer.process_update_contracts(
+        {"update_contracts": [{"contract": "project_identity", "payload": {
+            PROJECT: {"workflow": WORKFLOW}, "brand_new": {"name": "brand_new"},
+        }}]},
+        {"agent": AGENT, "db_path": db_path, "workspace": HOOK_CWD_WORKSPACE},
     )
 
-    assert response.exit_code == 0, response.output
-    assert WORKFLOW in _stored_in(HOOK_CWD_WORKSPACE)
-    assert WORKFLOW not in json.dumps(_project_view(db_path))
+    assert result["errors"] == []
+    assert sorted(a["workspace"] for a in result["applied"]) == [
+        DISPATCH_WORKSPACE, HOOK_CWD_WORKSPACE,
+    ]
+    assert "brand_new" in _stored_in(HOOK_CWD_WORKSPACE)
+    assert WORKFLOW not in _stored_in(HOOK_CWD_WORKSPACE)

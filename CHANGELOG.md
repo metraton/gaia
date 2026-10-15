@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`gaia install` fails on a workspace folder that does not exist.** `gaia install --workspace <missing>` (and `gaia update --channel ... --workspace <missing>`) exits 1 naming the folder, before the database is bootstrapped or the install lock is taken, with or without `--strict-wiring`. Before, it bootstrapped the database, printed a skip line and exited 0. `--postinstall` keeps exiting 0 with the skip warning, unless `--strict-wiring` is also set; `--skip-workspace` needs no workspace (#46).
+- **A `project_identity` update lands in the workspace that owns the project.** SubagentStop splits a `project_identity` entry by project key and writes each key into the workspace whose project it is, even when the dispatch named no project or an unknown one. Before, such a key went to the dispatch's workspace and left a stray fragment there that shadowed the real entry for readers of that workspace. The close now records `update_contracts_applied` (contract and workspace per write) and `update_contracts_refused` on the contract row, and returns `update_contracts_applied` to the orchestrator; a malformed entry or an unparseable clause is reported as refused instead of being dropped with a log line.
 
 ## [5.6.0] - 2026-10-15
 

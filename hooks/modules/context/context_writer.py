@@ -375,6 +375,48 @@ def apply_update(
 # 3. process_update_contracts (envelope path)
 # ============================================================================
 
+def _project_owner(project_key: str, workspace: str, db_path: Optional[Path]) -> str:
+    """The workspace whose ``projects`` row ``project_key`` names, else ``workspace``."""
+    try:
+        from modules.core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from tools.context.context_provider import dispatch_project_workspace
+
+        return dispatch_project_workspace(
+            workspace, project_key, Path(db_path) if db_path else None,
+        ) or workspace
+    except Exception:
+        logger.warning(
+            "Project owner lookup failed for %r; keeping workspace %s",
+            project_key, workspace, exc_info=True,
+        )
+        return workspace
+
+
+def _route_to_owning_workspaces(
+    entry: dict,
+    workspace: str,
+    db_path: Optional[Path],
+) -> list:
+    """``[(workspace, entry)]`` to write, splitting ``project_identity`` by project owner.
+
+    A ``project_identity`` payload is keyed by project, and a project lives in
+    exactly one workspace; writing its key into any other workspace leaves a
+    stray fragment that shadows the real entry for readers of that workspace.
+    A key no workspace owns stays in ``workspace``, where a new project starts.
+    """
+    if entry.get("contract") != "project_identity":
+        return [(workspace, entry)]
+    by_owner: dict = {}
+    for key, value in entry["payload"].items():
+        by_owner.setdefault(_project_owner(key, workspace, db_path), {})[key] = value
+    return [
+        (owner, {"contract": entry["contract"], "payload": payload})
+        for owner, payload in by_owner.items()
+    ]
+
+
 def process_update_contracts(
     contract_dict: dict,
     task_info: dict,
@@ -403,6 +445,7 @@ def process_update_contracts(
     result = {
         "updated": False,
         "contracts": [],
+        "applied": [],
         "rejected": [],
         "errors": [],
     }
@@ -410,12 +453,27 @@ def process_update_contracts(
     if not isinstance(contract_dict, dict):
         return result
 
+    raw = contract_dict.get("update_contracts")
     try:
         from ..agents.contract_validator import parse_update_contracts
         entries = parse_update_contracts(contract_dict)
     except Exception as exc:
-        logger.debug("parse_update_contracts failed (non-fatal): %s", exc)
+        logger.warning("parse_update_contracts failed: %s", exc)
+        if raw:
+            result["errors"].append(
+                f"update_contracts not applied: the clause could not be parsed ({exc})"
+            )
         return result
+
+    if raw and not isinstance(raw, list):
+        result["errors"].append(
+            f"update_contracts not applied: expected an array, got {type(raw).__name__}"
+        )
+    elif isinstance(raw, list) and len(entries) < len(raw):
+        result["errors"].append(
+            f"update_contracts: {len(raw) - len(entries)} of {len(raw)} entries not "
+            "applied: each must be an object with 'contract' and an object 'payload'"
+        )
 
     if not entries:
         return result
@@ -423,7 +481,7 @@ def process_update_contracts(
     agent_name = task_info.get("agent", task_info.get("agent_type", "unknown"))
     db_path = task_info.get("db_path")
     cloud_scope = task_info.get("cloud_scope")
-    workspace = task_info.get("workspace")
+    workspace = task_info.get("workspace") or _derive_workspace()
 
     evidence_entries = []
     context_entries = []
@@ -445,24 +503,32 @@ def process_update_contracts(
             logger.warning(rejection_msg)
             continue
 
-        audit = apply_update(entry, agent_name, workspace=workspace, db_path=db_path)
-        if audit["success"]:
-            result["contracts"].append(audit["contract"])
-            result["updated"] = True
-            logger.info(
-                "update_contracts applied by %s: workspace=%s contract=%s",
-                agent_name,
-                audit.get("workspace"),
-                audit["contract"],
-            )
-        else:
-            result["errors"].append(audit.get("error", "unknown error"))
-            logger.error(
-                "update_contracts failed for %s entry '%s': %s",
-                agent_name,
-                entry.get("contract", ""),
-                audit.get("error"),
-            )
+        for target_workspace, routed in _route_to_owning_workspaces(entry, workspace, db_path):
+            audit = apply_update(routed, agent_name, workspace=target_workspace, db_path=db_path)
+            if audit["success"]:
+                result["contracts"].append(audit["contract"])
+                result["applied"].append(
+                    {"contract": audit["contract"], "workspace": audit["workspace"]}
+                )
+                result["updated"] = True
+                logger.info(
+                    "update_contracts applied by %s: workspace=%s contract=%s",
+                    agent_name,
+                    audit.get("workspace"),
+                    audit["contract"],
+                )
+            else:
+                result["errors"].append(
+                    f"update_contracts entry '{audit['contract']}' for workspace "
+                    f"'{audit['workspace']}' not applied: "
+                    f"{audit.get('error') or 'unknown error'}"
+                )
+                logger.error(
+                    "update_contracts failed for %s entry '%s': %s",
+                    agent_name,
+                    entry.get("contract", ""),
+                    audit.get("error"),
+                )
 
     # Process evidence entries (fail-together per D8 -- hook-trusted path)
     if evidence_entries:
