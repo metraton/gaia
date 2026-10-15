@@ -118,6 +118,24 @@ BOOLEAN_SHORT_FLAGS: Dict[str, FrozenSet[str]] = {
 }
 
 
+# Long global flags that take their value as the NEXT token (`--project p`),
+# per CLI. Unlisted long flags absorb nothing, so a missing entry leaves the
+# value standing as the first positional and every anchor for that CLI misses:
+# `gcloud --project p auth login` read `p` as the group. A wrong entry is as
+# dangerous in the other direction -- a boolean listed here eats the
+# subcommand -- and no floor re-reads that case, so only flags the CLI documents
+# as value-taking belong here. gcloud's list is its documented "GCLOUD WIDE
+# FLAGS" (https://cloud.google.com/sdk/gcloud/reference).
+LONG_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "gcloud": frozenset({
+        "--access-token-file", "--account", "--billing-project",
+        "--configuration", "--flags-file", "--flatten", "--format",
+        "--impersonate-service-account", "--project", "--trace-token",
+        "--verbosity",
+    }),
+}
+
+
 @dataclass(frozen=True)
 class CommandSemantics:
     """Semantic view of a shell command for policy analysis."""
@@ -316,7 +334,8 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
             #   git -C <path>   kubectl -n <namespace>   tar -f <file>
             # Mark the next token for absorption if:
             #   1. It is a single-letter short flag (not combined like -rf)
-            #      and the CLI does not declare it valueless
+            #      the CLI does not declare valueless, or a long flag the CLI
+            #      declares value-taking (LONG_VALUE_FLAGS)
             #   2. No non-flag token (subcommand) has been seen yet
             #   3. The next token exists and is not itself a flag
             if (
@@ -417,6 +436,8 @@ def absorbs_next_token(base_cmd: str, token: str) -> bool:
     must ask this rather than re-deriving it, or the two views disagree about
     where a command's subcommand starts.
     """
+    if token in LONG_VALUE_FLAGS.get(base_cmd, frozenset()):
+        return True
     return _is_short_value_flag(token) and not is_boolean_short_flag(base_cmd, token)
 
 

@@ -955,8 +955,12 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # publishes a new secret value to every consumer of `latest`.
         MutativeAnchor(path=("secrets", "versions", "add")),
         # `--update-adc` rewrites the application default credentials that
-        # client libraries read, whatever the active account does.
-        MutativeAnchor(path=("auth", "login"), flags=frozenset({"--update-adc"})),
+        # client libraries read, whatever the active account does; a
+        # `--flags-file` can turn that or activation back on out of sight.
+        MutativeAnchor(
+            path=("auth", "login"),
+            flags=frozenset({"--update-adc", "--flags-file"}),
+        ),
         MutativeAnchor(
             path=("auth", "login"),
             exempt_flags=frozenset({"--no-activate"}),

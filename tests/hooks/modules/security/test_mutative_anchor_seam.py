@@ -330,7 +330,8 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         """The flag half of the seam has six shipped users.
 
         ``gcloud auth login --update-adc`` rewrites the application default
-        credentials, so it is gated even when ``--no-activate`` frees the login.
+        credentials, and ``--flags-file`` can turn that or activation back on,
+        so both are gated even when ``--no-activate`` frees the login.
 
         ``kubectl run`` -- a bare invocation names no form that actually
         starts a workload, so the condition is carried by the flag that does:
@@ -357,7 +358,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("terragrunt", "init"): state_flags,
             ("gaia", "memory", "add"): frozenset({"--replace"}),
             ("gaia", "memory", "link"): frozenset({"--delete"}),
-            ("gcloud", "auth", "login"): frozenset({"--update-adc"}),
+            ("gcloud", "auth", "login"): frozenset({"--update-adc", "--flags-file"}),
         }
 
 
