@@ -27,7 +27,17 @@ through the agent, and the user's active account never changes unless he asks.
 
 1. **Start it detached.** `gaia login start gcloud --account <email>` runs
    `gcloud auth login <email> --no-activate` in its own session and prints JSON
-   with `login_id` and `url`. It runs free: it cannot switch the account.
+   with `login_id`, `state: pending` and `url`. It runs free: it cannot switch
+   the account.
+   - **Already held.** When gcloud already stores a credential for the account
+     it re-uses it and prints no link; the start exits 0 with
+     `state: already_signed_in` and no `url`, and `gaia login status` reports
+     the same. Nothing to click: continue the task.
+   - **Expired or stale.** If commands with `--account <email>` still fail
+     after `already_signed_in`, renew with `gaia login start gcloud --account
+     <email> --force`. It runs `gcloud auth login <email> --no-activate --force`,
+     returns a fresh link, and is free for the same reason: it never activates
+     the account.
 2. **Close the turn on the link.** Close `NEEDS_INPUT`. Put the `url` as a
    markdown link in `user_facing_summary` with one line: open it, sign in, and
    reply when done. Record the `login_id` in `key_outputs`.

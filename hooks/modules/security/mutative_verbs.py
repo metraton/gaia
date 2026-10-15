@@ -3358,6 +3358,16 @@ COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS: Dict[str, Tuple[MutativeAnchor, ...]] = _va
         # so it was never matched by the ALWAYS scan in the first place.
         MutativeAnchor(path=("fetch",), flags=frozenset({"--prune"})),
     ),
+    # `--force` only makes gcloud fetch a credential it already stores again.
+    # Activation and `--update-adc` stay gated by the `auth login` anchors in
+    # COMMAND_PATH_MUTATIVE_UPGRADES, which are decided before this table.
+    "gcloud": (
+        MutativeAnchor(path=("auth", "login"), flags=frozenset({"--force"})),
+    ),
+    # `gaia login start --force` hands `--force` to the `--no-activate` login it runs.
+    "gaia": (
+        MutativeAnchor(path=("login", "start"), flags=frozenset({"--force"})),
+    ),
 })
 
 
@@ -3365,8 +3375,9 @@ def _always_flag_exemptions(base_cmd: str, semantics: "CommandSemantics") -> Fro
     """Return the ALWAYS-dangerous flags exempted for this exact command path.
 
     Consulted only from the read-only-verb ALWAYS-flag escalation branch of
-    Step 4, so a verb already decided MUTATIVE by an earlier step never
-    reaches this table and can never be downgraded by it.
+    Step 4 and from the gaia local-bookkeeping exception, after its
+    destructive verbs have returned, so a verb already decided MUTATIVE by an
+    earlier step never reaches this table and can never be downgraded by it.
     """
     exempted: set = set()
     for anchor in COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS.get(base_cmd, ()):
@@ -5191,7 +5202,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                         f"stays T3 despite the local bookkeeping exception"
                     ),
                 )
-            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+            exempt_flags = _always_flag_exemptions(base_cmd, semantics)
+            dangerous_flags = tuple(
+                flag for flag in _scan_dangerous_flags(tokens, base_cmd)
+                if flag not in exempt_flags
+            )
             if not dangerous_flags:
                 target_category = COMMAND_SUBCOMMAND_TIER_EXCEPTIONS[subcommand_key]
                 return MutativeResult(

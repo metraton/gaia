@@ -2,6 +2,7 @@
 
 A stand-in `gcloud` on PATH plays the browser flow: it prints the link the real
 CLI prints, waits for a "click" file, then records the account as credentialed.
+Like the real CLI, it re-uses an account it already holds unless given --force.
 """
 
 import json
@@ -23,6 +24,12 @@ from pathlib import Path
 state = Path(os.environ["FAKE_GCLOUD_STATE"])
 args = sys.argv[1:]
 if args[:2] == ["auth", "login"]:
+    (state / "login_argv").write_text(" ".join(args))
+    accounts = state / "accounts"
+    if "--force" not in args and accounts.exists() and args[2] in accounts.read_text().split():
+        print("WARNING: Re-using locally stored credentials for [" + args[2] + "]. "
+              "To fetch new credentials, re-run the command with the --force flag.", file=sys.stderr)
+        sys.exit(0)
     if os.environ.get("FAKE_GCLOUD_FLOW") == "paste":
         redirect = "https%3A%2F%2Fsdk.cloud.google.com%2Fauthcode.html"
     else:
@@ -162,6 +169,35 @@ def test_a_pid_now_held_by_another_process_is_not_pending(login_env, pid):
     }))
 
     assert _state_of(env, login_id) == "failed"
+
+
+def test_start_reports_an_account_gcloud_already_holds_without_a_link(login_env):
+    env, state, _started = login_env
+    (state / "accounts").write_text(ACCOUNT + "\n")
+
+    result = _gaia(env, "start", "gcloud", "--account", ACCOUNT)
+
+    assert result.returncode == 0, result.stderr
+    started_login = json.loads(result.stdout)
+    assert started_login["state"] == "already_signed_in"
+    assert "url" not in started_login
+    assert _state_of(env, started_login["login_id"]) == "already_signed_in"
+
+
+def test_force_fetches_a_fresh_link_for_an_account_already_held(login_env):
+    env, state, started = login_env
+    (state / "accounts").write_text(ACCOUNT + "\n")
+
+    result = _gaia(env, "start", "gcloud", "--account", ACCOUNT, "--force")
+
+    assert result.returncode == 0, result.stderr
+    started_login = json.loads(result.stdout)
+    started.append(started_login["pid"])
+    assert started_login["state"] == "pending"
+    assert "redirect_uri=http%3A%2F%2Flocalhost" in started_login["url"]
+    assert (state / "login_argv").read_text() == f"auth login {ACCOUNT} --no-activate --force"
+    (state / "click").touch()
+    assert _wait_until_finished(env, started_login["login_id"]) == "complete"
 
 
 def test_start_refuses_the_copy_code_flow_and_stops_it(login_env):

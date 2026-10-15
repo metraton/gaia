@@ -2,9 +2,13 @@
 gaia login -- Start a CLI login detached from the agent turn and report whether it completed.
 
 Subcommands:
-  login start gcloud --account <email>   Run `gcloud auth login <email> --no-activate`
-                                         in its own session; print its link as JSON
-  login status <login_id>                Print pending, complete or failed as JSON
+  login start gcloud --account <email> [--force]
+                                         Run `gcloud auth login <email> --no-activate`
+                                         in its own session; print its link as JSON,
+                                         or already_signed_in when gcloud re-uses the
+                                         stored credential (--force fetches a new one)
+  login status <login_id>                Print pending, complete, already_signed_in or
+                                         failed as JSON
 
 The login runs under a supervisor in a new session, so it outlives the turn that
 started it. The user opens the link in a browser and gcloud receives the answer
@@ -104,6 +108,16 @@ def _credentialed(account: str) -> bool:
     return account in listed.stdout.split()
 
 
+def _finished_signed_in(record: dict) -> bool:
+    """Did the login exit cleanly with gcloud now listing the account?"""
+    result_path = Path(record["result"])
+    return (
+        result_path.exists()
+        and json.loads(result_path.read_text())["returncode"] == 0
+        and _credentialed(record["account"])
+    )
+
+
 def _cmd_start(args) -> int:
     if not _ACCOUNT_RE.match(args.account):
         print(f"gaia login: --account must be an email address, got {args.account!r}", file=sys.stderr)
@@ -113,6 +127,8 @@ def _cmd_start(args) -> int:
     log_path = logins / f"{login_id}.log"
     result_path = logins / f"{login_id}.result"
     command = ["gcloud", "auth", "login", args.account, "--no-activate"]
+    if args.force:
+        command.append("--force")
     supervisor = subprocess.Popen(
         [sys.executable, "-I", str(Path(__file__).resolve()),
          "--supervise", str(log_path), str(result_path), "--", *command],
@@ -132,6 +148,13 @@ def _cmd_start(args) -> int:
     _write_private(logins / f"{login_id}.json", json.dumps(record))
 
     url = _wait_for_link(log_path, supervisor)
+    # Without --force, gcloud re-uses a credential it already stores: it prints
+    # a warning instead of a link and exits 0.
+    if url is None and supervisor.poll() is not None and _finished_signed_in(record):
+        record["already_signed_in"] = True
+        _write_private(logins / f"{login_id}.json", json.dumps(record))
+        print(json.dumps({"login_id": login_id, "account": args.account, "state": "already_signed_in"}))
+        return 0
     if url is None:
         _stop(supervisor)
         print(f"gaia login: gcloud printed no login link within {LINK_WAIT_SECONDS}s; see {log_path}", file=sys.stderr)
@@ -144,7 +167,10 @@ def _cmd_start(args) -> int:
             file=sys.stderr,
         )
         return 1
-    print(json.dumps({"login_id": login_id, "account": args.account, "url": url, "pid": supervisor.pid}))
+    print(json.dumps({
+        "login_id": login_id, "account": args.account, "state": "pending",
+        "url": url, "pid": supervisor.pid,
+    }))
     return 0
 
 
@@ -157,12 +183,10 @@ def _cmd_status(args) -> int:
         print(f"gaia login: no login {args.login_id!r}", file=sys.stderr)
         return 1
     record = json.loads(record_path.read_text())
-    result_path = Path(record["result"])
     if _supervisor_running(record):
         state = "pending"
-    elif result_path.exists() and json.loads(result_path.read_text())["returncode"] == 0 \
-            and _credentialed(record["account"]):
-        state = "complete"
+    elif _finished_signed_in(record):
+        state = "already_signed_in" if record.get("already_signed_in") else "complete"
     else:
         state = "failed"
     print(json.dumps({"login_id": args.login_id, "account": record["account"], "state": state}))
@@ -200,8 +224,9 @@ def register(subparsers):
         help="Start a CLI login detached from the turn and check whether it completed",
         description=(
             "Start a CLI login that needs no terminal and survives the agent turn.\n"
-            "start: runs the login in its own session and prints its link as JSON.\n"
-            "status: prints pending, complete or failed as JSON."
+            "start: runs the login in its own session and prints its link as JSON,\n"
+            "or already_signed_in when gcloud already holds the account.\n"
+            "status: prints pending, complete, already_signed_in or failed as JSON."
         ),
     )
     actions = login_parser.add_subparsers(dest="login_action", metavar="<action>", required=True)
@@ -209,6 +234,10 @@ def register(subparsers):
     start_p = actions.add_parser("start", help="Start a login and print its link")
     start_p.add_argument("cli", choices=["gcloud"], help="CLI to log in")
     start_p.add_argument("--account", required=True, help="Account email to add without activating it")
+    start_p.add_argument(
+        "--force", action="store_true",
+        help="Fetch new credentials even when gcloud already holds the account",
+    )
     start_p.set_defaults(func=_cmd_start)
 
     status_p = actions.add_parser("status", help="Report whether a started login completed")

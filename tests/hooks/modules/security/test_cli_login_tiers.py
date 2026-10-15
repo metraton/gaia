@@ -31,6 +31,9 @@ SWITCHES_ACTIVE_ACCOUNT = [
     ("gcloud-login-activate-wins-last", "gcloud auth login someone@example.com --no-activate --activate"),
     ("gcloud-login-update-adc-after", "gcloud auth login someone@example.com --no-activate --update-adc"),
     ("gcloud-login-update-adc-before", "gcloud auth login someone@example.com --update-adc --no-activate"),
+    ("gcloud-login-force-activates", "gcloud auth login someone@example.com --force"),
+    ("gcloud-login-force-activate-wins-last", "gcloud auth login someone@example.com --no-activate --force --activate"),
+    ("gcloud-login-force-update-adc", "gcloud auth login someone@example.com --no-activate --force --update-adc"),
 ]
 
 FREE = [
@@ -38,7 +41,10 @@ FREE = [
     ("gcloud-login-no-activate-wins-last", "gcloud auth login someone@example.com --activate --no-activate"),
     ("gcloud-login-no-activate-first", "gcloud auth login --no-activate someone@example.com"),
     ("gcloud-auth-list", "gcloud auth list --filter=account:someone@example.com --format=value(account)"),
+    ("gcloud-login-no-activate-force", "gcloud auth login someone@example.com --no-activate --force"),
+    ("gcloud-login-force-no-activate", "gcloud auth login someone@example.com --force --no-activate"),
     ("gaia-login-start", "gaia login start gcloud --account someone@example.com"),
+    ("gaia-login-start-force", "gaia login start gcloud --account someone@example.com --force"),
     ("gaia-login-status", "gaia login status 0123456789ab"),
 ]
 
