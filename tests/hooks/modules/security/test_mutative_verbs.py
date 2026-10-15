@@ -4633,6 +4633,81 @@ class TestGaiaMemoryTierGroup:
         assert result.is_mutative is True
 
 
+def _registered_migrate_actions():
+    """The `gaia migrate` actions as bin/cli/migrate.py registers them."""
+    import argparse
+    import importlib
+
+    bin_dir = HOOKS_DIR.parent / "bin"
+    if str(bin_dir) not in sys.path:
+        sys.path.insert(0, str(bin_dir))
+    migrate_cli = importlib.import_module("cli.migrate")
+    parser = argparse.ArgumentParser()
+    migrate_parser = migrate_cli.register(parser.add_subparsers())
+    actions = next(
+        a for a in migrate_parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    return set(actions.choices)
+
+
+class TestNounFirstGroupVerbExceptions:
+    """Issue #45: a group word that is itself a mutative verb (`migrate`,
+    `label`) must not gate the read-only action under it, while every action
+    that writes keeps its gate."""
+
+    def test_every_migrate_action_is_classified_by_whether_it_writes(self):
+        from modules.security.mutative_verbs import SUBCOMMAND_VERB_TIER_EXCEPTIONS
+        from modules.security.tiers import classify_command_tier
+
+        actions = _registered_migrate_actions()
+        read_only = set(SUBCOMMAND_VERB_TIER_EXCEPTIONS[("gaia", "migrate")])
+        assert read_only <= actions, f"table names unregistered actions: {read_only - actions}"
+        assert "apply" in actions - read_only
+
+        for action in sorted(actions):
+            command = f"gaia migrate {action}"
+            result = detect_mutative_command(command)
+            tier = classify_command_tier(command)
+            if action in read_only:
+                assert result.is_mutative is False, f"{command}: {result.reason}"
+                assert tier != SecurityTier.T3_BLOCKED, command
+            else:
+                assert result.is_mutative is True, f"{command}: {result.reason}"
+                assert tier == SecurityTier.T3_BLOCKED, command
+
+    @pytest.mark.parametrize("command,mutative", [
+        ("gaia migrate plan --db /tmp/scratch.db", False),
+        ("gaia migrate apply --db /tmp/scratch.db", True),
+        ("gaia migrate apply --consent-chain v40..v41", True),
+        ("gaia migrate plan --force", True),
+        ("gh label list --repo metraton/gaia", False),
+        ("gh label create bug --repo metraton/gaia", True),
+        ("gh label edit bug --color ff0000", True),
+        ("gh label delete bug --yes", True),
+        ("gh label clone metraton/other", True),
+    ])
+    def test_action_word_decides_under_the_group(self, command, mutative):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is mutative, f"{command}: {result.reason}"
+
+    @pytest.mark.parametrize("key,command", [
+        (("gaia", "migrate"), "gaia migrate plan"),
+        (("gh", "label"), "gh label list"),
+    ])
+    def test_the_table_entry_is_what_produces_the_verdict(self, key, command, monkeypatch):
+        from modules.security import mutative_verbs
+
+        monkeypatch.delitem(mutative_verbs.SUBCOMMAND_VERB_TIER_EXCEPTIONS, key)
+        detect_mutative_command.cache_clear()
+        try:
+            assert detect_mutative_command(command).is_mutative is True
+        finally:
+            monkeypatch.undo()
+            detect_mutative_command.cache_clear()
+        assert detect_mutative_command(command).is_mutative is False
+
+
 class TestScriptRecursionCycleGuard:
     """A script/npm body that references its OWN path (or a mutual A<->B cycle)
     must NOT recurse forever.

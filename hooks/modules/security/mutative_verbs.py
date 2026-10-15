@@ -616,6 +616,19 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 }
 
 
+# Noun-first groups whose group word is also in MUTATIVE_VERBS, so the verb
+# scan stops on the noun before it reaches the action. Only the verbs named
+# here are exempted; every other verb under the group, including one added
+# later, still falls to the scan and gates on the group word.
+#
+# Key:   (base_cmd, group)  -- group is non_flag_tokens[0].
+# Value: {verb: category} for the verbs proven not to write.
+SUBCOMMAND_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
+    ("gaia", "migrate"): {"plan": CATEGORY_SIMULATION},
+    ("gh", "label"): {"list": CATEGORY_READ_ONLY},
+}
+
+
 # ============================================================================
 # Command-path Tier UPGRADES (anchored) — the symmetric opposite of
 # COMMAND_SUBCOMMAND_TIER_EXCEPTIONS above.
@@ -5148,6 +5161,20 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                         f"excepted to {target_category.lower()} by config"
                     ),
                 )
+
+        verb_categories = SUBCOMMAND_VERB_TIER_EXCEPTIONS.get(subcommand_key, {})
+        if group_verb in verb_categories and not _scan_dangerous_flags(tokens, base_cmd):
+            return MutativeResult(
+                is_mutative=False,
+                category=verb_categories[group_verb],
+                verb=group_verb,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"'{base_cmd} {semantics.non_flag_tokens[0]} {group_verb}' "
+                    f"excepted to {verb_categories[group_verb].lower()} by config"
+                ),
+            )
 
     # --- Step 3f: Consent-reducing operations are not T3 (anchored) ---
     # Within Gaia's own consent layer (`gaia approvals ...`), verbs that REDUCE
