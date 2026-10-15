@@ -475,6 +475,10 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # `gaia notifications`: reversible local rows that start no process, and the
     # group has no delete/purge verb, so the deny-verb guard exempts all of it.
     ("gaia", "notifications"): CATEGORY_READ_ONLY,
+    # `gaia login start` only runs logins that keep the active account
+    # (`gcloud auth login --no-activate`); the consent is the user's own, given
+    # in the browser.
+    ("gaia", "login"): CATEGORY_READ_ONLY,
     # `gaia contract <verb>` (init/set/add/fill/finalize/view/validate): the
     # by-value agent_contract_handoff draft store under
     # `data_dir()/contract_drafts/` — a subagent's own turn-scoped draft, edited
@@ -654,8 +658,16 @@ _ACCOUNT_SLOT_GUIDANCE = (
     "session on this machine -- choose the account per process instead of "
     "switching it: set the CLI's token variable for that one process, e.g. "
     "`GH_TOKEN=$ACCOUNT_TOKEN gh pr list`, or run it through a wrapper that "
-    "does the same. `gh auth status` lists the accounts; `gh auth login` adds "
-    "a missing one."
+    "does the same. `gh auth status` lists the accounts. Adding a missing "
+    "account is the user's call: `gh auth login` makes the new account the "
+    "active one."
+)
+
+_GCLOUD_LOGIN_GUIDANCE = (
+    "A gcloud login makes the new account the active one for every "
+    "session on this machine. Add it without switching: "
+    "`gcloud auth login <account> --no-activate`, or start it detached with "
+    "`gaia login start gcloud --account <account>`."
 )
 
 _REMOTE_RUN_NOUNS: FrozenSet[str] = frozenset({
@@ -761,6 +773,7 @@ class MutativeAnchor:
     path: Tuple[str, ...]
     flags: FrozenSet[str] = frozenset()
     guidance: str = ""
+    exempt_flags: FrozenSet[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.path:
@@ -772,10 +785,10 @@ class MutativeAnchor:
                 raise ValueError(
                     f"MutativeAnchor.path token {token!r} must be non-empty lowercase"
                 )
-        for flag in self.flags:
+        for flag in self.flags | self.exempt_flags:
             if not flag or flag != flag.lower():
                 raise ValueError(
-                    f"MutativeAnchor.flags entry {flag!r} must be non-empty lowercase"
+                    f"MutativeAnchor flag {flag!r} must be non-empty lowercase"
                 )
 
     def matched_flags(self, semantics: CommandSemantics) -> Optional[Tuple[str, ...]]:
@@ -785,6 +798,8 @@ class MutativeAnchor:
         ``None`` rather than for truthiness.
         """
         if semantics.non_flag_tokens[:len(self.path)] != self.path:
+            return None
+        if self.exempt_flags.intersection(semantics.flag_tokens):
             return None
         if not self.flags:
             return ()
@@ -797,10 +812,12 @@ def _anchor_shadows(earlier: MutativeAnchor, later: MutativeAnchor) -> bool:
 
     Anchors of one CLI are tried in declaration order and the first match
     returns, so ``later`` is reachable only while some command matches it and
-    NOT ``earlier``. Two conditions together make that impossible:
+    NOT ``earlier``. Three conditions together make that impossible:
 
     * ``earlier``'s path is a prefix of ``later``'s -- matching is by prefix,
-      and an equal path is a prefix of itself; and
+      and an equal path is a prefix of itself;
+    * every flag that stands ``earlier`` down also stands ``later`` down,
+      otherwise ``later`` still answers the commands carrying that flag; and
     * ``earlier``'s condition is no narrower. An unflagged ``earlier`` fires on
       the path alone, so it swallows everything beneath it. A flagged one
       swallows ``later`` only when every flag that could fire ``later`` also
@@ -808,6 +825,8 @@ def _anchor_shadows(earlier: MutativeAnchor, later: MutativeAnchor) -> bool:
       ``earlier`` survives: it still answers the commands that carry no flag.
     """
     if later.path[:len(earlier.path)] != earlier.path:
+        return False
+    if not earlier.exempt_flags <= later.exempt_flags:
         return False
     if not earlier.flags:
         return True
@@ -922,6 +941,11 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # `add` is kept out of MUTATIVE_VERBS so `git add` stays free; this one
         # publishes a new secret value to every consumer of `latest`.
         MutativeAnchor(path=("secrets", "versions", "add")),
+        MutativeAnchor(
+            path=("auth", "login"),
+            exempt_flags=frozenset({"--no-activate"}),
+            guidance=_GCLOUD_LOGIN_GUIDANCE,
+        ),
     ),
     # `config <write verb>` is generic (_check_generic_cli_shape). NOT gated,
     # and left open on purpose: `kubectl config use-context` and `gcloud config

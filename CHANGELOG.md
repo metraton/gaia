@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **gcloud login from an agent turn.** `gaia login start gcloud --account <email>` runs `gcloud auth login <email> --no-activate` in its own session and prints the login link as JSON at once. The login outlives the turn that started it and stops after 10 minutes; `gaia login status <id>` reports `pending`, `complete` or `failed`. A start whose link is not a localhost redirect, meaning gcloud fell back to the copy-code flow, is stopped and exits 1. Skill `cli-login` teaches the cycle: start, close `NEEDS_INPUT` on the link, confirm on resume. `gaia login` runs without a signature. `gcloud auth login` without `--no-activate` now asks for one, because it switches the active account for every session on the machine.
+
 ### Fixed
 
 - **`gaia install` fails on a workspace folder that does not exist.** `gaia install --workspace <missing>` (and `gaia update --channel ... --workspace <missing>`) exits 1 naming the folder, before the database is bootstrapped or the install lock is taken, with or without `--strict-wiring`. Before, it bootstrapped the database, printed a skip line and exited 0. `--postinstall` keeps exiting 0 with the skip warning, unless `--strict-wiring` is also set; `--skip-workspace` needs no workspace (#46).

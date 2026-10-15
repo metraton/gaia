@@ -262,6 +262,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         assert paths == {
             ("sql", "users", "set-password"),
             ("secrets", "versions", "add"),
+            ("auth", "login"),
         }
 
     def test_configuration_write_paths_are_the_reviewed_ones(self):
