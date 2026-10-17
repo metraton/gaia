@@ -26,7 +26,7 @@ from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
-from .cli_aliases import as_wrapped_cli
+from .cli_aliases import as_wrapped_cli, declared_wrapper
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
     CommandSemantics,
@@ -620,17 +620,36 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 }
 
 
-# Noun-first groups whose group word is also in MUTATIVE_VERBS, so the verb
-# scan stops on the noun before it reaches the action. Only the verbs named
-# here are exempted; every other verb under the group, including one added
-# later, still falls to the scan and gates on the group word.
+# Actions exempted by name under a group whose other actions stay gated: the
+# verbs proven not to write, and `gh pr create|edit`, whose write the user
+# decided needs no consent because a PR changes nothing that runs until it is
+# merged. Every other verb under the group, including one added later, still
+# falls to the scan.
 #
 # Key:   (base_cmd, group)  -- group is non_flag_tokens[0].
-# Value: {verb: category} for the verbs proven not to write.
+# Value: {verb: category}.
 SUBCOMMAND_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
     ("gaia", "migrate"): {"plan": CATEGORY_SIMULATION},
     ("gh", "label"): {"list": CATEGORY_READ_ONLY},
+    ("gh", "pr"): {"create": CATEGORY_UNKNOWN, "edit": CATEGORY_UNKNOWN},
 }
+
+# Flags that take an exempted action back to the scan: `gh pr edit --base`
+# retargets the PR at another branch, which is the merge's own decision.
+SUBCOMMAND_VERB_EXCEPTION_REVOKING_FLAGS: Dict[Tuple[str, str, str], Tuple[str, ...]] = {
+    ("gh", "pr", "edit"): ("--base", "-B"),
+}
+
+
+def _carries_revoking_flag(tokens: Union[List[str], tuple], flags: Tuple[str, ...]) -> bool:
+    """True when any of *flags* appears, bare, as ``--long=value``, or as an attached ``-Xvalue``."""
+    for token in tokens:
+        for flag in flags:
+            if token == flag or (flag.startswith("--") and token.startswith(f"{flag}=")):
+                return True
+            if not flag.startswith("--") and token.startswith(flag):
+                return True
+    return False
 
 
 # ============================================================================
@@ -2970,7 +2989,6 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
 
     Any ambiguity returns False, keeping the command at T3.
     """
-    import os
     if _git_worktree_has_force_signal(tokens):
         return False
 
@@ -2980,18 +2998,137 @@ def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
     if not targets:
         return False
 
-    for target in targets:
-        if any(char in _WORKTREE_GLOB_CHARS for char in target):
-            return False
-        if ".." in target:
-            return False
-        expanded = os.path.expanduser(target)
-        if not os.path.isabs(expanded):
-            return False
-        if _gaia_worktrees_root(os.path.realpath(expanded)) is None:
-            return False
+    return all(_is_inside_managed_worktrees_root(target) for target in targets)
 
-    return True
+
+def _is_inside_managed_worktrees_root(target: str) -> bool:
+    """True when *target* is absolute, glob- and ``..``-free, and resolves inside a managed root."""
+    import os
+    if any(char in _WORKTREE_GLOB_CHARS for char in target) or ".." in target:
+        return False
+    expanded = os.path.expanduser(target)
+    if not os.path.isabs(expanded):
+        return False
+    return _gaia_worktrees_root(os.path.realpath(expanded)) is not None
+
+
+# `git push <remote> <branch>` and `git -C <worktree> merge --ff-only <rev>`
+# are freed only in these exact shapes; any other flag, global option or
+# operand count leaves the command to the verb scan, where both stay T3.
+_GIT_PUSH_RELIEF_FLAGS: FrozenSet[str] = frozenset({"-u", "--set-upstream"})
+_GIT_DEFAULT_BRANCHES: FrozenSet[str] = frozenset({"main", "master"})
+_GIT_REMOTE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_GIT_BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def _git_subcommand_split(tokens: tuple) -> "Optional[Tuple[Optional[str], str, List[str]]]":
+    """Split ``git [-C <path>] <subcommand> <rest>`` into ``(path, subcommand, rest)``.
+
+    None for any global option other than one ``-C <path>``: the others
+    (``-c``, ``--git-dir``, ``--work-tree``) can redirect what the command acts on.
+    """
+    args = list(tokens[1:])
+    path: Optional[str] = None
+    if len(args) >= 2 and args[0] == "-C":
+        path, args = args[1], args[2:]
+    if not args or args[0].startswith("-"):
+        return None
+    return path, args[0], args[1:]
+
+
+def _git_read(repo: str, *args: str) -> Optional[str]:
+    """Stdout of a read-only ``git -C <repo> <args>``, or None when it fails."""
+    import subprocess
+    try:
+        completed = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True, text=True, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout.strip() if completed.returncode == 0 else None
+
+
+def _remote_head_branch(repo: str, remote: str) -> Optional[str]:
+    """The branch ``refs/remotes/<remote>/HEAD`` points at, or None when unresolved."""
+    prefix = f"refs/remotes/{remote}/"
+    ref = _git_read(repo, "symbolic-ref", "--quiet", f"{prefix}HEAD")
+    if not ref or not ref.startswith(prefix):
+        return None
+    return ref[len(prefix):]
+
+
+def _is_local_branch_only(repo: str, name: str) -> bool:
+    """True when *name* is a local branch and no tag shares it, so git pushes that branch."""
+    return (
+        _git_read(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{name}") is not None
+        and _git_read(repo, "show-ref", "--verify", "--quiet", f"refs/tags/{name}") is None
+    )
+
+
+def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: Optional[str]) -> bool:
+    """True for ``push [-u|--set-upstream] <remote> <branch>`` onto a branch that is not the default.
+
+    The default is main, master and whatever the remote's HEAD names; an
+    unresolved HEAD leaves only main and master. A refspec (``+``, ``:``),
+    ``HEAD``, any ref outside ``refs/heads/`` and a name that is not a local
+    branch, or is also a tag, never qualify: git would push something else.
+    """
+    import os
+    flags = [token for token in rest if token.startswith("-")]
+    operands = [token for token in rest if not token.startswith("-")]
+    if any(flag not in _GIT_PUSH_RELIEF_FLAGS for flag in flags) or len(operands) != 2:
+        return False
+    remote, branch = operands
+    if not _GIT_REMOTE_NAME_RE.match(remote) or not _GIT_BRANCH_NAME_RE.match(branch):
+        return False
+    if branch.startswith("refs/"):
+        if not branch.startswith("refs/heads/"):
+            return False
+        branch = branch[len("refs/heads/"):]
+    if ".." in branch or branch.endswith(("/", ".lock")) or branch.lower() == "head":
+        return False
+    base = cwd or os.getcwd()
+    repo = os.path.join(base, os.path.expanduser(path)) if path else base
+    default = set(_GIT_DEFAULT_BRANCHES)
+    remote_head = _remote_head_branch(repo, remote)
+    if remote_head:
+        default.add(remote_head.lower())
+    return branch.lower() not in default and _is_local_branch_only(repo, branch)
+
+
+def _check_git_publish_relief(
+    semantics: CommandSemantics, tokens: tuple, family: str, cwd: Optional[str],
+) -> Optional["MutativeResult"]:
+    """Free a feature-branch push and a fast-forward merge in a managed worktree.
+
+    Returns None for every other git command, which keeps its verdict.
+    """
+    split = _git_subcommand_split(tokens)
+    if split is None:
+        return None
+    path, subcommand, rest = split
+    if subcommand == "push" and _git_push_targets_feature_branch(path, rest, cwd):
+        reason = "'git push' of a named non-default branch, without force, delete or refspec"
+    elif (
+        subcommand == "merge"
+        and path is not None
+        and len(rest) == 2
+        and rest[0] == "--ff-only"
+        and not rest[1].startswith("-")
+        and _is_inside_managed_worktrees_root(path)
+    ):
+        reason = "'git merge --ff-only' inside a Gaia-managed worktree"
+    else:
+        return None
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_UNKNOWN,
+        verb=subcommand,
+        cli_family=family,
+        confidence="high",
+        reason=reason,
+    )
 
 
 def _check_git_worktree_unlock(
@@ -4289,6 +4426,17 @@ def _check_command_substitutions(
 # ============================================================================
 
 
+def _is_unmodelled_cli(name: str) -> bool:
+    """True when the classifier has no rules of its own for the program *name*."""
+    base = name.lower()
+    return not (
+        base in CLI_FAMILY_LOOKUP
+        or base in COMMAND_ALIASES
+        or base in _SCRIPT_FILE_INTERPRETERS
+        or base in COMMAND_PATH_MUTATIVE_UPGRADES
+    )
+
+
 def _absorbing_form(command: str) -> "Optional[str]":
     """Rewrite *command* as the pre-table tokenizer read it, or None if identical.
 
@@ -4370,25 +4518,35 @@ def detect_mutative_command(
     old reading is the corrupted one, and it is consulted only as a source of
     escalation.
 
-    A wrapper declared in ``GAIA_CLI_ALIASES`` gets the same one-way floor:
-    it is also read as the CLI it wraps, so it is never classified more
-    leniently than that CLI.  The lookup stays outside the cached function so
-    the cache remains keyed on the command text alone.
+    A wrapper declared in ``GAIA_CLI_ALIASES`` is also read as the CLI it
+    wraps, so it is never classified more leniently than that CLI.  A wrapper
+    the classifier does not model is classified as that CLI outright, which
+    lets it inherit the CLI's exceptions (``gh pr create``); a declared name
+    the classifier models keeps its own gates.  The lookup stays outside the
+    cached function so the cache remains keyed on the command text alone.
     """
     result = _detect_mutative_command(command, from_source_code, cwd, _depth)
-    if result.is_mutative:
-        return result
 
-    wrapped = as_wrapped_cli(command)
-    if wrapped is not None:
+    declared = declared_wrapper(command)
+    if declared is not None:
+        wrapper, wrapped = declared
         # One hop through the cached classifier: a declared cycle
         # (a=b,b=a) must not recurse.
         wrapped_result = _detect_mutative_command(wrapped, from_source_code, cwd, _depth)
-        if wrapped_result.is_mutative:
+        if wrapped_result.is_mutative and not result.is_mutative:
             return replace(
                 wrapped_result,
                 reason=f"{wrapped_result.reason} (declared in GAIA_CLI_ALIASES as a wrapper of this CLI)",
             )
+        if result.is_mutative and not wrapped_result.is_mutative and _is_unmodelled_cli(wrapper):
+            command = wrapped
+            result = replace(
+                wrapped_result,
+                reason=f"{wrapped_result.reason} (inherited by a wrapper declared in GAIA_CLI_ALIASES)",
+            )
+
+    if result.is_mutative:
+        return result
 
     absorbing = _absorbing_form(command)
     if absorbing is None or absorbing == command:
@@ -4993,6 +5151,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         if config_result is not None:
             return config_result
 
+        relief_result = _check_git_publish_relief(semantics, tuple(tokens), family, cwd)
+        if relief_result is not None:
+            return relief_result
+
         git_subcmd = semantics.non_flag_tokens[0]
         reset_flags = tuple(sorted(
             _GIT_BRANCH_RESET_FLAGS.get(git_subcmd, frozenset()).intersection(tokens)
@@ -5223,7 +5385,14 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 )
 
         verb_categories = SUBCOMMAND_VERB_TIER_EXCEPTIONS.get(subcommand_key, {})
-        if group_verb in verb_categories and not _scan_dangerous_flags(tokens, base_cmd):
+        revoking_flags = SUBCOMMAND_VERB_EXCEPTION_REVOKING_FLAGS.get(
+            (*subcommand_key, group_verb), ()
+        )
+        if (
+            group_verb in verb_categories
+            and not _scan_dangerous_flags(tokens, base_cmd)
+            and not _carries_revoking_flag(tokens, revoking_flags)
+        ):
             return MutativeResult(
                 is_mutative=False,
                 category=verb_categories[group_verb],

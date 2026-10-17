@@ -1057,7 +1057,7 @@ class TestDetectMutativeCommand:
         ("git push origin main", "push"),
         ("git push --force origin main", "push"),
         ("git push --delete origin feature-branch", "push"),
-        ("git push -u origin feature", "push"),
+        ("git push -u origin main", "push"),
     ], ids=[
         "push-plain",
         "push-force",
@@ -1065,7 +1065,7 @@ class TestDetectMutativeCommand:
         "push-upstream",
     ])
     def test_git_push_always_mutative(self, cmd, expected_verb):
-        """git push (all variants) must remain mutative."""
+        """A push to the default branch, a forced push and a deleting push stay mutative."""
         result = detect_mutative_command(cmd)
         assert result.is_mutative is True
         assert result.verb == expected_verb
