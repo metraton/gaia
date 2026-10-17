@@ -69,8 +69,9 @@ Which of these ask for a signature (`security-tiers` owns the rule;
 `_check_git_publish_relief` in `mutative_verbs.py` decides it):
 
 - **Free:** `commit`, `add` and the other local subcommands;
-  `git push [-u|--set-upstream] <remote> <branch>` when the branch is named
-  and is not main, master or the remote's HEAD branch; `gh pr create`; `gh pr
+  `git -C /abs push [-u|--set-upstream] <remote> <branch>` when the branch is
+  named, is not main, master or the remote's HEAD branch, and the repository's
+  push configuration sends it to itself, with nothing before `git`; `gh pr create`; `gh pr
   edit` without `--base`; `git -C <path> merge --ff-only <rev>` when `<path>`
   is a Gaia-managed worktree.
 - **T3:** bare `git push`, a push to the default branch or `HEAD`, any push

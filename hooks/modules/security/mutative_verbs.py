@@ -3036,8 +3036,8 @@ def _git_subcommand_split(tokens: tuple) -> "Optional[Tuple[Optional[str], str, 
     return path, args[0], args[1:]
 
 
-def _git_read(repo: str, *args: str) -> Optional[str]:
-    """Stdout of a read-only ``git -C <repo> <args>``, or None when it fails."""
+def _git_run(repo: str, *args: str) -> Optional[Tuple[int, str]]:
+    """``(exit code, stdout)`` of a read-only ``git -C <repo> <args>``, or None when git cannot run."""
     import subprocess
     try:
         completed = subprocess.run(
@@ -3046,7 +3046,47 @@ def _git_read(repo: str, *args: str) -> Optional[str]:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return completed.stdout.strip() if completed.returncode == 0 else None
+    return completed.returncode, completed.stdout.strip()
+
+
+def _git_read(repo: str, *args: str) -> Optional[str]:
+    """Stdout of a read-only ``git -C <repo> <args>``, or None when it fails."""
+    ran = _git_run(repo, *args)
+    return ran[1] if ran is not None and ran[0] == 0 else None
+
+
+def _git_config(repo: str, key: str) -> Tuple[str, Optional[str]]:
+    """``("set", value)``, ``("unset", None)`` or ``("error", None)`` for one ``git config --get``.
+
+    Exit 1 is git's documented "key not set"; every other failure is an error.
+    """
+    ran = _git_run(repo, "config", "--get", key)
+    if ran is None or ran[0] not in (0, 1):
+        return "error", None
+    return ("set", ran[1]) if ran[0] == 0 else ("unset", None)
+
+
+def _push_config_keeps_branch(repo: str, remote: str, branch: str, default: FrozenSet[str]) -> bool:
+    """True when the repository's configuration pushes *branch* to itself, onto no default branch.
+
+    ``remote.<remote>.push`` and ``remote.<remote>.mirror`` replace the
+    refspec git pushes; under ``push.default`` upstream or tracking the branch
+    goes to its configured upstream, which must then be a non-default branch.
+    Any config read that fails keeps the push gated.
+    """
+    for key in (f"remote.{remote}.push", f"remote.{remote}.mirror"):
+        state, value = _git_config(repo, key)
+        if state == "error" or (state == "set" and value != "false"):
+            return False
+    state, mode = _git_config(repo, "push.default")
+    if state == "error":
+        return False
+    if state == "unset" or mode not in ("upstream", "tracking"):
+        return True
+    state, merge = _git_config(repo, f"branch.{branch}.merge")
+    if state != "set" or not merge or not merge.startswith("refs/heads/"):
+        return False
+    return merge[len("refs/heads/"):].lower() not in default
 
 
 def _remote_head_branch(repo: str, remote: str) -> Optional[str]:
@@ -3088,13 +3128,53 @@ def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: 
         branch = branch[len("refs/heads/"):]
     if ".." in branch or branch.endswith(("/", ".lock")) or branch.lower() == "head":
         return False
-    base = cwd or os.getcwd()
-    repo = os.path.join(base, os.path.expanduser(path)) if path else base
+    # The process cwd is not the shell's: with neither an absolute -C nor the
+    # caller's cwd the repository is unknown, and the push stays gated.
+    expanded = os.path.expanduser(path) if path else None
+    if expanded and os.path.isabs(expanded):
+        repo = expanded
+    elif cwd:
+        repo = os.path.join(cwd, expanded) if expanded else cwd
+    else:
+        return False
     default = set(_GIT_DEFAULT_BRANCHES)
     remote_head = _remote_head_branch(repo, remote)
     if remote_head:
         default.add(remote_head.lower())
-    return branch.lower() not in default and _is_local_branch_only(repo, branch)
+    return (
+        branch.lower() not in default
+        and _is_local_branch_only(repo, branch)
+        and _push_config_keeps_branch(repo, remote, branch, frozenset(default))
+    )
+
+
+def _git_relief_under_prefix(
+    readings: "Tuple[str, ...]", cwd: Optional[str],
+) -> Optional["MutativeResult"]:
+    """T3 for a push or ff-only merge the relief would free, run behind an assignment or wrapper.
+
+    ``GIT_DIR=``, ``GIT_CONFIG_GLOBAL=``, ``HOME=`` or ``sudo -u`` change which
+    repository, configuration or user git acts with, none of which the relief
+    read, so the freed shape is only trusted when nothing precedes ``git``.
+    """
+    for reading in readings:
+        semantics = analyze_command(reading)
+        if semantics.base_cmd != "git":
+            continue
+        relief = _check_git_publish_relief(semantics, tuple(semantics.tokens), "git", cwd)
+        if relief is not None:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=relief.verb,
+                cli_family="git",
+                confidence="high",
+                reason=(
+                    f"'git {relief.verb}' behind an environment assignment or wrapper "
+                    f"may act on another repository, configuration or user"
+                ),
+            )
+    return None
 
 
 def _check_git_publish_relief(
@@ -4426,15 +4506,46 @@ def _check_command_substitutions(
 # ============================================================================
 
 
+# Programs whose own effect is destructive, remote or an execution of other
+# commands. A wrapper declared under one of these names would otherwise shed
+# that effect's gate by inheriting the wrapped CLI's exceptions.
+_NEVER_INHERITING_PROGRAMS: FrozenSet[str] = frozenset({
+    "shred", "truncate", "dd", "wipefs", "srm", "fdisk", "sfdisk", "cfdisk",
+    "gdisk", "sgdisk", "parted", "blkdiscard", "mkswap", "hdparm", "rm",
+    "rmdir", "unlink", "mv", "cp", "ln", "install", "tee", "chmod", "chown",
+    "chgrp", "chattr", "kill", "pkill", "killall", "reboot", "shutdown", "halt",
+    "poweroff", "crontab", "at", "sudo", "su", "doas", "eval", "exec", "nohup",
+    "ssh", "scp", "sftp", "rsync", "xargs", "watch", "flock", "parallel",
+    "curl", "wget", "nc", "ncat", "socat", "sed", "awk", "find",
+})
+
+
 def _is_unmodelled_cli(name: str) -> bool:
-    """True when the classifier has no rules of its own for the program *name*."""
+    """True when no rule of the classifier, nor its destructive-program list, names the program *name*."""
+    from .flag_classifiers import _CLASSIFIER_REGISTRY
+    from .shell_unwrapper import _SHELLS
+    from .command_semantics import LONG_VALUE_FLAGS
+
     base = name.lower()
-    return not (
-        base in CLI_FAMILY_LOOKUP
-        or base in COMMAND_ALIASES
-        or base in _SCRIPT_FILE_INTERPRETERS
-        or base in COMMAND_PATH_MUTATIVE_UPGRADES
+    if base != name or base.startswith("mkfs"):
+        return False
+    if "-" in base and base.split("-", 1)[0] in _PS_ALL_VERBS:
+        return False
+    name_keyed_tables = (
+        CLI_FAMILY_LOOKUP, COMMAND_ALIASES, READ_ONLY_BASE_CMDS,
+        _SCRIPT_FILE_INTERPRETERS, _INLINE_CODE_MAP, _POWERSHELL_INTERPRETERS,
+        COMMAND_PATH_MUTATIVE_UPGRADES, COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS,
+        CLI_MUTATIVE_PATH_PREFIXES, _COMMAND_EXECUTORS, _COMMAND_WRAPPERS,
+        _PREFIX_RUNNER_SUBCOMMANDS, _PACKAGE_TOOL_COMMANDS, _PACKAGE_MANAGERS,
+        _CMD_MUTATIVE_BUILTINS, _CMD_READ_BUILTINS, _CMD_SUBCOMMAND_BUILTINS,
+        _PS_ALIASES, _PS_BARE_OBFUSCATION_ALIASES, F_FLAG_MEANS_FORCE,
+        R_FLAG_MEANS_RECURSIVE_DELETE, D_FLAG_MEANS_FORCE_DELETE,
+        M_FLAG_MEANS_FORCE_MOVE, DELETE_FLAG_IS_DESTRUCTIVE,
+        HARD_FLAG_IS_DESTRUCTIVE, BOOLEAN_SHORT_FLAGS, LONG_VALUE_FLAGS,
+        MUTATIVE_VERBS, SIMULATION_VERBS, READ_ONLY_VERBS,
+        _CLASSIFIER_REGISTRY, _SHELLS, _NEVER_INHERITING_PROGRAMS,
     )
+    return not any(base in table for table in name_keyed_tables)
 
 
 def _absorbing_form(command: str) -> "Optional[str]":
@@ -4652,6 +4763,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             node_options_result = node_test_under_node_options(env_remainder, cwd)
             if node_options_result is not None:
                 return node_options_result
+        prefixed_relief = _git_relief_under_prefix(readings, cwd)
+        if prefixed_relief is not None:
+            return prefixed_relief
         for reading in readings:
             result = detect_mutative_command(
                 reading, from_source_code=from_source_code, cwd=cwd,

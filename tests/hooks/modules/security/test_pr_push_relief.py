@@ -222,3 +222,122 @@ def test_unresolved_remote_head_counts_only_main_and_master_as_default(tmp_path)
     bare = _init_repo(tmp_path / "no-head")
     assert not _mutative(f"git -C {bare} push origin develop")
     assert _mutative(f"git -C {bare} push origin master")
+
+
+@pytest.mark.parametrize("push", [
+    "push origin refs/tags/v1.4.0",
+    "push origin refs/heads/main",
+])
+def test_a_tag_or_the_default_spelled_as_a_ref_still_asks(repo, push):
+    assert _mutative(f"git -C {repo} {push}"), push
+
+
+def test_a_feature_branch_spelled_as_a_ref_is_free(repo):
+    assert not _mutative(f"git -C {repo} push origin refs/heads/feat/x")
+
+
+# -- Alias inheritance is limited to names Gaia has no rule for ---------------
+
+@pytest.mark.parametrize("name", [
+    "shred", "truncate", "dd", "wipefs", "srm", "mkfs.ext4", "ssh", "xargs",
+    "watch", "flock", "sudo", "env", "bash", "rm", "curl",
+])
+def test_a_wrapper_named_after_a_governed_program_keeps_its_gate(monkeypatch, name):
+    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{name}=gh")
+    assert _mutative(f"{name} pr create --title t"), name
+
+
+# -- An environment or global option can redirect what git acts on -----------
+
+@pytest.mark.parametrize("prefix", [
+    "GIT_DIR=/elsewhere/.git ",
+    "GIT_WORK_TREE=/elsewhere ",
+    "GIT_CONFIG_GLOBAL=/elsewhere/config ",
+    "HOME=/elsewhere ",
+    "env GIT_DIR=/elsewhere/.git ",
+])
+def test_a_push_under_an_environment_prefix_still_asks(repo, prefix):
+    assert _mutative(f"{prefix}git -C {repo} push origin feat/x"), prefix
+
+
+@pytest.mark.parametrize("globals_", [
+    "--git-dir=/elsewhere/.git -C {path}",
+    "-C {path} --git-dir=/elsewhere/.git",
+    "-C {path} --work-tree /elsewhere",
+    "-c remote.origin.push=refs/heads/feat/x:refs/heads/main -C {path}",
+    "-C {path} -c push.default=upstream",
+])
+def test_a_push_under_a_redirecting_global_option_still_asks(repo, globals_):
+    assert _mutative(f"git {globals_.format(path=repo)} push origin feat/x"), globals_
+
+
+@pytest.mark.parametrize("prefix", ["GIT_DIR=/elsewhere/.git ", "HOME=/elsewhere "])
+def test_a_ff_only_merge_under_an_environment_prefix_still_asks(managed_worktree, prefix):
+    assert _mutative(f"{prefix}git -C {managed_worktree} merge --ff-only origin/main")
+
+
+@pytest.mark.parametrize("globals_", [
+    "-C {path} --git-dir=/elsewhere/.git",
+    "-c core.hooksPath=/elsewhere -C {path}",
+])
+def test_a_ff_only_merge_under_a_redirecting_global_option_still_asks(managed_worktree, globals_):
+    command = f"git {globals_.format(path=managed_worktree)} merge --ff-only origin/main"
+    assert _mutative(command), command
+
+
+# -- Push configuration can send a named branch somewhere else ---------------
+
+def _config(repo: str, key: str, value: str) -> None:
+    _git("-C", repo, "config", key, value)
+
+
+def test_a_configured_remote_push_refspec_still_asks(repo):
+    _config(repo, "remote.origin.push", "refs/heads/feat/x:refs/heads/main")
+    assert _mutative(f"git -C {repo} push origin feat/x")
+
+
+def test_a_mirror_remote_still_asks(repo):
+    _config(repo, "remote.origin.mirror", "true")
+    assert _mutative(f"git -C {repo} push origin feat/x")
+
+
+@pytest.mark.parametrize("mode", ["upstream", "tracking"])
+def test_upstream_mode_onto_the_default_branch_still_asks(repo, mode):
+    _config(repo, "push.default", mode)
+    _config(repo, "branch.feat/x.remote", "origin")
+    _config(repo, "branch.feat/x.merge", "refs/heads/main")
+    assert _mutative(f"git -C {repo} push origin feat/x")
+
+
+def test_upstream_mode_without_an_upstream_still_asks(repo):
+    _config(repo, "push.default", "upstream")
+    assert _mutative(f"git -C {repo} push origin feat/x")
+
+
+def test_upstream_mode_onto_the_same_feature_branch_is_free(repo):
+    _config(repo, "push.default", "upstream")
+    _config(repo, "branch.feat/x.remote", "origin")
+    _config(repo, "branch.feat/x.merge", "refs/heads/feat/x")
+    assert not _mutative(f"git -C {repo} push origin feat/x")
+
+
+def test_an_unreadable_config_still_asks(repo):
+    Path(repo, ".git", "config").write_text("[remote \"origin\"\n\tbroken")
+    assert _mutative(f"git -C {repo} push origin feat/x")
+
+
+# -- Without a known repository the push is not resolved ---------------------
+
+def test_a_push_with_no_path_and_no_cwd_still_asks(repo, monkeypatch):
+    monkeypatch.chdir(repo)
+    assert _mutative("git push origin feat/x")
+
+
+def test_a_push_with_a_relative_path_and_no_cwd_still_asks(repo, monkeypatch):
+    monkeypatch.chdir(Path(repo).parent)
+    assert _mutative("git -C repo push origin feat/x")
+
+
+def test_a_push_resolved_against_the_given_cwd_is_free(repo):
+    detect_mutative_command.cache_clear()
+    assert not detect_mutative_command("git push origin feat/x", cwd=repo).is_mutative
