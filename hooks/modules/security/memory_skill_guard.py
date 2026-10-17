@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 SKILL_LOADED_EVENT = "memory.skill_loaded"
 SKILL_DROPPED_EVENT = "memory.skill_dropped"
 SKILL_TOOL_NAMES = frozenset({"Skill", "skill"})
+MEMORY_SKILL_NAMES = frozenset({"memory", "gaia:memory"})
 GUARDED_VERBS = frozenset({"add", "append", "reclassify", "link"})
 
 REJECTION_MESSAGE = (
@@ -33,8 +34,7 @@ def is_memory_skill(tool_name: str, tool_input: object) -> bool:
     """True when the call loads the memory skill (Claude Code ``skill``, OpenCode ``name``)."""
     if tool_name not in SKILL_TOOL_NAMES or not isinstance(tool_input, dict):
         return False
-    name = str(tool_input.get("skill") or tool_input.get("name") or "")
-    return name.rsplit(":", 1)[-1] == "memory"
+    return str(tool_input.get("skill") or tool_input.get("name") or "") in MEMORY_SKILL_NAMES
 
 
 def record_skill_loaded(session_id: str) -> None:

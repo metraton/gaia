@@ -81,6 +81,43 @@ bug. What the user wants meanwhile is a preference that names the bug it covers
 and retires the day that bug closes. Behaviour belongs to the harness; memory
 holds what is true.
 
+## Where it goes when the user just says "save this"
+
+The user names the thing, never its home; the home is mine. The first yes wins:
+
+1. **Work someone must do?**
+   - Part of a version or feature with a brief or plan: add it there, as an AC,
+     a task through `gaia-planner`, or a `brief decision`. "So the agent on X
+     does it" means X's brief, because that is what that agent reads. The
+     version comes from the project's `workflow` (its accumulating branch or PR)
+     and `gaia brief list`; with no brief yet, append to the version's scope
+     thread.
+   - New work that needs its own scope: propose a brief (`brief-spec`).
+   - A defect in Gaia: `feedback`, `class=thread`, `status=open`,
+     `initiative=gaia_system`.
+   - A defect in a product whose repo we don't own (Claude Code, OpenCode, a
+     vendor CLI): propose an issue on that product's upstream repo, drafted with
+     `ticket-writing`; creating it needs a signature. Add a `gaia_system` thread
+     only if Gaia must work around the defect.
+   - A repo whose declared workflow says issues: an issue in that repo.
+   - Otherwise, one concern with no work object: a thread in that project's
+     initiative.
+2. **A short fixed rule an agent on one project must obey** (how it integrates,
+   reviews, releases): that project's `workflow` value, not memory.
+3. **True in a project he has never touched:** `type=user`. If it would make no
+   sense with Gaia working perfectly, it is a defect (step 1), plus a temporary
+   preference that names that bug.
+4. **A decision, fact, lesson or dead end about one project:** an anchor in that
+   project. Building Gaia goes under `gaia`; Gaia failing in use under
+   `gaia_system`.
+5. **Raw history:** nothing to save.
+
+Split a mixed item: the decision goes to its anchor, the work to its brief. Ask
+only when two live projects could own it, when a new brief or issue would be
+created, or when it contradicts a user decision row; never ask which table. Tell
+the user one line: "Saved as <kind> in <home>, because <who will read it
+there>."
+
 ## Process
 
 1. **Know what a session is born with, then sweep what you are about to
@@ -117,8 +154,8 @@ holds what is true.
    (`bin/cli/memory.py::_reader_workspaces`), so an empty search or a missing
    row without a project is a scoping hypothesis — confirm with the right
    `--workspace` before trusting it.
-3. **Choose the home.** Run *Other home first*, and continue only for genuinely
-   curated value.
+3. **Choose the home.** Run *Other home first* and *Where it goes*, and
+   continue only for genuinely curated value.
 4. **Write one thing per row, in the shape a reader decides on.** The
    orchestrator answers the three questions above, then writes a description
    that is one sentence naming its kind of claim and a body that carries the

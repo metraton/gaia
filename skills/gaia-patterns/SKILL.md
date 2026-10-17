@@ -25,8 +25,10 @@ Construction patterns for building Gaia components. Every component type follows
    (for a dispatched SUBAGENT only: the HOST -- Claude Code, not this
    hook or any other Gaia hook -- separately reads the target agent's
    `.md` frontmatter and preloads its `skills:` list before the first
-   turn. `hooks/hooks.json` carries no `Skill` matcher, so a
-   `Skill(...)` call never reaches PreToolUse either -- see
+   turn. `hooks/hooks.json` has no PreToolUse `Skill` matcher; its
+   PostToolUse `Skill` matcher only records a main-session
+   `Skill('memory')` load for the orchestrator's memory-write guard
+   (`hooks/modules/security/memory_skill_guard.py`) -- see
    `artifact_skill_reminder.py`. The primary agent has no equivalent:
    Claude Code's own docs list only "system prompt, tool restrictions,
    and model" as inherited on the main thread, which is why

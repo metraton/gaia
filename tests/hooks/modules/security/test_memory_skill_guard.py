@@ -115,10 +115,11 @@ def test_write_is_refused_without_the_skill(command):
     assert verdict["approval_id"] is None
 
 
-def test_write_is_allowed_after_claude_code_loads_the_skill():
+@pytest.mark.parametrize("skill", ("gaia:memory", "memory"))
+def test_write_is_allowed_after_claude_code_loads_the_skill(skill):
     assert _refused(_orchestrator_bash(ADD))
 
-    _claude_skill("gaia:memory")
+    _claude_skill(skill)
 
     assert _orchestrator_bash(ADD)["decision"] != "deny"
 
