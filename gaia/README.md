@@ -147,11 +147,16 @@ export GAIA_CLI_ALIASES="mywrapper=gh,kc=kubectl" # several, comma-separated
 ```
 
 Each pair is `wrapper=cli`, matched against the command's base name. With the
-variable unset there is no alias. A declared wrapper is classified both as
-written and as the CLI it wraps, and the stricter verdict stands: it is blocked
-wherever that CLI is blocked, asks consent wherever that CLI asks, and never
-loses a gate of its own, so a wrong entry can only cost an extra prompt or
-block. A leading `-C <dir>` on a declared `gh` wrapper is skipped
+variable unset there is no alias. A declared wrapper is classified as the CLI
+it wraps: it is blocked wherever that CLI is blocked, asks consent wherever
+that CLI asks, and runs free wherever that CLI has an exception, so
+`mywrapper pr create` needs no signature, as `gh pr create` does not. That
+inheritance applies only to a wrapper name the classifier does not know; a
+declared name it does know (`kubectl=gh`) keeps its own gates, the stricter
+verdict standing, and the permanent blocks always take the stricter of both.
+The declaration belongs to you: Gaia's installer does not write it, so set it
+in your shell profile or in the `env` block of the host settings you own (for
+Claude Code, `~/.claude/settings.json`). A leading `-C <dir>` on a declared `gh` wrapper is skipped
 before the publish guard reads the subcommand. Malformed pairs are ignored. The
 hooks read the variable at start-up, so restart the host after changing it.
 Implemented in `hooks/modules/security/cli_aliases.py`; pinned by

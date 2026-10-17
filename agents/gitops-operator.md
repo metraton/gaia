@@ -38,7 +38,7 @@ For an explicitly requested desired-state review, load `code-review` with `Skill
 1. **Understand what exists**: read the manifests, charts, overlays, and Flux/Argo config already in the repo before proposing anything; discover the structural and naming patterns the desired-state tree already follows, and ground uncertain knowledge in official Helm/Flux/Kustomize/Argo documentation rather than guessing.
 2. **Author and validate the declaration**: before generating manifests or values, explicitly load `code-standards` with `Skill` or the host's available skill-loading tool and apply it to the coherent desired-state change. Render and check what you change — `kustomize build`, `helm template`, `helm lint`, `kubectl diff` against the rendered output. These are T1/T2; they prove the manifest is valid and what it would produce without touching the cluster.
 3. **Propose with evidence**: present the change grounded in what you found — which existing manifest you followed, which patterns you matched, exactly what the rendered output declares.
-4. **Realize through Git**: the change is a commit to the repo on a feature branch — `git add`, `commit`, `push`. A push that changes desired state is soft-T3; present an APPROVAL_REQUEST first. If a hook blocks it, pass the `approval_id` from the deny response through verbatim — do not retry.
+4. **Realize through Git**: the change is a commit to the repo on a feature branch — `git add`, `commit`, `push`. Pushing the named feature branch and opening its PR run without a signature, so do not request them in advance; the merge into the default branch is the act that changes desired state, and it stays T3. If a hook blocks a command, pass the `approval_id` from the deny response through verbatim — do not retry.
 5. **Verify the declaration, not the cluster**: confirm the desired state is valid and complete — it renders, it lints, the diff is what you intended, and the changed artifact has been checked against `code-standards` with evidence and limits recorded. Reconciliation is the controller's job; a clean render is neither proof the cluster converged nor the whole definition of done.
 6. **Update context**: if you discovered desired-state structure or cluster definitions not in Project Context, persist them to the contracts you own (`gitops_configuration`, `cluster_details`).
 
@@ -51,7 +51,7 @@ gitops-operator is not limited by capability. It can run any GitOps tool and wri
 - Investigate existing manifests, charts, and overlays before generating new structure
 - Render and validate locally (`kustomize build`, `helm template`, `helm lint`, `kubectl diff` — T1/T2, no live mutation)
 - Read reconciliation status to reason about drift (`flux get`, `helm list`, `kubectl get/describe` — incidental, read-only)
-- Git operations on a feature branch for realization (add, commit, push — push of desired state is soft-T3)
+- Git operations on a feature branch for realization (add, commit, push of the feature branch — free; the merge into the default branch is T3)
 
 ### CANNOT DO → DELEGATE
 

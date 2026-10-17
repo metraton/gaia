@@ -161,35 +161,37 @@ gaia approvals request-set \
 
 ### Batches in sequence
 
-Open a pull request, then merge it: the merge needs the PR number, which only
-exists after the first step. Request the push and the PR creation now; after
-they run and you read the number, request the merge in a new request. The
-first request, run from `<workspace>` with the push sealed in the
+Merge a pull request, then publish its version: the tag needs the merge
+commit, which only exists after the merge. Pushing the feature branch and
+opening the PR run free (`security-tiers`), so they are run, never requested.
+Request the merge and the deletion of the merged branch now; after they run
+and you read the merge commit, request the tag push in a new request. The
+first request, run from `<workspace>` with the deletion sealed in the
 repository:
 
 ```
 gaia approvals request-set \
-  --command 'git push origin feature/demo-login' \
-  --cwd <workspace>/demo-repo \
-  --command 'gh pr create --repo metraton/demo --base main --head feature/demo-login --title "Login de prueba" --body-file ~/.gaia/scratch/demo-1234/pr.md' \
+  --command 'gh pr merge 42 --repo metraton/demo --squash' \
   --cwd <workspace> \
-  --what 'Publicar la rama de prueba y abrir su pull request.' \
-  --question '¿Publico la rama y abro el PR?' \
-  --does 'Sube la rama feature/demo-login al repositorio remoto.' \
-  --impact 'Otros ven la rama; se puede borrar del remoto.' \
-  --does 'Abre el pull request de la rama hacia main.' \
-  --impact 'Queda visible en GitHub; se puede cerrar sin fusionar.' \
-  --verification 'gh pr view muestra el pull request abierto.' \
-  --shared-state 'Sí: crea una rama y un pull request en el remoto.' \
-  --rollback 'Cerrar el pull request sin fusionar y borrar la rama del remoto.'
+  --command 'git push origin --delete feature/demo-login' \
+  --cwd <workspace>/demo-repo \
+  --what 'Fusionar el PR de la rama de prueba y borrar la rama.' \
+  --question '¿Fusiono el PR y borro la rama?' \
+  --does 'Fusiona el pull request 42 en main.' \
+  --impact 'main recibe los cambios; se revierte con otro commit.' \
+  --does 'Borra la rama feature/demo-login del remoto.' \
+  --impact 'La rama deja de existir en GitHub; se vuelve a subir desde el clon local.' \
+  --verification 'gh pr view 42 muestra el PR fusionado; git ls-remote ya no lista la rama.' \
+  --shared-state 'Sí: la rama principal y las ramas del remoto.' \
+  --rollback 'Revertir el commit de fusión en main y volver a subir la rama.'
 ```
 
 The user gets two questions, `Firma 1/2` and `Firma 2/2`, one per command.
-Only the push's Details names its folder, because only the push runs
+Only the deletion's Details names its folder, because only the deletion runs
 elsewhere:
 
 ```
-[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: git push origin feature/demo-login ] [ DOES: Sube la rama feature/demo-login al repositorio remoto. ] [ IMPACT: Otros ven la rama; se puede borrar del remoto. ] [ ROLLBACK: Cerrar el pull request sin fusionar y borrar la rama del remoto. ] [ CWD: <workspace>/demo-repo ]
+[ GAIA-SECURITY ] [ DETAILS ] [ developer ] [ COMMAND: git push origin --delete feature/demo-login ] [ DOES: Borra la rama feature/demo-login del remoto. ] [ IMPACT: La rama deja de existir en GitHub; se vuelve a subir desde el clon local. ] [ ROLLBACK: Revertir el commit de fusión en main y volver a subir la rama. ] [ CWD: <workspace>/demo-repo ]
 ```
 
 When one question call asks several signatures, each header names its
