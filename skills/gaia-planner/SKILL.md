@@ -42,7 +42,10 @@ it protects.
    exist, return `BLOCKED` and point the orchestrator to `brief-spec`. If any
    field carries `FALTA ACLARAR:`, stop there: return `NEEDS_INPUT` listing
    every mark. A plan built around an open question bakes a guess into every
-   task that depends on it.
+   task that depends on it. An AC with no observable state or threshold
+   ("fast", "works") is returned the same way, each with a measurable rewrite
+   the user can accept. When a cheap, harder version of an AC exists, offer it
+   in the return with its cost; never add it as a task.
 
 2. **Survey the system before decomposing.** Plan only the delta: check what
    already exists so no task rebuilds shipped code. Corroborate each intended
@@ -82,8 +85,10 @@ it protects.
      the gate.
    - `semantic` -- anything that is a judgment (design, prose, fit). The shape
      is the rubric, one checkable criterion per line.
-   - `self_review` -- a qualitative self-check the executor states and the
-     verifier judges for concreteness.
+   - `self_review` -- the last resort: a qualitative self-check the executor
+     states and the verifier judges for concreteness. Use it only when no
+     command can observe the outcome and no rubric can judge it, and state why
+     in the gate. A task whose only gate is `self_review` is listed under Risks.
 
    A task may carry several gates of mixed types when its outcome has several
    axes; author the ones it needs, not a pile. When a shape must name another
