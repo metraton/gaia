@@ -42,11 +42,14 @@ que capturar.
 
 ## Process
 
-1. **Ask only for the gaps**, one question per round via AskUserQuestion:
-   surface type (ui, api, job, cli); the problem it solves; the constraints that
-   matter; for each AC, what the user would see when it holds and what symptom
-   would show it failing silently; what is explicitly out of scope. Stop when
-   every AC is observable or explicitly marked unresolved (step 4).
+1. **Ask only for the gaps, never the obvious**, one question per round via
+   AskUserQuestion: surface type (ui, api, job, cli); the problem it solves; the
+   constraints that matter; for each AC, what the user would see when it holds
+   and what symptom would show it failing silently; what is explicitly out of
+   scope. For substantial work the gaps include the hard parts the user may not
+   have considered, and once, at capture, offer the goal the feature serves
+   beyond itself. Stop when every AC is observable or explicitly marked
+   unresolved (step 4).
 
 2. **Create the brief:**
 

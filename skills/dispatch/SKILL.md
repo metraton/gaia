@@ -26,7 +26,11 @@ two-writer wave, end to end, is in `examples.md`.
    the read menu, a bound task's gates and the user's standing rows. The contract
    rules reach the specialist through the `agent-protocol` skill, not the kernel.
    The goal carries what neither can: the references already opened, the
-   premise as a claim the specialist may refute, and the acceptance. What the
+   premise as a claim the specialist may refute, and the acceptance. Where they
+   change the work, it also names the rawest source, the trade's instrument, a
+   target precise enough to miss and the outside check that will show it is
+   right: a specialist born in clean context gets that depth from the goal or
+   not at all, and where they change nothing they are ceremony. What the
    goal repeats costs attention twice and drifts from the kernel the first time
    either one changes; what it omits that the kernel does not supply does not
    exist for the turn.
