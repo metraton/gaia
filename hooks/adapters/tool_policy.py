@@ -952,6 +952,11 @@ class ToolPolicy:
         )
         success = tool_result.exit_code == 0
 
+        from modules.security.memory_skill_guard import is_memory_skill, record_skill_loaded
+
+        if not hook_data.get("agent_id") and is_memory_skill(tool_name, parameters):
+            record_skill_loaded(post_session_id)
+
         # The dispatch result is the only place a harness-truncated subagent is
         # observable, and where the orchestrator gets its look at the row. The
         # tool reports itself as "Agent"; "Task" is its former name.

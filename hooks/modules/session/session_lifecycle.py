@@ -73,6 +73,11 @@ def run_start_maintenance(start: SessionStart) -> None:
     """
     from modules.session.session_registry import SessionRegistryError, register_session
 
+    if start.source == "compact":
+        from modules.security.memory_skill_guard import record_skill_dropped
+
+        record_skill_dropped(start.session_id)
+
     try:
         if start.session_id and start.session_id != "default":
             register_session(

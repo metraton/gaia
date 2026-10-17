@@ -91,6 +91,7 @@ from ..security.shell_substitution import extract_substitutions, extract_substit
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
+from ..security.memory_skill_guard import check as check_memory_skill_loaded
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
 )
@@ -835,6 +836,17 @@ class BashValidator:
                     "Write a `memorialize_suggestions` block into your "
                     "contract row with `gaia contract fill --json` instead.",
                 ],
+            )
+
+        skill_allowed, skill_reason = check_memory_skill_loaded(
+            command, is_subagent=is_subagent, session_id=session_id,
+        )
+        if not skill_allowed:
+            logger.warning("BLOCKED memory write without Skill('memory'): %s", command[:100])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=skill_reason,
             )
 
         resume_allowed, resume_reason = check_subagent_resume_point(
