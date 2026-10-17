@@ -33,7 +33,7 @@ from tests.hooks.test_terminal_event_close import (  # noqa: F401 - the fixture 
 
 PUSH = "git push origin feat/x"
 COMMIT = "git commit --allow-empty -m 'chore: record the step'"
-OPEN_PR = "gh pr create --base main --fill"
+MERGE_ONE = "gh pr merge 1"
 MERGE_PR = "gh pr merge --squash"
 
 
@@ -96,12 +96,12 @@ def test_signed_set_runs_whole_with_a_local_commit_and_a_sealed_folder(host, tmp
     other.mkdir()
     repo = host["repo"]
     approval_id = _requested(host, [
-        (PUSH, repo), (COMMIT, repo), (OPEN_PR, str(other)), (MERGE_PR, str(other)),
+        (PUSH, repo), (COMMIT, repo), (MERGE_ONE, str(other)), (MERGE_PR, str(other)),
     ])
     _approve(approval_id)
     adapter = _adapter()
 
-    calls = [PUSH, COMMIT, f"cd {other} && {OPEN_PR}", f"cd {other} && {MERGE_PR}"]
+    calls = [PUSH, COMMIT, f"cd {other} && {MERGE_ONE}", f"cd {other} && {MERGE_PR}"]
     for position, command in enumerate(calls):
         tool_use_id = f"toolu_step_{position}"
         ran = _pre(adapter, command, tool_use_id, repo)
@@ -111,14 +111,14 @@ def test_signed_set_runs_whole_with_a_local_commit_and_a_sealed_folder(host, tmp
     assert _grant(host["db"], approval_id)["status"] == "CONSUMED"
     outcomes = _outcomes(approval_id)
     assert [event for event, _ in outcomes] == ["EXECUTED"] * 3
-    assert [payload["command"] for _, payload in outcomes] == [PUSH, OPEN_PR, MERGE_PR]
+    assert [payload["command"] for _, payload in outcomes] == [PUSH, MERGE_ONE, MERGE_PR]
     assert _pending_count(host["db"]) == 0, "no second signature was asked"
 
 
 def test_the_questions_the_user_answers_show_every_unsigned_step_in_order(host):
     repo = host["repo"]
     log, status = "git log --oneline -1", "git status --short"
-    steps = [COMMIT, PUSH, log, OPEN_PR, status]
+    steps = [COMMIT, PUSH, log, MERGE_ONE, status]
     approval_id = _requested(host, [(command, repo) for command in steps])
 
     asked = subprocess.run(
@@ -142,7 +142,7 @@ def test_the_questions_the_user_answers_show_every_unsigned_step_in_order(host):
 
 def test_signed_set_request_shows_unsigned_steps_in_position_without_reserving_them(host):
     repo = host["repo"]
-    result = _request_set(host["db"].parent, [(PUSH, repo), (COMMIT, repo), (OPEN_PR, repo)])
+    result = _request_set(host["db"].parent, [(PUSH, repo), (COMMIT, repo), (MERGE_ONE, repo)])
     assert result.returncode == 0, result.stdout + result.stderr
     approval_id = json.loads(result.stdout.strip().splitlines()[-1])["approval_id"]
 
@@ -150,12 +150,12 @@ def test_signed_set_request_shows_unsigned_steps_in_position_without_reserving_t
 
     [shown] = core.question_batch([approval_id])
     lines = shown.text.splitlines()
-    assert [line.endswith(f"[ {command} ]") for line, command in zip(lines, (PUSH, COMMIT, OPEN_PR))] == [True] * 3
+    assert [line.endswith(f"[ {command} ]") for line, command in zip(lines, (PUSH, COMMIT, MERGE_ONE))] == [True] * 3
     assert len(shown.questions) == 2, "only the signed steps are asked"
 
     _approve(approval_id)
     adapter = _adapter()
-    assert _pre(adapter, OPEN_PR, "toolu_skip", repo) is None, "a signed step still runs only in order"
+    assert _pre(adapter, MERGE_ONE, "toolu_skip", repo) is None, "a signed step still runs only in order"
     ran = _pre(adapter, PUSH, "toolu_push", repo)
     _post_success(adapter, ran, "toolu_push", repo)
     assert _grant(host["db"], approval_id)["next_index"] == 1, "the unsigned commit holds no index"
@@ -169,7 +169,7 @@ def test_signed_set_request_with_no_signed_step_is_refused(host):
 
 def test_signed_set_item_denied_by_the_host_is_not_consumed(host):
     repo = host["repo"]
-    approval_id = _requested(host, [(PUSH, repo), (OPEN_PR, repo)])
+    approval_id = _requested(host, [(PUSH, repo), (MERGE_ONE, repo)])
     _approve(approval_id)
     adapter = _adapter()
 
