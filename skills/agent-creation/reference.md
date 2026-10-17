@@ -40,11 +40,15 @@ skills:
 
 ## Identity                            [REQUIRED]
 
-You are a <role with stakes>. You <what you uniquely see or are constrained to do>.
+<Does what activity>, with <which instruments>, over <which raw sources>. <The constraint that fences it>.
 
 **Your output is always a <Realization Package | Diagnostic Report | Findings Report>:**
 - What the output contains
 - What it never contains (hybrid outputs drift)
+
+## Termination                         [REQUIRED]
+
+Done when <the outside judge -- a command it runs, a verifier gate, or the user> shows <the observable outcome in this domain's terms>.
 
 ## <Domain-Specific Section>          [CONDITIONAL -- only if lookup logic is agent-specific]
 
@@ -152,7 +156,7 @@ What is actually per-builder, and where the design effort goes:
 - the **skills** list -- which catalog skills address this domain's risks
 - the **subset** -- one paragraph naming *what this agent builds* (application code / infrastructure-as-code / Kubernetes desired-state) and *which neighbors own the adjacent surfaces*
 
-`platform-architect` is the reference instance: read its identity to see the essence and subset side by side. A non-builder (read-only-into-prod, e.g. `cloud-troubleshooter`) does not use this essence -- its identity is the *constraint* that fences it ("you never act"), not the builder's capability-under-consent.
+`platform-architect` is the reference instance: read its identity to see the essence and subset side by side. A non-builder (read-only-into-prod, e.g. `cloud-troubleshooter`) does not use this essence -- its identity is the *constraint* that fences it ("never applies a fix"), not the builder's capability-under-consent.
 
 ---
 
@@ -221,7 +225,7 @@ This skill guides thinking about each file, but gaia-system (the invoking agent)
 |------|--------------|---------------|
 | `agents/<name>.md` (source, under `gaia/`, never the `.claude/` copy) | New agent definition | gaia-system |
 | new agent's `routing:` frontmatter block | New surface entry with signals; seeded into the `surface_routing` DB table by `tools/scan/seed_surface_routing.py` at install time | gaia-system |
-| `.claude/skills/README.md` | Agent assignment matrix (if agent gets new skills) | gaia-system |
+| `skills/README.md` | Agent assignment matrix (if agent gets new skills) | gaia-system |
 | `agents/README.md` | New agent in the roster | gaia-system |
 | `build/gaia.manifest.json` (`agents` array) | New `"agents/<name>.md"` entry — without it the agent is not part of the publishable plugin | gaia-system, Step 7 of this skill |
 | Installed marketplace copy (`~/.claude/plugins/marketplaces/<name>`) | Reached only via a `gaia-release` publish/update action, never a hand-edit of the `.claude/` copy — verify with `find ~/.claude/plugins/marketplaces -name <name>.md` | `gaia-release` flow, not this skill directly |
