@@ -8,20 +8,36 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def build_compact_context(*, session_id: str = "") -> str:
-    """Build the orchestrator identity reminder, the session's Environment block, and its own snapshot.
+def build_compact_context(*, session_id: str = "", record_injection: bool = False) -> str:
+    """Build the orchestrator identity reminder, the session's Environment block, the user's rows, and its own snapshot.
 
-    The Environment block is the birth block's own, so the trusted `gaia CLI:`
-    path the compaction discarded is published again. The snapshot is keyed by
+    The Environment block and the user's sections are the birth block's own,
+    so the trusted `gaia CLI:` path and the user's standing rules the
+    compaction discarded are published again. The snapshot is keyed by
     ``session_id``; the host event that triggers the refresh carries the same
     id across compaction, so another session's contracts and signatures never
     reach this one. On both hosts this refresh is the only post-compaction
-    delivery, outside any summary: the summarizer is only steered.
+    delivery, outside any summary: the summarizer is only steered. Each user
+    row counts one injection only when ``record_injection`` is set, as at birth.
     """
-    from modules.session.session_manifest import build_environment_section
+    from modules.context.user_sections import render_user_sections
+    from modules.session.session_manifest import (
+        build_environment_section,
+        orchestrator_user_rows,
+        record_user_rows_injected,
+    )
 
-    blocks = [_build_identity_block(), build_environment_section(session_id), _build_snapshot_block(session_id)]
-    return "\n\n".join(b for b in blocks if b)
+    user_rows = orchestrator_user_rows()
+    blocks = [
+        _build_identity_block(),
+        build_environment_section(session_id),
+        render_user_sections(user_rows),
+        _build_snapshot_block(session_id),
+    ]
+    text = "\n\n".join(b for b in blocks if b)
+    if record_injection:
+        record_user_rows_injected(user_rows)
+    return text
 
 
 def build_summary_instructions() -> str:

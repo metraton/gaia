@@ -73,6 +73,11 @@ def run_start_maintenance(start: SessionStart) -> None:
     """
     from modules.session.session_registry import SessionRegistryError, register_session
 
+    if start.source == "compact":
+        from modules.security.memory_skill_guard import record_skill_dropped
+
+        record_skill_dropped(start.session_id)
+
     try:
         if start.session_id and start.session_id != "default":
             register_session(
@@ -193,14 +198,16 @@ def _reconcile_install() -> tuple[str, str]:
 def start_context(source: str, alarms: list, session_id: str = "") -> str:
     """Return the birth block, or after compaction the refresh carrying ``session_id``'s snapshot; "" when building fails.
 
-    Compaction takes the refresh because the birth block's scan and memory
-    were already delivered at the true start; its environment comes back with
-    the refresh, since the compaction discarded the message that carried it.
+    Compaction takes the refresh because the birth block's project scan was
+    already delivered at the true start; its environment and the user's rows
+    come back with the refresh, since the compaction discarded the message
+    that carried them.
     """
     try:
         if source == "compact":
             from modules.context.compact_context_builder import build_compact_context
-            return "\n\n".join(b for b in (*alarms, build_compact_context(session_id=session_id)) if b)
+            refresh = build_compact_context(session_id=session_id, record_injection=True)
+            return "\n\n".join(b for b in (*alarms, refresh) if b)
         from modules.session.session_manifest import build_session_context
         return build_session_context(alarms=alarms, record_injection=True, session_id=session_id)
     except Exception as exc:

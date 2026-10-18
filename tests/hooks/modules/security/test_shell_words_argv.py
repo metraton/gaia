@@ -17,7 +17,7 @@ from modules.security.mutative_verbs import detect_mutative_command  # noqa: E40
 from modules.security.tiers import SecurityTier, classify_command_tier  # noqa: E402
 from modules.tools.bash_validator import BashValidator  # noqa: E402
 
-MUTATIONS = ["gaia task gate remove 12", "git push origin x"]
+MUTATIONS = ["gaia task gate remove 12", "git push origin main"]
 RESUME_POINT_WRITE = "gaia session resume-point set --session-id s --text t"
 
 # (case_id, how a fake `--help` is attached to a command)
@@ -66,9 +66,9 @@ def test_a_real_help_stays_free(command):
 
 
 @pytest.mark.parametrize("command", [
-    "'bash' -c 'git push origin x'",
-    'b""ash -c "git push origin x"',
-    "\\bash -c 'git push origin x'",
+    "'bash' -c 'git push origin main'",
+    'b""ash -c "git push origin main"',
+    "\\bash -c 'git push origin main'",
 ])
 def test_a_quoted_shell_name_is_still_a_shell_wrapper(command):
     result = _validate(command, is_subagent=True)

@@ -1057,7 +1057,7 @@ class TestDetectMutativeCommand:
         ("git push origin main", "push"),
         ("git push --force origin main", "push"),
         ("git push --delete origin feature-branch", "push"),
-        ("git push -u origin feature", "push"),
+        ("git push -u origin main", "push"),
     ], ids=[
         "push-plain",
         "push-force",
@@ -1065,7 +1065,7 @@ class TestDetectMutativeCommand:
         "push-upstream",
     ])
     def test_git_push_always_mutative(self, cmd, expected_verb):
-        """git push (all variants) must remain mutative."""
+        """A push to the default branch, a forced push and a deleting push stay mutative."""
         result = detect_mutative_command(cmd)
         assert result.is_mutative is True
         assert result.verb == expected_verb
@@ -4631,6 +4631,87 @@ class TestGaiaMemoryTierGroup:
         its own gate."""
         result = detect_mutative_command("gaia approvals approve P-abc123")
         assert result.is_mutative is True
+
+
+def _registered_migrate_actions():
+    """The `gaia migrate` actions as bin/cli/migrate.py registers them."""
+    import argparse
+    import importlib
+
+    bin_dir = HOOKS_DIR.parent / "bin"
+    if str(bin_dir) not in sys.path:
+        sys.path.insert(0, str(bin_dir))
+    migrate_cli = importlib.import_module("cli.migrate")
+    parser = argparse.ArgumentParser()
+    migrate_parser = migrate_cli.register(parser.add_subparsers())
+    actions = next(
+        a for a in migrate_parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    return set(actions.choices)
+
+
+class TestNounFirstGroupVerbExceptions:
+    """Issue #45: a group word that is itself a mutative verb (`migrate`,
+    `label`) must not gate the read-only action under it, while every action
+    that writes keeps its gate."""
+
+    MIGRATE_ACTION_WRITES = {"plan": False, "apply": True}
+
+    def test_every_migrate_action_is_classified_by_whether_it_writes(self):
+        from modules.security.tiers import classify_command_tier
+
+        assert set(self.MIGRATE_ACTION_WRITES) == _registered_migrate_actions()
+        for action, writes in self.MIGRATE_ACTION_WRITES.items():
+            command = f"gaia migrate {action}"
+            result = detect_mutative_command(command)
+            tier = classify_command_tier(command)
+            assert result.is_mutative is writes, f"{command}: {result.reason}"
+            assert (tier == SecurityTier.T3_BLOCKED) is writes, f"{command}: {tier}"
+
+    def test_dispatcher_path_form_from_the_issue(self):
+        gaia_bin = HOOKS_DIR.parent / "bin" / "gaia"
+        assert detect_mutative_command(f"{gaia_bin} migrate plan").is_mutative is False
+        assert detect_mutative_command(f"{gaia_bin} migrate apply").is_mutative is True
+
+    def test_tiers(self):
+        from modules.security.tiers import classify_command_tier
+
+        assert classify_command_tier("gaia migrate plan") == SecurityTier.T2_DRY_RUN
+        assert classify_command_tier("gh label list") == SecurityTier.T0_READ_ONLY
+        assert classify_command_tier("gh label create bug") == SecurityTier.T3_BLOCKED
+
+    @pytest.mark.parametrize("command,mutative", [
+        ("gaia migrate plan --db /tmp/scratch.db", False),
+        ("gaia migrate apply --db /tmp/scratch.db", True),
+        ("gaia migrate apply --consent-chain v40..v41", True),
+        ("gaia migrate plan --force", True),
+        ("gh label list --repo metraton/gaia", False),
+        ("gh label create bug --repo metraton/gaia", True),
+        ("gh label edit bug --color ff0000", True),
+        ("gh label delete bug --yes", True),
+        ("gh label clone metraton/other", True),
+    ])
+    def test_action_word_decides_under_the_group(self, command, mutative):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is mutative, f"{command}: {result.reason}"
+
+    @pytest.mark.parametrize("key,command", [
+        (("gaia", "migrate"), "gaia migrate plan"),
+        (("gaia", "migrate"), f"{HOOKS_DIR.parent / 'bin' / 'gaia'} migrate plan"),
+        (("gh", "label"), "gh label list"),
+    ])
+    def test_the_table_entry_is_what_produces_the_verdict(self, key, command, monkeypatch):
+        from modules.security import mutative_verbs
+
+        monkeypatch.delitem(mutative_verbs.SUBCOMMAND_VERB_TIER_EXCEPTIONS, key)
+        detect_mutative_command.cache_clear()
+        try:
+            assert detect_mutative_command(command).is_mutative is True
+        finally:
+            monkeypatch.undo()
+            detect_mutative_command.cache_clear()
+        assert detect_mutative_command(command).is_mutative is False
 
 
 class TestScriptRecursionCycleGuard:

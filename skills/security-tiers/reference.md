@@ -40,7 +40,7 @@ Read on-demand by infrastructure agents. Not injected automatically.
 - `flux reconcile` (write operations)
 - `git push` (any branch) -- mutates remote state
 
-Note: `git commit` and `git add` are **not** T3. They are local-only (working tree + local refs, never remote), classified safe by elimination via `GIT_LOCAL_SAFE_SUBCOMMANDS` in `mutative_verbs.py`. Only `git push` reaches remote state.
+Note: `git commit` and `git add` are **not** T3. They are local-only (working tree + local refs, never remote), classified safe by elimination via `GIT_LOCAL_SAFE_SUBCOMMANDS` in `mutative_verbs.py`. `git push` reaches remote state; a push of a named feature branch runs free and every other push is T3 (see "What reaches the remote" in `SKILL.md`).
 
 ## PowerShell / Windows shell lane
 

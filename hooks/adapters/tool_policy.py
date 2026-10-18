@@ -803,6 +803,8 @@ class ToolPolicy:
         account path (``sensitive_paths.is_account_path``) gets the signature a
         Bash write onto it gets.
 
+        - gaia-verifier: refused outright outside its own scratch entry
+          (``verifier_scratch_guard``), before any signature is considered.
         - Main session: consent is asked inline through the host's own
           mechanism (``consent`` without an approval id).
         - Subagent: the host-neutral ``core.protected_write_verdict`` decides,
@@ -830,6 +832,14 @@ class ToolPolicy:
         file_path = parameters.get("file_path", "")
         if not file_path:
             return PolicyVerdict()
+
+        from modules.security import verifier_scratch_guard
+
+        refusal = verifier_scratch_guard.check(
+            file_path, agent_type=agent_type, harness_agent_id=agent_id,
+        )
+        if refusal:
+            return PolicyVerdict(decision="deny", reason=refusal)
 
         account_path = is_account_path(file_path)
         if not account_path and not is_protected_hook_path(file_path):
@@ -951,6 +961,11 @@ class ToolPolicy:
             else 0.0
         )
         success = tool_result.exit_code == 0
+
+        from modules.security.memory_skill_guard import is_memory_skill, record_skill_loaded
+
+        if not hook_data.get("agent_id") and is_memory_skill(tool_name, parameters):
+            record_skill_loaded(post_session_id)
 
         # The dispatch result is the only place a harness-truncated subagent is
         # observable, and where the orchestrator gets its look at the row. The

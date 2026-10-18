@@ -10741,7 +10741,7 @@ def fill_empty_contract_evidence(
 ) -> dict:
     """Write ``entries`` into the evidence lists a cleanly finalized row left empty.
 
-    The only in-place edit of a closed row: a list that holds anything stays as
+    An in-place edit of a closed row: a list that holds anything stays as
     the agent wrote it, and no column other than ``raw_handoff_json`` changes.
 
     Returns ``{"status": "applied", "fields": [...], "envelope": dict}`` or
@@ -10791,6 +10791,68 @@ def fill_empty_contract_evidence(
                 )
                 con.commit()
                 return {"status": "applied", "fields": fields, "envelope": envelope}
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def record_update_contracts_outcome(
+    contract_id: "str | None",
+    *,
+    applied: "list[dict]",
+    refused: "list[str]",
+    db_path: "Path | None" = None,
+) -> dict:
+    """Stamp what SubagentStop did with a row's ``update_contracts`` onto that row.
+
+    Sets ``update_contracts_applied`` (``{contract, workspace}`` per write) and
+    ``update_contracts_refused`` (one reason per entry not applied) in
+    ``raw_handoff_json``; an empty list is left out. Returns
+    ``{"status": "applied"}`` or ``{"status": "skipped", "reason": ...}``
+    (``no_contract_id`` / ``nothing_to_record`` / ``no_row`` / ``no_envelope``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+    if not applied and not refused:
+        return {"status": "skipped", "reason": "nothing_to_record"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                row = con.execute(
+                    "SELECT raw_handoff_json FROM agent_contract_handoffs "
+                    "WHERE contract_id = ? LIMIT 1",
+                    (contract_id,),
+                ).fetchone()
+                if row is None:
+                    con.commit()
+                    return {"status": "skipped", "reason": "no_row"}
+                try:
+                    envelope = json.loads(row["raw_handoff_json"] or "null")
+                except (TypeError, ValueError):
+                    envelope = None
+                if not isinstance(envelope, dict):
+                    con.commit()
+                    return {"status": "skipped", "reason": "no_envelope"}
+                if applied:
+                    envelope["update_contracts_applied"] = list(applied)
+                if refused:
+                    envelope["update_contracts_refused"] = list(refused)
+                con.execute(
+                    "UPDATE agent_contract_handoffs SET raw_handoff_json = ? "
+                    "WHERE contract_id = ?",
+                    (json.dumps(envelope), contract_id),
+                )
+                con.commit()
+                return {"status": "applied"}
             except Exception:
                 con.rollback()
                 raise

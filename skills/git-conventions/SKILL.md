@@ -39,8 +39,8 @@ T3 (`Verb: 'rm' (MUTATIVE)` on text that only *mentions* `rm -rf`).
 
 Target the repo with `git -C /absolute/path <verb>` -- this is the canonical
 form in a subagent. The T3 consent gate parses `-C` as a flag and classifies
-the command identically to the bare verb (`git -C /repo push` is T3 `push`,
-same as `git push`); there is NO bypass of Gaia's gate. The full discipline --
+the command identically to the bare verb (`git -C /repo push origin main` is
+T3 `push`, same as `git push origin main`); there is NO bypass of Gaia's gate. The full discipline --
 why one byte-identical form prevents the approval loop, and why a separate `cd`
 call cannot work (the cwd resets between Bash calls) -- lives in
 `command-execution` Rule 7; follow it there.
@@ -64,6 +64,24 @@ Two narrow caveats:
 Push to the feature branch. Only push directly to `main` when explicitly
 instructed or when the work is already on main. Force-push (`--force`)
 requires explicit user instruction.
+
+Which of these ask for a signature (`security-tiers` owns the rule;
+`_check_git_publish_relief` in `mutative_verbs.py` decides it):
+
+- **Free:** `commit`, `add` and the other local subcommands;
+  `git -C /abs push [-u|--set-upstream] <remote> <branch>` when the branch is
+  named, is not main, master or the remote's HEAD branch, and the repository's
+  push configuration sends it to itself, with nothing before `git`; `gh pr create`; `gh pr
+  edit` without `--base`; `git -C <path> merge --ff-only <rev>` when `<path>`
+  is a Gaia-managed worktree.
+- **T3:** bare `git push`, a push to the default branch or `HEAD`, any push
+  with another flag (`--force`, `--force-with-lease`, `--delete`, `--mirror`,
+  `--all`, `--tags`) or a `+`/`:` refspec; `gh pr merge`; `gh pr edit
+  --base`; every other `merge`, including `--ff-only` in the live checkout;
+  `rebase`.
+
+Do not request the free forms in advance: run them, and request only what is
+still T3.
 
 ## Hook Enforcement
 

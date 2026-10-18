@@ -1426,6 +1426,23 @@ def _ro_connect(db_path: Path | None = None) -> sqlite3.Connection:
     return con
 
 
+def latest_session_event_type(
+    session_id: str, event_types: tuple[str, ...], db_path: Path | None = None,
+) -> str | None:
+    """The newest of ``event_types`` in ``harness_events`` whose payload names ``session_id``."""
+    marks = ",".join("?" * len(event_types))
+    con = _ro_connect(db_path)
+    try:
+        row = con.execute(
+            f"SELECT type FROM harness_events WHERE type IN ({marks}) "
+            "AND json_extract(payload, '$.session_id') = ? ORDER BY id DESC LIMIT 1",
+            (*event_types, session_id),
+        ).fetchone()
+    finally:
+        con.close()
+    return row[0] if row else None
+
+
 def _dedup_preserve(names) -> list[str]:
     """De-duplicate ``names`` preserving first-seen order, dropping falsy."""
     return list(dict.fromkeys(n for n in names if n))

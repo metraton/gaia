@@ -80,17 +80,20 @@ def _basename(token: str) -> str:
     return token.rsplit("/", 1)[-1]
 
 
-def is_memory_write_attempt(command: str) -> bool:
-    """Return True iff ``command`` invokes a `gaia memory <write-verb>`.
+def is_memory_write_attempt(
+    command: str, verbs: frozenset[str] = MEMORY_WRITE_VERBS,
+) -> bool:
+    """Return True iff ``command`` invokes a `gaia memory <verb>` for one of ``verbs``.
 
     Invocation-form agnostic (installed launcher, `python3 .../bin/gaia`,
     compound chains). Flags between `memory` and the verb are skipped.
 
     Args:
         command: The Bash command line (may include operators, wrappers).
+        verbs: The write verbs that count; every mutation verb by default.
 
     Returns:
-        True if a `gaia memory` mutation verb is present anywhere in the
+        True if one of ``verbs`` follows `gaia memory` anywhere in the
         command's token stream.
     """
     if not command or "memory" not in command:
@@ -107,13 +110,15 @@ def is_memory_write_attempt(command: str) -> bool:
 
     help_exempt = not any(marker in command for marker in ("$(", "`", "<(", ">("))
     return any(
-        _component_writes_memory(component, help_exempt=help_exempt)
+        _component_writes_memory(component, help_exempt=help_exempt, verbs=verbs)
         for component in parse_command(command)
     )
 
 
-def _component_writes_memory(component: str, *, help_exempt: bool) -> bool:
-    """True iff one operator-free component invokes a `gaia memory <write-verb>`."""
+def _component_writes_memory(
+    component: str, *, help_exempt: bool, verbs: frozenset[str],
+) -> bool:
+    """True iff one operator-free component invokes a `gaia memory <verb>` in ``verbs``."""
     try:
         tokens = shlex.split(component)
     except ValueError:
@@ -135,7 +140,7 @@ def _component_writes_memory(component: str, *, help_exempt: bool) -> bool:
         k = j + 1
         while k < n and tokens[k].startswith("-"):
             k += 1
-        if k < n and tokens[k] in MEMORY_WRITE_VERBS:
+        if k < n and tokens[k] in verbs:
             tail = tokens[k + 1:]
             if help_exempt and tail and tail[0] in {"--help", "-h", "-?", "--usage"}:
                 continue

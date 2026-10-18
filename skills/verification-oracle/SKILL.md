@@ -18,7 +18,9 @@ For `semantic` and `self_review` gates, use `verification-rubric`.
 Upstream, the planner authored the gate: its claim in `evidence_type`, its
 check in `evidence_shape`. Upstream of that, the executor ran the check red
 before its change and green after, recording both as evidence tied to the gate.
-The oracle never invents what to check, only whether it holds. Downstream, its
+The oracle never relaxes the gate: it runs the declared check as written and
+reports whether it holds. Probes against the claim belong to the verifier
+(`gaia-verifier`), which runs them after this check. Downstream, its
 verdict decides whether the task derives as done and, through the evidence it
 leaves, whether an AC can close -- so a false pass here counts unfinished work
 as done one layer up.

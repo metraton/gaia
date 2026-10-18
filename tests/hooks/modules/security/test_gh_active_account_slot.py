@@ -11,10 +11,10 @@ to READ_ONLY "by elimination" -- the audit log shows ``gh auth switch``
 running with no friction at all.
 
 The read surface of the same subcommand group must keep costing nothing, and
-one WRITE form is deliberately left free with it: ``gh auth login`` ADDS an
-account without displacing the active one, and it is the only way out when the
-account a command needs is absent. Gating it would leave an agent blocked on
-``switch`` with no route to the account it was told to use.
+``gh auth login`` stays free with it for now, although it makes the new account
+the active one (gh's multiple-accounts doc). Keeping the active account in
+place while adding one belongs to an isolated gh config directory, not to a
+signature on login.
 
 Every closed form carries its counterfactual: withdraw the anchor, drop the
 memoized verdicts, and the form must return to exactly what it classified
@@ -109,8 +109,8 @@ def test_reading_the_slot_and_adding_an_account_stay_free(case_id, command):
     """Face (b): status, token, and login keep costing nothing.
 
     This is the half that separates a repair from an overcorrection. `login`
-    is the deliberate one: it is a write that does not displace the active
-    account, and it is the escape hatch when the needed account is absent.
+    activates the account it adds, and stays free until the isolated gh config
+    takes over adding accounts.
     """
     result = detect_mutative_command(command)
     assert result.is_mutative is False, (

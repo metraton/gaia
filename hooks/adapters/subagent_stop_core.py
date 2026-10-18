@@ -1260,6 +1260,7 @@ def run_subagent_stop(
         )
 
         context_update_result = None
+        _update_contracts_applied: list = []
         _update_contracts_refused: list = []
         if isinstance(parsed_contract, dict):
             # The hook's cwd can resolve to a workspace other than the
@@ -1288,11 +1289,27 @@ def run_subagent_stop(
                     "updated": True,
                     "contract": ", ".join(_update_contracts_result.get("contracts", [])),
                 }
+            _update_contracts_applied = list(_update_contracts_result.get("applied", []))
             _update_contracts_refused = list(_update_contracts_result.get("errors", []))
             if _update_contracts_refused:
                 logger.warning(
                     "update_contracts not applied for %s: %s",
                     agent_type, _update_contracts_refused,
+                )
+            try:
+                from gaia.store.writer import record_update_contracts_outcome
+
+                record_update_contracts_outcome(
+                    parsed_contract.get("reconstructed_from_finalized_draft")
+                    or (_bound_dispatch_row or {}).get("contract_id"),
+                    applied=_update_contracts_applied,
+                    refused=_update_contracts_refused,
+                    db_path=Path(task_info["db_path"]) if task_info.get("db_path") else None,
+                )
+            except Exception:
+                logger.warning(
+                    "update_contracts outcome for %s not recorded on its row",
+                    agent_type, exc_info=True,
                 )
 
         anchor_hits = None
@@ -1732,6 +1749,8 @@ def run_subagent_stop(
                     f"Resumen de {agent_type} para el usuario: {_user_summary}"
                 )
 
+        if _update_contracts_applied:
+            result["update_contracts_applied"] = _update_contracts_applied
         if _update_contracts_refused:
             result["update_contracts_refused"] = _update_contracts_refused
             _refusal_notice = (

@@ -71,7 +71,8 @@ CLASSIFIER_TRUTH_TABLE = [
     ("gaia-deep-mutative-path", GATED, "gaia task gate remove 12", True, T3),
     ("git-push-help", FREE, "git push --help", False, T0),
     ("kubectl-delete-help", FREE, "kubectl delete --help", False, T0),
-    ("git-push-branch", GATED, "git push origin x", True, T3),
+    ("git-push-branch", GATED, "git push --force origin x", True, T3),
+    ("git-push-default-branch", GATED, "git push origin main", True, T3),
     ("kubectl-delete-namespace", GATED, "kubectl delete ns x", True, T3),
     # ---- CLOSED: granting capability is now gated exactly like removing it --
     # These four were recorded OPEN (False, T0): granting was gated on no

@@ -59,7 +59,10 @@ accepted plan predictably requires. Classify every command through
 `security-tiers` before execution.
 
 Request every predictable T3 command before attempting it, the instant it is
-known, rather than waiting for the policy gate to block it. The forecast is what
+known, rather than waiting for the policy gate to block it. Only a command
+`security-tiers` classifies T3 belongs in a request: pushing a named feature
+branch, opening a PR and editing one without `--base` run free, so run them
+instead of requesting them. The forecast is what
 the request is built from -- what each command does, its impact, how it is
 undone and checked: `subagent-request-approval` says which phrases to write and
 how to group the commands into the fewest signatures, leaving for a later
@@ -75,3 +78,15 @@ A finding names the source and observation. A failed command records its exact
 text, exit status, stdout/stderr, and what remains unknown. An exit code alone
 does not establish desired state; verification must query or inspect the result.
 Keep assumptions visibly separate from confirmed facts.
+
+## Deeper, not bigger
+
+Depth stays inside the goal: each move is a read, a check, or an offer.
+
+- Restate the acceptance measurably before working.
+- Use the trade's real instrument, not a summary of what it would say.
+- Prefer the raw output to a description of it.
+- Predict what a read you have not yet seen will show, then run it and compare.
+- The judge is something you did not write in order to pass.
+- What an expert would add and the goal did not ask for, you name in one line
+  as an offer, and do not do.

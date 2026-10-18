@@ -184,3 +184,29 @@ def test_a_refused_update_contracts_is_named_on_the_close(db_path, monkeypatch, 
     assert "project_identity" in (response.output.get("systemMessage") or ""), (
         "an unapplied proposal must reach the orchestrator, not only the hook log"
     )
+
+
+def test_a_refused_update_contracts_is_recorded_on_the_contract_row(db_path, monkeypatch):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
+    _seed_project(db_path, "gaia-operator")
+
+    _close_turn(db_path, monkeypatch, "gaia-planner", "NEEDS_VERIFICATION")
+
+    shown = _cli([str(_REPO_ROOT / "bin" / "gaia"), "contract", "view",
+                  "--harness-id", HARNESS_AGENT_ID])
+    assert shown.returncode == 0, shown.stderr
+    refused = json.loads(shown.stdout)["envelope"].get("update_contracts_refused") or []
+    assert any("project_identity" in message for message in refused), (
+        "the row is what a later reader opens; a refusal only in the hook output is lost"
+    )
+
+
+def test_a_malformed_update_contracts_entry_is_refused_not_dropped(db_path):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
+
+    result = context_writer.process_update_contracts(
+        {"update_contracts": [{"contract": "project_identity"}]},
+        {"agent": "gaia-operator", "db_path": db_path, "workspace": DISPATCH_WORKSPACE},
+    )
+
+    assert result["errors"], "an entry that cannot be applied must leave a reason"
