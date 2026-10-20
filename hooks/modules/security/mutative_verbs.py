@@ -903,6 +903,32 @@ def _validated_anchor_table(
     return table
 
 
+# `fmt` is a SIMULATION verb, so a formatter that rewrites files in place read
+# as a check. A formatter is free only on a flag the tool is known to honor; a
+# flag it does not know is ignored silently (terragrunt v0.72.6 ran `hclfmt
+# --check --working-dir <dir>` against the shell's cwd and rewrote four
+# unrelated repositories). Each spelling below is exact because `-check=false`
+# and `-write=true` turn the same flag back off; a later one of those cancels.
+# Narrower than the tools: `-check=true` asks a signature, and so does
+# `hclfmt --check`, which only terragrunt releases after the v0.72 flag
+# redesign honor. `--terragrunt-hclfmt-stdin` formats stdin to stdout;
+# terraform's `fmt -` is not exempted and asks a signature.
+_TERRAFORM_FMT_NO_WRITE_FLAGS = frozenset({"-check", "--check", "-write=false", "--write=false"})
+_TERRAFORM_FMT_WRITE_FLAGS = frozenset({"-check=false", "--check=false", "-write=true", "--write=true"})
+
+
+def _terraform_fmt_anchor() -> "MutativeAnchor":
+    return MutativeAnchor(
+        path=("fmt",),
+        exempt_flags=_TERRAFORM_FMT_NO_WRITE_FLAGS,
+        exempt_cancelled_by=_TERRAFORM_FMT_WRITE_FLAGS,
+        guidance=(
+            "fmt rewrites the files it finds unless -check or -write=false is "
+            "given. Run it as `terraform fmt -check` to see what would change."
+        ),
+    )
+
+
 # Keyed by base_cmd; the anchors of one CLI are tried in declaration order and
 # the first match decides. Every match yields the same verdict, so order only
 # affects which path the reason names -- and an order that leaves an anchor
@@ -1045,11 +1071,30 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
             path=("init",),
             flags=frozenset({"-upgrade", "-migrate-state", "-reconfigure"}),
         ),
+        _terraform_fmt_anchor(),
     ),
+    "tofu": (_terraform_fmt_anchor(),),
     "terragrunt": (
         MutativeAnchor(
             path=("init",),
             flags=frozenset({"-upgrade", "-migrate-state", "-reconfigure"}),
+        ),
+        _terraform_fmt_anchor(),
+        MutativeAnchor(
+            path=("hclfmt",),
+            exempt_flags=frozenset({"--terragrunt-check", "--terragrunt-hclfmt-stdin"}),
+            exempt_cancelled_by=frozenset({"--terragrunt-check=false"}),
+            guidance=(
+                "hclfmt rewrites HCL in place unless --terragrunt-check is "
+                "given; --check and --working-dir are not flags of this "
+                "terragrunt and are ignored."
+            ),
+        ),
+        MutativeAnchor(
+            path=("hcl", "fmt"),
+            exempt_flags=frozenset({"--check"}),
+            exempt_cancelled_by=frozenset({"--check=false"}),
+            guidance="hcl fmt rewrites HCL in place unless --check is given.",
         ),
     ),
 })

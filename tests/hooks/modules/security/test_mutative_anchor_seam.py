@@ -229,6 +229,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             "gh",
             "git",
             "terraform",
+            "tofu",
             "terragrunt",
         }
 
@@ -324,6 +325,10 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("git", "remote", "add"),
             ("terraform", "init"),
             ("terragrunt", "init"),
+            ("terraform", "fmt"),
+            ("terragrunt", "fmt"),
+            ("terragrunt", "hclfmt"),
+            ("terragrunt", "hcl", "fmt"),
         }
 
     def test_only_the_reviewed_shipped_anchors_carry_a_flag_condition(self):

@@ -155,7 +155,7 @@ EQUIVALENCE_COMMANDS = [
     "helm template my-release ./chart",
     "kubectl diff -f manifest.yaml",
     "terraform validate",
-    "terraform fmt",
+    "terraform fmt -check",
     # --- MUTATIVE verbs ---
     "terraform apply",
     "kubectl apply -f manifest.yaml",
@@ -260,7 +260,7 @@ CLASSIFICATION_SCENARIOS = [
     ("helm template my-release ./chart", True, "T0"),
     ("kubectl diff -f manifest.yaml", True, "T0"),
     ("terraform validate", True, "T0"),
-    ("terraform fmt", True, "T0"),
+    ("terraform fmt -check", True, "T0"),
     # === Dry-run overrides ===
     ("kubectl apply --dry-run=client -f manifest.yaml", True, "T0"),
     ("kubectl apply --dry-run=server -f manifest.yaml", True, "T0"),
