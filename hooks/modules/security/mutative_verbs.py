@@ -7695,6 +7695,45 @@ def sets_node_options(command: str) -> bool:
     return bool(_NODE_OPTIONS_ASSIGNMENT_RE.search(command))
 
 
+_PACKAGE_INPUT_TOKEN_RE = re.compile(r"(?:^|/)(?:package\.json|node_modules)(?:/|$)")
+_PACKAGE_INPUT_READERS: FrozenSet[str] = frozenset({
+    "cat", "grep", "egrep", "fgrep", "rg", "head", "tail", "ls", "stat", "wc", "diff",
+    "jq", "less", "more", "file", "test", "[", "tree", "du", "realpath", "readlink",
+    "sha256sum", "md5sum", "echo", "printf",
+})
+_GIT_PACKAGE_INPUT_READS: FrozenSet[str] = frozenset({
+    "diff", "show", "log", "blame", "status", "ls-files", "cat-file", "grep",
+    "rev-parse", "ls-tree", "describe", "shortlog", "check-ignore",
+})
+_PACKAGE_SCRIPT_RUNNERS: FrozenSet[str] = frozenset({"npm", "bun", "pnpm", "yarn", "npx", "bunx", "pnpx"})
+
+
+def rewrites_package_inputs(command: str) -> bool:
+    """True when *command* names package.json or a node_modules path as anything but a read.
+
+    A script run is classified from package.json and node_modules as they are
+    when the whole command is classified; a chain stage that rewrites either one
+    changes what the later run executes. The test is deliberately by exclusion
+    (a named reader is free, any other command naming the file is not): a
+    writer nobody listed still counts. It does not see a stage that rewrites
+    the tree without naming the file (``git checkout <branch>``).
+    """
+    semantics = analyze_command(command)
+    if not any(_PACKAGE_INPUT_TOKEN_RE.search(token) for token in semantics.tokens[1:]):
+        return False
+    if semantics.base_cmd in _PACKAGE_INPUT_READERS:
+        return False
+    if semantics.base_cmd == "git":
+        subcommand = semantics.non_flag_tokens[0] if semantics.non_flag_tokens else ""
+        return subcommand not in _GIT_PACKAGE_INPUT_READS
+    return True
+
+
+def runs_package_script(command: str) -> bool:
+    """True when *command* is a package manager or local runner whose code package.json or node_modules decides."""
+    return analyze_command(command).base_cmd in _PACKAGE_SCRIPT_RUNNERS
+
+
 def node_test_under_node_options(command: str, cwd: "Optional[str]") -> "Optional[MutativeResult]":
     """The T3 verdict for a ``node --test`` suite run that NODE_OPTIONS reaches, or None.
 

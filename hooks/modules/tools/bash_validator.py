@@ -61,6 +61,8 @@ from ..security.mutative_verbs import (
     build_t3_block_response,
     cwd_after_component,
     node_test_under_node_options,
+    rewrites_package_inputs,
+    runs_package_script,
     sets_node_options,
 )
 from ..security.flag_classifiers import (
@@ -1691,8 +1693,15 @@ class BashValidator:
         scan_cwd: Optional[str] = cwd
         # A NODE_OPTIONS set by an earlier component reaches every later node.
         node_options_set = False
+        # A package.json or node_modules path rewritten by an earlier component
+        # changes the script a later run executes, which was read before the chain ran.
+        package_inputs_rewritten = False
         for comp in components:
             detected = detect_mutative_command(comp, cwd=scan_cwd)
+            if package_inputs_rewritten and runs_package_script(comp):
+                has_t3 = True
+                break
+            package_inputs_rewritten = package_inputs_rewritten or rewrites_package_inputs(comp)
             if node_options_set and not detected.is_mutative:
                 detected = node_test_under_node_options(comp, scan_cwd) or detected
             node_options_set = node_options_set or sets_node_options(comp)
