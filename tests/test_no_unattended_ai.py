@@ -44,7 +44,7 @@ _UNATTENDED_SHAPES = {
     ),
     "permissions-skipped": re.compile(r"--dangerously-skip-permissions"),
     "crontab-shell-write": re.compile(r"\bcrontab\s+-(?:\s|$|e\b|r\b)", re.MULTILINE),
-    "crontab-subprocess-write": re.compile(r"""["']crontab["']\s*,\s*["'](?!-l["'])"""),
+    "crontab-subprocess-write": re.compile(r"""[\[(]\s*["']crontab["']\s*,\s*["'](?!-l["'])"""),
 }
 
 
@@ -121,6 +121,21 @@ def test_the_headless_launch_shape_catches_every_position_of_the_print_flag():
     shape = _UNATTENDED_SHAPES["host-headless-launch"]
     assert [text for text in launches if not shape.search(text)] == []
     assert [text for text in not_launches if shape.search(text)] == []
+
+
+def test_the_crontab_subprocess_shape_matches_an_argv_not_a_word_list():
+    writes = (
+        'subprocess.run(["crontab", "-"], input=table)',
+        "subprocess.check_call(['crontab', '-r'])",
+        'argv = ("crontab", "/tmp/table")',
+    )
+    not_writes = (
+        'subprocess.run(["crontab", "-l"], capture_output=True)',
+        '"poweroff", "crontab", "at", "sudo",',
+    )
+    shape = _UNATTENDED_SHAPES["crontab-subprocess-write"]
+    assert [text for text in writes if not shape.search(text)] == []
+    assert [text for text in not_writes if shape.search(text)] == []
 
 
 def _seed_schedules_and_a_due_reminder(db: Path, workspace_root: Path, project: Path) -> None:
