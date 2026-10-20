@@ -42,6 +42,9 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia_data"))
     monkeypatch.setenv("GAIA_WORKSPACE", "me")
     monkeypatch.setattr("gaia.store.writer.is_harness_session_bound", lambda _session: True)
+    # A bare `gaia` is admitted only when $PATH resolves it to an installed
+    # package's binary, which a clean runner lacks; provenance is not under test.
+    monkeypatch.setattr("modules.security.gaia_cli_only_guard.is_trusted_gaia_binary", lambda _binary: True)
 
 
 def _orchestrator_bash(command: str) -> dict:
