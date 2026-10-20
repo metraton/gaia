@@ -116,6 +116,108 @@ class TestWriteInClosure:
         assert tier == T3
 
 
+class TestDirectoryResolution:
+    """``require('./pkg')`` loads what pkg/package.json names, not just index.js."""
+
+    BENIGN = "module.exports = 1;\n"
+    CJS_WRITER = "const fs = require('fs');\nfs.writeFileSync('o', 'x');\n"
+
+    def test_package_main_writer_beside_a_benign_index_is_t3(self, tmp_path):
+        _write(tmp_path, "pkg/package.json", '{"main": "real.js"}')
+        _write(tmp_path, "pkg/real.js", self.CJS_WRITER)
+        _write(tmp_path, "pkg/index.js", self.BENIGN)
+        _write(tmp_path, "e.js", "require('./pkg');\n")
+        result, tier = _classify(tmp_path, "e.js")
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+        assert tier == T3
+
+    def test_package_main_without_an_index_is_followed(self, tmp_path):
+        _write(tmp_path, "pkg/package.json", '{"main": "./real"}')
+        _write(tmp_path, "pkg/real.js", self.CJS_WRITER)
+        _write(tmp_path, "e.js", "require('./pkg');\n")
+        result, _ = _classify(tmp_path, "e.js")
+        assert result.is_mutative is True
+
+    def test_package_exports_string_is_followed(self, tmp_path):
+        _write(tmp_path, "pkg/package.json", '{"exports": {".": {"require": "./real.cjs"}}}')
+        _write(tmp_path, "pkg/real.cjs", self.CJS_WRITER)
+        _write(tmp_path, "pkg/index.js", self.BENIGN)
+        _write(tmp_path, "e.js", "require('./pkg');\n")
+        result, _ = _classify(tmp_path, "e.js")
+        assert result.is_mutative is True
+
+    def test_missing_main_falls_back_to_index_like_node(self, tmp_path):
+        _write(tmp_path, "pkg/package.json", '{"main": "gone.js"}')
+        _write(tmp_path, "pkg/index.js", self.CJS_WRITER)
+        _write(tmp_path, "e.js", "require('./pkg');\n")
+        result, _ = _classify(tmp_path, "e.js")
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+    def test_benign_package_stays_free(self, tmp_path):
+        _write(tmp_path, "pkg/package.json", '{"name": "x", "main": "lib/main.js"}')
+        _write(tmp_path, "pkg/lib/main.js", self.BENIGN)
+        _write(tmp_path, "e.js", "require('./pkg');\n")
+        result, tier = _classify(tmp_path, "e.js")
+        assert result.is_mutative is False
+        assert tier == T0
+
+    @pytest.mark.parametrize("manifest", ["{not json", "[]", '{"main": 3}', '{"exports": 7}'])
+    def test_unreadable_or_odd_package_json_fails_closed(self, tmp_path, manifest):
+        _write(tmp_path, "pkg/package.json", manifest)
+        _write(tmp_path, "pkg/index.js", self.BENIGN)
+        _write(tmp_path, "e.js", "require('./pkg');\n")
+        result, tier = _classify(tmp_path, "e.js")
+        assert result.is_mutative is True
+        assert tier == T3
+        assert result.verb == "js-import-unresolved"
+        assert "package.json" in result.reason
+
+
+class TestSyntaxVersusText:
+    """Only real import syntax is an import, not text inside a string or comment."""
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "console.log(\"usage: require('./missing-plugin')\");\n",
+            "console.log('run: import \"./missing\"');\n",
+            "const help = `import x from './missing'`;\n",
+            "// require('./missing')\n/* import('./missing') */\n",
+        ],
+    )
+    def test_import_text_in_a_string_or_comment_is_not_followed(self, tmp_path, body):
+        _write(tmp_path, "main.mjs", body)
+        result, tier = _classify(tmp_path, "main.mjs")
+        assert result.is_mutative is False, body
+        assert tier == T0
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "require(`./lib.cjs`);\n",
+            "const m = require(\n  './lib.cjs'\n);\n",
+            "import * as ns from \"./lib.mjs\" with { type: 'javascript' };\n",
+        ],
+    )
+    def test_real_syntax_spelling_variants_are_followed(self, tmp_path, body):
+        _write(tmp_path, "lib.cjs", "const fs = require('fs');\nfs.writeFileSync('o', 'x');\n")
+        _write(tmp_path, "lib.mjs", WRITER)
+        _write(tmp_path, "main.mjs", body)
+        result, _ = _classify(tmp_path, "main.mjs")
+        assert result.is_mutative is True, body
+
+    def test_a_real_import_after_a_string_mentioning_one_is_still_followed(self, tmp_path):
+        _write(tmp_path, "lib.mjs", WRITER)
+        _write(tmp_path, "main.mjs", (
+            "console.log(\"require('./nope')\");\nimport './lib.mjs';\n"
+        ))
+        result, _ = _classify(tmp_path, "main.mjs")
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+
 class TestWriteFreeClosure:
     def test_entry_importing_a_read_only_module_stays_free(self, tmp_path):
         _write(tmp_path, "lib.mjs", READER)
