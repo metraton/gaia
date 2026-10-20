@@ -989,7 +989,7 @@ def run_subagent_stop(
     from modules.agents.transcript_reader import read_transcript, read_full_transcript_text
     from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
     from modules.audit.workflow_recorder import record as record_workflow
-    from modules.context.context_writer import process_update_contracts, proposal_notice
+    from modules.context.context_writer import process_update_contracts
     from modules.memory.episode_writer import write as write_episode
     from modules.security.approval_cleanup import cleanup as cleanup_approval
     from modules.session.session_manager import get_or_create_session_id
@@ -1262,7 +1262,6 @@ def run_subagent_stop(
         context_update_result = None
         _update_contracts_applied: list = []
         _update_contracts_refused: list = []
-        _update_contracts_notice = None
         if isinstance(parsed_contract, dict):
             # The hook's cwd can resolve to a workspace other than the
             # dispatch's, so the born row's column decides -- unless the row
@@ -1292,12 +1291,6 @@ def run_subagent_stop(
                 }
             _update_contracts_applied = list(_update_contracts_result.get("applied", []))
             _update_contracts_refused = list(_update_contracts_result.get("errors", []))
-            _update_contracts_notice = proposal_notice(
-                _update_contracts_result,
-                ((_bound_dispatch_row or {}).get("dispatch_project") or agent_type).partition(" (")[0],
-                parsed_contract.get("reconstructed_from_finalized_draft")
-                or (_bound_dispatch_row or {}).get("contract_id"),
-            )
             if _update_contracts_refused:
                 logger.warning(
                     "update_contracts not applied for %s: %s",
@@ -1756,11 +1749,6 @@ def run_subagent_stop(
                     f"Resumen de {agent_type} para el usuario: {_user_summary}"
                 )
 
-        if _update_contracts_notice:
-            user_message = (
-                f"{user_message}\n{_update_contracts_notice}"
-                if user_message else _update_contracts_notice
-            )
         if _update_contracts_applied:
             result["update_contracts_applied"] = _update_contracts_applied
         if _update_contracts_refused:

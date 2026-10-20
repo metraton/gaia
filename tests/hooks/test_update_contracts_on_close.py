@@ -30,6 +30,7 @@ for _p in (_HOOKS_DIR, str(_REPO_ROOT)):
 
 from adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
 from gaia.store.writer import stamp_harness_agent_id  # noqa: E402
+from modules.agents.task_result_observer import build_contract_summary_line  # noqa: E402
 from modules.context import context_writer  # noqa: E402
 from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
@@ -160,10 +161,17 @@ def _project_view(db_path: Path) -> dict:
     return json.loads(shown.stdout)
 
 
-def _notice_contract_id(response) -> str:
-    notice = response.output.get("systemMessage") or ""
-    match = re.search(r"gaia context accept ([^\s`]+)", notice)
-    assert match, f"the close must name the contract to apply: {notice!r}"
+def _dispatch_result_line() -> str:
+    """The line PostToolUse hands the orchestrator for the dispatch that just closed."""
+    line = build_contract_summary_line({"agentId": HARNESS_AGENT_ID}, session_id=SESSION_ID)
+    assert line, "the closed dispatch must resolve to a result line"
+    return line
+
+
+def _notice_contract_id() -> str:
+    line = _dispatch_result_line()
+    match = re.search(r"gaia context accept ([^\s`]+)", line)
+    assert match, f"the dispatch result must name the contract to apply: {line!r}"
     return match.group(1)
 
 
@@ -172,7 +180,9 @@ def _apply(contract_id: str, *extra: str):
 
 
 @pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
-def test_a_specialist_close_writes_nothing_and_announces_the_proposal(db_path, monkeypatch, state):
+def test_a_specialist_close_writes_nothing_and_the_dispatch_result_announces_the_proposal(
+    db_path, monkeypatch, state,
+):
     agent = "gaia-operator"
     ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, agent, "sess-boot")
     _seed_project(db_path, agent)
@@ -184,9 +194,13 @@ def test_a_specialist_close_writes_nothing_and_announces_the_proposal(db_path, m
         f"a {state} close only proposes; the project's entry must be untouched"
     )
     assert re.search(
-        r"1 project-context update proposed for \S+ -- contract \S+",
-        response.output.get("systemMessage") or "",
-    ), response.output
+        r"1 project-context update proposed( for \S+)? — contract \S+; apply with `gaia context accept \S+`",
+        _dispatch_result_line(),
+    )
+    emitted = json.dumps(response.output)
+    assert "project-context update" not in emitted and "gaia context accept" not in emitted, (
+        "SubagentStop's systemMessage reaches the user, not the orchestrator; it carries no proposal notice"
+    )
 
 
 @pytest.mark.parametrize("state", ["NEEDS_VERIFICATION", "COMPLETE"])
@@ -196,7 +210,8 @@ def test_applying_the_announced_proposal_lands_it_in_the_dispatch_workspace(
     agent = "gaia-operator"
     ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, agent, "sess-boot")
     _seed_project(db_path, agent)
-    contract_id = _notice_contract_id(_close_turn(db_path, monkeypatch, agent, state))
+    _close_turn(db_path, monkeypatch, agent, state)
+    contract_id = _notice_contract_id()
 
     applied = _apply(contract_id)
 
@@ -214,8 +229,8 @@ def test_any_specialist_may_propose_a_section_without_write_permission(db_path, 
     response = _close_turn(db_path, monkeypatch, "gaia-planner", state)
 
     assert not response.output.get("update_contracts_refused"), response.output
-    assert "1 project-context update proposed" in (response.output.get("systemMessage") or "")
-    applied = _apply(_notice_contract_id(response))
+    assert "1 project-context update proposed" in _dispatch_result_line()
+    applied = _apply(_notice_contract_id())
     assert applied.returncode == 0, applied.stderr
     assert WORKFLOW in json.dumps(_project_view(db_path))
 

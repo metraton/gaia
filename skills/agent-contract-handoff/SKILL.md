@@ -186,9 +186,9 @@ minted, `approval_id`, copied verbatim from the request's output.
 - `update_contracts`: `{contract, payload}` entries, a proposal for any
   section and never write authority: project context is written by the
   orchestrator alone. SubagentStop writes nothing for them, whatever
-  `agent_state` the turn closes in; it checks the shape and announces
-  "N project-context updates proposed for <project> -- contract <id>" to the
-  orchestrator, which decides and accepts with `gaia context accept <id>`
+  `agent_state` the turn closes in; it checks the shape, and the dispatch
+  result announces "N project-context updates proposed for <project> — contract <id>"
+  to the orchestrator, which decides and accepts with `gaia context accept <id>`
   (`--dry-run` shows the target workspaces). Accepting deep-merges the
   payload; lists replace whole and no delete sentinel exists. A single
   `{section: payload}` object is read as the array it abbreviates, any other

@@ -30,7 +30,7 @@ Public API:
     - apply_update(update, agent_name, workspace, db_path) -> dict
     - process_update_contracts(contract_dict, task_info) -> dict
     - apply_proposal(clause, workspace, db_path, dry_run) -> dict
-    - proposal_notice(result, project, contract_id) -> Optional[str]
+    - proposed_entries(clause) -> (entries, note)
 """
 
 import copy
@@ -473,18 +473,15 @@ def apply_proposal(
     return {"applied": applied, "errors": errors, "note": note}
 
 
-def proposal_notice(result: dict, project: str, contract_id: str) -> Optional[str]:
-    """One line telling the orchestrator a specialist's proposals await it, or None."""
-    count = len(result.get("proposed") or [])
-    if not count:
-        return None
-    plural = "" if count == 1 else "s"
-    note = f" ({result['normalized']})" if result.get("normalized") else ""
-    return (
-        f"{count} project-context update{plural} proposed for {project} -- "
-        f"contract {contract_id}{note}; apply with "
-        f"`gaia context accept {contract_id}`"
-    )
+def proposed_entries(clause: Any) -> tuple:
+    """``(entries, note)``: the well-formed project-context entries of a raw clause.
+
+    Shape only, with no owner lookup and no write, so a reader of a stored
+    envelope can count what awaits the orchestrator. ``evidence`` entries are
+    excluded because SubagentStop inserts them rather than proposing them.
+    """
+    entries, note, _errors = _parse_clause(clause)
+    return [entry for entry in entries if entry["contract"] != "evidence"], note
 
 
 def process_update_contracts(

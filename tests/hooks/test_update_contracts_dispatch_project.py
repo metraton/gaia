@@ -71,7 +71,7 @@ def test_update_contracts_dispatch_project_lands_in_the_projects_workspace(
 
     assert response.exit_code == 0, response.output
     assert WORKFLOW not in json.dumps(_project_view(db_path)), "the close only proposes"
-    applied = _apply(_notice_contract_id(response))
+    applied = _apply(_notice_contract_id())
     assert applied.returncode == 0, applied.stderr
     assert WORKFLOW in json.dumps(_project_view(db_path)), (
         f"the workflow must reach `gaia context project {PROJECT}` of {DISPATCH_WORKSPACE}"
@@ -150,7 +150,7 @@ def test_update_contracts_from_a_resumed_turn_lands_in_the_projects_workspace(
     )
 
     assert response.exit_code == 0, response.output
-    applied = _apply(_notice_contract_id(response))
+    applied = _apply(_notice_contract_id())
     assert applied.returncode == 0, applied.stderr
     assert WORKFLOW in json.dumps(_project_view(db_path)), (
         f"a continuation inherits the project the dispatch named, so the workflow "
@@ -204,7 +204,7 @@ def test_a_project_identity_key_lands_in_the_workspace_owning_that_project(
     response = _close_turn(db_path, monkeypatch, AGENT, "NEEDS_VERIFICATION", prompt=prompt)
 
     assert response.exit_code == 0, response.output
-    applied = _apply(_notice_contract_id(response))
+    applied = _apply(_notice_contract_id())
     assert applied.returncode == 0, applied.stderr
     assert WORKFLOW in json.dumps(_project_view(db_path)), (
         f"`gaia context project {PROJECT}` of {DISPATCH_WORKSPACE} must read the workflow back"
@@ -325,8 +325,6 @@ def test_a_section_keyed_object_is_recorded_not_dropped(db_path, branchkinect):
         "contract": "cluster_details", "workspace": HOOK_CWD_WORKSPACE, "keys": ["gke"],
     }]
     assert "{section: payload}" in result["normalized"]
-    notice = context_writer.proposal_notice(result, "gaia", "c1.abc")
-    assert notice.startswith("1 project-context update proposed for gaia -- contract c1.abc")
     assert context_writer._section_keys("cluster_details", HOOK_CWD_WORKSPACE, db_path) == set()
 
 

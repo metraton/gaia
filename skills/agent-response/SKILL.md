@@ -59,7 +59,9 @@ retry or remainder.
 row's coordinate is about to be handed to another agent. Read `memory_delta` too: its proposals are
 the specialist's, not yet memory, and what is kept, merged or dropped is yours to curate per
 Skill('memory'). The dispatch result flags a non-empty one with a line, `N project facts proposed
-for <project> — contract <id>`; a result without that line carries none.
+for <project> — contract <id>`; a result without that line carries none. A project-context proposal
+(`update_contracts`) is curated by you too, flagged by its own line, and if you accept it you apply it
+with `gaia context accept <contract-id>`.
 
 **Phase 3 — evidence on demand, only for the claim about to be made.** `commands_run` and
 `verbatim_outputs` for a positive; `patterns_checked` for a NEGATIVE; `cross_layer_impacts` before

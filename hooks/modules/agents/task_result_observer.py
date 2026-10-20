@@ -370,7 +370,8 @@ def build_contract_summary_line(
     command armed with the real id. This is the synchronous-dispatch case the
     Claude Code docs describe, where PostToolUse fires once the subagent has
     actually closed. When the envelope proposes project facts in
-    ``memory_delta``, a second line names how many and the contract holding them.
+    ``memory_delta`` or project-context updates in ``update_contracts``, a line
+    for each names how many and the contract holding them.
 
     MODE B (new): the row is NOT yet finalized (missing, or still DISPATCHED)
     but the result still carries an ``agentId`` -- the async-launch case,
@@ -452,9 +453,9 @@ def build_contract_summary_line(
     if fields_segment and len(line) > _LINE_HARD_CEILING:
         line = f"{core} -- {cmd}"
 
-    from .proposal_notices import memory_delta_notice
+    from .proposal_notices import proposal_notice
 
-    proposed = memory_delta_notice(
+    proposed = proposal_notice(
         envelope,
         contract_id=row.get("contract_id"),
         dispatch_project=row.get("dispatch_project"),
