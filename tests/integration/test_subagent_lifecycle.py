@@ -39,7 +39,6 @@ sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
     seed_workspace,
-    seed_agent_perms,
 )
 
 
@@ -115,34 +114,11 @@ def test_project(tmp_path):
 
 @pytest.fixture
 def lifecycle_db(tmp_path):
-    """Isolated gaia.db with cloud-troubleshooter and platform-architect permissions."""
+    """Isolated gaia.db with the schema and the ``global`` workspace."""
     db_path = tmp_path / "gaia_lifecycle.db"
     bootstrap_gaia_schema(db_path)
     seed_workspace(db_path, "global")
-    seed_agent_perms(
-        db_path,
-        "cloud-troubleshooter",
-        reads=["cluster_details", "infrastructure_topology", "application_services",
-               "monitoring_observability", "architecture_overview"],
-        writes=["cluster_details", "infrastructure_topology", "application_services",
-                "monitoring_observability", "architecture_overview"],
-    )
-    seed_agent_perms(
-        db_path,
-        "platform-architect",
-        reads=["terraform_infrastructure", "infrastructure_topology", "cluster_details",
-               "application_services", "architecture_overview"],
-        writes=["terraform_infrastructure", "infrastructure_topology"],
-    )
     return db_path
-
-
-def _clear_writer_cache():
-    try:
-        import context_writer as _cw
-        _cw._permissions_cache.clear()
-    except Exception:
-        pass
 
 
 def read_contract(db_path: Path, workspace: str, contract_name: str):
@@ -545,55 +521,11 @@ No new data found.
 
 
 # ============================================================================
-# PHASE 3: Permission Validation (DB-backed)
+# PHASE 4: Full Lifecycle - proposal at stop, write on accept (DB-backed)
 # ============================================================================
 
-class TestPhase3PermissionValidation:
-    """Validate that agents can only write to authorized contracts via DB."""
-
-    def test_cloud_troubleshooter_can_write_cluster_details(self, lifecycle_db):
-        """cloud-troubleshooter should be able to write to cluster_details."""
-        _clear_writer_cache()
-        from context_writer import validate_permission
-
-        update = {"contract": "cluster_details", "payload": {"node_count": 3}}
-        allowed, msg = validate_permission(update, "cloud-troubleshooter", db_path=lifecycle_db)
-
-        assert allowed is True
-        assert msg == ""
-
-    def test_cloud_troubleshooter_cannot_write_gitops_configuration(self, lifecycle_db):
-        """cloud-troubleshooter should NOT be able to write to gitops_configuration."""
-        _clear_writer_cache()
-        from context_writer import validate_permission
-
-        update = {"contract": "gitops_configuration", "payload": {"repo_url": "http://example.com"}}
-        allowed, msg = validate_permission(update, "cloud-troubleshooter", db_path=lifecycle_db)
-
-        assert allowed is False
-        assert "gitops_configuration" in msg
-
-    def test_terraform_architect_can_write_infrastructure(self, lifecycle_db):
-        """platform-architect should be able to write terraform_infrastructure and infrastructure_topology."""
-        _clear_writer_cache()
-        from context_writer import validate_permission
-
-        update_tf = {"contract": "terraform_infrastructure", "payload": {"modules_count": 12}}
-        update_topo = {"contract": "infrastructure_topology", "payload": {"vpc_id": "vpc-123"}}
-
-        allowed_tf, _ = validate_permission(update_tf, "platform-architect", db_path=lifecycle_db)
-        allowed_topo, _ = validate_permission(update_topo, "platform-architect", db_path=lifecycle_db)
-
-        assert allowed_tf is True
-        assert allowed_topo is True
-
-
-# ============================================================================
-# PHASE 4: Full Lifecycle - Context Update Application (DB-backed)
-# ============================================================================
-
-class TestPhase4FullLifecycle:
-    """End-to-end: process_update_contracts writes to gaia.db via the envelope."""
+class TestPhase4ProposeThenAccept:
+    """A specialist's close records a proposal; apply_proposal writes it."""
 
     @staticmethod
     def _make_contract(contract_name, payload):
@@ -603,13 +535,16 @@ class TestPhase4FullLifecycle:
             "update_contracts": [{"contract": contract_name, "payload": payload}],
         }
 
-    def test_context_update_applied_to_db(self, lifecycle_db):
-        """
-        Simulate the complete lifecycle:
-        1. Process a contract dict carrying an update_contracts entry
-        2. Verify gaia.db project_context_contracts was updated
-        """
-        _clear_writer_cache()
+    @staticmethod
+    def _task_info(db_path):
+        return {
+            "agent_type": "cloud-troubleshooter",
+            "db_path": db_path,
+            "workspace": "global",
+        }
+
+    def test_stop_writes_nothing_and_proposes(self, lifecycle_db):
+        """Processing the clause at stop lists the proposal and leaves gaia.db untouched."""
         from hooks.modules.context.context_writer import process_update_contracts
 
         contract = self._make_contract("cluster_details", {
@@ -619,88 +554,76 @@ class TestPhase4FullLifecycle:
             "status": "RUNNING",
         })
 
-        task_info = {
-            "agent_type": "cloud-troubleshooter",
-            "db_path": lifecycle_db,
-            "workspace": "global",
-        }
+        result = process_update_contracts(contract, self._task_info(lifecycle_db))
 
-        result = process_update_contracts(contract, task_info)
-
-        assert result["updated"] is True, f"Context should be updated, got: {result}"
-        assert "cluster_details" in result["contracts"]
+        assert result["updated"] is False, f"Stop must not write context, got: {result}"
         assert result["rejected"] == []
+        assert result["proposed"] == [{
+            "contract": "cluster_details",
+            "workspace": "global",
+            "keys": ["kubernetes_version", "node_count", "node_type", "status"],
+        }]
+        assert read_contract(lifecycle_db, "global", "cluster_details") is None
 
+    def test_accepting_the_proposal_writes_it_to_the_db(self, lifecycle_db):
+        """apply_proposal performs the write the stop only announced."""
+        from hooks.modules.context.context_writer import apply_proposal
+
+        contract = self._make_contract("cluster_details", {
+            "kubernetes_version": "1.28.5-gke.1200",
+            "node_count": 3,
+            "status": "RUNNING",
+        })
+
+        outcome = apply_proposal(
+            contract["update_contracts"], "global", db_path=lifecycle_db,
+        )
+
+        assert outcome["errors"] == []
+        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": "global"}]
         stored = read_contract(lifecycle_db, "global", "cluster_details")
-        assert stored is not None
         assert stored["kubernetes_version"] == "1.28.5-gke.1200"
         assert stored["node_count"] == 3
         assert stored["status"] == "RUNNING"
 
-    def test_unauthorized_contract_rejected(self, lifecycle_db):
-        """
-        Agent trying to write to a contract it doesn't own should be rejected.
-        cloud-troubleshooter writing to operational_guidelines → rejected.
-        """
-        _clear_writer_cache()
-        from hooks.modules.context.context_writer import process_update_contracts
+    def test_dry_run_accept_writes_nothing(self, lifecycle_db):
+        """A dry-run accept lists its targets and leaves gaia.db untouched."""
+        from hooks.modules.context.context_writer import apply_proposal
 
-        contract = self._make_contract(
-            "operational_guidelines", {"commit_standards": "HIJACKED"}
-        )
+        clause = self._make_contract("cluster_details", {"node_count": 3})["update_contracts"]
 
-        task_info = {
-            "agent_type": "cloud-troubleshooter",
-            "db_path": lifecycle_db,
-            "workspace": "global",
-        }
+        outcome = apply_proposal(clause, "global", db_path=lifecycle_db, dry_run=True)
 
-        result = process_update_contracts(contract, task_info)
+        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": "global"}]
+        assert read_contract(lifecycle_db, "global", "cluster_details") is None
 
-        assert result["updated"] is False
-        assert "operational_guidelines" in result["rejected"]
+    def test_second_accept_overwrites_the_scalar(self, lifecycle_db):
+        """A second accepted write to the same contract upserts the changed value."""
+        from hooks.modules.context.context_writer import apply_proposal
 
-        stored = read_contract(lifecycle_db, "global", "operational_guidelines")
-        assert stored is None, "Rejected contract must not be written to DB"
-
-    def test_second_write_replaces_contract(self, lifecycle_db):
-        """Second write to the same contract replaces the payload (upsert)."""
-        _clear_writer_cache()
-        from hooks.modules.context.context_writer import process_update_contracts
-
-        def write(node_count):
-            return process_update_contracts(
-                self._make_contract("cluster_details", {"node_count": node_count}),
-                {"agent_type": "cloud-troubleshooter", "db_path": lifecycle_db, "workspace": "global"}
-            )
-
-        r1 = write(3)
-        r2 = write(5)
-
-        assert r1["updated"] is True
-        assert r2["updated"] is True
+        for node_count in (3, 5):
+            clause = self._make_contract(
+                "cluster_details", {"node_count": node_count},
+            )["update_contracts"]
+            outcome = apply_proposal(clause, "global", db_path=lifecycle_db)
+            assert outcome["errors"] == []
 
         stored = read_contract(lifecycle_db, "global", "cluster_details")
         assert stored["node_count"] == 5
 
-    def test_audit_record_written_on_success(self, lifecycle_db):
-        """A successful update_contracts write is reflected in the DB contract row."""
-        _clear_writer_cache()
-        from hooks.modules.context.context_writer import process_update_contracts
+    def test_accepted_write_is_reflected_in_the_contract_row(self, lifecycle_db):
+        """An accepted proposal leaves exactly one stamped row for its section."""
+        from hooks.modules.context.context_writer import apply_proposal
 
-        contract = self._make_contract(
+        clause = self._make_contract(
             "infrastructure_topology", {"vpc_name": "main-vpc"}
-        )
-        task_info = {
-            "agent_type": "cloud-troubleshooter",
-            "db_path": lifecycle_db,
-            "workspace": "global",
-        }
+        )["update_contracts"]
 
-        result = process_update_contracts(contract, task_info)
+        outcome = apply_proposal(clause, "global", db_path=lifecycle_db)
 
-        assert result["updated"] is True
-        assert "infrastructure_topology" in result["contracts"]
+        assert outcome["applied"] == [
+            {"contract": "infrastructure_topology", "workspace": "global"}
+        ]
 
         con = sqlite3.connect(str(lifecycle_db))
         rows = con.execute(
@@ -721,14 +644,15 @@ class TestPhase4FullLifecycle:
 class TestPhase5SubagentStopHook:
     """Test the subagent_stop_hook processes update_contracts end-to-end."""
 
-    def test_subagent_stop_processes_context_update(self, test_project, lifecycle_db):
+    def test_subagent_stop_records_context_update_as_a_proposal(
+        self, test_project, lifecycle_db,
+    ):
         """
         subagent_stop_hook should:
         1. Capture metrics
-        2. Process update_contracts via context_writer (DB write)
-        3. Return context_updated=True
+        2. Route update_contracts through context_writer as a proposal
+        3. Write nothing: context_updated=False and gaia.db keeps no row
         """
-        _clear_writer_cache()
         tmp_path, claude_dir = test_project
 
         original_cwd = os.getcwd()
@@ -792,17 +716,22 @@ class TestPhase5SubagentStopHook:
                 "workspace": "global",
             }
 
+            processed = []
+            real_process = mod.process_update_contracts
+
+            def spy(contract_dict, info):
+                processed.append(real_process(contract_dict, info))
+                return processed[-1]
+
+            mod.process_update_contracts = spy
+
             result = mod.subagent_stop_hook(task_info, agent_output)
 
             assert result["success"] is True, f"subagent_stop_hook should succeed: {result}"
             assert result["metrics_captured"] is True
-            assert result["context_updated"] is True, f"Context should be marked as updated: {result}"
-
-            stored = read_contract(lifecycle_db, "global", "cluster_details")
-            assert stored is not None
-            assert stored["kubernetes_version"] == "1.28.5-gke.1200"
-            assert stored["health_status"] == "HEALTHY"
-            assert stored["node_count"] == 3
+            assert result["context_updated"] is False
+            assert [p["contract"] for r in processed for p in r["proposed"]] == ["cluster_details"]
+            assert read_contract(lifecycle_db, "global", "cluster_details") is None
 
         finally:
             os.chdir(original_cwd)

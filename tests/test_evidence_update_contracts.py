@@ -318,10 +318,10 @@ def test_mixed_contracts_evidence_and_context(evidence_db):
 
     # Evidence row inserted
     assert _count_evidence(evidence_db) == 1
-    # Context contract upserted
-    ctx_row = _get_context_contract(evidence_db, "test-ws", "app_services")
-    assert ctx_row is not None, "project_context_contracts row should have been upserted"
     assert result["updated"] is True
+    # The context clause is only proposed: stop writes no project_context_contracts row
+    assert [p["contract"] for p in result["proposed"]] == ["app_services"]
+    assert _get_context_contract(evidence_db, "test-ws", "app_services") is None
 
 
 # ---------------------------------------------------------------------------
@@ -351,11 +351,11 @@ def test_malformed_evidence_does_not_block_other_contracts(evidence_db):
 
     # Zero evidence rows (rejected)
     assert _count_evidence(evidence_db) == 0
-    # But context contract still applied
-    ctx_row = _get_context_contract(evidence_db, "test-ws", "app_services")
-    assert ctx_row is not None, (
-        "project_context_contracts should still be upserted even when evidence is rejected"
+    # But the context clause is still proposed, and still unwritten at stop
+    assert [p["contract"] for p in result["proposed"]] == ["app_services"], (
+        "the context proposal should be recorded even when evidence is rejected"
     )
+    assert _get_context_contract(evidence_db, "test-ws", "app_services") is None
     # Errors contain evidence rejection
     assert any("brief_id" in e or "evidence" in e for e in result["errors"]), (
         f"Expected evidence rejection in errors, got: {result['errors']}"

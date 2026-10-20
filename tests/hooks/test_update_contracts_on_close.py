@@ -54,7 +54,6 @@ def _isolated_substrate(tmp_path, monkeypatch):
     monkeypatch.delenv("GAIA_DISPATCH_WORKSPACE", raising=False)
     monkeypatch.delenv("GAIA_CONTRACT_FULL_VERDICT_GATE", raising=False)
     monkeypatch.setenv("GAIA_WORKSPACE", DISPATCH_WORKSPACE)
-    monkeypatch.setattr(context_writer, "_permissions_cache", {})
     yield
 
 

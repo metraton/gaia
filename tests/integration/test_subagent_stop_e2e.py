@@ -41,7 +41,6 @@ from modules.core.paths import clear_path_cache
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
     seed_workspace,
-    seed_agent_perms,
 )
 
 
@@ -53,15 +52,6 @@ def _import_subagent_stop():
     """Import subagent_stop module at call time so pytest can collect tests."""
     import subagent_stop
     return subagent_stop
-
-
-def _clear_writer_cache():
-    """Clear context_writer permissions cache between tests."""
-    try:
-        import context_writer as _cw
-        _cw._permissions_cache.clear()
-    except Exception:
-        pass
 
 
 # ---------------------------------------------------------------------------
@@ -162,23 +152,13 @@ def project_env(tmp_path, monkeypatch):
     """Creates an isolated project environment with a seeded gaia.db."""
     clear_path_cache()
     clear_contract_dir_cache()
-    _clear_writer_cache()
 
     monkeypatch.setenv("WORKFLOW_MEMORY_BASE_PATH", str(tmp_path))
     monkeypatch.chdir(tmp_path)
 
-    # Create gaia.db with schema + permissions
     db_path = tmp_path / "gaia_test.db"
     bootstrap_gaia_schema(db_path)
     seed_workspace(db_path, "global")
-    seed_agent_perms(
-        db_path,
-        "cloud-troubleshooter",
-        reads=["cluster_details", "infrastructure_topology", "application_services",
-               "monitoring_observability", "architecture_overview"],
-        writes=["cluster_details", "infrastructure_topology", "application_services",
-                "monitoring_observability", "architecture_overview"],
-    )
 
     yield {
         "tmp_path": tmp_path,
@@ -187,7 +167,6 @@ def project_env(tmp_path, monkeypatch):
     }
     clear_path_cache()
     clear_contract_dir_cache()
-    _clear_writer_cache()
 
 
 # ============================================================================
@@ -195,12 +174,12 @@ def project_env(tmp_path, monkeypatch):
 # ============================================================================
 
 class TestProcessContextUpdatesE2E:
-    """Test that the envelope update_contracts path correctly updates gaia.db
-    when the agent output carries an update_contracts clause."""
+    """The stop hook leaves a specialist's update_contracts clause unwritten;
+    apply_proposal (the write behind `gaia context accept`) lands it."""
 
     @patch("subagent_stop.write_episode", return_value=None)
-    def test_context_update_applied_to_db(self, mock_episodic, project_env):
-        """Full flow: agent output with update_contracts -> gaia.db updated."""
+    def test_context_update_is_not_written_at_stop(self, mock_episodic, project_env):
+        """Full flow: agent output with update_contracts -> gaia.db untouched."""
         mod = _import_subagent_stop()
         db_path = project_env["db_path"]
 
@@ -216,8 +195,20 @@ class TestProcessContextUpdatesE2E:
         )
 
         assert result is not None
-        assert result["context_updated"] is True
+        assert result["context_updated"] is False
+        assert read_contract(db_path, "global", "cluster_details") is None
 
+    def test_accepted_proposal_lands_in_the_given_db(self, project_env):
+        """apply_proposal writes the clause's payload into the db_path it is handed."""
+        from hooks.modules.context.context_writer import apply_proposal
+
+        db_path = project_env["db_path"]
+        clause = [{"contract": "cluster_details", "payload": CLUSTER_DETAILS_PAYLOAD}]
+
+        outcome = apply_proposal(clause, "global", db_path=db_path)
+
+        assert outcome["errors"] == []
+        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": "global"}]
         stored = read_contract(db_path, "global", "cluster_details")
         assert stored is not None
         namespaces = stored["namespaces"]
@@ -226,29 +217,6 @@ class TestProcessContextUpdatesE2E:
         assert "flux-system" in namespaces["infrastructure"]
         assert "kube-system" in namespaces["system"]
         assert stored["total_namespace_count"] == 20
-
-    @patch("subagent_stop.write_episode", return_value=None)
-    def test_config_dir_db_path_propagated(self, mock_episodic, project_env):
-        """Verify db_path in task_info is used for the write operation."""
-        mod = _import_subagent_stop()
-        db_path = project_env["db_path"]
-
-        task_info = {
-            **TASK_INFO_CLOUD_TROUBLESHOOTER,
-            "db_path": db_path,
-            "workspace": "global",
-        }
-
-        result = mod.subagent_stop_hook(
-            task_info,
-            AGENT_OUTPUT_WITH_CONTEXT_UPDATE,
-        )
-
-        assert result is not None
-        assert result["context_updated"] is True
-        # Verify data landed in the correct DB
-        stored = read_contract(db_path, "global", "cluster_details")
-        assert stored is not None
 
     @patch("subagent_stop.write_episode", return_value=None)
     def test_no_context_update_in_output(self, mock_episodic, project_env):
@@ -310,7 +278,7 @@ class TestSubagentStopHookE2E:
 
     @patch("subagent_stop.write_episode", return_value=None)
     def test_full_hook_with_context_update(self, mock_episodic, project_env):
-        """Full hook flow: metrics + context update."""
+        """Full hook flow: metrics are captured and the context update is only proposed."""
         mod = _import_subagent_stop()
         db_path = project_env["db_path"]
 
@@ -327,13 +295,8 @@ class TestSubagentStopHookE2E:
 
         assert result["success"] is True
         assert result["metrics_captured"] is True
-        assert result["context_updated"] is True
-
-        stored = read_contract(db_path, "global", "cluster_details")
-        assert stored is not None
-        namespaces = stored["namespaces"]
-        assert len(namespaces["application"]) == 3
-        assert "nova-auth-dev" in namespaces["application"]
+        assert result["context_updated"] is False
+        assert read_contract(db_path, "global", "cluster_details") is None
 
     @patch("subagent_stop.write_episode", return_value=None)
     def test_full_hook_without_context_update(self, mock_episodic, project_env):
@@ -383,12 +346,6 @@ class TestStdinHandler:
         db_path = data_dir / "gaia.db"
         bootstrap_gaia_schema(db_path)
         seed_workspace(db_path, "global")
-        seed_agent_perms(
-            db_path,
-            "cloud-troubleshooter",
-            reads=["cluster_details"],
-            writes=["cluster_details"],
-        )
 
         # Create a fake transcript JSONL file using the new CONTEXT_UPDATE format
         transcript_path = tmp_path / "agent_transcript.jsonl"
@@ -446,11 +403,7 @@ class TestStdinHandler:
         )
         assert result_json["success"] is True
 
-        stored = read_contract_any_workspace(db_path, "cluster_details")
-        assert stored is not None
-        namespaces = stored.get("namespaces", {})
-        assert "application" in namespaces
-        assert "nova-auth-dev" in namespaces["application"]
+        assert read_contract_any_workspace(db_path, "cluster_details") is None
 
     def test_stdin_handler_empty_transcript(self, tmp_path):
         """Stdin handler should handle missing transcript gracefully."""
@@ -519,12 +472,6 @@ class TestStdinHandler:
         db_path = data_dir / "gaia.db"
         bootstrap_gaia_schema(db_path)
         seed_workspace(db_path, "global")
-        seed_agent_perms(
-            db_path,
-            "cloud-troubleshooter",
-            reads=["cluster_details"],
-            writes=["cluster_details"],
-        )
 
         # Build a minimal output with valid contract block so hook can exit 0
         context_update_text = json.dumps({
@@ -607,11 +554,7 @@ class TestStdinHandler:
             f"stderr: {result.stderr}\nstdout: {result.stdout}"
         )
 
-        stored = read_contract_any_workspace(db_path, "cluster_details")
-        assert stored is not None
-        namespaces = stored.get("namespaces", {})
-        assert "application" in namespaces
-        assert "adm" in namespaces["application"]
+        assert read_contract_any_workspace(db_path, "cluster_details") is None
 
 
 # ============================================================================

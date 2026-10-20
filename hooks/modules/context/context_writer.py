@@ -27,7 +27,6 @@ refused at both seams -- skipped by
 :func:`apply_update` at the write itself.
 
 Public API:
-    - validate_permission(update, agent_name, cloud_scope, db_path) -> (allowed, message)
     - apply_update(update, agent_name, workspace, db_path) -> dict
     - process_update_contracts(contract_dict, task_info) -> dict
     - apply_proposal(clause, workspace, db_path, dry_run) -> dict
@@ -40,20 +39,13 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Module-level permissions cache (cleared between tests via .clear())
-# Keyed by (agent_name, cloud_scope, db_path_str)
-# ---------------------------------------------------------------------------
-_permissions_cache: dict = {}
-
-
 # ============================================================================
-# 1. validate_permission
+# 1. apply_update
 # ============================================================================
 
 def _get_db_path() -> Optional[Path]:
@@ -63,94 +55,6 @@ def _get_db_path() -> Optional[Path]:
     except Exception:
         return None
 
-
-def _load_writable_contracts(
-    agent_name: str,
-    cloud_scope: Optional[str],
-    db_path: Optional[Path],
-) -> set:
-    """Return the contracts agent_name may write under the given cloud scope.
-
-    Query::
-
-        SELECT contract_name FROM agent_contract_permissions
-        WHERE agent_name = ? AND can_write = 1
-          AND (cloud_scope IS NULL OR cloud_scope = ?);
-
-    A NULL ``cloud_scope`` on the permission row means "all providers". A
-    non-NULL value only matches when the caller's cloud_scope equals it.
-    """
-    cache_key = (agent_name, cloud_scope, str(db_path) if db_path else None)
-    if cache_key in _permissions_cache:
-        return _permissions_cache[cache_key]
-
-    resolved = db_path or _get_db_path()
-    if resolved is None or not resolved.exists():
-        logger.debug("gaia.db not found; no write grants for '%s'", agent_name)
-        _permissions_cache[cache_key] = set()
-        return set()
-
-    try:
-        con = sqlite3.connect(str(resolved))
-        rows = con.execute(
-            """
-            SELECT contract_name FROM agent_contract_permissions
-            WHERE agent_name = ? AND can_write = 1
-              AND (cloud_scope IS NULL OR cloud_scope = ?)
-            """,
-            (agent_name, cloud_scope),
-        ).fetchall()
-        con.close()
-        contracts = {row[0] for row in rows}
-        _permissions_cache[cache_key] = contracts
-        return contracts
-    except sqlite3.Error as exc:
-        logger.warning(
-            "Error loading agent_contract_permissions for '%s': %s",
-            agent_name, exc,
-        )
-        _permissions_cache[cache_key] = set()
-        return set()
-
-
-def _format_rejection_message(
-    agent_name: str,
-    contract_name: str,
-    writable: set,
-) -> str:
-    allowed_list = ", ".join(sorted(writable)) if writable else "(none)"
-    return (
-        f"update_contracts rejected: agent '{agent_name}' has no write permission "
-        f"for contract '{contract_name}'. "
-        f"Writable contracts for this agent: {allowed_list}."
-    )
-
-
-def validate_permission(
-    update: dict,
-    agent_name: str,
-    cloud_scope: Optional[str] = None,
-    db_path: Optional[Path] = None,
-) -> Tuple[bool, str]:
-    """Check whether agent_name may write the contract in update.
-
-    Returns:
-        (True, "")           -- allowed
-        (False, message)     -- blocked; message is deterministic and names
-                                agent_name, contract_name, and writable contracts
-    """
-    contract_name = update.get("contract", "")
-    writable = _load_writable_contracts(agent_name, cloud_scope, db_path)
-
-    if contract_name in writable:
-        return True, ""
-
-    return False, _format_rejection_message(agent_name, contract_name, writable)
-
-
-# ============================================================================
-# 2. apply_update
-# ============================================================================
 
 def _derive_workspace() -> str:
     try:
@@ -374,7 +278,7 @@ def apply_update(
 
 
 # ============================================================================
-# 3. process_update_contracts (envelope path)
+# 2. process_update_contracts (envelope path)
 # ============================================================================
 
 def _section_keys(contract_name: str, workspace: str, db_path: Optional[Path]) -> set:
