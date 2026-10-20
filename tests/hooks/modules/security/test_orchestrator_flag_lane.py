@@ -41,6 +41,7 @@ WITHHELD = {
 BASELINES = {
     ("brief", "new"): "brief new demo --headless --title=T",
     ("brief", "edit"): "brief edit demo --headless --field=title --content=X",
+    ("context", "accept"): "context accept c1",
     ("brief", "close"): "brief close demo",
     ("brief", "set-status"): "brief set-status demo open",
     ("brief", "set-project"): "brief set-project demo proj",
@@ -77,6 +78,7 @@ USED_TODAY = [
     "brief edit demo --headless --field=title --content=X",
     "brief new demo --headless --title=T --status=draft",
     "brief show demo --json",
+    "context accept c1 --workspace me --dry-run --json",
     "context get --section stack",
     "context get-contract --section project_identity",
     "contract view --draft-id d",

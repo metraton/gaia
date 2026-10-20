@@ -326,8 +326,11 @@ WRITE the orchestrator owns -- coordination state, in bounded shapes.
                  re-index this workspace's repos into (workspace, project)
                  rows -- how the coordinator keeps its own context current.
                  `scan --dry-run` previews the same result without writing.
-  context        scan
+  context        scan | accept
                  re-run the project scanner behind `context show`/`get`.
+                 `context accept CONTRACT_ID` writes the update_contracts
+                 proposal a specialist's close announced, each key in the
+                 workspace that owns its project.
   paths
                  report the resolved storage paths (data, db, snapshot, logs,
                  events) and materialize the ~/.gaia layout if it is missing.

@@ -568,6 +568,11 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # in-process to bin/cli/scan.py's cmd_scan. Admitting one and denying the
     # other would gate a route, not an effect.
     ("context", "scan"),
+    # Project context is the orchestrator's to write; a specialist's
+    # update_contracts is only a proposal until it accepts the contract that
+    # carries it. Each key lands in the workspace owning its project, and a
+    # key nobody owns is refused rather than written.
+    ("context", "accept"),
     # ``paths`` only PRINTS resolved paths, and still belongs here rather than
     # in the read set: all three of its handlers call ensure_layout(), which
     # os.makedirs() the ~/.gaia layout (data, workspaces, logs, events, cache,
@@ -1204,6 +1209,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("brief", "set-status"): _flags("--workspace --json"),
     ("brief", "show"): _flags("--json --workspace"),
     ("brief", "verify"): _flags("--workspace --json"),
+    ("context", "accept"): _flags("--workspace --dry-run --json"),
     ("context", "get"): _flags("--workspace --section --json --text --include-missing"),
     ("context", "get-contract"): _flags("--workspace --section --json --text"),
     ("context", "project"): _flags("--workspace --json"),
@@ -1448,7 +1454,7 @@ def _validate_orchestrator_write(
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _PLAN_STATUSES
     elif phrase in (("plan", "pause"), ("plan", "change", "request")):
         valid = bool(args) and not args[0].startswith("-") and _has_value(args, "--reason")
-    elif phrase == ("plan", "resume"):
+    elif phrase in (("plan", "resume"), ("context", "accept")):
         valid = bool(args) and not args[0].startswith("-")
     elif phrase == ("plan", "change", "approve"):
         valid = len(args) >= 2 and not args[0].startswith("-") and args[1].isdigit()
