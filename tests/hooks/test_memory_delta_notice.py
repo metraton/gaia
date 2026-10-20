@@ -67,7 +67,43 @@ def test_one_fact_reads_in_the_singular():
     assert line.splitlines()[-1] == f"1 project fact proposed for alpha — contract {CONTRACT_ID}"
 
 
-@pytest.mark.parametrize("memory_delta", [None, {"version": 1, "proposals": []}])
+FREE_SHAPE_PROPOSAL = {
+    "type": "atom",
+    "name": "atom_alpha_login_sso",
+    "description": "Fact: alpha signs in through the corporate SSO.",
+    "body": "Measured 2026-10-20 from the login page.",
+}
+
+
+def test_the_older_free_shape_without_version_or_operation_is_counted_too():
+    line = _line({"proposals": [FREE_SHAPE_PROPOSAL, FREE_SHAPE_PROPOSAL]})
+
+    assert line.splitlines()[-1] == f"2 project facts proposed for alpha — contract {CONTRACT_ID}"
+
+
+def test_free_shape_entries_without_a_description_and_body_are_not_counted():
+    line = _line({"proposals": [FREE_SHAPE_PROPOSAL, {"name": "atom_x"}]})
+
+    assert line.splitlines()[-1] == f"1 project fact proposed for alpha — contract {CONTRACT_ID}"
+
+
+def test_the_free_shape_reads_as_a_create_with_its_name_as_slug():
+    from modules.agents.response_contract import parse_memory_delta
+
+    block = parse_memory_delta("", parsed_contract={"memory_delta": {"proposals": [FREE_SHAPE_PROPOSAL]}})
+
+    assert block.proposals == [{
+        "operation": "create",
+        "create": {
+            "description": FREE_SHAPE_PROPOSAL["description"],
+            "body": FREE_SHAPE_PROPOSAL["body"],
+            "slug": "atom_alpha_login_sso",
+            "type": "atom",
+        },
+    }]
+
+
+@pytest.mark.parametrize("memory_delta", [None, {"version": 1, "proposals": []}, {"proposals": []}])
 def test_a_turn_with_no_proposed_facts_adds_no_line(memory_delta):
     line = _line(memory_delta)
 

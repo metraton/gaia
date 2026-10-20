@@ -34,8 +34,8 @@ row:
     dispatch project's live anchor notes, hard-capped at
     ``PROJECT_NOTES_BUDGET``, rendered after the user's rows and before the CLI
     index: the host truncates a kernel from the end, so a long kernel loses the
-    CLI index first and the notes only after it. Omitted when the dispatch has no project or the
-    project has no notes. Bodies are opened on demand with
+    CLI index first and the notes only after it. Omitted when the dispatch has
+    no project or the project has no notes. Bodies are opened on demand with
     ``gaia memory show <slug>``.
 
 ``# Your skills`` is a fourth block, rendered only for a host that preloads
