@@ -7942,9 +7942,15 @@ def _check_script_file(
     if lane == "code" and _spec_for_script is not None:
         spec = _spec_for_script(base_cmd, script_path)
         if spec is not None:
-            return _classify_source_with_lexer(
+            entry_result = _classify_source_with_lexer(
                 content, script_path, family, spec, cwd=cwd, _depth=_depth + 1,
             )
+            if entry_result.is_mutative or spec.name != "javascript":
+                return entry_result
+            closure_result = _classify_js_import_closure(
+                script_path, content, family, spec, cwd=cwd, _depth=_depth + 1,
+            )
+            return closure_result if closure_result is not None else entry_result
 
     # "code" lane (non-shell source: ruby/perl/php) suppresses camelCase
     # subcommand splitting so language identifiers are not read as CLI verbs;
@@ -8116,6 +8122,140 @@ def _classify_source_with_lexer(
         confidence="medium",
         reason=f"Script '{script_path}' has no mutative or blocked line",
     )
+
+
+# A node run executes its entry's whole local import closure, so a write in an
+# imported module is as much a write of the run as one inlined in the entry.
+# Both bounds exist to keep the hook fast and the walk finite; reaching either
+# is a failure to prove the closure write-free, so it is retained (T3), never
+# released.  Bare package specifiers (node_modules) are not followed.
+_JS_IMPORT_CLOSURE_MAX_FILES = 100
+_JS_IMPORT_CLOSURE_MAX_DEPTH = 16
+
+_JS_RELATIVE_SPECIFIER = r"""(\.{1,2}(?:/[^'"`]*)?|/[^'"`]*)"""
+_JS_IMPORT_SPECIFIER_RES: Tuple["_re.Pattern", ...] = (
+    _re.compile(
+        r"""\b(?:import|export)\b[^'"`;()]*?\bfrom\s*(['"])""" + _JS_RELATIVE_SPECIFIER + r"\1"
+    ),
+    _re.compile(r"""\bimport\s*(['"])""" + _JS_RELATIVE_SPECIFIER + r"\1"),
+    _re.compile(
+        r"""\b(?:require|import)\s*\(\s*(['"])""" + _JS_RELATIVE_SPECIFIER + r"""\1\s*[,)]"""
+    ),
+)
+_JS_IMPORT_EXTENSIONS = (".js", ".mjs", ".cjs", ".json")
+_JS_IMPORT_INDEX_FILES = tuple(f"index{ext}" for ext in _JS_IMPORT_EXTENSIONS)
+
+
+def _js_relative_specifiers(source: str, spec) -> "List[str]":
+    """Return the literal relative import specifiers of *source*, in order.
+
+    Matched on the ``exec_view`` because a specifier is itself a string and the
+    ``verb_view`` blanks string contents; comments are blanked there too, so a
+    commented-out import is not followed.
+    """
+    exec_view = _strip_source(source, spec).exec_view
+    found: List[str] = []
+    for pattern in _JS_IMPORT_SPECIFIER_RES:
+        found.extend(match.group(2) for match in pattern.finditer(exec_view))
+    return found
+
+
+def _resolve_js_relative_import(specifier: str, importer_dir: str) -> "Optional[str]":
+    """Resolve a relative *specifier* to a real file the way node does, or None.
+
+    Tries the exact file, then each extension, then a directory's index file.
+    This is the union of the CommonJS and ES-module rules, so it can follow a
+    file node would refuse to load (an extensionless ES import) but never
+    skips one node would load.
+    """
+    import os
+
+    base = os.path.normpath(os.path.join(importer_dir, specifier))
+    candidates = [base, *(base + ext for ext in _JS_IMPORT_EXTENSIONS)]
+    candidates.extend(os.path.join(base, index) for index in _JS_IMPORT_INDEX_FILES)
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return os.path.realpath(candidate)
+    return None
+
+
+def _import_closure_unproven(verb: str, entry_path: str, family: str, reason: str) -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb=verb,
+        cli_family=family,
+        confidence="low",
+        reason=(
+            f"Script '{entry_path}': {reason} -- cannot prove the import "
+            f"closure free of writes, requiring approval (conservative default)"
+        ),
+    )
+
+
+def _classify_js_import_closure(
+    entry_path: str, entry_content: str, family: str, spec,
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Classify the relative-import closure of a node entry, or None if write-free.
+
+    Every module reachable through literal ``import``/``export ... from``/
+    ``require``/``import()`` of a relative path is classified exactly as the
+    entry is (``_classify_source_with_lexer``), so the verdict does not depend
+    on whether a write sits in the entry or in a module it imports.  A relative
+    import that cannot be resolved or read, or a closure past either bound,
+    returns a mutative result naming the cause.  Cycles end on the visited set.
+    """
+    import os
+
+    entry_abs = entry_path
+    if not os.path.isabs(entry_abs):
+        entry_abs = os.path.join(cwd if cwd is not None else os.getcwd(), entry_abs)
+    entry_abs = os.path.realpath(entry_abs)
+
+    seen = {entry_abs}
+    queue = [(entry_abs, entry_content, 0)]
+    while queue:
+        module, content, depth = queue.pop(0)
+        for specifier in _js_relative_specifiers(content, spec):
+            target = _resolve_js_relative_import(specifier, os.path.dirname(module))
+            if target is None:
+                return _import_closure_unproven(
+                    "js-import-unresolved", entry_path, family,
+                    f"'{module}' imports '{specifier}', which resolves to no file",
+                )
+            if target in seen:
+                continue
+            if depth + 1 > _JS_IMPORT_CLOSURE_MAX_DEPTH:
+                return _import_closure_unproven(
+                    "js-import-closure-bound", entry_path, family,
+                    f"import chain deeper than depth {_JS_IMPORT_CLOSURE_MAX_DEPTH}",
+                )
+            if len(seen) >= _JS_IMPORT_CLOSURE_MAX_FILES:
+                return _import_closure_unproven(
+                    "js-import-closure-bound", entry_path, family,
+                    f"import closure larger than {_JS_IMPORT_CLOSURE_MAX_FILES} files",
+                )
+            seen.add(target)
+            if target.endswith(".json"):
+                continue
+            imported = _read_script_content(target)
+            if imported is None or len(imported) >= _MAX_SCRIPT_READ_BYTES:
+                return _import_closure_unproven(
+                    "js-import-unresolved", entry_path, family,
+                    f"imported module '{target}' is unreadable or over the "
+                    f"{_MAX_SCRIPT_READ_BYTES}-byte read limit",
+                )
+            verdict = _classify_source_with_lexer(
+                imported, target, family, spec, cwd=cwd, _depth=_depth,
+            )
+            if verdict.is_mutative:
+                return replace(
+                    verdict,
+                    reason=f"Imported by '{entry_path}': {verdict.reason}",
+                )
+            queue.append((target, imported, depth + 1))
+    return None
 
 
 def _classify_script_content_by_regex(
