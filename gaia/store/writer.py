@@ -4142,9 +4142,15 @@ def upsert_plan(
     Raises ContentWriteForbidden when GAIA_DISPATCH_AGENT names a dispatched
     agent not authorized to author plan content (plan content is authored by
     the planner). A human CLI call / orchestrator main session (no dispatch
-    identity) is always allowed.
+    identity) is always allowed. Raises StateTransitionForbidden when the save
+    would move the plan to a status other than the one it holds (``draft`` for a
+    plan that does not exist yet) and the dispatched agent is not a curator: the
+    planner authors content, it does not advance the plan.
     """
-    from gaia.state.permissions import _assert_dispatch_can_write_content
+    from gaia.state.permissions import (
+        _assert_dispatch_can_advance_state,
+        _assert_dispatch_can_write_content,
+    )
     _assert_dispatch_can_write_content("plans")
 
     if status not in VALID_PLAN_LIFECYCLE_STATUSES:
@@ -4179,6 +4185,10 @@ def upsert_plan(
             "SELECT id, status, content FROM plans WHERE brief_id = ?",
             (brief_id,),
         ).fetchone()
+
+        held_status = (existing["status"] if existing is not None else None) or "draft"
+        if status != held_status:
+            _assert_dispatch_can_advance_state("plans")
 
         now = _now_iso()
         if existing is None:
