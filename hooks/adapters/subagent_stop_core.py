@@ -1761,6 +1761,22 @@ def run_subagent_stop(
                 f"{user_message}\n{_refusal_notice}" if user_message else _refusal_notice
             )
 
+        from modules.agents.proposal_notices import append_notice, memory_delta_notice
+
+        _memory_delta_notice = memory_delta_notice(
+            parsed_contract,
+            contract_id=(
+                (parsed_contract if isinstance(parsed_contract, dict) else {}).get(
+                    "reconstructed_from_finalized_draft"
+                )
+                or (_bound_dispatch_row or {}).get("contract_id")
+            ),
+            dispatch_project=(_bound_dispatch_row or {}).get("dispatch_project"),
+        )
+        if _memory_delta_notice:
+            result["memory_delta_proposed"] = _memory_delta_notice
+            user_message = append_notice(user_message, _memory_delta_notice)
+
         # The repair message replaces the rejected one in everything the
         # orchestrator receives, so the rejected turn's work is preserved and
         # handed back (modules/agents/rejected_turn_relay.py). The branch keys

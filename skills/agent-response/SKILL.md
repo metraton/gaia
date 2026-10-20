@@ -56,7 +56,9 @@ terminal/frozen grant, and route fresh investigation plus a new request/approval
 retry or remainder.
 
 **Phase 2 — the findings.** `key_outputs`, and `report_prose` when the why is needed or when this
-row's coordinate is about to be handed to another agent.
+row's coordinate is about to be handed to another agent. Read `memory_delta` too: its proposals are
+the specialist's, not yet memory, and what is kept, merged or dropped is yours to curate per
+Skill('memory').
 
 **Phase 3 — evidence on demand, only for the claim about to be made.** `commands_run` and
 `verbatim_outputs` for a positive; `patterns_checked` for a NEGATIVE; `cross_layer_impacts` before
