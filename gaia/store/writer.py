@@ -10813,21 +10813,19 @@ def fill_empty_contract_evidence(
 def record_update_contracts_outcome(
     contract_id: "str | None",
     *,
-    applied: "list[dict]",
     refused: "list[str]",
     db_path: "Path | None" = None,
 ) -> dict:
-    """Stamp what SubagentStop did with a row's ``update_contracts`` onto that row.
+    """Stamp the reasons SubagentStop refused a row's ``update_contracts`` onto that row.
 
-    Sets ``update_contracts_applied`` (``{contract, workspace}`` per write) and
-    ``update_contracts_refused`` (one reason per entry not applied) in
-    ``raw_handoff_json``; an empty list is left out. Returns
-    ``{"status": "applied"}`` or ``{"status": "skipped", "reason": ...}``
-    (``no_contract_id`` / ``nothing_to_record`` / ``no_row`` / ``no_envelope``).
+    Sets ``update_contracts_refused`` (one reason per entry or key not
+    recorded) in ``raw_handoff_json``. Returns ``{"status": "applied"}`` or
+    ``{"status": "skipped", "reason": ...}`` (``no_contract_id`` /
+    ``nothing_to_record`` / ``no_row`` / ``no_envelope``).
     """
     if not contract_id:
         return {"status": "skipped", "reason": "no_contract_id"}
-    if not applied and not refused:
+    if not refused:
         return {"status": "skipped", "reason": "nothing_to_record"}
 
     _assert_dispatch_can_write_handoff()
@@ -10852,10 +10850,7 @@ def record_update_contracts_outcome(
                 if not isinstance(envelope, dict):
                     con.commit()
                     return {"status": "skipped", "reason": "no_envelope"}
-                if applied:
-                    envelope["update_contracts_applied"] = list(applied)
-                if refused:
-                    envelope["update_contracts_refused"] = list(refused)
+                envelope["update_contracts_refused"] = list(refused)
                 con.execute(
                     "UPDATE agent_contract_handoffs SET raw_handoff_json = ? "
                     "WHERE contract_id = ?",

@@ -1260,7 +1260,6 @@ def run_subagent_stop(
         )
 
         context_update_result = None
-        _update_contracts_applied: list = []
         _update_contracts_refused: list = []
         if isinstance(parsed_contract, dict):
             # The hook's cwd can resolve to a workspace other than the
@@ -1289,7 +1288,6 @@ def run_subagent_stop(
                     "updated": True,
                     "contract": ", ".join(_update_contracts_result.get("contracts", [])),
                 }
-            _update_contracts_applied = list(_update_contracts_result.get("applied", []))
             _update_contracts_refused = list(_update_contracts_result.get("errors", []))
             if _update_contracts_refused:
                 logger.warning(
@@ -1302,7 +1300,6 @@ def run_subagent_stop(
                 record_update_contracts_outcome(
                     parsed_contract.get("reconstructed_from_finalized_draft")
                     or (_bound_dispatch_row or {}).get("contract_id"),
-                    applied=_update_contracts_applied,
                     refused=_update_contracts_refused,
                     db_path=Path(task_info["db_path"]) if task_info.get("db_path") else None,
                 )
@@ -1749,17 +1746,8 @@ def run_subagent_stop(
                     f"Resumen de {agent_type} para el usuario: {_user_summary}"
                 )
 
-        if _update_contracts_applied:
-            result["update_contracts_applied"] = _update_contracts_applied
         if _update_contracts_refused:
             result["update_contracts_refused"] = _update_contracts_refused
-            _refusal_notice = (
-                f"update_contracts from {agent_type} was NOT applied: "
-                + "; ".join(_update_contracts_refused)
-            )
-            user_message = (
-                f"{user_message}\n{_refusal_notice}" if user_message else _refusal_notice
-            )
 
         # The repair message replaces the rejected one in everything the
         # orchestrator receives, so the rejected turn's work is preserved and

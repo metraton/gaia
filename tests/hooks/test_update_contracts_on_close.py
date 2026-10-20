@@ -246,8 +246,11 @@ def test_a_refused_update_contracts_is_named_on_the_close(db_path, monkeypatch, 
 
     refused = response.output.get("update_contracts_refused") or []
     assert any("no workspace owns no_such_project" in message for message in refused), response.output
-    assert "no_such_project" in (response.output.get("systemMessage") or ""), (
+    assert "no_such_project" in _dispatch_result_line(), (
         "an unrouted proposal must reach the orchestrator, not only the hook log"
+    )
+    assert "no_such_project" not in (response.output.get("systemMessage") or ""), (
+        "SubagentStop's systemMessage reaches the user, not the orchestrator"
     )
 
 

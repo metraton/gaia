@@ -43,10 +43,21 @@ def _update_contracts_line(contract: dict, contract_id: str, project: str) -> st
     )
 
 
+def _refused_line(contract: dict, contract_id: str) -> str:
+    """The reasons SubagentStop stamped on the row for entries it did not record."""
+    refused = contract.get("update_contracts_refused")
+    if not isinstance(refused, list) or not refused:
+        return ""
+    return (
+        f"update_contracts NOT recorded — contract {contract_id}: "
+        + "; ".join(str(reason) for reason in refused)
+    )
+
+
 def proposal_notice(
     contract: Any, *, contract_id: Optional[str], dispatch_project: Optional[str],
 ) -> str:
-    """One line per kind of proposal the contract carries, or "" when it carries none."""
+    """One line per proposal kind and one for refusals, or "" when the contract carries none."""
     if not isinstance(contract, dict):
         return ""
     contract_id = contract_id or "unknown"
@@ -54,5 +65,6 @@ def proposal_notice(
     lines = (
         _memory_delta_line(contract, contract_id, project),
         _update_contracts_line(contract, contract_id, project),
+        _refused_line(contract, contract_id),
     )
     return "\n".join(line for line in lines if line)

@@ -149,8 +149,8 @@ def test_specialist_skills_task_prompt_carries_the_claude_code_kernel(monkeypatc
     assert kernel_builder.build_kernel_context(_row("do the thing"), agent_name="gaia-system") in prompt
     assert _headers(prompt) == [
         kernel_builder.KERNEL_HEADING,
-        kernel_builder.CLI_HEADING,
         kernel_builder.MEMORY_HEADING,
+        kernel_builder.CLI_HEADING,
         kernel_builder.SKILLS_HEADING,
         "# Closing this turn",
     ]

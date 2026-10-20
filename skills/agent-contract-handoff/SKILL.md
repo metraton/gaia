@@ -199,8 +199,8 @@ minted, `approval_id`, copied verbatim from the request's output.
   (`hooks/modules/context/context_writer.py::apply_proposal`). Refusals are
   stamped on the contract row as `update_contracts_refused`, one reason per
   entry or key (`gaia/store/writer.py::record_update_contracts_outcome`), and
-  also reach the orchestrator's user message
-  (`hooks/adapters/subagent_stop_core.py::run_subagent_stop`).
+  the dispatch result names them to the orchestrator beside the proposal
+  notice (`hooks/modules/agents/proposal_notices.py::proposal_notice`).
 - `rollback_executed`, `context_consumption`: advisory fields.
 
 ## The evidence clause of `update_contracts`
