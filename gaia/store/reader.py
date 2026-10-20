@@ -230,16 +230,25 @@ def pending_threads_by_project(
     return _rows_of_projects(_PENDING_THREADS_WITH_A_PROJECT, keys, db_path)
 
 
-_LIVE_ANCHORS_WITH_A_PROJECT = (
-    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
-    "       m.initiative, m.project_ref, m.class, m.status, "
-    "       m.measured_at, m.method "
+_LIVE_ANCHORS_OF_A_PROJECT_WHERE = (
     "FROM memory m "
     "WHERE m.deleted_at IS NULL "
     "  AND m.class = 'anchor' "
     "  AND (COALESCE(m.initiative, '') != '' OR COALESCE(m.project_ref, '') != '') "
     f"  AND {not_superseded('m')} "
     "ORDER BY COALESCE(m.updated_at, '') DESC"
+)
+
+_LIVE_ANCHORS_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.type, m.description, m.body, m.updated_at, "
+    "       m.initiative, m.project_ref, m.class, m.status, "
+    "       m.measured_at, m.method "
+    + _LIVE_ANCHORS_OF_A_PROJECT_WHERE
+)
+
+_LIVE_ANCHOR_INDEX_WITH_A_PROJECT = (
+    "SELECT m.workspace, m.name, m.description, m.initiative, m.project_ref "
+    + _LIVE_ANCHORS_OF_A_PROJECT_WHERE
 )
 
 
@@ -255,6 +264,18 @@ def anchors_by_project(
     ``[]`` for empty ``keys`` and on any DB error.
     """
     return _rows_of_projects(_LIVE_ANCHORS_WITH_A_PROJECT, keys, db_path)
+
+
+def anchor_index_by_project(
+    keys: list[str],
+    db_path: Path | None = None,
+) -> list[dict]:
+    """:func:`anchors_by_project` without bodies: the same rows, freshest first, name and description only.
+
+    For readers that announce the notes instead of carrying them, so a project
+    with long standing notes costs a dispatch no body read.
+    """
+    return _rows_of_projects(_LIVE_ANCHOR_INDEX_WITH_A_PROJECT, keys, db_path)
 
 
 def _rows_of_projects(select: str, keys: list[str], db_path: Path | None) -> list[dict]:

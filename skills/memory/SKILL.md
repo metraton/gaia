@@ -127,9 +127,11 @@ there>."
    dispatched subagent receives them too, minus the rows whose audience is the
    orchestrator alone, so a row about how the orchestrator should report spends
    no specialist's attention. Project memory — anchors, threads, their bodies —
-   never loads at birth and never reaches a specialist's kernel: a count is a
-   signal to ask, not the corpus, and what a dispatched turn needs of it travels
-   as a reference in its goal. It arrives when that project is worked on: before
+   never loads at birth: a count is a signal to ask, not the corpus. A
+   specialist's kernel carries one slice of it, a capped index (slug and one
+   line) of the dispatch project's standing notes, whose bodies the turn opens
+   with `gaia memory show <slug>`; anything else a dispatched turn needs of it
+   travels as a reference in its goal. It arrives when that project is worked on: before
    writing into an initiative, or whenever the question is what it still owes,
    read its whole live-pending set with
    `gaia memory get-relevant --initiative=<key>`, uncapped and with bodies, and

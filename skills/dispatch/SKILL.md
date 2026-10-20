@@ -23,7 +23,8 @@ two-writer wave, end to end, is in `examples.md`.
 
 1. **A goal completes the kernel; it never repeats it.** The kernel is data
    only: it carries the turn's identity, the project and its declared workflow,
-   the read menu, a bound task's gates and the user's standing rows. The contract
+   the read menu, a bound task's gates, the user's standing rows and an index of
+   the project's standing notes (bodies open on demand). The contract
    rules reach the specialist through the `agent-protocol` skill, not the kernel.
    The goal carries what neither can: the references already opened, the
    premise as a claim the specialist may refute, and the acceptance. Where they

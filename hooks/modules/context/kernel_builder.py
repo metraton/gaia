@@ -30,6 +30,14 @@ row:
     further ``gaia memory show`` call the agent in practice never made.
     Omitted entirely when no row is selected -- never an empty heading.
 
+  * ``# Standing notes``     -- an INDEX (slug + one line, never a body) of the
+    dispatch project's live anchor notes, hard-capped at
+    ``PROJECT_NOTES_BUDGET`` and rendered LAST: the host truncates a kernel
+    from the end, so the index is what yields when the kernel runs long and
+    never the user's rows. Omitted when the dispatch has no project or the
+    project has no notes. Bodies are opened on demand with
+    ``gaia memory show <slug>``.
+
 ``# Your skills`` is a fourth block, rendered only for a host that preloads
 no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
 with its description, so the turn knows at birth which bodies to load. Claude
@@ -64,6 +72,10 @@ KERNEL_HEADING = "# Your Contract"
 CLI_HEADING = "# Your CLI"
 MEMORY_HEADING = "# How the user works"
 SKILLS_HEADING = "# Your skills"
+PROJECT_NOTES_HEADING = "# Standing notes"
+
+PROJECT_NOTES_BUDGET = 600
+_PROJECT_NOTE_LINE_MAX = 150
 
 # Claude Code caps hook-injected context at 10,000 chars, the budget a kernel is
 # held to on either host; the skills block takes the share USER_ROWS_BUDGET
@@ -482,6 +494,65 @@ def build_memory_block(*, db_path=None) -> str:
     return f"{MEMORY_HEADING}\n\n{sections}"
 
 
+def _project_note_line(name: str, description: str) -> str:
+    """``- slug: description`` on one line, the description clipped to fit ``_PROJECT_NOTE_LINE_MAX``."""
+    summary = " ".join(description.split())
+    line = f"- {name}: {summary}" if summary else f"- {name}"
+    if len(line) <= _PROJECT_NOTE_LINE_MAX:
+        return line
+    return line[:_PROJECT_NOTE_LINE_MAX - 1].rstrip() + "…"
+
+
+def build_project_notes_block(
+    row: Mapping[str, Any], *, db_path=None,
+) -> str:
+    """Render ``# Standing notes`` for the dispatch's project, or "" when it has none.
+
+    The notes are the project's live anchors (``gaia.store.reader``), matched
+    by the same ``canonical_project_key`` as ``gaia context project`` and
+    ``gaia memory get-relevant --initiative``, freshest first. As many lines
+    as fit ``PROJECT_NOTES_BUDGET`` are kept, the tail counting the rest and
+    naming the command that lists them; the whole block, tail included, never
+    exceeds the budget.
+    """
+    dispatch_project = row.get("dispatch_project")
+    if not dispatch_project:
+        return ""
+    try:
+        from ..core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from gaia.store.reader import anchor_index_by_project
+        from tools.context.context_provider import dispatch_project_key
+
+        key = dispatch_project_key(
+            str(row.get("workspace") or ""), dispatch_project, db_path=db_path,
+        )
+        notes = anchor_index_by_project([key], db_path) if key else []
+    except Exception:
+        logger.debug("project notes read failed (non-fatal)", exc_info=True)
+        return ""
+    if not notes:
+        return ""
+
+    def tail(more: int) -> str:
+        return f"+{more} more — `gaia memory get-relevant --initiative {key} --sections anchor`"
+
+    shown = [PROJECT_NOTES_HEADING, ""]
+    kept = 0
+    for note in notes:
+        line = _project_note_line(note["name"], note.get("description") or "")
+        is_last = kept == len(notes) - 1
+        size = len("\n".join(shown + [line] + ([] if is_last else [tail(len(notes))])))
+        if size > PROJECT_NOTES_BUDGET:
+            break
+        shown.append(line)
+        kept += 1
+    if kept < len(notes):
+        shown.append(tail(len(notes) - kept))
+    return "\n".join(shown)
+
+
 def build_kernel_context(
     row: Mapping[str, Any],
     *,
@@ -489,7 +560,7 @@ def build_kernel_context(
     agents_dir: "Path | None" = None,
     db_path=None,
 ) -> Optional[str]:
-    """The full kernel payload: contract + CLI + memory, blank-line joined.
+    """The full kernel payload: contract + CLI + user rows + project notes, blank-line joined.
 
     Returns None when the contract block itself cannot render (no identity on
     the row) -- the CLI/memory blocks never ship without it.
@@ -502,5 +573,6 @@ def build_kernel_context(
         kernel,
         build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace),
         build_memory_block(db_path=db_path),
+        build_project_notes_block(row, db_path=db_path),
     ]
     return "\n\n".join(b for b in blocks if b)

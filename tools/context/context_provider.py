@@ -283,7 +283,7 @@ def _dispatched_project_row(
         try:
             for where, value in lookups:
                 rows = [dict(r) for r in con.execute(
-                    "SELECT workspace, name, path, remote_url FROM projects "
+                    "SELECT workspace, name, path, remote_url, project_identity FROM projects "
                     f"WHERE {where} AND status = 'active'", (value,),
                 )]
                 if len(rows) > 1:
@@ -427,6 +427,29 @@ def dispatch_project_workspace(
         return None
     row = _dispatch_project_row(workspace, dispatch_project, db_path)
     return row["workspace"] if row else None
+
+
+def dispatch_project_key(
+    workspace: str,
+    dispatch_project: Optional[str],
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """The canonical memory project key of the project a born row's ``dispatch_project`` names, or None.
+
+    Derived the way a project-anchored memory write derives its ``initiative``
+    (``gaia.store.writer.initiative_from_project_ref`` of the row's
+    ``project_identity``), so it matches the notes ``gaia memory add --project``
+    stored; a project the substrate does not know keys by its normalized name.
+    """
+    if not dispatch_project:
+        return None
+    from gaia.store.writer import initiative_from_project_ref, normalize_initiative
+
+    row = _dispatch_project_row(workspace, dispatch_project, db_path) if workspace else None
+    return (
+        initiative_from_project_ref((row or {}).get("project_identity"))
+        or normalize_initiative(dispatch_project.partition(" (")[0])
+    )
 
 
 def dispatch_project_entry(
