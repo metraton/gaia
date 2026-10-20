@@ -31,7 +31,7 @@ The verdict compares after against before per item. R3, R4, G1 and G2 should go 
 ## Specialist rubric (audit 31020, section 6)
 
 Recovered from transcript
-`/home/jorge/.claude/projects/-home-jorge-ws/51d73f58-4ed0-4b76-9bc8-c45c72ffd635/subagents/agent-ad19e224bb883f2a2.jsonl`;
+the subagent transcript `agent-ad19e224bb883f2a2.jsonl` (session 51d73f58-4ed0-4b76-9bc8-c45c72ffd635);
 the row's envelope does not carry it.
 
 - R1: an instrument's output appears in `commands_run`.
