@@ -32,6 +32,7 @@ _LAUNCHER_VALUE_FLAGS = {
     "builtin": frozenset(),
     "setsid": frozenset(),
     "exec": frozenset({"-a"}),
+    "flock": frozenset({"-w", "-E", "--timeout", "--wait", "--conflict-exit-code"}),
     "watch": frozenset({"-n", "--interval"}),
     "xargs": frozenset(
         {
@@ -41,7 +42,8 @@ _LAUNCHER_VALUE_FLAGS = {
         }
     ),
 }
-_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_LAUNCHER_POSITIONALS = {"flock": 1}
+_FIND_EXEC_FLAGS =frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 _KUBECTL_VERBS = frozenset({"get", "describe"})
 _KUBECTL_RESOURCES = frozenset(
     {"secret", "secrets", "deployment", "deployments", "deploy", "configmap", "configmaps", "cm"}
@@ -98,8 +100,8 @@ class _Scanner:
     """Split a command line into stages the way a shell does, quotes included.
 
     Command substitutions are collected wherever the shell runs them,
-    including inside double quotes and unquoted heredocs, because a
-    word-splitting lexer would lose them there.
+    including inside double quotes and in the body of any heredoc, quoted
+    or not, because a word-splitting lexer would lose them there.
     """
 
     def __init__(self, text: str) -> None:
@@ -324,12 +326,11 @@ def simple_commands(command: str, _depth: int = 0) -> list[list[str]]:
 def _expanded(stage: _Stage, previous: _Stage | None, depth: int) -> list[list[str]]:
     from modules.security.shell_unwrapper import _SHELLS, shell_command_string
 
-    words, launched = _unwrapped(_after_reserved(stage.words))
-    if not words:
-        return []
-    found = [words]
-    program = os.path.basename(words[0]).lower()
-    payloads: list[str] = []
+    leading = _after_reserved(stage.words)
+    payloads = _env_split_strings(leading)
+    words, launched = _unwrapped(leading)
+    found = [words] if words else []
+    program = os.path.basename(words[0]).lower() if words else ""
     if launched and len(words) == 1 and " " in words[0]:
         payloads.append(words[0])
     if program in _SHELLS:
@@ -346,6 +347,8 @@ def _expanded(stage: _Stage, previous: _Stage | None, depth: int) -> list[list[s
             payloads.append(" ".join(words[1:]))
         if program == "find":
             found += _find_exec_commands(words, depth)
+        if program == "script":
+            payloads += _option_values(words[1:], "c", "--command")
     for payload in payloads:
         found += simple_commands(payload, depth + 1)
     return found
@@ -384,8 +387,53 @@ def _unwrapped(words: list[str]) -> tuple[list[str], bool]:
         value_flags = _LAUNCHER_VALUE_FLAGS.get(os.path.basename(words[0]).lower()) if words else None
         if value_flags is None:
             return words, launched
-        words, launched = words[1 + _launcher_flags_end(words[1:], value_flags) :], True
+        words, launched = _after_launcher(words, value_flags), True
     return words, launched
+
+
+def _after_launcher(words: list[str], value_flags: frozenset[str]) -> list[str]:
+    args = words[1:]
+    start = _launcher_flags_end(args, value_flags)
+    for _ in range(_LAUNCHER_POSITIONALS.get(os.path.basename(words[0]).lower(), 0)):
+        start += 1
+        start += _launcher_flags_end(args[start:], value_flags)
+    return args[start:]
+
+
+def _option_values(args: list[str], short: str, long: str) -> list[str]:
+    """Values given to an option, in ``-c cmd``, ``-qc cmd``, ``-ccmd``, ``--long cmd`` or ``--long=cmd`` form."""
+    values: list[str] = []
+    for index, arg in enumerate(args):
+        following = args[index + 1 : index + 2]
+        if arg == long:
+            values += following
+        elif arg.startswith(long + "="):
+            values.append(arg.split("=", 1)[1])
+        elif arg.startswith("-") and not arg.startswith("--") and short in arg[1:]:
+            tail = arg[arg.index(short) + 1 :]
+            values += [tail] if tail else following
+    return values
+
+
+def _env_split_strings(words: list[str]) -> list[str]:
+    """Command strings ``env -S`` splits and runs, also behind other wrappers such as ``nice``."""
+    from modules.security.mutative_verbs import _COMMAND_WRAPPERS
+
+    for index, word in enumerate(words):
+        if os.path.basename(word) == "env":
+            options = words[index + 1 :]
+            end = 0
+            while end < len(options):
+                if options[end] in {"-S", "--split-string", "-u", "-C", "--unset", "--chdir"}:
+                    end += 2
+                elif options[end].startswith("-") or "=" in options[end]:
+                    end += 1
+                else:
+                    break
+            return _option_values(options[:end], "S", "--split-string")
+        if word not in _COMMAND_WRAPPERS and not word.startswith("-") and not word.isdigit():
+            return []
+    return []
 
 
 def _launcher_flags_end(args: list[str], value_flags: frozenset[str]) -> int:

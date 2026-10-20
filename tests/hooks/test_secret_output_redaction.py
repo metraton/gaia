@@ -102,6 +102,14 @@ exec bash -c "$*"
 """
 
 
+FAKE_SCRIPT = """#!/usr/bin/env bash
+while [[ "$1" == -* ]]; do
+  case "$1" in -*c|--command) exec bash -c "$2" ;; esac
+  shift
+done
+"""
+
+
 @pytest.fixture()
 def world(tmp_path, monkeypatch):
     fake_bin = tmp_path / "bin"
@@ -109,6 +117,7 @@ def world(tmp_path, monkeypatch):
     for name, body in (
         ("kubectl", FAKE_KUBECTL), ("vault", FAKE_STORE), ("bao", FAKE_STORE),
         ("gcloud", FAKE_GCLOUD), ("aws", FAKE_AWS), ("sops", FAKE_SOPS), ("watch", FAKE_WATCH),
+        ("script", FAKE_SCRIPT),
     ):
         binary = fake_bin / name
         binary.write_text(body, encoding="utf-8")
@@ -277,6 +286,12 @@ REDACTED_SPELLINGS = [
     ("command kubectl describe secret db", None),
     ("echo 'sops -d app.enc.yaml' | bash", None),
     ("bash <<'EOF'\nsops -d app.enc.yaml\nEOF", None),
+    ("script -qc 'sops -d app.enc.yaml' /dev/null", None),
+    ("script --command 'sops -d app.enc.yaml' /dev/null", None),
+    ("flock REPO/.lock sops -d app.enc.yaml", None),
+    ("flock -w 5 REPO/.lock -c 'sops -d app.enc.yaml'", None),
+    ("env -S 'sops -d app.enc.yaml'", None),
+    ("nice -n 5 env -S 'sops -d app.enc.yaml'", None),
     ("aws secretsmanager batch-get-secret-value --secret-id-list a b", None),
     ("aws ssm get-parameter-history --name /app/db --with-decryption", None),
 ]
@@ -340,6 +355,11 @@ REFUSED_SPELLINGS = [
     "echo 'kubectl get secret db -o yaml' | bash",
     "kubectl get secret db -o go-template-file=/tmp/t",
     "kubectl get secret db -o jsonpath-file=/tmp/t",
+    "kubectl get secret db -o templatefile=/tmp/t",
+    "kubectl get secret db -o custom-columns-file=/tmp/t",
+    "script -qc 'kubectl get secret db -o yaml' /dev/null",
+    "flock /tmp/gaia.lock kubectl get secret db -o yaml",
+    "env -S 'kubectl get secret db -o yaml'",
     "kubectl get --raw /api/v1/namespaces/x/secrets/db",
     "bash -c 'sops -d app.enc.yaml'",
     "sh -c 'gcloud secrets versions access latest --secret=db-password'",
