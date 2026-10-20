@@ -155,10 +155,10 @@ def test_every_write_lane_verb_is_admitted_at_verb_level(help_text):
 @pytest.mark.parametrize(
     "phrase,args",
     [
-        (("brief", "ac", "add"), ("my-brief", "--id", "AC-1", "--text", "x")),
-        (("brief", "ac", "add"), ("my-brief", "--id=AC-1", "--text", "x")),
-        (("brief", "ac", "edit"), ("my-brief", "--id", "AC-1", "--text", "x")),
-        (("brief", "ac", "edit"), ("my-brief", "--id=AC-1", "--text", "x")),
+        (("brief", "ac", "add"), ("my-brief", "--id", "AC-1", "--description", "x")),
+        (("brief", "ac", "add"), ("my-brief", "--id=AC-1", "--description", "x")),
+        (("brief", "ac", "edit"), ("my-brief", "--id", "AC-1", "--description", "x")),
+        (("brief", "ac", "edit"), ("my-brief", "--id=AC-1", "--description", "x")),
         (("brief", "ac", "remove"), ("my-brief", "--id", "AC-1")),
         (("brief", "ac", "remove"), ("my-brief", "--id=AC-1")),
         (("brief", "new"), ("--title", "t", "--headless")),

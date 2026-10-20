@@ -269,6 +269,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
 from ..tools.stage_decomposer import StageDecomposer
@@ -993,6 +994,9 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
         invalid = _validate_orchestrator_write(candidate, allowed_phrase)
         if invalid is not None:
             return False, invalid
+        invalid = _validate_known_safe_flags(candidate, allowed_phrase, leading_flags)
+        if invalid is not None:
+            return False, invalid
         return True, None
 
     denied = match_allowed_phrase(candidate, EXPLICITLY_DENIED_PHRASES)
@@ -1150,6 +1154,183 @@ def _validate_read_flags(
             f"'gaia {' '.join(phrase)}'. {rationale}. The verb itself stays "
             f"allowed -- rerun it without that flag, or dispatch a specialist "
             f"for the repair. Denied outright, not approvable."
+        )
+    return None
+
+
+def _flags(spec: str) -> FrozenSet[str]:
+    return frozenset(spec.split())
+
+
+# Every option an admitted phrase may carry, read off the phrase's own argparse
+# parser (bin/cli/*.py) and cross-checked against the commands the orchestrator
+# identity and skills show. A flag absent here is refused, so a flag added to a
+# verb tomorrow stays outside the lane until someone decides it belongs in it.
+# Withheld on purpose although argparse defines them: doctor --fix, memory add
+# --replace, memory link --delete (signed operations), approvals reject --all,
+# task set-status --override/--reason, notifications ack --all-workspaces.
+# tests/hooks/modules/security/test_orchestrator_flag_lane.py pins this table
+# against the live parsers, so a drift in either direction fails there.
+_KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    ("approvals", "history"): _flags("--limit --status --json"),
+    ("approvals", "list"): _flags("--json --session --orphans-only"),
+    ("approvals", "pending"): _flags("--json --session --all-sessions"),
+    ("approvals", "question"): _flags("--details"),
+    ("approvals", "reject"): _flags("--reason --json"),
+    ("approvals", "revoke"): _flags("--yes --reason"),
+    ("approvals", "show"): _flags("--json --consent-surface"),
+    ("approvals", "stats"): _flags("--json"),
+    ("brief", "ac", "add"): _flags(
+        "--id --description --description-file --evidence-type --evidence-shape "
+        "--evidence-shape-file --artifact --workspace --json"),
+    ("brief", "ac", "edit"): _flags(
+        "--id --description --description-file --evidence-type --evidence-shape "
+        "--evidence-shape-file --artifact --workspace --json"),
+    ("brief", "ac", "remove"): _flags("--id --workspace --json"),
+    ("brief", "close"): _flags("--workspace"),
+    ("brief", "decision", "add"): _flags("--text --rationale --supersedes --workspace --json"),
+    ("brief", "decision", "list"): _flags("--workspace --json"),
+    ("brief", "deps"): _flags("--json --workspace"),
+    ("brief", "edit"): _flags(
+        "--workspace --headless --field --content --content-file --append --json"),
+    ("brief", "history"): _flags("--workspace --json"),
+    ("brief", "list"): _flags("--status --format --json --workspace"),
+    ("brief", "new"): _flags(
+        "--workspace --project --headless --title --objective --objective-file "
+        "--context --context-file --approach --approach-file --out-of-scope "
+        "--out-of-scope-file --status --surface-type --json"),
+    ("brief", "search"): _flags("--limit --json --workspace"),
+    ("brief", "set-project"): _flags("--clear --force --workspace --dry-run --json"),
+    ("brief", "set-status"): _flags("--workspace --json"),
+    ("brief", "show"): _flags("--json --workspace"),
+    ("brief", "verify"): _flags("--workspace --json"),
+    ("context", "get"): _flags("--workspace --section --json --text --include-missing"),
+    ("context", "get-contract"): _flags("--workspace --section --json --text"),
+    ("context", "project"): _flags("--workspace --json"),
+    ("context", "scan"): _flags("--dry-run --json"),
+    ("context", "show"): _flags("--section --json"),
+    ("contract", "list"): _flags(
+        "--plan-task --brief --agent-id --agent --state --cut --session --contract-id "
+        "--harness-id --workspace --since --until --limit --json"),
+    ("contract", "validate"): _flags("--draft-id --agent-id --json"),
+    ("contract", "view"): _flags("--field --draft-id --agent-id --harness-id --json"),
+    ("defects",): _flags(
+        "--origin --type --severity --agent --since --until --limit --workspace --count --json"),
+    ("doctor",): _flags("--json --workspace"),
+    ("evidence", "list"): _flags("--brief --ac --workspace --json"),
+    ("evidence", "show"): _flags("--json"),
+    ("history",): _flags("--today -t --blocked -b --agent -a --limit -n --workspace --json"),
+    ("memory", "add"): _flags(
+        "--name --type --body --body-file --description --project --project-ref "
+        "--initiative --class --status --audience --measured-at --method --workspace --json"),
+    ("memory", "append"): _flags("--body --body-file --workspace --json"),
+    ("memory", "checkpoint"): _flags(
+        "--file --project --project-ref --initiative --workspace --json"),
+    ("memory", "conflicts"): _flags("--threshold --json"),
+    ("memory", "episode-show"): _flags("--json"),
+    ("memory", "get-relevant"): _flags(
+        "--workspace --limit --max-chars --types --sections --initiative --project "
+        "--json --no-pointer"),
+    ("memory", "link"): _flags("--kind --workspace --json"),
+    ("memory", "list"): _flags(
+        "--type --audience --class --status --sort --order --workspace --limit --format --json"),
+    ("memory", "reclassify"): _flags("--class --status --workspace --json"),
+    ("memory", "search"): _flags("--limit --scope --workspace --json"),
+    ("memory", "show"): _flags("--workspace --links --history --json"),
+    ("memory", "stats"): _flags("--json"),
+    ("memory", "story"): _flags("--max-depth --workspace --json"),
+    ("metrics",): _flags("--agent --workspace --range --since --until --json"),
+    ("notifications", "ack"): _flags("--all --workspace --json"),
+    ("notifications", "add"): _flags(
+        "--kind --task --headline --body --session-id --at --cron --every --skill "
+        "--memory --project --workspace --json"),
+    ("notifications", "cancel"): _flags("--json"),
+    ("notifications", "list"): _flags(
+        "--unread --upcoming --all-workspaces --limit --workspace --json"),
+    ("notifications", "show"): _flags("--json"),
+    ("notifications", "snooze"): _flags("--for --until --json"),
+    ("now",): _flags("--json"),
+    ("paths",): _flags(""),
+    ("plan", "change", "approve"): _flags("--workspace --json"),
+    ("plan", "change", "list"): _flags("--workspace --json"),
+    ("plan", "change", "request"): _flags("--reason --workspace --json"),
+    ("plan", "history"): _flags("--content --workspace --json"),
+    ("plan", "list"): _flags("--brief --status --format --json --workspace"),
+    ("plan", "pause"): _flags("--reason --workspace --json"),
+    ("plan", "resume"): _flags("--workspace --json"),
+    ("plan", "set-status"): _flags("--workspace --json"),
+    ("plan", "show"): _flags("--workspace --json"),
+    ("query",): _flags(
+        "--surface --workspace --since --until --last --agent --type --command-like "
+        "--failed --group-by --count --snippets --metrics --format --json"),
+    ("scan",): _flags("--workspace --dry-run --json"),
+    ("session", "preview"): _flags(""),
+    ("session", "resume-point", "set"): _flags("--session-id --text"),
+    ("session", "snapshot"): _flags("--session-id --json"),
+    ("status",): _flags("--json"),
+    ("task", "gate", "list"): _flags("--workspace --json"),
+    ("task", "gate", "reverify"): _flags("--reason --workspace --json"),
+    ("task", "list"): _flags("--status --format --json --workspace"),
+    ("task", "set-status"): _flags("--workspace --json"),
+    ("task", "show"): _flags("--id --workspace --json"),
+    ("usage", "show"): _flags("--plan --session --since --until --json"),
+    ("workspace", "current"): _flags(""),
+    ("workspace", "info"): _flags(""),
+    ("worktree", "list"): _flags("--repo --json"),
+    ("worktree", "show"): _flags("--json"),
+    ("worktree", "show-capture"): _flags("--diff --json"),
+}
+
+# The root parser's own options: --json may precede the subcommand, --version
+# only stands alone (ALLOWED_BARE_READ_FLAGS) and -h/--help never reaches here.
+_KNOWN_SAFE_LEADING_FLAGS: FrozenSet[str] = frozenset({"--json"})
+
+_NEGATIVE_NUMBER = re.compile(r"^-\d+$|^-\d*\.\d+$")
+
+
+def _is_option_like(token: str) -> bool:
+    """True iff argparse would read *token* as an option rather than a value.
+
+    A value that starts with a dash and contains a space (``- a bullet``) or is
+    a negative number is a value to argparse, so it must be one here too; a lone
+    ``-`` and ``--`` are not special-cased: ``--`` is option-like and refused,
+    which also closes the demotion of a later flag to a positional.
+    """
+    name = token.split("=", 1)[0]
+    return (
+        len(name) > 1
+        and name[0] == "-"
+        and not _NEGATIVE_NUMBER.match(name)
+        and not any(ch.isspace() for ch in name)
+    )
+
+
+def _validate_known_safe_flags(
+    candidate: Tuple[str, ...],
+    phrase: Tuple[str, ...],
+    leading_flags: Tuple[str, ...] = (),
+) -> Optional[str]:
+    """Deny an option the admitted *phrase* is not known to be safe with.
+
+    Matching is by exact option name, never by abbreviation: ``--wor`` parses
+    to ``--workspace`` in argparse, but an abbreviation is a spelling nobody
+    vetted. Returns None when every option is known safe, else the denial.
+    """
+    safe = _KNOWN_SAFE_FLAGS.get(phrase, frozenset())
+    scanned = [(t, _KNOWN_SAFE_LEADING_FLAGS) for t in leading_flags]
+    scanned += [(t, safe) for t in candidate[len(phrase):]]
+    for token, known in scanned:
+        if not _is_option_like(token):
+            continue
+        name = token.split("=", 1)[0]
+        if name in known:
+            continue
+        return (
+            f"GAIA CLI ONLY: '{name}' is not a known-safe flag of "
+            f"'gaia {' '.join(phrase)}'. The orchestrator's lane is closed by "
+            f"default at flag level: an admitted verb carries only the options "
+            f"vetted for it (see _KNOWN_SAFE_FLAGS), and the rest belong to a "
+            f"specialist or a signed operation. Denied outright, not approvable."
         )
     return None
 
