@@ -43,7 +43,7 @@ _LAUNCHER_VALUE_FLAGS = {
     ),
 }
 _LAUNCHER_POSITIONALS = {"flock": 1}
-_FIND_EXEC_FLAGS =frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 _KUBECTL_VERBS = frozenset({"get", "describe"})
 _KUBECTL_RESOURCES = frozenset(
     {"secret", "secrets", "deployment", "deployments", "deploy", "configmap", "configmaps", "cm"}
