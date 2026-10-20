@@ -795,12 +795,16 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
     # decided by the shell's own quoting rules -- so a quoted MENTION of the
     # same text yields nothing and is not classified here at all. Strictly
     # additive, like the two guards above: the command as written was already
-    # classified, so this can only ADD a block.
+    # classified, so this can only ADD a block. A body gets every reading a
+    # command typed alone gets, wrapper peel included: ``$(sudo dd ...)`` runs
+    # the same ``dd``.
     for inner in extract_substitutions(command):
         for candidate in (inner, strip_grouping_wrappers(inner)):
-            inner_result = _classify_stripped_command(candidate)
-            if inner_result.is_blocked:
-                return inner_result
+            readings, peeled = _peel_command_wrappers(candidate)
+            for reading in (candidate, *(readings if peeled else ())):
+                inner_result = _classify_stripped_command(reading)
+                if inner_result.is_blocked:
+                    return inner_result
 
     return result
 
