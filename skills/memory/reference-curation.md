@@ -46,13 +46,15 @@ gaia memory link atom_node_20 anchor_routing --kind=relates_to
 # Retire an obsolete decision without losing the history: NEW first, OLD second
 gaia memory link decision_new decision_old --kind=supersedes
 
-# Drop a link that turned out wrong -- signed (T3), like delete
+# Drop a link that turned out wrong -- a specialist runs it through the signed
+# (T3) flow; the orchestrator lane refuses `--delete`
 gaia memory link a b --kind=relates_to --delete
 ```
 
-Removing an edge needs the same consent as `delete`: `memory_links` keeps no
-history, and dropping a `supersedes` edge puts the old row back into every
-injection. Both endpoints must exist as live curated rows. The command is
+Removing an edge is withheld from the orchestrator like `--replace` and
+`delete`, and delegated to a specialist through the signed flow:
+`memory_links` keeps no history, and dropping a `supersedes` edge puts the old
+row back into every injection. Both endpoints must exist as live curated rows. The command is
 idempotent: re-running the same link is a no-op. The four kinds map
 to the four reasons one note refers to another -- a generic
 relationship (`relates_to`), an obsolescence (`supersedes`), a

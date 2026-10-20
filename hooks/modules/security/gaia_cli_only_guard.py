@@ -201,18 +201,20 @@ under a task that forbids editing it.
 
 Design decision 4 -- flag-level policy, because a phrase cannot express it
 --------------------------------------------------------------------------------
-A phrase matches by PREFIX (see ``match_allowed_phrase``): everything after
-the matched tokens is gaia's own argument grammar and is not re-validated.
-That is the right default -- ids, search strings and per-command flags are
-not this guard's business -- but it means a phrase tuple is structurally
-incapable of saying "this verb, but not with that flag". And one admitted
-verb needs exactly that: ``gaia doctor`` is a read-only diagnostic EXCEPT
-under ``--fix``, which rewrites the settings file and rebuilds the memory
-FTS index.
+A phrase matches by PREFIX (see ``match_allowed_phrase``), so it admits the
+verb but is structurally incapable of saying "this verb, but not with that
+flag". Ids and search strings stay gaia's own argument grammar; the options
+are this guard's business, in two layers applied in ``_check_stage``:
 
-``_READ_PHRASE_FORBIDDEN_FLAGS`` is that missing expressiveness, applied by
-``_validate_read_flags`` in ``_check_stage`` BEFORE the write-shape gate, so
-a forbidden flag is refused whichever allowlist the phrase came from.
+  * ``_KNOWN_SAFE_FLAGS`` lists, per admitted phrase, the only options the
+    orchestrator may pass (``_validate_known_safe_flags``, after the write
+    shape). Anything else is refused, so the lane is closed by default at
+    flag level as it is at verb level.
+  * ``_READ_PHRASE_FORBIDDEN_FLAGS`` names a flag that makes an admitted verb
+    write -- ``gaia doctor --fix`` rewrites the settings file and rebuilds
+    the memory FTS index -- and is applied BEFORE the write-shape gate, so
+    the denial can say why. It is a rationale layer; the safe table already
+    excludes the flag.
 
 Two properties of the flag scan are load-bearing, and both were measured
 against argparse rather than assumed:
@@ -235,9 +237,10 @@ and needed it to survive ``gaia scan --workspace me -- --dry-run``, where a
 bare ``--`` demotes the flag to a positional and the command writes anyway.
 That whole class of parsing subtlety disappeared with the policy it served:
 ``scan`` refreshes the workspace substrate the orchestrator coordinates
-from, its identity already authorizes the CLI, and a narrower allowlist
-would have removed a capability it needs without adding any safety. The
-verb is admitted whole, as a write, in ``ALLOWED_WRITE_PHRASES``.
+from, its identity already authorizes the CLI, and requiring a flag would
+have removed a capability it needs without adding any safety. The verb is
+admitted as a write in ``ALLOWED_WRITE_PHRASES`` with every option in
+``_KNOWN_SAFE_FLAGS``, and no option is required.
 
 Scope of the check (categorical, NOT approvable)
 --------------------------------------------------
@@ -557,10 +560,9 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # its own job, not a specialist's. It is listed as a WRITE because it is
     # one: bin/cli/scan.py calls classify_scan(root, workspace,
     # apply=not dry_run), so its DEFAULT mode persists. It is admitted
-    # deliberately and without a flag condition (the orchestrator's identity
-    # is what authorizes the CLI; a narrower allowlist would only remove a
-    # capability it needs), and it carries no bounded-shape check in
-    # _validate_orchestrator_write -- gaia's own argparse owns its grammar.
+    # deliberately and without a required flag (the orchestrator's identity
+    # is what authorizes the CLI), its options are bounded by _KNOWN_SAFE_FLAGS,
+    # and it carries no bounded-shape check in _validate_orchestrator_write.
     ("scan",),
     # The same scan by its other spelling: context._cmd_scan delegates
     # in-process to bin/cli/scan.py's cmd_scan. Admitting one and denying the
@@ -1162,10 +1164,8 @@ def _flags(spec: str) -> FrozenSet[str]:
     return frozenset(spec.split())
 
 
-# Every option an admitted phrase may carry, read off the phrase's own argparse
-# parser (bin/cli/*.py) and cross-checked against the commands the orchestrator
-# identity and skills show. A flag absent here is refused, so a flag added to a
-# verb tomorrow stays outside the lane until someone decides it belongs in it.
+# Every option an admitted phrase may carry; a flag absent here is refused, so a
+# flag added to a verb tomorrow stays outside the lane until it is vetted.
 # Withheld on purpose although argparse defines them: doctor --fix, memory add
 # --replace, memory link --delete (signed operations), approvals reject --all,
 # task set-status --override/--reason, notifications ack --all-workspaces.
