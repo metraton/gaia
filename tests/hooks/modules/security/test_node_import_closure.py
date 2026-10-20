@@ -218,6 +218,19 @@ class TestSyntaxVersusText:
         assert result.verb == "fs-write"
 
 
+class TestPreloads:
+    """A preloaded module runs before the entry, so its closure counts too."""
+
+    @pytest.mark.parametrize("flag", ["--import", "-r", "--require"])
+    def test_preload_importing_a_writer_is_t3(self, tmp_path, flag):
+        _write(tmp_path, "w.cjs", "const fs = require('fs');\nfs.writeFileSync('o', 'x');\n")
+        _write(tmp_path, "pre.cjs", "require('./w.cjs');\n")
+        _write(tmp_path, "e.cjs", "console.log(1);\n")
+        result = detect_mutative_command(f"node {flag} ./pre.cjs e.cjs", cwd=str(tmp_path))
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+
 class TestWriteFreeClosure:
     def test_entry_importing_a_read_only_module_stays_free(self, tmp_path):
         _write(tmp_path, "lib.mjs", READER)
