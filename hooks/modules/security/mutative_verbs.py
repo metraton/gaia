@@ -903,16 +903,10 @@ def _validated_anchor_table(
     return table
 
 
-# `fmt` is a SIMULATION verb, so a formatter that rewrites files in place read
-# as a check. A formatter is free only on a flag the tool is known to honor; a
-# flag it does not know is ignored silently (terragrunt v0.72.6 ran `hclfmt
-# --check --working-dir <dir>` against the shell's cwd and rewrote four
-# unrelated repositories). Each spelling below is exact because `-check=false`
-# and `-write=true` turn the same flag back off; a later one of those cancels.
-# Narrower than the tools: `-check=true` asks a signature, and so does
-# `hclfmt --check`, which only terragrunt releases after the v0.72 flag
-# redesign honor. `--terragrunt-hclfmt-stdin` formats stdin to stdout;
-# terraform's `fmt -` is not exempted and asks a signature.
+# A tool ignores a flag it does not know, so only these exact spellings free a
+# formatter that otherwise rewrites files in place.
+# `-check=false` and `-write=true` turn them back off, and a later one cancels.
+# `-check=true` and `fmt -` are not exempted and ask a signature.
 _TERRAFORM_FMT_NO_WRITE_FLAGS = frozenset({"-check", "--check", "-write=false", "--write=false"})
 _TERRAFORM_FMT_WRITE_FLAGS = frozenset({"-check=false", "--check=false", "-write=true", "--write=true"})
 
@@ -1080,6 +1074,8 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
             flags=frozenset({"-upgrade", "-migrate-state", "-reconfigure"}),
         ),
         _terraform_fmt_anchor(),
+        # `--check` is honored only by terragrunt releases after the v0.72 flag
+        # redesign, so it asks; `--terragrunt-hclfmt-stdin` formats stdin to stdout.
         MutativeAnchor(
             path=("hclfmt",),
             exempt_flags=frozenset({"--terragrunt-check", "--terragrunt-hclfmt-stdin"}),

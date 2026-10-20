@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""A formatter rewrites files unless a flag it honors turns that off.
-
-``terragrunt hclfmt --check --working-dir <dir>`` on v0.72.6 knows neither flag
-(the real ones are ``--terragrunt-check`` and ``--terragrunt-working-dir``), so
-it ran against the shell's cwd and rewrote HCL in four unrelated repositories
-while the classifier read it as a check. Each case is a literal command fed to
-the live classifier.
-"""
+"""A formatter classifies as T3 unless it carries a flag it honors that turns writing off."""
 
 import sys
 from pathlib import Path
