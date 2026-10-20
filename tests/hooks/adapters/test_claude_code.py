@@ -578,6 +578,7 @@ class TestAdaptSubagentStopSessionId:
             {
                 "process_context_updates": lambda *_a, **_k: None,
                 "process_update_contracts": lambda *_a, **_k: None,
+                "proposal_notice": lambda *_a, **_k: None,
             },
         )
         _install_stub(
@@ -728,6 +729,7 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
             {
                 "process_context_updates": lambda *_a, **_k: None,
                 "process_update_contracts": lambda *_a, **_k: None,
+                "proposal_notice": lambda *_a, **_k: None,
             },
         )
         _install_stub(
@@ -969,6 +971,7 @@ class TestAdaptSubagentStopFencelessPlanStatusReachesEpisode:
             {
                 "process_context_updates": lambda *_a, **_k: None,
                 "process_update_contracts": lambda *_a, **_k: {"updated": False},
+                "proposal_notice": lambda *_a, **_k: None,
             },
         )
         _install_stub("modules.memory.episode_writer", {"write": _fake_write_episode})
@@ -1130,6 +1133,7 @@ class TestAdaptSubagentStopAnchorHits:
                 # and unconditionally does result.get(...) on it -- must be a
                 # dict, not None.
                 "process_update_contracts": lambda *_a, **_k: {},
+                "proposal_notice": lambda *_a, **_k: None,
             },
         )
         _install_stub(

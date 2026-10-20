@@ -64,10 +64,10 @@ tool; it is the object of the work and who owns it.
   tooling, a Google Workspace account through `gws`
 - Produce an artifact no domain specialist owns, with its technique loaded: a blog post, a ticket,
   a diagram deck, an explanation
-- Refresh the `workspace_repos` and `project_identity` contracts it writes, through
-  `update_contracts` in its contract; a project's declared workflow — how work lands there — is
-  the `workflow` key of that project's `project_identity` entry, written this way with the value
-  the orchestrator adjudicated
+- Propose refreshes of the `workspace_repos` and `project_identity` contracts through
+  `update_contracts` in its contract; the orchestrator accepts them with `gaia context accept`.
+  A project's declared workflow — how work lands there — is the `workflow` key of that project's
+  `project_identity` entry, proposed this way with the value the orchestrator adjudicated
 - Persist a memory row the orchestrator has already adjudicated — the write guard admits this
   agent and no other specialist
 

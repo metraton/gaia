@@ -374,7 +374,8 @@ def _cmd_get_contract(args) -> int:
     which resolves against the fixed workspace shape (apps/services/stack/
     git/environment/...); see the module docstring for the distinction that
     trips this up in practice. Never mutates project_context_contracts --
-    the only write path for that table is `move-contracts` (re-keying).
+    its write paths are `accept` (a recorded proposal) and
+    `move-contracts` (re-keying).
 
     Workspace defaults to `gaia.project.current()` (the caller's cwd); pass
     --workspace explicitly to name it, so it is always clear which
@@ -622,13 +623,17 @@ def _project_memory_sweep_command(initiative: str | None, name: str) -> str:
     return f"gaia memory search {name}"
 
 
-def _resolve_project(con, name: str, workspace: str | None) -> dict:
+def _resolve_project(
+    con, name: str, workspace: str | None, try_spellings: bool = True,
+) -> dict:
     """Resolve NAME (and optional --workspace) to exactly one `projects` row.
 
     Two match passes, in order -- exact `projects.name` first, basename of
     `projects.path` second (the fix for the legacy opaque-slot rows: a
     project scanned as `bildwiz-5` whose real repo is `control-tower-livekit`
-    is found when the user names the repo they actually know).
+    is found when the user names the repo they actually know). When both miss,
+    the underscore and hyphen spellings of NAME are tried the same way, since
+    `project_identity` keys are underscore slugs of hyphenated names.
 
     Returns one of:
       {"status": "resolved", "row": {...}, "resolved_via": str}
@@ -683,6 +688,16 @@ def _resolve_project(con, name: str, workspace: str | None) -> dict:
                 for r in basename_matches
             ],
         }
+
+    if try_spellings:
+        from tools.context.context_provider import name_variants
+
+        for variant in name_variants(name)[1:]:
+            found = _resolve_project(con, variant, workspace, try_spellings=False)
+            if found["status"] == "resolved":
+                found["resolved_via"] += f" (spelling of {name!r})"
+            if found["status"] != "not_found":
+                return found
 
     hint = None
     if workspace:
@@ -1283,6 +1298,54 @@ def _cmd_move_project(args) -> int:
     return 0
 
 
+def _cmd_accept(args) -> int:
+    """Handle ``gaia context accept CONTRACT_ID [--workspace W] [--dry-run]``.
+
+    Accepts the ``update_contracts`` proposal a specialist's turn recorded into
+    project context. Each ``project_identity`` key lands in the workspace that
+    owns its project, whichever workspace ``--workspace`` (default: the
+    caller's) names, and a key no workspace owns is refused. Exit 1 when
+    anything was refused. The verb is named ``accept`` rather than ``apply`` so
+    the orchestrator, which alone writes project context, runs it unsigned.
+    """
+    contract_id = getattr(args, "contract_id", None)
+    as_json = getattr(args, "json", False)
+    hooks_dir = str(Path(__file__).resolve().parents[2] / "hooks")
+    if hooks_dir not in sys.path:
+        sys.path.insert(0, hooks_dir)
+    try:
+        from gaia.project import current as _project_current
+        from gaia.store.writer import agent_contract_handoff_envelope
+        from modules.context.context_writer import apply_proposal
+    except Exception as exc:
+        print(f"gaia context accept: failed to import writer: {exc}", file=sys.stderr)
+        return 1
+
+    envelope = agent_contract_handoff_envelope(contract_id)
+    if envelope is None:
+        print(f"gaia context accept: no recorded contract '{contract_id}'", file=sys.stderr)
+        return 1
+    if not envelope.get("update_contracts"):
+        print(f"gaia context accept: contract '{contract_id}' proposes no update_contracts",
+              file=sys.stderr)
+        return 1
+
+    outcome = apply_proposal(
+        envelope["update_contracts"],
+        getattr(args, "workspace", None) or _project_current(),
+        dry_run=getattr(args, "dry_run", False),
+    )
+    if as_json:
+        print(json.dumps(outcome, indent=2))
+    else:
+        verb = "would apply" if getattr(args, "dry_run", False) else "applied"
+        for item in outcome["applied"]:
+            print(f"{verb}: {item['contract']} -> workspace {item['workspace']}")
+        for message in outcome["errors"]:
+            print(f"refused: {message}", file=sys.stderr)
+    return 1 if outcome["errors"] else 0
+
+
 def _cmd_move_contracts(args) -> int:
     """Handle ``gaia context move-contracts --from W1 --to W2 --contract C ...``.
 
@@ -1698,6 +1761,24 @@ def register(subparsers) -> None:
         help="Emit the plan/result as JSON",
     )
 
+    # gaia context accept CONTRACT_ID
+    # ('accept' is not in MUTATIVE_VERBS, so it classifies T0 and the orchestrator
+    # lane admits it in gaia_cli_only_guard.ALLOWED_WRITE_PHRASES.)
+    ac_parser = ctx_subparsers.add_parser(
+        "accept",
+        help="Accept the update_contracts proposal a specialist's turn recorded, "
+             "each key in the workspace that owns its project",
+    )
+    ac_parser.add_argument("contract_id", metavar="CONTRACT_ID",
+                           help="Contract id the proposal notice named")
+    ac_parser.add_argument("--workspace", metavar="W", default=None,
+                           help="Workspace for sections that are not keyed by project "
+                                "(default: gaia.project.current())")
+    ac_parser.add_argument("--dry-run", action="store_true", default=False,
+                           help="Show the target workspaces without writing")
+    ac_parser.add_argument("--json", action="store_true", default=False,
+                           help="Emit JSON")
+
     # gaia context move-contracts --from W1 --to W2 --contract C ...
     # (T3: the verb token 'move-contracts' hyphen-splits to 'move', which is in
     # MUTATIVE_VERBS -- gated as T3 without touching the security layer.)
@@ -1794,6 +1875,8 @@ def cmd_context(args) -> int:
         return _cmd_wipe(args)
     if context_cmd == "prune-workspaces":
         return _cmd_prune_workspaces(args)
+    if context_cmd == "accept":
+        return _cmd_accept(args)
     if context_cmd == "move-contracts":
         return _cmd_move_contracts(args)
     if context_cmd == "move-memory":

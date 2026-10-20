@@ -269,9 +269,9 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
 }
 ```
 
-## 7. COMPLETE with `update_contracts` (index a discovery into project-context)
+## 7. COMPLETE with `update_contracts` (propose a discovery for project-context)
 
-The agent discovered a project fact a section it owns did not yet hold, and writes it back so the next agent does not re-derive it. `update_contracts` is an array of `{contract, payload}`; `contract` must be a name from the INPUT `write_permissions.writable_sections`, and `payload` carries only the keys to add or update (index, not live-state). See `agent-contract-handoff` for merge semantics.
+The agent discovered a project fact a section did not yet hold, and proposes it so the next agent does not re-derive it. `update_contracts` is an array of `{contract, payload}`; nothing is written at close, the orchestrator is told and decides whether to accept it. `payload` carries only the keys to add or update (index, not live-state). See `agent-contract-handoff` for merge semantics.
 
 ```json
 {

@@ -262,6 +262,15 @@ def _project_identity_entries(
     return identity if isinstance(identity, dict) else {}
 
 
+def name_variants(name: str) -> list:
+    """``name`` followed by its underscore and hyphen spellings, without repeats.
+
+    ``projects.name`` is hyphenated while ``project_identity`` keys are
+    underscore slugs, so a reference may arrive in either spelling.
+    """
+    return list(dict.fromkeys((name, name.replace("_", "-"), name.replace("-", "_"))))
+
+
 def _dispatched_project_row(
     workspace: str,
     ref: str,
@@ -271,13 +280,15 @@ def _dispatched_project_row(
     """The active ``projects`` row a dispatch names, in whichever workspace holds it, or None.
 
     Matched by path when the dispatch carries one, else by project_identity,
-    else by name; a name several projects hold resolves to the one in
-    ``workspace`` or to none.
+    else by name, trying each spelling of ``ref`` (:func:`name_variants`); a
+    name several projects hold resolves to the one in ``workspace`` or to none.
     """
     if local_path:
         lookups = [("path = ?", local_path)]
     else:
-        lookups = [("project_identity = ?", ref), ("name = ? COLLATE NOCASE", ref)]
+        lookups = [("project_identity = ?", ref)] + [
+            ("name = ? COLLATE NOCASE", variant) for variant in name_variants(ref)
+        ]
     try:
         con = _db_connect(db_path)
         try:
