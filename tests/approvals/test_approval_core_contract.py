@@ -21,8 +21,9 @@ import pytest
 
 from gaia.store import writer
 
-#: Both are T3: a set signs only its T3 items, and `gh pr create` runs free.
-COMMANDS = ["git push origin feat/x", "gh pr merge 42 --squash"]
+#: Both are T3 whatever the repository holds: a set signs only its T3 items,
+#: `gh pr create` runs free, and `git push` is free once its branch exists locally.
+COMMANDS = ["gh pr merge 41 --squash", "gh pr merge 42 --squash"]
 #: An existing directory: request-set refuses a --cwd that does not exist (D24).
 REPO = str(Path(__file__).resolve().parent)
 SESSION = "ses-requester"
