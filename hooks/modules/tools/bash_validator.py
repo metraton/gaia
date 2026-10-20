@@ -1115,16 +1115,14 @@ class BashValidator:
                         suggestions=[comp_blocked.suggestion] if comp_blocked.suggestion else [],
                     )
 
-        secret_components = parsed_components if parsed_components is not None else [command]
-        for component in secret_components:
-            secret_violation = check_kubectl_secret_output(component.strip())
-            if secret_violation is not None:
-                return BashValidationResult(
-                    allowed=False,
-                    tier=SecurityTier.T3_BLOCKED,
-                    reason=secret_violation.reason,
-                    suggestions=[secret_violation.suggestion],
-                )
+        secret_violation = check_kubectl_secret_output(command)
+        if secret_violation is not None:
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=secret_violation.reason,
+                suggestions=[secret_violation.suggestion],
+            )
 
         # 3c. Validate git commit messages (on the potentially cleaned command).
         if "git commit" in command and "-m" in command:
