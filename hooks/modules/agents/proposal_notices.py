@@ -1,9 +1,11 @@
-"""One-line notices that tell the orchestrator a specialist left it something to decide.
+"""The one-line notice that a finished turn proposed project facts.
 
-A specialist never writes memory or project context; it proposes in its
-contract, and SubagentStop raises a notice so the orchestrator -- the only
-curator -- reads the proposal instead of finding it by chance. Each notice is a
-single line that names the contract to open.
+A specialist never writes memory or project context; it proposes in
+``memory_delta`` and the orchestrator, the only curator, decides. The notice
+rides the dispatch's PostToolUse result line (``task_result_observer``), the
+channel that reaches the orchestrator's context on both hosts. SubagentStop's
+``systemMessage`` goes to the user's display and its ``additionalContext``
+resumes the closing subagent, so neither carries it.
 """
 
 from __future__ import annotations
@@ -11,11 +13,6 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .response_contract import parse_memory_delta
-
-
-def append_notice(message: Optional[str], notice: str) -> str:
-    """``notice`` on its own line after ``message``, or alone when there is no message."""
-    return f"{message}\n{notice}" if message else notice
 
 
 def memory_delta_notice(

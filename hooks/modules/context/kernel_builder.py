@@ -32,9 +32,9 @@ row:
 
   * ``# Standing notes``     -- an INDEX (slug + one line, never a body) of the
     dispatch project's live anchor notes, hard-capped at
-    ``PROJECT_NOTES_BUDGET`` and rendered LAST: the host truncates a kernel
-    from the end, so the index is what yields when the kernel runs long and
-    never the user's rows. Omitted when the dispatch has no project or the
+    ``PROJECT_NOTES_BUDGET``, rendered after the user's rows and before the CLI
+    index: the host truncates a kernel from the end, so a long kernel loses the
+    CLI index first and the notes only after it. Omitted when the dispatch has no project or the
     project has no notes. Bodies are opened on demand with
     ``gaia memory show <slug>``.
 
@@ -560,7 +560,12 @@ def build_kernel_context(
     agents_dir: "Path | None" = None,
     db_path=None,
 ) -> Optional[str]:
-    """The full kernel payload: contract + CLI + user rows + project notes, blank-line joined.
+    """The full kernel payload: contract, user rows, project notes, CLI, blank-line joined.
+
+    The host keeps the head of an over-long hook context, so the order is the
+    order of what a turn can least do without: its identity and goal, the user's
+    rows, the project's notes, then the CLI index, which ``gaia --help`` can
+    always rebuild.
 
     Returns None when the contract block itself cannot render (no identity on
     the row) -- the CLI/memory blocks never ship without it.
@@ -571,8 +576,8 @@ def build_kernel_context(
     workspace = str(row.get("workspace") or "")
     blocks = [
         kernel,
-        build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace),
         build_memory_block(db_path=db_path),
         build_project_notes_block(row, db_path=db_path),
+        build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace),
     ]
     return "\n\n".join(b for b in blocks if b)

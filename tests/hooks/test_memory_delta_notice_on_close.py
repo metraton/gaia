@@ -1,9 +1,10 @@
-"""A specialist's proposed project facts reach the orchestrator when the turn closes.
+"""A turn's proposed project facts are not announced on the SubagentStop close.
 
-What the user feels: a fact a specialist found (a tool URL, a login method) is
-not left sitting in a contract nobody opens -- the close names how many were
-proposed and which contract holds them, so the orchestrator can curate them; a
-turn that proposed nothing adds no line. Runs against a temporary GAIA_DATA_DIR.
+What the user feels: the close message on their display stays about their work.
+The facts a specialist proposed reach the orchestrator through the dispatch
+result (see test_memory_delta_notice.py); SubagentStop's ``systemMessage`` goes
+to the user's display and its ``additionalContext`` would resume the closing
+subagent, so it carries neither. Runs against a temporary GAIA_DATA_DIR.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ for _p in (str(_REPO_ROOT / "hooks"), str(_REPO_ROOT)):
 
 from adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
 from gaia.store.writer import stamp_harness_agent_id  # noqa: E402
-from modules.agents.proposal_notices import append_notice, memory_delta_notice  # noqa: E402
 from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 SESSION_ID = "sess-memory-delta-notice"
@@ -91,34 +91,14 @@ def _close_turn(db_path: Path, memory_delta):
         "stop_reason": "end_turn",
         "cwd": "/tmp",
     }))
-    return identity["contract_id"], adapter.adapt_subagent_stop(event)
+    return adapter.adapt_subagent_stop(event)
 
 
-def test_a_turn_with_proposed_facts_names_the_count_and_the_contract(tmp_path):
-    contract_id, response = _close_turn(
-        tmp_path / "gaia-data" / "gaia.db",
-        {"version": 1, "proposals": [PROPOSAL, PROPOSAL]},
-    )
-
-    message = response.output.get("systemMessage") or ""
-    assert f"2 project facts proposed — contract {contract_id}" in message, response.output
-
-
-@pytest.mark.parametrize("memory_delta", [None, {"version": 1, "proposals": []}])
-def test_a_turn_with_no_proposed_facts_adds_no_line(tmp_path, memory_delta):
-    _, response = _close_turn(tmp_path / "gaia-data" / "gaia.db", memory_delta)
+@pytest.mark.parametrize(
+    "memory_delta", [{"version": 1, "proposals": [PROPOSAL, PROPOSAL]}, None],
+)
+def test_the_close_message_never_announces_proposed_facts(tmp_path, memory_delta):
+    response = _close_turn(tmp_path / "gaia-data" / "gaia.db", memory_delta)
 
     assert "project fact" not in (response.output.get("systemMessage") or ""), response.output
-    assert "memory_delta_proposed" not in response.output
-
-
-def test_the_notice_names_the_project_by_its_name_only():
-    contract = {"memory_delta": {"version": 1, "proposals": [PROPOSAL]}}
-
-    notice = memory_delta_notice(
-        contract, contract_id="c1.abc", dispatch_project="alpha (/work/alpha)",
-    )
-
-    assert notice == "1 project fact proposed for alpha — contract c1.abc"
-    assert append_notice("", notice) == notice
-    assert append_notice("earlier", notice) == f"earlier\n{notice}"
+    assert "additionalContext" not in json.dumps(response.output.get("hookSpecificOutput") or {})

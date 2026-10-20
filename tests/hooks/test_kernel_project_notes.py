@@ -109,14 +109,19 @@ def test_project_with_notes_carries_an_index_without_bodies(db):
     assert "more —" not in kernel
 
 
-def test_index_follows_the_user_rows_so_it_never_displaces_them(db):
+def test_a_long_kernel_loses_the_cli_index_before_the_notes_and_the_notes_before_the_user_rows(db):
     _user_row(db)
     _note(db, "atom_alpha_login_sso", "Fact: alpha signs in through the corporate SSO.")
 
     kernel = _kernel(db, "alpha")
 
-    assert kernel.index(USER_BODY) < kernel.index(PROJECT_NOTES_HEADING)
-    assert kernel.endswith("the corporate SSO.")
+    order = [
+        kernel.index(kernel_builder.KERNEL_HEADING),
+        kernel.index(USER_BODY),
+        kernel.index(PROJECT_NOTES_HEADING),
+        kernel.index(kernel_builder.CLI_HEADING),
+    ]
+    assert order == sorted(order)
 
 
 def test_index_is_capped_and_names_the_rest(db):

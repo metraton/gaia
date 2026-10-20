@@ -369,7 +369,8 @@ def build_contract_summary_line(
     verification result, and populated evidence-field counts, plus the read
     command armed with the real id. This is the synchronous-dispatch case the
     Claude Code docs describe, where PostToolUse fires once the subagent has
-    actually closed.
+    actually closed. When the envelope proposes project facts in
+    ``memory_delta``, a second line names how many and the contract holding them.
 
     MODE B (new): the row is NOT yet finalized (missing, or still DISPATCHED)
     but the result still carries an ``agentId`` -- the async-launch case,
@@ -450,7 +451,15 @@ def build_contract_summary_line(
     line = f"{core}, {fields_segment} -- {cmd}" if fields_segment else f"{core} -- {cmd}"
     if fields_segment and len(line) > _LINE_HARD_CEILING:
         line = f"{core} -- {cmd}"
-    return line
+
+    from .proposal_notices import memory_delta_notice
+
+    proposed = memory_delta_notice(
+        envelope,
+        contract_id=row.get("contract_id"),
+        dispatch_project=row.get("dispatch_project"),
+    )
+    return f"{line}\n{proposed}" if proposed else line
 
 
 def contract_row_state(agent_run_id: str, session_id: str = "") -> str:
