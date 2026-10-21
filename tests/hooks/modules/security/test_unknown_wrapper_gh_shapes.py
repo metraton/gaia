@@ -55,14 +55,51 @@ class TestUnknownWrapperMutationsAreSigned:
     def test_mutation_is_consent(self, command):
         assert classify_command_tier(command) == T3, command
 
-    @pytest.mark.xfail(strict=True, reason="no generic shape names these: they run free on any unknown binary")
     @pytest.mark.parametrize("command", [
         "ghx api repos/o/r/issues -f title=t",
+        "ghx api repos/o/r/issues -F body=@file",
+        "ghx api repos/o/r/issues --field title=t",
+        "ghx api repos/o/r/issues --raw-field title=t",
+        "ghx api repos/o/r/issues --field=title=t",
+        "ghx api repos/o/r/issues --input payload.json",
+        "ghx api repos/o/r/issues -ftitle=t",
+        "ghx api repos/o/r -XPATCH",
+        "ghx api repos/o/r --method=PUT",
+        "ghx -R o/r api repos/o/r/issues -f title=t",
+        "otherbin api some/path -f k=v",
         "ghx pr review 1 --approve",
+        "ghx pr review 1 --request-changes --body x",
+        "ghx pr review 1 --comment --body x",
+        "ghx pr review 1 -a",
         "ghx pr ready 1",
+        "ghx pr ready 1 --undo",
+        "otherbin mr ready 1",
     ])
-    def test_known_slip_mutation_runs_free(self, command):
+    def test_generic_shape_mutation_is_consent(self, command):
         assert classify_command_tier(command) == T3, command
+
+    @pytest.mark.parametrize("command", [
+        "ghx api repos/o/r/issues",
+        "ghx api repos/o/r/issues -X GET",
+        "ghx api search/issues -X GET -f q=is:open",
+        "ghx api repos/o/r --method GET --field q=x",
+        "ghx api repos/o/r/issues --jq .[].title",
+        "ghx api repos/o/r -H Accept:application/json",
+        "ghx pr review 1",
+        "ghx pr checkout 1",
+        "ghx pr list --state ready",
+        "git checkout ready",
+        "git log ready",
+        "kubectl get pods",
+        "kubectl describe pod x",
+        "gcloud compute instances list",
+        "aws s3api list-buckets",
+        "aws ec2 describe-instances",
+        "otherbin api some/path",
+        "make ready",
+    ])
+    def test_generic_shape_read_is_free(self, command):
+        assert classify_command_tier(command) == T0, command
 
     @pytest.mark.parametrize("command", [
         "ghx pr list",

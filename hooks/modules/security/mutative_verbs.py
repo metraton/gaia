@@ -693,6 +693,11 @@ _REMOTE_RUN_NOUNS: FrozenSet[str] = frozenset({
     "workflow", "workflows", "pipeline", "pipelines", "ci",
 })
 _ACCOUNT_SLOT_ACTIONS: FrozenSet[str] = frozenset({"switch", "logout"})
+_API_BODY_FLAGS: FrozenSet[str] = frozenset({"--field", "--raw-field", "--input"})
+_API_READ_METHODS: FrozenSet[str] = frozenset({"get", "head"})
+_REVIEW_VERDICT_FLAGS: FrozenSet[str] = frozenset({
+    "--approve", "--request-changes", "--comment", "-a", "-r", "-c",
+})
 _GMAIL_ARCHIVE_RE = re.compile(r"removelabelids\W[^\]]*\binbox\b", re.DOTALL)
 _GMAIL_HIDDEN_PAYLOAD_RE = re.compile(
     r"--[\w-]*file\b"
@@ -719,6 +724,25 @@ def _may_archive_gmail(semantics: CommandSemantics) -> bool:
     return bool(_GMAIL_HIDDEN_PAYLOAD_RE.search(text))
 
 
+def _api_mutating_verb(args: Tuple[str, ...]) -> Optional[str]:
+    """The method, or "api" for an implicit POST, when an `api` call writes; an explicit method decides alone."""
+    method: Optional[str] = None
+    has_body = False
+    for i, token in enumerate(args):
+        if token in ("-X", "--method"):
+            method = args[i + 1] if i + 1 < len(args) else ""
+        elif token.startswith("--method="):
+            method = token.split("=", 1)[1]
+        elif token.startswith("-X"):
+            method = token[2:]
+        elif token.split("=", 1)[0] in _API_BODY_FLAGS or token[:2] in ("-f", "-F"):
+            has_body = True
+    if method is None:
+        return "api" if has_body else None
+    method = method.lower()
+    return None if method in _API_READ_METHODS else method or "api"
+
+
 def _check_generic_cli_shape(
     base_cmd: str, family: str, semantics: CommandSemantics
 ) -> Optional["MutativeResult"]:
@@ -728,13 +752,16 @@ def _check_generic_cli_shape(
     <write verb>` rewrites where every later command points, and `auth
     switch|logout` rewrites the shared account slot. `config` heads the read
     forms people run all day, so only a write verb after it decides; `use-context`
-    and `activate` carry none and stay out. Only the leading path is read, so
-    `docker run ci run`, `npm run test` and `gh run list` are untouched.
+    and `activate` carry none and stay out. `api` with a body or non-GET method,
+    `<noun> ready` and `<noun> review` with a verdict flag publish on the remote.
+    Only the leading path is read, so `docker run ci run`, `npm run test` and
+    `gh run list` are untouched.
     """
     path = semantics.non_flag_tokens
     if len(path) < 2:
         return None
     head, action = path[0], path[1]
+    verb = action
     guidance = ""
     if head in _REMOTE_RUN_NOUNS and action == "run":
         pass
@@ -742,12 +769,18 @@ def _check_generic_cli_shape(
         pass
     elif head == "auth" and action in _ACCOUNT_SLOT_ACTIONS:
         guidance = _ACCOUNT_SLOT_GUIDANCE
+    elif head == "api" and (api_verb := _api_mutating_verb(semantics.args)):
+        verb = api_verb
+    elif action == "ready":
+        pass
+    elif action == "review" and _REVIEW_VERDICT_FLAGS.intersection(semantics.flag_tokens):
+        pass
     else:
         return None
     return MutativeResult(
         is_mutative=True,
         category=CATEGORY_MUTATIVE,
-        verb=action,
+        verb=verb,
         cli_family=family,
         confidence="high",
         reason=(
