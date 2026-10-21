@@ -138,8 +138,9 @@ permanent blocks (`gh repo delete`), consent anchors such as `gh workflow run`,
 `gh run rerun` and `gh pr update-branch`, and the publish-attribution guard on
 `gh pr|issue|release|api`. A wrapper you installed around a CLI (a launcher that
 pins an account, for example) runs the same subcommands under another name, so
-by default those gates do not recognize it. Gaia ships no wrapper names; declare
-yours in the environment the host (Claude Code, OpenCode) is started from:
+by default those gates do not recognize it. The classifier has no built-in
+wrapper name; declare yours in the environment the host (Claude Code, OpenCode)
+is started from:
 
 ```bash
 export GAIA_CLI_ALIASES="mywrapper=gh"          # one wrapper
@@ -155,9 +156,14 @@ inheritance applies only to a wrapper name the classifier has no rule for and
 that is not a destructive or command-running program; a declared name such as
 `kubectl=gh`, `ssh=gh` or `shred=gh` keeps its own gates, the stricter
 verdict standing, and the permanent blocks always take the stricter of both.
-The declaration belongs to you: Gaia's installer does not write it, so set it
-in your shell profile or in the `env` block of the host settings you own (for
-Claude Code, `~/.claude/settings.json`). A leading `-C <dir>` on a declared `gh` wrapper is skipped
+Gaia's installer declares one pair itself, `ghx=gh`, in the `env` block of the
+workspace `settings.local.json` it owns (`gaia install`/`gaia update` and the
+plugin's session setup write it, uninstall removes only that pair, and a pair you
+already declared for `ghx` is kept). Every other wrapper is yours to declare: set
+it in your shell profile or in the `env` block of the host settings you own (for
+Claude Code, `~/.claude/settings.json`). The session's tool list names a declared
+wrapper that resolves on PATH, so `ghx` shows up because it is declared, not
+because Gaia names it. A leading `-C <dir>` on a declared `gh` wrapper is skipped
 before the publish guard reads the subcommand. Malformed pairs are ignored. The
 hooks read the variable at start-up, so restart the host after changing it.
 Implemented in `hooks/modules/security/cli_aliases.py`; pinned by

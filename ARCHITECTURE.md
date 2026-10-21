@@ -38,7 +38,7 @@ pre_tool_use.py  (PreToolUse hook)
     v
 subagent_start.py  (SubagentStart hook)
     |  Claim the born row and inject the dispatch kernel:
-    |  # Your Contract, # Your CLI, # How the user works
+    |  # Your Contract, # How the user works, # Standing notes, # Environment, # Your CLI
     v
 Agent executes
     |  Pulls project context and memory on demand (gaia context, gaia memory),
@@ -152,16 +152,24 @@ A dispatched subagent starts with a small, data-only kernel, not a preloaded
 project-context snapshot. At PreToolUse the hook births the turn's
 `agent_contract_handoffs` row; at SubagentStart `claim_dispatch_row`
 correlates the starting subagent to that row and
-`hooks/modules/context/kernel_builder.py` renders three blocks from it:
+`hooks/modules/context/kernel_builder.py` renders these blocks from it, in this
+order (the host keeps the head of an over-long hook context, so the CLI index,
+which `gaia --help` can rebuild, comes last):
 
 ```
 # Your Contract       identity, goal, role and surface, the dispatch project and the
                       workflow it declared, can_read / can_write section scope, and the
                       acceptance gates when the turn is bound to a plan task
+# How the user works  the user's standing rows, bodies inline, only those whose
+                      audience is executor (any and orchestrator stay with the
+                      orchestrator)
+# Standing notes      the dispatch project's live anchors, one line each, freshest
+                      first, under PROJECT_NOTES_BUDGET; absent when the project has none
+# Environment         one capped line (ENVIRONMENT_LINE_MAX): OS (WSL named), the gaia
+                      CLI path, and the tools on PATH, including the wrappers the
+                      user declared in GAIA_CLI_ALIASES
 # Your CLI            the gaia verbs the turn uses to pull context (gaia context),
                       memory (gaia memory) and its own contract (gaia contract)
-# How the user works  the user's standing rows, bodies inline, minus those whose
-                      audience is the orchestrator alone
 ```
 
 `can_read` is the menu of `project_context_contracts` sections the turn pulls on

@@ -99,7 +99,7 @@ class TestAccountCredentialsAreRefusedToSubagents:
         "gh",
         "ghx",
         "ghx -C /repo",
-        "/home/jorge/bin/ghx",
+        "/home/user/bin/ghx",
         "GHX_ACCOUNT=metraton ghx",
         "env GH_HOST=github.com gh",
     ])

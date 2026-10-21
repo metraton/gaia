@@ -102,6 +102,7 @@ def test_no_wrapper_name_is_built_in():
     allowed = {
         _HOOKS_DIR / "modules" / "core" / "plugin_setup.py",
         _HOOKS_DIR / "modules" / "security" / "subagent_gh_account_guard.py",
+        _REPO_ROOT / "gaia" / "README.md",
     }
     offenders = [
         str(path)
