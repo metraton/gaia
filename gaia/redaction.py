@@ -60,6 +60,11 @@ _BEARER_VALUE = re.compile(
     r"(?P<prefix>\bBearer\s+)(?P<value>[A-Za-z0-9._~+/=-]+)",
     re.IGNORECASE,
 )
+TOKEN_SHAPE = re.compile(
+    r"\b(?:gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    r"|ya29\.[A-Za-z0-9._~-]{20,}|(?:AKIA|ASIA)[A-Z0-9]{16}"
+    r"|xox[abprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{20,})"
+)
 _SECRET_KIND = re.compile(r"(?m)^\s*kind\s*:\s*Secret\s*(?:#.*)?$")
 _YAML_DOCUMENT = re.compile(r"(?m)(^---\s*$)")
 _YAML_SECTION = re.compile(r"^(?P<indent>\s*)(?:data|stringData)\s*:\s*(?:#.*)?$")
@@ -82,7 +87,8 @@ def redact_text(text: str) -> str:
     redacted = _BEARER_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
     redacted = _QUOTED_VALUE.sub(_replace_quoted_value, redacted)
     redacted = _PLAIN_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
-    return _FLAG_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
+    redacted = _FLAG_VALUE.sub(rf"\g<prefix>{REDACTED}", redacted)
+    return TOKEN_SHAPE.sub(REDACTED, redacted)
 
 
 def redact_tree(value: Any) -> Any:
@@ -158,15 +164,39 @@ def has_clear_secret(text: str) -> bool:
     """
     if not isinstance(text, str) or not text:
         return False
+    if TOKEN_SHAPE.search(text):
+        return True
     for pattern in (_BEARER_VALUE, _QUOTED_VALUE, _PLAIN_VALUE, _FLAG_VALUE):
         for match in pattern.finditer(text):
             value = match.group("value").strip("'\"")
             name = re.sub(r"[^a-z]", "", match.group("prefix").lower())
             if name == "key":
                 continue
-            if value and not value.startswith("$") and value != REDACTED:
+            if value and not value.startswith(("$", REDACTED[:-1])):
                 return True
     return False
+
+
+def has_token_shape(value: Any) -> bool:
+    """Say whether any string inside ``value`` is shaped like a provider token."""
+    if isinstance(value, str):
+        return bool(TOKEN_SHAPE.search(value))
+    if isinstance(value, Mapping):
+        return any(has_token_shape(child) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(has_token_shape(child) for child in value)
+    return False
+
+
+def mask_clear_secrets(value: Any) -> Any:
+    """Return ``value`` with every string that carries a clear secret redacted and the rest untouched."""
+    if isinstance(value, str):
+        return redact_text(value) if has_clear_secret(value) else value
+    if isinstance(value, Mapping):
+        return {key: mask_clear_secrets(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [mask_clear_secrets(child) for child in value]
+    return value
 
 
 def _redact_data_leaves(value: Any) -> Any:

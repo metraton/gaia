@@ -1762,6 +1762,30 @@ def _request_set_items(args) -> list[dict]:
     ]
 
 
+def cmd_audit_secrets(args) -> int:
+    """Count, read-only, the stored approval text that carries a clear secret; ``--emit-sql`` prints the scrub."""
+    from gaia.approvals import secret_audit
+    from gaia.paths.resolver import db_path
+
+    path = args.db or str(db_path())
+    con = secret_audit.open_read_only(path)
+    try:
+        findings = list(secret_audit.scan(con))
+        if args.emit_sql:
+            print(secret_audit.scrub_sql(con, findings), end="")
+            return 0
+    finally:
+        con.close()
+    rows = [{"table": f.table, "key": f.key, "column": f.column} for f in findings]
+    if getattr(args, "json", False):
+        print(json.dumps({"db": path, "count": len(rows), "findings": rows}))
+    else:
+        print(f"{len(rows)} stored value(s) carry a clear secret in {path}")
+        for row in rows:
+            print(f"  {row['table']}.{row['column']} {row['key']}")
+    return 0
+
+
 def cmd_request_set(args) -> int:
     """Validate and persist a plan-first COMMAND_SET approval request.
 
@@ -2555,6 +2579,15 @@ def register(subparsers) -> None:
     p_approve.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
     p_approve.add_argument("--json", action="store_true", help="JSON output")
     p_approve.set_defaults(func=cmd_approve)
+
+    p_audit = sub.add_parser(
+        "audit-secrets",
+        help="Read-only: count stored approval text carrying a clear secret (values never printed)",
+    )
+    p_audit.add_argument("--db", help="Database file to scan (a copy); default: the live database")
+    p_audit.add_argument("--emit-sql", action="store_true", help="Print the scrub transaction instead of the report")
+    p_audit.add_argument("--json", action="store_true")
+    p_audit.set_defaults(func=cmd_audit_secrets)
 
     p_request_set = sub.add_parser(
         "request-set", help="Create a governed plan-first COMMAND_SET request"
