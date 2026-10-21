@@ -74,9 +74,10 @@ Which of these ask for a signature (`security-tiers` owns the rule;
   push configuration sends it to itself, with nothing before `git`; `gh pr create`; `gh pr
   edit` without `--base`; `git -C <path> merge --ff-only <rev>` when `<path>`
   is a Gaia-managed worktree.
-- **Free, local sync in any repository** (`_git_local_sync`): `git fetch`,
-  `pull --ff-only`, `switch`/`checkout <branch>`, and `merge --ff-only
-  <remote>/<branch>` when `<branch>` is the checked-out branch.
+- **Free, local sync in any repository:** `merge --ff-only <remote>/<branch>`
+  when `<branch>` is the checked-out branch (`_git_local_sync` decides it from
+  the repository's state); `git fetch`, `pull --ff-only` and `switch`/`checkout
+  <branch>` are free by elimination.
 - **T3:** bare `git push`, a push to the default branch or `HEAD`, any push
   with another flag (`--force`, `--force-with-lease`, `--delete`, `--mirror`,
   `--all`, `--tags`) or a `+`/`:` refspec; `gh pr merge`; `gh pr edit
