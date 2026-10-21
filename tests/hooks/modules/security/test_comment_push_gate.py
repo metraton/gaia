@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "hooks"))
 
 from modules.security.comment_push_gate import check  # noqa: E402
 from modules.tools.bash_validator import BashValidator  # noqa: E402
-from tests.fixtures.comment_repo import commit_files, git, interleave, make_change  # noqa: E402
+from tests.fixtures.comment_repo import code, commit_files, git, interleave, make_change  # noqa: E402
 
 BASE = {"a.py": "VALUE = 0\n"}
 
@@ -37,6 +37,18 @@ def test_a_branch_push_over_the_limit_is_refused_with_the_offenders(over, form):
     assert not verdict.allowed
     assert "[COMMENT_LIMIT]" in verdict.reason and "a.py:1: # fact 0" in verdict.reason
     assert "not approvable" in verdict.reason and verdict.warning is None
+
+
+@pytest.mark.parametrize("content,says,silent", [
+    (code(300) + "# --- Helpers ---\n", "section banner", "adds 1 net"),
+    ("# why\n# why\n# why\n" + code(300), "comment block", "net comment and docstring"),
+    (interleave(40, 6), "net comment and docstring lines over", "section banner"),
+])
+def test_the_refusal_names_the_reason_that_applies(tmp_path, content, says, silent):
+    repo = make_change(tmp_path, BASE, {"a.py": content})
+    verdict = check(f"git -C {repo} push origin feat")
+    assert not verdict.allowed
+    assert says in verdict.reason and silent not in verdict.reason
 
 
 def test_a_branch_push_under_the_limit_passes(under):

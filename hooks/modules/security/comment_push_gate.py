@@ -105,8 +105,7 @@ def _pushed(repo: str, rest: List[str]) -> List[Pushed]:
 
 def _refusal(branch: str, report) -> str:
     return (
-        f"[COMMENT_LIMIT] Refusing to push '{branch}': it adds {report.net} net comment and "
-        f"docstring lines over {report.added_code} added code lines (limit {report.limit}). "
+        f"[COMMENT_LIMIT] Refusing to push '{branch}': {'; '.join(report.reasons)}. "
         f"Trim them, commit, and push again; `gaia lint comments` prints this list.\n"
         f"{report.render(_MAX_LISTED)}\n"
         f"A comment survives only for a fact the code cannot say. This block is not approvable."

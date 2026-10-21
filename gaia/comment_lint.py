@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import tokenize
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -19,8 +19,7 @@ _MAX_RUN = 2
 _MAX_BASE_CANDIDATES = 300
 _GIT_TIMEOUT_SECONDS = 30
 _MAX_PUSHED_REFS = 100
-_MAX_SQUASH_REFS = 50
-_MAX_SQUASH_COMMITS = 20
+_MAX_CONTAINED_REFS = 50
 _PYTHON_EXT = {".py"}
 _JS_EXT = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 _HASH_EXT = {".sh", ".bash", ".zsh", ".yaml", ".yml"}
@@ -54,7 +53,6 @@ class Marked:
     text: str
     full_line: bool = True
     banner: bool = False
-    rev: str = ""
 
 
 @dataclass
@@ -83,6 +81,18 @@ class Report:
     def blocked(self) -> bool:
         return self.over_limit or bool(self.banners) or bool(self.runs)
 
+    @property
+    def reasons(self) -> List[str]:
+        found = []
+        if self.over_limit:
+            found.append(f"it adds {self.net} net comment and docstring lines over "
+                         f"{self.added_code} added code lines (limit {self.limit})")
+        if self.banners:
+            found.append(f"it adds {len(self.banners)} section banner(s)")
+        if self.runs:
+            found.append(f"it adds {len(self.runs)} comment block(s) over two lines")
+        return found
+
     def to_dict(self) -> dict:
         def row(path: str, mark: Marked, reason: str) -> dict:
             return {"file": path, "line": mark.line, "kind": mark.kind,
@@ -105,14 +115,11 @@ class Report:
         if not self.blocked:
             return head + " -- ok"
 
-        def where(path: str, mark: Marked) -> str:
-            return f"{path}:{mark.line}" + (f"@{mark.rev}" if mark.rev else "")
-
-        rows = [f"  {where(p, m)}: section banner: {m.text[:80]}" for p, m in self.banners]
-        rows += [f"  {where(p, run[0])}-{run[-1].line}: comment block of {len(run)} lines"
+        rows = [f"  {p}:{m.line}: section banner: {m.text[:80]}" for p, m in self.banners]
+        rows += [f"  {p}:{run[0].line}-{run[-1].line}: comment block of {len(run)} lines"
                  for p, run in self.runs]
         if self.over_limit:
-            rows += [f"  {where(p, m)}: {m.text[:100]}" for p, m in self.offenders]
+            rows += [f"  {p}:{m.line}: {m.text[:100]}" for p, m in self.offenders]
         if len(rows) > max_lines:
             rows = rows[:max_lines] + [f"  ... {len(rows) - max_lines} more (gaia lint comments --json)"]
         return "\n".join([head + " -- OVER", *rows])
@@ -259,12 +266,12 @@ def is_measured_path(path: str) -> bool:
     )
 
 
-def _git(repo: str, *args: str, check: bool = True, stdin: Optional[str] = None) -> str:
+def _git(repo: str, *args: str, check: bool = True) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", repo, "-c", "core.quotepath=false", *args],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=False, timeout=_GIT_TIMEOUT_SECONDS, input=stdin,
+            check=False, timeout=_GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CommentLintError(f"git {args[0]} did not run: {exc}") from exc
@@ -378,71 +385,83 @@ def _long_runs(path: str, scan: Scan, old_scan: Scan,
             and any(m.line in added for m in run)]
 
 
-def _patch_id(repo: str, *revs: str) -> str:
-    diff = _git(repo, "diff", "--no-renames", *revs, check=False)
-    words = _git(repo, "patch-id", "--stable", stdin=diff, check=False).split() if diff else []
-    return words[0] if words else ""
-
-
-def _already_pushed(repo: str, merge_base: str, head: str, commits: List[str]) -> Set[str]:
-    """Commits a remote ref already holds: by ancestry, by patch-id, or as a squash of one branch."""
-    span = f"{merge_base}..{head}"
-    unpushed = _git(repo, "rev-list", "--no-merges", span, "--not", "--remotes", check=False).split()
-    done = set(commits) - set(unpushed)
+def _remote_refs(repo: str) -> List[str]:
     refs = _git(repo, "for-each-ref", "--sort=-committerdate", "--format=%(refname)",
                 "refs/remotes", check=False).split()
-    refs = [ref for ref in refs if not ref.endswith("/HEAD")][:_MAX_PUSHED_REFS]
-    for ref in refs:
-        done.update(line[2:].strip() for line in _git(repo, "cherry", ref, head, check=False)
-                    .splitlines() if line.startswith("- "))
-    for commit in [c for c in commits if c not in done][:_MAX_SQUASH_COMMITS]:
-        patch = _patch_id(repo, f"{commit}^", commit)
-        for ref in refs[:_MAX_SQUASH_REFS]:
-            fork = _git(repo, "merge-base", f"{commit}^", ref, check=False).strip()
-            if patch and fork and _patch_id(repo, fork, ref) == patch:
-                done.add(commit)
-                break
-    return done
+    return [ref for ref in refs if not ref.endswith("/HEAD")][:_MAX_PUSHED_REFS]
+
+
+def _commits_between(repo: str, older: str, newer: str) -> int:
+    return int(_git(repo, "rev-list", "--count", f"{older}..{newer}", check=False).strip() or 0)
+
+
+def _pushed_base(repo: str, head: str, floor: str) -> Optional[str]:
+    """The newest commit of ``head`` its own remote branch already holds, when it is past ``floor``."""
+    head_sha = _git(repo, "rev-parse", "--verify", f"{head}^{{commit}}").strip()
+    best: Optional[Tuple[int, str]] = None
+    for ref in _own_remote_refs(repo, head):
+        held = _git(repo, "merge-base", ref, head_sha, check=False).strip()
+        if not held or held in (head_sha, floor) or _commits_between(repo, held, floor):
+            continue
+        ahead = _commits_between(repo, held, head_sha)
+        if best is None or ahead < best[0]:
+            best = (ahead, held)
+    return best[1] if best else None
+
+
+def _inserted_and_deleted(repo: str, older: str, newer: str) -> Tuple[int, int]:
+    rows = [line.split("\t")[:2] for line in
+            _git(repo, "diff", "--numstat", "--no-renames", older, newer, "--", check=False).splitlines()]
+    counts = [(int(a), int(b)) for a, b in rows if a.isdigit() and b.isdigit()]
+    return sum(a for a, _ in counts), sum(b for _, b in counts)
+
+
+def _contained_remote_tip(repo: str, start: str, head: str) -> Optional[str]:
+    """The remote tip whose whole content ``head`` already holds (squashed in), leaving the least to add."""
+    best: Tuple[int, Optional[str]] = (_inserted_and_deleted(repo, start, head)[0], None)
+    for ref in _remote_refs(repo)[:_MAX_CONTAINED_REFS]:
+        inserted, deleted = _inserted_and_deleted(repo, ref, head)
+        if deleted == 0 and inserted < best[0]:
+            best = (inserted, ref)
+    return best[1]
 
 
 def measure(repo: str, head: str = "HEAD", base: Optional[str] = None) -> Report:
-    """Measure the change ``head`` carries, leaving out commits a remote ref already holds and merges.
+    """Measure one cumulative diff from what the remote already holds to ``head``.
 
-    An explicit ``base`` measures its exact range with nothing left out.
+    The start is the nearest remote branch's merge-base, moved up to the newest commit the branch's own
+    remote holds, or to the tip of a remote branch whose whole content ``head`` contains (a squash).
+    An explicit ``base`` measures its exact range.
     """
-    merge_base = resolve_base(repo, head, base)
-    if merge_base is None:
+    floor = resolve_base(repo, head, base)
+    if floor is None:
         return Report(None, head, 0, 0, _LIMIT_FLOOR, [], [], [])
-    commits = _git(repo, "rev-list", "--no-merges", "--reverse", f"{merge_base}..{head}").split()
-    skipped = set() if base else _already_pushed(repo, merge_base, head, commits)
-    merges = not base and int(
-        _git(repo, "rev-list", "--merges", "--count", f"{merge_base}..{head}").strip() or 0)
-    spans = [(merge_base, head, "")]
-    if skipped or merges:
-        spans = [(f"{c}^", c, c[:7]) for c in commits if c not in skipped]
-    report = Report(merge_base, head, 0, 0, _LIMIT_FLOOR, [], [], [], len(skipped & set(commits)))
-    for span_base, span_head, rev in spans:
-        _measure_span(repo, span_base, span_head, rev, report)
-    report.limit = max(_LIMIT_FLOOR, int(_LIMIT_SHARE * report.added_code))
+    if base:
+        return _measure_range(repo, floor, head)
+    start = _pushed_base(repo, head, floor) or floor
+    report = _measure_range(repo, start, head, excluded=_commits_between(repo, floor, start))
+    held = _contained_remote_tip(repo, start, head)
+    if held:
+        return _measure_range(repo, held, head, excluded=_commits_between(repo, start, held))
     return report
 
 
-def _measure_span(repo: str, merge_base: str, head: str, rev: str, report: Report) -> None:
-    def tag(mark: Marked) -> Marked:
-        return replace(mark, rev=rev) if rev else mark
-
-    for path, hunks in sorted(_diff_hunks(repo, merge_base, head).items()):
+def _measure_range(repo: str, start: str, head: str, excluded: int = 0) -> Report:
+    report = Report(start, head, 0, 0, _LIMIT_FLOOR, [], [], [], excluded)
+    for path, hunks in sorted(_diff_hunks(repo, start, head).items()):
         added = _added_lines(hunks)
         if not is_measured_path(path):
             continue
-        new_text, old_text = _blob(repo, head, path), _blob(repo, merge_base, path)
+        new_text, old_text = _blob(repo, head, path), _blob(repo, start, path)
         if _is_generated(new_text) or _is_generated(old_text):
             continue
         new_scan = scan_text(path, new_text) or Scan({}, set())
         old_scan = scan_text(path, old_text) or Scan({}, set())
         report.net += len(new_scan.counted) - len(old_scan.counted)
         report.added_code += len(added - new_scan.noncode)
-        mine = [tag(m) for line, m in sorted(new_scan.counted.items()) if line in added]
+        mine = [m for line, m in sorted(new_scan.counted.items()) if line in added]
         report.offenders += [(path, m) for m in mine]
         report.banners += [(path, m) for m in mine if m.banner]
-        report.runs += [(p, [tag(m) for m in run]) for p, run in _long_runs(path, new_scan, old_scan, hunks)]
+        report.runs += _long_runs(path, new_scan, old_scan, hunks)
+    report.limit = max(_LIMIT_FLOOR, int(_LIMIT_SHARE * report.added_code))
+    return report

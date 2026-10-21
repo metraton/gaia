@@ -163,13 +163,35 @@ def test_a_squash_of_already_pushed_commits_is_not_counted_again(tmp_path):
     repo = squash_of_pushed_topic(tmp_path)
     assert measure(str(repo), head="squash", base="origin/main").blocked
     report = measure(str(repo), head="squash")
-    assert (report.excluded, report.net, report.blocked) == (1, 0, False)
+    assert (report.excluded, report.net, report.blocked) == (2, 0, False)
 
 
-def test_a_squash_that_adds_new_comments_still_blocks(tmp_path):
+def test_a_squash_that_adds_new_comments_counts_only_the_new_part(tmp_path):
     repo = squash_of_pushed_topic(tmp_path, {"c.py": interleave(40, 6)})
     report = measure(str(repo), head="squash")
-    assert (report.excluded, report.blocked) == (0, True)
+    assert (report.excluded, report.net, report.blocked) == (2, 6, True)
+    assert {path for path, _ in report.offenders} == {"c.py"}
+
+
+def test_a_squash_that_adds_a_few_comments_passes_over_the_pushed_content(tmp_path):
+    repo = squash_of_pushed_topic(tmp_path, {"c.py": "# one fact\nVALUE = 1\n"})
+    report = measure(str(repo), head="squash")
+    assert (report.net, report.blocked) == (1, False)
+
+
+def test_commits_that_rewrite_the_same_lines_count_the_final_diff_once(tmp_path):
+    repo = make_change(tmp_path, BASE, {"a.py": code(250)})
+    commit_files(repo, {"a.py": code(250).replace("value_", "item_")})
+    report = measure(str(repo), head="feat")
+    assert (report.added_code, report.limit) == (250, 5)
+
+
+def test_a_branch_with_a_remote_copy_measures_from_the_newest_commit_it_holds(tmp_path):
+    repo = make_change(tmp_path, BASE, {"a.py": code(250)})
+    git(repo, "update-ref", "refs/remotes/origin/feat", "HEAD")
+    commit_files(repo, {"a.py": code(250).replace("value_", "item_")})
+    report = measure(str(repo), head="feat")
+    assert (report.added_code, report.excluded) == (250, 1)
 
 
 def test_commits_the_branch_already_pushed_are_not_recounted(tmp_path):
