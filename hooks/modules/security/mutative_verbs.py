@@ -695,6 +695,8 @@ _REMOTE_RUN_NOUNS: FrozenSet[str] = frozenset({
 _ACCOUNT_SLOT_ACTIONS: FrozenSet[str] = frozenset({"switch", "logout"})
 _API_BODY_FLAGS: FrozenSet[str] = frozenset({"--field", "--raw-field", "--input"})
 _API_READ_METHODS: FrozenSet[str] = frozenset({"get", "head"})
+_GRAPHQL_MUTATION_RE = re.compile(r"\bmutation\b", re.IGNORECASE)
+_PULL_REQUEST_NOUNS: FrozenSet[str] = frozenset({"pr", "mr", "pull-request", "merge-request"})
 _REVIEW_VERDICT_FLAGS: FrozenSet[str] = frozenset({
     "--approve", "--request-changes", "--comment", "-a", "-r", "-c",
 })
@@ -724,10 +726,42 @@ def _may_archive_gmail(semantics: CommandSemantics) -> bool:
     return bool(_GMAIL_HIDDEN_PAYLOAD_RE.search(text))
 
 
-def _api_mutating_verb(args: Tuple[str, ...]) -> Optional[str]:
+def _api_body_flags(args: Tuple[str, ...]) -> List[Tuple[str, str]]:
+    """(flag, value) for each body flag of an `api` call, however the value is attached."""
+    found = []
+    for i, token in enumerate(args):
+        flag, eq, attached = token.partition("=")
+        following = args[i + 1] if i + 1 < len(args) else ""
+        if flag in _API_BODY_FLAGS:
+            found.append((flag, attached if eq else following))
+        elif token[:2] in ("-f", "-F"):
+            found.append(("-f", token[2:] or following))
+    return found
+
+
+def _graphql_document_mutates(bodies: List[Tuple[str, str]]) -> bool:
+    """True when a GraphQL `query` field or `--input` document holds `mutation`, or cannot be read."""
+    for flag, value in bodies:
+        if flag != "--input":
+            key, _, value = value.partition("=")
+            if key != "query":
+                continue
+        if flag == "--input" or value.startswith("@"):
+            try:
+                value = Path(value if flag == "--input" else value[1:]).read_text(errors="replace")
+            except OSError:
+                return True
+        if _GRAPHQL_MUTATION_RE.search(value):
+            return True
+    return False
+
+
+def _api_mutating_verb(args: Tuple[str, ...], graphql: bool = False) -> Optional[str]:
     """The method, or "api" for an implicit POST, when an `api` call writes; an explicit method decides alone."""
+    bodies = _api_body_flags(args)
+    if graphql:
+        return "api" if _graphql_document_mutates(bodies) else None
     method: Optional[str] = None
-    has_body = False
     for i, token in enumerate(args):
         if token in ("-X", "--method"):
             method = args[i + 1] if i + 1 < len(args) else ""
@@ -735,10 +769,8 @@ def _api_mutating_verb(args: Tuple[str, ...]) -> Optional[str]:
             method = token.split("=", 1)[1]
         elif token.startswith("-X"):
             method = token[2:]
-        elif token.split("=", 1)[0] in _API_BODY_FLAGS or token[:2] in ("-f", "-F"):
-            has_body = True
     if method is None:
-        return "api" if has_body else None
+        return "api" if bodies else None
     method = method.lower()
     return None if method in _API_READ_METHODS else method or "api"
 
@@ -752,8 +784,8 @@ def _check_generic_cli_shape(
     <write verb>` rewrites where every later command points, and `auth
     switch|logout` rewrites the shared account slot. `config` heads the read
     forms people run all day, so only a write verb after it decides; `use-context`
-    and `activate` carry none and stay out. `api` with a body or non-GET method,
-    `<noun> ready` and `<noun> review` with a verdict flag publish on the remote.
+    and `activate` carry none and stay out. `api` with a body or non-GET method
+    (`api graphql` only for a mutation), `pr ready` and `<noun> review` with a verdict flag publish.
     Only the leading path is read, so `docker run ci run`, `npm run test` and
     `gh run list` are untouched.
     """
@@ -769,9 +801,9 @@ def _check_generic_cli_shape(
         pass
     elif head == "auth" and action in _ACCOUNT_SLOT_ACTIONS:
         guidance = _ACCOUNT_SLOT_GUIDANCE
-    elif head == "api" and (api_verb := _api_mutating_verb(semantics.args)):
+    elif head == "api" and (api_verb := _api_mutating_verb(semantics.args, action == "graphql")):
         verb = api_verb
-    elif action == "ready":
+    elif head in _PULL_REQUEST_NOUNS and action == "ready":
         pass
     elif action == "review" and _REVIEW_VERDICT_FLAGS.intersection(semantics.flag_tokens):
         pass

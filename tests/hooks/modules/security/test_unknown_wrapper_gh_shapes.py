@@ -74,6 +74,8 @@ class TestUnknownWrapperMutationsAreSigned:
         "ghx pr ready 1",
         "ghx pr ready 1 --undo",
         "otherbin mr ready 1",
+        "otherbin pull-request ready 1",
+        "otherbin merge-request ready 1",
     ])
     def test_generic_shape_mutation_is_consent(self, command):
         assert classify_command_tier(command) == T3, command
@@ -97,9 +99,38 @@ class TestUnknownWrapperMutationsAreSigned:
         "aws ec2 describe-instances",
         "otherbin api some/path",
         "make ready",
+        "kubectl logs ready",
+        "kubectl describe ready",
+        "docker logs ready",
+        "docker inspect ready",
+        "helm status ready",
+        "systemctl status ready",
+        "ghx api graphql -f query=query{viewer{login}}",
+        "ghx api graphql -F query=query($n:Int!){viewer{login}} -F n=1",
     ])
     def test_generic_shape_read_is_free(self, command):
         assert classify_command_tier(command) == T0, command
+
+    @pytest.mark.parametrize("command", [
+        "ghx api graphql -f query=mutation{addStar(input:{starrableId:\"x\"}){clientMutationId}}",
+        "ghx api graphql -f query='  MUTATION { x }'",
+        "ghx api graphql --field query=mutation{x}",
+        "ghx api graphql -f query=@/nonexistent/doc.graphql",
+        "ghx api graphql --input /nonexistent/payload.json",
+    ])
+    def test_graphql_mutation_or_unreadable_document_is_consent(self, command):
+        assert classify_command_tier(command) == T3, command
+
+    def test_graphql_document_in_a_file_is_read_by_content(self, tmp_path):
+        query = tmp_path / "q.graphql"
+        query.write_text("query { viewer { login } }")
+        mutation = tmp_path / "m.graphql"
+        mutation.write_text("mutation { addStar(input: {starrableId: \"x\"}) { clientMutationId } }")
+        payload = tmp_path / "p.json"
+        payload.write_text('{"query": "query { viewer { login } }"}')
+        assert classify_command_tier(f"ghx api graphql -F query=@{query}") == T0
+        assert classify_command_tier(f"ghx api graphql --input {payload}") == T0
+        assert classify_command_tier(f"ghx api graphql -F query=@{mutation}") == T3
 
     @pytest.mark.parametrize("command", [
         "ghx pr list",
