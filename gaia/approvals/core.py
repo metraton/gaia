@@ -45,8 +45,8 @@ from gaia.store.writer import APPROVAL_WINDOW_MINUTES as WINDOW_MINUTES
 
 CLEAR_SECRET_REFUSAL = (
     "the request carries a credential in clear, which the approval record would store and show; "
-    "reference it instead of writing its value -- an exported variable ($GH_TOKEN) or a command "
-    "substitution ($(gh auth token)) -- and request that command"
+    "reference it instead of writing its value -- a leading assignment before the program, "
+    "GH_TOKEN=$GH_TOKEN or GH_TOKEN=$(gh auth token) -- and request that command"
 )
 
 DECISION_OPTIONS = frozenset({"approve", "reject", "details"})

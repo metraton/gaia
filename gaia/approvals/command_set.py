@@ -35,6 +35,29 @@ class CommandSetValidationError(ValueError):
 # one program; substitution runs even inside double quotes, so it is read raw.
 _CHAIN = re.compile(r"(?:&&|\|\||;|\n)")
 _SUBSTITUTION = re.compile(r"(?:`|\$\()")
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*="
+_PLAIN_ASSIGNMENT = re.compile(_NAME + r"(?:\$\{?\w+\}?|[^\s$`'\"\\;&|<>()]*)(?=\s)")
+_SUBSTITUTION_ASSIGNMENT = re.compile(_NAME + r"\$\(([^$`'\"\\;&|<>()\n]+)\)(?=\s)")
+
+
+def split_assignment_prefix(command: str) -> tuple[list[str], str]:
+    """Split the leading ``NAME=value`` words off ``command``: (substitution bodies, remainder).
+
+    A value is a plain word, ``$VAR`` or ``$(body)`` with a body that is one
+    simple command. Anything else stops the split and stays in the remainder,
+    where the chain and substitution checks refuse it.
+    """
+    bodies: list[str] = []
+    rest = command
+    while True:
+        match = _SUBSTITUTION_ASSIGNMENT.match(rest)
+        if match:
+            bodies.append(match.group(1).strip())
+        else:
+            match = _PLAIN_ASSIGNMENT.match(rest)
+            if not match:
+                return bodies, rest
+        rest = rest[match.end():].lstrip()
 # The trailing lookahead rejects a hyphen where `\b` accepted one: `ssh\b`
 # matched `ssh-keygen`, a batch tool that never prompts, and refused it as
 # interactive. Every alternative here names a program, and a hyphen starts a
@@ -284,11 +307,13 @@ def validate_request_set(
     for index, raw in enumerate(commands):
         if not isinstance(raw, str) or not raw or raw != raw.strip():
             raise CommandSetValidationError(f"command[{index}] must be a non-empty exact string")
+        bodies, program = split_assignment_prefix(raw)
+        assignments = raw[: len(raw) - len(program)]
         try:
-            if _SUBSTITUTION.search(raw) or _CHAIN.search(_blank_quoted(raw)):
+            if _SUBSTITUTION.search(program) or _CHAIN.search(_blank_quoted(program)):
                 raise CommandSetValidationError("must be one atomic program or pipeline, not a chain")
-            parenthesized = _unquoted_parenthesis_argument(raw)
-            stages = pipe_stages(raw)
+            parenthesized = _unquoted_parenthesis_argument(program)
+            stages = pipe_stages(program)
             if any(not stage for stage in stages):
                 raise CommandSetValidationError("has an empty pipeline stage")
             interactive = any(_INTERACTIVE.search(s) or _opens_repl(s) for s in stages)
@@ -311,8 +336,19 @@ def validate_request_set(
             _require_executable_pipeline(index, raw)
 
         stage_cwd = cwds[index] if cwds else cwd
+        for body in bodies:
+            body_flag = classify_by_flags(body)
+            if (
+                is_blocked_command(body).is_blocked
+                or detect_mutative_command(body, cwd=stage_cwd).is_mutative
+                or (body_flag is not None and body_flag.outcome in (OUTCOME_BLOCKED, OUTCOME_MUTATIVE))
+            ):
+                raise CommandSetValidationError(
+                    f"command[{index}] assignment substitution $({body}) must be a read-only command"
+                )
         is_t3 = False
-        for stage in stages:
+        for position, stage in enumerate(stages):
+            stage = assignments + stage if position == 0 else stage
             flag = classify_by_flags(stage)
             if flag is not None and flag.outcome == OUTCOME_BLOCKED:
                 raise CommandSetValidationError(f"command[{index}] is permanently blocked")
@@ -325,7 +361,7 @@ def validate_request_set(
                 "signed": bool(is_t3)}
         if is_t3:
             try:
-                files = sealed_files(raw, stage_cwd or os.getcwd())
+                files = sealed_files(program, stage_cwd or os.getcwd())
             except (CommandSetValidationError, ValueError) as exc:
                 raise CommandSetValidationError(f"command[{index}] {exc}") from exc
             if files:
