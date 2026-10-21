@@ -44,6 +44,7 @@ modules/
 │   ├── subagent_memory_write_guard.py # Blocks `gaia memory` writes from subagents (non-operator)
 │   ├── gaia_db_write_guard.py # Blocks direct sqlite3 writes to gaia.db (categorical)
 │   ├── protected_path_guard.py # Blocks Bash writes into the .claude/ tree (hooks/settings) (categorical)
+│   ├── comment_push_gate.py # Refuses a `git push` of a branch over the comment limit (categorical, fails open with a warning)
 │   ├── source_lexer.py     # Per-language comment/string lexer for the JS script lane
 │   ├── approval_grants.py  # Nonce-based approval grant management
 │   ├── approval_constants.py # Approval system constants

@@ -77,6 +77,7 @@ bin/
     ├── evidence.py            # gaia evidence   — per-AC evidence (three-tier storage)
     ├── history.py             # gaia history    — recent agent sessions
     ├── install.py             # gaia install    — migrate the DB, wire settings and symlinks, record the manifest (run manually; no postinstall; declares no workspace)
+    ├── lint.py                # gaia lint       — read-only checks over a branch; `lint comments` is the pre-push comment limit
     ├── memory.py              # gaia memory     — curated memory, append-only (add/append/reclassify/link/checkpoint; add --replace and delete signed) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
     ├── memory_story.py        # backs `gaia memory story` (lineage narration); imported by memory.py, no register() of its own
     ├── metrics.py             # gaia metrics    — usage analytics (DB-canonical episodes/anomalies + audit-log tier/commands)

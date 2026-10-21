@@ -90,6 +90,49 @@ def test_base_is_the_nearest_remote_branch_that_lacks_the_change(tmp_path):
     assert report.net == 1
 
 
+def squash_of_pushed_topic(tmp_path, extra=None):
+    repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 3)}, branch="topic")
+    commit_files(repo, {"b.py": interleave(40, 3)})
+    git(repo, "update-ref", "refs/remotes/origin/topic", "HEAD")
+    git(repo, "checkout", "-q", "-b", "squash", "main")
+    git(repo, "merge", "--squash", "topic")
+    commit_files(repo, extra or {}, "squash")
+    return repo
+
+
+def test_a_squash_of_already_pushed_commits_is_not_counted_again(tmp_path):
+    repo = squash_of_pushed_topic(tmp_path)
+    assert measure(str(repo), head="squash", base="origin/main").blocked
+    report = measure(str(repo), head="squash")
+    assert (report.excluded, report.net, report.blocked) == (1, 0, False)
+
+
+def test_a_squash_that_adds_new_comments_still_blocks(tmp_path):
+    repo = squash_of_pushed_topic(tmp_path, {"c.py": interleave(40, 6)})
+    report = measure(str(repo), head="squash")
+    assert (report.excluded, report.blocked) == (0, True)
+
+
+def test_commits_the_branch_already_pushed_are_not_recounted(tmp_path):
+    repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 6)})
+    git(repo, "update-ref", "refs/remotes/origin/feat", "HEAD")
+    commit_files(repo, {"b.py": "# one fact\nVALUE = 1\n"})
+    report = measure(str(repo), head="feat")
+    assert (report.excluded, report.net, report.blocked) == (1, 1, False)
+    assert [(path, mark.line) for path, mark in report.offenders] == [("b.py", 1)]
+
+
+def test_merge_commits_are_left_out(tmp_path):
+    repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 1)})
+    git(repo, "checkout", "-q", "main")
+    commit_files(repo, {"m.py": interleave(40, 6)}, "main moves")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repo, "checkout", "-q", "feat")
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge", "main")
+    report = measure(str(repo), head="feat")
+    assert report.net == 1 and not report.blocked
+
+
 def test_nothing_to_compare_without_a_remote_branch_is_not_a_block(tmp_path):
     repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 6)})
     git(repo, "update-ref", "-d", "refs/remotes/origin/main")

@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import tokenize
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -18,6 +18,9 @@ _LIMIT_SHARE = 0.02
 _MAX_RUN = 2
 _MAX_BASE_CANDIDATES = 300
 _GIT_TIMEOUT_SECONDS = 30
+_MAX_PUSHED_REFS = 100
+_MAX_SQUASH_REFS = 50
+_MAX_SQUASH_COMMITS = 20
 _PYTHON_EXT = {".py"}
 _JS_EXT = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
 _HASH_EXT = {".sh", ".bash", ".zsh", ".yaml", ".yml"}
@@ -48,6 +51,7 @@ class Marked:
     text: str
     full_line: bool = True
     banner: bool = False
+    rev: str = ""
 
 
 @dataclass
@@ -66,6 +70,7 @@ class Report:
     offenders: List[Tuple[str, Marked]]
     banners: List[Tuple[str, Marked]]
     runs: List[Tuple[str, List[Marked]]]
+    excluded: int = 0
 
     @property
     def over_limit(self) -> bool:
@@ -85,21 +90,26 @@ class Report:
         listed += [row(p, m, "block over two lines") for p, run in self.runs for m in run]
         return {
             "base": self.base, "head": self.head, "added_code_lines": self.added_code,
-            "net_comment_lines": self.net, "limit": self.limit,
+            "net_comment_lines": self.net, "limit": self.limit, "excluded_commits": self.excluded,
             "over_limit": self.over_limit, "blocked": self.blocked,
             "offenders": listed if self.blocked else [],
         }
 
     def render(self, max_lines: int = 40) -> str:
         head = (f"comments: net {self.net} over {self.added_code} added code lines, "
-                f"limit {self.limit} (base {self.base or 'none'})")
+                f"limit {self.limit} (base {self.base or 'none'}, "
+                f"{self.excluded} commits already pushed)")
         if not self.blocked:
             return head + " -- ok"
-        rows = [f"  {p}:{m.line}: section banner: {m.text[:80]}" for p, m in self.banners]
-        rows += [f"  {p}:{run[0].line}-{run[-1].line}: comment block of {len(run)} lines"
+
+        def where(path: str, mark: Marked) -> str:
+            return f"{path}:{mark.line}" + (f"@{mark.rev}" if mark.rev else "")
+
+        rows = [f"  {where(p, m)}: section banner: {m.text[:80]}" for p, m in self.banners]
+        rows += [f"  {where(p, run[0])}-{run[-1].line}: comment block of {len(run)} lines"
                  for p, run in self.runs]
         if self.over_limit:
-            rows += [f"  {p}:{m.line}: {m.text[:100]}" for p, m in self.offenders]
+            rows += [f"  {where(p, m)}: {m.text[:100]}" for p, m in self.offenders]
         if len(rows) > max_lines:
             rows = rows[:max_lines] + [f"  ... {len(rows) - max_lines} more (gaia lint comments --json)"]
         return "\n".join([head + " -- OVER", *rows])
@@ -245,12 +255,12 @@ def is_measured_path(path: str) -> bool:
     )
 
 
-def _git(repo: str, *args: str, check: bool = True) -> str:
+def _git(repo: str, *args: str, check: bool = True, stdin: Optional[str] = None) -> str:
     try:
         result = subprocess.run(
             ["git", "-C", repo, "-c", "core.quotepath=false", *args],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            check=False, timeout=_GIT_TIMEOUT_SECONDS,
+            check=False, timeout=_GIT_TIMEOUT_SECONDS, input=stdin,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CommentLintError(f"git {args[0]} did not run: {exc}") from exc
@@ -331,15 +341,59 @@ def _long_runs(path: str, scan: Scan, added: Set[int]) -> List[Tuple[str, List[M
             if len(run) > _MAX_RUN and sum(m.line in added for m in run) > _MAX_RUN]
 
 
+def _patch_id(repo: str, *revs: str) -> str:
+    diff = _git(repo, "diff", "--no-renames", *revs, check=False)
+    words = _git(repo, "patch-id", "--stable", stdin=diff, check=False).split() if diff else []
+    return words[0] if words else ""
+
+
+def _already_pushed(repo: str, merge_base: str, head: str, commits: List[str]) -> Set[str]:
+    """Commits a remote ref already holds: by ancestry, by patch-id, or as a squash of one branch."""
+    span = f"{merge_base}..{head}"
+    unpushed = _git(repo, "rev-list", "--no-merges", span, "--not", "--remotes", check=False).split()
+    done = set(commits) - set(unpushed)
+    refs = _git(repo, "for-each-ref", "--sort=-committerdate", "--format=%(refname)",
+                "refs/remotes", check=False).split()
+    refs = [ref for ref in refs if not ref.endswith("/HEAD")][:_MAX_PUSHED_REFS]
+    for ref in refs:
+        done.update(line[2:].strip() for line in _git(repo, "cherry", ref, head, check=False)
+                    .splitlines() if line.startswith("- "))
+    for commit in [c for c in commits if c not in done][:_MAX_SQUASH_COMMITS]:
+        patch = _patch_id(repo, f"{commit}^", commit)
+        for ref in refs[:_MAX_SQUASH_REFS]:
+            fork = _git(repo, "merge-base", f"{commit}^", ref, check=False).strip()
+            if patch and fork and _patch_id(repo, fork, ref) == patch:
+                done.add(commit)
+                break
+    return done
+
+
 def measure(repo: str, head: str = "HEAD", base: Optional[str] = None) -> Report:
-    """Measure the change ``head`` carries over the merge-base chosen by :func:`resolve_base`."""
+    """Measure the change ``head`` carries, leaving out commits a remote ref already holds and merges.
+
+    An explicit ``base`` measures its exact range with nothing left out.
+    """
     merge_base = resolve_base(repo, head, base)
     if merge_base is None:
         return Report(None, head, 0, 0, _LIMIT_FLOOR, [], [], [])
-    net = added_code = 0
-    offenders: List[Tuple[str, Marked]] = []
-    banners: List[Tuple[str, Marked]] = []
-    runs: List[Tuple[str, List[Marked]]] = []
+    commits = _git(repo, "rev-list", "--no-merges", "--reverse", f"{merge_base}..{head}").split()
+    skipped = set() if base else _already_pushed(repo, merge_base, head, commits)
+    merges = not base and int(
+        _git(repo, "rev-list", "--merges", "--count", f"{merge_base}..{head}").strip() or 0)
+    spans = [(merge_base, head, "")]
+    if skipped or merges:
+        spans = [(f"{c}^", c, c[:7]) for c in commits if c not in skipped]
+    report = Report(merge_base, head, 0, 0, _LIMIT_FLOOR, [], [], [], len(skipped & set(commits)))
+    for span_base, span_head, rev in spans:
+        _measure_span(repo, span_base, span_head, rev, report)
+    report.limit = max(_LIMIT_FLOOR, int(_LIMIT_SHARE * report.added_code))
+    return report
+
+
+def _measure_span(repo: str, merge_base: str, head: str, rev: str, report: Report) -> None:
+    def tag(mark: Marked) -> Marked:
+        return replace(mark, rev=rev) if rev else mark
+
     for path, added in sorted(_added_ranges(repo, merge_base, head).items()):
         if not is_measured_path(path):
             continue
@@ -348,11 +402,9 @@ def measure(repo: str, head: str = "HEAD", base: Optional[str] = None) -> Report
             continue
         new_scan = scan_text(path, new_text) or Scan({}, set())
         old_scan = scan_text(path, old_text) or Scan({}, set())
-        net += len(new_scan.counted) - len(old_scan.counted)
-        added_code += len(added - new_scan.noncode)
-        mine = [m for line, m in sorted(new_scan.counted.items()) if line in added]
-        offenders += [(path, m) for m in mine]
-        banners += [(path, m) for m in mine if m.banner]
-        runs += _long_runs(path, new_scan, added)
-    limit = max(_LIMIT_FLOOR, int(_LIMIT_SHARE * added_code))
-    return Report(merge_base, head, added_code, net, limit, offenders, banners, runs)
+        report.net += len(new_scan.counted) - len(old_scan.counted)
+        report.added_code += len(added - new_scan.noncode)
+        mine = [tag(m) for line, m in sorted(new_scan.counted.items()) if line in added]
+        report.offenders += [(path, m) for m in mine]
+        report.banners += [(path, m) for m in mine if m.banner]
+        report.runs += [(p, [tag(m) for m in run]) for p, run in _long_runs(path, new_scan, added)]
