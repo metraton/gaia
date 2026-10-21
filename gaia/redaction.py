@@ -177,14 +177,14 @@ def has_clear_secret(text: str) -> bool:
     return False
 
 
-def has_token_shape(value: Any) -> bool:
-    """Say whether any string inside ``value`` is shaped like a provider token."""
+def carries_clear_secret(value: Any) -> bool:
+    """Say whether any string inside ``value`` carries a secret in clear (:func:`has_clear_secret`)."""
     if isinstance(value, str):
-        return bool(TOKEN_SHAPE.search(value))
+        return has_clear_secret(value)
     if isinstance(value, Mapping):
-        return any(has_token_shape(child) for child in value.values())
+        return any(carries_clear_secret(child) for child in value.values())
     if isinstance(value, (list, tuple)):
-        return any(has_token_shape(child) for child in value)
+        return any(carries_clear_secret(child) for child in value)
     return False
 
 

@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
-from gaia.redaction import has_clear_secret, has_token_shape, mask_clear_secrets, redact_text
+from gaia.redaction import carries_clear_secret, has_clear_secret, mask_clear_secrets, redact_text
 from gaia.store.writer import APPROVAL_WINDOW_MINUTES as WINDOW_MINUTES
 
 CLEAR_SECRET_REFUSAL = (
@@ -292,7 +292,7 @@ def seal_request(
             scope=SCOPE_FILE_PATH,
             scope_signature=signature.to_dict(),
         )
-    if has_token_shape(payload):
+    if carries_clear_secret(payload):
         raise SealError(CLEAR_SECRET_REFUSAL)
     return payload
 

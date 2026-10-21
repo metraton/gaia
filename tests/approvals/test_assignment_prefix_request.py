@@ -14,7 +14,8 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "hooks"):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from gaia.approvals import core  # noqa: E402
+from gaia.approvals import core, secret_audit  # noqa: E402
+from gaia.redaction import REDACTED  # noqa: E402
 from gaia.store import writer  # noqa: E402
 
 SESSION = "ses-orchestrator"
@@ -102,8 +103,48 @@ def test_steered_request_grant_matches_the_identical_command_at_execution(host):
     "gh pr merge $(gh auth token) --squash",
     "gh pr merge 41 --body $(gh auth token)",
     "GH_TOKEN=$(gh auth token) && gh pr merge 41",
+    "A=1\nrm -rf /tmp/x",
+    "GH_TOKEN=$(gh auth token)\nrm -rf /tmp/x",
+    "A=1 \ngh pr merge 41",
+    "GH_TOKEN=$(cat ~/.config/gh/hosts.yml) gh pr merge 41 --squash",
+    "GH_TOKEN=$(cat .env) gh pr merge 41 --squash",
     "GH_TOKEN=$(gh auth token",
 ])
 def test_a_substitution_beyond_one_read_only_assignment_value_stays_refused(host, command):
     with pytest.raises(core.SealError):
         _request(command, host)
+
+
+BEARER = "Zx9Cv8Bn7Mm6Ll5Kk4Jj3Hh2"
+PASSWORD = "Pw9Lk8Jh7Gf6Ds5Aq4"
+PHRASES = ("what", "question", "rationale", "does", "impact", "rollback", "verification", "shared_state")
+
+
+@pytest.mark.parametrize("field", PHRASES)
+@pytest.mark.parametrize(
+    "text, secret", [(f"Bearer {BEARER}", BEARER), (f"PASSWORD={PASSWORD}", PASSWORD)], ids=["bearer", "password"],
+)
+def test_a_secret_in_a_phrase_field_is_refused_whole(host, field, text, secret):
+    phrases = {"what": "Merge the PR", "question": "Merge the PR?", "rationale": "Ready.",
+               "rollback": "Revert the merge commit.", "verification": "gh pr view 41", "shared_state": "Yes: main."}
+    item = {"command": STEERED, "cwd": host, "expect_exit": [],
+            "does": "Merges the pull request.", "impact": "The change lands on main."}
+    if field in ("does", "impact"):
+        item[field] = text
+    else:
+        phrases[field] = text
+    with pytest.raises(core.SealError) as refusal:
+        core.request_command_set([item], session_id=SESSION, agent_id=AGENT_TYPE, **phrases)
+    assert secret not in str(refusal.value)
+
+
+@pytest.mark.parametrize("template, secret", [
+    ("GH_TOKEN={} gh pr merge 41", LITERAL),
+    ("curl -H 'Authorization: Bearer {}' é", BEARER),
+    ("PASSWORD={} kubectl delete pod web-0", PASSWORD),
+], ids=["gho", "bearer", "password"])
+def test_scrub_masks_spans_in_the_raw_json_and_keeps_every_other_byte(template, secret):
+    text = json.dumps([{"command": template.format(secret), "key": "k"}], indent=2, ensure_ascii=False)
+    scrubbed = secret_audit.scrub_text(text)
+    assert secret not in scrubbed
+    assert scrubbed == text.replace(secret, REDACTED)

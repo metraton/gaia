@@ -71,14 +71,25 @@ def _mask(value: Any) -> Any:
 
 
 def scrub_text(text: str) -> str:
-    """Return ``text`` with every real secret redacted and everything else byte-identical; JSON stays canonical JSON."""
+    """Return ``text`` with every real secret redacted and everything else byte-identical.
+
+    JSON keeps its own formatting when masking the raw text parses to the masked value; otherwise it is canonical JSON.
+    """
     try:
         parsed = json.loads(text)
     except ValueError:
         parsed = None
     if isinstance(parsed, (dict, list)):
         masked = _mask(parsed)
-        return text if masked == parsed else canonical_payload(masked)
+        if masked == parsed:
+            return text
+        in_place = _mask_string(text)
+        try:
+            if json.loads(in_place) == masked:
+                return in_place
+        except ValueError:
+            pass
+        return canonical_payload(masked)
     return _mask_string(text)
 
 

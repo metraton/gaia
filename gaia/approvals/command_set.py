@@ -36,8 +36,8 @@ class CommandSetValidationError(ValueError):
 _CHAIN = re.compile(r"(?:&&|\|\||;|\n)")
 _SUBSTITUTION = re.compile(r"(?:`|\$\()")
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*="
-_PLAIN_ASSIGNMENT = re.compile(_NAME + r"(?:\$\{?\w+\}?|[^\s$`'\"\\;&|<>()]*)(?=\s)")
-_SUBSTITUTION_ASSIGNMENT = re.compile(_NAME + r"\$\(([^$`'\"\\;&|<>()\n]+)\)(?=\s)")
+_PLAIN_ASSIGNMENT = re.compile(_NAME + r"(?:\$\{?\w+\}?|[^\s$`'\"\\;&|<>()]*)(?=[ \t])")
+_SUBSTITUTION_ASSIGNMENT = re.compile(_NAME + r"\$\(([^$`'\"\\;&|<>()\n]+)\)(?=[ \t])")
 
 
 def split_assignment_prefix(command: str) -> tuple[list[str], str]:
@@ -57,7 +57,7 @@ def split_assignment_prefix(command: str) -> tuple[list[str], str]:
             match = _PLAIN_ASSIGNMENT.match(rest)
             if not match:
                 return bodies, rest
-        rest = rest[match.end():].lstrip()
+        rest = rest[match.end():].lstrip(" \t")
 # The trailing lookahead rejects a hyphen where `\b` accepted one: `ssh\b`
 # matched `ssh-keygen`, a batch tool that never prompts, and refused it as
 # interactive. Every alternative here names a program, and a hyphen starts a
@@ -302,6 +302,7 @@ def validate_request_set(
     )
     from modules.security.mutative_verbs import detect_mutative_command
     from modules.security.protected_path_guard import check as check_protected
+    from modules.security.sensitive_read_guard import check as check_sensitive_read
 
     normalized: list[dict] = []
     for index, raw in enumerate(commands):
@@ -339,7 +340,8 @@ def validate_request_set(
         for body in bodies:
             body_flag = classify_by_flags(body)
             if (
-                is_blocked_command(body).is_blocked
+                not check_sensitive_read(body, stage_cwd)[0]
+                or is_blocked_command(body).is_blocked
                 or detect_mutative_command(body, cwd=stage_cwd).is_mutative
                 or (body_flag is not None and body_flag.outcome in (OUTCOME_BLOCKED, OUTCOME_MUTATIVE))
             ):
