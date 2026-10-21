@@ -3099,6 +3099,17 @@ def _git_subcommand_split(tokens: tuple) -> "Optional[Tuple[Optional[str], str, 
     return path, args[0], args[1:]
 
 
+def _git_repo_dir(path: Optional[str], cwd: Optional[str]) -> Optional[str]:
+    """The repository a command acts on, or None when only the hook process's own cwd could name it."""
+    import os
+    expanded = os.path.expanduser(path) if path else None
+    if expanded and os.path.isabs(expanded):
+        return expanded
+    if cwd:
+        return os.path.join(cwd, expanded) if expanded else cwd
+    return None
+
+
 def _git_run(repo: str, *args: str) -> Optional[Tuple[int, str]]:
     """``(exit code, stdout)`` of a read-only ``git -C <repo> <args>``, or None when git cannot run."""
     import subprocess
@@ -3177,7 +3188,6 @@ def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: 
     ``HEAD``, any ref outside ``refs/heads/`` and a name that is not a local
     branch, or is also a tag, never qualify: git would push something else.
     """
-    import os
     flags = [token for token in rest if token.startswith("-")]
     operands = [token for token in rest if not token.startswith("-")]
     if any(flag not in _GIT_PUSH_RELIEF_FLAGS for flag in flags) or len(operands) != 2:
@@ -3191,14 +3201,8 @@ def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: 
         branch = branch[len("refs/heads/"):]
     if ".." in branch or branch.endswith(("/", ".lock")) or branch.lower() == "head":
         return False
-    # The process cwd is not the shell's: with neither an absolute -C nor the
-    # caller's cwd the repository is unknown, and the push stays gated.
-    expanded = os.path.expanduser(path) if path else None
-    if expanded and os.path.isabs(expanded):
-        repo = expanded
-    elif cwd:
-        repo = os.path.join(cwd, expanded) if expanded else cwd
-    else:
+    repo = _git_repo_dir(path, cwd)
+    if repo is None:
         return False
     default = set(_GIT_DEFAULT_BRANCHES)
     remote_head = _remote_head_branch(repo, remote)
@@ -3271,6 +3275,58 @@ def _check_git_publish_relief(
         cli_family=family,
         confidence="high",
         reason=reason,
+    )
+
+
+_GIT_SYNC_OPERAND_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._/@+-]*$")
+_GIT_SYNC_SHELL_CHARS_RE = re.compile(r"[;&|<>`$()\\\n'\"*?\[\]{}~#!]")
+
+
+def _git_current_branch(repo: str) -> Optional[str]:
+    """The checked-out branch, or None on a detached HEAD or when git cannot say."""
+    return _git_read(repo, "symbolic-ref", "--quiet", "--short", "HEAD") or None
+
+
+def _git_remote_names(repo: str) -> List[str]:
+    return (_git_read(repo, "remote") or "").split()
+
+
+def _git_merge_is_own_fast_forward(repo: str, rest: List[str]) -> bool:
+    """True for ``merge --ff-only <remote>/<branch>`` where <branch> is the checked-out one."""
+    if len(rest) != 2 or rest[0] != "--ff-only" or not _GIT_SYNC_OPERAND_RE.match(rest[1]):
+        return False
+    current = _git_current_branch(repo)
+    if current is None:
+        return False
+    return any(rest[1] == f"{remote}/{current}" for remote in _git_remote_names(repo))
+
+
+def _git_local_sync(
+    command: str, cwd: Optional[str], in_prefix: bool,
+) -> Optional["MutativeResult"]:
+    """Free ``git merge --ff-only <remote>/<branch>`` when <branch> is the checked-out one; None otherwise."""
+    if in_prefix or _GIT_SYNC_SHELL_CHARS_RE.search(command):
+        return None
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens or tokens[0] != "git":
+        return None
+    split = _git_subcommand_split(tuple(tokens))
+    if split is None:
+        return None
+    path, subcommand, rest = split
+    repo = _git_repo_dir(path, cwd)
+    if subcommand != "merge" or repo is None or not _git_merge_is_own_fast_forward(repo, rest):
+        return None
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_UNKNOWN,
+        verb=subcommand,
+        cli_family="git",
+        confidence="high",
+        reason="'git merge --ff-only' of the current branch to its own remote ref",
     )
 
 
@@ -4668,7 +4724,7 @@ def _absorbing_form(command: str) -> "Optional[str]":
 
 def detect_mutative_command(
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
-    _depth: int = 0,
+    _depth: int = 0, _in_prefix: bool = False,
 ) -> MutativeResult:
     """Classify *command*, then hold the result to a non-regression floor.
 
@@ -4699,6 +4755,12 @@ def detect_mutative_command(
     the classifier models keeps its own gates.  The lookup stays outside the
     cached function so the cache remains keyed on the command text alone.
     """
+    # The sync verdict depends on the repository's state, which the lru_cache
+    # on _detect_mutative_command would freeze, so it is decided here.
+    sync = None if from_source_code else _git_local_sync(command, cwd, _in_prefix)
+    if sync is not None:
+        return sync
+
     result = _detect_mutative_command(command, from_source_code, cwd, _depth)
 
     declared = declared_wrapper(command)
@@ -4832,7 +4894,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         for reading in readings:
             result = detect_mutative_command(
                 reading, from_source_code=from_source_code, cwd=cwd,
-                _depth=_depth,
+                _depth=_depth, _in_prefix=True,
             )
             if result.is_mutative:
                 break
@@ -5333,8 +5395,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             return relief_result
 
         git_subcmd = semantics.non_flag_tokens[0]
+        subcommand_split = _git_subcommand_split(tuple(tokens))
+        subcommand_args = subcommand_split[2] if subcommand_split else tokens
         reset_flags = tuple(sorted(
-            _GIT_BRANCH_RESET_FLAGS.get(git_subcmd, frozenset()).intersection(tokens)
+            _GIT_BRANCH_RESET_FLAGS.get(git_subcmd, frozenset()).intersection(subcommand_args)
         ))
         if reset_flags:
             return MutativeResult(

@@ -152,8 +152,8 @@ def test_ff_only_merge_inside_a_managed_worktree_is_free(managed_worktree):
     assert not _mutative(f"git -C {managed_worktree} merge --ff-only origin/main")
 
 
-def test_ff_only_merge_in_the_live_checkout_still_asks(repo):
-    assert _mutative(f"git -C {repo} merge --ff-only origin/main")
+def test_ff_only_merge_of_another_branchs_ref_in_the_live_checkout_still_asks(repo):
+    assert _mutative(f"git -C {repo} merge --ff-only origin/develop")
 
 
 @pytest.mark.parametrize("merge", [
