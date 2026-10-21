@@ -75,8 +75,6 @@ def _boundary_tier(command: str) -> str:
     return "T0" if result.allowed and result.tier == SecurityTier.T0_READ_ONLY else "T3"
 
 
-# -- the trigger: a base checkout brought up to date -------------------------
-
 def test_trigger_ff_only_merge_is_free_with_the_checkout_on_main(base):
     command = f"git -C {base} merge --ff-only origin/main"
     assert not _asks(command)
@@ -106,8 +104,6 @@ def test_ff_only_merge_in_the_callers_directory_is_free(base):
     assert not _asks("git merge --ff-only origin/main", cwd=base)
 
 
-# -- free ---------------------------------------------------------------------
-
 @pytest.mark.parametrize("command", [
     "fetch",
     "fetch origin",
@@ -129,8 +125,6 @@ def test_syncs_and_clean_branch_switches_are_free(base, command):
 def test_a_switch_to_a_branch_is_free_in_the_callers_directory(base, command):
     assert not _asks(f"git {command}", cwd=base)
 
-
-# -- still signed -------------------------------------------------------------
 
 def test_ff_only_merge_of_another_branchs_ref_asks(base):
     assert _asks(f"git -C {base} merge --ff-only origin/feat")
@@ -194,8 +188,6 @@ def test_a_path_that_is_not_a_repository_fails_closed(tmp_path):
 def test_a_prefix_or_extra_global_option_keeps_the_merge_signed(base, command):
     assert _asks(command.format(base=base))
 
-
-# -- the relief adds no signature --------------------------------------------
 
 @pytest.mark.parametrize("command", [
     "pull",
