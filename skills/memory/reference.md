@@ -110,9 +110,11 @@ both.
   old ones need no rewrite. The vocabulary is open: another first word is
   allowed and simply has no kind.
 - **Birth class** -- `gaia/store/writer.py::upsert_memory`: a new `type=user`
-  row with no `--class` is born `anchor`, so it reaches the birth block and
-  every dispatch kernel through `gaia/store/reader.py::user_anchor_rows`;
-  every other type is born `log`. An explicit `--class` wins, and a later
+  row with no `--class` is born `anchor`, so it reaches the birth block, and a
+  dispatch kernel only when its audience is `executor`, through
+  `gaia/store/reader.py::user_anchor_rows`; a new `type=user` row with no
+  `--audience` is born `orchestrator` (`bin/cli/memory.py::_cmd_add`). Every
+  other type is born `log`. An explicit `--class` wins, and a later
   `add` over the same row never changes its class.
 - **Warnings** -- `bin/cli/memory.py::_add_warnings` and the supersedes check
   in `bin/cli/memory.py::_cmd_link`. Each prints `warning: ...` to stderr (with

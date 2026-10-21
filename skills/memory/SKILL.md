@@ -123,10 +123,16 @@ there>."
 1. **Know what a session is born with, then sweep what you are about to
    touch.** Every session opens with four sections: the projects, each with its
    live-pending count; the environment it stands in; the user; and the user's
-   preferences. The last two are the user's standing rows, whole; every
-   dispatched subagent receives them too, minus the rows whose audience is the
-   orchestrator alone, so a row about how the orchestrator should report spends
-   no specialist's attention. Project memory — anchors, threads, their bodies —
+   preferences. The last two are the user's standing rows, whole; the
+   orchestrator holds them and curates them. A dispatched subagent receives only
+   the rows whose audience is `executor`, so mark a row `executor` (`--audience
+   executor`) only when it is a standard every artifact must obey in any project
+   and no skill, guard or environment fact can carry it. `any` and
+   `orchestrator` stay with the orchestrator, and a new `--type user` row
+   defaults to `orchestrator`; existing rows are not migrated by code, you
+   re-mark them as you curate. A specialist also gets one environment line
+   (OS/WSL, gaia CLI path, tools on PATH), so a machine fact needs no row.
+   Project memory — anchors, threads, their bodies —
    never loads at birth: a count is a signal to ask, not the corpus. A
    specialist's kernel carries one slice of it, a capped index (slug and one
    line) of the dispatch project's standing notes, whose bodies the turn opens

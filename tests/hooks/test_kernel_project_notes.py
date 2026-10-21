@@ -73,7 +73,7 @@ def _user_row(db: Path) -> None:
         con.execute(
             "INSERT INTO memory (workspace, name, type, description, body, class, "
             "audience, updated_at) VALUES ('_gaia_user', 'user_pref', 'user', ?, ?, "
-            "'anchor', 'any', '2026-09-01T00:00:00Z')",
+            "'anchor', 'executor', '2026-09-01T00:00:00Z')",
             (USER_BODY, USER_BODY),
         )
         con.commit()

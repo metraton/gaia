@@ -364,7 +364,7 @@ _USER_ANCHORS = (
     "FROM memory m "
     "WHERE m.type = 'user' AND m.class = 'anchor' AND m.deleted_at IS NULL "
     f"  AND {not_superseded('m')} "
-    "  AND (? IS NULL OR COALESCE(m.audience, 'any') IN (?, 'any')) "
+    "  AND (? IS NULL OR COALESCE(m.audience, 'any') = ?) "
     "ORDER BY COALESCE(m.updated_at, '') DESC, m.name"
 )
 
@@ -375,10 +375,10 @@ def user_anchor_rows(
     """The user's standing rows: live ``type='user'`` anchors no row supersedes.
 
     The one selection behind both the session birth block and the dispatch
-    kernel, so the orchestrator and every subagent know the user by the same
-    rows. ``audience`` names the reader's role: given, only rows addressed to
-    that role or to ``any`` come back; omitted, every row does, which is what
-    the orchestrator's birth block reads. Returns ``[]`` on any DB error.
+    kernel. ``audience`` names the role a row must be addressed to: given, only
+    those rows come back -- ``any`` stays with the orchestrator, so the dispatch
+    kernel asks for ``executor``; omitted, every row does, which is what the
+    orchestrator's birth block reads. Returns ``[]`` on any DB error.
     """
     try:
         con = _connect(db_path)

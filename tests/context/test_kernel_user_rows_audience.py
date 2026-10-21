@@ -1,9 +1,9 @@
-"""A specialist is not handed the rows the user addressed only to the orchestrator.
+"""A specialist is handed only the user rows marked for executors.
 
-What the user feels: a standing rule about how the orchestrator reports to them
-shapes the orchestrator's session and never spends a specialist's context,
-while rules marked for executors or for anyone reach both. Runs against a
-temporary HOME, GAIA_DATA_DIR and GAIA_DB.
+What the user feels: what they say about themselves reaches the orchestrator,
+which curates it; a specialist receives a row only when the user marked it as a
+standard every artifact must obey, never the rows left for "any" or the
+orchestrator. Runs against a temporary HOME, GAIA_DATA_DIR and GAIA_DB.
 """
 
 from __future__ import annotations
@@ -73,5 +73,34 @@ def test_orchestrator_only_rows_reach_birth_but_not_a_specialist_kernel(
 
     assert all(body in birth for body in BODIES.values())
     assert BODIES["orchestrator"] not in kernel
+    assert BODIES["any"] not in kernel
     assert BODIES["executor"] in kernel
-    assert BODIES["any"] in kernel
+
+
+def test_no_executor_row_means_no_user_block(tmp_path, monkeypatch, bootstrapped_db_template):
+    data = tmp_path / "data"
+    db = copy_bootstrapped_db(bootstrapped_db_template, data / "gaia.db")
+    (tmp_path / "home").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data))
+    monkeypatch.setenv("GAIA_DB", str(db))
+    monkeypatch.chdir(tmp_path)
+    _seed(db)
+    con = sqlite3.connect(db)
+    con.execute("DELETE FROM memory WHERE audience = 'executor'")
+    con.commit()
+    con.close()
+
+    from modules.context.kernel_builder import MEMORY_HEADING, build_memory_block
+
+    assert build_memory_block(db_path=db) == ""
+    assert MEMORY_HEADING not in build_kernel_context(
+        {
+            "contract_id": "a0123456789abcdef.beefcafe0123",
+            "agent_id": "a0123456789abcdef",
+            "workspace": "me",
+            "dispatch_prompt": "fix the build",
+            "kernel_sections": '{"role": "primary", "surface": "app_ci"}',
+        },
+        agent_name="developer", agents_dir=tmp_path / "agents", db_path=db,
+    )

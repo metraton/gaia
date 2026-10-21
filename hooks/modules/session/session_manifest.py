@@ -259,14 +259,19 @@ _CANDIDATE_TOOLS: tuple = (
 def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
     """Which *candidates* resolve on PATH right now, in declared order.
 
-    ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
-    -- so this reflects the current install rather than a snapshot. Never
-    raises: a lookup failure for one name is skipped, not fatal to the rest.
+    The wrappers the user declared in ``GAIA_CLI_ALIASES`` follow the
+    candidates: Gaia names none of them, so the declaration is the only reason
+    one is listed. ``shutil.which`` is a pure PATH lookup -- no subprocess, no
+    version probe -- so this reflects the current install rather than a
+    snapshot. Never raises: a lookup failure for one name is skipped, not fatal
+    to the rest.
     """
     import shutil
 
+    from ..security.cli_aliases import declared_wrappers
+
     found = []
-    for name in candidates:
+    for name in dict.fromkeys((*candidates, *declared_wrappers())):
         try:
             if shutil.which(name):
                 found.append(name)
@@ -292,6 +297,47 @@ def _machine_label() -> str:
         return host or os_part or "unknown"
     except Exception:
         return "unknown"
+
+
+ENVIRONMENT_LINE_MAX = 300
+
+
+def _os_label() -> str:
+    """``Linux``, or ``Linux/WSL2`` / ``Linux/WSL`` when the kernel release names Microsoft's."""
+    system = platform.system() or "unknown"
+    release = platform.release().lower()
+    if "wsl2" in release:
+        return f"{system}/WSL2"
+    if "microsoft" in release:
+        return f"{system}/WSL"
+    return system
+
+
+def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
+    """The machine facts a specialist needs, on one line of at most ``limit`` chars; "" on failure.
+
+    The gaia CLI path leads because the trust guard rejects the bare token;
+    tools follow in declared order until the cap is reached.
+    """
+    try:
+        parts = [_os_label()]
+        cli_path = _resolve_gaia_cli_path()
+        if cli_path:
+            parts.append(f"gaia CLI {cli_path}")
+        line = "; ".join(parts)
+        if len(line) > limit:
+            return line[:limit - 1] + "…"
+        label = "; tools on PATH: "
+        kept = ""
+        for name in _scan_available_tools():
+            candidate = f"{kept}, {name}" if kept else name
+            if len(line + label + candidate) > limit:
+                break
+            kept = candidate
+        return line + label + kept if kept else line
+    except Exception as exc:
+        logger.debug("build_environment_line failed (non-fatal): %s", exc)
+        return ""
 
 
 # ---------------------------------------------------------------------------

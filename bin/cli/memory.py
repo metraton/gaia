@@ -55,10 +55,12 @@ this order:
                                           --workspace only => project_ref NULL,
                                           exit 0 (explicit degraded lane).
                                           --audience sets memory.audience
-                                          at insertion time; omitted, a new row
-                                          defaults to 'any' and a --replace
-                                          that omits it leaves an existing
-                                          value untouched.
+                                          at insertion time; omitted, a new
+                                          user row defaults to 'orchestrator'
+                                          (only 'executor' reaches a
+                                          specialist), any other new row to
+                                          'any', and a --replace that omits it
+                                          leaves an existing value untouched.
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->
@@ -851,6 +853,8 @@ def _cmd_add(args) -> int:
             f"invalid type '{mem_type}'; must be one of {list(VALID_MEMORY_TYPES)}",
             as_json,
         )
+    if mem_type == "user" and audience_flag is None:
+        audience_flag = "orchestrator"
 
     project_ref = None
     if project_flag is not None:
@@ -3629,12 +3633,13 @@ def register(subparsers):
         "--audience", default=None,
         choices=("orchestrator", "executor", "any"),
         help=(
-            "Which agent role this row is FOR -- 'orchestrator' "
-            "(routing/model-choice/report-style instructions), 'executor' "
-            "(preferences for any dispatched specialist), or 'any' (the "
-            "schema default; unclassified/applies regardless). Omitted, a new "
-            "row gets 'any' and --replace keeps the stored value (never "
-            "silently reset)."
+            "Which agent role this row is FOR. A --type=user row reaches a "
+            "dispatched specialist only as 'executor': mark it so only when "
+            "it is a standard every artifact must obey in any project and no "
+            "skill, guard or environment fact can carry it. 'orchestrator' "
+            "and 'any' keep a user row with the orchestrator. Omitted, a new "
+            "user row gets 'orchestrator', any other new row gets 'any', and "
+            "--replace keeps the stored value (never silently reset)."
         ),
     )
     add_p.add_argument(
