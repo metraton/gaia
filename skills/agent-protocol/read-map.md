@@ -111,6 +111,7 @@ is pulled with exactly one verb.
 | `gaia now` | `--json` | The machine's local time, UTC offset and zone name; `--json` adds the UTC instant. Opens no database. The clock to read before fixing a reminder's absolute time. |
 | `gaia status` | `--json` | What Gaia has wired into this workspace: last agent, pending context updates, contract success rate. |
 | `gaia doctor` | `--workspace <path>`, `--json` | Health checks, read-only. `--fix` MUTATES and is a different verb in every sense that matters. |
+| `gaia lint comments` | `--repo`, `--head`, `--base`, `--json` | Net comment and docstring lines a branch adds over its merge-base against max(2, 2% of added code); lists each offender as file:line. The check a `git push` of the branch is gated on. |
 
 ## Consent state, and the channels that outlive the turn
 

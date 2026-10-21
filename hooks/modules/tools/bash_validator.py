@@ -292,6 +292,8 @@ class BashValidator:
     composition -> aggregate.  See module docstring for phase details.
     """
 
+    last_warning = ""
+
     def __init__(self):
         """Initialize validator with parser, unwrapper, and decomposer."""
         self.shell_parser = get_shell_parser()
