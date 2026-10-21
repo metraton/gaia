@@ -1,10 +1,4 @@
-"""A specialist is told the machine facts it cannot discover cheaply.
-
-What the user feels: a specialist knows it runs under WSL, which tools exist
-and where the gaia CLI lives without spending turns probing, and the line never
-grows past its cap however many tools the machine has. Runs against a
-temporary HOME, GAIA_DATA_DIR and GAIA_DB.
-"""
+"""A specialist is told the OS, the gaia CLI path and the tools on PATH, in a line that stays capped."""
 
 from __future__ import annotations
 

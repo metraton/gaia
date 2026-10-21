@@ -1,10 +1,4 @@
-"""A subagent knows the user by the live rows marked for executors, out of the orchestrator's.
-
-The session carries every live user row; a dispatched subagent carries only
-those addressed to executors, and a row the user retired -- replaced through a supersedes link, or kept only
-as a log -- must reach neither. Runs against a
-temporary HOME, GAIA_DATA_DIR and GAIA_DB.
-"""
+"""A subagent gets only live executor rows; superseded or log rows reach neither it nor the session."""
 
 from __future__ import annotations
 
@@ -27,7 +21,7 @@ USER_SCOPE = "_gaia_user"
 ROWS = {
     "user_jorge": ("anchor", "any", "Hecho: Jorge runs DevOps for a consultancy."),
     "user_pref_english": ("anchor", "orchestrator", "Preferencia: versioned text is in English."),
-    "user_pref_ghx": ("anchor", "executor","Preferencia: GitHub goes through ghx per command."),
+    "user_pref_ghx": ("anchor", "executor", "Preferencia: GitHub goes through ghx per command."),
     "user_pref_old": ("anchor", "executor", "Preferencia: an older rule, since replaced."),
     "user_retired": ("log", "executor", "Preferencia: a retired note kept as history."),
 }

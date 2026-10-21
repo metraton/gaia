@@ -55,12 +55,6 @@ this order:
                                           --workspace only => project_ref NULL,
                                           exit 0 (explicit degraded lane).
                                           --audience sets memory.audience
-                                          at insertion time; omitted, a new
-                                          user row defaults to 'orchestrator'
-                                          (only 'executor' reaches a
-                                          specialist), any other new row to
-                                          'any', and a --replace that omits it
-                                          leaves an existing value untouched.
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->

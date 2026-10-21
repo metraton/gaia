@@ -1,9 +1,4 @@
-"""A binary Gaia has never heard of still pays consent for what it mutates.
-
-With no alias declared, an unknown wrapper around gh (``ghx`` stands in for any
-user's own launcher) is classified by the shape of its arguments, so a merge, a
-delete or a workflow trigger asks for a signature while a list does not.
-"""
+"""An unknown wrapper around gh pays consent for the mutations its arguments name."""
 
 import sys
 from pathlib import Path

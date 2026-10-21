@@ -22,10 +22,8 @@ row:
     declaration pattern as ``routing:``) and rendered verbatim when present,
     additive to the base lines. Declaring is NOT permitting: tiers and
     guards still gate every execution.
-  * ``# How the user works`` -- only the user's standing rows whose
-    ``audience`` is ``executor`` (``any`` and ``orchestrator`` stay with the
-    orchestrator, which holds continuity and curates them), in the same
-    facts/preferences sections
+  * ``# How the user works`` -- the user's standing rows the session birth
+    block carries that are addressed to ``executor``, in the same facts/preferences sections
     (``gaia.store.reader.user_anchor_rows`` rendered by
     ``modules.context.user_sections``), BODY inline, not slugs: a slug cost a
     further ``gaia memory show`` call the agent in practice never made.
@@ -38,11 +36,6 @@ row:
     CLI index first and the notes only after it. Omitted when the dispatch has
     no project or the project has no notes. Bodies are opened on demand with
     ``gaia memory show <slug>``.
-
-  * ``# Environment``        -- one capped line of machine facts (OS/WSL, gaia
-    CLI path, tools on PATH), built by ``session_manifest.build_environment_line``
-    from the same probes as the orchestrator's ``## Environment`` block. Rendered
-    after the user's rows and the notes, so a long kernel loses it before them.
 
 ``# Your skills`` is a fourth block, rendered only for a host that preloads
 no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
@@ -479,10 +472,6 @@ def _record_kernel_telemetry(
 
 def build_memory_block(*, db_path=None) -> str:
     """Render ``# How the user works`` from the user's standing rows, or "" when there are none.
-
-    Whatever workspace the dispatch ran from: user memory belongs to no
-    workspace. Only rows addressed to ``executor`` ship; the orchestrator
-    marks a row so when it is a standard every artifact must obey.
     """
     from gaia.store.reader import user_anchor_rows
 
@@ -561,7 +550,6 @@ def build_project_notes_block(
 
 
 def build_environment_block() -> str:
-    """Render ``# Environment`` from the capped machine line, or "" when it cannot be built."""
     try:
         from ..session.session_manifest import build_environment_line
 
@@ -579,12 +567,12 @@ def build_kernel_context(
     agents_dir: "Path | None" = None,
     db_path=None,
 ) -> Optional[str]:
-    """The full kernel payload: contract, user rows, project notes, environment, CLI, blank-line joined.
+    """The full kernel payload: contract, user rows, project notes, CLI, blank-line joined.
 
     The host keeps the head of an over-long hook context, so the order is the
     order of what a turn can least do without: its identity and goal, the user's
-    rows, the project's notes, the machine line, then the CLI index, which
-    ``gaia --help`` can always rebuild.
+    rows, the project's notes, then the CLI index, which ``gaia --help`` can
+    always rebuild.
 
     Returns None when the contract block itself cannot render (no identity on
     the row) -- the CLI/memory blocks never ship without it.

@@ -258,8 +258,6 @@ _CANDIDATE_TOOLS: tuple = (
 
 USER_EXECUTABLES_MAX = 40
 
-# Directories that hold a package manager's installs, not tools the user wrote
-# or chose to put on PATH; one name anywhere in the path excludes the entry.
 _PACKAGE_TREES = frozenset({
     "node_modules", ".venv", "venv", ".cargo", ".rustup", "go", ".nvm", ".pyenv",
     ".rbenv", ".asdf", ".npm", ".npm-global", ".bun", ".volta", ".gem", "gem", ".sdkman",
@@ -267,12 +265,6 @@ _PACKAGE_TREES = frozenset({
 
 
 def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> list:
-    """Executable names in the PATH entries the user owns, first PATH entry winning.
-
-    A PATH entry is the user's when it sits under ``$HOME`` and no part of it
-    names a package-manager tree. Names only: nothing is run or read. Never
-    raises; an unreadable directory is skipped.
-    """
     home = Path.home()
     seen = set(exclude)
     names: list = []
@@ -299,11 +291,11 @@ def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> lis
 
 
 def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
-    """Which *candidates* resolve on PATH right now, then the user's own executables.
+    """Which *candidates* resolve on PATH right now, in declared order.
 
-    ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe --
-    so this reflects the current install rather than a snapshot. Never raises: a
-    lookup failure for one name is skipped, not fatal to the rest.
+    ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
+    -- so this reflects the current install rather than a snapshot. Never
+    raises: a lookup failure for one name is skipped, not fatal to the rest.
     """
     import shutil
 
@@ -340,7 +332,6 @@ ENVIRONMENT_LINE_MAX = 400
 
 
 def _os_label() -> str:
-    """``Linux``, or ``Linux/WSL2`` / ``Linux/WSL`` when the kernel release names Microsoft's."""
     system = platform.system() or "unknown"
     release = platform.release().lower()
     if "wsl2" in release:
@@ -351,11 +342,6 @@ def _os_label() -> str:
 
 
 def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
-    """The machine facts a specialist needs, on one line of at most ``limit`` chars; "" on failure.
-
-    The gaia CLI path leads because the trust guard rejects the bare token;
-    tools follow in declared order until the cap is reached.
-    """
     try:
         parts = [_os_label()]
         cli_path = _resolve_gaia_cli_path()
