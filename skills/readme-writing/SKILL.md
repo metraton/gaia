@@ -1,6 +1,6 @@
 ---
 name: readme-writing
-description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a folder that holds one kind of thing (modules, migrations, components, services, scripts, environments, workloads; Gaia's own agents/, skills/ and hooks/ are one instance of that same shape), or the README shipped inside a template or scaffold handed to someone else. Triggers -- "escribe el README", "actualiza el README", "limpia el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
+description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a folder that holds one kind of thing (modules, migrations, components, services, scripts, environments, workloads; Gaia's own agents/, skills/ and hooks/ are one instance of that same shape), or the README shipped inside a template or scaffold handed to someone else. Triggers -- "escribe el README", "actualiza el README", "limpia el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", "write a runbook", or a drift report flagging a README as stale.
 ---
 
 # README Writing
@@ -100,7 +100,7 @@ Each gate has exactly one section that carries the weight. If that one is vague,
 
 ## Step 4: The README is the map, not the territory
 
-A README routes to where each thing lives; it does not contain it. Long-form documentation goes to its own folder and is linked. Examples go to theirs. History goes to the changelog. Whatever is generated carries its own README, and the generator links to it. When a README already holds one of these, cleaning it up means moving the content to where it belongs and leaving the link -- not deleting it and not keeping a summary of it beside the link.
+A README routes to where each thing lives; it does not contain it. Long-form documentation goes to its own folder and is linked. A procedure goes to a runbook beside the component. Examples go to theirs. History goes to the changelog. Whatever is generated carries its own README, and the generator links to it. When a README already holds one of these, cleaning it up means moving the content to where it belongs and leaving the link -- not deleting it and not keeping a summary of it beside the link.
 
 **The rule that decides the factory case:** a repo whose product is another document or another repo documents the *generation contract* -- what goes in, what comes out, how it is run -- and links to what it generated. It never reproduces it. A copy and its original are two sources of truth, and they diverge on the first edit that lands in only one of them.
 
@@ -108,12 +108,28 @@ A README routes to where each thing lives; it does not contain it. Long-form doc
 
 ## Every sentence is a claim about somewhere else
 
-Nearly every sentence a README can hold asserts the current state of something the reader is not looking at -- a file, a workflow, a pin, an environment. That is the one kind of written claim that becomes false without anyone touching it (of the kinds in code-standards' "The four durabilities of a written claim", a README is built almost entirely of the rotting one), which is why a README rots faster than any comment in the code: a comment at least sits beside what it describes, while nothing that edits a workflow re-reads the README describing it. A real audit landed exactly here: of the false claims found across a 33-file repository, the root README alone carried four -- about its own CI workflow, its module pins, and its environments.
+Nearly every sentence a README can hold asserts the current state of something the reader is not looking at -- a file, a workflow, a pin, an environment. That is the one kind of written claim that becomes false without anyone touching it (a README is built almost entirely of claims of this kind), which is why a README rots faster than any comment in the code: a comment at least sits beside what it describes, while nothing that edits a workflow re-reads the README describing it. A real audit landed exactly here: of the false claims found across a 33-file repository, the root README alone carried four -- about its own CI workflow, its module pins, and its environments.
 
 Two consequences, one per direction:
 
-- **Writing: the repository already answers most questions.** Config files, the directory layout, a tool's own `--help` are sources of truth; a sentence restating one is a cache of a lookup, worth writing only when the lookup is expensive (the authoring test is code-standards' "Cache what the reader cannot look up"). What earns its place is what no lookup returns: the convention, the decision with its rejected alternative, the mistake the folder punishes -- which is what the gate sections above already ask for. When a sentence must assert the state of another file, it names the file and the symbol, key, or job inside it, so the reader can check it -- a name survives edits that a line number does not.
+- **Writing: the repository already answers most questions.** Config files, the directory layout, a tool's own `--help` are sources of truth; a sentence restating one is a cache of a lookup, worth writing only when the lookup is expensive. What earns its place is what no lookup returns: the convention, the decision with its rejected alternative, the mistake the folder punishes -- which is what the gate sections above already ask for. When a sentence must assert the state of another file, it names the file and the symbol, key, or job inside it, so the reader can check it -- a name survives edits that a line number does not.
 - **Updating: every sentence kept is a claim re-made.** Verify each sentence you keep against what it asserts, or say which ones you did not check -- a reader takes the README as true, and a model measurably absorbs a false sentence and builds on it rather than flagging it. An update whose diff touched three sentences has re-published all the others.
+
+## Freshness: the README changes with the component
+
+A change that adds, removes or renames a file, or adds, removes or renames a public entry point (a CLI verb, an exported function, a route, an environment variable), under a component updates that component's README in the same change: the tree line, the wiring, the convention it affects. A README fixed in a later change was false in between, and the later change is the one that never happens. Editing the contents of a file needs no README edit unless a sentence there names what changed.
+
+## Runbooks: a procedure lives next to its component
+
+Write a runbook when a task is done by hand, rarely, and a mistake is costly -- a rotation, a restore, a migration run, a release. A numbered list of commands growing inside a README is the signal to move it out. It lives beside the component it operates, as `RUNBOOK.md` (or `runbooks/<task>.md` when there are several), and the component README links it with its reason. Sections, in order:
+
+1. **Purpose** -- the outcome, and the trigger or symptom that says to run it.
+2. **Prerequisites** -- access, tools with versions, the state that must hold before step 1.
+3. **Steps** -- numbered, one exact copy-pasteable command each, with the expected output wherever a wrong result is possible. "Restart the service" fails the concreteness test in Step 3; the command passes.
+4. **Verification** -- the read-only command whose output shows it worked.
+5. **Rollback** -- how to undo it, or the step after which it cannot be undone.
+
+A runbook asserts the state of what it runs, so the freshness rule above applies to it: a change to a command it names updates it in the same change.
 
 ## Anti-patterns
 
