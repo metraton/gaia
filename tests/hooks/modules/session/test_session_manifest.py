@@ -419,7 +419,7 @@ class TestScanAvailableTools:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("PATH", "")
 
-    def test_a_user_executable_follows_the_candidates(self, monkeypatch, tmp_path):
+    def test_a_user_executable_precedes_the_candidates(self, monkeypatch, tmp_path):
         import shutil as _shutil
 
         user_bin = tmp_path / "bin"
@@ -430,7 +430,7 @@ class TestScanAvailableTools:
         monkeypatch.setattr(
             _shutil, "which", lambda name: "/usr/bin/" + name if name == "git" else None
         )
-        assert session_manifest._scan_available_tools(("git",)) == ["git", "mywrap"]
+        assert session_manifest._scan_available_tools(("git",)) == ["mywrap", "git"]
 
     def test_only_resolvable_candidates_are_returned_in_order(self, monkeypatch):
         import shutil as _shutil

@@ -52,6 +52,20 @@ def _tools(line: str) -> list[str]:
     return line.split("tools on PATH: ")[1].split(", ")
 
 
+def _make_console_scripts(directory: Path, *names: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        script = directory / name
+        script.write_text(
+            "#!/usr/bin/python3\n# -*- coding: utf-8 -*-\nimport re\nimport sys\n"
+            "from somepackage import main\nif __name__ == '__main__':\n"
+            "    sys.argv[0] = re.sub(r'(-script\\.pyw|\\.exe)?$', '', sys.argv[0])\n"
+            "    sys.exit(main())\n"
+        )
+        script.chmod(0o755)
+    return directory
+
+
 def test_line_lists_an_executable_from_a_directory_the_user_owns(env, tmp_path, monkeypatch):
     home = tmp_path / "home"
     _path_with(monkeypatch, _make(tmp_path / "usr", "git"), _make(home / "bin", "ghx"), _make(home / ".local" / "bin", "mytool"))
@@ -104,6 +118,41 @@ def test_orchestrator_section_lists_more_user_executables_than_the_line_keeps(en
 
     assert listed == names[: session_manifest.USER_EXECUTABLES_MAX]
     assert 0 < len(kept_by_line) < len(listed)
+
+
+def test_line_lists_the_users_own_tools_before_known_tools_and_pip_console_scripts(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    pip_scripts = [f"opentelemetry-tool-{n:02d}" for n in range(30)] + ["pytest", "py.test", "uvicorn"]
+    own_python = home / "bin" / "mytask"
+    _make(home / "bin", "ghx")
+    own_python.write_text("#!/usr/bin/env python3\nprint('mine')\n")
+    own_python.chmod(0o755)
+    _path_with(
+        monkeypatch,
+        _make_console_scripts(home / ".local" / "bin", *pip_scripts),
+        home / "bin",
+        _make(tmp_path / "usr", "git"),
+    )
+
+    line = session_manifest.build_environment_line()
+    tools = _tools(line)
+
+    assert len(line) <= session_manifest.ENVIRONMENT_LINE_MAX
+    assert tools[:3] == ["ghx", "mytask", "git"]
+    assert set(tools[3:]) <= set(pip_scripts)
+    assert 0 < len(tools[3:]) < len(pip_scripts)
+
+
+def test_orchestrator_scan_orders_own_tools_then_known_tools_then_pip_console_scripts(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _path_with(
+        monkeypatch,
+        _make_console_scripts(home / ".local" / "bin", "pytest"),
+        _make(home / "bin", "ghx"),
+        _make(tmp_path / "usr", "git"),
+    )
+
+    assert session_manifest._scan_available_tools() == ["ghx", "git", "pytest"]
 
 
 def test_line_names_wsl_from_the_kernel_release(env, monkeypatch):

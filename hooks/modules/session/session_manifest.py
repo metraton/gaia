@@ -264,10 +264,27 @@ _PACKAGE_TREES = frozenset({
 })
 
 
-def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> list:
+_CONSOLE_SCRIPT_HEAD_BYTES = 1024
+_CONSOLE_SCRIPT_MARKER = rb"-script\.pyw"
+
+
+def _is_package_console_script(path: str) -> bool:
+    """Whether *path* is the python entry-point wrapper pip and uv generate for a package."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_CONSOLE_SCRIPT_HEAD_BYTES)
+    except OSError:
+        return False
+    first_line = head.split(b"\n", 1)[0]
+    return first_line.startswith(b"#!") and b"python" in first_line and _CONSOLE_SCRIPT_MARKER in head
+
+
+def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> tuple:
+    """The user's executables on PATH as (authored, package console scripts), together within *limit*."""
     home = Path.home()
     seen = set(exclude)
     names: list = []
+    packages: list = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         if not entry:
             continue
@@ -277,21 +294,20 @@ def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> lis
         if _PACKAGE_TREES.intersection(directory.relative_to(home).parts):
             continue
         try:
-            files = sorted(e.name for e in os.scandir(directory)
+            files = sorted((e.name, e.path) for e in os.scandir(directory)
                            if not e.name.startswith(".") and e.is_file() and os.access(e.path, os.X_OK))
         except OSError:
             continue
-        for name in files:
+        for name, path in files:
             if name not in seen:
                 seen.add(name)
-                names.append(name)
-                if len(names) >= limit:
-                    return names
-    return names
+                (packages if _is_package_console_script(path) else names).append(name)
+    names = names[:limit]
+    return names, packages[:limit - len(names)]
 
 
 def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
-    """Which *candidates* resolve on PATH right now, in declared order.
+    """The user's own tools, then which *candidates* resolve on PATH right now, then package console scripts.
 
     ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
     -- so this reflects the current install rather than a snapshot. Never
@@ -306,7 +322,8 @@ def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
                 found.append(name)
         except Exception:
             continue
-    return found + _scan_user_executables(exclude=candidates)
+    authored, packages = _scan_user_executables(exclude=candidates)
+    return authored + found + packages
 
 
 def _machine_label() -> str:
