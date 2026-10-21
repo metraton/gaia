@@ -372,13 +372,7 @@ _USER_ANCHORS = (
 def user_anchor_rows(
     db_path: Path | None = None, *, audience: str | None = None,
 ) -> list[dict]:
-    """The user's standing rows: live ``type='user'`` anchors no row supersedes.
-
-    The one selection behind both the session birth block and the dispatch
-    kernel. A given ``audience`` selects exactly that role, ``any`` excluded;
-    omitted, every row, which is what the orchestrator's birth block reads.
-    Returns ``[]`` on any DB error.
-    """
+    """The user's live ``type='user'`` anchors, only those addressed to ``audience`` when given."""
     try:
         con = _connect(db_path)
     except Exception:
