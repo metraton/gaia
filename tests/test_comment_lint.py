@@ -50,10 +50,69 @@ def test_a_banner_is_refused_whatever_the_count(tmp_path):
     assert [mark.line for _, mark in report.banners] == [301]
 
 
+@pytest.mark.parametrize("path,line", [
+    ("a.py", "# --- Helpers ---"),
+    ("a.py", "#### Helpers ####"),
+    ("a.py", "# ****"),
+    ("a.py", "# ~~~ notes ~~~"),
+    ("a.sh", "# ___"),
+    ("a.ts", "// ===== X ====="),
+    ("a.ts", "/*****/"),
+    ("a.ts", "/* *** */"),
+])
+def test_a_line_that_is_mostly_decoration_is_a_banner(path, line):
+    assert scan_text(path, f"{line}\nvalue = 1\n").counted[1].banner
+
+
+@pytest.mark.parametrize("path,line", [
+    ("a.py", "# a -> b"),
+    ("a.py", "# TODO(x): handle the empty case..."),
+    ("a.py", "# see https://my-host.example.com/a-b-c for details"),
+    ("a.py", "# a -- b"),
+    ("a.py", "# **bold** claim"),
+    ("a.ts", "// wait for it..."),
+])
+def test_arrows_ellipses_and_urls_with_dashes_are_not_banners(path, line):
+    assert not scan_text(path, f"{line}\nvalue = 1\n").counted[1].banner
+
+
+@pytest.mark.parametrize("line", ["# --- Helpers ---", "#### Helpers ####"])
+def test_a_short_banner_alone_blocks_the_change(tmp_path, line):
+    report = run(tmp_path, {"a.py": code(300) + line + "\n"})
+    assert (report.over_limit, report.blocked, len(report.banners)) == (False, True, 1)
+
+
 @pytest.mark.parametrize("lines,blocked", [(2, False), (3, True)])
 def test_a_comment_block_over_two_lines_is_refused(tmp_path, lines, blocked):
     report = run(tmp_path, {"a.py": "# why\n" * lines + code(300)})
     assert (report.over_limit, report.blocked) == (False, blocked)
+
+
+EXISTING_BLOCK = "# first fact\n# second fact\n# third fact\n" + code(300)
+
+
+@pytest.mark.parametrize("edited,blocked", [
+    ("# first fact, corrected\n# second fact\n# third fact, corrected\n", False),
+    ("# first fact\n# third fact\n", False),
+    ("# first fact\n# second fact\n# third fact\n# fourth fact\n", True),
+    ("# first fact\n# second fact\n# third fact\n# fourth\n# fifth\n", True),
+])
+def test_only_a_block_the_change_creates_or_lengthens_is_refused(tmp_path, edited, blocked):
+    base = {"a.py": EXISTING_BLOCK}
+    report = run(tmp_path, {"a.py": edited + code(300)}, base)
+    assert (bool(report.runs), report.over_limit) == (blocked, False)
+
+
+def test_an_existing_block_survives_an_edit_that_shifts_it(tmp_path):
+    base = {"a.py": EXISTING_BLOCK}
+    report = run(tmp_path, {"a.py": "VALUE = 1\n" + EXISTING_BLOCK.replace("second", "2nd")}, base)
+    assert not report.runs
+
+
+def test_a_new_block_beside_an_existing_one_is_refused(tmp_path):
+    base = {"a.py": EXISTING_BLOCK}
+    report = run(tmp_path, {"a.py": EXISTING_BLOCK + "# new one\n# new two\n# new three\n"}, base)
+    assert [len(block) for _, block in report.runs] == [3]
 
 
 def test_directives_and_generated_files_are_not_counted(tmp_path):

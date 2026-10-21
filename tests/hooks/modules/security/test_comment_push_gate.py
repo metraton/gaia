@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "hooks"))
 
 from modules.security.comment_push_gate import check  # noqa: E402
 from modules.tools.bash_validator import BashValidator  # noqa: E402
-from tests.fixtures.comment_repo import git, interleave, make_change  # noqa: E402
+from tests.fixtures.comment_repo import commit_files, git, interleave, make_change  # noqa: E402
 
 BASE = {"a.py": "VALUE = 0\n"}
 
@@ -56,6 +56,44 @@ def test_a_branch_push_under_the_limit_passes(under):
 def test_pushes_with_nothing_to_compare_and_other_commands_are_not_gated(over, form):
     git(over, "tag", "v1")
     assert check(form.format(repo=over), cwd=str(over)).allowed
+
+
+def detach(repo):
+    git(repo, "checkout", "-q", "--detach")
+    return git(repo, "rev-parse", "HEAD")
+
+
+@pytest.mark.parametrize("form", [
+    "git -C {repo} push origin HEAD:x",
+    "git -C {repo} push origin {sha}:refs/heads/x",
+    "git -C {repo} push origin {sha}:x",
+])
+def test_a_detached_or_sha_push_over_the_limit_is_refused(over, form):
+    sha = detach(over)
+    verdict = check(form.format(repo=over, sha=sha), cwd=str(over))
+    assert not verdict.allowed and "[COMMENT_LIMIT]" in verdict.reason
+
+
+def test_a_sha_push_from_a_checked_out_branch_is_refused(over):
+    sha = git(over, "rev-parse", "HEAD")
+    assert not check(f"git -C {over} push origin {sha}:refs/heads/x").allowed
+
+
+@pytest.mark.parametrize("form", [
+    "git -C {repo} push origin HEAD:x",
+    "git -C {repo} push origin {sha}:refs/heads/x",
+])
+def test_a_detached_or_sha_push_under_the_limit_passes(under, form):
+    sha = detach(under)
+    assert check(form.format(repo=under, sha=sha), cwd=str(under)).allowed
+
+
+def test_an_existing_target_is_measured_against_its_remote_ref(over):
+    git(over, "update-ref", "refs/remotes/origin/x", "HEAD")
+    commit_files(over, {"b.py": "# one fact\nVALUE = 1\n"})
+    detach(over)
+    assert check(f"git -C {over} push origin HEAD:x", cwd=str(over)).allowed
+    assert not check(f"git -C {over} push origin HEAD:y", cwd=str(over)).allowed
 
 
 def test_a_counter_failure_allows_the_push_with_a_visible_warning(over, monkeypatch):

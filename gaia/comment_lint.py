@@ -29,7 +29,10 @@ _SOURCE_EXT = _PYTHON_EXT | _JS_EXT | _HASH_EXT | _HCL_EXT
 _GENERATED_PARTS = {"node_modules", "vendor", "dist", "generated", "__generated__"}
 _GENERATED_NAMES = {"pnpm-lock.yaml", "yarn.lock", ".terraform.lock.hcl"}
 _GENERATED_HEADER = re.compile(r"@generated|DO NOT EDIT|Code generated", re.IGNORECASE)
-_BANNER = re.compile(r"^(?:#+|//+|/\*+)\s*([-=*_~+#])\1{3,}")
+_COMMENT_MARKER = re.compile(r"^(?://|/\*|#)")
+_DECORATION_RUN = r"([^\w\s.`'\"]|_)\1{2,}"
+_BANNER_OPENING = re.compile(_DECORATION_RUN)
+_BANNER_CLOSING = re.compile(_DECORATION_RUN + r"$")
 _DIRECTIVE = re.compile(
     r"^(?:#+|//+|/\*+)\s*(?:!|noqa\b|type:|pragma\b|pylint:|fmt:|isort:|mypy:|pyright:|ruff:"
     r"|flake8:|coding[:=]|-\*-|eslint|@ts-|prettier-ignore|shellcheck|tflint|tfsec|checkov"
@@ -116,7 +119,8 @@ class Report:
 
 
 def _is_banner(text: str) -> bool:
-    return bool(_BANNER.match(text))
+    body = _COMMENT_MARKER.sub("", text.removesuffix("*/").rstrip(), count=1).strip()
+    return bool(_BANNER_OPENING.match(body) or _BANNER_CLOSING.search(body))
 
 
 def _lexer():
@@ -297,27 +301,47 @@ def resolve_base(repo: str, head: str, explicit: Optional[str] = None) -> Option
     return best[1] if best else None
 
 
-_HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+Hunk = Tuple[int, int, int, int]
 
 
-def _added_ranges(repo: str, base: str, head: str) -> Dict[str, Set[int]]:
+def _diff_hunks(repo: str, base: str, head: str) -> Dict[str, List[Hunk]]:
+    """Per path, each hunk as (old_start, old_count, new_start, new_count)."""
     diff = _git(repo, "diff", "--unified=0", "--no-renames", "--no-color", base, head, "--")
-    added: Dict[str, Set[int]] = {}
+    hunks: Dict[str, List[Hunk]] = {}
     old_path = new_path = ""
     for line in diff.splitlines():
         if line.startswith("--- "):
             old_path = line[4:].removeprefix("a/")
         elif line.startswith("+++ "):
             new_path = line[4:].removeprefix("b/")
-            path = old_path if new_path == "/dev/null" else new_path
-            added.setdefault(path, set())
+            hunks.setdefault(old_path if new_path == "/dev/null" else new_path, [])
         elif line.startswith("@@"):
             match = _HUNK.match(line)
             if match:
-                start, count = int(match.group(1)), int(match.group(2) or 1)
-                added[old_path if new_path == "/dev/null" else new_path].update(
-                    range(start, start + count))
-    return added
+                old_start, old_count, new_start, new_count = (
+                    int(group) if group is not None else 1 for group in match.groups())
+                hunks[old_path if new_path == "/dev/null" else new_path].append(
+                    (old_start, old_count, new_start, new_count))
+    return hunks
+
+
+def _added_lines(hunks: List[Hunk]) -> Set[int]:
+    return {n for _, _, start, count in hunks for n in range(start, start + count)}
+
+
+def _old_lines(hunks: List[Hunk], line: int) -> range:
+    """The lines of the old file that ``line`` of the new file stands for; empty for an insertion."""
+    shift = 0
+    for old_start, old_count, new_start, new_count in hunks:
+        if new_count and new_start <= line < new_start + new_count:
+            return range(old_start, old_start + old_count)
+        before_hunk = line <= new_start if new_count == 0 else line < new_start
+        if before_hunk:
+            break
+        shift += new_count - old_count
+    return range(line - shift, line - shift + 1)
 
 
 def _blob(repo: str, rev: str, path: str) -> str:
@@ -328,7 +352,7 @@ def _is_generated(text: str) -> bool:
     return any(_GENERATED_HEADER.search(line) for line in text.splitlines()[:5])
 
 
-def _long_runs(path: str, scan: Scan, added: Set[int]) -> List[Tuple[str, List[Marked]]]:
+def _comment_runs(scan: Scan) -> List[List[Marked]]:
     marks = sorted((m for m in scan.counted.values() if m.full_line and m.kind == "comment"),
                    key=lambda m: m.line)
     runs: List[List[Marked]] = []
@@ -337,8 +361,21 @@ def _long_runs(path: str, scan: Scan, added: Set[int]) -> List[Tuple[str, List[M
             runs[-1].append(mark)
         else:
             runs.append([mark])
-    return [(path, run) for run in runs
-            if len(run) > _MAX_RUN and sum(m.line in added for m in run) > _MAX_RUN]
+    return runs
+
+
+def _inherited_length(run: List[Marked], hunks: List[Hunk], old_runs: List[List[Marked]]) -> int:
+    stood_for = {n for mark in run for n in _old_lines(hunks, mark.line)}
+    return max((len(old) for old in old_runs if any(m.line in stood_for for m in old)), default=0)
+
+
+def _long_runs(path: str, scan: Scan, old_scan: Scan,
+               hunks: List[Hunk]) -> List[Tuple[str, List[Marked]]]:
+    added = _added_lines(hunks)
+    old_runs = _comment_runs(old_scan)
+    return [(path, run) for run in _comment_runs(scan)
+            if len(run) > max(_MAX_RUN, _inherited_length(run, hunks, old_runs))
+            and any(m.line in added for m in run)]
 
 
 def _patch_id(repo: str, *revs: str) -> str:
@@ -394,7 +431,8 @@ def _measure_span(repo: str, merge_base: str, head: str, rev: str, report: Repor
     def tag(mark: Marked) -> Marked:
         return replace(mark, rev=rev) if rev else mark
 
-    for path, added in sorted(_added_ranges(repo, merge_base, head).items()):
+    for path, hunks in sorted(_diff_hunks(repo, merge_base, head).items()):
+        added = _added_lines(hunks)
         if not is_measured_path(path):
             continue
         new_text, old_text = _blob(repo, head, path), _blob(repo, merge_base, path)
@@ -407,4 +445,4 @@ def _measure_span(repo: str, merge_base: str, head: str, rev: str, report: Repor
         mine = [tag(m) for line, m in sorted(new_scan.counted.items()) if line in added]
         report.offenders += [(path, m) for m in mine]
         report.banners += [(path, m) for m in mine if m.banner]
-        report.runs += [(p, [tag(m) for m in run]) for p, run in _long_runs(path, new_scan, added)]
+        report.runs += [(p, [tag(m) for m in run]) for p, run in _long_runs(path, new_scan, old_scan, hunks)]

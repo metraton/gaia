@@ -47,7 +47,33 @@ def _push_in(tokens: List[str], cwd: str) -> Optional[tuple]:
     return repo, args[1:]
 
 
-def _branches(repo: str, rest: List[str]) -> List[str]:
+class Pushed(NamedTuple):
+    label: str
+    head: str
+    base: Optional[str] = None
+
+
+def _commit_of(repo: str, rev: str) -> Optional[str]:
+    return _git_read(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
+
+
+def _default_branch_ref(repo: str, remote: str) -> Optional[str]:
+    for name in dict.fromkeys([remote, "origin"]):
+        pointed = _git_read(repo, "symbolic-ref", "--short", f"refs/remotes/{name}/HEAD")
+        for ref in [pointed, f"{name}/main", f"{name}/master"]:
+            if ref and _commit_of(repo, f"refs/remotes/{ref}"):
+                return f"refs/remotes/{ref}"
+    return None
+
+
+def _target_base(repo: str, remote: str, destination: str) -> Optional[str]:
+    target = f"refs/remotes/{remote}/{destination}"
+    if destination and _commit_of(repo, target):
+        return target
+    return _default_branch_ref(repo, remote)
+
+
+def _pushed(repo: str, rest: List[str]) -> List[Pushed]:
     operands: List[str] = []
     skip = False
     for token in rest:
@@ -60,14 +86,20 @@ def _branches(repo: str, rest: List[str]) -> List[str]:
         elif not token.startswith("-"):
             operands.append(token)
     current = _git_read(repo, "symbolic-ref", "--short", "HEAD")
-    found: List[str] = []
+    remote = operands[0] if operands else "origin"
+    found: List[Pushed] = []
     for spec in operands[1:] or ([current] if current else []):
-        source = spec.lstrip("+").split(":", 1)[0]
-        if spec.startswith(":") or source.startswith("refs/tags/"):
+        source, _, destination = spec.lstrip("+").partition(":")
+        if spec.startswith(":") or source.startswith("refs/tags/") or destination.startswith("refs/tags/"):
             continue
-        source = current if source == "HEAD" else source.removeprefix("refs/heads/")
-        if source and _git_read(repo, "show-ref", "--verify", f"refs/heads/{source}") is not None:
-            found.append(source)
+        branch = current if source == "HEAD" else source.removeprefix("refs/heads/")
+        if branch and _git_read(repo, "show-ref", "--verify", f"refs/heads/{branch}") is not None:
+            found.append(Pushed(branch, branch))
+        elif _git_read(repo, "show-ref", "--verify", f"refs/tags/{source}") is None:
+            commit = _commit_of(repo, source)
+            if commit:
+                base = _target_base(repo, remote, destination.removeprefix("refs/heads/"))
+                found.append(Pushed(source, commit, base))
     return found
 
 
@@ -97,10 +129,10 @@ def check(command: str, cwd: Optional[str] = None) -> GateVerdict:
         try:
             from gaia.comment_lint import measure
 
-            for branch in _branches(repo, rest):
-                report = measure(repo, head=branch)
+            for pushed in _pushed(repo, rest):
+                report = measure(repo, head=pushed.head, base=pushed.base)
                 if report.blocked:
-                    return GateVerdict(False, _refusal(branch, report))
+                    return GateVerdict(False, _refusal(pushed.label, report))
         except Exception as exc:  # noqa: BLE001
             logger.warning("comment gate skipped: %s", exc)
             return GateVerdict(True, warning=(
