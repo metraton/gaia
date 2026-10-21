@@ -93,6 +93,7 @@ from ..security.shell_substitution import extract_substitutions, extract_substit
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
+from ..security.subagent_gh_account_guard import check as check_subagent_gh_account
 from ..security.memory_skill_guard import check as check_memory_skill_loaded
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
@@ -863,6 +864,20 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=resume_reason,
+            )
+
+        gh_account_allowed, gh_account_reason = check_subagent_gh_account(
+            command, is_subagent=is_subagent,
+        )
+        if not gh_account_allowed:
+            logger.warning(
+                "BLOCKED subagent gh account credentials (agent=%s): %s",
+                agent_type or "?", command[:100],
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=gh_account_reason,
             )
 
         # ================================================================

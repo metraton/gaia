@@ -1,6 +1,6 @@
 """Plugin setup for the SessionStart hook.
 
-On every session, merges gaia permissions and attribution into
+On every session, merges gaia permissions, attribution and CLI aliases into
 .claude/settings.local.json; what that (or a registry landing in .claude/ when
 CLAUDE_PLUGIN_DATA is unset) writes into the workspace is recorded in the
 install manifest (recorded_in_manifest), so `gaia uninstall` reverts it. The
@@ -217,6 +217,44 @@ PERMISSIONS = {
 # removes the git status snapshot, which has nothing to do with attribution.
 HIDDEN_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
 
+# Wrappers around a CLI that Gaia declares in the workspace env block it owns,
+# in the ``GAIA_CLI_ALIASES`` format (hooks/modules/security/cli_aliases.py):
+# ghx picks the GitHub account per repository and must meet every gate gh meets.
+# A pair the user already declared for the same wrapper is theirs and is kept.
+CLI_ALIASES_ENV = "GAIA_CLI_ALIASES"
+DECLARED_CLI_ALIASES = {"ghx": "gh"}
+
+
+def declare_cli_aliases(env: dict) -> bool:
+    """Add the missing ``DECLARED_CLI_ALIASES`` pairs to *env*; True when it changed."""
+    current = env.get(CLI_ALIASES_ENV, "")
+    if not isinstance(current, str):
+        return False
+    pairs = [p.strip() for p in current.split(",") if p.strip()]
+    declared = {p.partition("=")[0].strip() for p in pairs}
+    missing = [f"{w}={c}" for w, c in DECLARED_CLI_ALIASES.items() if w not in declared]
+    if not missing:
+        return False
+    env[CLI_ALIASES_ENV] = ",".join(pairs + missing)
+    return True
+
+
+def undeclare_cli_aliases(env: dict) -> bool:
+    """Remove exactly the ``DECLARED_CLI_ALIASES`` pairs from *env*; True when it changed."""
+    current = env.get(CLI_ALIASES_ENV)
+    if not isinstance(current, str):
+        return False
+    ours = {f"{w}={c}" for w, c in DECLARED_CLI_ALIASES.items()}
+    pairs = [p.strip() for p in current.split(",") if p.strip()]
+    kept = [p for p in pairs if p.replace(" ", "") not in ours]
+    if len(kept) == len(pairs):
+        return False
+    if kept:
+        env[CLI_ALIASES_ENV] = ",".join(kept)
+    else:
+        del env[CLI_ALIASES_ENV]
+    return True
+
 
 def marker_path() -> Path:
     """The init marker: one per data home, whichever channel launched the session."""
@@ -362,13 +400,18 @@ def setup_project_permissions() -> bool:
     attribution = dict(attribution) if isinstance(attribution, dict) else {}
     attribution_current = all(attribution.get(k) == v for k, v in HIDDEN_ATTRIBUTION.items())
 
-    if merged == perms and attribution_current:
+    env = existing.get("env", {})
+    aliases_changed = isinstance(env, dict) and declare_cli_aliases(env)
+
+    if merged == perms and attribution_current and not aliases_changed:
         logger.info("Project permissions already include gaia rules, skipping")
         return False
 
-    # Update only permissions and attribution, preserve everything else (enabledPlugins, etc.)
+    # Update only permissions, attribution and CLI aliases, preserve everything else (enabledPlugins, etc.)
     existing["attribution"] = {**attribution, **HIDDEN_ATTRIBUTION}
     existing["permissions"] = merged
+    if aliases_changed:
+        existing["env"] = env
 
     claude_dir.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(existing, indent=2) + "\n")

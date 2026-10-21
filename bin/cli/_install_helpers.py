@@ -61,11 +61,15 @@ if str(_HOOKS_ROOT) not in sys.path:
 
 try:
     from modules.core.plugin_setup import (  # type: ignore  # noqa: E402
+        CLI_ALIASES_ENV,
+        declare_cli_aliases,
         merge_gaia_permissions,
         resolve_hook_channel,
         sync_workspace_hooks,
     )
 except Exception:  # noqa: BLE001
+    CLI_ALIASES_ENV = "GAIA_CLI_ALIASES"  # type: ignore[assignment]
+    declare_cli_aliases = None  # type: ignore[assignment]
     merge_gaia_permissions = None  # type: ignore[assignment]
     resolve_hook_channel = None  # type: ignore[assignment]
     sync_workspace_hooks = None  # type: ignore[assignment]
@@ -618,6 +622,8 @@ def merge_local_permissions(
     if "CLAUDE_CODE_DISABLE_AUTO_MEMORY" not in env:
         env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
         changed_fields.append("env.CLAUDE_CODE_DISABLE_AUTO_MEMORY")
+    if declare_cli_aliases(env):
+        changed_fields.append(f"env.{CLI_ALIASES_ENV}")
 
     perms = existing.get("permissions", {})
     merged = merge_gaia_permissions(perms)

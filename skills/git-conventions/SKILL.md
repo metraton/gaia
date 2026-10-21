@@ -97,7 +97,8 @@ Body line length triggers warnings only.
 A PR is written retrospectively, after the commits already exist -- it
 explains the change to a reviewer who was not present while it was made, in
 English, self-contained, with no reference to the process that produced it
-(no task IDs, no plan/sprint labels, no "as requested"). The title reuses the
+(no task IDs, no plan/sprint labels, no "as requested"). A PR body also names
+no approvals, signatures, tiers or the process that produced them. The title reuses the
 same `type(scope): outcome` rule as the commit subject above -- no plan
 jargon there either.
 

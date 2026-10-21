@@ -95,6 +95,12 @@ it protects.
    task, name it by `task_id` or a stable label -- `order_num` renumbers on
    insertion while the sealed prose does not.
 
+   One proof that a mechanism works is enough: do not gate each variant of it.
+   Prefer the repo's existing test, a state read or real use of the thing; do
+   not require auxiliary services or unusual setups to prove it. Reserve an
+   end-to-end gate for milestone tasks. The red run before the change may come
+   from that same existing test, not from a fixture built to fail.
+
 6. **Persist, in this order** (each step attaches to the one before it and
    fails without it):
 

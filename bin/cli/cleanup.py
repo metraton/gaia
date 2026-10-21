@@ -838,6 +838,16 @@ _GAIA_ENV_KEYS = {
 }
 
 
+def _undeclare_cli_aliases(env: dict) -> bool:
+    """Take the CLI alias pairs install declared out of *env*, leaving the user's own; False when the hooks package cannot be imported."""
+    try:
+        from cli import _install_helpers  # noqa: F401 -- puts hooks/ on sys.path
+        from modules.core.plugin_setup import undeclare_cli_aliases  # type: ignore
+    except Exception:  # noqa: BLE001
+        return False
+    return undeclare_cli_aliases(env)
+
+
 def _gaia_managed_permission_sets():
     """Return (managed_tool_names, deny_entries) a Gaia install has written into settings.
 
@@ -924,8 +934,9 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
 
     Mirrors merge_local_permissions and the hook writers:
       - agent: removed only if it equals "gaia-orchestrator".
-      - env: removes the two Gaia keys only when their value matches what
-        install set (a user override of the value is preserved).
+      - env: removes the Gaia keys only when their value matches what
+        install set (a user override of the value is preserved), and only
+        the CLI alias pairs install declared from a user's own GAIA_CLI_ALIASES.
       - permissions.allow: drops entries whose tool name Gaia manages.
       - permissions.deny: drops Gaia's deny rules.
       - hooks: drops hook commands Gaia injected, as the single ownership
@@ -961,6 +972,8 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
                 removed_fields.append(f"env.{key}")
                 if not dry_run:
                     del env[key]
+        if _undeclare_cli_aliases(dict(env) if dry_run else env):
+            removed_fields.append("env.GAIA_CLI_ALIASES")
         if not dry_run and not env:
             del data["env"]
 
@@ -1063,6 +1076,8 @@ def strip_gaia_local_settings(data: dict, workspace: Path) -> dict:
             for key, value in owned.items():
                 if block.get(key) == value:
                     del block[key]
+    if isinstance(data.get("env"), dict):
+        _undeclare_cli_aliases(data["env"])
     perms = data.get("permissions")
     if isinstance(perms, dict):
         managed_names, gaia_deny = _gaia_managed_permission_sets()

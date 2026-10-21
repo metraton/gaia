@@ -186,6 +186,7 @@ def test_e_plugin_channel_writes_hidden_attribution(env, monkeypatch):
 
     local = json.loads((env.workspace / ".claude" / "settings.local.json").read_text())
     assert local["attribution"] == {"commit": "", "pr": "", "sessionUrl": False}
+    assert local["env"]["GAIA_CLI_ALIASES"] == "ghx=gh"
     assert plugin_setup.setup_project_permissions() is False
 
 
