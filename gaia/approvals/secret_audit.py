@@ -1,11 +1,4 @@
-"""Find clear secrets already stored by the approval flow, and write the SQL that scrubs them.
-
-Nothing here writes: the scan opens the database read-only and the scrub is
-text for the user to run. A scrub replaces text columns only. The hash chain
-covers the ``fingerprint`` column, never ``payload_json``, so a scrubbed row
-keeps its chain and its original fingerprint; only ``verify_fingerprint`` of
-that one payload stops matching, which is the point.
-"""
+"""Find clear secrets stored by the approval flow (read-only) and write the SQL that scrubs them."""
 
 from __future__ import annotations
 
@@ -18,10 +11,7 @@ from typing import Any, Iterator
 from gaia.approvals.chain import canonical_payload
 from gaia.redaction import REDACTED, TOKEN_SHAPE
 
-# The refusal at request time (``has_clear_secret``) is deliberately wide. The audit
-# is narrower because each finding becomes an UPDATE of history: it names only a
-# provider token, a literal bearer token, or ``NAME=value`` with a secret-looking
-# NAME and a literal value, never a reference such as ``$VAR`` or ``$(...)``.
+# Narrower than the request-time refusal on purpose: each finding becomes an UPDATE of append-only history.
 _BEARER = re.compile(r"(?P<prefix>\bBearer\s+)(?P<value>[A-Za-z0-9._~+/=-]{16,})", re.IGNORECASE)
 _ASSIGNMENT = re.compile(
     r"(?P<prefix>(?<![A-Za-z0-9_-])[A-Za-z0-9_]*"
@@ -53,7 +43,6 @@ class Finding:
 
 
 def _is_credential(value: str) -> bool:
-    """A literal that can be a credential: not a Secret Manager reference, a bare word phrase or a stock placeholder."""
     return not (
         _SECRET_MANAGER_REFERENCE.match(value)
         or _BARE_WORDS.fullmatch(value)
@@ -111,11 +100,7 @@ def _literal(value: object) -> str:
 
 
 def scrub_sql(con: sqlite3.Connection, findings: list[Finding]) -> str:
-    """The one transaction that writes each finding's scrubbed text back.
-
-    The append-only trigger of ``approval_events`` is dropped and recreated
-    inside the same transaction, from the definition the database holds.
-    """
+    """The one transaction that writes each scrubbed text back, recreating the append-only events trigger inside it."""
     keys = {table: key for table, key, _ in SCANNED_COLUMNS}
     updates = {"approval_events": [], "other": []}
     for finding in findings:
