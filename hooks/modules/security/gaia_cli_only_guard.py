@@ -552,6 +552,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("worktree", "list"),
     ("worktree", "show"),
     ("worktree", "show-capture"),
+    ("lint", "comments"),
 })
 
 ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
@@ -1255,6 +1256,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
         "--unread --upcoming --all-workspaces --limit --workspace --json"),
     ("notifications", "show"): _flags("--json"),
     ("notifications", "snooze"): _flags("--for --until --json"),
+    ("lint", "comments"): _flags("--repo --head --base --json"),
     ("now",): _flags("--json"),
     ("paths",): _flags(""),
     ("plan", "change", "approve"): _flags("--workspace --json"),

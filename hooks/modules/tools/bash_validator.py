@@ -104,6 +104,7 @@ from ..security.protected_path_guard import (
 from ..security.shell_write_guard import check as check_shell_write
 from ..security.sensitive_read_guard import check as check_sensitive_read
 from ..security.publish_attribution_guard import check as check_publish_attribution
+from ..security.comment_push_gate import check as check_comment_push
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
 # `..tools.stage_decomposer`, which (via this package's own __init__.py
 # eagerly importing bash_validator) closes a circular-import loop back to
@@ -668,6 +669,7 @@ class BashValidator:
         # guard can return early, and an early return must not be a way for the
         # stale mark to survive. See modules.security.fail_open.
         clear_classification()
+        self.last_warning = ""
 
         # ================================================================
         # PHASE 0: GAIA CLI ONLY GUARD (orchestrator role closure)
@@ -784,6 +786,18 @@ class BashValidator:
                 tier=SecurityTier.T3_BLOCKED,
                 reason=attribution_reason,
             )
+
+        # Ahead of tier classification so a refused push mints no approval; a
+        # counter failure allows it and leaves its warning in `last_warning`.
+        comment_push = check_comment_push(command, (hook_payload or {}).get("cwd") or None)
+        if not comment_push.allowed:
+            logger.warning("BLOCKED push over the comment limit: %s", command[:100])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=comment_push.reason,
+            )
+        self.last_warning = comment_push.warning or ""
 
         # A data heredoc's body is stdin the shell never runs, so the write
         # guards below read only its command line; a command line carrying a

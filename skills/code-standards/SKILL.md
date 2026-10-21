@@ -101,11 +101,14 @@ justification as one written today. A pass
 that leaves a commented file carrying as much comment as it found owes an account of
 why each line survived, whatever route it took to get there.
 
-No comment-density ratio proves quality. Zero is valid where code carries the facts;
-necessary knowledge must survive where it does not. A 5–10% band is only a proposal
-for experimentation, not a quota, cap, gate, or chosen threshold. Keep interface
-contracts, licenses, and tool directives distinct from explanatory comments; do not
-delete their obligations to improve a count.
+Zero is valid where code carries the facts, and the limit is measured, not argued: over
+the diff against its merge-base, NET comment lines (added minus removed; `#`/`//` and
+docstring lines, tests included) may not exceed max(2, 2% of added code lines). One-line
+docstrings on public units are free; multi-line and private-unit ones count. Banners and
+comment blocks over two lines are refused at any count. Check with `gaia lint comments`;
+a `git push` over the limit is refused. A fact that no longer fits goes to the PR body.
+Keep interface contracts, licenses, and tool directives distinct from explanatory
+comments; do not delete their obligations to improve a count.
 
 ### 7. Comments are context, not evidence
 

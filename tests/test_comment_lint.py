@@ -1,0 +1,97 @@
+"""The comment counter against throwaway repositories with known comment content."""
+
+import pytest
+
+from gaia.comment_lint import is_measured_path, measure, scan_text
+from tests.fixtures.comment_repo import code, commit_files, git, interleave, make_change
+
+BASE = {"a.py": "VALUE = 0\n"}
+
+DOCSTRINGS = (
+    '"""Module summary."""\n\n\n'
+    'def public():\n    """One line."""\n    return 1\n\n\n'
+    'def _private():\n    """One line."""\n    return 2\n\n\n'
+    'def documented():\n    """Summary.\n\n    More detail.\n    """\n    return 3\n'
+)
+
+
+def run(tmp_path, change, base=BASE):
+    return measure(str(make_change(tmp_path, base, change)), head="feat")
+
+
+def test_a_comment_corrected_in_place_costs_nothing(tmp_path):
+    base = {"a.py": "# old claim\nVALUE = 0\n"}
+    report = run(tmp_path, {"a.py": "# corrected claim\nVALUE = 0\n"}, base)
+    assert (report.net, report.blocked) == (0, False)
+
+
+def test_over_the_limit_lists_every_added_comment_with_its_line(tmp_path):
+    report = run(tmp_path, {"a.py": interleave(40, 6)})
+    assert (report.net, report.limit, report.over_limit) == (6, 2, True)
+    assert [(path, mark.line) for path, mark in report.offenders][:2] == [("a.py", 1), ("a.py", 8)]
+    assert "a.py:1: # fact 0" in report.render()
+
+
+@pytest.mark.parametrize("comments,blocked", [(5, False), (6, True)])
+def test_limit_is_two_percent_of_added_code(tmp_path, comments, blocked):
+    report = run(tmp_path, {"a.py": interleave(250, comments)})
+    assert (report.limit, report.blocked) == (5, blocked)
+
+
+def test_one_line_public_docstrings_are_free_and_the_rest_count(tmp_path):
+    report = run(tmp_path, {"a.py": DOCSTRINGS})
+    assert sorted(mark.text for _, mark in report.offenders) == [
+        '"""One line."""', '"""Summary.', "More detail."]
+
+
+def test_a_banner_is_refused_whatever_the_count(tmp_path):
+    report = run(tmp_path, {"a.py": code(300) + "# ==== Section ====\n"})
+    assert (report.net, report.over_limit, report.blocked) == (1, False, True)
+    assert [mark.line for _, mark in report.banners] == [301]
+
+
+@pytest.mark.parametrize("lines,blocked", [(2, False), (3, True)])
+def test_a_comment_block_over_two_lines_is_refused(tmp_path, lines, blocked):
+    report = run(tmp_path, {"a.py": "# why\n" * lines + code(300)})
+    assert (report.over_limit, report.blocked) == (False, blocked)
+
+
+def test_directives_and_generated_files_are_not_counted(tmp_path):
+    change = {
+        "a.py": "#!/usr/bin/env python3\n# noqa: E501\nVALUE = 1  # type: ignore\n",
+        "gen.py": "# @generated\n# one\n\n# two\n\n# three\n\n# four\n",
+    }
+    assert run(tmp_path, change).net == 0
+
+
+def test_trailing_comments_count_in_python_and_javascript_not_in_shell_or_yaml():
+    python = scan_text("a.py", "x = 1  # trailing\n# full\n")
+    assert sorted(python.counted) == [1, 2] and python.noncode == {2}
+    ts = scan_text("a.ts", 'const u = "http://x.com";\n// one\nconst a = 1; // two\n'
+                           "/* block\n   more */\nconst b = `\n// text\n`;\n")
+    assert sorted(ts.counted) == [2, 3, 4, 5]
+    assert sorted(scan_text("a.sh", "#!/bin/sh\n# note\necho hi # not counted\n").counted) == [2]
+    assert sorted(scan_text("a.yaml", "# note\nkey: v # not counted\n").counted) == [1]
+
+
+def test_measured_paths_skip_vendored_and_lock_output():
+    assert is_measured_path("src/a.py") and is_measured_path("infra/main.tf")
+    assert not any(map(is_measured_path, [
+        "pnpm-lock.yaml", "vendor/x.py", "web/node_modules/y.js", "a.min.js", "README.md"]))
+
+
+def test_base_is_the_nearest_remote_branch_that_lacks_the_change(tmp_path):
+    repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 6)}, branch="feat-a")
+    git(repo, "update-ref", "refs/remotes/origin/feat-a", "HEAD")
+    commit_files(repo, {"b.py": "# one fact\nVALUE = 1\n"})
+    git(repo, "checkout", "-q", "-b", "feat")
+    report = measure(str(repo), head="feat")
+    assert report.base == git(repo, "rev-parse", "feat-a~1")
+    assert report.net == 1
+
+
+def test_nothing_to_compare_without_a_remote_branch_is_not_a_block(tmp_path):
+    repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 6)})
+    git(repo, "update-ref", "-d", "refs/remotes/origin/main")
+    report = measure(str(repo), head="feat")
+    assert (report.base, report.blocked) == (None, False)

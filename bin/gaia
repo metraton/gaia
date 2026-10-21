@@ -37,7 +37,7 @@ _CLI_DIR = _SCRIPT_DIR / "cli"
 #   - install:   bootstraps the DB itself (Step 1); double-bootstrap is wasteful.
 #   - uninstall: tearing Gaia down -- recreating the DB would be perverse.
 #   - now:       reads the clock only, and must work where no Gaia DB exists.
-_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall", "migrate", "now"})
+_LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall", "migrate", "now", "lint"})
 
 
 def _resolve_db_path():
@@ -304,6 +304,9 @@ READ -- changes nothing. The orchestrator runs these itself.
                  governed writes, below).
   session        preview | snapshot
                  render the SessionStart manifest in-process.
+  lint           comments
+                 net comment lines a branch adds against max(2, 2% of its added
+                 code); run it on a diff before presenting its push.
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
   brief          new | edit | set-status (not closed) | close | set-project |

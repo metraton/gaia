@@ -467,10 +467,11 @@ class ToolPolicy:
             return PolicyVerdict(
                 decision="allow", reason=reason,
                 updated_input={"command": final_command},
+                context=validator.last_warning,
             )
 
         logger.info("ALLOWED: %s - tier=%s", command[:100], result.tier)
-        return PolicyVerdict()
+        return PolicyVerdict(context=validator.last_warning)
 
     @staticmethod
     def _verdict_from_block_response(result) -> PolicyVerdict:
