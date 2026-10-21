@@ -1,6 +1,6 @@
 """Dispatch kernel -- the minimal, data-only context a claimed turn starts with.
 
-Renders the three blocks injected at SubagentStart once ``claim_dispatch_row``
+Renders the blocks injected at SubagentStart once ``claim_dispatch_row``
 has correlated the starting subagent to its born ``agent_contract_handoffs``
 row:
 
@@ -23,8 +23,7 @@ row:
     additive to the base lines. Declaring is NOT permitting: tiers and
     guards still gate every execution.
   * ``# How the user works`` -- the user's standing rows the session birth
-    block carries, minus those whose ``audience`` is the orchestrator alone,
-    in the same facts/preferences sections
+    block carries that are addressed to ``executor``, in the same sections
     (``gaia.store.reader.user_anchor_rows`` rendered by
     ``modules.context.user_sections``), BODY inline, not slugs: a slug cost a
     further ``gaia memory show`` call the agent in practice never made.
@@ -39,7 +38,7 @@ row:
     no project or the project has no notes. Bodies are opened on demand with
     ``gaia memory show <slug>``.
 
-``# Your skills`` is a fourth block, rendered only for a host that preloads
+``# Your skills`` is a further block, rendered only for a host that preloads
 no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
 with its description, so the turn knows at birth which bodies to load. Claude
 Code preloads those bodies itself, so ``build_kernel_context`` never carries it.
