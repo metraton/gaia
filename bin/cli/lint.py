@@ -44,8 +44,9 @@ def register(subparsers):
         "comments",
         help="Net comment lines vs max(2, 2%% of added code); exit 1 over the limit",
         description=(
-            "Count NET comment and docstring lines the branch adds over its merge-base, in\n"
-            "non-generated source files. One-line docstrings on public units are free.\n"
+            "Count NET comment and docstring lines the branch's unpushed commits add over its\n"
+            "remote copy (or the default branch's merge-base), in non-generated source files.\n"
+            "Lines a remote already holds are free. One-line docstrings on public units are free.\n"
             "Limit: max(2, 2% of added code lines). Section banners and comment blocks of\n"
             "more than two added lines are always listed and fail the check."
         ),
@@ -54,7 +55,7 @@ def register(subparsers):
     comments.add_argument("--head", default="HEAD", help="Change tip (default: HEAD)")
     comments.add_argument(
         "--base", default=None,
-        help="Target ref to merge-base against (default: nearest remote branch not containing HEAD)",
+        help="Ref to merge-base against (default: the branch's remote copy, else the default branch)",
     )
     comments.add_argument("--json", action="store_true", help="Emit JSON output")
     comments.set_defaults(func=_cmd_comments)

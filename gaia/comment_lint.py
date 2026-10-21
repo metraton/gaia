@@ -1,4 +1,4 @@
-"""Net comment lines a change adds against its merge-base, and the limit it must stay under."""
+"""Net comment lines a push adds through commits no remote holds yet, and the limit they must stay under."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tokenize
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -16,7 +17,6 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 _LIMIT_FLOOR = 2
 _LIMIT_SHARE = 0.02
 _MAX_RUN = 2
-_MAX_BASE_CANDIDATES = 300
 _GIT_TIMEOUT_SECONDS = 30
 _MAX_PUSHED_REFS = 100
 _MAX_CONTAINED_REFS = 50
@@ -32,6 +32,8 @@ _COMMENT_MARKER = re.compile(r"^(?://|/\*|#)")
 _DECORATION_RUN = r"([^\w\s.`'\"]|_)\1{2,}"
 _BANNER_OPENING = re.compile(_DECORATION_RUN)
 _BANNER_CLOSING = re.compile(_DECORATION_RUN + r"$")
+_BANNER_TITLE = re.compile(r"\w[\w\s,:&/-]*")
+_MAX_BANNER_TITLE = 40
 _DIRECTIVE = re.compile(
     r"^(?:#+|//+|/\*+)\s*(?:!|noqa\b|type:|pragma\b|pylint:|fmt:|isort:|mypy:|pyright:|ruff:"
     r"|flake8:|coding[:=]|-\*-|eslint|@ts-|prettier-ignore|shellcheck|tflint|tfsec|checkov"
@@ -111,7 +113,7 @@ class Report:
     def render(self, max_lines: int = 40) -> str:
         head = (f"comments: net {self.net} over {self.added_code} added code lines, "
                 f"limit {self.limit} (base {self.base or 'none'}, "
-                f"{self.excluded} commits already pushed)")
+                f"{self.excluded} already-pushed commits left out)")
         if not self.blocked:
             return head + " -- ok"
 
@@ -127,7 +129,18 @@ class Report:
 
 def _is_banner(text: str) -> bool:
     body = _COMMENT_MARKER.sub("", text.removesuffix("*/").rstrip(), count=1).strip()
-    return bool(_BANNER_OPENING.match(body) or _BANNER_CLOSING.search(body))
+    opening, closing = _BANNER_OPENING.match(body), _BANNER_CLOSING.search(body)
+    if not (opening or closing):
+        return False
+    start, end = opening.end() if opening else 0, closing.start() if closing else len(body)
+    if start >= end:
+        return True
+    inner = body[start:end]
+    framed = (not opening or inner[0].isspace()) and (not closing or inner[-1].isspace())
+    title = inner.strip()
+    if not framed or len(title) > _MAX_BANNER_TITLE:
+        return False
+    return bool(opening and closing) or not title or bool(_BANNER_TITLE.fullmatch(title))
 
 
 def _lexer():
@@ -280,35 +293,55 @@ def _git(repo: str, *args: str, check: bool = True) -> str:
     return result.stdout if result.returncode == 0 else ""
 
 
-def _own_remote_refs(repo: str, head: str) -> Set[str]:
-    branch = _git(repo, "rev-parse", "--abbrev-ref", head, check=False).strip()
-    if not branch or branch == "HEAD":
-        return set()
-    refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes", check=False)
-    return {ref for ref in refs.split() if ref.split("/", 3)[-1] == branch}
+def _commit(repo: str, rev: str) -> Optional[str]:
+    return _git(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}", check=False).strip() or None
 
 
-def resolve_base(repo: str, head: str, explicit: Optional[str] = None) -> Optional[str]:
-    """Merge-base of ``head`` with ``explicit`` or the nearest remote branch not containing it, or None."""
-    head_sha = _git(repo, "rev-parse", "--verify", f"{head}^{{commit}}").strip()
-    if explicit:
-        return _git(repo, "merge-base", explicit, head_sha).strip() or None
-    skip = _own_remote_refs(repo, head)
-    refs = _git(repo, "for-each-ref", "--format=%(refname)", "refs/remotes", check=False).split()
+def _own_destination(repo: str, head: str) -> Optional[str]:
+    full = _git(repo, "rev-parse", "--symbolic-full-name", head, check=False).strip()
+    if not full.startswith("refs/heads/"):
+        return None
+    branch = full.removeprefix("refs/heads/")
+    remote = _git(repo, "config", f"branch.{branch}.remote", check=False).strip() or "origin"
+    return f"{remote}/{branch}"
+
+
+def _default_branch_ref(repo: str, remote: str) -> Optional[str]:
+    for name in dict.fromkeys([remote, "origin"]):
+        pointed = _git(repo, "symbolic-ref", "--short", f"refs/remotes/{name}/HEAD", check=False).strip()
+        for short in [pointed, f"{name}/main", f"{name}/master"]:
+            if short and _commit(repo, f"refs/remotes/{short}"):
+                return f"refs/remotes/{short}"
+    return None
+
+
+def _nearest_remote_base(repo: str, head_sha: str) -> Optional[str]:
     best: Optional[Tuple[int, str]] = None
-    for ref in refs[:_MAX_BASE_CANDIDATES]:
-        if ref in skip or ref.endswith("/HEAD"):
-            continue
+    for ref in _remote_refs(repo):
         base = _git(repo, "merge-base", ref, head_sha, check=False).strip()
         if not base or base == head_sha:
             continue
-        ahead = int(_git(repo, "rev-list", "--count", f"{base}..{head_sha}").strip() or 0)
+        ahead = _commits_between(repo, base, head_sha)
         if best is None or ahead < best[0]:
             best = (ahead, base)
     return best[1] if best else None
 
 
+def _start(repo: str, head: str, head_sha: str, base: Optional[str],
+           destination: Optional[str]) -> Optional[str]:
+    if base:
+        return _git(repo, "merge-base", base, head_sha).strip() or None
+    destination = destination or _own_destination(repo, head)
+    if destination and _commit(repo, f"refs/remotes/{destination}"):
+        return f"refs/remotes/{destination}"
+    default = _default_branch_ref(repo, destination.split("/", 1)[0] if destination else "origin")
+    floor = (_git(repo, "merge-base", default, head_sha, check=False).strip() if default
+             else _nearest_remote_base(repo, head_sha))
+    return (_contained_remote_tip(repo, floor, head_sha) or floor) if floor else None
+
+
 _HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_BLAME_HEADER = re.compile(r"^([0-9a-f]{40,64}) \d+ (\d+)")
 
 Hunk = Tuple[int, int, int, int]
 
@@ -376,9 +409,8 @@ def _inherited_length(run: List[Marked], hunks: List[Hunk], old_runs: List[List[
     return max((len(old) for old in old_runs if any(m.line in stood_for for m in old)), default=0)
 
 
-def _long_runs(path: str, scan: Scan, old_scan: Scan,
-               hunks: List[Hunk]) -> List[Tuple[str, List[Marked]]]:
-    added = _added_lines(hunks)
+def _long_runs(path: str, scan: Scan, old_scan: Scan, hunks: List[Hunk],
+               added: Set[int]) -> List[Tuple[str, List[Marked]]]:
     old_runs = _comment_runs(old_scan)
     return [(path, run) for run in _comment_runs(scan)
             if len(run) > max(_MAX_RUN, _inherited_length(run, hunks, old_runs))
@@ -393,20 +425,6 @@ def _remote_refs(repo: str) -> List[str]:
 
 def _commits_between(repo: str, older: str, newer: str) -> int:
     return int(_git(repo, "rev-list", "--count", f"{older}..{newer}", check=False).strip() or 0)
-
-
-def _pushed_base(repo: str, head: str, floor: str) -> Optional[str]:
-    """The newest commit of ``head`` its own remote branch already holds, when it is past ``floor``."""
-    head_sha = _git(repo, "rev-parse", "--verify", f"{head}^{{commit}}").strip()
-    best: Optional[Tuple[int, str]] = None
-    for ref in _own_remote_refs(repo, head):
-        held = _git(repo, "merge-base", ref, head_sha, check=False).strip()
-        if not held or held in (head_sha, floor) or _commits_between(repo, held, floor):
-            continue
-        ahead = _commits_between(repo, held, head_sha)
-        if best is None or ahead < best[0]:
-            best = (ahead, held)
-    return best[1] if best else None
 
 
 def _inserted_and_deleted(repo: str, older: str, newer: str) -> Tuple[int, int]:
@@ -426,42 +444,84 @@ def _contained_remote_tip(repo: str, start: str, head: str) -> Optional[str]:
     return best[1]
 
 
-def measure(repo: str, head: str = "HEAD", base: Optional[str] = None) -> Report:
-    """Measure one cumulative diff from what the remote already holds to ``head``.
+def _removed_lines(hunks: List[Hunk]) -> Set[int]:
+    return {n for start, count, _, _ in hunks for n in range(start, start + count)}
 
-    The start is the nearest remote branch's merge-base, moved up to the newest commit the branch's own
-    remote holds, or to the tip of a remote branch whose whole content ``head`` contains (a squash).
-    An explicit ``base`` measures its exact range.
+
+def _lines_added_by(repo: str, start: str, head_sha: str, path: str, commits: Set[str]) -> Set[int]:
+    blame = _git(repo, "blame", "--porcelain", head_sha, f"^{start}", "--not", "--remotes", "--", path)
+    return {int(found.group(2)) for found in map(_BLAME_HEADER.match, blame.splitlines())
+            if found and found.group(1) in commits}
+
+
+def _texts_removed_by_new(repo: str, start: str, head_sha: str) -> Dict[str, Counter[str]]:
+    patch = _git(repo, "log", "--no-merges", "--format=", "-p", "--unified=0", "--no-renames",
+                 "--no-color", head_sha, "--not", start, "--remotes", "--")
+    removed: Dict[str, Counter[str]] = {}
+    path, in_hunk = "", False
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif not in_hunk and line.startswith("--- "):
+            path = line[4:].removeprefix("a/")
+        elif not in_hunk and line.startswith("+++ ") and line != "+++ /dev/null":
+            path = line[4:].removeprefix("b/")
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line.startswith("-"):
+            removed.setdefault(path, Counter())[line[1:].strip()] += 1
+    return removed
+
+
+def _credited(removed: Set[int], old_text: str, texts: Counter[str]) -> Set[int]:
+    lines, credited = old_text.splitlines(), set()
+    for number in sorted(removed):
+        text = lines[number - 1].strip()
+        if texts[text] > 0:
+            texts[text] -= 1
+            credited.add(number)
+    return credited
+
+
+def measure(repo: str, head: str = "HEAD", base: Optional[str] = None,
+            destination: Optional[str] = None) -> Report:
+    """Measure the lines commits no remote holds add or remove between the push's start and ``head``.
+
+    The start is the remote ref of ``destination`` (``<remote>/<branch>``, default the branch's own),
+    else the default branch's merge-base moved to a remote tip ``head`` wholly contains; ``base`` overrides.
     """
-    floor = resolve_base(repo, head, base)
-    if floor is None:
+    head_sha = _git(repo, "rev-parse", "--verify", f"{head}^{{commit}}").strip()
+    start = _start(repo, head, head_sha, base, destination)
+    if start is None:
         return Report(None, head, 0, 0, _LIMIT_FLOOR, [], [], [])
-    if base:
-        return _measure_range(repo, floor, head)
-    start = _pushed_base(repo, head, floor) or floor
-    report = _measure_range(repo, start, head, excluded=_commits_between(repo, floor, start))
-    held = _contained_remote_tip(repo, start, head)
-    if held:
-        return _measure_range(repo, held, head, excluded=_commits_between(repo, start, held))
-    return report
+    return _measure_range(repo, start, head_sha, head)
 
 
-def _measure_range(repo: str, start: str, head: str, excluded: int = 0) -> Report:
-    report = Report(start, head, 0, 0, _LIMIT_FLOOR, [], [], [], excluded)
-    for path, hunks in sorted(_diff_hunks(repo, start, head).items()):
-        added = _added_lines(hunks)
+def _measure_range(repo: str, start: str, head_sha: str, label: str) -> Report:
+    new = set(_git(repo, "rev-list", head_sha, "--not", start, "--remotes").split())
+    report = Report(start, label, 0, 0, _LIMIT_FLOOR, [], [], [],
+                    _commits_between(repo, start, head_sha) - len(new))
+    start_sha = _commit(repo, start)
+    all_new = not report.excluded and _git(repo, "merge-base", start, head_sha).strip() == start_sha
+    removed_texts = {} if all_new else _texts_removed_by_new(repo, start, head_sha)
+    for path, hunks in sorted(_diff_hunks(repo, start, head_sha).items()):
         if not is_measured_path(path):
             continue
-        new_text, old_text = _blob(repo, head, path), _blob(repo, start, path)
+        new_text, old_text = _blob(repo, head_sha, path), _blob(repo, start, path)
         if _is_generated(new_text) or _is_generated(old_text):
             continue
         new_scan = scan_text(path, new_text) or Scan({}, set())
         old_scan = scan_text(path, old_text) or Scan({}, set())
-        report.net += len(new_scan.counted) - len(old_scan.counted)
+        added, removed = _added_lines(hunks), _removed_lines(hunks)
+        if not all_new:
+            added &= _lines_added_by(repo, start, head_sha, path, new) if added and new else set()
+            removed = _credited(removed, old_text, removed_texts.get(path, Counter()))
+        report.net += (sum(line in added for line in new_scan.counted)
+                       - sum(line in removed for line in old_scan.counted))
         report.added_code += len(added - new_scan.noncode)
         mine = [m for line, m in sorted(new_scan.counted.items()) if line in added]
         report.offenders += [(path, m) for m in mine]
         report.banners += [(path, m) for m in mine if m.banner]
-        report.runs += _long_runs(path, new_scan, old_scan, hunks)
+        report.runs += _long_runs(path, new_scan, old_scan, hunks, added)
     report.limit = max(_LIMIT_FLOOR, int(_LIMIT_SHARE * report.added_code))
     return report

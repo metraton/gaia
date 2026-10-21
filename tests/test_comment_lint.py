@@ -55,6 +55,9 @@ def test_a_banner_is_refused_whatever_the_count(tmp_path):
     ("a.py", "#### Helpers ####"),
     ("a.py", "# ****"),
     ("a.py", "# ~~~ notes ~~~"),
+    ("a.py", "# Helpers -----"),
+    ("a.py", "# ---------- Public API"),
+    ("a.yaml", "# ---- section ----"),
     ("a.sh", "# ___"),
     ("a.ts", "// ===== X ====="),
     ("a.ts", "/*****/"),
@@ -76,7 +79,14 @@ def test_arrows_ellipses_and_urls_with_dashes_are_not_banners(path, line):
     assert not scan_text(path, f"{line}\nvalue = 1\n").counted[1].banner
 
 
-@pytest.mark.parametrize("line", ["# --- Helpers ---", "#### Helpers ####"])
+@pytest.mark.parametrize("line", [
+    "# >>> parse('x')", "# never remove this!!!", "# ***must*** run first", "# path a/b///"])
+def test_decoration_that_does_not_frame_a_title_passes(tmp_path, line):
+    report = run(tmp_path, {"a.py": code(300) + line + "\n"})
+    assert (report.banners, report.blocked) == ([], False)
+
+
+@pytest.mark.parametrize("line", ["# --- Helpers ---", "#### Helpers ####", "# Helpers -----"])
 def test_a_short_banner_alone_blocks_the_change(tmp_path, line):
     report = run(tmp_path, {"a.py": code(300) + line + "\n"})
     assert (report.over_limit, report.blocked, len(report.banners)) == (False, True, 1)
@@ -139,14 +149,21 @@ def test_measured_paths_skip_vendored_and_lock_output():
         "pnpm-lock.yaml", "vendor/x.py", "web/node_modules/y.js", "a.min.js", "README.md"]))
 
 
-def test_base_is_the_nearest_remote_branch_that_lacks_the_change(tmp_path):
+def test_a_new_branch_starts_from_a_remote_tip_it_wholly_contains(tmp_path):
     repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 6)}, branch="feat-a")
     git(repo, "update-ref", "refs/remotes/origin/feat-a", "HEAD")
     commit_files(repo, {"b.py": "# one fact\nVALUE = 1\n"})
     git(repo, "checkout", "-q", "-b", "feat")
     report = measure(str(repo), head="feat")
-    assert report.base == git(repo, "rev-parse", "feat-a~1")
-    assert report.net == 1
+    assert (report.base, report.net) == ("refs/remotes/origin/feat-a", 1)
+
+
+def test_lines_a_remote_holds_are_free_from_any_start(tmp_path):
+    repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 6)}, branch="feat-a")
+    git(repo, "update-ref", "refs/remotes/origin/feat-a", "HEAD")
+    commit_files(repo, {"b.py": "# one fact\nVALUE = 1\n"})
+    report = measure(str(repo), head="feat-a", base="origin/main")
+    assert (report.excluded, report.net, [path for path, _ in report.offenders]) == (1, 1, ["b.py"])
 
 
 def squash_of_pushed_topic(tmp_path, extra=None):
@@ -163,13 +180,13 @@ def test_a_squash_of_already_pushed_commits_is_not_counted_again(tmp_path):
     repo = squash_of_pushed_topic(tmp_path)
     assert measure(str(repo), head="squash", base="origin/main").blocked
     report = measure(str(repo), head="squash")
-    assert (report.excluded, report.net, report.blocked) == (2, 0, False)
+    assert (report.base, report.net, report.blocked) == ("refs/remotes/origin/topic", 0, False)
 
 
 def test_a_squash_that_adds_new_comments_counts_only_the_new_part(tmp_path):
     repo = squash_of_pushed_topic(tmp_path, {"c.py": interleave(40, 6)})
     report = measure(str(repo), head="squash")
-    assert (report.excluded, report.net, report.blocked) == (2, 6, True)
+    assert (report.base, report.net, report.blocked) == ("refs/remotes/origin/topic", 6, True)
     assert {path for path, _ in report.offenders} == {"c.py"}
 
 
@@ -186,12 +203,12 @@ def test_commits_that_rewrite_the_same_lines_count_the_final_diff_once(tmp_path)
     assert (report.added_code, report.limit) == (250, 5)
 
 
-def test_a_branch_with_a_remote_copy_measures_from_the_newest_commit_it_holds(tmp_path):
+def test_a_branch_with_a_remote_copy_measures_from_that_copy(tmp_path):
     repo = make_change(tmp_path, BASE, {"a.py": code(250)})
     git(repo, "update-ref", "refs/remotes/origin/feat", "HEAD")
     commit_files(repo, {"a.py": code(250).replace("value_", "item_")})
     report = measure(str(repo), head="feat")
-    assert (report.added_code, report.excluded) == (250, 1)
+    assert (report.added_code, report.base) == (250, "refs/remotes/origin/feat")
 
 
 def test_commits_the_branch_already_pushed_are_not_recounted(tmp_path):
@@ -199,7 +216,7 @@ def test_commits_the_branch_already_pushed_are_not_recounted(tmp_path):
     git(repo, "update-ref", "refs/remotes/origin/feat", "HEAD")
     commit_files(repo, {"b.py": "# one fact\nVALUE = 1\n"})
     report = measure(str(repo), head="feat")
-    assert (report.excluded, report.net, report.blocked) == (1, 1, False)
+    assert (report.net, report.blocked) == (1, False)
     assert [(path, mark.line) for path, mark in report.offenders] == [("b.py", 1)]
 
 

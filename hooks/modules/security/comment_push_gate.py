@@ -50,27 +50,11 @@ def _push_in(tokens: List[str], cwd: str) -> Optional[tuple]:
 class Pushed(NamedTuple):
     label: str
     head: str
-    base: Optional[str] = None
+    destination: Optional[str]
 
 
 def _commit_of(repo: str, rev: str) -> Optional[str]:
     return _git_read(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
-
-
-def _default_branch_ref(repo: str, remote: str) -> Optional[str]:
-    for name in dict.fromkeys([remote, "origin"]):
-        pointed = _git_read(repo, "symbolic-ref", "--short", f"refs/remotes/{name}/HEAD")
-        for ref in [pointed, f"{name}/main", f"{name}/master"]:
-            if ref and _commit_of(repo, f"refs/remotes/{ref}"):
-                return f"refs/remotes/{ref}"
-    return None
-
-
-def _target_base(repo: str, remote: str, destination: str) -> Optional[str]:
-    target = f"refs/remotes/{remote}/{destination}"
-    if destination and _commit_of(repo, target):
-        return target
-    return _default_branch_ref(repo, remote)
 
 
 def _pushed(repo: str, rest: List[str]) -> List[Pushed]:
@@ -93,13 +77,13 @@ def _pushed(repo: str, rest: List[str]) -> List[Pushed]:
         if spec.startswith(":") or source.startswith("refs/tags/") or destination.startswith("refs/tags/"):
             continue
         branch = current if source == "HEAD" else source.removeprefix("refs/heads/")
+        target = destination.removeprefix("refs/heads/")
         if branch and _git_read(repo, "show-ref", "--verify", f"refs/heads/{branch}") is not None:
-            found.append(Pushed(branch, branch))
+            found.append(Pushed(branch, branch, f"{remote}/{target or branch}"))
         elif _git_read(repo, "show-ref", "--verify", f"refs/tags/{source}") is None:
             commit = _commit_of(repo, source)
             if commit:
-                base = _target_base(repo, remote, destination.removeprefix("refs/heads/"))
-                found.append(Pushed(source, commit, base))
+                found.append(Pushed(source, commit, f"{remote}/{target}" if target else None))
     return found
 
 
@@ -129,7 +113,7 @@ def check(command: str, cwd: Optional[str] = None) -> GateVerdict:
             from gaia.comment_lint import measure
 
             for pushed in _pushed(repo, rest):
-                report = measure(repo, head=pushed.head, base=pushed.base)
+                report = measure(repo, head=pushed.head, destination=pushed.destination)
                 if report.blocked:
                     return GateVerdict(False, _refusal(pushed.label, report))
         except Exception as exc:  # noqa: BLE001

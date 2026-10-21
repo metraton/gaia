@@ -100,12 +100,66 @@ def test_a_detached_or_sha_push_under_the_limit_passes(under, form):
     assert check(form.format(repo=under, sha=sha), cwd=str(under)).allowed
 
 
-def test_an_existing_target_is_measured_against_its_remote_ref(over):
+def test_content_a_remote_already_holds_is_free_for_any_target(over):
     git(over, "update-ref", "refs/remotes/origin/x", "HEAD")
     commit_files(over, {"b.py": "# one fact\nVALUE = 1\n"})
     detach(over)
     assert check(f"git -C {over} push origin HEAD:x", cwd=str(over)).allowed
+    assert check(f"git -C {over} push origin HEAD:y", cwd=str(over)).allowed
+    git(over, "update-ref", "-d", "refs/remotes/origin/x")
     assert not check(f"git -C {over} push origin HEAD:y", cwd=str(over)).allowed
+
+
+ACCUMULATING = "feat/gaia-5-7"
+PRE_GATE_BLOCK = "# one\n# two\n# three\n"
+
+
+def accumulating_branch(tmp_path):
+    """A pushed accumulating branch that already carries comment-heavy work from before the gate."""
+    repo = make_change(tmp_path, BASE, {"old.py": PRE_GATE_BLOCK + interleave(60, 5)}, branch=ACCUMULATING)
+    git(repo, "update-ref", f"refs/remotes/origin/{ACCUMULATING}", "HEAD")
+    return repo
+
+
+def push_accumulating(repo):
+    return check(f"git -C {repo} push origin {ACCUMULATING}", cwd=str(repo))
+
+
+@pytest.mark.parametrize("task,allowed", [
+    ({"x.py": "# one fact\n" + code(80)}, True),
+    ({"x.py": PRE_GATE_BLOCK + code(80)}, False),
+])
+def test_a_task_cherry_picked_after_others_landed_is_measured_on_its_own_lines(tmp_path, task, allowed):
+    repo = accumulating_branch(tmp_path)
+    git(repo, "checkout", "-q", "-b", "feat/x")
+    picked = commit_files(repo, task, "task x")
+    git(repo, "update-ref", "refs/remotes/origin/feat/x", "HEAD")
+    git(repo, "checkout", "-q", ACCUMULATING)
+    commit_files(repo, {"y.py": PRE_GATE_BLOCK + interleave(60, 5)}, "task y landed")
+    git(repo, "update-ref", f"refs/remotes/origin/{ACCUMULATING}", "HEAD")
+    git(repo, "cherry-pick", picked)
+    verdict = push_accumulating(repo)
+    assert verdict.allowed is allowed
+    assert allowed or ("x.py:1-3" in verdict.reason and "y.py" not in verdict.reason)
+
+
+@pytest.mark.parametrize("new_work,allowed", [
+    ({}, True),
+    ({"n.py": PRE_GATE_BLOCK + code(80)}, False),
+])
+def test_merging_main_into_the_accumulating_branch_counts_only_new_commits(tmp_path, new_work, allowed):
+    repo = accumulating_branch(tmp_path)
+    git(repo, "checkout", "-q", "main")
+    commit_files(repo, {"a.py": PRE_GATE_BLOCK + interleave(60, 6), "m.py": "# --- M ---\n" + code(5)},
+                 "main moves")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repo, "checkout", "-q", ACCUMULATING)
+    if new_work:
+        commit_files(repo, new_work, "new work")
+    git(repo, "merge", "-q", "--no-edit", "main")
+    verdict = push_accumulating(repo)
+    assert verdict.allowed is allowed
+    assert allowed or ("n.py:1-3" in verdict.reason and "a.py" not in verdict.reason)
 
 
 def test_a_counter_failure_allows_the_push_with_a_visible_warning(over, monkeypatch):
