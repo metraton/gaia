@@ -256,28 +256,65 @@ _CANDIDATE_TOOLS: tuple = (
 )
 
 
-def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
-    """Which *candidates* resolve on PATH right now, in declared order.
+USER_EXECUTABLES_MAX = 40
 
-    The wrappers the user declared in ``GAIA_CLI_ALIASES`` follow the
-    candidates: Gaia names none of them, so the declaration is the only reason
-    one is listed. ``shutil.which`` is a pure PATH lookup -- no subprocess, no
-    version probe -- so this reflects the current install rather than a
-    snapshot. Never raises: a lookup failure for one name is skipped, not fatal
-    to the rest.
+# Directories that hold a package manager's installs, not tools the user wrote
+# or chose to put on PATH; one name anywhere in the path excludes the entry.
+_PACKAGE_TREES = frozenset({
+    "node_modules", ".venv", "venv", ".cargo", ".rustup", "go", ".nvm", ".pyenv",
+    ".rbenv", ".asdf", ".npm", ".npm-global", ".bun", ".volta", ".gem", "gem", ".sdkman",
+})
+
+
+def _scan_user_executables(exclude=(), limit: int = USER_EXECUTABLES_MAX) -> list:
+    """Executable names in the PATH entries the user owns, first PATH entry winning.
+
+    A PATH entry is the user's when it sits under ``$HOME`` and no part of it
+    names a package-manager tree. Names only: nothing is run or read. Never
+    raises; an unreadable directory is skipped.
+    """
+    home = Path.home()
+    seen = set(exclude)
+    names: list = []
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        directory = Path(entry)
+        if not directory.is_absolute() or not directory.is_relative_to(home):
+            continue
+        if _PACKAGE_TREES.intersection(directory.relative_to(home).parts):
+            continue
+        try:
+            files = sorted(e.name for e in os.scandir(directory)
+                           if not e.name.startswith(".") and e.is_file() and os.access(e.path, os.X_OK))
+        except OSError:
+            continue
+        for name in files:
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+                if len(names) >= limit:
+                    return names
+    return names
+
+
+def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
+    """Which *candidates* resolve on PATH right now, then the user's own executables.
+
+    ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe --
+    so this reflects the current install rather than a snapshot. Never raises: a
+    lookup failure for one name is skipped, not fatal to the rest.
     """
     import shutil
 
-    from ..security.cli_aliases import declared_wrappers
-
     found = []
-    for name in dict.fromkeys((*candidates, *declared_wrappers())):
+    for name in candidates:
         try:
             if shutil.which(name):
                 found.append(name)
         except Exception:
             continue
-    return found
+    return found + _scan_user_executables(exclude=candidates)
 
 
 def _machine_label() -> str:
@@ -299,7 +336,7 @@ def _machine_label() -> str:
         return "unknown"
 
 
-ENVIRONMENT_LINE_MAX = 300
+ENVIRONMENT_LINE_MAX = 400
 
 
 def _os_label() -> str:

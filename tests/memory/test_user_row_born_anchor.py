@@ -45,6 +45,7 @@ def test_a_user_row_saved_without_a_class_reaches_birth_and_kernel():
         "--name=user_pref_draft_prs",
         "--description=Preference: pull requests start as drafts.",
         f"--body={STANDING}",
+        "--audience=executor",
     )
 
     assert STANDING in build_session_context()

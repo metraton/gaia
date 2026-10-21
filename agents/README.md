@@ -44,8 +44,8 @@ agent's .md frontmatter and spawns the subagent with:
     that frontmatter's skills: list. No Gaia hook performs this load.
         |
 [subagent_start.py] claims the born row, injects the dispatch KERNEL
-(# Your Contract incl. can_read/can_write menu, # Your CLI, # What I
-know about you). Project context is NOT preloaded here either -- the
+(# Your Contract incl. can_read/can_write menu, # How the user works,
+# Standing notes, # Environment, # Your CLI). Project context is NOT preloaded here either -- the
 agent pulls sections on demand within its can_read menu.
         |
 Agent executes, closing its agent_contract_handoffs row with

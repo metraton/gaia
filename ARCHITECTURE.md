@@ -166,8 +166,9 @@ which `gaia --help` can rebuild, comes last):
 # Standing notes      the dispatch project's live anchors, one line each, freshest
                       first, under PROJECT_NOTES_BUDGET; absent when the project has none
 # Environment         one capped line (ENVIRONMENT_LINE_MAX): OS (WSL named), the gaia
-                      CLI path, and the tools on PATH, including the wrappers the
-                      user declared in GAIA_CLI_ALIASES
+                      CLI path, and the tools on PATH: the known-tool probe, then the
+                      user's own executables from PATH entries under $HOME that are
+                      not package-manager trees
 # Your CLI            the gaia verbs the turn uses to pull context (gaia context),
                       memory (gaia memory) and its own contract (gaia contract)
 ```

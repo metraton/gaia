@@ -215,51 +215,6 @@ class TestMergeLocalPermissions(unittest.TestCase):
             # Unrelated user env var preserved
             self.assertEqual(data["env"]["CUSTOM_VAR"], "x")
 
-    def _local(self, workspace: Path, env: dict | None = None) -> Path:
-        (workspace / ".claude").mkdir()
-        path = workspace / ".claude" / "settings.local.json"
-        if env is not None:
-            path.write_text(json.dumps({"env": env}))
-        return path
-
-    def test_declares_ghx_as_gh_in_the_workspace_it_owns(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            local = self._local(workspace)
-            helpers.merge_local_permissions(workspace)
-            self.assertEqual(json.loads(local.read_text())["env"]["GAIA_CLI_ALIASES"], "ghx=gh")
-            self.assertEqual(helpers.merge_local_permissions(workspace)["action"], "noop")
-
-    def test_ghx_declaration_keeps_the_users_own_aliases(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            local = self._local(Path(tmp), {"GAIA_CLI_ALIASES": "mywrap=gh"})
-            helpers.merge_local_permissions(Path(tmp))
-            self.assertEqual(json.loads(local.read_text())["env"]["GAIA_CLI_ALIASES"], "mywrap=gh,ghx=gh")
-
-    def test_a_ghx_the_user_declared_is_theirs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            local = self._local(Path(tmp), {"GAIA_CLI_ALIASES": "ghx=kubectl"})
-            helpers.merge_local_permissions(Path(tmp))
-            self.assertEqual(json.loads(local.read_text())["env"]["GAIA_CLI_ALIASES"], "ghx=kubectl")
-
-    def test_cleanup_takes_back_only_what_install_declared(self):
-        from cli import cleanup
-
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            local = self._local(workspace, {"GAIA_CLI_ALIASES": "mywrap=gh"})
-            helpers.merge_local_permissions(workspace)
-            self.assertTrue(cleanup._clean_settings_local_json(workspace, dry_run=False)["found"])
-            self.assertEqual(json.loads(local.read_text())["env"], {"GAIA_CLI_ALIASES": "mywrap=gh"})
-
-            fresh = Path(tmp) / "fresh"
-            fresh.mkdir()
-            self._local(fresh)
-            helpers.merge_local_permissions(fresh)
-            stripped = cleanup.strip_gaia_local_settings(
-                json.loads((fresh / ".claude" / "settings.local.json").read_text()), fresh)
-            self.assertNotIn("env", stripped)
-
     def _merged_local(self, workspace: Path) -> dict:
         helpers.merge_local_permissions(workspace)
         return json.loads((workspace / ".claude" / "settings.local.json").read_text())

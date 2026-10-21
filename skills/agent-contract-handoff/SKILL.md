@@ -45,8 +45,10 @@ See `agent-protocol` for when in the turn's cycle this first write happens.
 The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
 role/surface, `project` with its declared `workflow` line when the project
 declares one, `can_read`/`can_write`, and -- on a plan-task-bound turn -- the
-acceptance gates), `# Your CLI`, and `# How the user works` (the user's
-standing rows, minus those addressed to the orchestrator alone).
+acceptance gates), `# How the user works` (only the user's rows marked
+`executor`), `# Standing notes` (the project's live anchors, one line each, when
+it has any), `# Environment` (one line: OS, the gaia CLI path, the tools on
+PATH including the user's own executables) and `# Your CLI`.
 Project context is NOT preloaded and no surface routing arrives: pull the
 sections you need on demand, within the `can_read` menu, before querying
 anything wider (`agent-protocol/read-map.md`). Only sections in `can_write`

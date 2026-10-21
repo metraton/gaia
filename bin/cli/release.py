@@ -188,9 +188,8 @@ _DEFAULT_GH = "gh"
 _GH_ACCOUNT_FIX = (
     "Pass `--gh <program>` naming a gh wrapper that sets GH_TOKEN for the right "
     "account in its own process only (one that maps the origin owner to an "
-    "account); `gh auth status` lists the accounts. A missing account is the "
-    "user's to add with `gh auth login` in their own shell -- an agent cannot "
-    "run it. Do NOT `gh auth switch` -- the active "
+    "account); `gh auth status` lists the accounts and "
+    "`gh auth login` adds a missing one. Do NOT `gh auth switch` -- the active "
     "account is global state shared with every other session on this machine."
 )
 

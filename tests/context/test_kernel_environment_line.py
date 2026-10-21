@@ -8,6 +8,7 @@ temporary HOME, GAIA_DATA_DIR and GAIA_DB.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -35,48 +36,80 @@ def env(tmp_path, monkeypatch, bootstrapped_db_template):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("GAIA_DATA_DIR", str(data))
     monkeypatch.setenv("GAIA_DB", str(db))
-    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: CLI_PATH)
     return db
 
 
-def _path_with(tmp_path: Path, monkeypatch, *binaries: str) -> None:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for name in binaries:
-        tool = bin_dir / name
+def _path_with(monkeypatch, *dirs: Path) -> None:
+    monkeypatch.setenv("PATH", os.pathsep.join(str(d) for d in dirs))
+
+
+def _make(directory: Path, *names: str, mode: int = 0o755) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        tool = directory / name
         tool.write_text("#!/bin/sh\n")
-        tool.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
+        tool.chmod(mode)
+    return directory
 
 
 def _tools(line: str) -> list[str]:
     return line.split("tools on PATH: ")[1].split(", ")
 
 
-def test_line_lists_a_declared_wrapper_that_is_on_path(env, tmp_path, monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", "ghx=gh")
-    _path_with(tmp_path, monkeypatch, "ghx", "git")
+def test_line_lists_an_executable_from_a_directory_the_user_owns(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _path_with(monkeypatch, _make(tmp_path / "usr", "git"), _make(home / "bin", "ghx"), _make(home / ".local" / "bin", "mytool"))
 
     line = session_manifest.build_environment_line()
 
-    assert "ghx" in _tools(line)
+    assert {"git", "ghx", "mytool"} <= set(_tools(line))
     assert CLI_PATH in line
     assert line.startswith("Linux")
 
 
-def test_line_omits_a_wrapper_that_is_on_path_but_not_declared(env, tmp_path, monkeypatch):
-    _path_with(tmp_path, monkeypatch, "ghx", "git")
+def test_line_names_only_executable_files(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _make(home / "bin", "runs")
+    _make(home / "bin", "notes.txt", ".hidden", mode=0o644)
+    (home / "bin" / "adir").mkdir()
+    _path_with(monkeypatch, home / "bin")
 
-    assert "ghx" not in session_manifest.build_environment_line()
+    assert _tools(session_manifest.build_environment_line()) == ["runs"]
 
 
-def test_line_omits_a_declared_wrapper_that_is_not_on_path(env, tmp_path, monkeypatch):
-    monkeypatch.setenv("GAIA_CLI_ALIASES", "ghx=gh")
-    _path_with(tmp_path, monkeypatch, "git")
+def test_line_skips_directories_outside_home_and_package_manager_trees(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _path_with(
+        monkeypatch,
+        _make(tmp_path / "system", "systool"),
+        _make(home / "proj" / "node_modules" / ".bin", "nodetool"),
+        _make(home / ".cargo" / "bin", "cargotool"),
+        _make(home / "go" / "bin", "gotool"),
+        _make(home / ".venv" / "bin", "venvtool"),
+        _make(home / "bin", "owned"),
+    )
 
-    assert "ghx" not in session_manifest.build_environment_line()
+    assert _tools(session_manifest.build_environment_line()) == ["owned"]
+
+
+def test_line_lists_a_name_once_across_directories_and_known_tools(env, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _path_with(monkeypatch, _make(tmp_path / "usr", "git"), _make(home / "bin", "git", "twice"), _make(home / ".local" / "bin", "twice"))
+
+    assert sorted(_tools(session_manifest.build_environment_line())) == ["git", "twice"]
+
+
+def test_orchestrator_section_lists_more_user_executables_than_the_line_keeps(env, tmp_path, monkeypatch):
+    names = [f"my-own-tool-{n:02d}" for n in range(60)]
+    _path_with(monkeypatch, _make(tmp_path / "home" / "bin", *names))
+
+    kept_by_line = _tools(session_manifest.build_environment_line())
+    listed = session_manifest._scan_available_tools()
+
+    assert listed == names[: session_manifest.USER_EXECUTABLES_MAX]
+    assert 0 < len(kept_by_line) < len(listed)
 
 
 def test_line_names_wsl_from_the_kernel_release(env, monkeypatch):
@@ -92,8 +125,8 @@ def test_line_is_capped_and_keeps_the_cli_path(env, monkeypatch):
 
     line = session_manifest.build_environment_line()
 
-    assert session_manifest.ENVIRONMENT_LINE_MAX == 300
-    assert len(line) <= 300
+    assert session_manifest.ENVIRONMENT_LINE_MAX == 400
+    assert len(line) <= 400
     assert CLI_PATH in line
     assert "tool00" in line and "tool79" not in line
 

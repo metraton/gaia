@@ -54,11 +54,6 @@ def aliased_cli(base_cmd: str) -> Optional[str]:
     return _parse(os.environ.get(ENV_VAR, "")).get(base_cmd)
 
 
-def declared_wrappers() -> Tuple[str, ...]:
-    """The wrapper names the user declared, in declaration order."""
-    return tuple(_parse(os.environ.get(ENV_VAR, "")))
-
-
 def is_cli(base_cmd: str, cli: str) -> bool:
     """True when *base_cmd* is *cli* itself or a wrapper the user declared for it."""
     return base_cmd == cli or aliased_cli(base_cmd) == cli

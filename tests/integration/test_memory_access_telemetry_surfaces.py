@@ -104,7 +104,7 @@ SEEDS: tuple[Seed, ...] = (
          initiative="beta"),
     # type=user: the anchor section carries the user's instructions, so a
     # type=project anchor sharing the workspace no longer reaches it.
-    Seed("a_anchor", "user", class_="anchor"),
+    Seed("a_anchor", "user", class_="anchor", audience="executor"),
     # A user row is born anchor; this one is explicitly a log row, the one no
     # kernel or birth block renders.
     Seed("u_exec", "user", class_="log", audience="executor"),

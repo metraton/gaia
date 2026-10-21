@@ -415,30 +415,22 @@ class TestResolveGaiaCliPathByInstallLayout:
 
 class TestScanAvailableTools:
     @pytest.fixture(autouse=True)
-    def _no_declared_wrappers(self, monkeypatch):
-        monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
+    def _no_user_executables(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("PATH", "")
 
-    def test_a_declared_wrapper_on_path_follows_the_candidates(self, monkeypatch):
+    def test_a_user_executable_follows_the_candidates(self, monkeypatch, tmp_path):
         import shutil as _shutil
 
-        monkeypatch.setenv("GAIA_CLI_ALIASES", "mywrap=gh, other=kubectl")
+        user_bin = tmp_path / "bin"
+        user_bin.mkdir()
+        (user_bin / "mywrap").write_text("#!/bin/sh\n")
+        (user_bin / "mywrap").chmod(0o755)
+        monkeypatch.setenv("PATH", str(user_bin))
         monkeypatch.setattr(
-            _shutil, "which", lambda name: "/usr/bin/" + name if name in ("git", "mywrap") else None
+            _shutil, "which", lambda name: "/usr/bin/" + name if name == "git" else None
         )
         assert session_manifest._scan_available_tools(("git",)) == ["git", "mywrap"]
-
-    def test_a_wrapper_on_path_without_a_declaration_is_not_listed(self, monkeypatch):
-        import shutil as _shutil
-
-        monkeypatch.setattr(_shutil, "which", lambda name: "/usr/bin/" + name)
-        assert "mywrap" not in session_manifest._scan_available_tools(("git",))
-
-    def test_a_wrapper_named_like_a_candidate_is_listed_once(self, monkeypatch):
-        import shutil as _shutil
-
-        monkeypatch.setenv("GAIA_CLI_ALIASES", "git=gh")
-        monkeypatch.setattr(_shutil, "which", lambda name: "/usr/bin/" + name)
-        assert session_manifest._scan_available_tools(("git",)) == ["git"]
 
     def test_only_resolvable_candidates_are_returned_in_order(self, monkeypatch):
         import shutil as _shutil

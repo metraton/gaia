@@ -150,6 +150,7 @@ def test_specialist_skills_task_prompt_carries_the_claude_code_kernel(monkeypatc
     assert _headers(prompt) == [
         kernel_builder.KERNEL_HEADING,
         kernel_builder.MEMORY_HEADING,
+        kernel_builder.ENVIRONMENT_HEADING,
         kernel_builder.CLI_HEADING,
         kernel_builder.SKILLS_HEADING,
         "# Closing this turn",
@@ -168,7 +169,7 @@ def test_specialist_skills_survive_child_compaction(monkeypatch):
     context = "\n\n".join(OpenCodeAdapter().adapt_pre_compact(event).output["updated_input"]["context"])
 
     assert kernel_builder.build_skills_block("gaia-system") in context
-    assert _headers(context)[:2] == [kernel_builder.KERNEL_HEADING, kernel_builder.CLI_HEADING]
+    assert _headers(context)[:2] == [kernel_builder.KERNEL_HEADING, kernel_builder.ENVIRONMENT_HEADING]
 
 
 def test_specialist_skills_parity_alarm_no_longer_holds_the_gap():

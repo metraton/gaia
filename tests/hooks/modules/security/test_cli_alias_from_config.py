@@ -93,24 +93,18 @@ def test_undeclared_wrapper_reads_stay_free(command):
 
 
 def test_no_wrapper_name_is_built_in():
-    """The classifier resolves no wrapper by name; ghx is declared by the installer and named only by the refusal that routes to it."""
+    """Gaia knows no wrapper by name: nothing resolves one, and no source names one."""
     from modules.security.cli_aliases import as_wrapped_cli
 
     assert as_wrapped_cli("ghx pr list") is None
 
     wrapper_name = re.compile(r"\bghx\b")
-    allowed = {
-        _HOOKS_DIR / "modules" / "core" / "plugin_setup.py",
-        _HOOKS_DIR / "modules" / "security" / "subagent_gh_account_guard.py",
-        _REPO_ROOT / "gaia" / "README.md",
-    }
     offenders = [
         str(path)
         for root in ("hooks", "gaia", "bin")
         for path in (_REPO_ROOT / root).rglob("*")
         if path.suffix in {".py", ".md", ".sh"}
         and "__pycache__" not in path.parts
-        and path not in allowed
         and wrapper_name.search(path.read_text(errors="ignore"))
     ]
     assert offenders == []
