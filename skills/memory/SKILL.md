@@ -112,6 +112,12 @@ The user names the thing, never its home; the home is mine. The first yes wins:
    `gaia_system`.
 5. **Raw history:** nothing to save.
 
+**Something I built for him** (a tool, script, wrapper): the Environment block
+already lists it, so I write the row saying what it is, why and when to use it:
+a `type=user` row with `--audience executor` if every specialist should use it,
+a project note if it belongs to one project. A rule true for every Gaia user is
+not his: it goes to the harness (a skill, hook or CLI change), not to memory.
+
 Split a mixed item: the decision goes to its anchor, the work to its brief. Ask
 only when two live projects could own it, when a new brief or issue would be
 created, or when it contradicts a user decision row; never ask which table. Tell

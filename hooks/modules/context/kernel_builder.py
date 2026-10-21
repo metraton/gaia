@@ -1,6 +1,6 @@
 """Dispatch kernel -- the minimal, data-only context a claimed turn starts with.
 
-Renders the three blocks injected at SubagentStart once ``claim_dispatch_row``
+Renders the blocks injected at SubagentStart once ``claim_dispatch_row``
 has correlated the starting subagent to its born ``agent_contract_handoffs``
 row:
 
@@ -28,6 +28,7 @@ row:
     ``modules.context.user_sections``), BODY inline, not slugs: a slug cost a
     further ``gaia memory show`` call the agent in practice never made.
     Omitted entirely when no row is selected -- never an empty heading.
+  * ``# Environment``    -- the OS, the gaia CLI path and the tools on PATH, one capped line.
 
   * ``# Standing notes``     -- an INDEX (slug + one line, never a body) of the
     dispatch project's live anchor notes, hard-capped at
@@ -37,7 +38,7 @@ row:
     no project or the project has no notes. Bodies are opened on demand with
     ``gaia memory show <slug>``.
 
-``# Your skills`` is a fourth block, rendered only for a host that preloads
+``# Your skills`` is a further block, rendered only for a host that preloads
 no skill body (OpenCode): each skill the agent's ``skills:`` frontmatter names,
 with its description, so the turn knows at birth which bodies to load. Claude
 Code preloads those bodies itself, so ``build_kernel_context`` never carries it.
@@ -471,8 +472,7 @@ def _record_kernel_telemetry(
 
 
 def build_memory_block(*, db_path=None) -> str:
-    """Render ``# How the user works`` from the user's standing rows, or "" when there are none.
-    """
+    """Render ``# How the user works`` from the executor-addressed user rows, or ""."""
     from gaia.store.reader import user_anchor_rows
 
     from .user_sections import render_user_sections
@@ -550,6 +550,7 @@ def build_project_notes_block(
 
 
 def build_environment_block() -> str:
+    """Render ``# Environment`` from the session's environment line, or "" when empty."""
     try:
         from ..session.session_manifest import build_environment_line
 
@@ -567,7 +568,7 @@ def build_kernel_context(
     agents_dir: "Path | None" = None,
     db_path=None,
 ) -> Optional[str]:
-    """The full kernel payload: contract, user rows, project notes, CLI, blank-line joined.
+    """The kernel payload: contract, user rows, notes, environment and CLI, blank-line joined.
 
     The host keeps the head of an over-long hook context, so the order is the
     order of what a turn can least do without: its identity and goal, the user's

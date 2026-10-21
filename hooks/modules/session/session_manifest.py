@@ -342,6 +342,7 @@ def _os_label() -> str:
 
 
 def build_environment_line(*, limit: int = ENVIRONMENT_LINE_MAX) -> str:
+    """The OS, gaia CLI path and tools on PATH as one line within ``limit`` characters."""
     try:
         parts = [_os_label()]
         cli_path = _resolve_gaia_cli_path()
