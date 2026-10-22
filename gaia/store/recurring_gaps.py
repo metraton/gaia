@@ -7,27 +7,25 @@ import re
 import sqlite3
 from typing import Any, Optional
 
-RECURRENCE_THRESHOLD = 3
+RECURRENCE_THRESHOLD = 2
 RECENT_ROWS = 200
-MIN_TOKENS = 3
-SAME_GAP_OVERLAP = 0.75
+SAME_GAP_SIMILARITY = 0.75
 
 _STOPWORDS = frozenset(
     "a an and are as at be by does do for from in into is it its no not of on or the "
     "this that to was with yet still".split())
+_INFLECTION = re.compile(r"(?<=\w{3})(ing|ed|es|e|(?<!s)s)$")
 
 
 def gap_tokens(text: str) -> frozenset:
-    """Content words of ``text``, each cut to four letters so wire, wired and wiring are one."""
+    """Content words of ``text``, whole and without inflection, so wire, wired and wiring are one."""
     words = re.findall(r"[a-z0-9]+", text.lower())
-    return frozenset(word[:4] for word in words if word not in _STOPWORDS)
+    return frozenset(_INFLECTION.sub("", word) for word in words if word not in _STOPWORDS)
 
 
 def same_gap(left: frozenset, right: frozenset) -> bool:
-    """Whether two token sets name one gap: most of the shorter one appears in the longer."""
-    if min(len(left), len(right)) < MIN_TOKENS:
-        return left == right and bool(left)
-    return len(left & right) / min(len(left), len(right)) >= SAME_GAP_OVERLAP
+    """Whether two token sets name one gap: their shared words are most of all the words either uses."""
+    return bool(left | right) and len(left & right) / len(left | right) >= SAME_GAP_SIMILARITY
 
 
 def _open_gaps(envelope: Any) -> list:
