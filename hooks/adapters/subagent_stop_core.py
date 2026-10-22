@@ -802,6 +802,10 @@ def salvage_truncated_draft(
 
         cleaning_log: list = []
         salvaged = dict(clean_rescue_envelope(envelope, log=cleaning_log))
+        from gaia.contract import read_spool
+        from gaia.contract.tool_record import recover_spooled_files
+
+        spool_key = recover_spooled_files(salvaged, draft_id, db_path=db_path)
         if cleaning_log:
             logger.debug(
                 "T11 salvage: cleaned draft %s: %s",
@@ -840,6 +844,8 @@ def salvage_truncated_draft(
             cut_reason=CUT_REASON_SALVAGED_TRUNCATION,
             db_path=db_path,
         )
+        if spool_key and outcome.get("created"):
+            read_spool.discard(spool_key)
 
         try:
             resume_hint = render_resume_hint(draft_id, envelope)

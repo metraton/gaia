@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
 import sys
@@ -367,3 +368,71 @@ def test_an_agent_written_worktree_scope_or_foreign_agent_id_never_wins():
 
     assert envelope["agent_status"]["agent_id"] == agent
     assert envelope["worktree_scope"] == "shared"
+
+
+def _stored(contract_id: str) -> dict:
+    from gaia.paths.resolver import db_path
+
+    con = sqlite3.connect(db_path())
+    try:
+        raw = con.execute(
+            "SELECT raw_handoff_json FROM agent_contract_handoffs WHERE contract_id = ?", (contract_id,),
+        ).fetchone()[0]
+    finally:
+        con.close()
+    return json.loads(raw)
+
+
+def test_a_cut_turn_row_lists_the_paths_it_spooled_and_its_spool_is_deleted():
+    from adapters.subagent_stop_core import salvage_truncated_draft
+    from gaia.contract import read_spool
+    from gaia.contract.drafts import save_draft
+
+    minted, harness = _agent(), _agent()
+    contract_id = _born_row(minted, harness)
+    save_draft(contract_id, _envelope(minted, files=["/repo/a.py"]))
+    _read("/repo/a.py", harness)
+    _read("/repo/b.py", harness)
+
+    outcome = salvage_truncated_draft(
+        parsed_contract=None, task_info={"agent_id": harness, "agent": "developer", "workspace": "me"},
+        session_id="ses-parent",
+    )
+
+    assert outcome["created"] is True
+    assert _stored(contract_id)["evidence_report"]["files_checked"] == ["/repo/a.py", "/repo/b.py"]
+    assert read_spool.read(harness) == []
+
+
+def test_finalize_writes_the_row_from_the_harness_record_and_deletes_the_spool():
+    import importlib.util
+
+    from gaia.contract import read_spool
+    from gaia.contract.drafts import save_draft
+    from gaia.contract.tool_record import ANNOTATION_MARK
+
+    spec = importlib.util.spec_from_file_location("contract_cli_under_test", REPO_ROOT / "bin" / "cli" / "contract.py")
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    for command in ("git status", "ls /repo"):
+        _bash(command, agent)
+    _read("/repo/a.py", agent)
+    draft = _envelope(agent, commands=["terraform apply"], files=["/repo/a.py"], conclusion="read and ran")
+    draft["agent_status"].update(pending_steps=[], next_action="pending")
+    draft["evidence_report"].update(
+        patterns_checked=[], key_outputs=[], verbatim_outputs=[], cross_layer_impacts=[], open_gaps=[],
+        verification={"type": "command", "command": "true", "method": "ran it", "result": "pass", "details": "ok"},
+    )
+    save_draft(contract_id, draft)
+
+    code = cli.cmd_finalize(argparse.Namespace(draft_id=contract_id, agent_id=None, json=True))
+
+    report = _stored(contract_id)["evidence_report"]
+    assert code == 0
+    assert [entry.split(" (exit")[0] for entry in report["commands_run"]] == [
+        "git status", "ls /repo", ANNOTATION_MARK + "terraform apply",
+    ]
+    assert report["files_checked"] == ["/repo/a.py"]
+    assert read_spool.read(agent) == []
