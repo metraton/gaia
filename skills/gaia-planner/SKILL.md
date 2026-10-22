@@ -95,7 +95,8 @@ it protects.
 
    **Every gate is verified by an agent.** The check is a command or code
    run, or a browser-automation check (Playwright or the project's
-   equivalent) for what only shows in a rendered page or a live session. The
+   equivalent) for what only shows in a rendered page or a live session,
+   asserting the content or state the AC names, so a broken page fails it. The
    user's part in a gate is at most handing over a secret or completing a
    credential login inside a session the agent drives, after which the agent
    observes the result: "after install, the user confirms X" becomes the check
