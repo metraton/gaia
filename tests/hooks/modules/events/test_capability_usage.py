@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
-import importlib.machinery
 import importlib.util
 import json
 import sqlite3
@@ -125,32 +123,23 @@ def _opencode(event: str, tool: str, args: dict, **extra) -> dict:
     return adapter.adapt_post_tool_use(parsed).output
 
 
-def _parser_grammar() -> tuple[dict, dict]:
-    loader = importlib.machinery.SourceFileLoader("gaia_cli_entry", str(REPO_ROOT / "bin" / "gaia"))
-    spec = importlib.util.spec_from_loader("gaia_cli_entry", loader)
+def _generator():
+    spec = importlib.util.spec_from_file_location(
+        "generate_gaia_cli_grammar", REPO_ROOT / "scripts" / "generate_gaia_cli_grammar.py",
+    )
     module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    parser = module._build_parser(module._discover_plugins())
-    children: dict = {}
-    options: dict = {}
-
-    def walk(node, prefix):
-        options[" ".join(prefix)] = frozenset(o for a in node._actions for o in a.option_strings)
-        for action in node._actions:
-            if isinstance(action, argparse._SubParsersAction):
-                children[" ".join(prefix)] = frozenset(action.choices)
-                for name, child in action.choices.items():
-                    walk(child, prefix + (name,))
-
-    walk(parser, ())
-    return children, options
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_the_grammar_is_the_cli_parser_tree_and_its_declared_options():
-    children, options = _parser_grammar()
+    generator = _generator()
+    children, options = generator.parser_grammar()
+    drift = f"gaia_cli_grammar.py drifted from the CLI parser; run: {generator.REGENERATE_COMMAND}"
 
-    assert SUBCOMMAND_TREE == children
-    assert DECLARED_OPTIONS == options
+    assert generator.GRAMMAR_PATH.read_text(encoding="utf-8") == generator.render(), drift
+    assert SUBCOMMAND_TREE == {path: frozenset(names.split()) for path, names in children.items()}, drift
+    assert DECLARED_OPTIONS == {path: frozenset(names.split()) for path, names in options.items()}, drift
 
 
 @pytest.mark.parametrize(("command", "expected"), (
