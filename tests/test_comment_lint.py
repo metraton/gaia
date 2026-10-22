@@ -231,6 +231,26 @@ def test_merge_commits_are_left_out(tmp_path):
     assert report.net == 1 and not report.blocked
 
 
+def renamed_directory(tmp_path, appended=""):
+    old = "# ==== Existing ====\n# fact one\n" + code(30)
+    repo = make_change(tmp_path, {"old/mod.py": old}, {"note.txt": "unrelated\n"})
+    (repo / "new").mkdir()
+    git(repo, "mv", "old/mod.py", "new/mod.py")
+    commit_files(repo, {"new/mod.py": old + appended}, "rename")
+    return measure(str(repo), head="feat")
+
+
+def test_a_pure_directory_rename_adds_no_comment_lines(tmp_path):
+    report = renamed_directory(tmp_path)
+    assert (report.net, report.blocked, report.banners) == (0, False, [])
+
+
+def test_a_rename_plus_one_added_banner_counts_only_that_banner(tmp_path):
+    report = renamed_directory(tmp_path, "# ==== Added ====\n")
+    assert (report.net, report.blocked) == (1, True)
+    assert [(path, mark.text) for path, mark in report.banners] == [("new/mod.py", "# ==== Added ====")]
+
+
 def test_nothing_to_compare_without_a_remote_branch_is_not_a_block(tmp_path):
     repo = make_change(tmp_path, BASE, {"a.py": interleave(40, 6)})
     git(repo, "update-ref", "-d", "refs/remotes/origin/main")

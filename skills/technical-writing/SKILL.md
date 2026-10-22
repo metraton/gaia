@@ -112,7 +112,7 @@ The structure is advisory: nothing gates the body. It exists so a reviewer gets 
 3. **What to do or decide** -- the actions open, each with who and by when; or that none is needed.
 4. **The detail** -- evidence, numbers, identifiers, each with its mark and a pointer the reader can open; or a link to where it lives.
 
-A report that opens with the detail has handed its reader the agent's register; a report whose grave line sits third misleads by emphasis (`human-register`, Rule 2). A time in a report for readers in several places is written in the standard they share.
+The first line of a report is the situation, never an author or date stamp or a title block; metadata, if any, goes last. A report that opens with the detail has handed its reader the agent's register; a report whose grave line sits third misleads by emphasis (`human-register`, Rule 2). A time in a report for readers in several places is written in the standard they share.
 
 ### CHANGELOG entry -- one entry per behavior change
 
