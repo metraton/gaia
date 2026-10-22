@@ -1756,6 +1756,35 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- project_context: context sections keyed by the project they describe (v69).
+-- Replaces project_context_contracts, which readers keep as a per-section
+-- fallback until its rows are moved; history is written by the writer
+-- (gaia/store/project_context.py::write_section), inserts included.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS project_context (
+    project_identity TEXT NOT NULL,
+    contract_name    TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    metadata         TEXT,
+    updated_at       TEXT,
+    PRIMARY KEY (project_identity, contract_name)
+);
+
+CREATE TABLE IF NOT EXISTS project_context_history (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_identity    TEXT NOT NULL,
+    contract_name       TEXT NOT NULL,
+    before_payload_json TEXT,
+    after_payload_json  TEXT NOT NULL,
+    changed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    changed_by_agent    TEXT,
+    proposed_by         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_context_history_section
+    ON project_context_history(project_identity, contract_name);
+
+-- ---------------------------------------------------------------------------
 -- approvals: durable approval lifecycle records (v12 / approval-model-redesign)
 -- One row per approval request. Survives session close; queryable cross-session.
 -- id carries a P-{uuid4} prefix so it is readable in denial messages and logs.

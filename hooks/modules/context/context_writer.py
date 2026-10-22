@@ -2,8 +2,8 @@
 ContextWriter: validates update_contracts clauses from agent output and applies them.
 
 A specialist's clause is a proposal: :func:`process_update_contracts` checks its
-shape, routes it, and writes nothing; :func:`apply_proposal` is the
-orchestrator's write into project_context_contracts.
+shape, routes it to the project it is about, and writes nothing;
+:func:`apply_proposal` is the orchestrator's write into project_context.
 
 update_contracts format (array inside agent_contract_handoff)::
 
@@ -27,13 +27,12 @@ refused at both seams -- skipped by
 :func:`apply_update` at the write itself.
 
 Public API:
-    - apply_update(update, agent_name, workspace, db_path) -> dict
+    - apply_update(update, agent_name, workspace, db_path, project, proposed_by) -> dict
     - process_update_contracts(contract_dict, task_info) -> dict
-    - apply_proposal(clause, workspace, db_path, dry_run) -> dict
+    - apply_proposal(clause, workspace, db_path, dry_run, project, proposed_by, proposer_agent) -> dict
     - proposed_entries(clause) -> (entries, note)
 """
 
-import copy
 import json
 import logging
 import sqlite3
@@ -96,42 +95,9 @@ def _merge_section_payload(stored: Any, delta: dict) -> dict:
     verb did exist once and was removed on exactly these grounds -- see the note
     in ``tests/test_writer_surgical_reconciliation.py``.
     """
-    merged = copy.deepcopy(stored) if isinstance(stored, dict) else {}
-    for key, value in delta.items():
-        current = merged.get(key)
-        if isinstance(value, dict) and isinstance(current, dict):
-            merged[key] = _merge_section_payload(current, value)
-        else:
-            merged[key] = value
-    return merged
+    from gaia.store.project_context import merge_section_payload
 
-
-def _decode_stored_payload(raw: Optional[str], contract_name: str) -> Any:
-    """Decode a stored payload column, returning None when it cannot be merged into.
-
-    A payload that is absent, unparseable, or not a JSON object has no keys to
-    preserve, so the caller replaces it outright. The prior value is not lost:
-    ``trg_pcc_history`` records the before/after pair for every UPDATE.
-    """
-    if raw is None:
-        return None
-    try:
-        decoded = json.loads(raw)
-    except (TypeError, ValueError) as exc:
-        logger.warning(
-            "Stored payload for contract '%s' is not valid JSON (%s); "
-            "replacing it instead of merging",
-            contract_name, exc,
-        )
-        return None
-    if not isinstance(decoded, dict):
-        logger.warning(
-            "Stored payload for contract '%s' is a %s, not an object; "
-            "replacing it instead of merging",
-            contract_name, type(decoded).__name__,
-        )
-        return None
-    return decoded
+    return merge_section_payload(stored, delta)
 
 
 def apply_update(
@@ -139,8 +105,16 @@ def apply_update(
     agent_name: str,
     workspace: Optional[str] = None,
     db_path: Optional[Path] = None,
+    project: Optional[str] = None,
+    proposed_by: Optional[str] = None,
 ) -> dict:
-    """Merge a validated update_contracts entry into project_context_contracts.
+    """Merge a validated update_contracts entry into the ``project_context`` row of its project.
+
+    The project is the one the entry names, else ``project``, else -- for
+    ``project_identity`` -- the single project its keys name (:func:`_route`);
+    an entry that resolves to no project, or to several, is refused. The
+    section a reader of that project saw is the merge base, so a first write
+    never hides keys still read from ``project_context_contracts``.
 
     The payload is a DELTA: the stored section is read, deep-merged with the
     payload (:func:`_merge_section_payload`), and written back, so a partial
@@ -155,14 +129,16 @@ def apply_update(
     such an entry on the envelope path; this check is the one adjacent to the
     write, so a direct caller of this function cannot reach the destructive
     path either. Note the asymmetry with a non-object payload already IN the
-    row, handled by :func:`_decode_stored_payload`: that one is replaced, since
+    row: that one is replaced (``write_mode`` ``replace``), since
     a corrupt or non-object stored value has nothing worth preserving and
-    ``trg_pcc_history`` retains the prior value regardless.
+    ``project_context_history`` retains the prior value regardless.
 
-    ``workspace`` defaults to gaia.project.current() when not provided.
+    ``workspace`` defaults to gaia.project.current() and only disambiguates a
+    project name several workspaces hold. ``agent_name`` and ``proposed_by``
+    are recorded in ``project_context_history``.
 
     Returns an audit dict:
-    ``{timestamp, agent, contract, workspace, success, error, write_mode}``,
+    ``{timestamp, agent, contract, workspace, project, success, error, write_mode}``,
     where ``write_mode`` is ``insert`` (no prior row), ``merge`` (deep-merged
     into the prior payload), or ``replace`` (the prior payload was corrupt or
     not an object, so it had no keys to preserve).
@@ -177,6 +153,7 @@ def apply_update(
         "agent": agent_name,
         "contract": contract_name,
         "workspace": ws,
+        "project": None,
         "success": False,
         "error": None,
         "write_mode": None,
@@ -215,46 +192,41 @@ def apply_update(
         con.execute("PRAGMA foreign_keys = ON")
         con.execute("BEGIN IMMEDIATE")
 
-        row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = ?",
-            (ws, contract_name),
-        ).fetchone()
+        targets, refusals = _route(update, ws, project, con)
+        if refusals or len(targets) != 1:
+            con.execute("ROLLBACK")
+            audit["error"] = "; ".join(refusals) or (
+                f"update_contracts '{contract_name}' names {len(targets)} projects; "
+                "write each project's keys separately"
+            )
+            return audit
+        owner, entry = targets[0]
+        audit["workspace"], audit["project"] = owner["workspace"], owner["identity"]
 
-        if row is None:
-            stored = None
-            write_mode = "insert"
-        else:
-            stored = _decode_stored_payload(row[0], contract_name)
+        from gaia.store.project_context import project_sections, write_section
+
+        seen = project_sections(con, owner).get(contract_name)
+        stored = None
+        write_mode = "insert"
+        if seen is not None:
+            stored = seen["payload"] if isinstance(seen["payload"], dict) else None
+            if stored is not None and contract_name == "project_identity":
+                stored = {k: v for k, v in stored.items() if k in entry["payload"]}
             write_mode = "merge" if stored is not None else "replace"
 
-        merged_payload = _merge_section_payload(stored, payload)
+        merged_payload = _merge_section_payload(stored, entry["payload"])
         payload_json = json.dumps(merged_payload)
-
-        # Ensure workspace row exists so the FK on project_context_contracts holds.
-        con.execute(
-            "INSERT OR IGNORE INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
-            (ws, ws, now),
-        )
-
-        con.execute(
-            """
-            INSERT INTO project_context_contracts
-                (workspace, contract_name, payload, metadata, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(workspace, contract_name) DO UPDATE SET
-                payload    = excluded.payload,
-                updated_at = excluded.updated_at
-            """,
-            (ws, contract_name, payload_json, None, now),
+        write_section(
+            con, owner["identity"], contract_name, payload_json, now,
+            agent_name, proposed_by,
         )
         con.execute("COMMIT")
 
         audit["success"] = True
         audit["write_mode"] = write_mode
         logger.info(
-            "Context updated by %s: workspace=%s contract=%s mode=%s keys=%d",
-            agent_name, ws, contract_name, write_mode,
+            "Context updated by %s: project=%s contract=%s mode=%s keys=%d",
+            agent_name, owner["identity"], contract_name, write_mode,
             len(merged_payload) if isinstance(merged_payload, dict) else 0,
         )
         return audit
@@ -282,93 +254,92 @@ def apply_update(
 # ============================================================================
 
 def _section_keys(contract_name: str, workspace: str, db_path: Optional[Path]) -> set:
-    """Top-level keys of the stored section, or an empty set when it holds none."""
+    """Top-level keys of the section as ``workspace`` reads it, or an empty set when it holds none."""
     resolved = Path(db_path) if db_path else _get_db_path()
     if resolved is None or not resolved.exists():
         return set()
     try:
+        from gaia.store.project_context import workspace_sections
+
         con = sqlite3.connect(str(resolved))
         try:
-            row = con.execute(
-                "SELECT payload FROM project_context_contracts "
-                "WHERE workspace = ? AND contract_name = ?",
-                (workspace, contract_name),
-            ).fetchone()
+            section = workspace_sections(con, workspace).get(contract_name)
         finally:
             con.close()
     except sqlite3.Error:
         return set()
-    stored = _decode_stored_payload(row[0], contract_name) if row else None
-    return set(stored) if stored else set()
+    stored = section["payload"] if section else None
+    return set(stored) if isinstance(stored, dict) else set()
 
 
-def _project_owner(
-    project_key: str, workspace: str, db_path: Optional[Path],
-) -> Optional[tuple]:
-    """``(owner workspace, key to write)`` for ``project_key``, or None when nobody owns it.
+def _identity_key(con: sqlite3.Connection, owner: dict, key: str) -> str:
+    """The spelling of ``key`` the project's ``project_identity`` already holds, else ``key``.
 
-    ``projects.name`` is hyphenated while ``project_identity`` keys are
-    underscore slugs; the lookup tries both spellings
-    (``context_provider.name_variants``). The written key is the spelling the
-    owner's section already holds, which keeps a hyphenated proposal from
-    forking a second entry beside the underscore one. A project with no
-    ``projects`` row is still owned by ``workspace`` when its section already
-    holds the key; otherwise it is unknown, and the caller refuses it rather
-    than start an entry in whichever workspace the session happened to open in.
+    Keeps a hyphenated proposal from forking a second entry beside the
+    underscore slug ``tools/scan/promote.py`` writes.
     """
-    try:
-        from modules.core.paths import ensure_package_root_importable
+    from gaia.store.project_context import name_variants, project_sections
 
-        ensure_package_root_importable()
-        from tools.context.context_provider import (
-            dispatch_project_workspace,
-            name_variants,
-        )
-
-        variants = name_variants(project_key)
-        owner = dispatch_project_workspace(
-            workspace, project_key, Path(db_path) if db_path else None,
-        )
-    except Exception:
-        logger.warning(
-            "Project owner lookup failed for %r", project_key, exc_info=True,
-        )
-        return None
-    holder = owner or workspace
-    held = _section_keys("project_identity", holder, db_path)
-    key = next((variant for variant in variants if variant in held), project_key)
-    if owner is None and key not in held:
-        return None
-    return holder, key
+    held = (project_sections(con, owner).get("project_identity") or {}).get("payload")
+    held = held if isinstance(held, dict) else {}
+    return next((variant for variant in name_variants(key) if variant in held), key)
 
 
-def _route_to_owning_workspaces(
+def _route(
     entry: dict,
     workspace: str,
-    db_path: Optional[Path],
+    dispatch_project: Optional[str],
+    con: sqlite3.Connection,
 ) -> tuple:
-    """``([(workspace, entry)], [unowned keys])``, splitting ``project_identity`` by project owner.
+    """``([(project, entry)], [refusal])``: each part of ``entry`` under the project it is about.
 
-    A ``project_identity`` payload is keyed by project, and a project lives in
-    exactly one workspace; writing its key into any other workspace leaves a
-    stray fragment that shadows the real entry for readers of that workspace.
-    A key no workspace owns is returned unrouted, never defaulted to ``workspace``.
+    The project is the one the entry names (``project``), else, for
+    ``project_identity``, the one each key names (a key's value may also name
+    it by ``local_path``), else the dispatch project. Nothing is ever
+    defaulted to ``workspace``: a section about a project that lands in the
+    session's workspace is invisible to every reader of that project.
     """
-    if entry.get("contract") != "project_identity":
-        return [(workspace, entry)], []
+    from gaia.store.project_context import resolve_project
+
+    contract_name = entry["contract"]
+    if entry.get("project"):
+        owner = resolve_project(con, entry["project"], workspace)
+        if owner is None:
+            return [], [_unowned_error(contract_name, [str(entry["project"])])]
+        return [(owner, entry)], []
+    if contract_name != "project_identity":
+        owner = resolve_project(con, dispatch_project, workspace)
+        if owner is None:
+            return [], [_no_project_error(contract_name, dispatch_project)]
+        return [(owner, entry)], []
     by_owner: dict = {}
     unowned: list = []
     for key, value in entry["payload"].items():
-        owner = _project_owner(key, workspace, db_path)
+        path = value.get("local_path") if isinstance(value, dict) else None
+        owner = resolve_project(con, key, workspace) or resolve_project(con, path, workspace)
         if owner is None:
             unowned.append(key)
             continue
-        by_owner.setdefault(owner[0], {})[owner[1]] = value
+        slot = by_owner.setdefault(owner["identity"], (owner, {}))
+        slot[1][_identity_key(con, owner, key)] = value
     routed = [
-        (target, {"contract": entry["contract"], "payload": payload})
-        for target, payload in by_owner.items()
+        (owner, {"contract": contract_name, "payload": payload})
+        for owner, payload in by_owner.values()
     ]
-    return routed, unowned
+    return routed, [_unowned_error(contract_name, unowned)] if unowned else []
+
+
+def _route_proposal(entry: dict, workspace: str, dispatch_project: Optional[str], db_path) -> tuple:
+    """:func:`_route` on a read-only connection; ``([], [refusal])`` when the DB is unreadable."""
+    resolved = Path(db_path) if db_path else _get_db_path()
+    try:
+        con = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+        try:
+            return _route(entry, workspace, dispatch_project, con)
+        finally:
+            con.close()
+    except sqlite3.Error as exc:
+        return [], [f"update_contracts '{entry['contract']}' not routed: {exc}"]
 
 
 def _unowned_error(contract_name: str, unowned: list) -> str:
@@ -377,6 +348,17 @@ def _unowned_error(contract_name: str, unowned: list) -> str:
         "so nothing was routed for it. Repair: key the entry by a project the "
         "substrate knows (see `gaia context project <name>`; underscore and "
         "hyphen spellings are both tried) and propose it again."
+    )
+
+
+def _no_project_error(contract_name: str, dispatch_project: Optional[str]) -> str:
+    named = f"the dispatch project {dispatch_project!r} is unknown" if dispatch_project else (
+        "the dispatch named no project"
+    )
+    return (
+        f"update_contracts '{contract_name}': the entry names no project and {named}, "
+        "so it was written nowhere. Repair: add \"project\": \"<name or identity>\" "
+        "to the entry (see `gaia context project <name>`) and propose it again."
     )
 
 
@@ -437,38 +419,47 @@ def apply_proposal(
     workspace: str,
     db_path: Optional[Path] = None,
     dry_run: bool = False,
+    project: Optional[str] = None,
+    proposed_by: Optional[str] = None,
+    proposer_agent: Optional[str] = None,
 ) -> dict:
-    """Write a recorded ``update_contracts`` proposal to the workspaces that own its projects.
+    """Write a recorded ``update_contracts`` proposal under the projects it is about.
 
     This is the orchestrator's write path: SubagentStop only records and
-    announces a specialist's proposal (:func:`process_update_contracts`). Each
-    ``project_identity`` key lands in its project's own workspace
-    (:func:`_route_to_owning_workspaces`) and a key nobody owns is refused,
-    never written to ``workspace``. ``evidence`` entries are skipped: they are
-    inserted at SubagentStop. With ``dry_run`` nothing is written and
-    ``applied`` lists the targets that would be.
+    announces a specialist's proposal (:func:`process_update_contracts`).
+    ``project`` is the proposing turn's dispatch project; :func:`_route` says
+    which project each part lands in, and a part with none is refused, never
+    written to ``workspace``. ``proposed_by`` (the proposing contract id) and
+    ``proposer_agent`` are recorded in history. ``evidence`` entries are
+    skipped: they are inserted at SubagentStop. With ``dry_run`` nothing is
+    written and ``applied`` lists the targets that would be.
 
-    Returns ``{applied: [{contract, workspace}], errors: [str], note}``.
+    Returns ``{applied: [{contract, workspace, project}], errors: [str], note}``.
     """
     entries, note, errors = _parse_clause(clause)
     applied: list = []
     for entry in entries:
         if entry["contract"] == "evidence":
             continue
-        routed, unowned = _route_to_owning_workspaces(entry, workspace, db_path)
-        if unowned:
-            errors.append(_unowned_error(entry["contract"], unowned))
-        for target, routed_entry in routed:
+        routed, refusals = _route_proposal(entry, workspace, project, db_path)
+        errors.extend(refusals)
+        for owner, routed_entry in routed:
+            target = {"contract": entry["contract"], "workspace": owner["workspace"],
+                      "project": owner["identity"]}
             if dry_run:
-                applied.append({"contract": entry["contract"], "workspace": target})
+                applied.append(target)
                 continue
-            audit = apply_update(routed_entry, "orchestrator", workspace=target, db_path=db_path)
+            audit = apply_update(
+                dict(routed_entry, project=owner["identity"]),
+                proposer_agent or "orchestrator", workspace=owner["workspace"],
+                db_path=db_path, proposed_by=proposed_by,
+            )
             if audit["success"]:
-                applied.append({"contract": audit["contract"], "workspace": audit["workspace"]})
+                applied.append(target)
             else:
                 errors.append(
-                    f"update_contracts entry '{audit['contract']}' for workspace "
-                    f"'{audit['workspace']}' not applied: {audit.get('error') or 'unknown error'}"
+                    f"update_contracts entry '{audit['contract']}' for project "
+                    f"'{owner['identity']}' not applied: {audit.get('error') or 'unknown error'}"
                 )
     return {"applied": applied, "errors": errors, "note": note}
 
@@ -499,13 +490,14 @@ def process_update_contracts(
 
     Args:
         contract_dict: Parsed JSON contract dict (from parse_contract()).
-        task_info: Task metadata (agent, db_path, cloud_scope, workspace).
+        task_info: Task metadata (agent, db_path, cloud_scope, workspace, and
+            project -- the born row's ``dispatch_project``).
 
     Returns:
         dict with keys:
             updated (bool)         -- True when an evidence entry was inserted
             contracts (list[str])  -- Names of inserted evidence rows
-            proposed (list[dict])  -- ``{contract, workspace, keys}`` awaiting the orchestrator
+            proposed (list[dict])  -- ``{contract, workspace, project, keys}`` awaiting the orchestrator
             rejected (list[str])   -- Names of rejected contracts
             errors (list[str])     -- Why an entry or key was not recorded
             normalized (str)       -- Present when a single-object clause was reshaped
@@ -542,13 +534,13 @@ def process_update_contracts(
             context_entries.append(entry)
 
     for entry in context_entries:
-        routed, unowned = _route_to_owning_workspaces(entry, workspace, db_path)
-        if unowned:
-            result["errors"].append(_unowned_error(entry["contract"], unowned))
-        for target_workspace, routed_entry in routed:
+        routed, refusals = _route_proposal(entry, workspace, task_info.get("project"), db_path)
+        result["errors"].extend(refusals)
+        for owner, routed_entry in routed:
             result["proposed"].append({
                 "contract": entry["contract"],
-                "workspace": target_workspace,
+                "workspace": owner["workspace"],
+                "project": owner["identity"],
                 "keys": sorted(routed_entry["payload"]),
             })
 

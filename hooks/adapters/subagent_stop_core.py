@@ -1279,6 +1279,7 @@ def run_subagent_stop(
                 "db_path": task_info.get("db_path"),
                 "cloud_scope": task_info.get("cloud_scope"),
                 "workspace": _update_contracts_workspace,
+                "project": (_bound_dispatch_row or {}).get("dispatch_project"),
             }
             _update_contracts_result = process_update_contracts(
                 parsed_contract, _update_contracts_task_info

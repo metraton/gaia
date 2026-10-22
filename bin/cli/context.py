@@ -393,26 +393,30 @@ def _cmd_get_contract(args) -> int:
         print(f"gaia context get-contract: failed to import store: {exc}", file=sys.stderr)
         return 1
 
+    from gaia.store.project_context import project_sections, resolve_project, workspace_sections
+
     workspace = getattr(args, "workspace", None) or _project_current()
+    project_ref = getattr(args, "project", None)
     use_text = getattr(args, "text", False)
 
     con = _store_connect()
     try:
-        row = con.execute(
-            "SELECT contract_name, payload, metadata, updated_at "
-            "FROM project_context_contracts WHERE workspace = ? AND contract_name = ?",
-            (workspace, section),
-        ).fetchone()
-        available = [
-            r[0]
-            for r in con.execute(
-                "SELECT DISTINCT contract_name FROM project_context_contracts "
-                "WHERE workspace = ? ORDER BY contract_name",
-                (workspace,),
-            ).fetchall()
-        ]
+        project = resolve_project(con, project_ref, workspace) if project_ref else None
+        if project_ref and project is None:
+            print(f"gaia context get-contract: no active project '{project_ref}' "
+                  "(see `gaia context project <name>`)", file=sys.stderr)
+            return 1
+        sections = project_sections(con, project) if project else workspace_sections(con, workspace)
     finally:
         con.close()
+    if project:
+        workspace = project["workspace"]
+    available = sorted(sections)
+    found = sections.get(section)
+    row = None if found is None else (
+        section, json.dumps(found["payload"]) if found["payload"] is not None else None,
+        found["metadata"], found["updated_at"],
+    )
 
     if row is None:
         avail_txt = ", ".join(available) if available else "(none for this workspace)"
@@ -452,6 +456,9 @@ def _cmd_get_contract(args) -> int:
         "payload": payload,
         "updated_at": updated_at,
     }
+    if project:
+        result["project"] = project["identity"]
+        result["source"] = found["source"]
     if metadata is not None:
         result["metadata"] = metadata
     print(json.dumps(result, indent=2, default=str))
@@ -1302,9 +1309,9 @@ def _cmd_accept(args) -> int:
     """Handle ``gaia context accept CONTRACT_ID [--workspace W] [--dry-run]``.
 
     Accepts the ``update_contracts`` proposal a specialist's turn recorded into
-    project context. Each ``project_identity`` key lands in the workspace that
-    owns its project, whichever workspace ``--workspace`` (default: the
-    caller's) names, and a key no workspace owns is refused. Exit 1 when
+    project context. Each part lands under the project it names, else the
+    proposing turn's dispatch project, and history records that contract id
+    and agent; a part no project owns is refused. Exit 1 when
     anything was refused. The verb is named ``accept`` rather than ``apply`` so
     the orchestrator, which alone writes project context, runs it unsigned.
     """
@@ -1315,6 +1322,7 @@ def _cmd_accept(args) -> int:
         sys.path.insert(0, hooks_dir)
     try:
         from gaia.project import current as _project_current
+        from gaia.store.writer import _connect as _store_connect
         from gaia.store.writer import agent_contract_handoff_envelope
         from modules.context.context_writer import apply_proposal
     except Exception as exc:
@@ -1330,17 +1338,31 @@ def _cmd_accept(args) -> int:
               file=sys.stderr)
         return 1
 
+    con = _store_connect()
+    try:
+        born = con.execute(
+            "SELECT dispatch_project, agent_id FROM agent_contract_handoffs "
+            "WHERE contract_id = ? ORDER BY id LIMIT 1", (contract_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    dispatch_project, proposer = born if born else (None, None)
+
     outcome = apply_proposal(
         envelope["update_contracts"],
         getattr(args, "workspace", None) or _project_current(),
         dry_run=getattr(args, "dry_run", False),
+        project=dispatch_project,
+        proposed_by=contract_id,
+        proposer_agent=proposer,
     )
     if as_json:
         print(json.dumps(outcome, indent=2))
     else:
         verb = "would apply" if getattr(args, "dry_run", False) else "applied"
         for item in outcome["applied"]:
-            print(f"{verb}: {item['contract']} -> workspace {item['workspace']}")
+            print(f"{verb}: {item['contract']} -> project {item['project']} "
+                  f"(workspace {item['workspace']})")
         for message in outcome["errors"]:
             print(f"refused: {message}", file=sys.stderr)
     return 1 if outcome["errors"] else 0
@@ -1612,6 +1634,13 @@ def register(subparsers) -> None:
         default=None,
         help="Workspace identity owning the contract (default: "
              "gaia.project.current())",
+    )
+    gc_parser.add_argument(
+        "--project",
+        metavar="P",
+        default=None,
+        help="Project identity or name: read the section stored for that "
+             "project, falling back to its workspace's pre-v68 row",
     )
     gc_parser.add_argument(
         "--section",
