@@ -212,6 +212,7 @@ if str(_REPO_ROOT) not in sys.path:
 from gaia.contract.validator import (  # noqa: E402
     AGENT_ID_PATTERN_TEXT,
     canonicalize_envelope,
+    envelope_as_read,
     sanitize_envelope,
 )
 
@@ -1377,6 +1378,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
     row = collapse_continuation_chains(links)[-1]
     contract_id = row.get("contract_id")
     envelope, source = _freshest_envelope(contract_id, row)
+    envelope = envelope_as_read(envelope)
 
     field = getattr(args, "field", None)
     if field is not None:
@@ -1496,6 +1498,7 @@ def cmd_view(args) -> int:
             )
             return 1
 
+    envelope = envelope_as_read(envelope)
     field = getattr(args, "field", None)
     if field is not None:
         if not isinstance(envelope, dict):
@@ -1996,19 +1999,19 @@ def cmd_finalize(args) -> int:
                 print(f"Rejected: {msg}", file=sys.stderr)
             return 1
 
-    summary = envelope.get("user_facing_summary")
-    if not isinstance(summary, str) or not summary.strip():
+    conclusion = envelope.get("conclusion")
+    if not isinstance(conclusion, str) or not conclusion.strip():
         msg = (
-            "user_facing_summary is empty, but it is the only part of the "
-            "contract the user reads. Write what the user should know in plain "
-            f"words: gaia contract set --draft-id {draft_id} user_facing_summary "
-            "'<what was done, what is left, what they must decide>', then "
+            "conclusion is empty, but it is your verdict for the orchestrator, "
+            "which validates it before answering the user. Write it in your "
+            f"technical register: gaia contract set --draft-id {draft_id} "
+            "conclusion '<what holds, on what evidence, what is open>', then "
             "finalize."
         )
         if as_json:
             print(json.dumps({
                 "status": "rejected",
-                "reason": "user_facing_summary_required",
+                "reason": "conclusion_required",
                 "error": msg,
             }))
         else:
@@ -2377,7 +2380,7 @@ def cmd_reap(args) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_fill_rate(args) -> int:
-    """Report surface and user_facing_summary fill rates over a window; exit 1 under ``--min``."""
+    """Report surface and conclusion fill rates over a window; exit 1 under ``--min``."""
     from gaia.store.reader import parse_when
     from gaia.store.writer import contract_fill_rate
 
@@ -2389,7 +2392,7 @@ def cmd_fill_rate(args) -> int:
         return 1
 
     report = contract_fill_rate(since=since, until=until, workspace=args.workspace)
-    fields = ("surface", "user_facing_summary")
+    fields = ("surface", "conclusion")
     rates = [report[field]["rate"] for field in fields]
     if args.min is not None:
         report["min"] = args.min
@@ -2830,11 +2833,12 @@ def _build_subcommands(sub) -> None:
 
     p_fill_rate = sub.add_parser(
         "fill-rate",
-        help="Share of clean closes carrying a surface and a user_facing_summary (read-only)",
+        help="Share of clean closes carrying a surface and a conclusion (read-only)",
         description=(
             "Over rows created in the window that closed clean (no cut_reason, "
             "not DISPATCHED, not hook-backstop residue), report how many carry a "
-            "surface and how many a user_facing_summary. With --min, exit 1 "
+            "surface and how many a conclusion (user_facing_summary on rows "
+            "closed before the rename). With --min, exit 1 "
             "when either rate is below it or the window holds no rows."
         ),
     )

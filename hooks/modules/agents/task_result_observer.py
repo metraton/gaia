@@ -453,7 +453,12 @@ def build_contract_summary_line(
     if fields_segment and len(line) > _LINE_HARD_CEILING:
         line = f"{core} -- {cmd}"
 
+    from gaia.contract.validator import conclusion_of
     from .proposal_notices import proposal_notice
+
+    conclusion = conclusion_of(envelope)
+    if conclusion:
+        line = f"{line}\nconclusion: {conclusion}"
 
     proposed = proposal_notice(
         envelope,

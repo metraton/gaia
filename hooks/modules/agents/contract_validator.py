@@ -731,21 +731,11 @@ def parse_memory_suggestions(contract: dict) -> List[str]:
     return [str(item) for item in raw if item is not None]
 
 
-def parse_user_facing_summary(contract: dict) -> Optional[str]:
-    """Parse the optional top-level ``user_facing_summary`` clause (advisory).
+def parse_conclusion(contract: dict) -> Optional[str]:
+    """The specialist's verdict for the orchestrator, read from ``user_facing_summary`` on rows closed before the rename."""
+    from gaia.contract.validator import conclusion_of
 
-    The single human-audience field in the contract: a short prose summary the
-    subagent writes once for the user. The orchestrator relays it near-verbatim
-    on a single-agent COMPLETE (N=1) instead of re-synthesizing ``key_outputs``.
-
-    Strictly additive and advisory -- the validator never rejects based on this
-    field. Returns the trimmed string when present and non-empty, else None.
-    """
-    raw = contract.get("user_facing_summary")
-    if not isinstance(raw, str):
-        return None
-    text = raw.strip()
-    return text or None
+    return conclusion_of(contract)
 
 
 def parse_failure_report(contract: dict) -> Optional[Dict[str, Any]]:

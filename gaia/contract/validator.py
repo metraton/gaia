@@ -522,7 +522,30 @@ TOP_LEVEL_FIELD_TYPES = {
     "consolidation_report": (dict,),
     "approval_request": (dict,),
     "report_prose": (str,),
+    "conclusion": (str,),
 }
+
+LEGACY_CONCLUSION_FIELD = "user_facing_summary"
+
+
+def envelope_as_read(envelope: Any) -> Any:
+    """The envelope a reader sees: a row closed before the rename reads its user_facing_summary as its conclusion."""
+    if not isinstance(envelope, dict) or envelope.get("conclusion") is not None:
+        return envelope
+    if LEGACY_CONCLUSION_FIELD not in envelope:
+        return envelope
+    read = {key: value for key, value in envelope.items() if key != LEGACY_CONCLUSION_FIELD}
+    read["conclusion"] = envelope[LEGACY_CONCLUSION_FIELD]
+    return read
+
+
+def conclusion_of(envelope: Any) -> "str | None":
+    """The trimmed conclusion a row carries for the orchestrator, or None when it has none."""
+    read = envelope_as_read(envelope)
+    text = read.get("conclusion") if isinstance(read, dict) else None
+    if not isinstance(text, str):
+        return None
+    return text.strip() or None
 
 # ``report_prose`` is the one entry above with NO persisted population behind
 # it, and that absence is what makes typing it safe rather than unsupported:
@@ -2240,6 +2263,9 @@ __all__ = [
     "AGENT_WRITABLE_TOP_LEVEL_KEYS",
     "TOP_LEVEL_ENVELOPE_KEYS",
     "TOP_LEVEL_FIELD_TYPES",
+    "LEGACY_CONCLUSION_FIELD",
+    "envelope_as_read",
+    "conclusion_of",
     "AGENT_STATUS_FIELD_TYPES",
     "EVIDENCE_FIELD_TYPES",
     "SYSTEM_WRITTEN_ENVELOPE_KEYS",

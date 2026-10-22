@@ -1720,33 +1720,6 @@ def run_subagent_stop(
                 "como un cierre valido, aunque declare COMPLETE."
             )
 
-        # The summary comes off the envelope the gate judged, so what the user
-        # reads and the verdict share one artifact. A rejected or cut turn is
-        # excluded: its work is not a valid close. How many subagents ran is
-        # unknown here, so the relay-at-one rule stays the orchestrator's.
-        if (
-            not contract_rejected
-            and not _circuit_tripped
-            and isinstance(_authoritative_envelope, dict)
-        ):
-            try:
-                from modules.agents.contract_validator import (
-                    parse_user_facing_summary,
-                )
-
-                _user_summary = parse_user_facing_summary(_authoritative_envelope)
-            except Exception as _summary_exc:
-                _user_summary = None
-                logger.debug(
-                    "user_facing_summary relay skipped (non-fatal): %s",
-                    _summary_exc,
-                )
-            if _user_summary:
-                result["user_facing_summary"] = _user_summary
-                user_message = (
-                    f"Resumen de {agent_type} para el usuario: {_user_summary}"
-                )
-
         if _update_contracts_refused:
             result["update_contracts_refused"] = _update_contracts_refused
 
