@@ -187,6 +187,14 @@ session opened in another workspace landed where no reader of the project looked
   fallback would hide every unmoved section of a project as soon as one
   section was written. For the same reason a first write merges into the
   section the project's readers saw, so a delta never hides old keys.
+- **A workspace is a container, not an owner**: `project_context` holds
+  project facts only. Scanner promotion (`tools/scan/promote.py`) moves each
+  `project_identity` entry that resolves to a project (path, then name) into
+  that project's row. The `_workspace` reserved key, anything describing the
+  workspace itself, and any entry no project owns (reported as a warning)
+  stay in the workspace-keyed row, which remains the store for
+  workspace-level data. `gaia context accept` and SubagentStop both stamp
+  refusals on the proposing row as `update_contracts_refused`.
 - **Workspace readers** (`workspace_sections`: the context provider, the
   contracts loader, freshness, the session roster, `get-contract --workspace`)
   read the old row merged with the rows of that workspace's projects.

@@ -26,6 +26,7 @@ sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
 # DB helpers
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
+    seed_project,
     seed_workspace,
 )
 
@@ -487,7 +488,12 @@ def _build_task_info(agent_type: str, db_path: Path, workspace: str = "global") 
         "agent_type": agent_type,
         "db_path": db_path,
         "workspace": workspace,
+        "project": PERF_PROJECT,
     }
+
+
+PERF_PROJECT = "platform"
+PERF_PROJECT_ID = "github.com/acme/platform"
 
 
 def _median_time_ms(fn, iterations: int = TIMING_ITERATIONS) -> float:
@@ -518,6 +524,7 @@ def setup_perf(tmp_path):
     db_path = tmp_path / "gaia_perf.db"
     bootstrap_gaia_schema(db_path)
     seed_workspace(db_path, "global")
+    seed_project(db_path, "global", PERF_PROJECT, PERF_PROJECT_ID)
 
     large_payload = _generate_large_context(TARGET_CONTEXT_SIZE_KB)
     return db_path, large_payload
@@ -627,7 +634,7 @@ class TestCorrectnessUnderLoad:
         )["update_contracts"]
 
         elapsed_ms = _median_time_ms(
-            lambda: apply_proposal(clause, "global", db_path=db_path)
+            lambda: apply_proposal(clause, "global", db_path=db_path, project=PERF_PROJECT)
         )
 
         assert elapsed_ms < NFR_001_MAX_MS, (
@@ -657,16 +664,19 @@ class TestCorrectnessUnderLoad:
 
         con = sqlite3.connect(str(db_path))
         assert con.execute(
-            "SELECT COUNT(*) FROM project_context_contracts WHERE contract_name='cluster_details'"
+            "SELECT COUNT(*) FROM project_context WHERE contract_name='cluster_details'"
         ).fetchone()[0] == 0
         con.close()
 
-        outcome = apply_proposal(contract["update_contracts"], "global", db_path=db_path)
+        outcome = apply_proposal(
+            contract["update_contracts"], "global", db_path=db_path, project=PERF_PROJECT,
+        )
         assert outcome["errors"] == []
 
         con = sqlite3.connect(str(db_path))
         row = con.execute(
-            "SELECT payload FROM project_context_contracts WHERE workspace='global' AND contract_name='cluster_details'"
+            "SELECT payload FROM project_context WHERE project_identity = ? "
+            "AND contract_name = 'cluster_details'", (PERF_PROJECT_ID,),
         ).fetchone()
         con.close()
 

@@ -40,6 +40,7 @@ from modules.core.paths import clear_path_cache
 # ---------------------------------------------------------------------------
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
+    seed_project,
     seed_workspace,
 )
 
@@ -121,14 +122,13 @@ TASK_INFO_CLOUD_TROUBLESHOOTER = {
 # ---------------------------------------------------------------------------
 
 def read_contract(db_path: Path, workspace: str, contract_name: str):
-    """Read back a contract payload from the DB; returns parsed dict or None."""
+    """The section as a reader of ``workspace`` sees it, or None."""
+    from gaia.store.project_context import workspace_sections
+
     con = sqlite3.connect(str(db_path))
-    row = con.execute(
-        "SELECT payload FROM project_context_contracts WHERE workspace=? AND contract_name=?",
-        (workspace, contract_name),
-    ).fetchone()
+    section = workspace_sections(con, workspace).get(contract_name)
     con.close()
-    return json.loads(row[0]) if row else None
+    return section["payload"] if section else None
 
 
 def read_contract_any_workspace(db_path: Path, contract_name: str):
@@ -205,10 +205,15 @@ class TestProcessContextUpdatesE2E:
         db_path = project_env["db_path"]
         clause = [{"contract": "cluster_details", "payload": CLUSTER_DETAILS_PAYLOAD}]
 
-        outcome = apply_proposal(clause, "global", db_path=db_path)
+        seed_project(db_path, "global", "platform", "github.com/acme/platform")
+
+        outcome = apply_proposal(clause, "global", db_path=db_path, project="platform")
 
         assert outcome["errors"] == []
-        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": "global"}]
+        assert outcome["applied"] == [{
+            "contract": "cluster_details", "workspace": "global",
+            "project": "github.com/acme/platform",
+        }]
         stored = read_contract(db_path, "global", "cluster_details")
         assert stored is not None
         namespaces = stored["namespaces"]

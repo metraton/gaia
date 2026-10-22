@@ -575,21 +575,42 @@ def _entry_owner(con, workspace: str, slug: str, entry) -> Optional[str]:
     return None
 
 
+def _workspace_row(con, workspace: str) -> Optional[dict]:
+    row = con.execute(
+        "SELECT payload FROM project_context_contracts WHERE workspace = ? AND contract_name = ?",
+        (workspace, CONTRACT_NAME),
+    ).fetchone()
+    data = json.loads(row[0]) if row and row[0] else None
+    return data if isinstance(data, dict) else None
+
+
 def _upsert_identity_payload(con, workspace: str, existing: Optional[dict], payload: dict) -> list:
-    """Write each changed map entry into ``project_context`` under its project; return the slugs no project owns."""
+    """Move project-owned entries into ``project_context``; keep reserved and unowned ones in the workspace row.
+
+    Returns the non-reserved slugs no project owns.
+    """
     from gaia.store.project_context import write_section
 
     now = _now_iso()
+    held = _workspace_row(con, workspace)
     by_owner: dict = {}
+    kept: dict = {}
     unowned = []
     for slug, entry in payload.items():
-        if (existing or {}).get(slug) == entry:
-            continue
-        owner = _entry_owner(con, workspace, slug, entry)
+        owner = None if slug.startswith("_") else _entry_owner(con, workspace, slug, entry)
         if owner is None:
-            unowned.append(slug)
+            kept[slug] = entry
+            if not slug.startswith("_"):
+                unowned.append(slug)
             continue
-        by_owner.setdefault(owner, {})[slug] = entry
+        if (existing or {}).get(slug) != entry or slug in (held or {}):
+            by_owner.setdefault(owner, {})[slug] = entry
+    if held is not None and kept != held:
+        con.execute(
+            "UPDATE project_context_contracts SET payload = ?, updated_at = ? "
+            "WHERE workspace = ? AND contract_name = ?",
+            (json.dumps(kept), now, workspace, CONTRACT_NAME),
+        )
     for identity, entries in by_owner.items():
         row = con.execute(
             "SELECT payload FROM project_context WHERE project_identity = ? AND contract_name = ?",

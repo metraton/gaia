@@ -102,6 +102,26 @@ def _read_contract(tmp_db, ws):
     return section["payload"] if section else None
 
 
+def _stores(tmp_db, ws):
+    """``(workspace row, {project identity: payload})``: where each identity fact actually lives."""
+    from gaia.store.writer import _connect
+    con = _connect(tmp_db)
+    try:
+        held = con.execute(
+            "SELECT payload FROM project_context_contracts "
+            "WHERE workspace = ? AND contract_name = 'project_identity'", (ws,),
+        ).fetchone()
+        projects = {
+            r[0]: json.loads(r[1]) for r in con.execute(
+                "SELECT project_identity, payload FROM project_context "
+                "WHERE contract_name = 'project_identity'",
+            )
+        }
+    finally:
+        con.close()
+    return (json.loads(held[0]) if held else None), projects
+
+
 def _write_contract(tmp_db, ws, payload):
     from gaia.store.writer import _connect
     con = _connect(tmp_db)
@@ -477,6 +497,10 @@ def test_flat_contract_with_multiple_projects_is_converted_to_map(tmp_db):
     assert payload["b"]["local_path"] == "/home/u/ws/me/b"
     # The map no longer has a top-level workspace-identity `name`.
     assert "name" not in payload
+    held, projects = _stores(tmp_db, ws)
+    assert set(held) == {"_workspace"}, "the workspace row keeps only workspace-level data"
+    assert projects["/home/u/ws/me/a/.git"]["a"]["local_path"] == "/home/u/ws/me/a"
+    assert projects["/home/u/ws/me/b/.git"]["b"]["local_path"] == "/home/u/ws/me/b"
 
 
 def test_flat_multi_conversion_preserves_workspace_metadata(tmp_db):
@@ -501,6 +525,9 @@ def test_flat_multi_conversion_preserves_workspace_metadata(tmp_db):
     assert meta["identity"] == "me"
     assert meta["local_path"] == "/home/u/ws/me"
     assert meta["_source"] == "hand-authored"
+    held, projects = _stores(tmp_db, ws)
+    assert held[WORKSPACE_META_KEY] == meta, "workspace metadata stays in the workspace-keyed store"
+    assert not any(WORKSPACE_META_KEY in p for p in projects.values())
 
 
 def test_entry_holding_only_a_declared_workflow_is_the_scanned_project(tmp_db):
@@ -539,6 +566,11 @@ def test_rescan_reclaims_a_project_entry_parked_under_the_workspace_key(tmp_db):
     assert list(payload) == ["gaia"]
     assert payload["gaia"]["workflow"] == "pull request into feat/x"
     assert payload["gaia"]["local_path"] == "/abs/gaia"
+    held, projects = _stores(tmp_db, ws)
+    assert held == {}, "the parked entry left the workspace row"
+    assert projects["/abs/gaia/.git"]["gaia"]["workflow"] == "pull request into feat/x", (
+        "the reclaimed entry returned to its owner, the project"
+    )
 
 
 def test_scanner_shape_single_project_not_flat_refreshed(tmp_db):
@@ -568,6 +600,9 @@ def test_scanner_shape_single_project_not_flat_refreshed(tmp_db):
     assert payload[WORKSPACE_META_KEY]["workspace_repos"][0]["name"] == "bild-iac"
     # The project promoted as a first-class map entry.
     assert payload["bild_iac"]["local_path"] == "/abs/bild-iac"
+    held, projects = _stores(tmp_db, ws)
+    assert set(held) == {WORKSPACE_META_KEY}
+    assert projects["/abs/bild-iac/.git"]["bild_iac"]["local_path"] == "/abs/bild-iac"
 
 
 # ---------------------------------------------------------------------------

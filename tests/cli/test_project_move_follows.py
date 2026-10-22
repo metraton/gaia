@@ -81,8 +81,8 @@ def alpha_in_a(tmp_path, monkeypatch, bootstrapped_db_template):
     )
     assert promote_workspace("a", db_path=db)["outcome"] == "applied"
     slug = next(iter(json.loads(_query(
-        db, "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = 'a' AND contract_name = 'project_identity'",
+        db, "SELECT payload FROM project_context "
+            "WHERE project_identity = ? AND contract_name = 'project_identity'", (IDENTITY,),
     )[0][0])))
     declared = apply_update(
         {"contract": "project_identity", "payload": {slug: {"workflow": WORKFLOW}}},
@@ -186,14 +186,20 @@ def test_alpha_own_entry_replaces_a_target_entry_for_the_same_repo(alpha_in_a, t
     from tools.context.context_provider import _project_identity_entries
 
     db = alpha_in_a
+    from gaia.store.writer import _connect
+
     stale = {"integration": "direct"}
-    declared = apply_update(
-        {"contract": "project_identity", "payload": {"alpha": {
-            "name": "alpha", "local_path": str(tmp_path / "a" / "alpha"), "workflow": stale,
-        }}},
-        "gaia-operator", workspace="b", db_path=db,
+    # A pre-v68 entry for the same repo left in b's workspace-keyed row; since v68 a
+    # write through the writer would land in alpha's own project row instead.
+    con = _connect(db)
+    con.execute(
+        "INSERT INTO project_context_contracts (workspace, contract_name, payload) "
+        "VALUES ('b', 'project_identity', ?)",
+        (json.dumps({"alpha": {"name": "alpha", "local_path": str(tmp_path / "a" / "alpha"),
+                               "workflow": stale}}),),
     )
-    assert declared["success"], declared
+    con.commit()
+    con.close()
 
     preview = move_project("alpha", "b", dry_run=True, db_path=db)
     assert preview["tables"]["project_context_contracts"]["replaces"] == ["project_identity.alpha"]

@@ -36,6 +36,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from modules.context.context_writer import process_update_contracts
 from gaia.store.writer import _connect
+from tests.fixtures.db_helpers import _MINIMAL_SCHEMA
 
 
 # ---------------------------------------------------------------------------
@@ -104,9 +105,14 @@ def evidence_db(tmp_path):
     db_path = tmp_path / "evidence_test.db"
     con = sqlite3.connect(str(db_path))
     con.executescript(_EVIDENCE_TEST_SCHEMA)
-    # Seed a workspace
+    con.executescript(_MINIMAL_SCHEMA)
+    # Seed a workspace and the project its context proposals are about
     con.execute(
         "INSERT INTO workspaces (name, identity) VALUES ('test-ws', 'test-ws')"
+    )
+    con.execute(
+        "INSERT INTO projects (workspace, name, path, project_identity) "
+        "VALUES ('test-ws', ?, '/repos/web-app', ?)", (PROJECT, PROJECT_ID),
     )
     # Seed a brief (brief_id=1)
     con.execute(
@@ -143,15 +149,21 @@ def _get_evidence_rows(db_path: Path) -> list:
 
 
 def _get_context_contract(db_path: Path, workspace: str, contract_name: str):
-    """Return the project_context_contracts row or None."""
+    """The section stored for ``workspace`` or for any of its projects, or None."""
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     row = con.execute(
-        "SELECT * FROM project_context_contracts WHERE workspace = ? AND contract_name = ?",
-        (workspace, contract_name),
+        "SELECT payload FROM project_context_contracts WHERE workspace = ? AND contract_name = ? "
+        "UNION ALL SELECT pc.payload FROM project_context pc JOIN projects p "
+        "ON p.project_identity = pc.project_identity WHERE p.workspace = ? AND pc.contract_name = ?",
+        (workspace, contract_name, workspace, contract_name),
     ).fetchone()
     con.close()
     return dict(row) if row else None
+
+
+PROJECT = "web-app"
+PROJECT_ID = "github.com/acme/web-app"
 
 
 def _make_task_info(db_path: Path, agent: str = "test-agent", workspace: str = "test-ws") -> dict:
@@ -159,6 +171,7 @@ def _make_task_info(db_path: Path, agent: str = "test-agent", workspace: str = "
         "agent": agent,
         "db_path": db_path,
         "workspace": workspace,
+        "project": PROJECT,
     }
 
 
