@@ -42,7 +42,6 @@ Provides:
     - parse_rollback_executed(): Parse rollback_executed clause (advisory)
     - parse_context_consumption(): Parse context_consumption clause (advisory)
     - parse_memory_suggestions(): Parse memory_suggestions clause (advisory)
-    - parse_user_facing_summary(): Parse user_facing_summary clause (advisory)
     - parse_failure_report(): Parse the optional failure_report clause (advisory)
 
 memory_delta is parsed by response_contract.parse_memory_delta, not here; the

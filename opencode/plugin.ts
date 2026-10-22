@@ -1312,6 +1312,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     if (dispatch?.background) dispatch.completed = true
   }
 
+  /** Take the notices left by children of this parent whose task result already went out, as a background one does. */
+  function takeParentNotices(parentSessionID: string): string {
+    const taken: string[] = []
+    for (const [childSessionID, notices] of parentNotices) {
+      if (childBindings.get(childSessionID)?.parentSessionID !== parentSessionID) continue
+      parentNotices.delete(childSessionID)
+      taken.push(...notices)
+    }
+    return taken.join("\n")
+  }
+
   /** Act on the SubagentStop gate's verdict for a child's ended turn.
    *
    * A bus event cannot hold the turn, so a rejection becomes the child's next
@@ -2292,6 +2303,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         contexts.push(await mainMessageContext("chat.message", sessionID, "compact"))
       }
       contexts.push(await mainMessageContext("chat.prompt", sessionID))
+      contexts.push(takeParentNotices(sessionID))
       const context = contexts.filter(Boolean).join("\n\n")
       if (!context) return
       parts.push({

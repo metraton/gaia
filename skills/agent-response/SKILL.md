@@ -94,8 +94,10 @@ the owning specialist, never with a reading of the forge of your own.
 
 A specialist answers you, never the user: nothing it writes reaches the user's display before you
 handled it (`decision_gaia_especialistas_responden_al_orquestador_no_al_usuario_20261022`). Its
-`conclusion` is its verdict for you, in its technical register, and arrives once on the dispatch
-result's contract summary line as `conclusion: <text>` on both hosts; `contract view --field conclusion
+`conclusion` is its verdict for you, in its technical register, and arrives once on both hosts: as
+`conclusion: <text>` on the dispatch result's contract summary line when the turn closed before that
+result, otherwise -- a background dispatch -- as `<agentId>: closed <state>, conclusion: <text>` in the
+next prompt's context, at most three per prompt and the rest named by their reader; `contract view --field conclusion
 --harness-id <agentId>` reads it again (a row closed before the rename answers from its
 `user_facing_summary`). Treat it as a claim, not as copy: validate it against the row's evidence, the
 artifacts it names and the user's intent, discuss with the specialist when they disagree, and only then
