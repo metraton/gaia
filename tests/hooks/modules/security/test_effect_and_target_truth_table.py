@@ -28,6 +28,7 @@ OWNER = re.compile(r"^(T1|T[2-9]|T1[01]|out-of-brief)$")
 EXTERNAL = {"codex": "Apache-2.0", "continue": "Apache-2.0", "roo": "Apache-2.0", "gptme": "MIT", "oh-sdk": "MIT"}
 SOURCE_VERDICT = {"free": "FREE", "ask": "SIGNED", "deny": "BLOCKED", "unknown": "UNKNOWN"}
 COMPOUND_DENIAL = "Compound T3 execution is disabled"
+UNDETERMINED = "could not be determined"
 
 
 def _build_context(spec: dict, root: Path, name: str, managed_root: Path) -> Path:
@@ -79,7 +80,7 @@ def observe(command: str, context: str, world: dict) -> str:
     if result.allowed:
         return "FREE"
     if result.approval_id or (result.reason or "").startswith(COMPOUND_DENIAL):
-        return "SIGNED"
+        return "UNKNOWN" if UNDETERMINED in (result.reason or "").lower() else "SIGNED"
     return "BLOCKED"
 
 
@@ -92,14 +93,23 @@ def _case(row: dict):
     return pytest.param(row, id=row["id"], marks=marks)
 
 
-@pytest.mark.parametrize("row", [_case(r) for r in ROWS])
-def test_verdict(row, world, monkeypatch):
+def _observe_isolated(row, world, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(world["root"] / "gaia-data"))
     monkeypatch.setenv("GAIA_DB", str(world["root"] / "gaia-data" / "gaia.db"))
     monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     monkeypatch.chdir(world["root"])
     assert os.environ["GAIA_DB"].startswith(str(world["root"]))
-    assert observe(row["command"], row.get("context", "none"), world) == row["expected"], row["command"]
+    return observe(row["command"], row.get("context", "none"), world)
+
+
+@pytest.mark.parametrize("row", [_case(r) for r in ROWS])
+def test_verdict(row, world, monkeypatch):
+    assert _observe_isolated(row, world, monkeypatch) == row["expected"], row["command"]
+
+
+@pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["expected"] == "UNKNOWN"])
+def test_an_undeterminable_row_asks_today(row, world, monkeypatch):
+    assert _observe_isolated(row, world, monkeypatch) in {"SIGNED", "UNKNOWN"}, row["command"]
 
 
 def test_every_row_carries_its_provenance():
@@ -131,11 +141,12 @@ def test_seed_rows_say_where_their_verdict_differs_from_the_source():
 
 
 def test_every_blocked_pattern_of_the_floor_has_a_row():
+    floor = [r["command"] for r in ROWS if r["expected"] == "BLOCKED" and r["rule"].startswith("floor.")]
     for key, patterns in BLOCKED_PATTERNS.items():
         if key == "git_destructive":
             continue
-        rows = [r for r in ROWS if r["rule"] == f"floor.{key}" and r["expected"] == "BLOCKED"]
-        assert len(rows) >= len(patterns), key
+        for pattern in patterns:
+            assert any(pattern.search(command) for command in floor), (key, pattern.pattern)
 
 
 def test_force_push_is_the_only_blocked_case_expected_to_be_signed():
@@ -197,7 +208,7 @@ AC_SHAPES = {
     "AC-2": {
         "feature push free": ["ctl-push-feature", "mined-feature-push-u", "git-push-feature-colon"],
         "default branch push asks": ["git-push-default", "git-push-head-main", "git-push-branch-to-main", "git-push-head-refs-main"],
-        "protected non-default branch": ["git-push-protected-release-branch"],
+        "protected non-default branch": ["git-push-protected-release-branch", "git-push-protected-declared-release-branch"],
         "force push signed": ["git-push-force", "git-push-force-short", "git-push-force-trailing", "git-push-force-default", "git-push-force-dash-c"],
         "ff to own upstream free": ["ctl-ff-own-upstream", "git-merge-ff-other-branch"],
         "undeterminable target asks": ["git-push-unresolved-branch", "git-push-substituted-branch"],
@@ -219,7 +230,8 @@ AC_SHAPES = {
         "dry-run plan check free": ["lex-pulumi-up-dry-run", "lex-ansible-check", "lex-kubectl-dry-run-server", "lex-helm-upgrade-dry-run", "ctl-terraform-plan"],
     },
     "AC-5": {
-        "cluster context": ["target-kubectl-prod-context-apply", "target-kubectl-dev-context-apply", "target-kubectl-prod-context-read"],
+        "cluster context": ["target-kubectl-prod-context-apply", "target-kubectl-dev-context-apply", "target-kubectl-prod-context-read",
+                            "target-context-unknown-verb-prod", "target-context-unknown-verb-dev", "target-context-unknown-verb-nonprod"],
         "cloud project": ["target-gcloud-prod-project-unknown-verb", "target-gcloud-dev-project-unknown-verb"],
         "account": ["target-account-unknown-verb-prod", "target-account-unknown-verb-dev", "target-account-aws-prod-delete", "target-account-aws-dev-delete"],
         "iac workspace": ["target-workspace-unknown-verb-prod", "target-workspace-unknown-verb-dev", "target-iac-terraform-workspace-select-prod"],
@@ -239,6 +251,7 @@ AC_SHAPES = {
         "cp": ["mined-scratch-cp", "local-cp-managed-worktree", "local-cp-worktree-git-dir-twin"],
         "git merge-tree and git grep": ["local-git-merge-tree", "local-git-grep"],
         "similar local git reads": ["local-git-diff-stat", "local-git-log", "local-git-show", "local-git-blame", "local-git-ls-files"],
+        "runs code the user did not write": ["inline-foreign-exec-fetched-code", "foreign-registry-runner-npx", "foreign-registry-runner-uvx"],
         "still asks when it reaches shared state": ["inline-python-subprocess-write-twin", "inline-python-os-system-twin", "local-git-merge-twin"],
     },
     "AC-8": {
