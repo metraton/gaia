@@ -5099,7 +5099,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     dynamic_word = tokens[0] if program_is_dynamic else (
         _dynamic_verb_span_word(base_cmd, tokens[1:]) if family in _VERB_FIRST_FAMILIES else None
     )
-    if dynamic_word is not None:
+    if dynamic_word is not None and not from_source_code:
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_UNKNOWN,
