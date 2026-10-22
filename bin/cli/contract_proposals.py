@@ -17,7 +17,6 @@ def _print(payload: dict, text: str, as_json: bool, *, error: bool = False) -> N
 
 
 def _refused(verb: str, as_json: bool) -> Optional[int]:
-    """Exit 1 when a dispatched subagent tries to decide; a decision is the orchestrator's."""
     from gaia.agent_identity import ORCHESTRATOR, dispatch_agent_from_env
 
     agent = dispatch_agent_from_env().strip()
@@ -66,7 +65,6 @@ def _resolve_project(reference: str) -> Optional[dict]:
 
 
 def _accept_memory(item: dict, owner: Optional[dict], workspace: Optional[str]) -> tuple:
-    """``(ok, message)`` after writing a memory create through ``gaia memory add``."""
     payload = item["payload"]
     if payload.get("operation") != "create":
         return False, (f"operation {payload.get('operation')!r} is applied with "
@@ -92,7 +90,6 @@ def _accept_memory(item: dict, owner: Optional[dict], workspace: Optional[str]) 
 
 
 def _accept_context(item: dict, owner: Optional[dict], workspace: Optional[str]) -> tuple:
-    """``(ok, message)`` after writing the entry through the project-keyed context writer."""
     hooks_dir = str(Path(__file__).resolve().parents[2] / "hooks")
     if hooks_dir not in sys.path:
         sys.path.insert(0, hooks_dir)

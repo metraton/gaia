@@ -1,10 +1,4 @@
-"""The pending-proposal store: memory and project-context proposals awaiting the orchestrator.
-
-A specialist proposes in ``memory_delta`` and ``update_contracts``; every close
-lane records them through :func:`record_close`, since all of them write the row
-with ``finalize_agent_contract_handoff``. Only the orchestrator decides, through
-``gaia contract proposals accept|dismiss``.
-"""
+"""Memory and project-context proposals of closed turns, pending until the orchestrator decides."""
 
 from __future__ import annotations
 
@@ -73,10 +67,7 @@ def record_proposals(con: sqlite3.Connection, handoff_id: int, envelope: Any) ->
 
 
 def record_close(con: sqlite3.Connection, handoff_id: int, raw_handoff_json: str) -> None:
-    """Record a closing row's proposals inside the caller's transaction, never failing the close.
-
-    A lost index is recoverable by the backfill verb; a lost close is not.
-    """
+    """Record a closing row's proposals in the caller's transaction, never failing the close."""
     try:
         envelope = json.loads(raw_handoff_json)
     except (TypeError, ValueError):
@@ -166,10 +157,7 @@ def decide_proposal(
 def backfill_proposals(
     *, since_days: int = 30, apply: bool = False, db_path: Optional[Path] = None,
 ) -> dict:
-    """Record the proposals of rows closed in the last ``since_days``; insert-only, idempotent.
-
-    Without ``apply`` it only counts. Decided and already-recorded items are never touched.
-    """
+    """Count, or with ``apply`` insert, the proposals of rows closed in the last ``since_days``."""
     from gaia.store.writer import _connect
 
     cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).strftime(

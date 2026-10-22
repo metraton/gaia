@@ -1,10 +1,4 @@
-"""The pending-proposal store: what a closed turn proposed waits, indexed, for the orchestrator.
-
-Measured defect (plan 94, F4): a ``memory_delta`` or ``update_contracts``
-proposal lived only in the row's JSON and in one PostToolUse notice, so a
-compaction, a background dispatch or a cut row lost its only index, and no verb
-listed, accepted or dismissed it.
-"""
+"""What a closed turn proposed waits, indexed, until the orchestrator decides it (plan 94, F4)."""
 
 from __future__ import annotations
 
@@ -212,6 +206,56 @@ def test_proposals_store_orchestrator_lane_admits_the_verbs():
         ALLOWED_WRITE_PHRASES)
     assert not any(phrase[:3] == ("contract", "proposals", "backfill")
                    for phrase in ALLOWED_READ_PHRASES | ALLOWED_WRITE_PHRASES)
+
+
+def test_proposals_store_prune_keeps_a_row_until_its_proposal_is_decided(db):
+    from gaia.store.proposals import decide_proposal, list_proposals
+    from gaia.store.writer import prune_handoffs
+
+    pending_row = _close(f"{AGENT}.000000000006", "COMPLETE",
+                         _envelope("COMPLETE", memory=["atom_pending"]))
+    plain_row = _close(f"{AGENT}.000000000007", "COMPLETE", _envelope("COMPLETE"))
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("UPDATE agent_contract_handoffs SET created_at = ? WHERE id IN (?, ?)",
+                    (_ago(120), pending_row, plain_row))
+        con.commit()
+    finally:
+        con.close()
+
+    assert prune_handoffs(cutoff_days=90, db_path=db)["deleted"] == 1
+    kept = list_proposals(db_path=db)
+    assert [(p["handoff_id"], p["payload"]["create"]["slug"]) for p in kept] == [
+        (pending_row, "atom_pending")]
+
+    decide_proposal(kept[0]["id"], "dismissed", decided_by="orchestrator", db_path=db)
+    assert prune_handoffs(cutoff_days=90, db_path=db)["deleted"] == 1
+    assert list_proposals(status=None, db_path=db) == []
+
+
+@pytest.mark.parametrize("agent", ["developer", "gaia-operator"])
+@pytest.mark.parametrize("command", [
+    "gaia contract proposals accept 7 --project github.com/metraton/gaia",
+    "cd /repo && gaia contract proposals --json dismiss 7",
+    "python3 /x/bin/gaia contract proposals accept 7",
+])
+def test_proposals_store_hook_guard_refuses_a_subagent_decision(command, agent):
+    from modules.security.subagent_memory_write_guard import check
+
+    allowed, reason = check(command, is_subagent=True, agent_type=agent)
+    assert not allowed and "orchestrator" in reason
+    assert check(command, is_subagent=False) == (True, None)
+
+
+@pytest.mark.parametrize("command", [
+    "gaia contract proposals list --json",
+    "gaia contract proposals accept --help",
+    "gaia contract view --draft-id x",
+])
+def test_proposals_store_hook_guard_lets_a_subagent_read(command):
+    from modules.security.subagent_memory_write_guard import check
+
+    assert check(command, is_subagent=True, agent_type="developer") == (True, None)
 
 
 @pytest.mark.parametrize("command", [

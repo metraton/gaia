@@ -45,6 +45,7 @@ subcommand and then a write verb.
 
 Public API:
     is_memory_write_attempt(command: str) -> bool
+    is_proposal_decision_attempt(command: str) -> bool  (refused for every subagent)
     rejection_message(agent_type: str = "") -> str
     check(command, *, is_subagent, agent_type) -> tuple[bool, str | None]
 """
@@ -74,6 +75,15 @@ REJECTION_MESSAGE = (
 )
 
 
+PROPOSAL_DECISION_VERBS = frozenset({"accept", "dismiss"})
+
+PROPOSAL_DECISION_REJECTION = (
+    "Accepting or dismissing a proposal is the orchestrator's decision, refused for "
+    "every subagent. Propose in your contract row instead. Do NOT retry -- this is "
+    "not approvable."
+)
+
+
 def _basename(token: str) -> str:
     """Return the last path component of a token ('/a/bin/gaia' -> 'gaia')."""
     # Handle both '/' and trailing separators without importing os for a hot path.
@@ -96,7 +106,16 @@ def is_memory_write_attempt(
         True if one of ``verbs`` follows `gaia memory` anywhere in the
         command's token stream.
     """
-    if not command or "memory" not in command:
+    return _invokes(command, ("memory",), verbs)
+
+
+def is_proposal_decision_attempt(command: str) -> bool:
+    """Return True iff ``command`` invokes `gaia contract proposals accept|dismiss`."""
+    return _invokes(command, ("contract", "proposals"), PROPOSAL_DECISION_VERBS)
+
+
+def _invokes(command: str, group: tuple, verbs: frozenset[str]) -> bool:
+    if not command or group[-1] not in command:
         return False
 
     # A help-only invocation exits after printing usage and performs no write.
@@ -110,15 +129,15 @@ def is_memory_write_attempt(
 
     help_exempt = not any(marker in command for marker in ("$(", "`", "<(", ">("))
     return any(
-        _component_writes_memory(component, help_exempt=help_exempt, verbs=verbs)
+        _component_invokes(component, group=group, help_exempt=help_exempt, verbs=verbs)
         for component in parse_command(command)
     )
 
 
-def _component_writes_memory(
-    component: str, *, help_exempt: bool, verbs: frozenset[str],
+def _component_invokes(
+    component: str, *, group: tuple, help_exempt: bool, verbs: frozenset[str],
 ) -> bool:
-    """True iff one operator-free component invokes a `gaia memory <verb>` in ``verbs``."""
+    """True iff one operator-free component invokes `gaia <group...> <verb>`, verb in ``verbs``."""
     try:
         tokens = shlex.split(component)
     except ValueError:
@@ -130,22 +149,23 @@ def _component_writes_memory(
     for i, tok in enumerate(tokens):
         if _basename(tok) != "gaia":
             continue
-        # Next non-flag token must be the `memory` subcommand.
-        j = i + 1
-        while j < n and tokens[j].startswith("-"):
-            j += 1
-        if j >= n or tokens[j] != "memory":
-            continue
-        # Next non-flag token after `memory` must be a write verb.
-        k = j + 1
-        while k < n and tokens[k].startswith("-"):
-            k += 1
-        if k < n and tokens[k] in verbs:
+        k = _skip_flags(tokens, i + 1)
+        matched = 0
+        while matched < len(group) and k < n and tokens[k] == group[matched]:
+            k = _skip_flags(tokens, k + 1)
+            matched += 1
+        if matched == len(group) and k < n and tokens[k] in verbs:
             tail = tokens[k + 1:]
             if help_exempt and tail and tail[0] in {"--help", "-h", "-?", "--usage"}:
                 continue
             return True
     return False
+
+
+def _skip_flags(tokens: list, index: int) -> int:
+    while index < len(tokens) and tokens[index].startswith("-"):
+        index += 1
+    return index
 
 
 def rejection_message(agent_type: str = "") -> str:
@@ -180,6 +200,8 @@ def check(
     """
     if not is_subagent:
         return True, None
+    if is_proposal_decision_attempt(command):
+        return False, PROPOSAL_DECISION_REJECTION
     if agent_type in ALLOWED_AGENTS:
         return True, None
     if is_memory_write_attempt(command):

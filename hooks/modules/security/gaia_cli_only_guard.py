@@ -576,8 +576,6 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # carries it. Each key lands in the workspace owning its project, and a
     # key nobody owns is refused rather than written.
     ("context", "accept"),
-    # A turn's memory and context proposals are decided here; backfill is absent
-    # because writing old rows into a live database is the user's decision.
     ("contract", "proposals", "accept"),
     ("contract", "proposals", "dismiss"),
     # ``paths`` only PRINTS resolved paths, and still belongs here rather than

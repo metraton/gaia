@@ -1,10 +1,4 @@
-"""A proposal from a turn with no dispatch project is kept, listed and assigned, through the real CLI.
-
-Plan 94 D3/D9: a proposal with no project is listed with no project, and
-``accept --project`` assigns one. Every step runs ``bin/gaia`` as a subprocess
-on a scratch database; only the dispatch birth and the project row are seeded
-in-process, since those belong to the hooks and the scanner.
-"""
+"""A project-less proposal is listed with no project and accept --project assigns one (plan 94 D3/D9)."""
 
 from __future__ import annotations
 
