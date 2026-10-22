@@ -424,8 +424,6 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+/\s*$", re.IGNORECASE),
         re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+/\*", re.IGNORECASE),
         re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+/\*", re.IGNORECASE),
-        re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+~/?", re.IGNORECASE),
-        re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+~/?", re.IGNORECASE),
     ],
 
     # Gmail - Permanent purge only (delete/trash are reversible, handled as T3 mutative)
@@ -881,15 +879,24 @@ def _classify_stripped_command(command: str) -> BlockedCommandResult:
     return BlockedCommandResult(is_blocked=False)
 
 
-_RM_ROOT_TARGETS = frozenset({"/", "/*", "~", "~/*"})
+_HOME_WORD = re.compile(r"^(?:~[A-Za-z0-9._-]*|\$HOME|\$\{HOME\})$")
+
+
+def _is_root_or_home(operand: str) -> bool:
+    """True when *operand* normalizes to /, /*, a home directory (~, ~user, $HOME) or its /* glob; a deeper path is not."""
+    path = posixpath.normpath(re.sub(r"/+", "/", operand))
+    if path in ("/", "/*"):
+        return True
+    head, _, rest = path.partition("/")
+    return bool(_HOME_WORD.match(head)) and rest in ("", "*")
 
 
 def _rm_deletes_root(command: str) -> bool:
-    """True when *command* is rm with recursive and force set, in any spelling rm accepts, and an operand that normalizes to /, /*, ~ or ~/*."""
+    """True when *command* is rm with recursive set, in any spelling rm accepts, and an operand that is root or a home directory (``_is_root_or_home``)."""
     semantics = analyze_command(command)
     if semantics.base_cmd != "rm":
         return False
-    recursive = force = options_ended = False
+    recursive = options_ended = False
     operands = []
     for token in semantics.tokens[1:]:
         if options_ended or token == "-" or not token.startswith("-"):
@@ -898,13 +905,9 @@ def _rm_deletes_root(command: str) -> bool:
             options_ended = True
         elif token.startswith("--"):
             recursive = recursive or "--recursive".startswith(token)
-            force = force or "--force".startswith(token)
         else:
             recursive = recursive or "r" in token[1:].lower()
-            force = force or "f" in token[1:]
-    return recursive and force and any(
-        posixpath.normpath(re.sub(r"/+", "/", operand)) in _RM_ROOT_TARGETS for operand in operands
-    )
+    return recursive and any(_is_root_or_home(operand) for operand in operands)
 
 
 
