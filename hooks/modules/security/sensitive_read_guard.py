@@ -51,14 +51,21 @@ _LISTER_COMMANDS = frozenset({
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
 # A program named by an expansion is unknown until the shell runs it.
 _UNDETERMINED_PROGRAM_MARKS = ("$", "`")
-# HTTP clients send a file they name (upload, form, body); the use flags only hand
-# a credential to the TLS or auth layer, which sends none of its bytes.
+# HTTP clients send a file they name (upload, form, body). These flags' values are
+# never sent: a credential handed to TLS or auth, or a file the client writes.
 _UPLOADERS = frozenset({"curl", "wget", "http", "https", "xh"})
-_UPLOADER_USE_FLAGS = frozenset({
+_UPLOADER_WRITE_FLAGS = frozenset({
+    "-o", "--output", "-O", "--output-document", "-c", "--cookie-jar", "-D", "--dump-header",
+    "--trace", "--trace-ascii", "--stderr", "--etag-save", "--libcurl",
+    "--output-file", "-a", "--append-output", "--save-cookies",
+})
+_UPLOADER_UNSENT_FLAGS = _UPLOADER_WRITE_FLAGS | {
     "--cacert", "--capath", "--cert", "-E", "--key", "--crlfile", "--pinnedpubkey",
     "--proxy-cacert", "--proxy-cert", "--proxy-key", "--netrc-file",
     "--ca-certificate", "--certificate", "--private-key", "--verify", "--cert-key",
-})
+    "--output-dir", "-P", "--directory-prefix",
+}
+_SHORT_FLAG_WITH_VALUE = re.compile(r"^-[A-Za-z].")
 # Windows shells and the flag after which the rest of the command line is the
 # command they run.
 _WINDOWS_SHELL_INLINE_FLAGS = {
@@ -109,12 +116,47 @@ def _split_redirects(component: str) -> Tuple[List[str], List[str]]:
     return words, inputs
 
 
+def _sent_arguments(arguments: List[str]) -> List[str]:
+    """The arguments of an HTTP client that may name a file it sends, attached short values split off."""
+    sent: List[str] = []
+    remaining = iter(arguments)
+    for arg in remaining:
+        flag = arg.split("=", 1)[0]
+        if flag in _UPLOADER_UNSENT_FLAGS:
+            if "=" not in arg:
+                next(remaining, None)
+        elif _SHORT_FLAG_WITH_VALUE.match(arg):
+            if arg[:2] not in _UPLOADER_UNSENT_FLAGS:
+                sent.append(arg[2:])
+        else:
+            sent.append(arg)
+    return sent
+
+
+def http_client_written_paths(command: str) -> List[str]:
+    """The files the HTTP clients in *command* write through their output flags."""
+    written: List[str] = []
+    for component in _OPERATOR_SPLIT.split(command):
+        tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
+        if not tokens or command_name(tokens[0]) not in _UPLOADERS:
+            continue
+        for index, arg in enumerate(tokens[1:], start=2):
+            flag, _, value = arg.partition("=")
+            if flag in _UPLOADER_WRITE_FLAGS:
+                written.append(value or (tokens[index] if index < len(tokens) else ""))
+            elif _SHORT_FLAG_WITH_VALUE.match(arg) and arg[:2] in _UPLOADER_WRITE_FLAGS:
+                written.append(arg[2:])
+    return [path for path in written if path]
+
+
 def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     """The sensitive path a single command component reads or lists, or ""."""
     words, inputs = _split_redirects(strip_grouping_wrappers(component))
     fed = first_sensitive_token(inputs, cwd)
     if fed:
         return fed
+    if component.lstrip().startswith(_UNDETERMINED_PROGRAM_MARKS):
+        return first_sensitive_token(words, cwd)
     tokens = _strip_transparent_prefixes(words)
     if not tokens:
         return ""
@@ -132,10 +174,7 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     if tokens[0].startswith(_UNDETERMINED_PROGRAM_MARKS):
         return first_sensitive_token(arguments, cwd)
     if base in _UPLOADERS:
-        uploaded = [arg for index, arg in enumerate(arguments)
-                    if arg.split("=", 1)[0] not in _UPLOADER_USE_FLAGS
-                    and (index == 0 or arguments[index - 1] not in _UPLOADER_USE_FLAGS)]
-        return first_sensitive_token(uploaded, cwd)
+        return first_sensitive_token(_sent_arguments(arguments), cwd)
     if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
         return ""
     if base == "sed" and any(_SED_IN_PLACE.match(arg) for arg in arguments):

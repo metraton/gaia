@@ -2569,9 +2569,11 @@ def is_account_sensitive_path(token: str) -> bool:
 
 
 def account_path_redirect_target(command: str) -> str:
-    """The first redirect destination in *command* that grants account access."""
-    for match in _REDIRECT_TARGET_RE.finditer(command):
-        target = match.group(1).strip("\"'")
+    """The first redirect or HTTP-client output destination in *command* that grants account access."""
+    from .sensitive_read_guard import http_client_written_paths
+
+    redirected = [match.group(1).strip("\"'") for match in _REDIRECT_TARGET_RE.finditer(command)]
+    for target in redirected + http_client_written_paths(command):
         if is_account_sensitive_path(target):
             return target
     return ""
