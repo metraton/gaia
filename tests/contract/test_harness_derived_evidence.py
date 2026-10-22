@@ -546,6 +546,50 @@ def test_a_shell_spelling_of_the_read_spool_that_hides_its_path_is_still_refused
     assert read_spool.read(agent) == ["/repo/a.py"]
 
 
+def test_a_navigation_chain_that_ends_in_the_read_spool_is_still_refused(data_dir_under_home):
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    spool = read_spool.spool_path(agent)
+    spool_dir = spool.parent
+    below_home = spool_dir.relative_to(Path.home())
+    append = f"printf x >> {spool.name}"
+    chains = {
+        "home_variable_then_cd": f"cd $HOME/{below_home.parent} && cd {spool_dir.name} && {append}",
+        "pushd_absolute": f"pushd {spool_dir} && {append}",
+        "pushd_tilde": f"pushd ~/{below_home} && {append}",
+        "cd_dash": f"cd {spool_dir} && cd /tmp && cd - && {append}",
+        "popd": f"pushd {spool_dir} && popd && {append}",
+    }
+
+    verdicts = {name: _spool_write_verdict("Bash", {"command": command}, agent) for name, command in chains.items()}
+
+    unknown_directory = {"cd_dash", "popd"}
+    assert {n: v for n, v in verdicts.items() if n not in unknown_directory} == {
+        n: "refused" for n in chains if n not in unknown_directory
+    }
+    assert all("[PROTECTED_PATH]" in verdicts[n] for n in unknown_directory), verdicts
+    assert read_spool.read(agent) == ["/repo/a.py"]
+
+
+def test_a_read_from_inside_the_read_spool_directory_is_allowed_and_a_write_names_its_file(data_dir_under_home):
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    spool = read_spool.spool_path(agent)
+    spool_dir = str(spool.parent)
+
+    reads = {c: _spool_write_verdict("Bash", {"command": c}, agent, cwd=spool_dir) for c in ("ls", f"cat {spool.name}")}
+    write = _spool_write_verdict("Bash", {"command": f"printf x >> {spool.name}"}, agent, cwd=spool_dir)
+
+    assert "refused" not in reads.values()
+    assert write == "refused"
+
+
 def test_a_write_beside_the_read_spool_is_not_mistaken_for_it(data_dir_under_home):
     from gaia.contract import read_spool
 

@@ -6871,6 +6871,12 @@ def _check_gaia_cli_dispatcher(
 # the ``cd`` FAILED, so the target dir is not in effect.  ``|`` / ``&`` are not
 # sequential cwd hand-offs either.
 _LEADING_CD_SPLIT_RE = _re.compile(r"&&|;|\n")
+_CD_FAMILY_RE = _re.compile(r"\s*(?:cd|pushd|popd)(?=\s|$)")
+_CD_PLAIN_FLAGS = frozenset({"-P", "-L", "-e", "-@"})
+
+# The cwd after a `cd -`, `popd` or other move the fold cannot follow: a path no
+# relative target can be placed under, so a consumer fails closed rather than guess.
+UNKNOWN_CWD = "/nonexistent/gaia-unknown-cwd"
 
 
 def _parse_cd_target(segment: str) -> "Optional[str]":
@@ -6884,11 +6890,12 @@ def _parse_cd_target(segment: str) -> "Optional[str]":
     filesystems.
     """
     sem = analyze_command(segment)
-    if sem.base_cmd != "cd":
+    if sem.base_cmd == "popd" and len(sem.tokens) == 1:
+        return "-"
+    if sem.base_cmd not in ("cd", "pushd"):
         return None
-    args = [t for t in sem.tokens[1:] if not t.startswith("-")]
-    flags = [t for t in sem.tokens[1:] if t.startswith("-")]
-    if flags or len(args) != 1:
+    args = [t for t in sem.tokens[1:] if t not in _CD_PLAIN_FLAGS]
+    if len(args) != 1 or (args[0][0] in "-+" and args[0] != "-"):
         return None
     return args[0]
 
@@ -6903,11 +6910,16 @@ def _resolve_dir_against_cwd(base_cwd: "Optional[str]", target: str) -> str:
     matching the hook's previous default.
     """
     import os
+    from .sensitive_paths import expand_home
 
+    if target == "-":
+        return UNKNOWN_CWD
     base = base_cwd if base_cwd is not None else os.getcwd()
-    target = os.path.expanduser(target)
+    target = os.path.expanduser(expand_home(target))
     if os.path.isabs(target):
         return os.path.normpath(target)
+    if base == UNKNOWN_CWD:
+        return UNKNOWN_CWD
     return os.path.normpath(os.path.join(base, target))
 
 
@@ -6957,7 +6969,9 @@ def cwd_after_component(command: str, base_cwd: "Optional[str]") -> "Optional[st
     where the ``cd`` and the script land in SEPARATE components.
     """
     cwd, _remaining, peeled = _peel_leading_cd(command, base_cwd)
-    return cwd if peeled else base_cwd
+    if peeled:
+        return cwd
+    return UNKNOWN_CWD if _CD_FAMILY_RE.match(command) else base_cwd
 
 
 # A leading shell env-var assignment:  NAME=  (value consumed separately, so it

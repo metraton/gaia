@@ -233,8 +233,7 @@ def is_read_spool_path(path_str: str, cwd: Optional[str] = None) -> bool:
 
     A line written there by any tool would return as an unmarked files_checked
     entry, so every surface refuses it for every role, with no signature.
-    `$HOME`, `${HOME}` and `~` expand as the sensitive-path guard expands them,
-    and a relative path is anchored at `cwd` when the caller has one.
+    `$HOME`, `${HOME}` and `~` expand, and a relative path anchors at `cwd`.
     """
     if not path_str:
         return False
