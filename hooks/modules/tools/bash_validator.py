@@ -62,6 +62,8 @@ from ..security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
     cwd_after_component,
+    git_under_injected_config,
+    injects_git_config,
     node_test_under_node_options,
     rewrites_package_inputs,
     runs_package_script,
@@ -192,7 +194,6 @@ _COMPOUND_T3_DENIAL = (
     "request-set and run each command directly as a separate Bash "
     "call, with no wrapper (bash -c, sh -c, eval)."
 )
-_BUILTIN_WRAPPERS = frozenset({"command", "builtin", "exec"})
 _HEREDOC_DATA_READERS = frozenset({
     "cat", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "nl", "rev", "fold", "tee", "jq",
 })
@@ -429,18 +430,18 @@ FORBIDDEN_FOOTER_PATTERNS = [
 
 # Indirect execution other than a shell's command string, which
 # shell_command_string recognises: eval, inline interpreter code and a
-# process substitution fed to a shell.
-_WRAPPER_PREFIX = r"(?:(?:nohup|sudo|env|nice|ionice|setsid|strace|ltrace|time)\s+)*"
+# process substitution fed to a shell. Matched against the command with its
+# _COMMAND_WRAPPERS prefix peeled as well as as written.
 
 INDIRECT_EXEC_PATTERNS = [
     re.compile(r"^\s*eval\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"python3?\s+-c\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"node\s+-e\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"perl\s+-e\s+", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"ruby\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^\s*python3?\s+-c\s+", re.IGNORECASE),
+    re.compile(r"^\s*node\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^\s*perl\s+-e\s+", re.IGNORECASE),
+    re.compile(r"^\s*ruby\s+-e\s+", re.IGNORECASE),
     # Process substitution and heredoc piped to shell
-    re.compile(r"^" + _WRAPPER_PREFIX + r"bash\s+<\(", re.IGNORECASE),
-    re.compile(r"^" + _WRAPPER_PREFIX + r"sh\s+<\(", re.IGNORECASE),
+    re.compile(r"^\s*bash\s+<\(", re.IGNORECASE),
+    re.compile(r"^\s*sh\s+<\(", re.IGNORECASE),
 ]
 
 def _plan_grant_for_denial(command: str) -> Optional[dict]:
@@ -2023,6 +2024,7 @@ class BashValidator:
         scan_cwd: Optional[str] = cwd
         # A NODE_OPTIONS set by an earlier component reaches every later node.
         node_options_set = False
+        git_config_injected = False
         # A package.json or node_modules path rewritten by an earlier component
         # changes the script a later run executes, which was read before the chain ran.
         package_inputs_rewritten = False
@@ -2036,6 +2038,9 @@ class BashValidator:
             if node_options_set and not detected.is_mutative:
                 detected = node_test_under_node_options(comp, scan_cwd) or detected
             node_options_set = node_options_set or sets_node_options(comp)
+            if git_config_injected and not detected.is_mutative:
+                detected = git_under_injected_config(comp) or detected
+            git_config_injected = git_config_injected or injects_git_config(comp)
             flagged = classify_by_flags(comp)
             scan_cwd = cwd_after_component(comp, scan_cwd)
             if detected.is_mutative or (

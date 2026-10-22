@@ -4481,6 +4481,13 @@ _COMMAND_EXECUTORS: Dict[str, _ExecutorGrammar] = {
         trailing="argv",
     ),
     "sg": _ExecutorGrammar(positionals=1, command_option=True, trailing="shell"),
+    "runuser": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group",
+            "--shell", "--whitelist-environment",
+        }),
+        command_option=True,
+    ),
     "su": _ExecutorGrammar(
         value_flags=frozenset({
             "-s", "-g", "-G", "-w", "--shell", "--group", "--supp-group",
@@ -6941,10 +6948,7 @@ class _WrapperGrammar:
     command (``timeout``'s duration). A Windows wrapper takes ``/x`` switches,
     matched in any case; one of its ``terminators`` (``cmd /c``) ends its
     arguments, and ``window_title`` lets a leading quoted word be the title
-    ``start`` gives the window rather than the command. A ``lookup_flags``
-    flag makes the wrapper report on the name instead of running it
-    (``command -v``); a ``split_string_flags`` value is split into words that
-    take the flag's place (``env -S``).
+    ``start`` gives the window rather than the command.
     """
 
     value_flags: FrozenSet[str] = frozenset()
@@ -7106,7 +7110,6 @@ def _short_bundle_ends_in_value_flag(tok: str, value_flags: FrozenSet[str]) -> b
 
 
 def _split_string_flag(tok: str, grammar: _WrapperGrammar) -> bool:
-    """True when *tok* is, or ends a short bundle with, one of the wrapper's split-string flags."""
     if tok.startswith("--"):
         return tok.split("=", 1)[0] in grammar.split_string_flags
     for letter in tok[1:]:
@@ -7118,11 +7121,7 @@ def _split_string_flag(tok: str, grammar: _WrapperGrammar) -> bool:
 
 
 def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> "Optional[int]":
-    """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name.
-
-    None when a lookup flag means the wrapper runs nothing; a split-string
-    flag stops the scan at that flag for ``_expand_split_string``.
-    """
+    """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
     positionals = grammar.positionals
     title_allowed = grammar.window_title
@@ -7223,8 +7222,6 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
     unquoted first word after ``start`` is the program to Windows but reads
     as a title to anyone expecting ``start "title"``; the words after it are
     a reading too, so either spelling classifies at the stricter verdict.
-    An ``env -S`` string is peeled as the words it splits into, and a git
-    configuration value git runs as a program is a reading of its own.
     """
     s = command.strip() if command else ""
     expanded = False
@@ -7259,7 +7256,6 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
 
 
 def _peel_prefix(s: str) -> "Tuple[int, Optional[_WrapperGrammar]]":
-    """Return the index past the leading wrappers and assignments of *s*, and the innermost wrapper's grammar."""
     n = len(s)
     i = 0
     innermost: "Optional[_WrapperGrammar]" = None
@@ -7280,13 +7276,7 @@ def _peel_prefix(s: str) -> "Tuple[int, Optional[_WrapperGrammar]]":
 
 
 def _expand_split_string(rest: str, grammar: "Optional[_WrapperGrammar]") -> "Optional[str]":
-    """Rewrite ``env -S STRING ARGS`` (*rest* starts at the flag) as ``env STRING ARGS``, or None.
-
-    env reads the split words as its own arguments, options and assignments
-    included, so the rewrite keeps ``env`` in front. A string the shell cannot
-    unquote is kept verbatim, leaving its quote unbalanced so it never reads
-    as a known-safe command.
-    """
+    """Rewrite ``env -S STRING ARGS`` as ``env STRING ARGS``: env reads the split words as its own arguments."""
     if grammar is None or not grammar.split_string_flags:
         return None
     tok_end = _consume_shell_word(rest, 0)
@@ -7309,8 +7299,6 @@ def _expand_split_string(rest: str, grammar: "Optional[_WrapperGrammar]") -> "Op
     return f"env {' '.join(words)} {rest[tok_end:].strip()}".strip()
 
 
-# A path key points git at scripts the command line does not show; a program
-# key's value is itself a command, judged as that command.
 _GIT_CODE_PATH_KEY_RE = _re.compile(r"core\.hookspath|core\.fsmonitor|include\.path|includeif\..+\.path")
 _GIT_PROGRAM_KEY_RE = _re.compile(
     r"core\.(?:pager|editor|sshcommand|askpass|gitproxy)|sequence\.editor|diff\.external"
@@ -7369,18 +7357,12 @@ def _git_config_programs(command: str) -> "List[str]":
 
 
 def _check_git_code_config(command: str) -> "Optional[MutativeResult]":
-    """Sign git run with configuration that points it at code the command line does not show.
-
-    ``core.hooksPath``, ``core.fsmonitor`` and included files on ``-c``, any
-    code-running key through ``--config-env`` (its value lives in a variable),
-    ``--exec-path=<dir>``, and the ``GIT_CONFIG_*`` variables that inject
-    configuration all make git run scripts whatever the subcommand.
-    """
+    """Sign git run with configuration that points it at code the command line does not show."""
     readings, _ = _peel_wrapper_readings(command)
     options = _git_global_options(readings[0])
     if options is None:
         return None
-    reasons = []
+    reasons = _git_config_env_reasons(command)
     for option, value in options:
         key, _, setting = value.partition("=")
         key = key.lower()
@@ -7390,6 +7372,11 @@ def _check_git_code_config(command: str) -> "Optional[MutativeResult]":
             reasons.append(f"--config-env {key}")
         elif option == "--exec-path" and value:
             reasons.append("--exec-path")
+    return _git_config_code_result(reasons) if reasons else None
+
+
+def _git_config_env_reasons(command: str) -> "List[str]":
+    reasons = []
     for match in _GIT_CONFIG_ENV_RE.finditer(command):
         name, value = match.group(0).split("=", 1)[0], match.group(1).strip("\"'").lower()
         if name.startswith("GIT_CONFIG_KEY_"):
@@ -7397,8 +7384,22 @@ def _check_git_code_config(command: str) -> "Optional[MutativeResult]":
                 reasons.append(f"{name}={value}")
         elif value != "/dev/null":
             reasons.append(name)
-    if not reasons:
+    return reasons
+
+
+def injects_git_config(command: str) -> bool:
+    """True when *command* sets a ``GIT_CONFIG_*`` variable that can point git at code."""
+    return bool(_git_config_env_reasons(command))
+
+
+def git_under_injected_config(command: str) -> "Optional[MutativeResult]":
+    """Sign *command* when it runs git after an earlier command of its chain injected git configuration."""
+    if _git_global_options(_peel_wrapper_readings(command)[0][0]) is None:
         return None
+    return _git_config_code_result(["GIT_CONFIG_* set earlier in the chain"])
+
+
+def _git_config_code_result(reasons: "List[str]") -> MutativeResult:
     return MutativeResult(
         is_mutative=True,
         category=CATEGORY_MUTATIVE,
