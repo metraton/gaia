@@ -1939,25 +1939,6 @@ def cmd_finalize(args) -> int:
             print(f"Rejected: {msg}", file=sys.stderr)
         return 1
 
-    summary = envelope.get("user_facing_summary")
-    if not isinstance(summary, str) or not summary.strip():
-        msg = (
-            "user_facing_summary is empty, but it is the only part of the "
-            "contract the user reads. Write what the user should know in plain "
-            f"words: gaia contract set --draft-id {draft_id} user_facing_summary "
-            "'<what was done, what is left, what they must decide>', then "
-            "finalize."
-        )
-        if as_json:
-            print(json.dumps({
-                "status": "rejected",
-                "reason": "user_facing_summary_required",
-                "error": msg,
-            }))
-        else:
-            print(f"Rejected: {msg}", file=sys.stderr)
-        return 1
-
     # Blind-verification anti-leak at the CLI seam (plan 34 task 8). The
     # SubagentStop gate already refuses a plan-task-bound self-COMPLETE
     # (hooks/adapters/claude_code.py::_blind_verification_required), but that gate
@@ -2014,6 +1995,25 @@ def cmd_finalize(args) -> int:
             else:
                 print(f"Rejected: {msg}", file=sys.stderr)
             return 1
+
+    summary = envelope.get("user_facing_summary")
+    if not isinstance(summary, str) or not summary.strip():
+        msg = (
+            "user_facing_summary is empty, but it is the only part of the "
+            "contract the user reads. Write what the user should know in plain "
+            f"words: gaia contract set --draft-id {draft_id} user_facing_summary "
+            "'<what was done, what is left, what they must decide>', then "
+            "finalize."
+        )
+        if as_json:
+            print(json.dumps({
+                "status": "rejected",
+                "reason": "user_facing_summary_required",
+                "error": msg,
+            }))
+        else:
+            print(f"Rejected: {msg}", file=sys.stderr)
+        return 1
 
     from gaia.store.writer import finalize_agent_contract_handoff
 

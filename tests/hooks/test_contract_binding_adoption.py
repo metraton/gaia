@@ -543,7 +543,10 @@ def _adopt(identity: dict) -> None:
     assert json.loads(init.stdout)["draft_id"] == identity["contract_id"], (
         "adoption means the draft is created AT the born id, not beside it"
     )
-    patch = json.dumps({"evidence_report": {k: [] for k in _EVIDENCE_KEYS}})
+    patch = json.dumps({
+        "evidence_report": {k: [] for k in _EVIDENCE_KEYS},
+        "user_facing_summary": "Work recorded for the test.",
+    })
     assert _cli([
         "fill", "--draft-id", identity["contract_id"], "--json", patch,
     ]).returncode == 0
@@ -588,6 +591,7 @@ def _finalized_envelope(identity: dict) -> dict:
         "evidence_report": {k: [] for k in _EVIDENCE_KEYS},
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
 
 
@@ -739,7 +743,7 @@ def test_bound_producer_cannot_self_complete_under_the_adopted_id(db_path):
     _adopt(identity)
     assert _cli([
         "fill", "--draft-id", identity["contract_id"], "--json",
-        json.dumps({"evidence_report": {
+        json.dumps({"user_facing_summary": "Work recorded for the test.", "evidence_report": {
             "verification": {"method": "pytest", "result": "pass", "details": "x"},
         }}),
     ]).returncode == 0
@@ -909,6 +913,7 @@ def test_unadopted_turn_born_row_is_closed_through_the_birth_envelope_name(db_pa
         },
         "evidence_report": {k: [] for k in _EVIDENCE_KEYS},
         "consolidation_report": None, "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
     save_draft(own_draft_id, own_envelope)
     finalize_agent_contract_handoff(
@@ -1010,6 +1015,7 @@ def _complete_envelope(identity: dict) -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
 
 
@@ -1054,7 +1060,7 @@ def test_adopted_verifier_class_row_is_born_adopted_and_finalized_as_one_row(
     _adopt(identity)
     assert _cli([
         "fill", "--draft-id", identity["contract_id"], "--json",
-        json.dumps({"evidence_report": {
+        json.dumps({"user_facing_summary": "Work recorded for the test.", "evidence_report": {
             "verification": {
                 "method": "test", "result": "pass", "details": "suite green",
             },
@@ -1202,7 +1208,7 @@ def test_free_kind_row_adopted_and_finalized_to_complete_with_no_blind_verificat
     _adopt(identity)
     assert _cli([
         "fill", "--draft-id", identity["contract_id"], "--json",
-        json.dumps({"evidence_report": {
+        json.dumps({"user_facing_summary": "Work recorded for the test.", "evidence_report": {
             "verification": {
                 "method": "test", "result": "pass", "details": "suite green",
             },
@@ -1280,7 +1286,7 @@ def test_first_fill_without_init_adopts_the_born_identity(db_path):
     assert pre_created is not None, "birth must pre-create the draft file"
     assert pre_created["agent_status"]["agent_id"] == identity["agent_id"]
 
-    patch = json.dumps({"evidence_report": {k: [] for k in _EVIDENCE_KEYS}})
+    patch = json.dumps({"user_facing_summary": "Work recorded for the test.", "evidence_report": {k: [] for k in _EVIDENCE_KEYS}})
     first_write = _cli([
         "fill", "--draft-id", identity["contract_id"], "--json", patch,
     ])
@@ -1298,7 +1304,7 @@ def test_first_fill_without_init_adopts_the_born_identity(db_path):
 
     assert _cli([
         "fill", "--draft-id", identity["contract_id"], "--json",
-        json.dumps({"evidence_report": {
+        json.dumps({"user_facing_summary": "Work recorded for the test.", "evidence_report": {
             "verification": {"method": "test", "result": "pass", "details": "x"},
         }}),
     ]).returncode == 0

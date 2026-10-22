@@ -123,6 +123,7 @@ def _close_turn(
             "pending_steps": [],
             "next_action": "done",
         },
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": dict(
             {k: [] for k in _EVIDENCE_KEYS},
             verification={"method": "test", "result": "pass", "details": "ok"},

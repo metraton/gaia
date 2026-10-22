@@ -66,6 +66,7 @@ def _close_turn(db_path: Path, memory_delta):
             "agent_id": identity["agent_id"], "agent_state": "NEEDS_VERIFICATION",
             "pending_steps": [], "next_action": "done",
         },
+        "user_facing_summary": "Work recorded for the test.",
         "evidence_report": dict(
             {k: [] for k in _EVIDENCE_KEYS},
             verification={"method": "test", "result": "pass", "details": "ok"},

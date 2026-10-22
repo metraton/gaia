@@ -119,6 +119,14 @@ already wrote.
   `NEEDS_VERIFICATION`; the verifier is bound through `parent_handoff_id`.
 - `consolidation_report` is required when input marks consolidation,
   cross-check, or multi-surface work.
+- Every clean close, in any closing state: `user_facing_summary` is a
+  non-blank string. It is the only part of the row that reaches the user's
+  display, so it holds what the user needs in plain words -- what was done,
+  what is left, what they must decide. `finalize` refuses a close without it
+  (`user_facing_summary_required`) and names the `gaia contract set
+  --draft-id <id> user_facing_summary '...'` call that fills it. Rows closed by
+  the reaper, the SubagentStop backstop or salvage are cut, not clean, and are
+  exempt.
 
 `finalize` persists any valid state and converges the row born at dispatch. It
 does not turn a non-terminal state into `COMPLETE`. `validate` is read-only.
@@ -179,7 +187,6 @@ minted, `approval_id`, copied verbatim from the request's output.
 
 ## Other optional fields
 
-- `user_facing_summary`: human prose, for the end user.
 - `report_prose`: narrow narrative field -- why/discovery-order/purpose-frame/synthesis, never
   evidence, addressed to the orchestrator and the next agent, not the end user; full definition and
   the line against `user_facing_summary` in `agent-protocol`.

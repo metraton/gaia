@@ -89,6 +89,7 @@ def _envelope(state: str = "COMPLETE") -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
 
 

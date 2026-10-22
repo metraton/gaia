@@ -45,7 +45,7 @@ If the turn is cut, only what you already wrote exists; everything else survives
 
 A stable fact of this project that a future turn would otherwise re-derive and that neither your kernel nor a skill already carries (a tool URL, an account, an endpoint) you propose in `memory_delta` -- `{"version": 1, "proposals": [{"operation": "create", "create": {"slug", "type", "description", "body"}}]}`, the `create` fields as `gaia memory add --help` describes them -- and the orchestrator decides what is kept; you never write memory or project context yourself.
 
-Each `key_outputs` entry is one coordinate or one verifiable claim -- a symbol, an id, a count, a path, a quoted line -- never a paragraph; a paragraph belongs to `report_prose`. `user_facing_summary` is the only channel that reaches the user's display (`agent-contract-handoff`); write it in the plain register when a human will read the result.
+Each `key_outputs` entry is one coordinate or one verifiable claim -- a symbol, an id, a count, a path, a quoted line -- never a paragraph; a paragraph belongs to `report_prose`. `user_facing_summary` is the only channel that reaches the user's display, and every clean close carries it: `finalize` refuses a row without one and names the `set` call that fills it (`agent-contract-handoff`). Write it in the plain register -- what was done, what is left, what the user must decide -- for the user, not for the orchestrator; rows cut by the reaper, backstop or salvage are exempt.
 
 ## 6. The phase is declared before doing that phase's work
 

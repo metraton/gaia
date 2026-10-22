@@ -74,6 +74,7 @@ def _close_first_turn(db: Path) -> None:
             "verification": {"method": "t", "result": "pass", "details": "t"},
         },
         "consolidation_report": None, "approval_request": None,
+        "user_facing_summary": "Work recorded for the test.",
     }
     finalize_agent_contract_handoff(
         contract_id=CLOSED_ID, agent_id=AGENT_ID, workspace="me",
@@ -120,6 +121,8 @@ def test_resumed_turn_on_a_finalized_contract_can_still_close(env):
     }
     done = _cli(env, "set", "agent_status", json.dumps(status), "--draft-id", link_id)
     assert done.returncode == 0, done.stderr
+    summary = _cli(env, "set", "user_facing_summary", "Resumed work recorded.", "--draft-id", link_id)
+    assert summary.returncode == 0, summary.stderr
     closed = _cli(env, "finalize", "--draft-id", link_id)
     assert closed.returncode == 0, closed.stderr
     assert _link_of(db)["agent_state"] == "NEEDS_VERIFICATION"
