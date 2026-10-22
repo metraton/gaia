@@ -182,6 +182,19 @@ def test_first_prompt_without_ledger_opens_it_so_a_later_start_cannot_swallow(db
     assert _prompt().count("closed after an empty first prompt") == 1
 
 
+def test_summary_line_without_a_session_id_still_claims_for_the_row_session(db):
+    from modules.agents.task_result_observer import build_contract_summary_line
+
+    conclusions.baseline(SESSION_ID)
+    contract_id = f"{AGENT_ID}.nosession"
+    insert_dispatched_handoff(contract_id, AGENT_ID, WORKSPACE, session_id=SESSION_ID, db_path=db)
+    stamp_harness_agent_id(contract_id, HARNESS_AGENT_ID, db_path=db)
+    _finalize(db, contract_id, _envelope(conclusion=CONCLUSION))
+    line = build_contract_summary_line({"status": "completed", "agentId": HARNESS_AGENT_ID}, session_id="")
+    again = build_contract_summary_line({"status": "completed", "agentId": HARNESS_AGENT_ID}, session_id="")
+    assert [line.count(CONCLUSION), again.count(CONCLUSION), _prompt().count(CONCLUSION)] == [1, 0, 0]
+
+
 def test_prune_removes_only_aged_ledgers():
     conclusions.claim("old-session", "c.1")
     conclusions.claim(SESSION_ID, "c.2")

@@ -458,7 +458,8 @@ def build_contract_summary_line(
     from .proposal_notices import proposal_notice
 
     conclusion = conclusion_of(envelope)
-    if conclusion and claim(session_id, str(row.get("contract_id") or "")):
+    ledger_session = str(row.get("session_id") or session_id or "")
+    if conclusion and claim(ledger_session, str(row.get("contract_id") or "")):
         line = f"{line}\nconclusion: {conclusion}"
 
     proposed = proposal_notice(
