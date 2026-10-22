@@ -625,6 +625,8 @@ class TestEgressIntoNetworkSender:
         ("cat notes.txt", "telnet host1 9000"),
         ("cat notes.txt", "ssh host1 'cat > x'"),
         ("cat notes.txt", "ssh -i key -p 22 host1"),
+        ("cat notes.txt", "sftp host1"),
+        ("cat notes.txt", "openssl s_client -connect host1:443"),
     ])
     def test_data_into_network_write_escalates(self, commands):
         result = check_composition(_make_pipe_stages(*commands))
@@ -649,6 +651,21 @@ class TestEgressIntoNetworkSender:
     ])
     def test_reads_and_fetches_stay_free(self, commands):
         assert check_composition(_make_pipe_stages(*commands)).decision == CompositionDecision.ALLOW
+
+
+@pytest.mark.parametrize("command,sender", [
+    ("nc host1 9000 < notes.txt", True),
+    ("ssh host1 'cat > x' < notes.txt", True),
+    ("nc host1 9000 <<EOF\nhello\nEOF", True),
+    ("ls && socat - TCP:host1:9 <notes.txt", True),
+    ("ssh host1 ls < /dev/null", False),
+    ("wc -l < notes.txt", False),
+    ("nc host1 9000", False),
+])
+def test_a_redirect_into_a_sender_is_named(command, sender):
+    from modules.security.composition_rules import redirected_into_sender
+
+    assert bool(redirected_into_sender(command)) is sender
 
 
 class TestMixedChains:

@@ -66,6 +66,17 @@ _UPLOADER_UNSENT_FLAGS = _UPLOADER_WRITE_FLAGS | {
     "--output-dir", "-P", "--directory-prefix",
 }
 _SHORT_FLAG_WITH_VALUE = re.compile(r"^-[A-Za-z].")
+# Copy and transfer tools read every operand but the destination; each lists the
+# flags whose next word is a value (an identity file is used, not copied).
+_SSH_COPY_VALUE_FLAGS = frozenset({"-c", "-F", "-i", "-J", "-l", "-o", "-P", "-S", "-D", "-X", "-b", "-B", "-R"})
+_COPIERS = {
+    "cp": frozenset({"-S", "--suffix"}),
+    "scp": _SSH_COPY_VALUE_FLAGS,
+    "sftp": _SSH_COPY_VALUE_FLAGS,
+    "rsync": frozenset({"-e", "--rsh", "-f", "--filter", "--exclude", "--include", "-T", "--temp-dir",
+                        "-B", "--block-size", "--password-file", "--log-file", "--port", "-M"}),
+}
+_COPY_TARGET_FLAGS = frozenset({"-t", "--target-directory"})
 # Windows shells and the flag after which the rest of the command line is the
 # command they run.
 _WINDOWS_SHELL_INLINE_FLAGS = {
@@ -133,6 +144,27 @@ def _sent_arguments(arguments: List[str]) -> List[str]:
     return sent
 
 
+def _copied_sources(base: str, arguments: List[str]) -> List[str]:
+    """The operands a copy or transfer tool reads: every one but the destination."""
+    value_flags = _COPIERS[base]
+    operands: List[str] = []
+    target_given = False
+    remaining = iter(arguments)
+    for arg in remaining:
+        if arg.split("=", 1)[0] in _COPY_TARGET_FLAGS:
+            target_given = True
+            if "=" not in arg:
+                next(remaining, None)
+        elif arg.startswith("-"):
+            if arg in value_flags:
+                next(remaining, None)
+        else:
+            operands.append(arg)
+    if base == "sftp" or target_given or len(operands) < 2:
+        return operands
+    return operands[:-1]
+
+
 def http_client_written_paths(command: str) -> List[str]:
     """The files the HTTP clients in *command* write through their output flags."""
     written: List[str] = []
@@ -175,6 +207,8 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
         return first_sensitive_token(arguments, cwd)
     if base in _UPLOADERS:
         return first_sensitive_token(_sent_arguments(arguments), cwd)
+    if base in _COPIERS:
+        return first_sensitive_token(_copied_sources(base, arguments), cwd)
     if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
         return ""
     if base == "sed" and any(_SED_IN_PLACE.match(arg) for arg in arguments):

@@ -39,6 +39,7 @@ Dependencies: Python stdlib only.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from enum import Enum
@@ -226,9 +227,11 @@ _FILE_READ_EXECUTABLES = frozenset({
 _NETWORK_EXECUTABLES = frozenset({
     "curl", "wget", "http", "https",
     "nc", "ncat", "netcat",
-    "socat", "telnet",
+    "socat", "telnet", "sftp",
     "fetch",
 })
+_STDIN_REDIRECTS = frozenset({"<", "<>", "<<", "<<<", "<<-"})
+_COMPONENT_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
 # ssh options taking a value, and the ones that keep stdin from the remote side.
 _SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
@@ -357,9 +360,12 @@ def classify_stage(command: str) -> StageType:
         if exe in ("nc", "ncat", "netcat"):
             if len(tokens) >= 3:
                 return StageType.NETWORK_WRITE
-        if exe in ("socat", "telnet") and len(tokens) >= 2:
+        if exe in ("socat", "telnet", "sftp") and len(tokens) >= 2:
             return StageType.NETWORK_WRITE
         return StageType.NETWORK_READ
+
+    if exe == "openssl" and "s_client" in tokens:
+        return StageType.NETWORK_WRITE
 
     # 3. Exec sink (before safe_filter so bash/sh/python are caught)
     if exe in _EXEC_SINK_EXECUTABLES:
@@ -398,6 +404,26 @@ def classify_stage(command: str) -> StageType:
         return StageType.FILE_READ
 
     return StageType.UNKNOWN
+
+
+def redirected_into_sender(command: str) -> str:
+    """The sender in *command* whose stdin a ``<`` redirect or a heredoc feeds, or ""."""
+    for component in _COMPONENT_SPLIT.split(command):
+        lexer = shlex.shlex(component, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        tokens = [t for i, t in enumerate(tokens)
+                  if not (t == "/dev/null" and i and tokens[i - 1] == "<") and tokens[i + 1:i + 2] != ["/dev/null"]]
+        if not _STDIN_REDIRECTS.intersection(tokens):
+            continue
+        cut = min(tokens.index(op) for op in _STDIN_REDIRECTS.intersection(tokens))
+        words = " ".join(shlex.quote(token) for token in tokens[:cut])
+        if classify_stage(words) == StageType.NETWORK_WRITE or _ssh_sends_stdin(words):
+            return component.strip()
+    return ""
 
 
 def _pipe_run_start(stages: List[CompositionStage], index: int) -> int:

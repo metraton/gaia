@@ -115,6 +115,7 @@ from ..security.comment_push_gate import check as check_comment_push
 from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
+    redirected_into_sender,
     CompositionDecision,
 )
 from .shell_parser import get_shell_parser
@@ -999,6 +1000,23 @@ class BashValidator:
                     f"[T3_APPROVAL_REQUIRED] This command writes "
                     f"'{account_write_target}', which grants access to your "
                     f"own account."
+                ),
+                session_id=session_id,
+                agent_type=agent_type,
+            )
+
+        # A file fed by redirect into a sender leaves the machine like a piped one;
+        # decided before the sanitizer, which strips the `< file` it rests on.
+        redirect_sender = redirected_into_sender(write_guard_scope)
+        if redirect_sender:
+            return decide_t3_outcome(
+                command,
+                verb="egress",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                native_ask_reason=(
+                    f"[T3_APPROVAL_REQUIRED] '{redirect_sender[:80]}' sends a "
+                    f"redirected file off this machine."
                 ),
                 session_id=session_id,
                 agent_type=agent_type,
