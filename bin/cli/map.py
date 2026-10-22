@@ -82,7 +82,9 @@ def _due_lines(workspace: Optional[str]) -> list[tuple[str, str]]:
     if timed:
         named = ", ".join(f"{row['kind']} #{row['id']}" for row in timed[:LISTED_IDS])
         lines.append((f"{len(timed)} reminder(s)/routine(s) due: {named}",
-                      "gaia notifications show <id> ; ack|snooze|cancel <id>   (Skill reminders)"))
+                      "gaia notifications show <id> ; gaia notifications ack <id> ; "
+                      "gaia notifications snooze <id> --for 1d ; gaia notifications cancel <id>"
+                      "   (Skill reminders)"))
     if reports:
         lines.append((f"{len(reports)} unread task report(s): {_ids(reports, 'id', '#')}",
                       "gaia notifications list --unread ; gaia notifications ack <id>"))
@@ -99,9 +101,16 @@ def _proposal_lines() -> list[tuple[str, str]]:
              "gaia contract proposals list ; gaia contract proposals accept|dismiss <id>")]
 
 
-def _dispatched_lines(session_id: str) -> list[tuple[str, str]]:
+def _dispatched_lines(session_id: str, caller_agent: str) -> list[tuple[str, str]]:
+    """Turns the session dispatched and never closed; none for a dispatched caller.
+
+    A dispatched caller shares its parent's session id and the CLI holds only
+    its agent name, so its own in-flight row cannot be told from a sibling's.
+    """
     from gaia.store.reader import dispatched_handoffs
 
+    if caller_agent:
+        return []
     rows = dispatched_handoffs(session_id)
     if not rows:
         return []
@@ -142,12 +151,12 @@ def _plan_lines(workspace: Optional[str]) -> list[tuple[str, str]]:
     return lines
 
 
-def collect_now(session_id: str, workspace: Optional[str]) -> list[tuple[str, str]]:
+def collect_now(session_id: str, workspace: Optional[str], caller_agent: str = "") -> list[tuple[str, str]]:
     """Every live-state line as (what, verb that moves it); sources needing a session yield nothing without one."""
     return [
         *_due_lines(workspace),
         *_proposal_lines(),
-        *_dispatched_lines(session_id),
+        *_dispatched_lines(session_id, caller_agent),
         *_signal_lines(session_id),
         *_plan_lines(workspace),
     ]
@@ -215,9 +224,10 @@ def cmd_map(args) -> int:
         print(render_intent(match))
         return 0
 
-    from gaia.agent_identity import host_session_from_env
+    from gaia.agent_identity import dispatch_agent_from_env, host_session_from_env
     from gaia.project import cli_workspace
 
     workspace = cli_workspace(None)
-    print(render_map(collect_now(host_session_from_env(), workspace), workspace))
+    now = collect_now(host_session_from_env(), workspace, dispatch_agent_from_env())
+    print(render_map(now, workspace))
     return 0

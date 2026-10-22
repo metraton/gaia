@@ -221,7 +221,7 @@ def dispatched_handoffs(session_id: str, db_path: Path | None = None) -> list[di
 
 
 def active_plan_heads(workspace: str | None = None, db_path: Path | None = None) -> list[dict[str, Any]]:
-    """Each active plan with its brief and lowest-ordered pending task, limited to ``workspace`` and its aliases."""
+    """Each active, unpaused plan with its brief and lowest-ordered pending task, limited to ``workspace`` and its aliases."""
     try:
         con = _ro_connect(db_path)
     except Exception:
@@ -236,7 +236,7 @@ def active_plan_heads(workspace: str | None = None, db_path: Path | None = None)
             "FROM plans p JOIN briefs b ON b.id = p.brief_id "
             "LEFT JOIN tasks t ON t.id = (SELECT id FROM tasks WHERE plan_id = p.id "
             "AND status = 'pending' ORDER BY order_num LIMIT 1) "
-            f"WHERE p.status = 'active'{scope_sql} ORDER BY p.id",
+            f"WHERE p.status = 'active' AND p.paused_at IS NULL{scope_sql} ORDER BY p.id",
             params,
         ).fetchall()
         return [dict(r) for r in rows]

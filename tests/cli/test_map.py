@@ -93,7 +93,7 @@ def _seed_plan(db):
 SOURCES = {
     "due": (_seed_due, lambda m: m._due_lines("me"), "gaia notifications show <id>"),
     "proposals": (_seed_proposal, lambda m: m._proposal_lines(), "gaia contract proposals accept|dismiss"),
-    "dispatched": (_seed_dispatched, lambda m: m._dispatched_lines(SESSION), "--state DISPATCHED"),
+    "dispatched": (_seed_dispatched, lambda m: m._dispatched_lines(SESSION, caller_agent=""), "--state DISPATCHED"),
     "signals": (_seed_signal, lambda m: m._signal_lines(SESSION), "gaia signals --since 0"),
     "plans": (_seed_plan, lambda m: m._plan_lines("me"), "gaia plan show export-csv ; gaia task show --id"),
 }
@@ -108,6 +108,42 @@ def test_each_now_source_absent_then_present(runtime, name):
     seed(db)
     lines = read(mod)
     assert len(lines) == 1 and verb in lines[0][1], lines
+
+
+def test_paused_plan_is_not_in_now(runtime):
+    _env, db = runtime
+    _seed_plan(db)
+    _exec(db, "UPDATE plans SET paused_at = '2026-10-01T00:00:00Z'")
+    assert _load_map()._plan_lines("me") == []
+
+
+def test_due_verbs_are_runnable_commands(runtime):
+    import argparse
+    import shlex
+
+    _env, db = runtime
+    _seed_due(db)
+    mod = _load_map()
+    (_what, verbs), = mod._due_lines("me")
+    assert "gaia notifications snooze <id> --for 1d" in verbs
+    spec = importlib.util.spec_from_file_location("cli_notifications_under_test",
+                                                  _REPO_ROOT / "bin" / "cli" / "notifications.py")
+    notifications = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(notifications)
+    parser = argparse.ArgumentParser(exit_on_error=False)
+    notifications.register(parser.add_subparsers())
+    for command in verbs.split("(")[0].split(";"):
+        words = shlex.split(command.replace("<id>", "7"))
+        assert words[0] == "gaia", command
+        parser.parse_args(words[1:])
+
+
+def test_callers_own_dispatched_turn_is_not_listed(runtime):
+    _env, db = runtime
+    _seed_dispatched(db)
+    mod = _load_map()
+    assert mod._dispatched_lines(SESSION, caller_agent="gaia-system") == []
+    assert len(mod._dispatched_lines(SESSION, caller_agent="")) == 1
 
 
 def test_empty_now_is_omitted_and_static_sections_print(runtime):
@@ -133,15 +169,19 @@ def test_cli_writes_nothing_and_prints_no_secret_or_body(runtime, tmp_path):
     env, db = runtime
     for seed, _read, _verb in SOURCES.values():
         seed(db)
+    _exec(db, "UPDATE task_notifications SET workspace = NULL")
+    _exec(db, "UPDATE briefs SET workspace = 'global'")
     before_sha, before_dump = _sha(db), list(sqlite3.connect(db).iterdump())
     run_env = dict(env)
     run_env["GAIA_HOST_SESSION_ID"] = SESSION
+    run_env.pop("GAIA_DISPATCH_AGENT", None)
     result = subprocess.run([sys.executable, str(_GAIA), "map"], cwd=tmp_path, env=run_env,
                             capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr
     assert _sha(db) == before_sha
     assert list(sqlite3.connect(db).iterdump()) == before_dump
-    assert "NOW --" in result.stdout
+    for source_line in ("due:", "proposal(s)", "never closed", "unread signal", "next task"):
+        assert source_line in result.stdout, result.stdout
     for secret in SECRETS:
         assert secret not in result.stdout
 

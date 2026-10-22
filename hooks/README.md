@@ -72,13 +72,13 @@ Tool executes
 
 Claude Code replaces a hook's `additionalContext` over 10,000 chars with a 2,000-char preview and a file path, and never asks the model to read the file. Everything Gaia injects is therefore held under `CONTEXT_BUDGET` (9,500, `modules/context/user_sections.py`) on both hosts, so the model always reads it whole.
 
-**The birth block** (`modules/session/session_manifest.py::build_session_context`) is one assembler for every start source. A compaction is one more birth of the same session, not a special refresh: `session_lifecycle.start_context` calls the same function for `startup`, `resume`, `clear`, `fork` and `compact`, and OpenCode's `adapt_session_start` calls it for its first message and for the first message after a compaction. `modules/context/compact_context_builder.py` keeps only the instructions for the summarizer. The block reads, in order:
+**The birth block** (`modules/session/session_manifest.py::build_session_context`) is one assembler for every start source. A compaction is one more birth of the same session, not a special refresh: `session_lifecycle.start_context` calls the same function for `startup`, `resume`, `clear`, `fork` and `compact`, and OpenCode's `adapt_session_start` calls it for its first message and for the first message after a compaction. `modules/context/compact_context_builder.py` keeps only the instructions for the summarizer, which end the summary with the same `gaia map` pointer. The block reads, in order:
 
 1. a heading naming the source (`# Gaia session context (source: compact)`), which is the orchestrator's cue that the context was compacted;
 2. the alarms that condition every write (database upgrade, data home, workspace, schema mismatch);
 3. `## The user` and `## User preferences`, each row whole (`user_sections`, shared with the kernel);
 4. `## Resume point`: the session's snapshot (`gaia/session_snapshot.py::render_resume_section`) with the resume point whole, the active task, pending signatures and open contracts. It is absent when the session has nothing to resume;
-5. `## Environment`;
+5. `## Environment`: where the session stands (machine, folder, zone, CLI path, data home, tools), one line pointing at `gaia map` for live state, habits and which capability serves an intent, and the recurring work that is due;
 6. `## Projects`.
 
 The order defends what matters most if the block is ever cut. Over the budget it shrinks in a fixed order, and each step runs only when the previous one was not enough:
