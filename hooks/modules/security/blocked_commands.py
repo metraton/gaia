@@ -751,6 +751,12 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
     if result.is_blocked:
         return result
 
+    from ..tools.shell_parser import unquoted_readings
+    for spelled in unquoted_readings(command):
+        spelled_result = _classify_all_forms(spelled)
+        if spelled_result.is_blocked:
+            return spelled_result
+
     # ------------------------------------------------------------------
     # Wrapper / assignment evasion guard.
     # ------------------------------------------------------------------

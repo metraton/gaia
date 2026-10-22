@@ -4554,6 +4554,8 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
 def _executor_floor_payload(command: str) -> "Optional[str]":
     """Return the command a ``_COMMAND_EXECUTORS`` line runs (its ``-c`` option or trailing words), or None; the floor judges it as written."""
     semantics = analyze_command(command)
+    if semantics.base_cmd == "find":
+        return _resolve_executor_payload("find", semantics)
     grammar = _COMMAND_EXECUTORS.get(semantics.base_cmd)
     if grammar is None:
         return None

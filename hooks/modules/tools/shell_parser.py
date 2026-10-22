@@ -91,13 +91,114 @@ def drop_redirections(words: List[str]) -> List[str]:
     return out
 
 
+_ANSI_C_ESCAPES = {"a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "n": "\n", "r": "\r",
+                   "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"', "?": "?"}
+_ANSI_C_NUMERIC = re.compile(r"x([0-9a-fA-F]{1,2})|([0-7]{1,3})")
+# An unquoted IFS expansion splits words under the default IFS.
+_IFS_EXPANSION = re.compile(r"\$(?:IFS(?![A-Za-z0-9_])|\{IFS[^}]*\})")
+_DOUBLE_QUOTE_ESCAPABLE = '$`"\\\n'
+
+
+def _ansi_c_body(text: str, i: int) -> "tuple[str, int]":
+    """The value of a ``$'...'`` word whose body starts at *i*, and the index after its closing quote."""
+    out: List[str] = []
+    while i < len(text):
+        ch = text[i]
+        if ch == "'":
+            return "".join(out), i + 1
+        if ch == "\\" and i + 1 < len(text):
+            numeric = _ANSI_C_NUMERIC.match(text, i + 1)
+            if text[i + 1] in _ANSI_C_ESCAPES:
+                out.append(_ANSI_C_ESCAPES[text[i + 1]])
+                i += 2
+            elif numeric:
+                out.append(chr(int(numeric.group(1), 16) if numeric.group(1) else int(numeric.group(2), 8)))
+                i = numeric.end()
+            else:
+                out.append(text[i:i + 2])
+                i += 2
+            continue
+        out.append(ch)
+        i += 1
+    raise ValueError("No closing quotation")
+
+
+def shell_split(text: str) -> List[str]:
+    """The words bash makes of *text* after quote removal (backslash, '', "", $'', $"") and default-IFS splitting; raises ValueError like shlex.split."""
+    words: List[str] = []
+    current: List[str] = []
+    started = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        ifs = _IFS_EXPANSION.match(text, i) if ch == "$" else None
+        if ch in " \t\n" or ifs:
+            if started:
+                words.append("".join(current))
+                current, started = [], False
+            i = ifs.end() if ifs else i + 1
+            continue
+        started = True
+        if ch == "\\":
+            if i + 1 >= n:
+                raise ValueError("No escaped character")
+            current.append("" if text[i + 1] == "\n" else text[i + 1])
+            i += 2
+        elif ch == "'":
+            end = text.find("'", i + 1)
+            if end == -1:
+                raise ValueError("No closing quotation")
+            current.append(text[i + 1:end])
+            i = end + 1
+        elif ch == "$" and text.startswith("'", i + 1):
+            body, i = _ansi_c_body(text, i + 2)
+            current.append(body)
+        elif ch == '"' or (ch == "$" and text.startswith('"', i + 1)):
+            i += 2 if ch == "$" else 1
+            while True:
+                if i >= n:
+                    raise ValueError("No closing quotation")
+                if text[i] == '"':
+                    i += 1
+                    break
+                if text[i] == "\\" and i + 1 < n and text[i + 1] in _DOUBLE_QUOTE_ESCAPABLE:
+                    current.append("" if text[i + 1] == "\n" else text[i + 1])
+                    i += 2
+                    continue
+                current.append(text[i])
+                i += 1
+        else:
+            current.append(ch)
+            i += 1
+    if started:
+        words.append("".join(current))
+    return words
+
+
 def shell_words(component: str) -> List[str]:
     """The unquoted words of one operator-free component, redirections removed."""
     try:
-        words = shlex.split(component)
+        words = shell_split(component)
     except ValueError:
         words = component.split()
     return drop_redirections(words)
+
+
+def unquoted_readings(command: str) -> List[str]:
+    """Each component of *command* re-spelled from its words with minimal quoting, where that differs from how it was written."""
+    readings: List[str] = []
+    for component in parse_command(command):
+        try:
+            words = shell_split(component)
+        except ValueError:
+            continue
+        spelled = " ".join(
+            word if _REDIRECT_OPERATOR.match(word) or _REDIRECT_ATTACHED.match(word) else shlex.quote(word)
+            for word in words
+        )
+        if spelled and spelled != component.strip():
+            readings.append(spelled)
+    return readings
 
 
 def program_argv(command: str) -> List[str]:
