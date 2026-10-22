@@ -129,8 +129,8 @@ line `[ GAIA-SECURITY ] [ AGENT-REQUEST ] [ <agent> ] [ COMMAND ] [ <exact comma
 with Approve / Reject / Details; then Details, headed `Detalle 1/1`, one line
 `[ GAIA-SECURITY ] [ DETAILS ] [ <agent> ] [ COMMAND: ... ] [ DOES: ... ] [ IMPACT: ... ] [ ROLLBACK: ... ]`,
 labels in English, phrases in the user's language, no validity or ID; then
-Reject. Expected: the user says both look right; State `rejected`, no Outcome
-line.
+Reject. Expected: the user, who asked for this live check, judges that both
+look right; State `rejected`, no Outcome line.
 
 Report per check: the answer given, State and Outcome from `gaia approvals
 show`, the folder listing, pass or fail.

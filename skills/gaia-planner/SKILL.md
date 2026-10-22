@@ -82,7 +82,10 @@ it protects.
      after: the executor records the failing run with `gaia evidence add
      --gate <id> --negative` and the passing run with `--gate <id>`. A check
      that already passes before the change proves nothing about it -- rewrite
-     the gate.
+     the gate. The shape selects its tests by file or node id, fixed here, so
+     the selection the red run used is the one the verifier re-runs; a `-k`
+     over test names the producer has yet to write is a selection the
+     producer decides, and it passes by construction.
    - `semantic` -- anything that is a judgment (design, prose, fit). The shape
      is the rubric, one checkable criterion per line.
    - `self_review` -- the last resort: a qualitative self-check the executor
@@ -90,10 +93,29 @@ it protects.
      command can observe the outcome and no rubric can judge it, and state why
      in the gate. A task whose only gate is `self_review` is listed under Risks.
 
+   **Every gate is verified by an agent.** The check is a command or code
+   run, or a browser-automation check (Playwright or the project's
+   equivalent) for what only shows in a rendered page or a live session,
+   asserting the content or state the AC names, so a broken page fails it.
+   The user's part in a gate is at most handing over a secret or completing a
+   credential login inside a session the agent drives, after which the agent
+   observes the result: "after install, the user confirms X" becomes the check
+   the agent runs after install. Two gates are the user's: a judgment of taste
+   the brief assigns to the user in an AC -- a deck's or a page's visual look,
+   say -- and a check the user explicitly asked to make themselves. Either
+   stays `semantic`, names the user as its judge and cites the AC or the
+   request. The verifier leaves it pending and names it in its result; the
+   orchestrator asks the user and records the answer with `gaia task gate
+   set-status` and `gaia evidence add --gate`. This is what lets a plan close
+   without the user stopping to check.
+
    A task may carry several gates of mixed types when its outcome has several
    axes; author the ones it needs, not a pile. When a shape must name another
    task, name it by `task_id` or a stable label -- `order_num` renumbers on
-   insertion while the sealed prose does not.
+   insertion while the sealed prose does not. When a sibling task owns the
+   counterpart of a property (the background half of a foreground delivery),
+   the shape names what it excludes and which task covers it, so the verifier
+   judges the gate against its own scope.
 
    One proof that a mechanism works is enough: do not gate each variant of it.
    Prefer the repo's existing test, a state read or real use of the thing; do
