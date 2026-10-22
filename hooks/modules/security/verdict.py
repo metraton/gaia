@@ -1,10 +1,4 @@
-"""The consent verdict a command receives, the rule that decided it, and the sentence that says how to proceed.
-
-UNKNOWN asks like SIGNED but is not a rank between SIGNED and BLOCKED: it says the
-decision depends on a word the validator could not read, and its remediation names
-that word. A literal reading of the command may raise a verdict to UNKNOWN; it never
-lowers one, and nothing here turns a BLOCKED command into anything else.
-"""
+"""The consent verdict a command receives, the rule that decided it, and the sentence that says how to proceed."""
 
 from __future__ import annotations
 
@@ -57,6 +51,15 @@ REMEDIATION: Dict[str, str] = {
     "floor.clear-secret": "Move the secret out of the command line into a variable or file the command reads, then run it again.",
     "floor.no-requester": "Run the command from a dispatched turn whose host event names its agent, so the request can be bound to it.",
     "floor.approval-store": "Run the command again once the approval store is reachable; no request was recorded.",
+    "floor.composition-network-to-exec": "Download the code to a file, read it, and run it as a separate step only if it is yours to run.",
+    "floor.composition-decode-to-exec": "Decode the payload to a file, read it, and run it as a separate step only if it is yours to run.",
+}
+
+COMPOSITION_RULES: Dict[str, str] = {
+    "exfiltration": "floor.secret-read",
+    "rce": "floor.composition-network-to-exec",
+    "network_write_rce": "floor.composition-network-to-exec",
+    "obfuscated_exec": "floor.composition-decode-to-exec",
 }
 
 _DESTROY_WORDS: FrozenSet[str] = frozenset({
@@ -102,12 +105,7 @@ def _tokens(command: str) -> Tuple[str, ...]:
 
 
 def undetermined_span(verb: str, category: str, command: str) -> Optional[Tuple[str, str]]:
-    """Return (rule, what could not be determined) when a dynamic word sits where the decision reads.
-
-    Only the spans the verdict uses are inspected -- the program, the payload an
-    executor runs, the script it reads and the ref a push writes -- so a variable
-    anywhere else leaves the verdict as it is.
-    """
+    """Return (rule, what could not be determined) when the program, executor payload, script or pushed ref is dynamic."""
     tokens = _tokens(command)
     if verb == "script-file-unreadable":
         return UNKNOWN_SPAN, "the script that decides its effect"
@@ -146,11 +144,7 @@ def effect_rule(verb: str, command: str) -> str:
 
 
 def signing_rule(verb: str, category: str, command: str, rule: str = "") -> Tuple[str, str]:
-    """Return (rule, what could not be determined or "") for a command that asks.
-
-    A rule the classifier already settled wins; otherwise an undeterminable span
-    makes the verdict UNKNOWN, and the effect leg decides the rest.
-    """
+    """Return (rule, what could not be determined or "") for a command that asks; a classifier-settled rule wins."""
     if rule:
         return rule, ""
     unknown = undetermined_span(verb, category, command)

@@ -124,8 +124,7 @@ class MutativeResult:
         reason: Human-readable explanation of the classification.
         guidance: The non-mutating way to reach the same outcome, when one
             exists. Empty for every classification that has no such equivalent.
-        rule: The verdict rule a lane settled itself (modules.security.verdict);
-            empty when the validator derives it from the verb.
+        rule: The verdict rule a lane settled itself; empty when derived from the verb.
     """
     is_mutative: bool = False
     category: str = CATEGORY_UNKNOWN

@@ -87,7 +87,7 @@ from ..security.approval_messages import (
     build_t3_degraded_block_message,
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
-from ..security.verdict import UNDETERMINED, blocked_rule, render, signing_rule
+from ..security.verdict import COMPOSITION_RULES, UNDETERMINED, blocked_rule, render, signing_rule
 from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
@@ -1452,7 +1452,7 @@ class BashValidator:
                 except Exception as exc:
                     return BashValidationResult(
                         allowed=False, tier=SecurityTier.T3_BLOCKED,
-                        reason=f"COMMAND_SET persistence failed closed: {exc}",
+                        reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
                     )
                 if pending_set is not None:
                     _record_plan_command_denial(
@@ -1476,7 +1476,7 @@ class BashValidator:
                 return BashValidationResult(
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
-                    reason=f"COMMAND_SET persistence failed closed: {exc}",
+                    reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
                 )
             if cs_match is not None:
                 return BashValidationResult(
@@ -1620,7 +1620,7 @@ class BashValidator:
                         return BashValidationResult(
                             allowed=False,
                             tier=SecurityTier.T3_BLOCKED,
-                            reason=f"COMMAND_SET persistence failed closed: {exc}",
+                            reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
                         )
                     if cs_match is not None:
                         return BashValidationResult(
@@ -1928,7 +1928,7 @@ class BashValidator:
         except Exception as exc:
             return BashValidationResult(
                 allowed=False, tier=SecurityTier.T3_BLOCKED,
-                reason=f"COMMAND_SET persistence failed closed: {exc}",
+                reason=f"COMMAND_SET persistence failed closed: {exc}", rule="floor.approval-store",
             )
         if cs_match is None:
             return None
@@ -1977,8 +1977,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=f"Dangerous pipe composition blocked: {result.reason}",
-                rule="floor.secret-read" if re.search("sensitive|exfil", result.pattern)
-                else f"floor.composition-{result.pattern.replace('_', '-')}",
+                rule=COMPOSITION_RULES.get(result.pattern, "floor.unclassified"),
             )
 
         if result.decision == CompositionDecision.ESCALATE:
@@ -2829,6 +2828,7 @@ def decide_t3_outcome(
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"Command blocked by security policy: {_blocked.category}",
                     suggestions=[_blocked.suggestion] if _blocked.suggestion else [],
+                    rule=blocked_rule(_blocked.category),
                 )
 
             # ---- Degradation sensor (always-on) ------------------------------
@@ -2874,6 +2874,7 @@ def decide_t3_outcome(
                 tier=SecurityTier.T3_BLOCKED,
                 reason="T3 degraded-block: approval persistence failed",
                 block_response=hook_deny,
+                rule="floor.approval-store",
             )
         reason = build_t3_blocked_denial_message(
             approval_id=approval_id,
