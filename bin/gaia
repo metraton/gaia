@@ -256,6 +256,11 @@ READ -- changes nothing. The orchestrator runs these itself.
                  the installed gaia version, as the only argument.
   now
                  local time, UTC offset and zone; read it before computing an absolute --at.
+  map
+                 what is live now (due reminders, pending proposals, turns never
+                 closed, unread signals, active plans) with the verb that moves
+                 each, the five habits, and which capability serves an intent;
+                 `map <intent>` expands one row.
   signals
                  the curated changes behind a `~ changed:` line, each with the
                  command that opens it.

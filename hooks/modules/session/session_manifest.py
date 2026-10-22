@@ -422,6 +422,9 @@ def _recurring_work_line(workspace: Optional[str]) -> str:
     return f"- Recurring work pending: {', '.join(items)} — {', '.join(verbs)}"
 
 
+MAP_POINTER = "- Live state, habits and which capability serves an intent: `gaia map`"
+
+
 def _local_zone_line() -> str:
     """The zone only: a time in the birth block goes stale within one long turn."""
     from gaia import notifications_time
@@ -453,6 +456,7 @@ def build_environment_section(session_id: str = "") -> str:
         if session_id:
             lines.append(f"- Session id: {session_id}")
         lines.append(_local_zone_line())
+        lines.append(MAP_POINTER)
         # The orchestrator invokes `gaia` by this absolute path: the trust
         # guard rejects the bare token.
         cli_path = _resolve_gaia_cli_path()

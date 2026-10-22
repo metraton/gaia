@@ -21,7 +21,9 @@ def build_summary_instructions() -> str:
         "- Carry durable work as coordinates, never its body: task and plan ids, "
         "contract ids, approval ids, memory slugs, commit SHAs, brief names.\n"
         "- Keep facts that exist only in this conversation, labeled as not durable.\n"
-        "- Compress tool output and intermediate reasoning to what the next decision needs."
+        "- Compress tool output and intermediate reasoning to what the next decision needs.\n"
+        "- End with this line verbatim: Live state, habits and which capability serves an "
+        "intent: `gaia map`"
     )
 
 
