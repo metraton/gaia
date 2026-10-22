@@ -23,7 +23,7 @@ SUBCOMMANDS = {
         'accept dump get get-contract move-contracts move-memory move-project project '
         'prune-workspaces query scan show wipe'
     ),
-    'contract': 'add chain fill finalize init list reap reconcile set validate view',
+    'contract': 'add chain fill fill-rate finalize init list reap reconcile set validate view',
     'evidence': 'add list orphans show',
     'lint': 'comments',
     'login': 'start status',
@@ -126,7 +126,7 @@ OPTIONS = {
     'context accept': '--dry-run --help --json --workspace -h',
     'context dump': '--help --include-missing --json --section --text --workspace -h',
     'context get': '--help --include-missing --json --section --text --workspace -h',
-    'context get-contract': '--help --json --section --text --workspace -h',
+    'context get-contract': '--help --json --project --section --text --workspace -h',
     'context move-contracts': '--contract --dry-run --from --help --json --on-conflict --to --yes -h',
     'context move-memory': '--dry-run --from --help --json --name --on-conflict --to --yes -h',
     'context move-project': (
@@ -143,6 +143,7 @@ OPTIONS = {
     'contract add': '--agent-id --draft-id --help --json -h',
     'contract chain': '--contract-id --help --json -h',
     'contract fill': '--agent-id --draft-id --help --json --json-file -h',
+    'contract fill-rate': '--help --json --min --since --until --workspace -h',
     'contract finalize': '--agent-id --draft-id --help --json --plan-task-id --session-id --workspace -h',
     'contract init': '--agent-id --draft-id --help --json -h',
     'contract list': (
