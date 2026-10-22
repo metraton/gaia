@@ -91,17 +91,15 @@ def _seed_project(tmp_db, ws, name, *, path, identity, remote=None,
 
 
 def _read_contract(tmp_db, ws):
+    """The workspace's project_identity as readers see it: the old row merged with its projects' rows."""
+    from gaia.store.project_context import workspace_sections
     from gaia.store.writer import _connect
     con = _connect(tmp_db)
     try:
-        row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = 'project_identity'",
-            (ws,),
-        ).fetchone()
+        section = workspace_sections(con, ws).get("project_identity")
     finally:
         con.close()
-    return json.loads(row["payload"]) if row else None
+    return section["payload"] if section else None
 
 
 def _write_contract(tmp_db, ws, payload):
@@ -251,11 +249,15 @@ def test_rescan_preserves_description_added_between_scans(tmp_db):
     _seed_project(tmp_db, ws, "app", path="/abs/app", identity="/abs/app/.git")
     promote_workspace(ws, db_path=tmp_db, apply=True)
 
-    # An agent enriches the contract entry with a description.
-    payload = _read_contract(tmp_db, ws)
-    slug = next(iter(payload))
-    payload[slug]["description"] = "agent-authored purpose"
-    _write_contract(tmp_db, ws, payload)
+    # An agent enriches the entry the way agents write since v68: through the writer.
+    from hooks.modules.context.context_writer import apply_update
+
+    slug = next(iter(_read_contract(tmp_db, ws)))
+    enriched = apply_update(
+        {"contract": "project_identity", "payload": {slug: {"description": "agent-authored purpose"}}},
+        "developer", workspace=ws, db_path=tmp_db,
+    )
+    assert enriched["success"], enriched
 
     # A later scan must leave that description intact.
     promote_workspace(ws, db_path=tmp_db, apply=True)
@@ -844,7 +846,7 @@ def _promote_with_an_interleaved_agent_merge(tmp_db, monkeypatch, ws):
 def test_concurrent_agent_merge_survives_promotion(tmp_db, monkeypatch):
     """A concurrent ``update_contracts`` merge must not be lost by promotion.
 
-    ``project_context_contracts`` has two writers -- promotion here and
+    ``project_context`` has two writers -- promotion here and
     ``context_writer.apply_update`` for an agent's delta -- and both finish with
     ``payload = excluded.payload``. So the write is only safe if the payload it
     replaces was read under the same lock. The property is order-independent:
@@ -879,7 +881,7 @@ def test_interleaving_harness_detects_a_non_atomic_writer(tmp_db, monkeypatch):
             return shape, payload, stats, False
         con = _connect(db_path)
         try:
-            promote._upsert_identity_payload(con, workspace, payload)
+            promote._upsert_identity_payload(con, workspace, existing, payload)
             con.commit()
         finally:
             con.close()

@@ -37,10 +37,13 @@ sys.path.insert(0, str(TOOLS_DIR / "context"))
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
     seed_workspace,
+    seed_project,
     seed_workspace_contracts,
 )
 
 WORKSPACE = "test-ws"
+PROJECT = "platform"
+PROJECT_ID = "github.com/acme/platform"
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +64,7 @@ def _import_process_update_contracts():
 def _accept(contract: dict, db_path: Path) -> dict:
     """Apply a contract's update_contracts clause the way `gaia context accept` does."""
     from hooks.modules.context.context_writer import apply_proposal
-    outcome = apply_proposal(contract["update_contracts"], WORKSPACE, db_path=db_path)
+    outcome = apply_proposal(contract["update_contracts"], WORKSPACE, db_path=db_path, project=PROJECT)
     assert outcome["errors"] == []
     return outcome
 
@@ -90,19 +93,20 @@ def _build_task_info(agent_type: str, db_path: Path, workspace: str = WORKSPACE)
         "agent_type": agent_type,
         "db_path": db_path,
         "workspace": workspace,
+        "project": PROJECT,
     }
 
 
 def read_contract(db_path: Path, workspace: str, contract_name: str):
-    """Read back a contract payload from the DB; returns parsed dict or None."""
+    """The section as a reader of ``workspace`` sees it, or None."""
     import sqlite3
+
+    from gaia.store.project_context import workspace_sections
+
     con = sqlite3.connect(str(db_path))
-    row = con.execute(
-        "SELECT payload FROM project_context_contracts WHERE workspace=? AND contract_name=?",
-        (workspace, contract_name),
-    ).fetchone()
+    section = workspace_sections(con, workspace).get(contract_name)
     con.close()
-    return json.loads(row[0]) if row else None
+    return section["payload"] if section else None
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +119,7 @@ def ctx_db(tmp_path):
     db_path = tmp_path / "gaia_test.db"
     bootstrap_gaia_schema(db_path)
     seed_workspace(db_path, WORKSPACE)
+    seed_project(db_path, WORKSPACE, PROJECT, PROJECT_ID)
     return db_path
 
 
@@ -145,7 +150,8 @@ class TestFreshInstallFirstEnrichment:
         assert result["updated"] is False
         assert result["rejected"] == []
         assert result["proposed"] == [
-            {"contract": "cluster_details", "workspace": WORKSPACE, "keys": ["namespaces"]}
+            {"contract": "cluster_details", "workspace": WORKSPACE, "project": PROJECT_ID,
+             "keys": ["namespaces"]}
         ]
         assert read_contract(ctx_db, WORKSPACE, "cluster_details") is None
 
@@ -185,7 +191,9 @@ class TestIncrementalEnrichment:
 
         outcome = _accept(make_contract("cluster_details", new_payload), ctx_db)
 
-        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": WORKSPACE}]
+        assert outcome["applied"] == [
+            {"contract": "cluster_details", "workspace": WORKSPACE, "project": PROJECT_ID},
+        ]
 
         stored = read_contract(ctx_db, WORKSPACE, "cluster_details")
         assert stored is not None
@@ -249,7 +257,9 @@ class TestDriftDetection:
 
         outcome = _accept(make_contract("cluster_details", update_payload), ctx_db)
 
-        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": WORKSPACE}]
+        assert outcome["applied"] == [
+            {"contract": "cluster_details", "workspace": WORKSPACE, "project": PROJECT_ID},
+        ]
 
         stored = read_contract(ctx_db, WORKSPACE, "cluster_details")
         assert stored is not None

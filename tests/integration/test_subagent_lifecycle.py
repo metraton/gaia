@@ -38,6 +38,7 @@ sys.path.insert(0, str(HOOKS_DIR / "modules" / "context"))
 # DB helpers
 from tests.fixtures.db_helpers import (
     bootstrap_gaia_schema,
+    seed_project,
     seed_workspace,
 )
 
@@ -118,18 +119,22 @@ def lifecycle_db(tmp_path):
     db_path = tmp_path / "gaia_lifecycle.db"
     bootstrap_gaia_schema(db_path)
     seed_workspace(db_path, "global")
+    seed_project(db_path, "global", PROJECT, PROJECT_ID)
     return db_path
 
 
+PROJECT = "infra"
+PROJECT_ID = "github.com/acme/infra"
+
+
 def read_contract(db_path: Path, workspace: str, contract_name: str):
-    """Read back a contract payload from the DB; returns parsed dict or None."""
+    """The section as a reader of ``workspace`` sees it, or None."""
+    from gaia.store.project_context import workspace_sections
+
     con = sqlite3.connect(str(db_path))
-    row = con.execute(
-        "SELECT payload FROM project_context_contracts WHERE workspace=? AND contract_name=?",
-        (workspace, contract_name),
-    ).fetchone()
+    section = workspace_sections(con, workspace).get(contract_name)
     con.close()
-    return json.loads(row[0]) if row else None
+    return section["payload"] if section else None
 
 
 # ============================================================================
@@ -541,6 +546,7 @@ class TestPhase4ProposeThenAccept:
             "agent_type": "cloud-troubleshooter",
             "db_path": db_path,
             "workspace": "global",
+            "project": PROJECT,
         }
 
     def test_stop_writes_nothing_and_proposes(self, lifecycle_db):
@@ -561,6 +567,7 @@ class TestPhase4ProposeThenAccept:
         assert result["proposed"] == [{
             "contract": "cluster_details",
             "workspace": "global",
+            "project": PROJECT_ID,
             "keys": ["kubernetes_version", "node_count", "node_type", "status"],
         }]
         assert read_contract(lifecycle_db, "global", "cluster_details") is None
@@ -576,11 +583,13 @@ class TestPhase4ProposeThenAccept:
         })
 
         outcome = apply_proposal(
-            contract["update_contracts"], "global", db_path=lifecycle_db,
+            contract["update_contracts"], "global", db_path=lifecycle_db, project=PROJECT,
         )
 
         assert outcome["errors"] == []
-        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": "global"}]
+        assert outcome["applied"] == [
+            {"contract": "cluster_details", "workspace": "global", "project": PROJECT_ID},
+        ]
         stored = read_contract(lifecycle_db, "global", "cluster_details")
         assert stored["kubernetes_version"] == "1.28.5-gke.1200"
         assert stored["node_count"] == 3
@@ -592,9 +601,11 @@ class TestPhase4ProposeThenAccept:
 
         clause = self._make_contract("cluster_details", {"node_count": 3})["update_contracts"]
 
-        outcome = apply_proposal(clause, "global", db_path=lifecycle_db, dry_run=True)
+        outcome = apply_proposal(clause, "global", db_path=lifecycle_db, dry_run=True, project=PROJECT)
 
-        assert outcome["applied"] == [{"contract": "cluster_details", "workspace": "global"}]
+        assert outcome["applied"] == [
+            {"contract": "cluster_details", "workspace": "global", "project": PROJECT_ID},
+        ]
         assert read_contract(lifecycle_db, "global", "cluster_details") is None
 
     def test_second_accept_overwrites_the_scalar(self, lifecycle_db):
@@ -605,7 +616,7 @@ class TestPhase4ProposeThenAccept:
             clause = self._make_contract(
                 "cluster_details", {"node_count": node_count},
             )["update_contracts"]
-            outcome = apply_proposal(clause, "global", db_path=lifecycle_db)
+            outcome = apply_proposal(clause, "global", db_path=lifecycle_db, project=PROJECT)
             assert outcome["errors"] == []
 
         stored = read_contract(lifecycle_db, "global", "cluster_details")
@@ -619,21 +630,21 @@ class TestPhase4ProposeThenAccept:
             "infrastructure_topology", {"vpc_name": "main-vpc"}
         )["update_contracts"]
 
-        outcome = apply_proposal(clause, "global", db_path=lifecycle_db)
+        outcome = apply_proposal(clause, "global", db_path=lifecycle_db, project=PROJECT)
 
         assert outcome["applied"] == [
-            {"contract": "infrastructure_topology", "workspace": "global"}
+            {"contract": "infrastructure_topology", "workspace": "global", "project": PROJECT_ID}
         ]
 
         con = sqlite3.connect(str(lifecycle_db))
         rows = con.execute(
-            "SELECT workspace, contract_name, updated_at FROM project_context_contracts "
+            "SELECT project_identity, contract_name, updated_at FROM project_context "
             "WHERE contract_name='infrastructure_topology'"
         ).fetchall()
         con.close()
 
         assert len(rows) == 1
-        assert rows[0][0] == "global"
+        assert rows[0][0] == PROJECT_ID
         assert rows[0][2] is not None  # updated_at set
 
 
@@ -714,6 +725,7 @@ class TestPhase5SubagentStopHook:
                 "tags": ["#diagnostic"],
                 "db_path": lifecycle_db,
                 "workspace": "global",
+                "dispatch_project": PROJECT,
             }
 
             processed = []

@@ -88,7 +88,7 @@ def _project_rows(con: sqlite3.Connection, where: str, value: str) -> list:
     return con.execute(
         "SELECT pc.contract_name, pc.payload, pc.metadata, pc.updated_at, pc.project_identity "
         "FROM project_context pc LEFT JOIN projects p "
-        "ON COALESCE(p.project_identity, p.path) = pc.project_identity AND p.status = 'active' "
+        "ON COALESCE(p.project_identity, p.path) = pc.project_identity "
         f"WHERE {where} ORDER BY pc.updated_at", (value,),
     ).fetchall()
 
@@ -113,7 +113,8 @@ def workspace_sections(con: sqlite3.Connection, workspace: str) -> dict:
         )
         decoded = _decode(payload)
         if isinstance(decoded, dict):
-            section["payload"] = merge_section_payload(section["payload"], decoded)
+            base = section["payload"] if isinstance(section["payload"], dict) else {}
+            section["payload"] = {**base, **decoded}
         elif decoded is not None:
             section["payload"] = decoded
         section["updated_at"] = max(filter(None, (section["updated_at"], updated_at)), default=None)
@@ -131,7 +132,7 @@ def workspaces_with_section(con: sqlite3.Connection, contract_name: str) -> list
         names.update(r[0] for r in con.execute(
             "SELECT p.workspace FROM project_context pc JOIN projects p "
             "ON COALESCE(p.project_identity, p.path) = pc.project_identity "
-            "WHERE pc.contract_name = ? AND p.status = 'active'", (contract_name,),
+            "WHERE pc.contract_name = ?", (contract_name,),
         ))
     return sorted(names)
 

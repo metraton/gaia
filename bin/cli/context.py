@@ -1351,6 +1351,13 @@ def _cmd_accept(args) -> int:
         proposed_by=contract_id,
         proposer_agent=proposer,
     )
+    if outcome["errors"] and not getattr(args, "dry_run", False):
+        from gaia.store.writer import record_update_contracts_outcome
+
+        earlier = envelope.get("update_contracts_refused") or []
+        record_update_contracts_outcome(
+            contract_id, refused=list(dict.fromkeys([*earlier, *outcome["errors"]])),
+        )
     if as_json:
         print(json.dumps(outcome, indent=2))
     else:
