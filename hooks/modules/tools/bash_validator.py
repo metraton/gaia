@@ -428,10 +428,9 @@ FORBIDDEN_FOOTER_PATTERNS = [
     r"Co-authored-by:\s+Gemini\b",
 ]
 
-# Indirect execution other than a shell's command string, which
-# shell_command_string recognises: eval, inline interpreter code and a
-# process substitution fed to a shell. Matched against the command with its
-# _COMMAND_WRAPPERS prefix peeled as well as as written.
+# Indirect execution other than a shell's command string (which
+# shell_command_string recognises): eval, inline interpreter code and a
+# process substitution fed to a shell, matched as written and wrapper-peeled.
 
 INDIRECT_EXEC_PATTERNS = [
     re.compile(r"^\s*eval\s+", re.IGNORECASE),

@@ -95,6 +95,15 @@ def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
         return (command,), False
 
 
+def _executor_option_payload(command: str) -> Optional[str]:
+    """Return the ``-c`` command an option-carrying executor runs (``mutative_verbs._executor_option_payload``)."""
+    try:
+        from .mutative_verbs import _executor_option_payload as payload_of
+        return payload_of(command)
+    except ImportError:
+        return None
+
+
 def _powershell_positions(command: str) -> Tuple[str, ...]:
     """Return the command positions a PowerShell command line runs (``mutative_verbs._powershell_floor_readings``)."""
     try:
@@ -767,6 +776,13 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
             position_result = _classify_stripped_command(position)
             if position_result.is_blocked:
                 return position_result
+
+    for reading in (command, *readings):
+        option_payload = _executor_option_payload(reading)
+        if option_payload and option_payload != reading:
+            payload_result = _classify_all_forms(option_payload)
+            if payload_result.is_blocked:
+                return payload_result
 
     # ------------------------------------------------------------------
     # Grouping / substitution wrapper guard.

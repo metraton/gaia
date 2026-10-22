@@ -4551,6 +4551,15 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
     return None
 
 
+def _executor_option_payload(command: str) -> "Optional[str]":
+    """Return the ``-c`` command of a ``runuser``/``su``/``sg``/``flock``/``script`` line, or None; the floor judges it as written."""
+    semantics = analyze_command(command)
+    grammar = _COMMAND_EXECUTORS.get(semantics.base_cmd)
+    if grammar is None or not grammar.command_option:
+        return None
+    return _command_option_payload(list(semantics.tokens[1:]))
+
+
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
 # CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
 _GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil"})
