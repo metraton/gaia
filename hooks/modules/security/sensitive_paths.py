@@ -29,7 +29,7 @@ from .canonical_path import canonical_path, is_absolute
 CREDENTIAL_DIR_NAMES = frozenset({".ssh", ".gnupg", ".aws", ".azure"})
 
 # File names that are credentials wherever they sit.
-CREDENTIAL_FILE_NAMES = frozenset({".netrc", ".pgpass", ".git-credentials"})
+CREDENTIAL_FILE_NAMES = frozenset({".netrc", ".pgpass", ".git-credentials", ".credentials.json"})
 
 # Private-key stems; ``id_rsa.pub`` shares the stem and is kept with it.
 PRIVATE_KEY_STEMS = frozenset({"id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"})
@@ -67,6 +67,20 @@ HOME_ENTRIES = {
     ".profile": _WRITE_ONLY, ".zshrc": _WRITE_ONLY, ".zprofile": _WRITE_ONLY,
     ".zshenv": _WRITE_ONLY,
 }
+
+# Coding-agent CLI token and API-key files, each with the source naming the path;
+# a CLI that keeps them only in the OS keychain has no file to refuse.
+CODING_CLI_CREDENTIAL_STORES = {
+    ".claude/.credentials.json": "https://code.claude.com/docs/en/iam#credential-management",
+    ".config/anthropic": "https://code.claude.com/docs/en/iam#anthropic-profiles-and-federation-credentials",
+    ".codex/auth.json": "https://learn.chatgpt.com/docs/auth",
+    ".gemini/oauth_creds.json": "google-gemini/gemini-cli packages/core/src/config/storage.ts::OAUTH_FILE",
+    ".gemini/mcp-oauth-tokens.json": "google-gemini/gemini-cli packages/core/src/config/storage.ts::getMcpOAuthTokensPath",
+    ".qwen/oauth_creds.json": "QwenLM/qwen-code docs/users/qwen-serve.md",
+    ".local/share/opencode/auth.json": "https://opencode.ai/docs/providers/#credentials",
+    ".copilot/config.json": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli",
+}
+HOME_ENTRIES.update(dict.fromkeys(CODING_CLI_CREDENTIAL_STORES, _BOTH))
 
 # The Windows homes of the same uses, marked like HOME_ENTRIES and matched
 # anywhere in an absolute path: a profile may sit on any drive or under

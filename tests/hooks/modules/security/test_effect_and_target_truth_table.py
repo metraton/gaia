@@ -143,6 +143,12 @@ def test_verdict(row, world, monkeypatch):
         assert row["reason_contains"].lower() in reason.lower(), reason
 
 
+@pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["category"] in ("egress", "secret-store") and r["owner"] == "T1"])
+def test_egress_and_credential_store_rows_hold_under_a_tmp_path_home(row, world, monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    assert _observe_isolated(row, world, monkeypatch)[0] == row["expected"], row["command"]
+
+
 @pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["expected"] == "UNKNOWN" and r["owner"] != "out-of-brief"])
 def test_an_undeterminable_row_asks_today(row, world, monkeypatch):
     assert _observe_isolated(row, world, monkeypatch)[0] in {"SIGNED", "UNKNOWN"}, row["command"]
@@ -291,9 +297,10 @@ AC_SHAPES = {
         "still asks when it reaches shared state": ["inline-python-subprocess-write-twin", "inline-python-os-system-twin", "local-git-merge-twin"],
     },
     "AC-8": {
-        "data piped into a network sender": ["egress-file-into-nc", "egress-echo-into-nc", "egress-log-into-curl-upload"],
+        "data piped into a network sender": ["egress-file-into-nc", "egress-echo-into-nc", "egress-log-into-curl-upload", "egress-diff-into-curl-data-binary"],
         "secret piped stays refused": ["egress-secret-into-nc"],
-        "coding-CLI credential stores": ["store-codex-cat", "store-claude-cat", "store-gemini-cat", "store-opencode-cat"],
+        "coding-CLI credential stores": ["store-codex-cat", "store-claude-cat", "store-gemini-cat", "store-opencode-cat", "store-qwen-cat",
+                                         "store-copilot-cat", "store-anthropic-profiles-ls"],
     },
 }
 

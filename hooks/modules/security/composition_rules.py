@@ -19,6 +19,8 @@ Composition rules (permanent block, exit 2):
 Escalation (route to T3 ask, not permanent block):
   4. File-to-exec:    file_read | exec_sink
                       e.g. cat script.sh | bash
+  6. Egress:          any other stage | network_write
+                      e.g. git diff | curl --data-binary @- host
 
 Transparent suffix rule:
   If every stage after the first is a safe_filter, no composition rule fires
@@ -445,7 +447,8 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
       3. RCE:          network_read   | exec_sink             -> BLOCK
       4. Obfuscated:   decode         | exec_sink             -> BLOCK
       5. Net-write RCE: network_write | exec_sink             -> BLOCK
-      6. File-to-exec: file_read      | exec_sink             -> ESCALATE
+      6. Egress:       any other      | network_write         -> ESCALATE
+      7. File-to-exec: file_read      | exec_sink             -> ESCALATE
 
     Returns a CompositionResult.  If no rule fires, decision is ALLOW.
     """
@@ -544,24 +547,24 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
                 stage_types=all_types,
             )
 
-        # Rule 6 (formerly 4): File-to-exec -- file_read | exec_sink (escalate, not block)
+        if dst_type == StageType.NETWORK_WRITE:
+            return CompositionResult(
+                decision=CompositionDecision.ESCALATE,
+                pattern="egress",
+                reason=(
+                    f"Data piped to a network sender: '{src.command[:60]}' feeds "
+                    f"'{dst.command[:60]}', which sends it off this machine"
+                ),
+                matched_stages=[src_idx, dst_idx],
+                stage_types=all_types,
+            )
+
+        # Rule 4: File-to-exec -- file_read | exec_sink (escalate, not block)
         if src_type == StageType.FILE_READ and dst_type == StageType.EXEC_SINK:
-            # False-positive reduction: when the FILE_READ side reads only local
-            # workspace data file(s) (.json/.yaml/.yml/.csv/.txt), the exec sink
-            # is consuming structured DATA on stdin, not executing file content
-            # as a program (e.g. `cat config.json | python3 -c '...json.load...'`).
-            # That is benign -> ALLOW.  Scripts and extension-less files still
-            # ESCALATE, and network/decode/network_write -> exec still BLOCK above.
+            # A local data file (.json/.yaml/.csv/.txt) feeds DATA to the sink, not a
+            # program; the later pairs of the pipe are still judged.
             if _file_read_is_local_data_file(src.command):
-                return CompositionResult(
-                    decision=CompositionDecision.ALLOW,
-                    reason=(
-                        f"File-to-exec with local data file: '{src.command[:60]}' "
-                        f"feeds data to '{dst.command[:60]}' -- benign data consumption"
-                    ),
-                    matched_stages=[src_idx, dst_idx],
-                    stage_types=all_types,
-                )
+                continue
             return CompositionResult(
                 decision=CompositionDecision.ESCALATE,
                 pattern="file_to_exec",
