@@ -102,7 +102,7 @@ ORDINARY_WRITES = [
     ("tmp-redirect", "echo hello > /tmp/notes.txt"),
     ("unrelated-config", "tee ~/.config/nvim/init.lua"),
     ("neighbour-of-a-sensitive-name", "tee ~/.gitconfig.bak"),
-    ("neighbour-of-a-sensitive-prefix", "tee ~/.config/github-copilot/hosts.json"),
+    ("neighbour-of-a-sensitive-prefix", "tee ~/.config/github-copilot/versions.json"),
 ]
 
 
