@@ -4546,15 +4546,34 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
 # CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
 _GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil"})
-_KNOWN_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS
+_SHARED_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS | {"ls", "ps", "rm", "cp", "mv"}
 
 
 def _is_shell_expansion(word: str) -> bool:
     return word[:1] in ("$", "`")
 
 
+def _is_known_verb(word: str) -> bool:
+    word = word.lower()
+    return word in _SHARED_VERBS or word.split("-", 1)[0] in _SHARED_VERBS
+
+
+def _literal_verb_follows(args: "List[str]") -> bool:
+    """Return True when a known verb follows among the literal words, before any other shell expansion."""
+    for token in args:
+        if _is_shell_expansion(token):
+            return False
+        if not token.startswith("-") and _is_known_verb(token):
+            return True
+    return False
+
+
 def _dynamic_verb_span_word(base_cmd: str, args: "List[str]") -> "Optional[str]":
-    """Return a shell-expanded word that may stand on a verb-first CLI's command path, or None."""
+    """Return a shell-expanded word that may stand on a CLI's command path, or None.
+
+    An unknown long flag followed by an expansion is resolved by the shared verb
+    vocabulary: a known verb after it makes the expansion the flag's value.
+    """
     index = 0
     while index < len(args):
         token = args[index]
@@ -4566,16 +4585,17 @@ def _dynamic_verb_span_word(base_cmd: str, args: "List[str]") -> "Optional[str]"
                 continue
             follower = args[index + 1] if index + 1 < len(args) else "-"
             unknown_long = token.startswith("--") and "=" not in token and not follower.startswith("-")
-            if unknown_long and _is_shell_expansion(follower):
+            if unknown_long and _is_shell_expansion(follower) and not _literal_verb_follows(args[index + 2:]):
                 return follower
-            index += 2 if unknown_long and follower.lower() not in _KNOWN_VERBS else 1
+            index += 2 if unknown_long and not _is_known_verb(follower) else 1
             continue
         if _is_shell_expansion(token):
             return token
-        if base_cmd not in _GROUP_PATH_CLIS or token.lower() in _KNOWN_VERBS:
+        if base_cmd not in _GROUP_PATH_CLIS or _is_known_verb(token):
             return None
         index += 1
     return None
+
 
 # Executors whose every option is known, so a flag outside both sets leaves the payload's start unknown.
 _EXECUTOR_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
@@ -5096,8 +5116,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
     program = command.lstrip()
     program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
+    subcommand_shaped = family in _VERB_FIRST_FAMILIES or (
+        family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS and len(tokens) > 1 and tokens[1].startswith("--")
+    )
     dynamic_word = tokens[0] if program_is_dynamic else (
-        _dynamic_verb_span_word(base_cmd, tokens[1:]) if family in _VERB_FIRST_FAMILIES else None
+        _dynamic_verb_span_word(base_cmd, tokens[1:]) if subcommand_shaped else None
     )
     if dynamic_word is not None and not from_source_code:
         return MutativeResult(
