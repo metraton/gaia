@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import shlex
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,10 +32,11 @@ PROJECT = "alpha"
 IDENTITY = "github.com/me/alpha"
 DISPLAY = "alpha (/work/alpha)"
 USER_ROWS = 7
+POINTER_SCOPE = f"--workspace me --project {IDENTITY}"
 
 
 def _pointer(section: str) -> str:
-    return f"`gaia context get-contract --section {section} --project {PROJECT}`"
+    return f"`gaia context get-contract --section {section} {POINTER_SCOPE}`"
 
 
 @pytest.fixture()
@@ -138,7 +143,7 @@ def test_kernel_project_context_under_a_huge_prompt_is_one_line_and_the_contract
 
     kernel = _kernel(db, row)
 
-    assert "1 section — `gaia context get-contract --section <s> --project alpha`" in kernel
+    assert f"1 section — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
     assert kernel.startswith(build_dispatch_kernel(row, db_path=db))
     assert len(kernel) <= KERNEL_BUDGET
 
@@ -223,7 +228,7 @@ def test_kernel_project_context_near_the_cap_is_one_line_and_no_user_row_leaves(
 
     kernel = _kernel(db, row)
 
-    assert "3 sections — `gaia context get-contract --section <s> --project alpha`" in kernel
+    assert f"3 sections — `gaia context get-contract --section <s> {POINTER_SCOPE}`" in kernel
     assert "- stack," not in kernel
     _assert_all_user_rows(kernel)
     assert len(kernel) <= KERNEL_BUDGET
@@ -231,24 +236,24 @@ def test_kernel_project_context_near_the_cap_is_one_line_and_no_user_row_leaves(
 
 def test_kernel_project_context_pointers_without_bodies_when_only_they_fit(db):
     row = _row(DISPLAY, ["stack", "environment"])
-    _user_rows_leaving_room(db, row, 230)
-    _section(db, "stack", {"value": "a" * 150})
-    _section(db, "environment", {"value": "b" * 150})
+    _user_rows_leaving_room(db, row, 420)
+    _section(db, "stack", {"value": "a" * 400})
+    _section(db, "environment", {"value": "b" * 400})
 
     kernel = _kernel(db, row)
 
     assert _pointer("stack") in kernel and _pointer("environment") in kernel
-    assert "a" * 150 not in kernel and "b" * 150 not in kernel
+    assert "a" * 400 not in kernel and "b" * 400 not in kernel
     _assert_all_user_rows(kernel)
     assert len(kernel) <= KERNEL_BUDGET
 
 
 def test_project_context_block_degrades_whole_then_pointers_then_one_line():
     sections = [("stack", {"v": "a" * 300}), ("environment", {"v": "b" * 300})]
-    whole = build_project_context_block(PROJECT, sections, max_chars=10_000)
-    mixed = build_project_context_block(PROJECT, sections, max_chars=len(whole) - 1)
-    pointers = build_project_context_block(PROJECT, sections, max_chars=len(mixed) - 150)
-    line = build_project_context_block(PROJECT, sections, max_chars=0)
+    whole = build_project_context_block("me", IDENTITY, sections, max_chars=10_000)
+    mixed = build_project_context_block("me", IDENTITY, sections, max_chars=len(whole) - 1)
+    pointers = build_project_context_block("me", IDENTITY, sections, max_chars=len(mixed) - 150)
+    line = build_project_context_block("me", IDENTITY, sections, max_chars=0)
 
     assert "a" * 300 in whole and "b" * 300 in whole
     assert _pointer("stack") not in whole
@@ -256,4 +261,59 @@ def test_project_context_block_degrades_whole_then_pointers_then_one_line():
     assert _pointer("environment") in mixed and _pointer("stack") not in mixed
     assert "a" * 300 not in pointers
     assert _pointer("stack") in pointers and _pointer("environment") in pointers
-    assert line == f"{HEADING}\n\n2 sections — `gaia context get-contract --section <s> --project {PROJECT}`"
+    assert line == f"{HEADING}\n\n2 sections — `gaia context get-contract --section <s> {POINTER_SCOPE}`"
+
+
+def _pasted_pointers(kernel: str) -> list:
+    return [
+        shlex.split(line)[1:]
+        for line in re.findall(r"`(gaia context get-contract --section [^<`][^`]*)`", kernel)
+    ]
+
+
+def _paste(db: Path, args: list):
+    env = dict(os.environ, GAIA_DB=str(db), GAIA_DATA_DIR=str(db.parent))
+    return subprocess.run(
+        [sys.executable, str(_REPO_ROOT / "bin" / "gaia"), *args], capture_output=True, text=True, env=env,
+    )
+
+
+def test_kernel_project_context_pointer_pasted_returns_the_section_when_two_workspaces_share_a_name(db):
+    _execute(db, "INSERT OR IGNORE INTO workspaces (name, identity) VALUES ('other', 'other')")
+    _execute(
+        db, "INSERT INTO projects (workspace, name, path, project_identity) "
+        "VALUES ('other', ?, '/other/alpha', 'github.com/other/alpha')", PROJECT,
+    )
+    _section(db, "stack", {"who": "mine", "pad": "p" * KERNEL_BUDGET})
+    _execute(
+        db, "INSERT INTO project_context (project_identity, contract_name, payload, updated_at) "
+        "VALUES ('github.com/other/alpha', 'stack', ?, '2026-10-01T00:00:00Z')",
+        json.dumps({"who": "theirs", "pad": "p" * KERNEL_BUDGET}),
+    )
+
+    pointers = _pasted_pointers(_kernel(db, _row(DISPLAY, ["stack"])))
+
+    assert len(pointers) == 1
+    result = _paste(db, pointers[0])
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["payload"]["who"] == "mine"
+
+
+def test_kernel_project_context_pointer_pasted_returns_the_section_when_the_project_path_has_a_space(db):
+    spaced = "/work/my proj"
+    _execute(
+        db, "INSERT INTO projects (workspace, name, path, project_identity) VALUES ('me', 'my proj', ?, NULL)",
+        spaced,
+    )
+    _execute(
+        db, "INSERT INTO project_context (project_identity, contract_name, payload, updated_at) "
+        "VALUES (?, 'stack', ?, '2026-10-01T00:00:00Z')",
+        spaced, json.dumps({"who": "spaced", "pad": "p" * KERNEL_BUDGET}),
+    )
+
+    pointers = _pasted_pointers(_kernel(db, _row(f"my proj ({spaced})", ["stack"])))
+
+    assert len(pointers) == 1
+    result = _paste(db, pointers[0])
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["payload"]["who"] == "spaced"

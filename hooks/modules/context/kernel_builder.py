@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import textwrap
 from pathlib import Path
 from typing import Any, Mapping, Optional
@@ -82,7 +83,10 @@ PROJECT_CONTEXT_HEADING = "# Project context"
 
 PROJECT_NOTES_BUDGET = 600
 _PROJECT_NOTE_LINE_MAX = 150
-_SECTION_POINTER = "`gaia context get-contract --section {section} --project {project}`"
+def _section_pointer(section: str, workspace: str, project: str) -> str:
+    args = " ".join(("--workspace", shlex.quote(workspace), "--project", shlex.quote(project)))
+    return f"`gaia context get-contract --section {section} {args}`"
+
 
 KERNEL_BUDGET = CONTEXT_BUDGET
 # Inlined skill bodies cannot fit KERNEL_BUDGET: security-tiers alone is over 50,000.
@@ -561,12 +565,12 @@ def build_project_notes_block(
 
 
 def _readable_project_sections(row: Mapping[str, Any], *, db_path=None) -> tuple:
-    """The dispatch project's name and the non-empty ``(section, payload)`` pairs of its ``can_read``, in that order."""
+    """The dispatch project's ``{identity, workspace, name}`` and the non-empty ``(section, payload)`` pairs of its ``can_read``, in that order."""
     dispatch_project = row.get("dispatch_project")
     sections = _parse_json_field(row.get("kernel_sections"))
     can_read = sections.get("can_read") if isinstance(sections, dict) else None
     if not dispatch_project or not can_read:
-        return "", []
+        return {}, []
     try:
         from ..core.paths import ensure_package_root_importable
 
@@ -581,21 +585,21 @@ def _readable_project_sections(row: Mapping[str, Any], *, db_path=None) -> tuple
             con.close()
     except Exception:
         logger.debug("project context read failed (non-fatal)", exc_info=True)
-        return "", []
+        return {}, []
     readable = [
         (str(name), stored[name]["payload"]) for name in can_read
         if name in stored and stored[name]["payload"]
     ]
-    return (project["name"] if readable else ""), readable
+    return (project if readable else {}), readable
 
 
-def build_project_context_block(project: str, sections: list, *, max_chars: int) -> str:
+def build_project_context_block(workspace: str, project: str, sections: list, *, max_chars: int) -> str:
     """Render ``# Project context`` as whole sections, then pointers, then one count line that ignores ``max_chars``."""
     if not sections:
         return ""
     texts = [json.dumps(payload, ensure_ascii=False) for _, payload in sections]
     pointers = [
-        f"- {name}, {len(text):,} chars: " + _SECTION_POINTER.format(section=name, project=project)
+        f"- {name}, {len(text):,} chars: " + _section_pointer(shlex.quote(name), workspace, project)
         for (name, _), text in zip(sections, texts)
     ]
     head = [PROJECT_CONTEXT_HEADING, ""]
@@ -603,7 +607,7 @@ def build_project_context_block(project: str, sections: list, *, max_chars: int)
     if spare < 0:
         count = f"{len(sections)} section{'s' if len(sections) > 1 else ''}"
         return "\n".join(
-            head + [f"{count} — " + _SECTION_POINTER.format(section="<s>", project=project)]
+            head + [f"{count} — " + _section_pointer("<s>", workspace, project)]
         )
     lines = list(pointers)
     for index, ((name, _), text) in enumerate(zip(sections, texts)):
@@ -653,7 +657,7 @@ def build_kernel_context(
     project, sections = _readable_project_sections(row, db_path=db_path)
     context_room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 4 - memory_size
     context = build_project_context_block(
-        project, sections, max_chars=context_room,
+        project.get("workspace", ""), project.get("identity", ""), sections, max_chars=context_room,
     )
 
     def over() -> bool:
