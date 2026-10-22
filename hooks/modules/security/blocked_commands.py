@@ -95,10 +95,10 @@ def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
         return (command,), False
 
 
-def _executor_option_payload(command: str) -> Optional[str]:
-    """Return the ``-c`` command an option-carrying executor runs (``mutative_verbs._executor_option_payload``)."""
+def _executor_floor_payload(command: str) -> Optional[str]:
+    """Return the command an executor (runuser, ssh, xargs, ...) runs (``mutative_verbs._executor_floor_payload``)."""
     try:
-        from .mutative_verbs import _executor_option_payload as payload_of
+        from .mutative_verbs import _executor_floor_payload as payload_of
         return payload_of(command)
     except ImportError:
         return None
@@ -778,9 +778,9 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
                 return position_result
 
     for reading in (command, *readings):
-        option_payload = _executor_option_payload(reading)
-        if option_payload and option_payload != reading:
-            payload_result = _classify_all_forms(option_payload)
+        executor_payload = _executor_floor_payload(reading)
+        if executor_payload and executor_payload != reading:
+            payload_result = _classify_all_forms(executor_payload)
             if payload_result.is_blocked:
                 return payload_result
 

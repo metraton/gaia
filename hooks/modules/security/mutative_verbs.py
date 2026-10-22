@@ -4551,13 +4551,13 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
     return None
 
 
-def _executor_option_payload(command: str) -> "Optional[str]":
-    """Return the ``-c`` command of a ``runuser``/``su``/``sg``/``flock``/``script`` line, or None; the floor judges it as written."""
+def _executor_floor_payload(command: str) -> "Optional[str]":
+    """Return the command a ``_COMMAND_EXECUTORS`` line runs (its ``-c`` option or trailing words), or None; the floor judges it as written."""
     semantics = analyze_command(command)
     grammar = _COMMAND_EXECUTORS.get(semantics.base_cmd)
-    if grammar is None or not grammar.command_option:
+    if grammar is None:
         return None
-    return _command_option_payload(list(semantics.tokens[1:]))
+    return _executor_grammar_payload(list(semantics.tokens[1:]), grammar)
 
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})

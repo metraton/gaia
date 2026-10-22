@@ -903,4 +903,13 @@
 ,{"id": "git-export-harmless-key-chain", "owner": "T1", "expected": "FREE", "command": "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x && git status", "rule": "free.reads", "category": "git-target", "src": "gaia-authored", "ac": ["AC-6"]}
 ,{"id": "overcons-exec-fd-heredoc", "owner": "out-of-brief", "expected": "FREE", "command": "exec 3<<EOF\nhello\nEOF", "rule": "free.reads", "category": "executor", "src": "gaia-authored", "ac": ["AC-6"], "note": "Recorded by task 1022: UNKNOWN today (compound path); the harmless body opens a descriptor and runs nothing. May stay."}
 ,{"id": "overcons-sh-herestring-echo", "owner": "out-of-brief", "expected": "FREE", "command": "sh <<< 'echo hi'", "rule": "free.reads", "category": "executor", "src": "gaia-authored", "ac": ["AC-6"], "note": "Recorded by task 1022: UNKNOWN today, the here-string body is not read as the program. May stay."}
+,{"id": "wrap-watch-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "watch rm -rf /", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"], "note": "Task 1022: a trailing-payload executor never yields a more permissive verdict than the command written directly."}
+,{"id": "wrap-watch-n-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "watch -n 5 rm -rf /", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "wrap-ssh-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "ssh host rm -rf /", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "wrap-ssh-quoted-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "ssh host 'rm -rf /'", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "wrap-ssh-p-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "ssh -p 22 host rm -rf /", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "wrap-xargs-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "xargs rm -rf /", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "wrap-flock-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "flock /tmp/l rm -rf /", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "wrap-sg-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "sg wheel 'rm -rf /'", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
+,{"id": "wrap-su-c-rm-root", "owner": "T1", "expected": "BLOCKED", "command": "su -c 'rm -rf /' bob", "rule": "floor.rm_critical", "category": "floor", "src": "gaia-authored", "ac": ["AC-6"]}
 ]}
