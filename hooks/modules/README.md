@@ -227,17 +227,22 @@ bash_validator checks commands in this order (short-circuit on first match):
 
 ### Heredoc readers
 
-A heredoc body is data only when the program reading it, after its wrappers (`sudo`, `env`, `timeout`, `nice`, `command`, `builtin`, `exec`), is a pure data reader: `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `nl`, `rev`, `fold`, `tee`, `grep`/`egrep`/`fgrep` without `-f`/`--file`, and `base64` encoding or decoding (`_heredoc_reader` in `tools/bash_validator.py`). These programs never run what they read.
+Every `<<` on a line is paired with the command segment that reads it, and bodies are taken in the order the shell reads them (`_heredoc_openers`, `_scan_heredocs` in `tools/bash_validator.py`). A segment starts after `;`, `|`, `&`, `&&`, `||` or `(`.
 
-A program whose flag takes stdin as a message or body file reads the heredoc as data too, keyed by program, subcommand and flag (`_HEREDOC_MESSAGE_FLAGS`):
+A heredoc body is data only when that reader, after its wrappers (`sudo`, `env`, `timeout`, `nice`, `command`, `builtin`, `exec`), never runs what it reads (`_heredoc_reader`):
 
-| Program | Subcommand | Flag reading `-` |
-|---------|------------|------------------|
+- **Pure data readers.** `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `nl`, `rev`, `fold`, `tee`, and `base64` encoding or decoding.
+- **Expression-first tools.** `awk`/`gawk`/`mawk`, `sed`, `grep`/`egrep`/`fgrep`, `jq` and `yq` take their program from argv, so the heredoc is their input. A program-file flag reading stdin (`-f`, `--file`, `--from-file` with `-`, `/dev/stdin`, `/dev/fd/0`) makes the body their program, and it is code (`_PROGRAM_FILE_FLAGS`).
+- **`xargs` running a data reader**, as in `xargs -d , cat`. Its value flags are skipped to find the target (`_xargs_target`); any other target is code.
+- **Message flags**, keyed by program, subcommand path and flag (`_HEREDOC_MESSAGE_FLAGS`). Any other path, alias or extension (`gh x`, `gh myext run`, `gh api`) is code, because it may run stdin.
+
+| Program | Subcommand path | Flag reading `-` |
+|---------|-----------------|------------------|
 | `git` | `commit`, `tag`, `notes` | `-F`, `--file` |
-| `gh` | any | `--body-file` |
-| `glab` | any | `--description` |
+| `gh` | `pr` or `issue` + `create`, `edit`, `comment`; `release` + `create`, `edit` | `--body-file`, `--notes-file`, `-F` |
+| `glab` | `mr` or `issue` + `create`, `update`, `note` | `--description` |
 
-Such a command keeps its own verdict: `git commit -F - <<EOF` runs free, while `git tag -a v1 -F -` still signs for the tag. A data body is never read as commands. Only a line of an unquoted body that holds `$` or a backtick is checked, because the shell expands it before the reader sees it.
+A data heredoc's command keeps its own verdict: `git commit -F - <<EOF` runs free, while `git tag -a v1 -F -` still signs for the tag. A data body is never read as commands. Only a line of an unquoted body that holds `$` or a backtick is checked, because the shell expands it before the reader sees it. A data reader whose output is piped on (`cat <<EOF | sh`) keeps its body as commands.
 
 Every other reader makes the body code, and the heredoc fails closed (`_fail_closed_on_code_heredoc`):
 
@@ -245,9 +250,9 @@ Every other reader makes the body code, and the heredoc fails closed (`_fail_clo
 - A reading that hits a floor blocks the command. A mutative reading signs it, with the rule of its strongest effect.
 - With neither, the command asks as UNKNOWN (`unknown.dynamic-span`). Gaia does not parse another language: an awk program, or Python behind `timeout` or `nice`, is code it cannot read.
 
-One reader is read in full: an interpreter that takes its program from the heredoc with nothing before it (`python3 -`, `node -`, `bash -s`, bare `sh`; `security/program_heredoc.py`). Its body goes through the inline-code or script lanes like a script file. That holds only while the body is the program that runs. An unquoted delimiter whose body carries `$` or a backtick lets the shell rewrite the body first, so it asks as UNKNOWN too.
+One reader is read in full: an interpreter that takes its program from the heredoc with nothing before it (`python3 -`, `node -`, `bash -s`, bare `sh`; `security/program_heredoc.py`). Its body goes through the inline-code or script lanes like a script file, wherever the heredoc sits on the line (`_heredoc_as_program`). That holds only while the body is the program that runs. An unquoted delimiter whose body carries `$` or a backtick lets the shell rewrite the body first, so it asks as UNKNOWN too.
 
-The list is short on purpose. A reader left off it over-asks (`awk '{print}'` asks), which is the cost of failing closed. A reader wrongly on it would run a body nobody classified.
+The list is short on purpose. A reader left off it over-asks, which is the cost of failing closed. A reader wrongly on it would run a body nobody classified.
 
 ### Tier Classification
 - **T0**: Read-only (get, list, describe, show)

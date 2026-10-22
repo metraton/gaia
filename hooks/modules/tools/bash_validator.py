@@ -51,7 +51,7 @@ import shlex
 import shutil
 import logging
 from typing import Dict, Any, Optional, List, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
@@ -196,33 +196,80 @@ _BUILTIN_WRAPPERS = frozenset({"command", "builtin", "exec"})
 _HEREDOC_DATA_READERS = frozenset({
     "cat", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "nl", "rev", "fold", "tee",
 })
-_GREPS = frozenset({"grep", "egrep", "fgrep"})
 _BASE64_DECODE_ARGS = frozenset({"-d", "--decode", "-i", "--ignore-garbage"})
-
-
-_HEREDOC_MESSAGE_FLAGS = {
-    "git": (frozenset({"commit", "tag", "notes"}), frozenset({"-F", "--file"})),
-    "gh": (None, frozenset({"--body-file"})),
-    "glab": (None, frozenset({"--description"})),
+_STDIN_PATHS = frozenset({"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
+_AWK_SED_PROGRAM_FILE = frozenset({"-f", "--file"})
+_PROGRAM_FILE_FLAGS = {
+    "awk": _AWK_SED_PROGRAM_FILE, "gawk": _AWK_SED_PROGRAM_FILE, "mawk": _AWK_SED_PROGRAM_FILE,
+    "sed": _AWK_SED_PROGRAM_FILE,
+    "grep": _AWK_SED_PROGRAM_FILE, "egrep": _AWK_SED_PROGRAM_FILE, "fgrep": _AWK_SED_PROGRAM_FILE,
+    "jq": frozenset({"-f", "--from-file"}),
+    "yq": frozenset({"--from-file"}),
 }
+_XARGS_VALUE_FLAGS = frozenset({"-a", "-E", "-I", "-L", "-n", "-P", "-s", "-d"})
+_PATH_VALUE_OPTIONS = frozenset({"-C", "-c", "-R", "--repo"})
+_HEREDOC_MESSAGE_FLAGS = {
+    "git": (
+        frozenset({("commit",), ("tag",), ("notes",)}),
+        frozenset({"-F", "--file"}),
+    ),
+    "gh": (
+        frozenset({(noun, verb) for noun in ("pr", "issue") for verb in ("create", "edit", "comment")})
+        | {("release", "create"), ("release", "edit")},
+        frozenset({"--body-file", "--notes-file", "-F"}),
+    ),
+    "glab": (
+        frozenset({(noun, verb) for noun in ("mr", "issue") for verb in ("create", "update", "note")}),
+        frozenset({"--description"}),
+    ),
+}
+
+
+def _flag_values(args: List[str], flags: frozenset) -> List[str]:
+    values = []
+    for arg, following in zip(args, args[1:] + [""]):
+        if arg in flags:
+            values.append(following)
+        elif arg.startswith("--") and arg.split("=", 1)[0] in flags:
+            values.append(arg.split("=", 1)[1] if "=" in arg else "")
+        elif arg[:1] == "-" and arg[:2] in flags:
+            values.append(arg[2:])
+        elif arg[:1] == "-" and arg[1:2] != "-" and f"-{arg[-1:]}" in flags:
+            values.append(following)
+    return values
+
+
+def _command_path(args: List[str], length: int) -> Tuple[str, ...]:
+    path, skip_value = [], False
+    for arg in args:
+        if skip_value:
+            skip_value = False
+        elif arg in _PATH_VALUE_OPTIONS:
+            skip_value = True
+        elif not arg.startswith("-"):
+            path.append(arg)
+            if len(path) == length:
+                break
+    return tuple(path)
 
 
 def _reads_message_from_stdin(program: str, args: List[str]) -> bool:
     if program not in _HEREDOC_MESSAGE_FLAGS:
         return False
-    subcommands, flags = _HEREDOC_MESSAGE_FLAGS[program]
-    if subcommands is not None and not subcommands & set(args):
-        return False
-    attached = {f"{flag}=-" for flag in flags} | {f"{flag}-" for flag in flags if not flag.startswith("--")}
-    return any(
-        arg in attached or (arg in flags and following == "-")
-        for arg, following in zip(args, args[1:] + [""])
-    )
+    paths, flags = _HEREDOC_MESSAGE_FLAGS[program]
+    return _command_path(args, len(next(iter(paths)))) in paths and "-" in _flag_values(args, flags)
+
+
+def _xargs_target(args: List[str]) -> List[str]:
+    index = 0
+    while index < len(args) and args[index].startswith("-"):
+        if args[index] == "--":
+            return args[index + 1:]
+        index += 2 if args[index] in _XARGS_VALUE_FLAGS else 1
+    return args[index:]
 
 
 def _heredoc_reader(head: str) -> bool:
-    if any(os.path.basename(word) == "xargs" for word in head.split()):
-        return False
     words = _peel_leading_command_wrappers(head)[0].split()
     while words and words[0] in _BUILTIN_WRAPPERS:
         words = words[1:]
@@ -231,17 +278,38 @@ def _heredoc_reader(head: str) -> bool:
     if not words:
         return False
     program, args = os.path.basename(words[0]), words[1:]
-    if _reads_message_from_stdin(program, args):
-        return True
-    if program in _GREPS:
-        return not any(a.startswith("--file") or (a[:2] != "--" and a[:1] == "-" and "f" in a[1:]) for a in args)
+    if program == "xargs":
+        return _heredoc_reader(" ".join(_xargs_target(args)))
+    if program in _PROGRAM_FILE_FLAGS:
+        return not set(_flag_values(args, _PROGRAM_FILE_FLAGS[program])) & _STDIN_PATHS
     if program == "base64":
         return set(args) <= _BASE64_DECODE_ARGS
-    return program in _HEREDOC_DATA_READERS
+    return _reads_message_from_stdin(program, args) or program in _HEREDOC_DATA_READERS
 
 
-def _heredoc_opener(line: str) -> Optional[Tuple[str, str, bool, bool]]:
-    quote, index, start = "", 0, 0
+@dataclass
+class _Heredoc:
+    reader: str
+    delimiter: str
+    strip_tabs: bool
+    expands: bool
+    segment: int
+    piped: bool = False
+    body: List[str] = field(default_factory=list)
+
+    @property
+    def is_data(self) -> bool:
+        return _heredoc_reader(self.reader)
+
+
+def _starts_command(line: str, index: int) -> bool:
+    if line[index] != "&":
+        return line[index] in "|;("
+    return not ((index and line[index - 1] in "<>") or line[index + 1:index + 2] == ">")
+
+
+def _heredoc_openers(line: str) -> List[_Heredoc]:
+    openers, quote, index, start = [], "", 0, 0
     while index < len(line):
         char = line[index]
         if quote:
@@ -251,18 +319,31 @@ def _heredoc_opener(line: str) -> Optional[Tuple[str, str, bool, bool]]:
         elif char in "'\"`":
             quote = char
         elif char == "#" and (index == 0 or line[index - 1] in " \t"):
-            return None
-        elif char in "|;&(":
+            break
+        elif line.startswith(("||", "&&"), index):
+            index = start = index + 2
+            continue
+        elif _starts_command(line, index):
+            for heredoc in openers:
+                heredoc.piped = heredoc.piped or (char == "|" and heredoc.segment == start)
             start = index + 1
         elif line.startswith("<<<", index):
             index += 2
         elif line.startswith("<<", index):
             opener = _read_heredoc_opener(line, index)
-            if opener is None or line[opener[3]:].strip()[:1] not in ("", "#"):
-                return None
-            return line[start:index].strip(), opener[0], opener[2], opener[1]
+            if opener is not None:
+                openers.append(_Heredoc(line[start:index].strip(), opener[0], opener[2], opener[1], start))
+                index = opener[3]
+                continue
         index += 1
-    return None
+    return openers
+
+
+def _heredoc_as_program(heredoc: _Heredoc) -> Optional[str]:
+    quote = "" if heredoc.expands else "'"
+    command = f"{heredoc.reader} <<{quote}GAIA_BODY_END{quote}\n" + "".join(f"{b}\n" for b in heredoc.body) + "GAIA_BODY_END"
+    program = heredoc_program(command)
+    return command if program is not None and program.is_readable else None
 
 
 def _heredoc_readings(reader: str, body: List[str]) -> List[str]:
@@ -275,27 +356,29 @@ def _heredoc_readings(reader: str, body: List[str]) -> List[str]:
     return readings
 
 
-def _scan_heredocs(command: str) -> Tuple[str, List[str]]:
-    lines, body, opener, readings = [], [], None, []
+def _scan_heredocs(command: str) -> Tuple[str, List[_Heredoc]]:
+    lines, pending, code = [], [], []
     for line in command.split("\n"):
-        if opener is None:
+        if not pending:
             lines.append(line)
-            opener = _heredoc_opener(line)
+            pending = _heredoc_openers(line)
             continue
-        reader, delimiter, strip_tabs, expands = opener
-        if (line.lstrip("\t") if strip_tabs else line) != delimiter:
-            body.append(line)
+        heredoc = pending[0]
+        text = line.lstrip("\t") if heredoc.strip_tabs else line
+        if text != heredoc.delimiter:
+            heredoc.body.append(text)
             continue
-        if _heredoc_reader(reader):
-            lines.extend(f"echo {b}" for b in body if expands and set("$`") & set(b))
+        if heredoc.is_data and not heredoc.piped:
+            lines.extend(f"echo {b}" for b in heredoc.body if heredoc.expands and set("$`") & set(b))
         else:
-            lines.extend(body)
-            readings.extend(_heredoc_readings(reader, body))
+            lines.extend(heredoc.body)
+        code.extend([] if heredoc.is_data else [heredoc])
         lines.append(line)
-        body, opener = [], None
-    if opener is not None and not _heredoc_reader(opener[0]):
-        readings.extend(_heredoc_readings(opener[0], body))
-    return "\n".join(lines + body), readings
+        pending.pop(0)
+    for heredoc in pending:
+        lines.extend(heredoc.body)
+        code.extend([] if heredoc.is_data else [heredoc])
+    return "\n".join(lines), code
 
 
 def _rules_t3_outcome(decide):
@@ -1390,7 +1473,7 @@ class BashValidator:
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
-        classified, heredoc_readings = _scan_heredocs(command)
+        classified, code_heredocs = _scan_heredocs(command)
         if parsed_components is not None and classified != command:
             parsed_components = self.shell_parser.parse(classified)
         program = heredoc_program(command)
@@ -1413,9 +1496,9 @@ class BashValidator:
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
             )
-        if heredoc_readings and not (program is not None and program.is_readable):
+        if code_heredocs:
             result = self._fail_closed_on_code_heredoc(
-                heredoc_readings, result, is_subagent=is_subagent, cwd=payload_cwd,
+                code_heredocs, result, is_subagent=is_subagent, cwd=payload_cwd,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
@@ -1436,9 +1519,14 @@ class BashValidator:
 
     @staticmethod
     def _fail_closed_on_code_heredoc(
-        readings: List[str], result: BashValidationResult, *, is_subagent: bool, cwd: Optional[str],
+        heredocs: List[_Heredoc], result: BashValidationResult, *, is_subagent: bool, cwd: Optional[str],
     ) -> BashValidationResult:
         """Hold a heredoc no pure data reader reads to at least UNKNOWN; a body reading on a floor blocks, a mutative one signs."""
+        readings, unread = [], False
+        for heredoc in heredocs:
+            program = _heredoc_as_program(heredoc)
+            unread = unread or program is None
+            readings.extend([program] if program else _heredoc_readings(heredoc.reader, heredoc.body))
         for reading in readings:
             blocked = is_blocked_command(reading)
             if blocked.is_blocked:
@@ -1459,6 +1547,9 @@ class BashValidator:
                 if rule.startswith("unknown.") and not undetermined:
                     undetermined = "the span the decision reads"
                 break
+        else:
+            if not unread:
+                return result
         return BashValidationResult(
             allowed=False,
             tier=SecurityTier.T3_BLOCKED,
