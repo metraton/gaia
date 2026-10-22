@@ -26,10 +26,14 @@ Construction patterns for building Gaia components. Every component type follows
    hook or any other Gaia hook -- separately reads the target agent's
    `.md` frontmatter and preloads its `skills:` list before the first
    turn. `hooks/hooks.json` has no PreToolUse `Skill` matcher; its
-   PostToolUse `Skill` matcher only records a main-session
-   `Skill('memory')` load for the orchestrator's memory-write guard
+   PostToolUse `Skill` matcher only records loads: every load becomes a
+   `skill.loaded` harness event naming the skill, agent, role and
+   session (`hooks/modules/events/capability_usage.py`), and a
+   main-session `Skill('memory')` load also becomes `memory.skill_loaded`
+   for the orchestrator's memory-write guard
    (`hooks/modules/security/memory_skill_guard.py`) -- see
-   `artifact_skill_reminder.py`. The primary agent has no equivalent:
+   `artifact_skill_reminder.py`. A preloaded skill never passes through
+   the `Skill` tool, so it records nothing. The primary agent has no equivalent:
    Claude Code's own docs list only "system prompt, tool restrictions,
    and model" as inherited on the main thread, which is why
    `gaia-orchestrator.md`'s frontmatter carries no `skills:` field.)

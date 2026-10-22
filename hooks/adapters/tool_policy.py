@@ -243,6 +243,36 @@ def _record_dispatch_binding_rejection(
         )
 
 
+def _record_cli_use(
+    hook_data: dict, *, outcome: str, command: str = "", exit_code: int | None = None,
+) -> None:
+    """Record a shell call's gaia invocations, never failing it; ``command`` is the call before its rewrite."""
+    try:
+        tool_input = hook_data.get("tool_input")
+        if str(hook_data.get("tool_name") or "").lower() not in SHELL_TOOLS or not isinstance(
+            tool_input, dict
+        ):
+            return
+        from modules.events.capability_usage import record_cli_invocations
+
+        record_cli_invocations(
+            command or str(tool_input.get("command") or ""), hook_data,
+            outcome=outcome, exit_code=exit_code,
+        )
+    except Exception as exc:
+        logger.debug("gaia CLI use not recorded (non-fatal): %s", exc)
+
+
+def _record_skill_use(tool_name: str, tool_input: object, hook_data: dict) -> None:
+    """Record a skill load; telemetry never fails the call."""
+    try:
+        from modules.events.capability_usage import record_skill_load
+
+        record_skill_load(tool_name, tool_input, hook_data)
+    except Exception as exc:
+        logger.debug("skill load not recorded (non-fatal): %s", exc)
+
+
 def failure_verdict(error: Exception) -> PolicyVerdict:
     """Refuse a call whose validation raised, naming storage exhaustion apart.
 
@@ -282,8 +312,19 @@ class ToolPolicy:
 
         ``dispatch_identity_in_env`` is set by a host that exports the
         subagent's identity through the shell environment itself, so the
-        command is not rewritten to carry it.
+        command is not rewritten to carry it. A refused gaia call is recorded
+        here, since no terminal event follows a PreToolUse refusal.
         """
+        verdict = self._decide_before_call(
+            event, dispatch_identity_in_env=dispatch_identity_in_env,
+        )
+        if verdict.refusal is not None or verdict.decision == "deny":
+            _record_cli_use(event.payload, outcome="denied")
+        return verdict
+
+    def _decide_before_call(
+        self, event: HookEvent, *, dispatch_identity_in_env: bool,
+    ) -> PolicyVerdict:
         from modules.security.approval_grants import cleanup_expired_grants
 
         hook_data = event.payload
@@ -967,6 +1008,7 @@ class ToolPolicy:
 
         if not hook_data.get("agent_id") and is_memory_skill(tool_name, parameters):
             record_skill_loaded(post_session_id)
+        _record_skill_use(tool_name, parameters, hook_data)
 
         # The dispatch result is the only place a harness-truncated subagent is
         # observable, and where the orchestrator gets its look at the row. The
@@ -982,6 +1024,17 @@ class ToolPolicy:
                 session_id=post_session_id, tool_use_id=tool_use_id
             )
             tier = pre_state.tier if pre_state else "unknown"
+
+            if hook_data.get("is_interrupt") is True:
+                outcome, exit_code = "interrupted", None
+            elif not tool_result.ran:
+                outcome, exit_code = "refused", None
+            else:
+                outcome, exit_code = "allowed", tool_result.exit_code
+            _record_cli_use(
+                hook_data, outcome=outcome, exit_code=exit_code,
+                command=pre_state.command if pre_state else "",
+            )
 
             computed_duration = duration
             if pre_state and pre_state.start_time_epoch > 0:

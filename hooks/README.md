@@ -50,10 +50,14 @@ Orchestrator dispatches agent (Task/Agent tool call)
         |
 Tool executes
         |
-[post_tool_use.py] <- fires on PostToolUse for: Bash, Task, AskUserQuestion,
+[post_tool_use.py] <- fires on PostToolUse for: Bash, Task, AskUserQuestion, Skill,
         |                 and on PostToolUseFailure for: Bash
         |  Audits result, logs to the data home's logs/ (~/.gaia/logs, or GAIA_DATA_DIR); a signed call closes on its own
         |        terminal event (success or failure), matched by tool_use_id
+        |  Every gaia CLI call appends a `cli.invoked` harness event (verb, flag names, agent, role, session,
+        |        outcome, exit code; never argument values); a call PreToolUse denied is recorded there instead,
+        |        since no terminal event follows it. Every skill load appends `skill.loaded`
+        |        (modules/events/capability_usage.py)
         v
 [subagent_stop.py] <- fires on SubagentStop for all agents
         |  Validates the turn's own agent_contract_handoffs row
