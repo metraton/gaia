@@ -2853,7 +2853,10 @@ def _build_subcommands(sub) -> None:
     p_fill_rate.add_argument("--json", action="store_true", help="JSON output")
     p_fill_rate.set_defaults(func=cmd_fill_rate)
 
-    from cli.contract_proposals import register_proposals
+    try:
+        from cli.contract_proposals import register_proposals
+    except ModuleNotFoundError:
+        from contract_proposals import register_proposals
 
     register_proposals(sub)
 
