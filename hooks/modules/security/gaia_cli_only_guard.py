@@ -1213,7 +1213,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
     ("brief", "verify"): _flags("--workspace --json"),
     ("context", "accept"): _flags("--workspace --dry-run --json"),
     ("context", "get"): _flags("--workspace --section --json --text --include-missing"),
-    ("context", "get-contract"): _flags("--workspace --section --json --text"),
+    ("context", "get-contract"): _flags("--workspace --project --section --json --text"),
     ("context", "project"): _flags("--workspace --json"),
     ("context", "scan"): _flags("--dry-run --json"),
     ("context", "show"): _flags("--section --json"),
