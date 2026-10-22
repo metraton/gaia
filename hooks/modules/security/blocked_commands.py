@@ -27,6 +27,7 @@ Categories:
 
 import re
 import logging
+import posixpath
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -93,6 +94,15 @@ def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
         return _peel_wrapper_readings(command)
     except ImportError:
         return (command,), False
+
+
+def _executor_floor_payloads(command: str) -> Tuple[str, ...]:
+    """Return every command an executor (runuser, ssh, xargs, find -exec, ...) runs (``mutative_verbs._executor_floor_payloads``)."""
+    try:
+        from .mutative_verbs import _executor_floor_payloads as payloads_of
+        return payloads_of(command)
+    except ImportError:
+        return ()
 
 
 def _powershell_positions(command: str) -> Tuple[str, ...]:
@@ -414,8 +424,6 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+/\s*$", re.IGNORECASE),
         re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+/\*", re.IGNORECASE),
         re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+/\*", re.IGNORECASE),
-        re.compile(r"rm\s+.*-[a-z]*r[a-z]*f[a-z]*\s+~/?", re.IGNORECASE),
-        re.compile(r"rm\s+.*-[a-z]*f[a-z]*r[a-z]*\s+~/?", re.IGNORECASE),
     ],
 
     # Gmail - Permanent purge only (delete/trash are reversible, handled as T3 mutative)
@@ -742,6 +750,12 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
     if result.is_blocked:
         return result
 
+    from ..tools.shell_parser import unquoted_readings
+    for spelled in unquoted_readings(command):
+        spelled_result = _classify_all_forms(spelled)
+        if spelled_result.is_blocked:
+            return spelled_result
+
     # ------------------------------------------------------------------
     # Wrapper / assignment evasion guard.
     # ------------------------------------------------------------------
@@ -767,6 +781,13 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
             position_result = _classify_stripped_command(position)
             if position_result.is_blocked:
                 return position_result
+
+    for reading in (command, *readings):
+        for executor_payload in _executor_floor_payloads(reading):
+            if executor_payload != reading:
+                payload_result = _classify_all_forms(executor_payload)
+                if payload_result.is_blocked:
+                    return payload_result
 
     # ------------------------------------------------------------------
     # Grouping / substitution wrapper guard.
@@ -844,23 +865,49 @@ def _classify_stripped_command(command: str) -> BlockedCommandResult:
                 scratch_confined_rm = _rm_confined_to_scratch(command)
             if scratch_confined_rm:
                 continue
-        for pattern in patterns:
-            if pattern.search(command):
-                # Find suggestion for this command
-                suggestion = None
-                for cmd_prefix, cmd_suggestion in BLOCKED_COMMAND_SUGGESTIONS.items():
-                    if cmd_prefix in command.lower():
-                        suggestion = cmd_suggestion
-                        break
-
-                return BlockedCommandResult(
-                    is_blocked=True,
-                    pattern_matched=pattern.pattern,
-                    category=category,
-                    suggestion=suggestion,
-                )
+        matched = next((pattern.pattern for pattern in patterns if pattern.search(command)), None)
+        if matched is None and category == "rm_critical" and _rm_deletes_root(command):
+            matched = "semantic:rm-root"
+        if matched is not None:
+            suggestion = next(
+                (text for prefix, text in BLOCKED_COMMAND_SUGGESTIONS.items() if prefix in command.lower()), None,
+            )
+            return BlockedCommandResult(
+                is_blocked=True, pattern_matched=matched, category=category, suggestion=suggestion,
+            )
 
     return BlockedCommandResult(is_blocked=False)
+
+
+_HOME_WORD = re.compile(r"^(?:~[A-Za-z0-9._-]*|\$HOME|\$\{HOME\})$")
+
+
+def _is_root_or_home(operand: str) -> bool:
+    """True when *operand* normalizes to /, /*, a home directory (~, ~user, $HOME) or its /* glob; a deeper path is not."""
+    path = posixpath.normpath(re.sub(r"/+", "/", operand))
+    if path in ("/", "/*"):
+        return True
+    head, _, rest = path.partition("/")
+    return bool(_HOME_WORD.match(head)) and rest in ("", "*")
+
+
+def _rm_deletes_root(command: str) -> bool:
+    """True when *command* is rm with recursive set, in any spelling rm accepts, and an operand that is root or a home directory (``_is_root_or_home``)."""
+    semantics = analyze_command(command)
+    if semantics.base_cmd != "rm":
+        return False
+    recursive = options_ended = False
+    operands = []
+    for token in semantics.tokens[1:]:
+        if options_ended or token == "-" or not token.startswith("-"):
+            operands.append(token)
+        elif token == "--":
+            options_ended = True
+        elif token.startswith("--"):
+            recursive = recursive or "--recursive".startswith(token)
+        else:
+            recursive = recursive or "r" in token[1:].lower()
+    return recursive and any(_is_root_or_home(operand) for operand in operands)
 
 
 

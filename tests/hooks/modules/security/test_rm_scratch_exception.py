@@ -201,7 +201,8 @@ def test_predicate_false_without_scratch_root(monkeypatch):
     "rm -rf /*",
     "rm -rf ~",
     "rm -rf ~/",
-    "rm -rf ~/Documents",      # non-scratch home subpath: floor unchanged
+    "rm -rf ~/*",
+    "rm -r $HOME",
 ])
 def test_catastrophic_floor_still_blocks(cmd, scratch):
     # scratch fixture is active but these are NOT scratch paths, so the

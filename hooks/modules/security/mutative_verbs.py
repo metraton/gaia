@@ -124,6 +124,7 @@ class MutativeResult:
         reason: Human-readable explanation of the classification.
         guidance: The non-mutating way to reach the same outcome, when one
             exists. Empty for every classification that has no such equivalent.
+        rule: The verdict rule a lane settled itself; empty when derived from the verb.
     """
     is_mutative: bool = False
     category: str = CATEGORY_UNKNOWN
@@ -133,6 +134,7 @@ class MutativeResult:
     confidence: str = "low"
     reason: str = ""
     guidance: str = ""
+    rule: str = ""
 
 
 
@@ -4376,7 +4378,29 @@ _SHELL_MULTICALL_WRAPPERS = frozenset({"busybox"})
 # tokens between the flag and the terminator ARE a command by definition, which
 # is what makes reading them safe here rather than a heuristic.
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
-_FIND_EXEC_TERMINATORS = frozenset({";", "\\;", "+"})
+_FIND_EXEC_TERMINATORS = frozenset({";", "\\;"})
+
+
+def _find_exec_payloads(tokens: "List[str]") -> "Tuple[str, ...]":
+    """Every argv a find line hands to -exec/-execdir/-ok/-okdir, in order; ``+`` ends one only right after ``{}``, as find reads it."""
+    payloads: "List[str]" = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index].lower() not in _FIND_EXEC_FLAGS:
+            index += 1
+            continue
+        words: "List[str]" = []
+        index += 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in _FIND_EXEC_TERMINATORS or (token == "+" and words[-1:] == ["{}"]):
+                break
+            words.append(token)
+            index += 1
+        index += 1
+        if words:
+            payloads.append(shlex.join(words))
+    return tuple(payloads)
 
 
 def _resolve_executor_payload(
@@ -4384,15 +4408,16 @@ def _resolve_executor_payload(
 ) -> "Optional[str]":
     """Return the command text *base_cmd* would hand to an executor, or None.
 
-    Three shapes, all of which pass a COMMAND as DATA:
+    Shapes that pass a COMMAND as DATA (find's exec actions are
+    ``_find_exec_payloads``, since one find can carry several):
 
         <shell> -c "<command>"      the payload is a program
         eval <words>                the words are re-parsed as a command
-        find ... -exec <command> ;  each match is handed to a command
+        a ``_COMMAND_EXECUTORS`` line  its ``-c`` option or trailing words
 
     Returns:
         The payload as a command string, or ``None`` when this command is not
-        one of the three shapes. An empty or flag-only payload also returns
+        one of these shapes. An empty or flag-only payload also returns
         ``None`` -- there is nothing to classify and inventing a verdict for it
         would gate the shell's own ``--help``.
     """
@@ -4415,18 +4440,6 @@ def _resolve_executor_payload(
 
     if base_cmd == "eval":
         return " ".join(tokens[1:]).strip() or None
-
-    if base_cmd == "find":
-        for index, token in enumerate(tokens):
-            if token.lower() not in _FIND_EXEC_FLAGS:
-                continue
-            payload = []
-            for token in tokens[index + 1:]:
-                if token in _FIND_EXEC_TERMINATORS:
-                    break
-                payload.append(token)
-            return " ".join(payload).strip() or None
-        return None
 
     grammar = _COMMAND_EXECUTORS.get(base_cmd)
     if grammar is not None:
@@ -4479,6 +4492,14 @@ _COMMAND_EXECUTORS: Dict[str, _ExecutorGrammar] = {
         positionals=1,
         command_option=True,
         trailing="argv",
+    ),
+    "sg": _ExecutorGrammar(positionals=1, command_option=True, trailing="shell"),
+    "runuser": _ExecutorGrammar(
+        value_flags=frozenset({
+            "-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group",
+            "--shell", "--whitelist-environment",
+        }),
+        command_option=True,
     ),
     "su": _ExecutorGrammar(
         value_flags=frozenset({
@@ -4543,6 +4564,127 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
     return None
 
 
+def _executor_floor_payloads(command: str) -> "Tuple[str, ...]":
+    """Return every command *command* hands to an executor (``_resolve_executor_payload``, or each find exec action); the floor judges each as written."""
+    semantics = analyze_command(command)
+    if semantics.base_cmd == "find":
+        return _find_exec_payloads(list(semantics.tokens))
+    payload = _resolve_executor_payload(semantics.base_cmd, semantics)
+    return (payload,) if payload else ()
+
+
+_VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
+# CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
+_GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil"})
+_SHARED_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS | {"ls", "ps", "rm", "cp", "mv"}
+
+
+def _is_shell_expansion(word: str) -> bool:
+    return word[:1] in ("$", "`")
+
+
+def _verb_word_effect(word: str) -> str:
+    """Return the strongest category among a verb word's hyphen parts: MUTATIVE, READ_ONLY, or "" when none is a verb."""
+    parts = word.lower().split("-")
+    if any(part in MUTATIVE_VERBS or part == "rm" for part in parts):
+        return CATEGORY_MUTATIVE
+    return CATEGORY_READ_ONLY if any(part in _SHARED_VERBS for part in parts) else ""
+
+
+_EXPRESSION_FIRST_TOOLS: FrozenSet[str] = frozenset({
+    "jq", "yq", "sed", "awk", "gawk", "shellcheck", "curl", "wget", "grep", "egrep", "fgrep", "rg",
+    "test", "[", "[[", "printf", "cut", "sort", "tr", "xmllint", "dasel",
+})
+
+
+def _literal_words(base_cmd: str, args: "List[str]") -> "List[str]":
+    """Return the literal positionals of *args*, with every flag value and shell expansion left out."""
+    words, index = [], 0
+    while index < len(args):
+        token = args[index]
+        if token.startswith("-") and len(token) > 1:
+            follower = args[index + 1] if index + 1 < len(args) else "-"
+            unknown_long = token.startswith("--") and not follower.startswith("-")
+            takes_value = "=" not in token and (absorbs_next_token(base_cmd, token) or unknown_long)
+            index += 2 if takes_value else 1
+            continue
+        closer = ")" if token.startswith("$(") else "`" if token.startswith("`") else ""
+        if closer and not (token.endswith(closer) and len(token) > 2):
+            while index + 1 < len(args) and not args[index].endswith(closer):
+                index += 1
+        elif not _is_shell_expansion(token):
+            words.append(token)
+        index += 1
+    return words
+
+
+def _is_known_verb(word: str) -> bool:
+    word = word.lower()
+    return word in _SHARED_VERBS or word.split("-", 1)[0] in _SHARED_VERBS
+
+
+def _literal_verb_follows(args: "List[str]") -> bool:
+    """Return True when a known verb follows among the literal words, before any other shell expansion."""
+    for token in args:
+        if _is_shell_expansion(token):
+            return False
+        if not token.startswith("-") and _is_known_verb(token):
+            return True
+    return False
+
+
+def _dynamic_verb_span_word(base_cmd: str, args: "List[str]") -> "Optional[str]":
+    """Return a shell-expanded word that may stand on a CLI's command path, or None.
+
+    An unknown long flag followed by an expansion is resolved by the shared verb
+    vocabulary: a known verb after it makes the expansion the flag's value.
+    """
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return None
+        if token.startswith("-") and len(token) > 1:
+            if "=" not in token and absorbs_next_token(base_cmd, token):
+                index += 2
+                continue
+            follower = args[index + 1] if index + 1 < len(args) else "-"
+            unknown_long = token.startswith("--") and "=" not in token and not follower.startswith("-")
+            if unknown_long and _is_shell_expansion(follower) and not _literal_verb_follows(args[index + 2:]):
+                return follower
+            index += 2 if unknown_long and not _is_known_verb(follower) else 1
+            continue
+        if _is_shell_expansion(token):
+            return token
+        if base_cmd not in _GROUP_PATH_CLIS or _is_known_verb(token):
+            return None
+        index += 1
+    return None
+
+
+# Executors whose every option is known, so a flag outside both sets leaves the payload's start unknown.
+_EXECUTOR_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
+    "ssh": frozenset(f"-{ch}" for ch in "46AaCfGgKkMNnqsTtVvXxYy"),
+}
+
+
+def _executor_unparsed_flag(base_cmd: str, args: "List[str]") -> "Optional[str]":
+    """Return the first option before an executor's payload that its grammar does not name, or None."""
+    grammar, boolean = _COMMAND_EXECUTORS.get(base_cmd), _EXECUTOR_BOOLEAN_FLAGS.get(base_cmd)
+    if grammar is None or boolean is None:
+        return None
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "--":
+        token = args[index]
+        if token in grammar.value_flags or token[:2] in grammar.value_flags:
+            index += 2 if token in grammar.value_flags else 1
+        elif all(f"-{ch}" in boolean for ch in token[1:]):
+            index += 1
+        else:
+            return token
+    return None
+
+
 def _check_executor_payload(
     base_cmd: str, semantics: "CommandSemantics", *,
     cwd: "Optional[str]", _depth: int,
@@ -4575,16 +4717,33 @@ def _check_executor_payload(
         A mutative result when the payload is mutative, ``None`` otherwise --
         including for every command that is not one of the executor shapes.
     """
-    payload = _resolve_executor_payload(base_cmd, semantics)
-    if payload is None:
+    unparsed = _executor_unparsed_flag(base_cmd, list(semantics.tokens[1:]))
+    if unparsed is not None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="executor-unparsed-flag",
+            cli_family=base_cmd,
+            reason=f"'{base_cmd}' option {unparsed!r} is not in its grammar, so the command it runs could not be determined",
+            rule="unknown.dynamic-span",
+        )
+    if base_cmd == "find":
+        payloads = _find_exec_payloads(list(semantics.tokens))
+    else:
+        payload = _resolve_executor_payload(base_cmd, semantics)
+        payloads = (payload,) if payload is not None else ()
+    if not payloads:
         return None
 
     # Budget exhausted: stop descending AND retain -- see the constant.
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("executor payload")
 
-    inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
-    if not inner.is_mutative:
+    for payload in payloads:
+        inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
+        if inner.is_mutative:
+            break
+    else:
         return None
     return MutativeResult(
         is_mutative=True,
@@ -4597,6 +4756,7 @@ def _check_executor_payload(
             f"Executor '{base_cmd}' runs mutative payload {payload!r}: "
             f"{inner.reason}"
         ),
+        rule=inner.rule,
     )
 
 
@@ -4916,6 +5076,10 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # environment, but command substitutions in its value still execute.
     # Inspect those before env-prefix peeling; otherwise
     # ``TOKEN=$(mutative-command) read-only-command`` loses the mutation.
+    git_config_result = _check_git_code_config(command)
+    if git_config_result is not None:
+        return git_config_result
+
     assignment_result = _classify_leading_shell_assignments(
         command, cwd=cwd, _depth=_depth,
     )
@@ -4966,6 +5130,13 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             if result.is_mutative:
                 break
         return result
+    for reading in readings[1:] if env_peeled else ():
+        result = detect_mutative_command(
+            reading, from_source_code=from_source_code, cwd=cwd,
+            _depth=_depth, _in_prefix=True,
+        )
+        if result.is_mutative:
+            return result
 
     # --- Honor a release-track prefix (`gcloud alpha ...`, `gcloud beta ...`) ---
     # A track word between the tool and the command names a different API track
@@ -5024,6 +5195,40 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     account_redirect = _check_account_path_redirect(command)
     if account_redirect is not None:
         return account_redirect
+
+    # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
+    program = command.lstrip()
+    program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
+    literal_words = _literal_words(base_cmd, tokens[1:])
+    first_word = literal_words[0] if literal_words else ""
+    unlisted_subcommand = (
+        family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS | _EXPRESSION_FIRST_TOOLS
+        and any(_is_known_verb(word) for word in literal_words)
+    )
+    if program_is_dynamic:
+        dynamic_word = tokens[0]
+    elif family in _VERB_FIRST_FAMILIES or unlisted_subcommand:
+        dynamic_word = _dynamic_verb_span_word(base_cmd, tokens[1:])
+    else:
+        dynamic_word = None
+    if dynamic_word is not None and not from_source_code:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="dynamic-program" if program_is_dynamic else "dynamic-verb",
+            cli_family=family,
+            reason=f"the word {dynamic_word!r} naming what runs could not be determined",
+            rule="unknown.dynamic-span",
+        )
+    if unlisted_subcommand and "-" in first_word and _verb_word_effect(first_word) == CATEGORY_MUTATIVE:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=first_word,
+            cli_family=family,
+            confidence="medium",
+            reason=f"the verb word {first_word!r} carries a mutative part",
+        )
 
     # --- Step 1: Command alias fast-path ---
     if base_cmd in COMMAND_ALIASES:
@@ -6780,6 +6985,8 @@ class _WrapperGrammar:
     windows_switches: bool = False
     terminators: FrozenSet[str] = frozenset()
     window_title: bool = False
+    lookup_flags: FrozenSet[str] = frozenset()
+    split_string_flags: FrozenSet[str] = frozenset()
 
 
 # Wrappers that run the command after them with the same effect it has alone.
@@ -6787,9 +6994,38 @@ class _WrapperGrammar:
 # _peel_leading_command_wrappers), so a wrapper recognised by one and not the
 # other cannot reopen a floor command the other still blocks.
 _COMMAND_WRAPPERS: Dict[str, _WrapperGrammar] = {
-    "env": _WrapperGrammar(value_flags=frozenset({
-        "-u", "-C", "-S", "--unset", "--chdir", "--split-string",
-        "--block-signal", "--default-signal", "--ignore-signal",
+    "env": _WrapperGrammar(
+        value_flags=frozenset({
+            "-u", "-C", "--unset", "--chdir",
+            "--block-signal", "--default-signal", "--ignore-signal",
+        }),
+        split_string_flags=frozenset({"-S", "--split-string"}),
+    ),
+    "command": _WrapperGrammar(lookup_flags=frozenset({"-v", "-V"})),
+    "builtin": _WrapperGrammar(),
+    "exec": _WrapperGrammar(value_flags=frozenset({"-a"})),
+    "busybox": _WrapperGrammar(),
+    "setsid": _WrapperGrammar(),
+    "chronic": _WrapperGrammar(),
+    "unbuffer": _WrapperGrammar(),
+    "pkexec": _WrapperGrammar(value_flags=frozenset({"--user"})),
+    "chroot": _WrapperGrammar(value_flags=frozenset({"--userspec", "--groups"}), positionals=1),
+    "taskset": _WrapperGrammar(positionals=1),
+    "chrt": _WrapperGrammar(value_flags=frozenset({"-T", "-P", "-D"}), positionals=1),
+    "numactl": _WrapperGrammar(value_flags=frozenset({
+        "-N", "-m", "-C", "-p", "-i", "-P", "--cpunodebind", "--membind",
+        "--physcpubind", "--preferred", "--interleave",
+    })),
+    "prlimit": _WrapperGrammar(value_flags=frozenset({"-p", "--pid"})),
+    "unshare": _WrapperGrammar(value_flags=frozenset({"-S", "-G", "-R", "-w"})),
+    "nsenter": _WrapperGrammar(value_flags=frozenset({
+        "-t", "-S", "-G", "-r", "-w", "--target", "--setuid", "--setgid",
+    })),
+    "strace": _WrapperGrammar(value_flags=frozenset({
+        "-e", "-o", "-p", "-s", "-u", "-E", "-a", "-b", "-I", "-O", "-P", "-S", "-X",
+    })),
+    "ltrace": _WrapperGrammar(value_flags=frozenset({
+        "-e", "-o", "-p", "-s", "-u", "-a", "-A", "-D", "-F", "-l", "-n", "-x", "-w",
     })),
     "sudo": _WrapperGrammar(value_flags=frozenset({
         "-u", "-g", "-h", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "-R",
@@ -6902,7 +7138,18 @@ def _short_bundle_ends_in_value_flag(tok: str, value_flags: FrozenSet[str]) -> b
     return False
 
 
-def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
+def _split_string_flag(tok: str, grammar: _WrapperGrammar) -> bool:
+    if tok.startswith("--"):
+        return tok.split("=", 1)[0] in grammar.split_string_flags
+    for letter in tok[1:]:
+        if f"-{letter}" in grammar.split_string_flags:
+            return True
+        if f"-{letter}" in grammar.value_flags:
+            return False
+    return False
+
+
+def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> "Optional[int]":
     """Return the index where the wrapped command starts, given ``s[i:]`` follows a wrapper name."""
     n = len(s)
     positionals = grammar.positionals
@@ -6929,6 +7176,10 @@ def _skip_wrapper_arguments(s: str, i: int, grammar: _WrapperGrammar) -> int:
             else tok.startswith("-")
         )
         if is_switch:
+            if tok in grammar.lookup_flags:
+                return None
+            if _split_string_flag(tok, grammar):
+                return i
             i = tok_end
             if tok in grammar.value_flags or _short_bundle_ends_in_value_flag(
                 tok, grammar.value_flags,
@@ -6966,10 +7217,11 @@ def _wrapper_chain(s: str, i: int) -> "Tuple[int, Tuple[_WrapperGrammar, ...]]":
             i += 1
         word_end = _consume_shell_word(s, i)
         grammar = _COMMAND_WRAPPERS.get(program_identity(s[i:word_end].strip("\"'")))
-        if grammar is None:
+        wrapped_start = None if grammar is None else _skip_wrapper_arguments(s, word_end, grammar)
+        if wrapped_start is None:
             return i, tuple(chain)
         chain.append(grammar)
-        i = _skip_wrapper_arguments(s, word_end, grammar)
+        i = wrapped_start
 
 
 def _peel_leading_command_wrappers(command: str) -> "Tuple[str, bool]":
@@ -7001,23 +7253,13 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
     a reading too, so either spelling classifies at the stricter verdict.
     """
     s = command.strip() if command else ""
-    n = len(s)
-    i = 0
-    innermost: "Optional[_WrapperGrammar]" = None
+    expanded = False
     while True:
-        start = i
-        i, chain = _wrapper_chain(s, i)
-        if chain:
-            innermost = chain[-1]
-        while True:
-            while i < n and s[i].isspace():
-                i += 1
-            m = _ENV_ASSIGN_PREFIX_RE.match(s, i)
-            if not m:
-                break
-            i = _consume_shell_word(s, m.end())
-        if i == start:
+        i, innermost = _peel_prefix(s)
+        split = _expand_split_string(s[i:], innermost)
+        if split is None:
             break
+        s, expanded = split, True
 
     remainder = s[i:].strip()
     readings = [remainder]
@@ -7034,7 +7276,167 @@ def _peel_wrapper_readings(command: str) -> "Tuple[Tuple[str, ...], bool]":
             readings.append(after_title)
     named = [_name_program_head(reading) for reading in readings]
     renamed = any(was_renamed for _, was_renamed in named)
-    return tuple(reading for reading, _ in named), i > 0 or renamed
+    named_readings = [reading for reading, _ in named]
+    config_programs = _git_config_programs(named_readings[0])
+    return (
+        tuple(named_readings + config_programs),
+        i > 0 or expanded or renamed or bool(config_programs),
+    )
+
+
+def _peel_prefix(s: str) -> "Tuple[int, Optional[_WrapperGrammar]]":
+    n = len(s)
+    i = 0
+    innermost: "Optional[_WrapperGrammar]" = None
+    while True:
+        start = i
+        i, chain = _wrapper_chain(s, i)
+        if chain:
+            innermost = chain[-1]
+        while True:
+            while i < n and s[i].isspace():
+                i += 1
+            m = _ENV_ASSIGN_PREFIX_RE.match(s, i)
+            if not m:
+                break
+            i = _consume_shell_word(s, m.end())
+        if i == start:
+            return i, innermost
+
+
+def _expand_split_string(rest: str, grammar: "Optional[_WrapperGrammar]") -> "Optional[str]":
+    """Rewrite ``env -S STRING ARGS`` as ``env STRING ARGS``: env reads the split words as its own arguments."""
+    if grammar is None or not grammar.split_string_flags:
+        return None
+    tok_end = _consume_shell_word(rest, 0)
+    tok = rest[:tok_end]
+    if not tok.startswith("-") or not _split_string_flag(tok, grammar):
+        return None
+    if tok.startswith("--"):
+        value = tok.split("=", 1)[1] if "=" in tok else None
+    else:
+        attached = tok[tok.index("S") + 1:]
+        value = attached or None
+    if value is None:
+        value_start = len(rest) - len(rest[tok_end:].lstrip())
+        tok_end = _consume_shell_word(rest, value_start)
+        value = rest[value_start:tok_end]
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        words = [value]
+    return f"env {' '.join(words)} {rest[tok_end:].strip()}".strip()
+
+
+_GIT_CODE_PATH_KEY_RE = _re.compile(r"core\.hookspath|core\.fsmonitor|include\.path|includeif\..+\.path")
+_GIT_PROGRAM_KEY_RE = _re.compile(
+    r"core\.(?:pager|editor|sshcommand|askpass|gitproxy)|sequence\.editor|diff\.external"
+    r"|gpg\.(?:[^.]+\.)?program|credential\.(?:.+\.)?helper|pager\..+|alias\..+"
+    r"|(?:filter|diff|merge|difftool|mergetool|browser|man)\..+\."
+    r"(?:clean|smudge|process|textconv|command|driver|cmd|path)"
+    r"|uploadpack\.packobjectshook|remote\..+\.(?:uploadpack|receivepack)|web\.browser"
+)
+_GIT_HARMLESS_CODE_VALUES = frozenset({
+    "/dev/null", "true", "false", "yes", "no", "on", "off", "1", "0", "",
+    "$pager", "${pager}", "$git_pager", "$editor", "${editor}", "$visual", "$git_editor",
+})
+_GIT_VALUE_OPTIONS = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix",
+})
+_GIT_CONFIG_ENV_RE = _re.compile(
+    r"(?<!\S)(?:GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_\d+|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG)="
+    r"(\S*)"
+)
+
+
+def _git_global_options(command: str) -> "Optional[List[Tuple[str, str]]]":
+    """Return git's global options in *command* as ``(option, value)`` pairs, or None when it is not git."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    if not words or program_identity(words[0]) != "git":
+        return None
+    options: List[Tuple[str, str]] = []
+    index = 1
+    while index < len(words) and words[index].startswith("-"):
+        option, has_value, value = words[index].partition("=")
+        if not has_value and option in _GIT_VALUE_OPTIONS and index + 1 < len(words):
+            index += 1
+            value = words[index]
+        options.append((option, value))
+        index += 1
+    return options
+
+
+def _git_config_programs(command: str) -> "List[str]":
+    """Return the commands git runs from program-valued ``-c`` keys of *command*."""
+    programs = []
+    for option, value in _git_global_options(command) or ():
+        key, has_value, program = value.partition("=")
+        if option != "-c" or not has_value or not _GIT_PROGRAM_KEY_RE.fullmatch(key.lower()):
+            continue
+        if program.lower() in _GIT_HARMLESS_CODE_VALUES:
+            continue
+        if key.lower().startswith("alias.") and not program.startswith("!"):
+            programs.append(f"git {program}")
+        else:
+            programs.append(program.lstrip("!"))
+    return programs
+
+
+def _check_git_code_config(command: str) -> "Optional[MutativeResult]":
+    """Sign git run with configuration that points it at code the command line does not show."""
+    readings, _ = _peel_wrapper_readings(command)
+    options = _git_global_options(readings[0])
+    if options is None:
+        return None
+    reasons = _git_config_env_reasons(command)
+    for option, value in options:
+        key, _, setting = value.partition("=")
+        key = key.lower()
+        if option == "-c" and _GIT_CODE_PATH_KEY_RE.fullmatch(key) and setting.lower() not in _GIT_HARMLESS_CODE_VALUES:
+            reasons.append(f"-c {key}")
+        elif option == "--config-env" and (_GIT_CODE_PATH_KEY_RE.fullmatch(key) or _GIT_PROGRAM_KEY_RE.fullmatch(key)):
+            reasons.append(f"--config-env {key}")
+        elif option == "--exec-path" and value:
+            reasons.append("--exec-path")
+    return _git_config_code_result(reasons) if reasons else None
+
+
+def _git_config_env_reasons(command: str) -> "List[str]":
+    reasons = []
+    for match in _GIT_CONFIG_ENV_RE.finditer(command):
+        name, value = match.group(0).split("=", 1)[0], match.group(1).strip("\"'").lower()
+        if name.startswith("GIT_CONFIG_KEY_"):
+            if _GIT_CODE_PATH_KEY_RE.fullmatch(value) or _GIT_PROGRAM_KEY_RE.fullmatch(value):
+                reasons.append(f"{name}={value}")
+        elif value != "/dev/null":
+            reasons.append(name)
+    return reasons
+
+
+def injects_git_config(command: str) -> bool:
+    """True when *command* sets a ``GIT_CONFIG_*`` variable that can point git at code."""
+    return bool(_git_config_env_reasons(command))
+
+
+def git_under_injected_config(command: str) -> "Optional[MutativeResult]":
+    """Sign *command* when it runs git after an earlier command of its chain injected git configuration."""
+    if _git_global_options(_peel_wrapper_readings(command)[0][0]) is None:
+        return None
+    return _git_config_code_result(["GIT_CONFIG_* set earlier in the chain"])
+
+
+def _git_config_code_result(reasons: "List[str]") -> MutativeResult:
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="git-config-code",
+        cli_family="git",
+        confidence="high",
+        reason=f"git runs code its configuration points at ({', '.join(reasons)})",
+    )
 
 
 def _unquote_single_word(command: str) -> str:
@@ -8936,7 +9338,7 @@ def _classify_frozen_install(
             continue
         result = _classify_package_script_body(manager, name, body, family, cwd, _depth)
         if result.is_mutative:
-            return result
+            return replace(result, rule="sign.lifecycle-body-verb")
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_UNKNOWN,

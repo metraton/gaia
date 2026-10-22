@@ -149,6 +149,13 @@ def test_egress_and_credential_store_rows_hold_under_a_tmp_path_home(row, world,
     assert _observe_isolated(row, world, monkeypatch)[0] == row["expected"], row["command"]
 
 
+@pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["owner"] == "T1" and r["expected"] != "FREE"])
+def test_every_denial_names_its_rule_and_remediation(row, world, monkeypatch):
+    reason = _observe_isolated(row, world, monkeypatch)[1]
+    ruling = re.search(r"Rule: (\S+)\. Remediation: (\S.*\.)$", reason, re.M)
+    assert ruling and ruling.group(1) == row["rule"], reason
+
+
 @pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["expected"] == "UNKNOWN" and r["owner"] != "out-of-brief"])
 def test_an_undeterminable_row_asks_today(row, world, monkeypatch):
     assert _observe_isolated(row, world, monkeypatch)[0] in {"SIGNED", "UNKNOWN"}, row["command"]
@@ -273,12 +280,12 @@ AC_SHAPES = {
     },
     "AC-5": {
         "cluster context": ["target-kubectl-prod-context-apply", "target-kubectl-dev-context-apply", "target-kubectl-prod-context-read",
-                            "target-context-unknown-verb-prod", "target-context-unknown-verb-dev", "target-context-unknown-verb-nonprod"],
-        "cloud project": ["target-project-unknown-verb-prod", "target-project-unknown-verb-dev"],
-        "account": ["target-account-unknown-verb-prod", "target-account-unknown-verb-dev", "target-account-aws-prod-delete", "target-account-aws-dev-delete"],
-        "iac workspace": ["target-workspace-unknown-verb-prod", "target-workspace-unknown-verb-dev", "target-iac-terraform-workspace-select-prod"],
-        "iac stack": ["target-stack-unknown-verb-prod", "target-stack-unknown-verb-dev", "target-iac-pulumi-up-prod-stack", "target-iac-pulumi-preview-prod-stack"],
-        "name inference": ["target-unknown-verb-prod", "target-unknown-verb-nonprod", "target-unknown-verb-staging", "target-unknown-verb-dev"],
+                            "target-context-unlisted-verb-prod", "target-context-unlisted-verb-dev", "target-context-unlisted-verb-nonprod"],
+        "cloud project": ["target-project-unlisted-verb-prod", "target-project-unlisted-verb-dev"],
+        "account": ["target-account-unlisted-verb-prod", "target-account-unlisted-verb-dev", "target-account-aws-prod-delete", "target-account-aws-dev-delete"],
+        "iac workspace": ["target-workspace-unlisted-verb-prod", "target-workspace-unlisted-verb-dev", "target-iac-terraform-workspace-select-prod"],
+        "iac stack": ["target-stack-unlisted-verb-prod", "target-stack-unlisted-verb-dev", "target-iac-pulumi-up-prod-stack", "target-iac-pulumi-preview-prod-stack"],
+        "name inference": ["target-unlisted-verb-prod", "target-unlisted-verb-nonprod", "target-unlisted-verb-staging", "target-unlisted-verb-dev"],
         "declared production": ["target-declared-production", "target-declared-not-production"],
     },
     "AC-6": {
@@ -330,6 +337,7 @@ REFUSAL_SITES = {
     "validate::Obfuscated shell nesting detected: {unwr": ["floor-obfuscated-nesting"],
     "validate::Command blocked by security policy: {blo": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
     "validate::Command blocked by security policy: {com": ["floor-compound-component-blocked"],
+    "_fail_closed_on_code_heredoc::Command blocked by security policy: {blo": ["floor-v11-xargs-heredoc-tail"],
     "validate::secret_violation.reason": ["floor-kubectl-secret-output"],
     "validate::read_permission_reason(pipe_block)": ["floor-cloud-pipe"],
     "validate::sensitive_reason": ["floor-secret-read-ssh-key"],

@@ -541,21 +541,17 @@ class TestFlagClassifierFind:
         assert result.outcome == OUTCOME_MUTATIVE
         assert result.matched_pattern == "-delete"
 
-    def test_find_exec_is_mutative(self):
-        result = classify_by_flags("find . -name '*.py' -exec chmod 644 {} +")
-        assert result is not None
-        assert result.outcome == OUTCOME_MUTATIVE
-        assert result.matched_pattern == "-exec"
-
-    def test_find_execdir_is_mutative(self):
-        result = classify_by_flags("find . -name '*.py' -execdir rm {} \\;")
-        assert result is not None
-        assert result.outcome == OUTCOME_MUTATIVE
-
-    def test_find_ok_is_mutative(self):
-        result = classify_by_flags("find . -name '*.tmp' -ok rm {} \\;")
-        assert result is not None
-        assert result.outcome == OUTCOME_MUTATIVE
+    @pytest.mark.parametrize("command,mutative", [
+        ("find . -name '*.py' -exec chmod 644 {} +", True),
+        ("find . -name '*.py' -execdir rm {} \\;", True),
+        ("find . -name '*.tmp' -ok rm {} \\;", True),
+        ("find . -name '*.py' -exec cat {} +", False),
+        ("find . -okdir ls {} \\;", False),
+    ])
+    def test_find_exec_actions_take_the_payload_verdict(self, command, mutative):
+        from modules.security.mutative_verbs import detect_mutative_command
+        assert classify_by_flags(command).outcome == OUTCOME_READ_ONLY
+        assert detect_mutative_command(command).is_mutative is mutative
 
 
 # ============================================================================

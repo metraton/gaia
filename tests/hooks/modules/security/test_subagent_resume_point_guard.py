@@ -40,7 +40,8 @@ def _validate(command, *, is_subagent):
 def _assert_categorical_refusal(result, case_id):
     assert result.allowed is False, case_id
     assert result.tier == SecurityTier.T3_BLOCKED, case_id
-    assert result.reason == guard.REJECTION_MESSAGE, f"{case_id}: refused by another rule: {result.reason}"
+    assert result.rule == "floor.subagent-resume-point", f"{case_id}: refused by another rule: {result.reason}"
+    assert result.reason.split("\n", 1)[0] == guard.REJECTION_MESSAGE, case_id
     assert result.approval_id is None, case_id
     assert result.block_response is None, case_id
 

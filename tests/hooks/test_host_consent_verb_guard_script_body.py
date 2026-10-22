@@ -60,7 +60,8 @@ def test_a_subagent_calling_the_consent_verb_is_still_refused():
     verdict = _verdict(f"gaia approvals opencode-present {BINDING}")
 
     assert verdict.allowed is False
-    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.reason.split("\n", 1)[0].endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.rule == "floor.host-consent-verb", verdict.reason
     assert "receives the consent verb" in verdict.reason
     assert verdict.block_response is None
 
@@ -71,7 +72,8 @@ def test_a_script_that_runs_the_consent_verb_is_refused_and_named(tmp_path):
     verdict = _verdict(f"bash {script}")
 
     assert verdict.allowed is False
-    assert verdict.reason.endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.reason.split("\n", 1)[0].endswith(REJECTION_MESSAGE), verdict.reason
+    assert verdict.rule == "floor.host-consent-verb", verdict.reason
     assert str(script) in verdict.reason
 
 

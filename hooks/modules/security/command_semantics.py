@@ -133,6 +133,17 @@ LONG_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
         "--impersonate-service-account", "--project", "--trace-token",
         "--verbosity",
     }),
+    "kubectl": frozenset({
+        "--as", "--as-group", "--as-uid", "--cache-dir", "--certificate-authority",
+        "--client-certificate", "--client-key", "--cluster", "--context", "--kubeconfig",
+        "--namespace", "--profile", "--profile-output", "--request-timeout", "--server",
+        "--tls-server-name", "--token", "--user",
+    }),
+    "helm": frozenset({
+        "--burst-limit", "--kube-apiserver", "--kube-as-group", "--kube-as-user", "--kube-ca-file",
+        "--kube-context", "--kube-tls-server-name", "--kube-token", "--kubeconfig", "--namespace",
+        "--qps", "--registry-config", "--repository-cache", "--repository-config",
+    }),
 }
 
 
@@ -178,13 +189,13 @@ def tokenize_command(command: str) -> Tuple[str, ...]:
     they change the command's identity and are deliberately left intact so a
     decorated form re-triggers T3.
     """
-    from ..tools.shell_parser import strip_comment
+    from ..tools.shell_parser import shell_split, strip_comment
 
     command = strip_comment(command or "").strip()
     if not command:
         return ()
     try:
-        raw = list(shlex.split(command))
+        raw = shell_split(command)
     except ValueError:
         raw = list(_degraded_tokenize(command))
     return strip_redirect_tokens(raw)
