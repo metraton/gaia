@@ -28,6 +28,8 @@ decides both whether something is kept and how it is written:
 - **Whose difference it is decides its home,** so he never has to name one.
 - **A row carries the difference alone,** never the context Gaia already has,
   which is what keeps it short.
+- **A decision goes to its home when it is made;** the conversation is only a
+  cache of it (orchestrator identity, principle 7).
 
 ## The three floors
 

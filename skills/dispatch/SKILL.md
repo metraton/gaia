@@ -130,6 +130,14 @@ at a time); the craft of the rest is here.
   resolves, never only in a return message, because contract rows persist
   verdicts, not bodies. A sibling's finished contract is handed off by pointing
   at the rows and fields that hold the evidence.
+- **What is already measured, before an investigation.** Before dispatching
+  one, the orchestrator searches prior contract rows, memory and deposited
+  evidence for the part of the question they already answer, and passes each
+  hit as a coordinate -- the handoff id and field, the slug -- with the commit
+  or date it was measured at. A question answered twice costs a turn, and the
+  second answer can disagree with the first with no reason recorded for the
+  disagreement. Where the source changed since that measure, the goal says so,
+  and that part is measured again.
 - **A seeded agent for contract-bearing work.** A host-native agent cannot
   finalize a contract row, so one is used only when the returned message is the
   whole deliverable.
