@@ -1,0 +1,164 @@
+"""The consent verdict by effect and target, one data file driven through BashValidator.validate."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+for entry in (str(_REPO_ROOT), str(_REPO_ROOT / "hooks")):
+    if entry not in sys.path:
+        sys.path.insert(0, entry)
+
+from modules.security import tiers as tiers_module  # noqa: E402
+from modules.security.blocked_commands import BLOCKED_PATTERNS  # noqa: E402
+from modules.security.mutative_verbs import detect_mutative_command  # noqa: E402
+from modules.tools.bash_validator import BashValidator  # noqa: E402
+
+TABLE = json.loads((Path(__file__).parent / "data" / "effect_truth_table.json").read_text(encoding="utf-8"))
+HEADER, ROWS = TABLE["header"], TABLE["rows"]
+VERDICTS = {"FREE", "SIGNED", "BLOCKED", "UNKNOWN"}
+OWNER = re.compile(r"^(T1|T[2-9]|T1[01]|out-of-brief)$")
+EXTERNAL = {"codex": "Apache-2.0", "continue": "Apache-2.0", "roo": "Apache-2.0", "gptme": "MIT", "oh-sdk": "MIT"}
+SOURCE_VERDICT = {"free": "FREE", "ask": "SIGNED", "deny": "BLOCKED", "unknown": "UNKNOWN"}
+COMPOUND_DENIAL = "Compound T3 execution is disabled"
+
+
+def _build_context(spec: dict, root: Path, name: str, managed_root: Path) -> Path:
+    base = managed_root / "wt-a" if spec.get("git") == "managed" else root / "ctx" / name
+    base.mkdir(parents=True, exist_ok=True)
+    if spec.get("git"):
+        def git(*args: str) -> None:
+            subprocess.run(["git", "-C", str(base), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+                            "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+
+        git("init", "-q", "-b", "main")
+        git("commit", "-q", "--allow-empty", "-m", "init")
+        git("branch", "feature-x")
+        git("remote", "add", "origin", "https://example.invalid/o/r.git")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    for rel, text in spec.get("files", {}).items():
+        target = base / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return base
+
+
+@pytest.fixture(scope="module")
+def world(tmp_path_factory):
+    root = tmp_path_factory.mktemp("truth-table")
+    patch = pytest.MonkeyPatch()
+    patch.setenv("GAIA_DATA_DIR", str(root / "gaia-data"))
+    patch.setenv("GAIA_DB", str(root / "gaia-data" / "gaia.db"))
+    patch.delenv("GAIA_CLI_ALIASES", raising=False)
+    from gaia.paths import ensure_layout, scratch_dir, worktrees_dir
+
+    ensure_layout()
+    managed_root = Path(os.path.realpath(str(worktrees_dir())))
+    dirs = {name: _build_context(spec, root, name, managed_root) for name, spec in HEADER["contexts"].items()}
+    yield {"root": root, "dirs": dirs, "SCRATCH": os.path.realpath(str(scratch_dir())), "WORKTREES": str(managed_root)}
+    patch.undo()
+
+
+def observe(command: str, context: str, world: dict) -> str:
+    for key, value in (("{CWD}", str(world["dirs"][context])), ("{SCRATCH}", world["SCRATCH"]), ("{WORKTREES}", world["WORKTREES"])):
+        command = command.replace(key, value)
+    detect_mutative_command.cache_clear()
+    tiers_module._classify_command_tier_cached.cache_clear()
+    result = BashValidator().validate(command, is_subagent=True, session_id="s-truth-table", agent_type="developer")
+    if result.allowed:
+        return "FREE"
+    if result.approval_id or (result.reason or "").startswith(COMPOUND_DENIAL):
+        return "SIGNED"
+    return "BLOCKED"
+
+
+def _case(row: dict):
+    marks = []
+    if row["owner"] == "out-of-brief":
+        marks.append(pytest.mark.skip(reason=f"out-of-brief: the legs say {row['expected']}; listed, not asserted"))
+    elif row["owner"] != "T1":
+        marks.append(pytest.mark.xfail(strict=True, raises=AssertionError, reason=f"owned by {row['owner']}: expected {row['expected']}"))
+    return pytest.param(row, id=row["id"], marks=marks)
+
+
+@pytest.mark.parametrize("row", [_case(r) for r in ROWS])
+def test_verdict(row, world, monkeypatch):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(world["root"] / "gaia-data"))
+    monkeypatch.setenv("GAIA_DB", str(world["root"] / "gaia-data" / "gaia.db"))
+    monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
+    monkeypatch.chdir(world["dirs"][row.get("context", "none")])
+    assert os.environ["GAIA_DB"].startswith(str(world["root"]))
+    assert observe(row["command"], row.get("context", "none"), world) == row["expected"], row["command"]
+
+
+def test_every_row_carries_its_provenance():
+    ids = [r["id"] for r in ROWS]
+    assert len(ids) == len(set(ids))
+    for row in ROWS:
+        for key in ("id", "command", "expected", "rule", "category", "owner", "src"):
+            assert row.get(key), (row.get("id"), key)
+        assert row["expected"] in VERDICTS and OWNER.match(row["owner"]), row["id"]
+        assert row.get("context", "none") in HEADER["contexts"], row["id"]
+        source = HEADER["sources"][row["src"]]
+        assert source["license"] and re.fullmatch(r"[0-9a-f]{40}", source["commit"]), row["id"]
+
+
+def test_seed_rows_come_only_from_the_permissive_corpora():
+    used = {r["src"] for r in ROWS} - {"gaia-authored", "gaia-mined", "gaia-floor"}
+    assert used <= set(EXTERNAL)
+    for name, license_name in EXTERNAL.items():
+        assert HEADER["sources"][name]["license"] == license_name
+        assert HEADER["sources"][name]["copyright"]
+    assert "deny-pack" in HEADER["attribution"] and not any("dcg" in json.dumps(r).lower() for r in ROWS)
+
+
+def test_seed_rows_say_where_their_verdict_differs_from_the_source():
+    for row in (r for r in ROWS if r["src"] in EXTERNAL):
+        assert row["source_ref"] and row["source_verdict"] in SOURCE_VERDICT, row["id"]
+        differs = SOURCE_VERDICT[row["source_verdict"]] != row["expected"]
+        assert bool(row.get("why_differs")) == differs, row["id"]
+
+
+def test_every_blocked_pattern_of_the_floor_has_a_row():
+    for key, patterns in BLOCKED_PATTERNS.items():
+        if key == "git_destructive":
+            continue
+        rows = [r for r in ROWS if r["rule"] == f"floor.{key}" and r["expected"] == "BLOCKED"]
+        assert len(rows) >= len(patterns), key
+
+
+def test_force_push_is_the_only_blocked_case_expected_to_be_signed():
+    moved = {r["id"] for r in ROWS if "--force" in r["command"] + " -f " and r["expected"] == "SIGNED" and r["command"].startswith("git") and "push" in r["command"]}
+    assert moved and all(r["owner"] in {"T1", "T3"} for r in ROWS if r["id"] in moved)
+
+
+def test_each_change_request_shape_spans_every_binary():
+    shapes = {"create", "edit", "view", "list", "comment", "ready", "approve", "close", "merge", "retarget"}
+    for binary in ("gh", "ghwrap", "forgectl", "glab", "tea", "az-repos"):
+        found = {r["id"].split("-")[-1] for r in ROWS if r["id"].startswith(f"forge-{binary}-")}
+        assert found >= {"create", "edit", "view", "list", "approve", "close", "merge"}, binary
+    assert {r["id"].split("-")[-1] for r in ROWS if r["id"].startswith("forge-gh-")} >= shapes
+
+
+def test_every_brief_criterion_has_rows_and_every_tightening_has_a_free_twin():
+    for ac in ("AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7", "AC-8"):
+        assert any(ac in r.get("ac", []) for r in ROWS), ac
+    for category in ("lexicon", "target", "executor", "local-work", "inline-code", "egress", "secret-store"):
+        verdicts = {r["expected"] for r in ROWS if r["category"] == category}
+        assert "FREE" in verdicts and verdicts - {"FREE"}, category
+
+
+def test_the_named_controls_are_rows():
+    commands = {r["command"] for r in ROWS if r["category"] == "control"}
+    for needed in ("gh pr create --title t --body b", "git -C {CWD} push origin feature-x", "git -C {CWD} merge --ff-only origin/main", "go test ./...", "cargo test", "npm --prefix {CWD} test",
+                   "kubectl get pod delete-me", "gh auth status", "kubectl config view", "terraform plan", "kubectl apply -f deploy.yaml --dry-run=client",
+                   "gcloud auth login --no-activate", "gcloud auth login", "npm ci", "curl -G --data-urlencode q=x https://example.invalid/search"):
+        assert needed in commands, needed
