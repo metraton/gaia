@@ -862,6 +862,7 @@ class BashValidator:
         session_id: str = "",
         agent_type: str = "",
         hook_payload: Optional[Dict[str, Any]] = None,
+        cwd: Optional[str] = None,
     ) -> BashValidationResult:
         """
         Validate a Bash command through the 5-phase pipeline.
@@ -889,6 +890,7 @@ class BashValidator:
                 leaving it unset -- `None`, never a substituted `{}` -- is
                 what keeps the guard below correctly inert for them instead
                 of misreading their absence as an empty orchestrator role.
+            cwd: The caller's directory when no hook_payload carries one.
 
         Returns:
             BashValidationResult with validation details
@@ -903,6 +905,7 @@ class BashValidator:
         # stale mark to survive. See modules.security.fail_open.
         clear_classification()
         self.last_warning = ""
+        cwd = (hook_payload or {}).get("cwd") or cwd
 
         # ================================================================
         # PHASE 0: GAIA CLI ONLY GUARD (orchestrator role closure)
@@ -971,7 +974,7 @@ class BashValidator:
         # ahead of the sealed-retry lane so no signature can carry them.
         # ================================================================
         consent_verb_allowed, consent_verb_reason = check_host_consent_verb(
-            command, cwd=(hook_payload or {}).get("cwd") or None,
+            command, cwd=cwd,
         )
         if not consent_verb_allowed:
             logger.warning("BLOCKED host consent verb from a shell: %s", command[:120])
@@ -1013,7 +1016,7 @@ class BashValidator:
         # approval; a granted retry re-reads its body files.
         # ================================================================
         attribution_allowed, attribution_reason = check_publish_attribution(
-            command, (hook_payload or {}).get("cwd") or None,
+            command, cwd,
         )
         if not attribution_allowed:
             logger.warning("BLOCKED Claude attribution in published text: %s", command[:100])
@@ -1026,7 +1029,7 @@ class BashValidator:
 
         # Ahead of tier classification so a refused push mints no approval; a
         # counter failure allows it and leaves its warning in `last_warning`.
-        comment_push = check_comment_push(command, (hook_payload or {}).get("cwd") or None)
+        comment_push = check_comment_push(command, cwd)
         if not comment_push.allowed:
             logger.warning("BLOCKED push over the comment limit: %s", command[:100])
             return BashValidationResult(
@@ -1192,7 +1195,7 @@ class BashValidator:
         # the destination before this guard could see it.
         # ================================================================
         shell_write_allowed, shell_write_reason = check_shell_write(
-            write_guard_scope, cwd=(hook_payload or {}).get("cwd") or None,
+            write_guard_scope, cwd=cwd,
         )
         if not shell_write_allowed:
             logger.warning(
@@ -1343,11 +1346,12 @@ class BashValidator:
         # short-circuiting past it.
         # ================================================================
 
-        # 3a. Blocked commands check on FULL command (exit 2).
-        # This MUST run before any other classifier to ensure permanently
-        # blocked commands (kubectl delete namespace, etc.) are caught
-        # with a reliable exit 2.
-        blocked_result = is_blocked_command(command)
+        # 3a. Blocked commands check on the command minus its data-heredoc
+        # bodies (exit 2). This MUST run before any other classifier to ensure
+        # permanently blocked commands (kubectl delete namespace, etc.) are
+        # caught with a reliable exit 2.
+        classified, code_heredocs = _scan_heredocs(command)
+        blocked_result = is_blocked_command(classified)
         if blocked_result.is_blocked:
             return BashValidationResult(
                 allowed=False,
@@ -1363,7 +1367,7 @@ class BashValidator:
         has_operators = self._has_operators(command)
         parsed_components = None
         if has_operators:
-            parsed_components = self.shell_parser.parse(command)
+            parsed_components = self.shell_parser.parse(classified)
             # Check each component against the deny list.
             # This catches "ls && kubectl delete namespace prod" early.
             for component in parsed_components:
@@ -1432,7 +1436,7 @@ class BashValidator:
         # after the account-path write above so a write keeps its signature.
         # ================================================================
         sensitive_allowed, sensitive_reason = check_sensitive_read(
-            command, (hook_payload or {}).get("cwd") or None,
+            command, cwd,
         )
         if not sensitive_allowed:
             logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
@@ -1463,11 +1467,8 @@ class BashValidator:
         # cwd is already in effect), so the already-covered "behind a cd"
         # case is unaffected.
         # ================================================================
-        payload_cwd = (hook_payload or {}).get("cwd") or None
+        payload_cwd = cwd
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
-        classified, code_heredocs = _scan_heredocs(command)
-        if parsed_components is not None and classified != command:
-            parsed_components = self.shell_parser.parse(classified)
         program = heredoc_program(command)
         # An interpreter's heredoc is its program: splitting it into shell
         # components would validate the body's lines one by one and never
@@ -1513,19 +1514,21 @@ class BashValidator:
         self, heredocs: List[_Heredoc], result: BashValidationResult, *, is_subagent: bool, cwd: Optional[str],
     ) -> BashValidationResult:
         """Hold a heredoc no pure data reader reads to at least UNKNOWN; a body reading on a floor blocks, a mutative one signs."""
-        readings, xargs_commands, unread = [], [], False
+        readings, xargs_commands, unread, unplaced = [], [], False, False
         for heredoc in heredocs:
             program, payload = _heredoc_as_program(heredoc), _xargs_payload(heredoc.reader)
             if program:
                 readings.append(program)
             elif payload is not None:
-                xargs_commands.extend(f"{payload} {line}" for line in _heredoc_lines(heredoc.body))
+                lines = _heredoc_lines(heredoc.body)
+                xargs_commands.extend(f"{payload} {line}" for line in lines)
+                unplaced = unplaced or (cwd is None and any(w[:1] not in "/~-" for line in lines for w in line.split()))
             else:
                 unread = True
                 readings.extend(_heredoc_lines(heredoc.body))
         signed = None
         for xargs_command in xargs_commands:
-            verdict = BashValidator.validate.__wrapped__(self, xargs_command)
+            verdict = BashValidator.validate.__wrapped__(self, xargs_command, cwd=cwd)
             asks = verdict.block_response is not None and read_permission_decision(verdict.block_response) == "ask"
             if not (verdict.allowed or asks):
                 return verdict
@@ -1543,6 +1546,8 @@ class BashValidator:
         if not result.allowed:
             return result
         rule, undetermined = UNKNOWN_SPAN, "the program its heredoc feeds"
+        if unplaced and not unread:
+            undetermined = "the directory a relative xargs argument resolves against"
         tripped = signed is not None
         if tripped:
             rule, undetermined = signed.rule, signed.undetermined
@@ -1554,7 +1559,7 @@ class BashValidator:
                     undetermined = "the span the decision reads"
                 tripped = True
                 break
-        if not (tripped or unread):
+        if not (tripped or unread or unplaced):
             return result
         return BashValidationResult(
             allowed=False,
