@@ -70,7 +70,11 @@ que capturar.
    ```
 
    An AC says what is true and visible when the work is done, precisely enough
-   to disagree with ("p95 under 200ms on /search", not "fast"). It does not
+   to disagree with ("p95 under 200ms on /search", not "fast"), and visible to
+   an agent: a state it reads, an output it runs, a page it drives. An AC only
+   the user can observe is the exception, written as theirs with its reason --
+   a judgment of taste -- because it becomes the one gate the user judges
+   (`gaia-planner` step 5). It does not
    prescribe the proof: which test, command or rubric shows it is the planner's
    proposal, authored as gates. Fixing a mechanism here, before anyone has read
    the code, turns a guess into a requirement. Set `--evidence-type` /
@@ -150,15 +154,19 @@ make it done.
 
 **Approve by activating.** After the audit and the user checkpoint, run
 `gaia plan set-status <slug> active`: `active` is what approved means. Dispatch
-only tasks of an active, unpaused plan; until then send corrections back to the
-planner, who edits the draft directly.
+only tasks of an active, unpaused plan whose brief is clear of `FALTA ACLARAR`
+marks in the fields and ACs those tasks rest on -- `gaia brief verify` lists them
+as `unresolved_clarification`, and a mark written after activation holds the
+tasks that cover it until the answer replaces it. Until then send corrections
+back to the planner, who edits the draft directly.
 
 **Changing an approved plan goes through the planner.** Request it with the
 justification (`gaia plan change request <slug> --reason="..."`); the planner
 proposes which tasks the change touches and why; review the proposal
 (`gaia plan change list <slug>`) and approve it (`gaia plan change approve`),
 taking it to the user first when it changes *what* is delivered. Verified tasks
-the change does not touch stay as they are. To stop dispatch without changing
+the change does not touch stay as they are, and a task already in flight
+receives the change at its next dispatch (`dispatch` principle 8). To stop dispatch without changing
 the plan, `gaia plan pause <slug> --reason="..."`, then `gaia plan resume`.
 
 ## Anti-Patterns

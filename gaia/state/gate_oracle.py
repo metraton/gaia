@@ -33,9 +33,11 @@ type-checker, an assertion), never how the oracle behaves.
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # The two DETERMINISTIC verification types this oracle re-runs. Deliberately
 # NOT "semantic" (needs a human/rubric) or "self_review" (trusts the agent's
@@ -101,8 +103,83 @@ def _extract_command(gate: dict) -> str | None:
 # expected-exit-code column and the envelope verification block no such key.
 _EXPECTED_EXIT_CODE = 0
 
+_SELECTION_FILTER_FLAGS = ("-k", "-m", "--deselect")
+_NARROWING_MARKER_RE = re.compile(
+    r"pytest\.mark\.(?:skip|skipif|xfail)\b"
+    r"|pytest\.(?:skip|xfail|importorskip)\s*\("
+    r"|unittest\.(?:skip|skipIf|skipUnless|expectedFailure)\b"
+)
 
-def run_oracle_check(gate: dict, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> OracleVerdict:
+
+@dataclass(frozen=True)
+class GateSelection:
+    """What a gate's check selects: its filter flags and the skip/xfail count per test file."""
+
+    filters: tuple[tuple[str, str], ...]
+    markers: dict[str, int]
+
+
+def _split_filter(token: str, following: str | None) -> tuple[str, str, bool] | None:
+    """Return (flag, value, consumed_next) when ``token`` is a selection filter."""
+    for flag in _SELECTION_FILTER_FLAGS:
+        if token == flag and following is not None:
+            return flag, following, True
+        if token.startswith(flag + "="):
+            return flag, token[len(flag) + 1:], False
+        if len(flag) == 2 and token.startswith(flag) and len(token) > 2:
+            return flag, token[2:], False
+    return None
+
+
+def gate_selection(command: str, cwd: str | Path | None = None) -> GateSelection:
+    """Snapshot a pytest gate's selection, resolving test files against ``cwd``."""
+    base = Path(cwd) if cwd is not None else Path.cwd()
+    argv = shlex.split(command)
+    filters: list[tuple[str, str]] = []
+    markers: dict[str, int] = {}
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        following = argv[index + 1] if index + 1 < len(argv) else None
+        parsed = _split_filter(token, following)
+        if parsed is not None:
+            flag, value, consumed_next = parsed
+            filters.append((flag, value))
+            index += 2 if consumed_next else 1
+            continue
+        path_part = token.split("::", 1)[0]
+        test_file = base / path_part
+        if not token.startswith("-") and path_part.endswith(".py") and test_file.is_file():
+            source = test_file.read_text(encoding="utf-8", errors="replace")
+            markers[path_part] = len(_NARROWING_MARKER_RE.findall(source))
+        index += 1
+    return GateSelection(filters=tuple(filters), markers=markers)
+
+
+def selection_narrowing(red: GateSelection, now: GateSelection) -> list[str]:
+    """List every way ``now`` selects less than the selection its red run used."""
+    reasons = [
+        f"selection filter {flag} {value} added since the red run"
+        for flag, value in now.filters
+        if (flag, value) not in red.filters
+    ]
+    for path, red_count in red.markers.items():
+        if path not in now.markers:
+            reasons.append(f"test file {path} no longer selected since the red run")
+        elif now.markers[path] > red_count:
+            reasons.append(
+                f"{path}: skip/xfail markers grew from {red_count} to "
+                f"{now.markers[path]} since the red run"
+            )
+    return reasons
+
+
+def run_oracle_check(
+    gate: dict,
+    *,
+    timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+    red_selection: GateSelection | None = None,
+) -> OracleVerdict:
     """Re-execute a command/code gate and return an objective verdict.
 
     Accepts a mapping in EITHER the task_gates shape (``verification_type``,
@@ -116,7 +193,8 @@ def run_oracle_check(gate: dict, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -
 
     Otherwise runs the tokenized command as a subprocess (``shell=False`` --
     no shell injection surface, mirrors the ``command-execution`` discipline),
-    with a bounded ``timeout``, and passes only on exit code 0. A command that cannot be found,
+    with a bounded ``timeout``, and passes only on exit code 0 and, given ``red_selection``,
+    only when ``selection_narrowing`` finds nothing. A command that cannot be found,
     or that times out, is ``ok=False`` with a distinct ``errors`` entry -- it
     is never silently treated as a pass.
     """
@@ -209,10 +287,12 @@ def run_oracle_check(gate: dict, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -
             errors=[f"command timed out after {timeout}s"],
         )
 
-    ok = proc.returncode == expected_exit_code
     errors: list[str] = []
-    if not ok:
+    if proc.returncode != expected_exit_code:
         errors.append(f"exit code {proc.returncode} != expected {expected_exit_code}")
+    if red_selection is not None:
+        errors.extend(selection_narrowing(red_selection, gate_selection(command)))
+    ok = not errors
 
     return OracleVerdict(
         ok=ok,
@@ -228,6 +308,9 @@ def run_oracle_check(gate: dict, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -
 
 __all__ = [
     "DETERMINISTIC_ORACLE_TYPES",
+    "GateSelection",
     "OracleVerdict",
+    "gate_selection",
     "run_oracle_check",
+    "selection_narrowing",
 ]

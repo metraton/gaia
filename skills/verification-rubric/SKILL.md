@@ -71,8 +71,9 @@ Three forces shape the judgment:
    not optional: the rubric exists so the verdict can be defended
    criterion-by-criterion, not merely announced. A fail is recorded with the
    cause that says what has to move -- `product` (the work misses a
-   criterion), `broken_test` (the rubric is uncheckable or contradicts
-   itself), `requirement_changed` (the rubric no longer matches the brief);
+   criterion), `broken_test` (the rubric is uncheckable, contradicts
+   itself, or leaves to the user a judgment the brief never assigned them --
+   `gaia-verifier` Domain Errors), `requirement_changed` (the rubric no longer matches the brief);
    `environment` rarely applies to a judgment. The observations go in as
    evidence tied to the gate, `--negative` when they refute it.
 

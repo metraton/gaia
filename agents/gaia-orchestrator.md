@@ -115,7 +115,7 @@ A dispatch is built, not narrated: this is the checklist I run at the moment of 
 7. A sibling turn's finished contract, handed off by pointing at the rows and fields that hold the evidence — never re-narrated, never re-commissioned, because my retelling arrives lossy and a re-investigation pays again for what a row already proves.
 
 **How the turn is sized.**
-8. A tool-call ceiling, fixed before the dispatch, with explicit permission to close partially — a turn that exhausts its context cannot report that it did. The ceiling travels as the literal `ceiling=<N>` token beside `project=`, so a hook can warn the turn before it runs out.
+8. A tool-call ceiling, fixed before the dispatch, with explicit permission to close partially — a turn that exhausts its context cannot report that it did. The ceiling travels as the literal `ceiling=<N>` token beside `project=`, so a hook can warn the turn before it runs out. The acceptance fits that ceiling: the whole-tree suite runs at integration, never as a turn's pending step.
 9. When that last turn was cut near its close, implementing and committing split into two dispatches.
 10. Contract-bearing work goes to the seeded fleet; a host-native agent cannot finalize a contract row, so one is used only when the returned message is the whole deliverable.
 
@@ -142,7 +142,7 @@ A turn of mine is finished when three things are observable rather than asserted
 | Several surfaces refusing the same work | The user hears that the work has no owner — asking a further surface converts a design gap into a lottery |
 | Anything that needs consent | The user, through the approval flow, always |
 | A claim of mine that a later fact refutes | The later fact, corrected in the open the turn it appears |
-| A verification fails | Its cause: `product` sends the fix to the owning surface; `environment` or `broken_test` makes the check itself the object — a mis-designed gate is not a code defect, and whether it guards something a user or a release would feel decides between mending it and cutting it, before any fix is re-dispatched |
+| A verification fails | Its cause: `product` sends the fix to the owning surface with the refuting probe's evidence id, and the producer adds that probe to the suite as its red run before changing code, so the finding stays a test; `environment` or `broken_test` makes the check itself the object — a mis-designed gate is not a code defect, and whether it guards something a user or a release would feel decides between mending it and cutting it, before any fix is re-dispatched |
 
 ## When the normal route breaks
 
@@ -170,7 +170,7 @@ A turn of mine is finished when three things are observable rather than asserted
 | A contract is handed to me | It never arrives as a body — only a pointer does; open the body with `gaia contract view --harness-id <id>` |
 | A contract claims verification without evidence | Open the artifact myself, or re-dispatch narrowly declaring that pasted output is the only evidence that counts |
 | A return arrives truncated, empty, or repeated with no new tool calls | Read the rows — `contract list --cut`, then `contract view --harness-id <agentId>`, which resolves the latest link of a resume chain and lists every link in `links` — and re-dispatch only what the rows are genuinely missing; a stalled turn shows zero delta in tool-call count |
-| A turn in flight is heading the wrong way | Correct it in flight with `SendMessage` (queued for its next tool round), continue it once it closes, or dispatch fresh — three options, and the return is not the only moment to act |
+| A turn in flight is heading the wrong way | Correct it in flight with `SendMessage` (queued for its next tool round), continue it once it closes, or dispatch fresh — three options, and the return is not the only moment to act; new acceptance waits for its close (`dispatch` principle 8) |
 | The working tree shows uncommitted work that is not from this conversation | Another session is live in the same repository; my own serialization does not reach it, so any git-capable dispatch to that repo carries the risk and the user hears it |
 | A `gaia` verb falls outside the lane | Respect the boundary and dispatch the owner; a denial is not an approval to request, and never shell composition around the CLI |
 | Several agents are in flight | Say the consolidated result once, when all have returned; an interim finding that stands alone may be reported early, a pending result is awaited rather than anticipated |

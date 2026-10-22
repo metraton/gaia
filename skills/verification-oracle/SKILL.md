@@ -45,7 +45,11 @@ as done one layer up.
 5. **Check that the gate could fail.** For a gate on a change, look for its red
    run (`gaia evidence list`, negative evidence tied to this gate). A check that
    was never shown failing, or that passes whether or not the change is there,
-   cannot distinguish done from not done.
+   cannot distinguish done from not done. Then check that the selection was
+   not narrowed since that red run: `git log -p` over the gate's test files
+   from the red run's `created_at` shows no new `-k`, `-m` or `--deselect` in
+   the shape and no new skip or xfail. Added tests are growth; a narrowed
+   selection is `broken_test`.
 6. **Return the full verdict and record it.** Pass, or fail with the cause that
    says what has to move: `product` (the change does not do it),
    `environment` (the runner, a dependency, the network), `broken_test` (the
@@ -59,7 +63,10 @@ as done one layer up.
 `gaia.state.gate_oracle.run_oracle_check(gate, timeout=60.0)` runs step 4: it
 accepts either the gate or the envelope shape and returns an `OracleVerdict`
 with `ok`, the resolved command, the exit code, stdout, stderr and `errors`.
-Steps 3, 5 and the failure cause are the verifier's judgment on top of it.
+Given `red_selection=gate_selection(command)` captured at the red run, it also
+fails on step 5's narrowing (`selection_narrowing`); no CLI persists that
+snapshot yet, so the `git log -p` read stands in. Step 3 and the failure cause
+are the verifier's judgment on top of it.
 
 ## Anti-patterns
 
