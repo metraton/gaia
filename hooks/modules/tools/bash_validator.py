@@ -252,7 +252,7 @@ def _heredoc_opener(line: str) -> Optional[Tuple[str, str, bool, bool]]:
             quote = char
         elif char == "#" and (index == 0 or line[index - 1] in " \t"):
             return None
-        elif char in "|;&":
+        elif char in "|;&(":
             start = index + 1
         elif line.startswith("<<<", index):
             index += 2
