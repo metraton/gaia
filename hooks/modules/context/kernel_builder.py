@@ -590,12 +590,7 @@ def _readable_project_sections(row: Mapping[str, Any], *, db_path=None) -> tuple
 
 
 def build_project_context_block(project: str, sections: list, *, max_chars: int) -> str:
-    """Render ``# Project context`` within ``max_chars``, degrading in three stages and never dropping the block.
-
-    Sections stay whole while the room allows, the rest are pointer lines; when
-    even every pointer does not fit, one line counts the sections and shows the
-    pointer form, and that line is shown whatever ``max_chars`` says.
-    """
+    """Render ``# Project context`` as whole sections, then pointers, then one count line that ignores ``max_chars``."""
     if not sections:
         return ""
     texts = [json.dumps(payload, ensure_ascii=False) for _, payload in sections]
