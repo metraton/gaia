@@ -120,7 +120,7 @@ from ..security.composition_rules import (
     CompositionDecision,
 )
 from .shell_parser import get_shell_parser
-from .cloud_pipe_validator import validate_cloud_pipe
+from .cloud_pipe_validator import validate_cloud_pipe, violation_kind
 from .hook_response import (
     build_hook_permission_response,
     inject_updated_input,
@@ -182,6 +182,23 @@ def _carries_ruling(validate):
             )
         return result
     return wrapper
+
+
+_UNQUOTED_HEREDOC = re.compile(r"(?<!<)<<-?\s*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _heredoc_body_lines_as_data(command: str) -> str:
+    lines, delimiter = [], None
+    for line in command.split("\n"):
+        opener = _UNQUOTED_HEREDOC.search(line) if delimiter is None else None
+        if delimiter is not None and line.strip() == delimiter:
+            delimiter = None
+        elif delimiter is not None and line.lstrip()[:1] in ("$", "`"):
+            line = f"echo {line}"
+        elif opener is not None:
+            delimiter = opener.group(1)
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _rules_t3_outcome(decide):
@@ -1214,7 +1231,7 @@ class BashValidator:
                 suggestions=[],
                 modified_input=None,
                 block_response=pipe_block,
-                rule="floor.cloud-pipe",
+                rule="floor.shell-write" if violation_kind(command) == "redirect" else "floor.cloud-pipe",
             )
 
         # ================================================================
@@ -1276,6 +1293,9 @@ class BashValidator:
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
+        classified = _heredoc_body_lines_as_data(command)
+        if parsed_components is not None and classified != command:
+            parsed_components = self.shell_parser.parse(classified)
         # An interpreter's heredoc is its program: splitting it into shell
         # components would validate the body's lines one by one and never
         # show the classifier the program whose effect decides the tier.

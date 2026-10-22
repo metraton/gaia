@@ -4561,25 +4561,6 @@ def _verb_word_effect(word: str) -> str:
     return CATEGORY_READ_ONLY if any(part in _SHARED_VERBS for part in parts) else ""
 
 
-_BARE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
-_EXPRESSION_BUILTINS: FrozenSet[str] = frozenset({"test", "[", "[["})
-
-
-def _unlisted_dynamic_verb(args: "List[str]") -> "Optional[str]":
-    index = 0
-    while index < len(args) and args[index].startswith("-") and len(args[index]) > 1:
-        token = args[index]
-        takes_value = token.startswith("--") and "=" not in token and index + 1 < len(args)
-        index += 2 if takes_value and not args[index + 1].startswith("-") else 1
-    if index >= len(args) or not _is_shell_expansion(args[index]):
-        return None
-    candidate, end = args[index], index
-    closer = ")" if candidate.startswith("$(") else "`" if candidate.startswith("`") else ""
-    while closer and end + 1 < len(args) and not (args[end].endswith(closer) and (end > index or len(candidate) > 2)):
-        end += 1
-    return candidate if any(_BARE_IDENTIFIER.fullmatch(word) for word in args[end + 1:]) else None
-
-
 def _first_literal_word(args: "List[str]") -> str:
     """Return the first literal positional, skipping an expansion only where it may be a long flag's value."""
     after_long_flag = False
@@ -5160,14 +5141,13 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     program = command.lstrip()
     program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
     first_word = _first_literal_word(tokens[1:])
-    unlisted = family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS | _EXPRESSION_BUILTINS and base_cmd not in COMMAND_ALIASES
-    unlisted_subcommand = unlisted and _is_known_verb(first_word)
+    unlisted_subcommand = family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS and _is_known_verb(first_word)
     if program_is_dynamic:
         dynamic_word = tokens[0]
     elif family in _VERB_FIRST_FAMILIES or unlisted_subcommand:
         dynamic_word = _dynamic_verb_span_word(base_cmd, tokens[1:])
     else:
-        dynamic_word = _unlisted_dynamic_verb(tokens[1:]) if unlisted else None
+        dynamic_word = None
     if dynamic_word is not None and not from_source_code:
         return MutativeResult(
             is_mutative=True,
