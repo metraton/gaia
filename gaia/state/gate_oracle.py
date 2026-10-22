@@ -143,7 +143,6 @@ def _pytest_args_start(argv: list[str]) -> int:
 
 
 def _selected_test_files(base: Path, path_part: str) -> dict[str, Path]:
-    """Map each test file a positional selects, a file or a directory, to its path."""
     target = base / path_part
     if target.is_file() and path_part.endswith(".py"):
         return {path_part: target}
