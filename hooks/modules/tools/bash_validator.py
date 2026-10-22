@@ -271,10 +271,6 @@ def _xargs_target(args: List[str]) -> List[str]:
 
 def _heredoc_reader(head: str) -> bool:
     words = _peel_leading_command_wrappers(head)[0].split()
-    while words and words[0] in _BUILTIN_WRAPPERS:
-        words = words[1:]
-        while words and words[0].startswith("-"):
-            words = words[2:] if words[0] == "-a" else words[1:]
     if not words:
         return False
     program, args = os.path.basename(words[0]), words[1:]
@@ -602,8 +598,9 @@ class BashValidator:
         Returns BashValidationResult if indirect execution detected, else None.
         """
         shell_string = shell_command_string(command)
+        peeled = _peel_leading_command_wrappers(command)[0]
         if shell_string is None and not any(
-            pattern.search(command) for pattern in INDIRECT_EXEC_PATTERNS
+            pattern.search(text) for pattern in INDIRECT_EXEC_PATTERNS for text in (command, peeled)
         ):
             return None
 

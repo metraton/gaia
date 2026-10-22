@@ -129,7 +129,7 @@ def effect_rule(verb: str, command: str) -> str:
     raw_words = _WORD.findall(command)
     words = {w.lower() for w in raw_words}
     words |= {part.lower() for w in raw_words if _CAMEL.search(w) for part in _CAMEL_PART.findall(w)}
-    if verb == "registry-fetch":
+    if verb in ("registry-fetch", "git-config-code"):
         return "sign.foreign-code"
     if verb == "install" and "install" in lowered:
         installer = lowered[lowered.index("install") - 1] if lowered.index("install") else ""
