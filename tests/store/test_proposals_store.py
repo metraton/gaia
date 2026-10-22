@@ -394,6 +394,30 @@ def test_proposals_store_clearing_the_environment_is_refused_only_around_gaia(co
 
 
 @pytest.mark.parametrize("command", [
+    "gaia contract proposals \"$(cat <<'EOF'\naccept\nEOF\n)\" 1",
+    "gaia contract proposals \"$(cat <<\"EOF\"\ndismiss\nEOF\n)\" 1",
+])
+def test_proposals_store_a_verb_printed_by_a_quoted_cat_heredoc_is_still_the_decision(command):
+    """A quoted cat heredoc is read as the literal value it prints, so a decision verb inside it is refused."""
+    from modules.security.subagent_memory_write_guard import PROPOSAL_DECISION_REJECTION, check
+
+    assert check(command, is_subagent=True, agent_type="developer") == (False, PROPOSAL_DECISION_REJECTION)
+    assert _subagent_verdict(command, "gaia-operator").allowed is False
+
+
+@pytest.mark.parametrize("command", [
+    "gaia contract add x \"$(cat <<EOF\nvalue\nEOF\n)\"",
+    "gaia contract proposals $(echo dismiss) 1",
+])
+def test_proposals_store_computed_gaia_words_are_refused_under_their_own_rule(command):
+    """An unquoted heredoc delimiter still expands, so its word stays computed; the refusal names its own rule."""
+    from modules.security.subagent_memory_write_guard import COMPUTED_WORDS_REJECTION, check
+
+    assert check(command, is_subagent=True, agent_type="developer") == (False, COMPUTED_WORDS_REJECTION)
+    assert _subagent_verdict(command, "developer").rule == "floor.computed-gaia-words"
+
+
+@pytest.mark.parametrize("command", [
     "$(which python3) deploy.py",
     "timeout 5 $(which tool) list",
     "G=gaia; $G contract proposals $(echo dismiss) 1",
