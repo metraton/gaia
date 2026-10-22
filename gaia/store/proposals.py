@@ -1,0 +1,201 @@
+"""The pending-proposal store: memory and project-context proposals awaiting the orchestrator.
+
+A specialist proposes in ``memory_delta`` and ``update_contracts``; every close
+lane records them through :func:`record_close`, since all of them write the row
+with ``finalize_agent_contract_handoff``. Only the orchestrator decides, through
+``gaia contract proposals accept|dismiss``.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+DECISIONS = ("accepted", "dismissed")
+
+
+def _hook_parsers():
+    hooks_root = str(Path(__file__).resolve().parents[2] / "hooks")
+    if hooks_root not in sys.path:
+        sys.path.insert(0, hooks_root)
+    from modules.agents.response_contract import parse_memory_delta
+    from modules.context.context_writer import proposed_entries
+
+    return parse_memory_delta, proposed_entries
+
+
+def extract_proposals(envelope: Any) -> list:
+    """``[(kind, payload)]``: each memory proposal, then each project-context entry."""
+    if not isinstance(envelope, dict):
+        return []
+    parse_memory_delta, proposed_entries = _hook_parsers()
+    memory = parse_memory_delta("", parsed_contract=envelope).proposals
+    context, _note = proposed_entries(envelope.get("update_contracts"))
+    return [("memory", item) for item in memory] + [("context", item) for item in context]
+
+
+def _row_project(con: sqlite3.Connection, handoff_id: int) -> Optional[str]:
+    row = con.execute(
+        "SELECT dispatch_project, workspace FROM agent_contract_handoffs WHERE id = ?",
+        (handoff_id,),
+    ).fetchone()
+    if row is None or not row[0]:
+        return None
+    from gaia.store.project_context import resolve_project
+
+    owner = resolve_project(con, row[0], row[1])
+    return owner["identity"] if owner else None
+
+
+def _insert(con: sqlite3.Connection, handoff_id: int, found: list) -> int:
+    if not found:
+        return 0
+    project = _row_project(con, handoff_id)
+    inserted = 0
+    for index, (kind, payload) in enumerate(found):
+        cur = con.execute(
+            "INSERT OR IGNORE INTO proposals (handoff_id, item_index, kind, project, payload) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (handoff_id, index, kind, project, json.dumps(payload, sort_keys=True)),
+        )
+        inserted += cur.rowcount
+    return inserted
+
+
+def record_proposals(con: sqlite3.Connection, handoff_id: int, envelope: Any) -> int:
+    """Record ``envelope``'s proposals for ``handoff_id``; a re-close replaces only what is still pending."""
+    con.execute("DELETE FROM proposals WHERE handoff_id = ? AND status = 'pending'", (handoff_id,))
+    return _insert(con, handoff_id, extract_proposals(envelope))
+
+
+def record_close(con: sqlite3.Connection, handoff_id: int, raw_handoff_json: str) -> None:
+    """Record a closing row's proposals inside the caller's transaction, never failing the close.
+
+    A lost index is recoverable by the backfill verb; a lost close is not.
+    """
+    try:
+        envelope = json.loads(raw_handoff_json)
+    except (TypeError, ValueError):
+        return
+    con.execute("SAVEPOINT record_proposals")
+    try:
+        record_proposals(con, handoff_id, envelope)
+    except Exception as exc:
+        con.execute("ROLLBACK TO SAVEPOINT record_proposals")
+        print(f"gaia: proposals of handoff {handoff_id} not recorded: {exc}", file=sys.stderr)
+    finally:
+        con.execute("RELEASE SAVEPOINT record_proposals")
+
+
+def _decode(row: sqlite3.Row) -> dict:
+    item = dict(row)
+    item["payload"] = json.loads(item["payload"])
+    return item
+
+
+_SELECT = (
+    "SELECT p.*, h.contract_id, h.agent_id FROM proposals p "
+    "JOIN agent_contract_handoffs h ON h.id = p.handoff_id"
+)
+
+
+def list_proposals(
+    *, status: Optional[str] = "pending", kind: Optional[str] = None,
+    contract_id: Optional[str] = None, db_path: Optional[Path] = None,
+) -> list:
+    """Proposals oldest first, filtered by status (None for every status), kind and proposing contract."""
+    from gaia.store.writer import _connect
+
+    clauses, params = [], []
+    for column, value in (("p.status", status), ("p.kind", kind), ("h.contract_id", contract_id)):
+        if value is not None:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    con = _connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        return [_decode(row) for row in con.execute(f"{_SELECT}{where} ORDER BY p.id", params)]
+    finally:
+        con.close()
+
+
+def get_proposal(proposal_id: int, *, db_path: Optional[Path] = None) -> Optional[dict]:
+    """One proposal with its proposing contract, or None."""
+    from gaia.store.writer import _connect
+
+    con = _connect(db_path)
+    try:
+        con.row_factory = sqlite3.Row
+        row = con.execute(f"{_SELECT} WHERE p.id = ?", (proposal_id,)).fetchone()
+        return _decode(row) if row else None
+    finally:
+        con.close()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def decide_proposal(
+    proposal_id: int, decision: str, *, decided_by: str, project: Optional[str] = None,
+    note: Optional[str] = None, db_path: Optional[Path] = None,
+) -> bool:
+    """Mark a pending proposal accepted or dismissed; False when it is not pending."""
+    if decision not in DECISIONS:
+        raise ValueError(f"decision must be one of {DECISIONS}, got {decision!r}")
+    from gaia.store.writer import _connect
+
+    con = _connect(db_path)
+    try:
+        cur = con.execute(
+            "UPDATE proposals SET status = ?, project = COALESCE(?, project), decided_at = ?, "
+            "decided_by = ?, decision_note = ? WHERE id = ? AND status = 'pending'",
+            (decision, project, _now(), decided_by, note, proposal_id),
+        )
+        con.commit()
+        return cur.rowcount == 1
+    finally:
+        con.close()
+
+
+def backfill_proposals(
+    *, since_days: int = 30, apply: bool = False, db_path: Optional[Path] = None,
+) -> dict:
+    """Record the proposals of rows closed in the last ``since_days``; insert-only, idempotent.
+
+    Without ``apply`` it only counts. Decided and already-recorded items are never touched.
+    """
+    from gaia.store.writer import _connect
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=since_days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    report = {"since": cutoff, "rows_scanned": 0, "rows_with_proposals": 0,
+              "proposals": 0, "inserted": 0, "applied": apply}
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT id, raw_handoff_json FROM agent_contract_handoffs "
+            "WHERE created_at >= ? AND agent_state != 'DISPATCHED' ORDER BY id", (cutoff,),
+        ).fetchall()
+        for handoff_id, raw in rows:
+            report["rows_scanned"] += 1
+            try:
+                found = extract_proposals(json.loads(raw or "null"))
+            except ValueError:
+                continue
+            if not found:
+                continue
+            report["rows_with_proposals"] += 1
+            report["proposals"] += len(found)
+            if apply:
+                report["inserted"] += _insert(con, handoff_id, found)
+        if apply:
+            con.commit()
+        return report
+    finally:
+        con.close()

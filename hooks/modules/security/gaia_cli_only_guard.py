@@ -428,6 +428,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("contract", "view"),
     ("contract", "list"),
     ("contract", "validate"),
+    ("contract", "proposals", "list"),
     ("task", "list"),
     # `task show` is the single-task complement of `task list`: a mechanical
     # read of a task row, which the orchestrator's own identity already says
@@ -575,6 +576,10 @@ ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # carries it. Each key lands in the workspace owning its project, and a
     # key nobody owns is refused rather than written.
     ("context", "accept"),
+    # A turn's memory and context proposals are decided here; backfill is absent
+    # because writing old rows into a live database is the user's decision.
+    ("contract", "proposals", "accept"),
+    ("contract", "proposals", "dismiss"),
     # ``paths`` only PRINTS resolved paths, and still belongs here rather than
     # in the read set: all three of its handlers call ensure_layout(), which
     # os.makedirs() the ~/.gaia layout (data, workspaces, logs, events, cache,
@@ -1221,6 +1226,9 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
         "--plan-task --brief --agent-id --agent --state --cut --session --contract-id "
         "--harness-id --workspace --since --until --limit --json"),
     ("contract", "validate"): _flags("--draft-id --agent-id --json"),
+    ("contract", "proposals", "list"): _flags("--all --kind --contract-id --json"),
+    ("contract", "proposals", "accept"): _flags("--project --workspace --json"),
+    ("contract", "proposals", "dismiss"): _flags("--reason --json"),
     ("contract", "view"): _flags("--field --draft-id --agent-id --harness-id --json"),
     ("defects",): _flags(
         "--origin --type --severity --agent --since --until --limit --workspace --count --json"),

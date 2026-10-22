@@ -9528,6 +9528,9 @@ def finalize_agent_contract_handoff(
                 returned = cur.fetchone()
                 if returned is not None:
                     handoff_id = returned["id"]
+                    from gaia.store.proposals import record_close
+
+                    record_close(con, handoff_id, raw_handoff_json)
                     con.commit()
                     # Automatic retention (mirrors episodes): occasionally prune
                     # handoffs older than the 90-day window. Runs on its own

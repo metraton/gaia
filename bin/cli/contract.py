@@ -1524,6 +1524,11 @@ def cmd_view(args) -> int:
             payload["handoff_id"] = row.get("id")
             payload["agent_state"] = row.get("agent_state")
             payload["cut_reason"] = row.get("cut_reason")
+    from gaia.store.proposals import list_proposals
+
+    decisions = list_proposals(status=None, contract_id=draft_id)
+    if decisions:
+        payload["proposals"] = decisions
     print(json.dumps(payload, indent=2))
     return 0
 
@@ -2847,6 +2852,10 @@ def _build_subcommands(sub) -> None:
                              help="Fail (exit 1) when a rate is below this fraction, e.g. 0.95")
     p_fill_rate.add_argument("--json", action="store_true", help="JSON output")
     p_fill_rate.set_defaults(func=cmd_fill_rate)
+
+    from cli.contract_proposals import register_proposals
+
+    register_proposals(sub)
 
 
 def _contract_default(args) -> int:
