@@ -4561,6 +4561,22 @@ def _verb_word_effect(word: str) -> str:
     return CATEGORY_READ_ONLY if any(part in _SHARED_VERBS for part in parts) else ""
 
 
+def _first_literal_word(args: "List[str]") -> str:
+    """Return the first literal positional, skipping an expansion only where it may be a long flag's value."""
+    after_long_flag = False
+    for token in args:
+        if token.startswith("-") and len(token) > 1:
+            after_long_flag = token.startswith("--") and "=" not in token
+            continue
+        if _is_shell_expansion(token):
+            if not after_long_flag:
+                return ""
+            after_long_flag = False
+            continue
+        return token
+    return ""
+
+
 def _is_known_verb(word: str) -> bool:
     word = word.lower()
     return word in _SHARED_VERBS or word.split("-", 1)[0] in _SHARED_VERBS
@@ -5124,7 +5140,7 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
     program = command.lstrip()
     program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
-    first_word = next((t for t in tokens[1:] if not t.startswith("-") and not _is_shell_expansion(t)), "")
+    first_word = _first_literal_word(tokens[1:])
     unlisted_subcommand = family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS and _is_known_verb(first_word)
     dynamic_word = tokens[0] if program_is_dynamic else (
         _dynamic_verb_span_word(base_cmd, tokens[1:])
