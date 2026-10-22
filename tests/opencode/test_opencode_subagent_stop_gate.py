@@ -129,7 +129,7 @@ def test_subagent_stop_gate_returns_an_unfinalized_child_turn_for_repair(tmp_pat
     repaired = _idle()
 
     assert repaired["contract_valid"] is True, "the child's own finalize must still close the turn it was sent back"
-    assert SUMMARY in repaired["user_message"]
+    assert SUMMARY not in json.dumps(repaired)
 
 
 def test_subagent_stop_gate_cuts_after_the_claude_code_rejection_limit(tmp_path):
