@@ -1281,7 +1281,7 @@ _KNOWN_SAFE_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
         "--surface --workspace --since --until --last --agent --type --command-like "
         "--failed --group-by --count --snippets --metrics --format --json"),
     ("scan",): _flags("--workspace --dry-run --json"),
-    ("session", "preview"): _flags(""),
+    ("session", "preview"): _flags("--session-id"),
     ("session", "resume-point", "set"): _flags("--session-id --text"),
     ("session", "snapshot"): _flags("--session-id --json"),
     ("signals",): _flags("--since --limit --json"),

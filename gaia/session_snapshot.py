@@ -26,6 +26,7 @@ _BLOCK_MAX_CHARS = 1500
 _TRUNCATED = "\n... (snapshot truncated; `gaia session snapshot --json` has the rest)"
 _ISO = "%Y-%m-%dT%H:%M:%SZ"
 _PROPOSALS_VERB = "gaia contract proposals list"
+_UNAVAILABLE = "unavailable (the query failed)"
 
 
 def _resume_path(session_id: str):
@@ -149,7 +150,7 @@ def _active_task(con, session_id: str) -> dict[str, Any] | None:
 
 
 def _active_plan(con, _session_id: str) -> dict[str, Any] | None:
-    """The newest unpaused active plan across sessions, since plans carry no session key."""
+    """The newest unpaused active plan across sessions, since plans carry no session key, with every workspace's active-plan count."""
     plans = con.execute(
         "SELECT b.name AS brief, b.workspace AS workspace, p.id AS plan_id FROM plans p "
         "JOIN briefs b ON b.id = p.brief_id WHERE p.status = 'active' AND p.paused_at IS NULL "
@@ -164,7 +165,13 @@ def _active_plan(con, _session_id: str) -> dict[str, Any] | None:
         (plan["plan_id"],),
     ).fetchone()
     plan["task_id"], plan["task_order"], plan["goal"] = tuple(task) if task else (None, None, None)
-    plan["other_active"] = len(plans) - 1
+    plan["active_by_workspace"] = [
+        list(row)
+        for row in con.execute(
+            "SELECT b.workspace, COUNT(*) FROM plans p JOIN briefs b ON b.id = p.brief_id "
+            "WHERE p.status = 'active' GROUP BY b.workspace ORDER BY b.workspace"
+        )
+    ]
     return plan
 
 
@@ -192,9 +199,10 @@ def _newest_contract_at(con, session_id: str) -> str | None:
 
 
 def build_snapshot(session_id: str) -> dict[str, Any]:
-    """The snapshot of *session_id*; a source that fails contributes its empty value."""
+    """The snapshot of *session_id*; a source that fails contributes its empty value and is named in ``unavailable``."""
     snapshot: dict[str, Any] = {
         "session_id": session_id,
+        "unavailable": [],
         "open_contracts": [],
         "older_unbound": [],
         "pending_signatures": [],
@@ -218,7 +226,7 @@ def build_snapshot(session_id: str) -> dict[str, Any]:
         try:
             snapshot["open_contracts"], snapshot["older_unbound"] = _open_contracts(con, session_id)
         except Exception:
-            pass
+            snapshot["unavailable"].append("open_contracts")
         for key, query in (
             ("pending_signatures", _pending_signatures),
             ("active_task", _active_task),
@@ -230,7 +238,7 @@ def build_snapshot(session_id: str) -> dict[str, Any]:
             try:
                 snapshot[key] = query(con, session_id)
             except Exception:
-                pass
+                snapshot["unavailable"].append(key)
     finally:
         con.close()
     return snapshot
@@ -273,8 +281,12 @@ def _active_line(task: dict[str, Any] | None, plan: dict[str, Any] | None = None
     line = f"Active plan, no contract of this session bound: brief {plan['brief']} ({plan['workspace']}), plan {plan['plan_id']}"
     if plan["task_id"] is not None:
         line += f", next pending task {plan['task_id']} (order {plan['task_order']})" + _goal(plan)
-    if plan["other_active"]:
-        line += f"\n+{plan['other_active']} other active plans (`gaia plan list --status active`)"
+    counts = plan.get("active_by_workspace") or []
+    if sum(count for _, count in counts) > 1:
+        line += "\nActive plans: " + ", ".join(
+            f"{workspace} {count} (`gaia plan list --status active --workspace {workspace}`)"
+            for workspace, count in counts
+        )
     return line
 
 
@@ -311,15 +323,19 @@ def _note_age(snapshot: dict[str, Any]) -> str:
     return f"written {_age(written)} ago ({written}){stale}"
 
 
+def _failed(snapshot: dict[str, Any], key: str) -> bool:
+    return key in snapshot.get("unavailable", ())
+
+
 def _list_sections(snapshot: dict[str, Any]) -> list[str]:
     quiet = len(snapshot.get("older_unbound", []))
     waiting_first = sorted(snapshot["open_contracts"], key=lambda c: c["agent_state"] not in _WAITING_STATES)
     return [
-        _listed("Pending signatures", [
+        f"Pending signatures: {_UNAVAILABLE}" if _failed(snapshot, "pending_signatures") else _listed("Pending signatures", [
             f"- {a['id']} (agent {a['agent_id'] or 'unknown'}, {a['created_at']})"
             for a in snapshot["pending_signatures"]
         ]),
-        _listed("Open contracts", [
+        f"Open contracts: {_UNAVAILABLE}" if _failed(snapshot, "open_contracts") else _listed("Open contracts", [
             f"- {c['contract_id'] or c['agent_id']} [{c['agent_state']}]"
             + (f" kind={c['kind']}" if c["kind"] else "")
             + (f" task={c['plan_task_id']}" if c.get("plan_task_id") else "")
@@ -333,9 +349,13 @@ def _list_sections(snapshot: dict[str, Any]) -> list[str]:
 
 def _count_sections(snapshot: dict[str, Any]) -> list[str]:
     quiet = len(snapshot.get("older_unbound", []))
+
+    def count(key: str) -> str:
+        return _UNAVAILABLE if _failed(snapshot, key) else str(len(snapshot[key]))
+
     return [
-        f"Pending signatures: {len(snapshot['pending_signatures'])}\n"
-        f"Open contracts: {len(snapshot['open_contracts'])}"
+        f"Pending signatures: {count('pending_signatures')}\n"
+        f"Open contracts: {count('open_contracts')}"
         + (f" (+{quiet} unbound, quiet for 24h)" if quiet else "")
         + f"\nList them with `gaia session snapshot --session-id {snapshot['session_id']}`"
     ]
@@ -365,7 +385,10 @@ def render_snapshot(snapshot: dict[str, Any]) -> str:
 def render_resume_section(snapshot: dict[str, Any], *, counts_only: bool = False) -> str:
     """The birth block's resume section, derived lines first and the hand note whole with its age; "" when nothing is derived and no note exists."""
     resume = snapshot["resume_point"]
-    has_lists = snapshot["pending_signatures"] or snapshot["open_contracts"] or snapshot.get("older_unbound")
+    has_lists = (
+        snapshot["pending_signatures"] or snapshot["open_contracts"] or snapshot.get("older_unbound")
+        or _failed(snapshot, "pending_signatures") or _failed(snapshot, "open_contracts")
+    )
     active = snapshot["active_task"] or snapshot.get("active_plan")
     head = "\n".join(filter(None, [
         _active_line(snapshot["active_task"], snapshot.get("active_plan")) if active else "",

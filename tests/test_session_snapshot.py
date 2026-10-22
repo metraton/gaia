@@ -505,6 +505,58 @@ def test_an_active_plan_with_no_contract_of_the_session_is_named_with_its_next_t
     ]
 
 
+def _gaia(*argv):
+    return subprocess.run(
+        [sys.executable, str(_ROOT / "bin" / "gaia"), *argv],
+        capture_output=True, text=True, timeout=60, env=os.environ.copy(),
+    )
+
+
+def test_every_plan_count_is_exactly_what_its_pointer_lists(db):
+    from gaia.session_snapshot import build_snapshot, render_resume_section
+
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO workspaces (name) VALUES ('ws')")
+    con.execute("UPDATE plans SET status = 'active' WHERE id = 1")
+    for workspace, name, paused in (("me", "brief-b", "2026-01-01T00:00:00Z"), ("ws", "brief-c", None), ("ws", "brief-d", None)):
+        brief_id = con.execute("INSERT INTO briefs (workspace, name) VALUES (?, ?)", (workspace, name)).lastrowid
+        con.execute("INSERT INTO plans (brief_id, status, paused_at) VALUES (?, 'active', ?)", (brief_id, paused))
+    con.commit()
+    con.close()
+
+    section = render_resume_section(build_snapshot("ses-plan"))
+    pointed = re.findall(r"(\d+) [^()]*\(`gaia (plan list [^`]+)`\)", section)
+
+    assert len(pointed) == 2, section
+    for count, command in pointed:
+        proc = _gaia(*command.split(), "--json")
+        assert proc.returncode == 0, proc.stderr
+        assert int(count) == len(json.loads(proc.stdout)), (command, section)
+
+
+def test_session_preview_renders_the_named_sessions_resume_section(db):
+    named = _gaia("session", "preview", "--session-id", SESSION_A)
+    bare = _gaia("session", "preview")
+
+    assert named.returncode == 0, named.stderr
+    assert "## Resume point" in named.stdout and "aaaaaaaaaaaaaaaaa.tokena" in named.stdout
+    assert "## Resume point" not in bare.stdout
+
+
+def test_a_contract_query_that_fails_is_reported_unavailable_not_none(db, monkeypatch):
+    import gaia.session_snapshot as snapshot_module
+
+    def broken(con, session_id):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(snapshot_module, "_open_contracts", broken)
+    snapshot = snapshot_module.build_snapshot("ses-quiet")
+
+    for rendered in (snapshot_module.render_snapshot(snapshot), snapshot_module.render_resume_section(snapshot)):
+        assert "Open contracts: unavailable" in rendered
+        assert "Open contracts: none" not in rendered
+
+
 def test_a_compaction_birth_carries_the_derived_resume_point_once(db, tmp_path):
     _proposals(db, pending=1)
     _memory(db, SESSION_A, ["atom_from_before_compaction"])

@@ -267,7 +267,7 @@ OPTIONS = {
     'release publish': '--branch --dry-run --gh --help --local-suite --quiet -h',
     'scan': '--dry-run --help --json --workspace -h',
     'session': '--help -h',
-    'session preview': '--help -h',
+    'session preview': '--help --session-id -h',
     'session resume-point': '--help -h',
     'session resume-point set': '--help --session-id --text -h',
     'session snapshot': '--help --json --session-id -h',
