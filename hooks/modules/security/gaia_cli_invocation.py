@@ -50,7 +50,10 @@ def entry_group(word: str) -> Optional[str]:
     if is_shell_resolved(word):
         return ""
     from .cli_aliases import aliased_cli
+    from .gaia_cli_only_guard import is_trusted_gaia_binary
 
+    if is_trusted_gaia_binary(word):
+        return ""
     for candidate in (word, os.path.realpath(word)) if os.path.islink(word) else (word,):
         name = os.path.basename(candidate)
         if name == "gaia" or aliased_cli(name) == "gaia":

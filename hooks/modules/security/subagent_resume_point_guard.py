@@ -15,11 +15,9 @@ on raw text: `resume-poin\\t`, `'resume'-point` and `resume""-point` are the
 word `resume-point` to the shell. A subagent's session call is free only when
 its verb words are a read declared in SESSION_VERBS; anything else under
 `session` -- a shell-resolved verb (`$S`, a backtick, a glob), an undeclared
-verb -- is refused, as is `gaia <shell-resolved group>`. The command word
-counts as gaia by name, as a GAIA_CLI_ALIASES wrapper, by realpath to the
-trusted binary (a symlink), or when only the shell can resolve it before a
-literal `session`. A wrapper script nobody declared keeps its ordinary tier:
-nothing static sees inside it.
+verb -- is refused, as is `gaia <shell-resolved group>`. Whether the command
+word is a Gaia CLI entry point is `gaia_cli_invocation.entry_group`'s answer,
+shared with the memory and proposal guard.
 
 Public API:
     SESSION_VERBS: every `gaia session` verb path and how it is classified
@@ -32,6 +30,8 @@ from __future__ import annotations
 import os
 import re
 from typing import Dict, Optional, Sequence, Tuple
+
+from .gaia_cli_invocation import entry_group, is_shell_resolved
 
 # Every verb under `gaia session` (bin/cli/session.py), and the only source of
 # its tier: mutative_verbs classifies a `gaia session` call read-only only when
@@ -46,12 +46,6 @@ SESSION_VERBS: Dict[Tuple[str, ...], str] = {
 
 _HELP_FLAGS = frozenset({"--help", "-h", "-?", "--usage"})
 _PYTHON_INTERPRETER = re.compile(r"^python[0-9.]*$")
-_SHELL_RESOLVED = ("$", "`", "(", ")", "*", "?", "[")
-
-
-def is_shell_resolved(word: str) -> bool:
-    """True when only the shell can say what *word* becomes: an expansion, a substitution or a glob."""
-    return any(c in word for c in _SHELL_RESOLVED)
 
 
 def declared_session_verb(words: Sequence[str]) -> Optional[Tuple[str, ...]]:
@@ -61,18 +55,6 @@ def declared_session_verb(words: Sequence[str]) -> Optional[Tuple[str, ...]]:
             return path
     return None
 
-
-def _runs_gaia(word: str) -> bool:
-    """True when *word* runs the gaia CLI or cannot be shown not to: its name, a declared wrapper, the trusted binary, or a shell-resolved word."""
-    if is_shell_resolved(word):
-        return True
-    name = os.path.basename(word)
-    if name == "gaia":
-        return True
-    from .cli_aliases import aliased_cli
-    from .gaia_cli_only_guard import is_trusted_gaia_binary
-
-    return aliased_cli(name) == "gaia" or is_trusted_gaia_binary(word)
 
 REJECTION_MESSAGE = (
     "The session's resume point is the orchestrator's to write; a subagent "
@@ -113,15 +95,16 @@ def _component_writes_resume_point(component: str, *, help_exempt: bool) -> bool
     program = _program_index(words)
     if program is None:
         return False
-    word, own_argv = words[program], words[program + 1:]
+    word = words[program]
+    entry = entry_group(word)
+    if entry is None:
+        return False
+    own_argv = ([entry] if entry else []) + list(words[program + 1:])
     positional = [w for w in own_argv if not w.startswith("-")]
     if not positional:
         return False
     group = positional[0]
-    if group == "session":
-        if not _runs_gaia(word):
-            return False
-    elif not is_shell_resolved(group) or is_shell_resolved(word) or not _runs_gaia(word):
+    if group != "session" and (not is_shell_resolved(group) or is_shell_resolved(word)):
         return False
     verb_words = positional[1:]
     if group == "session" and not verb_words:
