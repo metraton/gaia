@@ -152,7 +152,7 @@ def test_subagent_stop_gate_cuts_after_the_claude_code_rejection_limit(tmp_path)
     assert row[0]["cut_reason"] is not None, "a cut turn is never recorded as a clean close"
 
 
-def test_subagent_stop_gate_relays_the_user_facing_summary(tmp_path):
+def test_subagent_stop_gate_leaves_the_conclusion_to_the_task_result(tmp_path):
     db = _db(tmp_path)
     _born_child(db)
     _finalize(db)
@@ -161,7 +161,7 @@ def test_subagent_stop_gate_relays_the_user_facing_summary(tmp_path):
 
     assert response["contract_valid"] is True
     assert "repair_prompt" not in response
-    assert SUMMARY in response["user_message"]
+    assert "user_message" not in response
     assert response["closed"] == {"status": "already_closed", "contract_id": CONTRACT_ID}
 
 

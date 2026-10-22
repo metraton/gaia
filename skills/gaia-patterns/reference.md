@@ -120,7 +120,7 @@ The package ships a single `gaia` entry point (`bin/gaia`, mapped by the `bin` f
 | `agent_contract_permissions` table (gaia.db) | Per-agent context contracts; source of truth is each agent's `project_context_contracts:` frontmatter, seeded by `tools/scan/seed_contract_permissions.py` (runtime SSOT is DB) |
 | `surface_routing` table (gaia.db) | Surface routing table (intent to agent mapping); source of truth is agent `routing:` frontmatter, seeded by `tools/scan/seed_surface_routing.py` |
 | `surface:` agent frontmatter | Surface a dispatch is born with when the agent owns no `surface_routing` row (e.g. `gaia-verifier: verification`); read by `tools/context/context_provider.py::_declared_surface` |
-| `gaia contract fill-rate` | Share of clean closes (no cut, not DISPATCHED) carrying a surface and a `user_facing_summary` over `--since`; `--min` makes it a gate (exit 1 below the rate or on an empty window) |
+| `gaia contract fill-rate` | Share of clean closes (no cut, not DISPATCHED) carrying a surface and a `conclusion` over `--since`; `--min` makes it a gate (exit 1 below the rate or on an empty window) |
 
 ---
 

@@ -4,9 +4,8 @@ A host adapter translates its stop event into ``hook_data`` plus an
 ``AgentCompletion``, hands them to :func:`run_subagent_stop` with a
 :class:`SubagentStopHost`, and formats the returned
 :class:`SubagentStopOutcome` for its own wire. The gate, the rejection circuit
-and its cut, the episode write, the workflow audit, the agent's approval
-cleanup and the user_facing_summary relay all run here, so every host closes a
-turn by the same rules.
+and its cut, the episode write, the workflow audit and the agent's approval
+cleanup all run here, so every host closes a turn by the same rules.
 """
 
 from __future__ import annotations
@@ -953,8 +952,8 @@ class SubagentStopOutcome:
     Attributes:
         result: the hook output, free of any host channel key.
         rejected: the turn goes back to the subagent for repair.
-        user_message: text for the host's user-facing channel -- the circuit
-            cut notice or the relayed user_facing_summary. It must never travel
+        user_message: text for the host's user-facing channel -- only the
+            circuit cut notice, which Gaia writes. It must never travel
             on a channel that feeds back into the subagent: that resumes the
             turn being closed.
     """

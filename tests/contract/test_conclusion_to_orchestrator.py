@@ -196,7 +196,7 @@ def _draft(envelope: dict) -> str:
 
 
 @pytest.mark.parametrize("text_fields", [
-    {}, {"conclusion": ""}, {"conclusion": "   "}, {"user_facing_summary": CONCLUSION},
+    {}, {"conclusion": ""}, {"conclusion": "   "}, {"user_facing_summary": "  "},
 ])
 def test_finalize_refuses_a_clean_close_without_conclusion_and_names_it(text_fields):
     draft_id = _draft(_envelope("NEEDS_VERIFICATION", **text_fields))
@@ -217,6 +217,22 @@ def test_finalize_accepts_the_close_once_the_conclusion_is_set():
 
     assert fin.returncode == 0, fin.stderr
     assert json.loads(fin.stdout)["status"] == "finalized"
+
+
+def test_finalize_stores_the_old_name_as_conclusion_and_records_the_alias(db):
+    draft_id = _draft(_envelope("NEEDS_VERIFICATION", user_facing_summary=CONCLUSION))
+
+    fin = _cli(["finalize", "--draft-id", draft_id, "--json"])
+
+    assert fin.returncode == 0, fin.stdout
+    assert json.loads(fin.stdout)["conclusion_alias"] == "user_facing_summary"
+    from gaia.store.writer import list_agent_contract_handoffs
+
+    [row] = list_agent_contract_handoffs(contract_id=draft_id, db_path=db)
+    stored = json.loads(row["raw_handoff_json"])
+    assert stored["conclusion"] == CONCLUSION
+    assert stored["conclusion_alias"] == "user_facing_summary"
+    assert "user_facing_summary" not in stored
 
 
 def test_a_row_with_only_user_facing_summary_reads_as_its_conclusion(db):

@@ -38,10 +38,11 @@ through the agent, and the user's active account never changes unless he asks.
      <email> --force`. It runs `gcloud auth login <email> --no-activate --force`,
      returns a fresh link, and is free for the same reason: it never activates
      the account.
-2. **Close the turn on the link.** Close `NEEDS_INPUT`. Put the `url` as a
-   markdown link in `user_facing_summary` with one line: open it, sign in, and
-   reply when done. Tell him to open it in a browser profile, or an incognito
-   window, that holds only the target account: each link allows exactly one
+2. **Close the turn on the link.** Close `NEEDS_INPUT`. Put the `url` in your
+   `conclusion` for the orchestrator, which hands it to the user as a link with
+   one line: open it, sign in, and reply when done. Say it must be opened in a
+   browser profile, or an incognito window, that holds only the target account:
+   each link allows exactly one
    sign-in attempt, because gcloud stops listening after the browser's first
    answer. Record the `login_id` in `key_outputs`.
 3. **On resume, confirm.** `gaia login status <login_id>` reports `pending`,

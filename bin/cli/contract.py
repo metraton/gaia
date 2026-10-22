@@ -211,6 +211,7 @@ if str(_REPO_ROOT) not in sys.path:
 # from the one the envelope itself is checked against.
 from gaia.contract.validator import (  # noqa: E402
     AGENT_ID_PATTERN_TEXT,
+    LEGACY_CONCLUSION_FIELD,
     canonicalize_envelope,
     envelope_as_read,
     sanitize_envelope,
@@ -2000,6 +2001,20 @@ def cmd_finalize(args) -> int:
             return 1
 
     conclusion = envelope.get("conclusion")
+    legacy = envelope.get(LEGACY_CONCLUSION_FIELD)
+    alias_used = (
+        (not isinstance(conclusion, str) or not conclusion.strip())
+        and isinstance(legacy, str) and bool(legacy.strip())
+    )
+    if alias_used:
+        conclusion = envelope["conclusion"] = envelope.pop(LEGACY_CONCLUSION_FIELD)
+        envelope["conclusion_alias"] = LEGACY_CONCLUSION_FIELD
+        if not as_json:
+            print(
+                f"Note: {LEGACY_CONCLUSION_FIELD} was stored as conclusion; "
+                "write conclusion from now on.",
+                file=sys.stderr,
+            )
     if not isinstance(conclusion, str) or not conclusion.strip():
         msg = (
             "conclusion is empty, but it is your verdict for the orchestrator, "
@@ -2056,12 +2071,15 @@ def cmd_finalize(args) -> int:
     handoff_id = outcome.get("handoff_id")
     created = bool(outcome.get("created"))
     if as_json:
-        print(json.dumps({
+        payload = {
             "status": "finalized",
             "draft_id": draft_id,
             "handoff_id": handoff_id,
             "created": created,
-        }))
+        }
+        if alias_used:
+            payload["conclusion_alias"] = LEGACY_CONCLUSION_FIELD
+        print(json.dumps(payload))
     else:
         if created:
             print(f"OK: draft {draft_id} finalized (handoff_id={handoff_id}).")

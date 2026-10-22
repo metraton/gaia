@@ -693,6 +693,8 @@ EVIDENCE_FIELD_TYPES = dict(
 #                       runs in its own Gaia-managed worktree. Registers the
 #                       fact only; never gates a close. Queryable via
 #                       ``json_extract(raw_handoff_json, '$.worktree_scope')``.
+#   conclusion_alias    stamped by ``cmd_finalize`` when a close wrote only the
+#                       pre-rename user_facing_summary, stored as conclusion.
 SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "_contract_tag",
     "agent_name",
@@ -702,6 +704,7 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "backstop",
     "binding_rejection",
     "born_at_dispatch",
+    "conclusion_alias",
     "continues_contract_id",
     "degraded",
     "dispatch_closed_at_subagent_stop",
