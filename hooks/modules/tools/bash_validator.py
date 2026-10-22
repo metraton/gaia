@@ -43,6 +43,7 @@ empty role" are kept distinct rather than collapsed by a default.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 import json
@@ -86,6 +87,7 @@ from ..security.approval_messages import (
     build_t3_degraded_block_message,
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
+from ..security.verdict import UNDETERMINED, blocked_rule, render, signing_rule
 from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
@@ -153,10 +155,46 @@ class BashValidationResult:
     # The pending approval a T3 denial asks consent for, named structurally so
     # no adapter reads it back out of the denial text.
     approval_id: Optional[str] = None
+    rule: str = ""
+    undetermined: str = ""
 
     def __post_init__(self):
         if self.suggestions is None:
             self.suggestions = []
+
+
+def _carries_ruling(validate):
+    """Make every refusal and signature request a validator returns name its rule and remediation."""
+    @functools.wraps(validate)
+    def wrapper(self, command: str, *args, **kwargs) -> BashValidationResult:
+        result = validate(self, command, *args, **kwargs)
+        if result.allowed:
+            return result
+        line = render(result.rule or "floor.unclassified")
+        if result.undetermined:
+            line = f"{result.undetermined[:1].upper()}{result.undetermined[1:]} {UNDETERMINED}. {line}"
+        result.reason = f"{result.reason}\n{line}"
+        if result.block_response is not None:
+            decision = read_permission_decision(result.block_response) or "deny"
+            result.block_response = build_hook_permission_response(
+                decision, f"{read_permission_reason(result.block_response)}\n{line}",
+                updated_input=result.modified_input if decision == "ask" else None,
+            )
+        return result
+    return wrapper
+
+
+def _rules_t3_outcome(decide):
+    """Name the rule of a T3 outcome; an undeterminable span the decision reads makes it UNKNOWN."""
+    @functools.wraps(decide)
+    def wrapper(command: str, verb: str, category: str, *, rule: str = "", **kwargs) -> BashValidationResult:
+        result = decide(command, verb, category, **kwargs)
+        if not result.rule:
+            result.rule, result.undetermined = signing_rule(verb, category, command, rule)
+            if result.rule.startswith("unknown.") and not result.undetermined:
+                result.undetermined = "the span the decision reads"
+        return result
+    return wrapper
 
 
 # Patterns for AI tool attribution footers (auto-stripped from commits).
@@ -394,6 +432,7 @@ class BashValidator:
                     suggestions=[
                         blocked.suggestion or "Run the command directly instead of via a shell wrapper.",
                     ],
+                    rule="floor.indirect-execution",
                 )
 
         logger.info("Indirect execution detected: %s", command[:80])
@@ -440,6 +479,7 @@ class BashValidator:
                 block_response=build_hook_permission_response(
                     "deny", deny_msg,
                 ),
+                rule="floor.indirect-execution",
             )
         dialog_msg = (
             "Indirect execution detected. The command uses a shell "
@@ -454,6 +494,7 @@ class BashValidator:
             tier=SecurityTier.T2_DRY_RUN,
             reason=reason_msg,
             block_response=hook_block,
+            rule="floor.indirect-execution",
         )
 
     def _extract_inner_command(self, command: str) -> Optional[str]:
@@ -624,6 +665,7 @@ class BashValidator:
 
         return cleaned, stripped_parts
 
+    @_carries_ruling
     def validate(
         self,
         command: str,
@@ -719,6 +761,7 @@ class BashValidator:
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
                     reason=guard_reason,
+                    rule="floor.gaia-cli-only",
                 )
 
         if not command or not command.strip():
@@ -726,6 +769,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason="Empty command not allowed",
+                rule="floor.empty-command",
             )
 
         command = command.strip()
@@ -746,6 +790,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=consent_verb_reason,
+                rule="floor.host-consent-verb",
             )
 
         sealed = self._sealed_elsewhere(command, session_id, agent_type, hook_payload)
@@ -787,6 +832,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=attribution_reason,
+                rule="floor.publish-attribution",
             )
 
         # Ahead of tier classification so a refused push mints no approval; a
@@ -798,6 +844,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=comment_push.reason,
+                rule="floor.comment-push-gate",
             )
         self.last_warning = comment_push.warning or ""
 
@@ -821,6 +868,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=db_write_reason,
+                rule="floor.gaia-db-write",
                 suggestions=[
                     "Use the `gaia context` CLI or emit update_contracts.",
                 ],
@@ -850,6 +898,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=mem_write_reason,
+                rule="floor.subagent-memory-write",
                 suggestions=[
                     "Write a `memorialize_suggestions` block into your "
                     "contract row with `gaia contract fill --json` instead.",
@@ -865,6 +914,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=skill_reason,
+                rule="floor.memory-skill-not-loaded",
             )
 
         resume_allowed, resume_reason = check_subagent_resume_point(
@@ -879,6 +929,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=resume_reason,
+                rule="floor.subagent-resume-point",
             )
 
         # ================================================================
@@ -901,6 +952,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=ownership_reason,
+                rule="floor.contract-ownership",
                 suggestions=[
                     "Address your own contract with --draft-id <contract_id>.",
                 ],
@@ -930,6 +982,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=pp_write_reason,
+                rule="floor.protected-path",
                 suggestions=[
                     "Edit the SOURCE under gaia/ and run `gaia install` to "
                     "propagate; never modify .claude/ directly.",
@@ -960,6 +1013,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=shell_write_reason,
+                rule="floor.shell-write",
                 suggestions=[
                     "Use the Write or Edit tool on the file instead; a "
                     "throwaway dump belongs under ~/.gaia/scratch.",
@@ -1066,6 +1120,7 @@ class BashValidator:
                     f"Obfuscated shell nesting detected: {unwrap_result.depth} "
                     f"wrapper layers exceeds limit of {_OBFUSCATION_DEPTH_LIMIT}"
                 ),
+                rule="floor.obfuscated-nesting",
             )
 
         indirect_result = self._detect_indirect_execution(
@@ -1110,6 +1165,7 @@ class BashValidator:
                 tier=SecurityTier.T3_BLOCKED,
                 reason=f"Command blocked by security policy: {blocked_result.category}",
                 suggestions=[blocked_result.suggestion] if blocked_result.suggestion else [],
+                rule=blocked_rule(blocked_result.category),
             )
 
         # 3b. Parse compound commands and check each component against the
@@ -1129,6 +1185,7 @@ class BashValidator:
                         tier=SecurityTier.T3_BLOCKED,
                         reason=f"Command blocked by security policy: {comp_blocked.category}",
                         suggestions=[comp_blocked.suggestion] if comp_blocked.suggestion else [],
+                        rule=blocked_rule(comp_blocked.category),
                     )
 
         secret_violation = check_kubectl_secret_output(command)
@@ -1138,6 +1195,7 @@ class BashValidator:
                 tier=SecurityTier.T3_BLOCKED,
                 reason=secret_violation.reason,
                 suggestions=[secret_violation.suggestion],
+                rule="floor.kubectl-secret-output",
             )
 
         # 3c. Validate git commit messages (on the potentially cleaned command).
@@ -1156,6 +1214,7 @@ class BashValidator:
                 suggestions=[],
                 modified_input=None,
                 block_response=pipe_block,
+                rule="floor.cloud-pipe",
             )
 
         # ================================================================
@@ -1192,6 +1251,7 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=sensitive_reason,
+                rule="floor.secret-read",
             )
 
         # ================================================================
@@ -1515,6 +1575,7 @@ class BashValidator:
                     agent_type=agent_type,
                     guidance=result.guidance,
                     cwd=cwd,
+                    rule=result.rule,
                 )
 
         # Flag-dependent classification (sed -i, find -exec, tar -x, etc.)
@@ -1710,6 +1771,7 @@ class BashValidator:
         # A package.json or node_modules path rewritten by an earlier component
         # changes the script a later run executes, which was read before the chain ran.
         package_inputs_rewritten = False
+        tripped, tripped_command = None, command
         for comp in components:
             detected = detect_mutative_command(comp, cwd=scan_cwd)
             if package_inputs_rewritten and runs_package_script(comp):
@@ -1727,6 +1789,7 @@ class BashValidator:
                 and not flagged.command_family.startswith("git_")
             ):
                 has_t3 = True
+                tripped, tripped_command = detected, comp
                 break
         if not has_t3:
             has_t3 = self._has_mutative_substitution_outside_components(command, components, cwd)
@@ -1748,6 +1811,8 @@ class BashValidator:
                 tier=SecurityTier.T3_BLOCKED,
                 reason=reason,
                 block_response=build_hook_permission_response(decision, reason),
+                rule=signing_rule(tripped.verb, tripped.category, tripped_command, tripped.rule)[0]
+                if tripped is not None else signing_rule("", "MUTATIVE", command)[0],
             )
 
         component_results: List[BashValidationResult] = []
@@ -1912,6 +1977,8 @@ class BashValidator:
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=f"Dangerous pipe composition blocked: {result.reason}",
+                rule="floor.secret-read" if re.search("sensitive|exfil", result.pattern)
+                else f"floor.composition-{result.pattern.replace('_', '-')}",
             )
 
         if result.decision == CompositionDecision.ESCALATE:
@@ -2071,6 +2138,7 @@ class BashValidator:
                     allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
                     reason=f"Commit message validation failed: {validation.errors[0]['message']}",
+                    rule="floor.commit-message",
                     suggestions=suggestions[:3]  # Limit to 3 suggestions
                 )
 
@@ -2520,6 +2588,7 @@ def _build_sealed_payload(
     )
 
 
+@_rules_t3_outcome
 def decide_t3_outcome(
     command: str,
     verb: str,
@@ -2603,6 +2672,7 @@ def decide_t3_outcome(
             tier=SecurityTier.T3_BLOCKED,
             reason=reason,
             block_response=build_hook_permission_response("deny", reason),
+            rule="floor.clear-secret",
         )
 
     # A genuine multi-command chain is a set of >= 2 items. Anything else
@@ -2634,6 +2704,7 @@ def decide_t3_outcome(
                 tier=SecurityTier.T3_BLOCKED,
                 reason=reason,
                 block_response=build_hook_permission_response("deny", reason),
+                rule="floor.no-requester",
             )
 
         # Subagent-under-orchestrator: deny + persisted approval_id so the

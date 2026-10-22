@@ -124,6 +124,8 @@ class MutativeResult:
         reason: Human-readable explanation of the classification.
         guidance: The non-mutating way to reach the same outcome, when one
             exists. Empty for every classification that has no such equivalent.
+        rule: The verdict rule a lane settled itself (modules.security.verdict);
+            empty when the validator derives it from the verb.
     """
     is_mutative: bool = False
     category: str = CATEGORY_UNKNOWN
@@ -133,6 +135,7 @@ class MutativeResult:
     confidence: str = "low"
     reason: str = ""
     guidance: str = ""
+    rule: str = ""
 
 
 
@@ -4541,6 +4544,31 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
     return None
 
 
+_VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
+
+# Executors whose every option is known, so a flag outside both sets leaves the payload's start unknown.
+_EXECUTOR_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
+    "ssh": frozenset(f"-{ch}" for ch in "46AaCfGgKkMNnqsTtVvXxYy"),
+}
+
+
+def _executor_unparsed_flag(base_cmd: str, args: "List[str]") -> "Optional[str]":
+    """Return the first option before an executor's payload that its grammar does not name, or None."""
+    grammar, boolean = _COMMAND_EXECUTORS.get(base_cmd), _EXECUTOR_BOOLEAN_FLAGS.get(base_cmd)
+    if grammar is None or boolean is None:
+        return None
+    index = 0
+    while index < len(args) and args[index].startswith("-") and args[index] != "--":
+        token = args[index]
+        if token in grammar.value_flags or token[:2] in grammar.value_flags:
+            index += 2 if token in grammar.value_flags else 1
+        elif all(f"-{ch}" in boolean for ch in token[1:]):
+            index += 1
+        else:
+            return token
+    return None
+
+
 def _check_executor_payload(
     base_cmd: str, semantics: "CommandSemantics", *,
     cwd: "Optional[str]", _depth: int,
@@ -4573,6 +4601,16 @@ def _check_executor_payload(
         A mutative result when the payload is mutative, ``None`` otherwise --
         including for every command that is not one of the executor shapes.
     """
+    unparsed = _executor_unparsed_flag(base_cmd, list(semantics.tokens[1:]))
+    if unparsed is not None:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="executor-unparsed-flag",
+            cli_family=base_cmd,
+            reason=f"'{base_cmd}' option {unparsed!r} is not in its grammar, so the command it runs could not be determined",
+            rule="unknown.dynamic-span",
+        )
     payload = _resolve_executor_payload(base_cmd, semantics)
     if payload is None:
         return None
@@ -5022,6 +5060,17 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     account_redirect = _check_account_path_redirect(command)
     if account_redirect is not None:
         return account_redirect
+
+    # --- Step 0-dynamic: the verb word of a verb-first CLI is a shell expansion ---
+    if family in _VERB_FIRST_FAMILIES and len(tokens) > 1 and tokens[1][:1] in ("$", "`"):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_UNKNOWN,
+            verb="dynamic-verb",
+            cli_family=family,
+            reason=f"the verb word {tokens[1]!r} of '{base_cmd}' could not be determined",
+            rule="unknown.dynamic-span",
+        )
 
     # --- Step 1: Command alias fast-path ---
     if base_cmd in COMMAND_ALIASES:
@@ -8934,7 +8983,7 @@ def _classify_frozen_install(
             continue
         result = _classify_package_script_body(manager, name, body, family, cwd, _depth)
         if result.is_mutative:
-            return result
+            return replace(result, rule="sign.lifecycle-body-verb")
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_UNKNOWN,
