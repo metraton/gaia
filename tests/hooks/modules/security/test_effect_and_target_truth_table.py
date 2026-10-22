@@ -41,6 +41,7 @@ def _build_context(spec: dict, root: Path, name: str, managed_root: Path) -> Pat
         git("init", "-q", "-b", "main")
         git("commit", "-q", "--allow-empty", "-m", "init")
         git("branch", "feature-x")
+        git("branch", "release/1.x")
         git("remote", "add", "origin", "https://example.invalid/o/r.git")
         git("update-ref", "refs/remotes/origin/main", "HEAD")
         git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
@@ -179,6 +180,86 @@ def test_a_twin_flips_on_its_target_or_effect_alone(free_id, signed_id):
     assert changed <= 2 or free["command"] == signed["command"]
     if free["command"] == signed["command"]:
         assert free.get("context") != signed.get("context")
+
+
+AC_SHAPES = {
+    "AC-1": {
+        "create": ["forge-gh-create", "forge-ghwrap-create", "forge-glab-create", "forge-tea-create", "forge-az-repos-create", "forge-forgectl-create"],
+        "edit": ["forge-gh-edit", "forge-ghwrap-edit", "forge-glab-edit", "forge-tea-edit", "forge-az-repos-edit", "forge-forgectl-edit"],
+        "view and list": ["forge-gh-view", "forge-gh-list", "forge-glab-view", "forge-tea-list", "forge-az-repos-view", "forge-forgectl-list"],
+        "comment": ["forge-gh-comment", "forge-ghwrap-comment", "forge-glab-comment", "forge-tea-comment", "forge-forgectl-comment"],
+        "mark ready": ["forge-gh-ready", "forge-ghwrap-ready", "forge-glab-ready", "forge-az-repos-ready", "forge-forgectl-ready"],
+        "review and approve": ["forge-gh-approve", "forge-ghwrap-approve", "forge-glab-approve", "forge-tea-approve", "forge-az-repos-approve", "forge-forgectl-approve"],
+        "close": ["forge-gh-close", "forge-ghwrap-close", "forge-glab-close", "forge-tea-close", "forge-az-repos-close", "forge-forgectl-close"],
+        "merge": ["forge-gh-merge", "forge-ghwrap-merge", "forge-glab-merge", "forge-tea-merge", "forge-az-repos-merge", "forge-forgectl-merge"],
+        "retarget to main": ["forge-gh-retarget", "forge-ghwrap-retarget", "forge-glab-retarget", "forge-az-repos-retarget", "forge-forgectl-retarget"],
+    },
+    "AC-2": {
+        "feature push free": ["ctl-push-feature", "mined-feature-push-u", "git-push-feature-colon"],
+        "default branch push asks": ["git-push-default", "git-push-head-main", "git-push-branch-to-main", "git-push-head-refs-main"],
+        "protected non-default branch": ["git-push-protected-release-branch"],
+        "force push signed": ["git-push-force", "git-push-force-short", "git-push-force-trailing", "git-push-force-default", "git-push-force-dash-c"],
+        "ff to own upstream free": ["ctl-ff-own-upstream", "git-merge-ff-other-branch"],
+        "undeterminable target asks": ["git-push-unresolved-branch", "git-push-substituted-branch"],
+    },
+    "AC-3": {
+        "kubectl exec": ["exec-kubectl-read-namespaced", "exec-kubectl-sh-c-write", "exec-kubectl-interactive-sh"],
+        "docker exec": ["exec-docker-read", "exec-docker-write", "exec-docker-interactive"],
+        "gcloud compute ssh --command": ["exec-gcloud-ssh-read", "exec-gcloud-ssh-write", "exec-gcloud-ssh-interactive"],
+        "op run": ["exec-op-run-read", "exec-op-run-write"],
+        "aws-vault exec": ["exec-aws-vault-read", "exec-aws-vault-write"],
+        "similar executor (ssh)": ["exec-ssh-read", "exec-ssh-write"],
+    },
+    "AC-4": {
+        "compound cloud operations": ["lex-aws-run-instances", "lex-aws-ecr-batch-delete", "lex-gcloud-add-metadata"],
+        "iac and container verbs": ["lex-pulumi-up", "lex-compose-down-volumes", "lex-buildx-push", "lex-terraform-test", "lex-helm-test", "lex-vault-seal"],
+        "auth and context switches": ["lex-gh-auth-login", "lex-gh-auth-refresh", "lex-kubectl-use-context", "lex-gcloud-get-credentials"],
+        "remote copy": ["lex-rsync-remote", "lex-scp-remote"],
+        "local-only run free": ["lex-helm-repo-update", "lex-apt-update", "lex-act-push"],
+        "dry-run plan check free": ["lex-pulumi-up-dry-run", "lex-ansible-check", "lex-kubectl-dry-run-server", "lex-helm-upgrade-dry-run", "ctl-terraform-plan"],
+    },
+    "AC-5": {
+        "cluster context": ["target-kubectl-prod-context-apply", "target-kubectl-dev-context-apply", "target-kubectl-prod-context-read"],
+        "cloud project": ["target-gcloud-prod-project-unknown-verb", "target-gcloud-dev-project-unknown-verb"],
+        "account": ["target-account-unknown-verb-prod", "target-account-unknown-verb-dev", "target-account-aws-prod-delete", "target-account-aws-dev-delete"],
+        "iac workspace": ["target-workspace-unknown-verb-prod", "target-workspace-unknown-verb-dev", "target-iac-terraform-workspace-select-prod"],
+        "iac stack": ["target-stack-unknown-verb-prod", "target-stack-unknown-verb-dev", "target-iac-pulumi-up-prod-stack", "target-iac-pulumi-preview-prod-stack"],
+        "name inference": ["target-unknown-verb-prod", "target-unknown-verb-nonprod", "target-unknown-verb-staging", "target-unknown-verb-dev"],
+        "declared production": ["target-declared-production", "target-declared-not-production"],
+    },
+    "AC-6": {
+        "blocked cases stay blocked": ["floor-aws-delete-vpc", "floor-azure-group", "floor-gcp-projects", "floor-k8s-namespace", "floor-rm-root", "floor-secret-read-ssh-key"],
+        "force push moves to signed": ["git-push-force"],
+    },
+    "AC-7": {
+        "long inline read-only code": ["inline-python-long-read", "seed-roo-node-e-long-read"],
+        "subprocess helper that reads": ["inline-python-subprocess-read"],
+        "tar -xf": ["mined-scratch-tar-x", "local-tar-x-managed-worktree", "mined-tar-x-root-twin"],
+        "mv": ["mined-scratch-mv", "local-mv-managed-worktree", "mined-scratch-mv-out-twin"],
+        "cp": ["mined-scratch-cp", "local-cp-managed-worktree", "local-cp-worktree-git-dir-twin"],
+        "git merge-tree and git grep": ["local-git-merge-tree", "local-git-grep"],
+        "similar local git reads": ["local-git-diff-stat", "local-git-log", "local-git-show", "local-git-blame", "local-git-ls-files"],
+        "still asks when it reaches shared state": ["inline-python-subprocess-write-twin", "inline-python-os-system-twin", "local-git-merge-twin"],
+    },
+    "AC-8": {
+        "data piped into a network sender": ["egress-file-into-nc", "egress-echo-into-nc", "egress-log-into-curl-upload"],
+        "secret piped stays refused": ["egress-secret-into-nc"],
+        "coding-CLI credential stores": ["store-codex-cat", "store-claude-cat", "store-gemini-cat", "store-opencode-cat"],
+    },
+}
+
+
+def test_every_shape_named_in_every_brief_criterion_maps_to_rows():
+    by_id = {r["id"]: r for r in ROWS}
+    for ac, shapes in AC_SHAPES.items():
+        for shape, ids in shapes.items():
+            assert ids, (ac, shape)
+            for row_id in ids:
+                assert row_id in by_id, (ac, shape, row_id)
+
+
+def test_no_row_names_a_personal_tool():
+    assert not any("ghx" in json.dumps(r).lower() for r in ROWS)
 
 
 def test_the_named_controls_are_rows():
