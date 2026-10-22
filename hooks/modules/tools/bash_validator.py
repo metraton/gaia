@@ -354,6 +354,8 @@ def _scan_heredocs(command: str) -> Tuple[str, List[_Heredoc]]:
         if not pending:
             lines.append(line)
             pending = _heredoc_openers(line)
+            for heredoc in pending if line.endswith("\\") else []:
+                heredoc.piped = True
             continue
         heredoc = pending[0]
         text = line.lstrip("\t") if heredoc.strip_tabs else line
@@ -1328,7 +1330,8 @@ class BashValidator:
         # phase 4 (composition rules, T4) and provides operator context
         # that ShellCommandParser.parse() discards.
         # ================================================================
-        decomposed = self._decomposer.decompose(command)
+        classified, code_heredocs = _scan_heredocs(command)
+        decomposed = self._decomposer.decompose(classified)
 
         # ================================================================
         # PHASE 3: CLASSIFY STAGES
@@ -1350,7 +1353,6 @@ class BashValidator:
         # bodies (exit 2). This MUST run before any other classifier to ensure
         # permanently blocked commands (kubectl delete namespace, etc.) are
         # caught with a reliable exit 2.
-        classified, code_heredocs = _scan_heredocs(command)
         blocked_result = is_blocked_command(classified)
         if blocked_result.is_blocked:
             return BashValidationResult(
@@ -1381,7 +1383,7 @@ class BashValidator:
                         rule=blocked_rule(comp_blocked.category),
                     )
 
-        secret_violation = check_kubectl_secret_output(command)
+        secret_violation = check_kubectl_secret_output(classified)
         if secret_violation is not None:
             return BashValidationResult(
                 allowed=False,
@@ -1398,7 +1400,7 @@ class BashValidator:
                 return commit_validation
 
         # 3d. Cloud pipe/redirect/chaining check.
-        pipe_block = validate_cloud_pipe(command)
+        pipe_block = validate_cloud_pipe(classified)
         if pipe_block is not None:
             return BashValidationResult(
                 allowed=False,
@@ -1407,7 +1409,7 @@ class BashValidator:
                 suggestions=[],
                 modified_input=None,
                 block_response=pipe_block,
-                rule="floor.shell-write" if violation_kind(command) == "redirect" else "floor.cloud-pipe",
+                rule="floor.shell-write" if violation_kind(classified) == "redirect" else "floor.cloud-pipe",
             )
 
         # ================================================================
@@ -1435,9 +1437,7 @@ class BashValidator:
         # composition so the exfiltration pipe keeps its own verdict, and
         # after the account-path write above so a write keeps its signature.
         # ================================================================
-        sensitive_allowed, sensitive_reason = check_sensitive_read(
-            command, cwd,
-        )
+        sensitive_allowed, sensitive_reason = check_sensitive_read(classified, cwd)
         if not sensitive_allowed:
             logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
             return BashValidationResult(

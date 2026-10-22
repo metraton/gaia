@@ -238,7 +238,7 @@ A heredoc body is data only when that reader, after its wrappers (`sudo`, `env`,
 
 `awk`, `gawk`, `sed` and `yq` are not on the list, whatever their flags. Their languages run commands or write files (`system()`, sed's `e` and `w`, `print >`), so a heredoc they read fails closed even when it only feeds them input.
 
-`xargs` is never relief. Each body line is evaluated through the whole validator as `<target> <line>`, the command xargs would run (`_xargs_payload`, value flags such as `-d`, `-I` and `--arg-file` skipped). `xargs cat` with `~/.ssh/id_rsa` is refused as a secret read, `xargs tee` with `~/.bashrc` signs as an account write, and `xargs cat` with `notes.txt` runs free.
+`xargs` is never relief. Each body line is evaluated through the whole validator as `<target> <line>`, the command xargs would run (`_xargs_payload`, value flags such as `-d`, `-I` and `--arg-file` skipped). `xargs cat` with `~/.ssh/id_rsa` is refused as a secret read, `xargs tee` with `~/.bashrc` signs as an account write, and `xargs cat` with `notes.txt` runs free. Each line is checked in the caller's working directory, the one the hook payload carries, so `xargs tee` with `notes.txt` inside a git repository is refused exactly as `tee notes.txt` is there. When that directory is unknown, a line with a relative word (neither `/`, `~` nor `-` first) asks for a signature instead of resolving against the hook's own directory.
 
 | Program | Subcommand path | Flag reading `-` |
 |---------|-----------------|------------------|
@@ -246,7 +246,7 @@ A heredoc body is data only when that reader, after its wrappers (`sudo`, `env`,
 | `gh` | `pr` or `issue` + `create`, `edit`, `comment`; `release` + `create`, `edit` | `--body-file`, `--notes-file`, `-F` |
 | `glab` | `mr` or `issue` + `create`, `update`, `note` | `--description` |
 
-A data heredoc's command keeps its own verdict: `git commit -F - <<EOF` runs free, while `git tag -a v1 -F -` still signs for the tag. A data body is never read as commands. Only a line of an unquoted body that holds `$` or a backtick is checked, because the shell expands it before the reader sees it. A data reader whose output is piped on (`cat <<EOF | sh`) keeps its body as commands.
+A data heredoc's command keeps its own verdict: `git commit -F - <<EOF` runs free, while `git tag -a v1 -F -` still signs for the tag. A data body is never read as commands, by the blocked-command floor, the secret-read guard, the cloud-pipe check and the kubectl secret-output check alike, so a commit message that names `kubectl delete ns prod` is not refused. Only a line of an unquoted body that holds `$` or a backtick is checked, because the shell expands it before the reader sees it. A data reader whose output is piped on (`cat <<EOF | sh`) keeps its body as commands, and so does one whose line ends in a backslash: the shell joins the next line (`| sh`) to the command before it reads the body.
 
 Every other reader makes the body code, and the heredoc fails closed (`_fail_closed_on_code_heredoc`):
 
