@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 CLI_INVOKED = "cli.invoked"
 SKILL_LOADED = "skill.loaded"
+EXCERPT_LIMIT = 500
 
 ORCHESTRATOR_AGENT = "gaia-orchestrator"
 
@@ -126,3 +127,56 @@ def record_skill_load(tool_name: str, tool_input: object, hook_data: Mapping[str
         )
     except Exception as exc:
         logger.debug("skill.loaded not recorded (non-fatal): %s", exc)
+
+
+def _excerpt(text: str) -> str:
+    from gaia.redaction import redact_text
+
+    # Redacting before the cut keeps a secret that straddles it from leaving its prefix.
+    redacted = redact_text(text[: EXCERPT_LIMIT * 4])
+    return redacted if len(redacted) <= EXCERPT_LIMIT else redacted[:EXCERPT_LIMIT] + "...[truncated]"
+
+
+def _tool_entry(tool_name: str, tool_input: Mapping[str, Any], output: str, exit_code: Optional[int],
+                hook_data: Mapping[str, Any], is_shell: bool) -> Optional[Dict[str, Any]]:
+    from gaia.redaction import redact_text
+
+    if is_shell:
+        command = str(tool_input.get("command") or "")
+        if not command:
+            return None
+        return {"command": redact_text(command), "exit_code": exit_code, "excerpt": _excerpt(output)}
+    if tool_name == "Read":
+        path = tool_input.get("file_path")
+        return {"path": path} if isinstance(path, str) and path else None
+    if tool_name in ("Grep", "Glob"):
+        path = tool_input.get("path") or hook_data.get("cwd") or ""
+        return {"path": str(path), "pattern": redact_text(str(tool_input.get("pattern") or "")),
+                "excerpt": _excerpt(output)}
+    return None
+
+
+def record_tool_call(
+    tool_name: str,
+    tool_input: object,
+    output: str,
+    exit_code: Optional[int],
+    hook_data: Mapping[str, Any],
+    *,
+    is_shell: bool,
+) -> None:
+    """Append one ``tool.called`` event to the calling subagent's tool record; the orchestrator's calls and other tools leave none; never raises."""
+    try:
+        key = str(hook_data.get("harness_agent_id", hook_data.get("agent_id")) or "")
+        if not key or not isinstance(tool_input, dict):
+            return
+        entry = _tool_entry(tool_name, tool_input, output or "", exit_code, hook_data, is_shell)
+        if entry is None:
+            return
+        from gaia.contract.tool_record import TOOL_CALLED
+
+        _, agent = _caller(hook_data)
+        _write(TOOL_CALLED, agent, f"{tool_name} agent_id={key}", "info",
+               {"harness_agent_id": key, "tool": tool_name, **entry})
+    except Exception as exc:
+        logger.debug("tool.called not recorded (non-fatal): %s", exc)

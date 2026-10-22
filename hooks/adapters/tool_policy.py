@@ -30,6 +30,9 @@ GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
 
 SHELL_TOOLS = frozenset({"bash", "powershell", "monitor"})
 
+# Their PostToolUse exists only to feed the tool record, so it skips audit and grant work.
+RECORD_ONLY_TOOLS = frozenset({"Read", "Grep", "Glob"})
+
 # Dotted event category written to harness_events when a nascent-row birth is
 # rejected for an ANOMALOUS reason (see _is_anomalous_dispatch_binding_rejection).
 # Severity is warning, not error: a rejected birth never blocks the dispatch, so
@@ -271,6 +274,22 @@ def _record_skill_use(tool_name: str, tool_input: object, hook_data: dict) -> No
         record_skill_load(tool_name, tool_input, hook_data)
     except Exception as exc:
         logger.debug("skill load not recorded (non-fatal): %s", exc)
+
+
+def _record_tool_use(
+    tool_name: str, tool_input: object, tool_result: ToolResult, hook_data: dict,
+) -> None:
+    """Add the call to the calling subagent's tool record; recording never fails the call."""
+    try:
+        from modules.events.capability_usage import record_tool_call
+
+        ran = tool_result.ran and hook_data.get("is_interrupt") is not True
+        record_tool_call(
+            tool_name, tool_input, tool_result.output, tool_result.exit_code if ran else None,
+            hook_data, is_shell=str(tool_name).lower() in SHELL_TOOLS,
+        )
+    except Exception as exc:
+        logger.debug("tool call not recorded (non-fatal): %s", exc)
 
 
 def failure_verdict(error: Exception) -> PolicyVerdict:
@@ -1009,6 +1028,9 @@ class ToolPolicy:
         if not hook_data.get("agent_id") and is_memory_skill(tool_name, parameters):
             record_skill_loaded(post_session_id)
         _record_skill_use(tool_name, parameters, hook_data)
+        _record_tool_use(tool_name, parameters, tool_result, hook_data)
+        if tool_name in RECORD_ONLY_TOOLS:
+            return PolicyVerdict()
 
         # The dispatch result is the only place a harness-truncated subagent is
         # observable, and where the orchestrator gets its look at the row. The

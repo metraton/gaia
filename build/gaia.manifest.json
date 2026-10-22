@@ -29,7 +29,8 @@
         {"matcher": "Bash|PowerShell|Monitor"},
         {"matcher": "Task"},
         {"matcher": "AskUserQuestion"},
-        {"matcher": "Skill"}
+        {"matcher": "Skill"},
+        {"matcher": "Read|Grep|Glob"}
       ],
       "PostToolUseFailure": [{"matcher": "Bash|PowerShell|Monitor"}],
       "SubagentStop": [{"matcher": "*"}],

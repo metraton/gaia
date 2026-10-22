@@ -91,6 +91,11 @@ CAPABILITIES: Tuple[Capability, ...] = (
         opencode_event="tool.execute.after",
     ),
     Capability(
+        name="tool record",
+        claude_code=_registrations("PostToolUse", "Read", "Grep", "Glob"),
+        opencode_event="tool.execute.after",
+    ),
+    Capability(
         name="child compaction kernel",
         claude_code=_registrations("PreCompact"),
         opencode_event="session.compacting",

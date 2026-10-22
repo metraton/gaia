@@ -1895,32 +1895,17 @@ def cmd_finalize(args) -> int:
         _print_rejection(result, as_json=as_json)
         return 1
 
+    from gaia.contract.tool_record import stamp_harness_fields
+
+    try:
+        stamp_harness_fields(envelope, draft_id, worktree_scope=_finalize_worktree_scope())
+    except Exception as exc:
+        _print_error(f"finalize could not read the harness tool record: {exc}", as_json)
+        return 1
     agent_status = envelope.get("agent_status") or {}
     agent_id = agent_status.get("agent_id")
     agent_state = agent_status.get("agent_state")
     workspace = _resolve_workspace(getattr(args, "workspace", None))
-
-    # Identity coherence, made VISIBLE at the last seam before the row lands.
-    # A draft id IS ``{agent_id}.{token}`` and resolution globs on that prefix
-    # (gaia.contract.drafts._agent_of / list_draft_ids), so an envelope whose
-    # agent_id disagrees with its own file name is already unaddressable by
-    # --agent-id -- it just fails silently today. Since `gaia contract init`
-    # now mints and prints the handle, the only way to reach this state is to
-    # overwrite agent_status.agent_id after init with a different value, and a
-    # terminal row is immutable once written: refuse now rather than persist a
-    # row nothing can join back to its draft.
-    draft_agent_id = draft_id.split(".", 1)[0]
-    if agent_id and draft_agent_id and agent_id != draft_agent_id:
-        _print_error(
-            f"agent_id mismatch: the draft is keyed to {draft_agent_id!r} but "
-            f"agent_status.agent_id is {agent_id!r}. The draft id is "
-            f"'{{agent_id}}.{{token}}', so these must agree or the finalized "
-            f"row cannot be joined back to its draft. Set "
-            f"agent_status.agent_id to {draft_agent_id!r}, or run "
-            f"'gaia contract init' for a fresh draft under the id you want.",
-            as_json,
-        )
-        return 1
 
     # Closing-state floor (live finding: handoff row 10955). finalize is the
     # turn's CLEAN close -- it clears cut_reason and ends the row's life. A
@@ -2045,20 +2030,6 @@ def cmd_finalize(args) -> int:
         return 1
 
     from gaia.store.writer import finalize_agent_contract_handoff
-
-    # Detection surface for the agent-protocol rule that a turn implementing
-    # work runs inside its own Gaia-managed worktree rather than the shared
-    # checkout: DETECT AND REGISTER ONLY, never a gate -- adoption today is
-    # zero, so refusing a close on this would block the whole fleet at
-    # install time. Stamped on EVERY finalize (not only a turn that
-    # committed), because raw_handoff_json is the only queryable surface a
-    # later count can join against; a query that also wants "did this turn
-    # commit" filters evidence_report.commands_run itself, so this needs no
-    # commit-detection logic of its own. Best-effort by construction: the
-    # process cwd at finalize time is the only signal available without
-    # trusting anything the agent self-reports, so it degrades to "unknown"
-    # rather than raise when the worktree root cannot be resolved.
-    envelope["worktree_scope"] = _finalize_worktree_scope()
 
     try:
         outcome = finalize_agent_contract_handoff(

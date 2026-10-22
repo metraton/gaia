@@ -686,6 +686,8 @@ EVIDENCE_FIELD_TYPES = dict(
 # ...`` cannot see either. A sweep is only as complete as the shapes it knows
 # to look for.
 #
+#   harness_record      harness id and last tool-call event id finalize
+#                       consumed (``gaia.contract.tool_record``).
 #   worktree_scope      "managed" | "shared" | "unknown", stamped by
 #                       ``bin/cli/contract.py::cmd_finalize`` on every close
 #                       (``_finalize_worktree_scope``) -- DETECTION for the
@@ -707,6 +709,7 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "degraded",
     "dispatch_closed_at_subagent_stop",
     "fallback",
+    "harness_record",
     "reaped",
     "reconciled",
     "reconstructed_from_finalized_draft",

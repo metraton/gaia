@@ -11315,6 +11315,56 @@ def find_dispatch_row_by_harness_agent_id(
     return collapsed[0]
 
 
+def tool_records_for_contract(contract_id: str, *, db_path: "Path | None" = None) -> dict:
+    """The born row's agent_id and harness id, and the tool calls recorded for that harness id since its previous finalized turn.
+
+    A resumed turn shares its harness id with the turn it continues, so the
+    calls an earlier finalize already consumed (its ``harness_record``) are
+    excluded by event id rather than by timestamp, which has one-second grain.
+    """
+    from gaia.contract.tool_record import TOOL_CALLED
+
+    empty = {"agent_id": None, "harness_agent_id": None, "records": [], "through_event_id": 0}
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id, agent_id, harness_agent_id, continues_handoff_id "
+            "FROM agent_contract_handoffs WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchone()
+        if row is None:
+            return empty
+        handoff_id, agent_id, harness_agent_id, parent = row[0], row[1], row[2], row[3]
+        while not harness_agent_id and parent:
+            ancestor = con.execute(
+                "SELECT harness_agent_id, continues_handoff_id FROM agent_contract_handoffs WHERE id = ?",
+                (parent,),
+            ).fetchone()
+            harness_agent_id, parent = (ancestor[0], ancestor[1]) if ancestor else (None, None)
+        if not harness_agent_id:
+            return {**empty, "agent_id": agent_id}
+        consumed = con.execute(
+            "SELECT MAX(CAST(json_extract(raw, '$.harness_record.through_event_id') AS INTEGER)) "
+            "FROM (SELECT CASE WHEN json_valid(raw_handoff_json) THEN raw_handoff_json END AS raw "
+            "      FROM agent_contract_handoffs WHERE id != ?) "
+            "WHERE json_extract(raw, '$.harness_record.harness_agent_id') = ?",
+            (handoff_id, harness_agent_id),
+        ).fetchone()[0] or 0
+        events = con.execute(
+            "SELECT id, payload FROM harness_events WHERE type = ? AND id > ? "
+            "AND json_extract(payload, '$.harness_agent_id') = ? ORDER BY id",
+            (TOOL_CALLED, consumed, harness_agent_id),
+        ).fetchall()
+    finally:
+        con.close()
+    return {
+        "agent_id": agent_id,
+        "harness_agent_id": harness_agent_id,
+        "records": [json.loads(event[1]) for event in events],
+        "through_event_id": events[-1][0] if events else consumed,
+    }
+
+
 def open_contract_continuation(
     parent_contract_id: "str | None",
     new_contract_id: "str | None",
