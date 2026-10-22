@@ -57,6 +57,7 @@ from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
 from ..security.mutative_verbs import (
+    READ_ONLY_BASE_CMDS,
     account_path_redirect_target,
     detect_mutative_command,
     build_t3_block_response,
@@ -184,21 +185,49 @@ def _carries_ruling(validate):
     return wrapper
 
 
-_UNQUOTED_HEREDOC = re.compile(r"(?<!<)<<-?\s*([A-Za-z_][A-Za-z0-9_]*)")
+_HEREDOC_DELIMITER = re.compile(r"-?[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _reader_heredoc(line: str) -> Optional[tuple]:
+    quote, index = "", 0
+    while index < len(line):
+        char = line[index]
+        if quote:
+            quote = "" if char == quote else quote
+        elif char == "\\":
+            index += 1
+        elif char in "'\"`":
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1] in " \t"):
+            return None
+        elif char in "|;&":
+            return None
+        elif line.startswith("<<", index) and not line.startswith("<<<", index):
+            delimiter = _HEREDOC_DELIMITER.match(line, index + 2)
+            head = line[:index].split()
+            reader = bool(head) and os.path.basename(head[0]) in READ_ONLY_BASE_CMDS
+            if not (delimiter and reader) or line[delimiter.end():].strip()[:1] not in ("", "#"):
+                return None
+            return delimiter.group(1), line[index + 2:index + 3] == "-"
+        index += 1
+    return None
 
 
 def _heredoc_body_lines_as_data(command: str) -> str:
-    lines, delimiter = [], None
+    lines, body, opener = [], [], None
     for line in command.split("\n"):
-        opener = _UNQUOTED_HEREDOC.search(line) if delimiter is None else None
-        if delimiter is not None and line.strip() == delimiter:
-            delimiter = None
-        elif delimiter is not None and line.lstrip()[:1] in ("$", "`"):
-            line = f"echo {line}"
-        elif opener is not None:
-            delimiter = opener.group(1)
-        lines.append(line)
-    return "\n".join(lines)
+        if opener is None:
+            lines.append(line)
+            opener = _reader_heredoc(line)
+            continue
+        delimiter, strip_tabs = opener
+        if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+            lines.extend(f"echo {b}" if b.lstrip()[:1] in ("$", "`") else b for b in body)
+            lines.append(line)
+            body, opener = [], None
+            continue
+        body.append(line)
+    return "\n".join(lines + body)
 
 
 def _rules_t3_outcome(decide):
@@ -1826,13 +1855,19 @@ class BashValidator:
                 "call, with no wrapper (bash -c, sh -c, eval)."
             )
             decision = "deny" if is_subagent else "ask"
+            rule, undetermined = (
+                signing_rule(tripped.verb, tripped.category, tripped_command, tripped.rule)
+                if tripped is not None else signing_rule("", "MUTATIVE", command)
+            )
+            if rule.startswith("unknown.") and not undetermined:
+                undetermined = "the span the decision reads"
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
                 reason=reason,
                 block_response=build_hook_permission_response(decision, reason),
-                rule=signing_rule(tripped.verb, tripped.category, tripped_command, tripped.rule)[0]
-                if tripped is not None else signing_rule("", "MUTATIVE", command)[0],
+                rule=rule,
+                undetermined=undetermined,
             )
 
         component_results: List[BashValidationResult] = []

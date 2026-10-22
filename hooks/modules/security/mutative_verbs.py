@@ -4561,20 +4561,31 @@ def _verb_word_effect(word: str) -> str:
     return CATEGORY_READ_ONLY if any(part in _SHARED_VERBS for part in parts) else ""
 
 
-def _first_literal_word(args: "List[str]") -> str:
-    """Return the first literal positional, skipping an expansion only where it may be a long flag's value."""
-    after_long_flag = False
-    for token in args:
+_EXPRESSION_FIRST_TOOLS: FrozenSet[str] = frozenset({
+    "jq", "yq", "sed", "awk", "gawk", "shellcheck", "curl", "wget", "grep", "egrep", "fgrep", "rg",
+    "test", "[", "[[", "printf", "cut", "sort", "tr", "xmllint", "dasel",
+})
+
+
+def _literal_words(base_cmd: str, args: "List[str]") -> "List[str]":
+    """Return the literal positionals of *args*, with every flag value and shell expansion left out."""
+    words, index = [], 0
+    while index < len(args):
+        token = args[index]
         if token.startswith("-") and len(token) > 1:
-            after_long_flag = token.startswith("--") and "=" not in token
+            follower = args[index + 1] if index + 1 < len(args) else "-"
+            unknown_long = token.startswith("--") and not follower.startswith("-")
+            takes_value = "=" not in token and (absorbs_next_token(base_cmd, token) or unknown_long)
+            index += 2 if takes_value else 1
             continue
-        if _is_shell_expansion(token):
-            if not after_long_flag:
-                return ""
-            after_long_flag = False
-            continue
-        return token
-    return ""
+        closer = ")" if token.startswith("$(") else "`" if token.startswith("`") else ""
+        if closer and not (token.endswith(closer) and len(token) > 2):
+            while index + 1 < len(args) and not args[index].endswith(closer):
+                index += 1
+        elif not _is_shell_expansion(token):
+            words.append(token)
+        index += 1
+    return words
 
 
 def _is_known_verb(word: str) -> bool:
@@ -5140,8 +5151,12 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
     program = command.lstrip()
     program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
-    first_word = _first_literal_word(tokens[1:])
-    unlisted_subcommand = family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS and _is_known_verb(first_word)
+    literal_words = _literal_words(base_cmd, tokens[1:])
+    first_word = literal_words[0] if literal_words else ""
+    unlisted_subcommand = (
+        family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS | _EXPRESSION_FIRST_TOOLS
+        and any(_is_known_verb(word) for word in literal_words)
+    )
     if program_is_dynamic:
         dynamic_word = tokens[0]
     elif family in _VERB_FIRST_FAMILIES or unlisted_subcommand:
