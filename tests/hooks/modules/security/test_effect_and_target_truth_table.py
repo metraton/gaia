@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import os
+import textwrap
 import re
 import subprocess
 import sys
@@ -45,6 +48,7 @@ def _build_context(spec: dict, root: Path, name: str, managed_root: Path) -> Pat
         git("branch", "release/1.x")
         git("remote", "add", "origin", "https://example.invalid/o/r.git")
         git("update-ref", "refs/remotes/origin/main", "HEAD")
+        git("update-ref", "refs/remotes/origin/feature-x", "feature-x")
         git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
     for branch, files in spec.get("branches", {}).items():
         git("checkout", "-q", "-b", branch)
@@ -242,7 +246,7 @@ AC_SHAPES = {
     "AC-5": {
         "cluster context": ["target-kubectl-prod-context-apply", "target-kubectl-dev-context-apply", "target-kubectl-prod-context-read",
                             "target-context-unknown-verb-prod", "target-context-unknown-verb-dev", "target-context-unknown-verb-nonprod"],
-        "cloud project": ["target-gcloud-prod-project-unknown-verb", "target-gcloud-dev-project-unknown-verb"],
+        "cloud project": ["target-project-unknown-verb-prod", "target-project-unknown-verb-dev"],
         "account": ["target-account-unknown-verb-prod", "target-account-unknown-verb-dev", "target-account-aws-prod-delete", "target-account-aws-dev-delete"],
         "iac workspace": ["target-workspace-unknown-verb-prod", "target-workspace-unknown-verb-dev", "target-iac-terraform-workspace-select-prod"],
         "iac stack": ["target-stack-unknown-verb-prod", "target-stack-unknown-verb-dev", "target-iac-pulumi-up-prod-stack", "target-iac-pulumi-preview-prod-stack"],
@@ -282,28 +286,49 @@ def test_every_shape_named_in_every_brief_criterion_maps_to_rows():
 
 
 REFUSAL_SOURCES = {
-    "gaia_cli_only_guard (orchestrator role)": ["floor-cli-only-orchestrator"],
+    "check_gaia_cli_only": ["floor-cli-only-orchestrator"],
     "empty command": ["floor-empty-command"],
-    "host_consent_verb_guard": ["floor-consent-verb"],
-    "publish_attribution_guard": ["floor-claude-attribution"],
-    "comment_push_gate": ["floor-comment-limit-push"],
-    "gaia_db_write_guard": ["floor-gaia-db-sqlite", "floor-gaia-db-cp"],
-    "subagent_memory_write_guard": ["floor-memory-write-subagent"],
-    "memory_skill_guard": ["floor-memory-skill-orchestrator"],
-    "subagent_resume_point_guard": ["floor-resume-point-subagent"],
-    "protected_path_guard": ["floor-protected-install-cp", "floor-protected-install-sed"],
-    "shell_write_guard": ["floor-shell-write-redirect", "floor-shell-write-tee", "floor-shell-write-sed-i"],
-    "blocked_commands patterns": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
-    "pipe composition (network to exec)": ["seed-continue-curl-pipe-sh"],
-    "sensitive_read_guard": ["floor-secret-read-ssh-key"],
-    "indirect execution (shell wrapper, eval)": ["floor-shell-wrapper-bash-c", "floor-shell-wrapper-eval"],
+    "check_host_consent_verb": ["floor-consent-verb"],
+    "check_publish_attribution": ["floor-claude-attribution"],
+    "check_comment_push": ["floor-comment-limit-push"],
+    "check_gaia_db_write": ["floor-gaia-db-sqlite", "floor-gaia-db-cp"],
+    "check_subagent_memory_write": ["floor-memory-write-subagent"],
+    "check_memory_skill_loaded": ["floor-memory-skill-orchestrator"],
+    "check_subagent_resume_point": ["floor-resume-point-subagent"],
+    "check_protected_path_write": ["floor-protected-install-cp", "floor-protected-install-sed"],
+    "check_shell_write": ["floor-shell-write-redirect", "floor-shell-write-tee", "floor-shell-write-sed-i"],
+    "is_blocked_command": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
+    "check_kubectl_secret_output": ["floor-kubectl-secret-output"],
+    "_validate_commit_message": ["floor-commit-message"],
+    "validate_cloud_pipe": ["floor-cloud-pipe"],
+    "_phase4_check_composition": ["seed-continue-curl-pipe-sh"],
+    "check_sensitive_read": ["floor-secret-read-ssh-key"],
 }
+UNCOVERED = {"check_contract_ownership": "needs a contract row already owned by the agent id; the temp database holds none"}
+DISPATCHERS = {"_validate_sealed_elsewhere", "_validate_data_heredoc", "_validate_compound_command", "_validate_single_command"}
+
+
+def _validate_callees():
+    tree = ast.parse(textwrap.dedent(inspect.getsource(BashValidator.validate)))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
+            if name.startswith(("check_", "validate_", "_validate_", "is_blocked", "_phase4")):
+                names.add(name)
+    return names
 
 
 def test_every_non_approvable_refusal_source_has_a_blocked_row():
     by_id = {r["id"]: r for r in ROWS}
     for source, ids in REFUSAL_SOURCES.items():
         assert ids and all(by_id[i]["expected"] == "BLOCKED" for i in ids), source
+
+
+def test_the_refusal_sources_are_every_guard_the_validate_path_calls():
+    unaccounted = _validate_callees() - set(REFUSAL_SOURCES) - set(UNCOVERED) - DISPATCHERS
+    assert not unaccounted, unaccounted
 
 
 def test_no_row_names_a_personal_tool():
