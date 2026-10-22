@@ -4376,7 +4376,29 @@ _SHELL_MULTICALL_WRAPPERS = frozenset({"busybox"})
 # tokens between the flag and the terminator ARE a command by definition, which
 # is what makes reading them safe here rather than a heuristic.
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
-_FIND_EXEC_TERMINATORS = frozenset({";", "\\;", "+"})
+_FIND_EXEC_TERMINATORS = frozenset({";", "\\;"})
+
+
+def _find_exec_payloads(tokens: "List[str]") -> "Tuple[str, ...]":
+    """Every argv a find line hands to -exec/-execdir/-ok/-okdir, in order; ``+`` ends one only right after ``{}``, as find reads it."""
+    payloads: "List[str]" = []
+    index = 0
+    while index < len(tokens):
+        if tokens[index].lower() not in _FIND_EXEC_FLAGS:
+            index += 1
+            continue
+        words: "List[str]" = []
+        index += 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in _FIND_EXEC_TERMINATORS or (token == "+" and words[-1:] == ["{}"]):
+                break
+            words.append(token)
+            index += 1
+        index += 1
+        if words:
+            payloads.append(shlex.join(words))
+    return tuple(payloads)
 
 
 def _resolve_executor_payload(
@@ -4384,15 +4406,16 @@ def _resolve_executor_payload(
 ) -> "Optional[str]":
     """Return the command text *base_cmd* would hand to an executor, or None.
 
-    Three shapes, all of which pass a COMMAND as DATA:
+    Shapes that pass a COMMAND as DATA (find's exec actions are
+    ``_find_exec_payloads``, since one find can carry several):
 
         <shell> -c "<command>"      the payload is a program
         eval <words>                the words are re-parsed as a command
-        find ... -exec <command> ;  each match is handed to a command
+        a ``_COMMAND_EXECUTORS`` line  its ``-c`` option or trailing words
 
     Returns:
         The payload as a command string, or ``None`` when this command is not
-        one of the three shapes. An empty or flag-only payload also returns
+        one of these shapes. An empty or flag-only payload also returns
         ``None`` -- there is nothing to classify and inventing a verdict for it
         would gate the shell's own ``--help``.
     """
@@ -4415,18 +4438,6 @@ def _resolve_executor_payload(
 
     if base_cmd == "eval":
         return " ".join(tokens[1:]).strip() or None
-
-    if base_cmd == "find":
-        for index, token in enumerate(tokens):
-            if token.lower() not in _FIND_EXEC_FLAGS:
-                continue
-            payload = []
-            for token in tokens[index + 1:]:
-                if token in _FIND_EXEC_TERMINATORS:
-                    break
-                payload.append(token)
-            return " ".join(payload).strip() or None
-        return None
 
     grammar = _COMMAND_EXECUTORS.get(base_cmd)
     if grammar is not None:
@@ -4551,15 +4562,13 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
     return None
 
 
-def _executor_floor_payload(command: str) -> "Optional[str]":
-    """Return the command a ``_COMMAND_EXECUTORS`` line runs (its ``-c`` option or trailing words), or None; the floor judges it as written."""
+def _executor_floor_payloads(command: str) -> "Tuple[str, ...]":
+    """Return every command *command* hands to an executor (``_resolve_executor_payload``, or each find exec action); the floor judges each as written."""
     semantics = analyze_command(command)
     if semantics.base_cmd == "find":
-        return _resolve_executor_payload("find", semantics)
-    grammar = _COMMAND_EXECUTORS.get(semantics.base_cmd)
-    if grammar is None:
-        return None
-    return _executor_grammar_payload(list(semantics.tokens[1:]), grammar)
+        return _find_exec_payloads(list(semantics.tokens))
+    payload = _resolve_executor_payload(semantics.base_cmd, semantics)
+    return (payload,) if payload else ()
 
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
@@ -4716,16 +4725,23 @@ def _check_executor_payload(
             reason=f"'{base_cmd}' option {unparsed!r} is not in its grammar, so the command it runs could not be determined",
             rule="unknown.dynamic-span",
         )
-    payload = _resolve_executor_payload(base_cmd, semantics)
-    if payload is None:
+    if base_cmd == "find":
+        payloads = _find_exec_payloads(list(semantics.tokens))
+    else:
+        payload = _resolve_executor_payload(base_cmd, semantics)
+        payloads = (payload,) if payload is not None else ()
+    if not payloads:
         return None
 
     # Budget exhausted: stop descending AND retain -- see the constant.
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
         return _budget_exhausted_result("executor payload")
 
-    inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
-    if not inner.is_mutative:
+    for payload in payloads:
+        inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
+        if inner.is_mutative:
+            break
+    else:
         return None
     return MutativeResult(
         is_mutative=True,

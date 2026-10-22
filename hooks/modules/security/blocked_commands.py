@@ -27,6 +27,7 @@ Categories:
 
 import re
 import logging
+import posixpath
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
@@ -95,13 +96,13 @@ def _peel_command_wrappers(command: str) -> Tuple[Tuple[str, ...], bool]:
         return (command,), False
 
 
-def _executor_floor_payload(command: str) -> Optional[str]:
-    """Return the command an executor (runuser, ssh, xargs, ...) runs (``mutative_verbs._executor_floor_payload``)."""
+def _executor_floor_payloads(command: str) -> Tuple[str, ...]:
+    """Return every command an executor (runuser, ssh, xargs, find -exec, ...) runs (``mutative_verbs._executor_floor_payloads``)."""
     try:
-        from .mutative_verbs import _executor_floor_payload as payload_of
-        return payload_of(command)
+        from .mutative_verbs import _executor_floor_payloads as payloads_of
+        return payloads_of(command)
     except ImportError:
-        return None
+        return ()
 
 
 def _powershell_positions(command: str) -> Tuple[str, ...]:
@@ -784,11 +785,11 @@ def _classify_all_forms(command: str) -> BlockedCommandResult:
                 return position_result
 
     for reading in (command, *readings):
-        executor_payload = _executor_floor_payload(reading)
-        if executor_payload and executor_payload != reading:
-            payload_result = _classify_all_forms(executor_payload)
-            if payload_result.is_blocked:
-                return payload_result
+        for executor_payload in _executor_floor_payloads(reading):
+            if executor_payload != reading:
+                payload_result = _classify_all_forms(executor_payload)
+                if payload_result.is_blocked:
+                    return payload_result
 
     # ------------------------------------------------------------------
     # Grouping / substitution wrapper guard.
@@ -866,23 +867,44 @@ def _classify_stripped_command(command: str) -> BlockedCommandResult:
                 scratch_confined_rm = _rm_confined_to_scratch(command)
             if scratch_confined_rm:
                 continue
-        for pattern in patterns:
-            if pattern.search(command):
-                # Find suggestion for this command
-                suggestion = None
-                for cmd_prefix, cmd_suggestion in BLOCKED_COMMAND_SUGGESTIONS.items():
-                    if cmd_prefix in command.lower():
-                        suggestion = cmd_suggestion
-                        break
-
-                return BlockedCommandResult(
-                    is_blocked=True,
-                    pattern_matched=pattern.pattern,
-                    category=category,
-                    suggestion=suggestion,
-                )
+        matched = next((pattern.pattern for pattern in patterns if pattern.search(command)), None)
+        if matched is None and category == "rm_critical" and _rm_deletes_root(command):
+            matched = "semantic:rm-root"
+        if matched is not None:
+            suggestion = next(
+                (text for prefix, text in BLOCKED_COMMAND_SUGGESTIONS.items() if prefix in command.lower()), None,
+            )
+            return BlockedCommandResult(
+                is_blocked=True, pattern_matched=matched, category=category, suggestion=suggestion,
+            )
 
     return BlockedCommandResult(is_blocked=False)
+
+
+_RM_ROOT_TARGETS = frozenset({"/", "/*", "~", "~/*"})
+
+
+def _rm_deletes_root(command: str) -> bool:
+    """True when *command* is rm with recursive and force set, in any spelling rm accepts, and an operand that normalizes to /, /*, ~ or ~/*."""
+    semantics = analyze_command(command)
+    if semantics.base_cmd != "rm":
+        return False
+    recursive = force = options_ended = False
+    operands = []
+    for token in semantics.tokens[1:]:
+        if options_ended or token == "-" or not token.startswith("-"):
+            operands.append(token)
+        elif token == "--":
+            options_ended = True
+        elif token.startswith("--"):
+            recursive = recursive or "--recursive".startswith(token)
+            force = force or "--force".startswith(token)
+        else:
+            recursive = recursive or "r" in token[1:].lower()
+            force = force or "f" in token[1:]
+    return recursive and force and any(
+        posixpath.normpath(re.sub(r"/+", "/", operand)) in _RM_ROOT_TARGETS for operand in operands
+    )
 
 
 
