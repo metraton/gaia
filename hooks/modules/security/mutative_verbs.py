@@ -3253,7 +3253,8 @@ def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: 
     """True for ``push [-u|--set-upstream] <remote> <branch>`` onto a branch that is not the default.
 
     The default is main, master and whatever the remote's HEAD names; an
-    unresolved HEAD leaves only main and master. A refspec (``+``, ``:``),
+    unresolved HEAD leaves only main and master. A ``+`` refspec, a ``src:dst``
+    whose sides name different branches, a remote that is not configured,
     ``HEAD``, any ref outside ``refs/heads/`` and a name that is not a local
     branch, or is also a tag, never qualify: git would push something else.
     """
@@ -3262,6 +3263,11 @@ def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: 
     if any(flag not in _GIT_PUSH_RELIEF_FLAGS for flag in flags) or len(operands) != 2:
         return False
     remote, branch = operands
+    source, colon, destination = branch.partition(":")
+    if colon:
+        if destination not in (source, f"refs/heads/{source}"):
+            return False
+        branch = source
     if not _GIT_REMOTE_NAME_RE.match(remote) or not _GIT_BRANCH_NAME_RE.match(branch):
         return False
     if branch.startswith("refs/"):
@@ -3271,7 +3277,7 @@ def _git_push_targets_feature_branch(path: Optional[str], rest: List[str], cwd: 
     if ".." in branch or branch.endswith(("/", ".lock")) or branch.lower() == "head":
         return False
     repo = _git_repo_dir(path, cwd)
-    if repo is None:
+    if repo is None or remote not in _git_remote_names(repo):
         return False
     default = set(_GIT_DEFAULT_BRANCHES)
     remote_head = _remote_head_branch(repo, remote)

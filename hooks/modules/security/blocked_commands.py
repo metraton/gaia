@@ -17,7 +17,6 @@ Categories:
 - Terraform/Terragrunt destroy (without -target)
 - Docker bulk prune operations
 - Flux uninstall (removes all Flux components)
-- Git force push operations (not --force-with-lease)
 - GitHub/GitLab repo delete
 - npm unpublish (entire package)
 - SQL destructive operations (drop database, drop table)
@@ -372,16 +371,8 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"flux\s+uninstall\b", re.IGNORECASE),
     ],
 
-    # Git - Force push (history rewrite, not --force-with-lease).
-    # NOTE: ``git reset --hard`` is intentionally NOT in this category.  It is
-    # routed through the T3 approval flow (mutative_verbs.py) so the user can
-    # confirm or decline it interactively.  See the rationale in
-    # ``mutative_verbs.GIT_HARD_RESET_FLAGS`` and the test
-    # ``test_git_reset_hard_is_t3_approvable`` for the contract.
-    "git_destructive": [
-        re.compile(r"git\s+push\s+.*--force(?!-with-lease)", re.IGNORECASE),
-        re.compile(r"git\s+push\s+.*(?<!\w)-f\b", re.IGNORECASE),
-    ],
+    # Git has no floor entry: a force push destroys remote history that the
+    # remote's reflog or a re-push can restore, so it signs (mutative_verbs.py).
 
     # GitHub/GitLab - Repo deletion
     "repo_delete": [
@@ -512,10 +503,6 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     # Flux suggestions
     "flux uninstall": "[BLOCKED] flux uninstall removes ALL Flux components from the cluster",
 
-    # Git suggestions
-    "git push --force": "[BLOCKED] Force push rewrites history - use git push --force-with-lease",
-    "git push -f": "[BLOCKED] Force push rewrites history - use git push --force-with-lease",
-
     # GitHub/GitLab suggestions
     "gh repo delete": "[BLOCKED] Repository deletion is irreversible - destroys all code and history",
     "glab project delete": "[BLOCKED] Project deletion is irreversible - destroys all code and history",
@@ -552,7 +539,7 @@ BLOCKED_COMMAND_SUGGESTIONS = {
 # the real subcommand, e.g.:
 #   kubectl --context prod delete namespace
 #   aws --profile prod ec2 delete-vpc
-#   git -C repo push origin main --force
+#   gh --repo o/r repo delete
 SEMANTIC_BLOCKED_RULES = (
     # AWS
     SemanticBlockedRule("aws_critical", ("aws", "ec2", "delete-vpc"), "aws ec2 delete-vpc"),
@@ -680,12 +667,6 @@ SEMANTIC_BLOCKED_RULES = (
 
     # Flux
     SemanticBlockedRule("flux_critical", ("flux", "uninstall"), "flux uninstall"),
-
-    # Git
-    # NOTE: ``git reset --hard`` is approvable (T3) -- see git_destructive
-    # comment above and ``mutative_verbs.GIT_HARD_RESET_FLAGS``.
-    SemanticBlockedRule("git_destructive", ("git", "push"), "git push --force", required_flags=("--force",)),
-    SemanticBlockedRule("git_destructive", ("git", "push"), "git push -f", required_flags=("-f",)),
 
     # GitHub/GitLab
     SemanticBlockedRule("repo_delete", ("gh", "repo", "delete"), "gh repo delete"),

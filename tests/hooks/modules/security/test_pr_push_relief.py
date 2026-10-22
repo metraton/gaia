@@ -207,7 +207,8 @@ def test_push_of_a_feature_branch_is_free_at_the_bash_boundary(repo):
     "push --all origin",
     "push --tags origin",
     "push origin +feat/x",
-    "push origin feat/x:feat/x",
+    "push origin feat/x:main",
+    "push origin feat/x:feat/y",
     "push origin :feat/x",
     "push origin feat/x feat/y",
     "push https://example.invalid/o/r.git feat/x",
@@ -220,8 +221,14 @@ def test_push_that_rewrites_deletes_or_targets_the_default_still_asks(repo, push
 
 def test_unresolved_remote_head_counts_only_main_and_master_as_default(tmp_path):
     bare = _init_repo(tmp_path / "no-head")
+    _git("-C", bare, "remote", "add", "origin", "https://example.invalid/o/r.git")
     assert not _mutative(f"git -C {bare} push origin develop")
     assert _mutative(f"git -C {bare} push origin master")
+
+
+def test_a_remote_the_repository_does_not_configure_asks(tmp_path):
+    bare = _init_repo(tmp_path / "no-remote")
+    assert _mutative(f"git -C {bare} push origin develop")
 
 
 @pytest.mark.parametrize("push", [
@@ -234,6 +241,11 @@ def test_a_tag_or_the_default_spelled_as_a_ref_still_asks(repo, push):
 
 def test_a_feature_branch_spelled_as_a_ref_is_free(repo):
     assert not _mutative(f"git -C {repo} push origin refs/heads/feat/x")
+
+
+@pytest.mark.parametrize("refspec", ["feat/x:feat/x", "feat/x:refs/heads/feat/x"])
+def test_a_refspec_onto_the_same_feature_branch_is_free(repo, refspec):
+    assert not _mutative(f"git -C {repo} push origin {refspec}")
 
 
 # -- Alias inheritance is limited to names Gaia has no rule for ---------------
