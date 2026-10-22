@@ -256,7 +256,7 @@
 ,{"id": "floor-claude-attribution", "owner": "T1", "expected": "BLOCKED", "command": "gh pr create --title t --body \"Generated with Claude Code\"", "rule": "floor.publish-attribution", "category": "floor", "src": "gaia-floor"}
 ,{"id": "floor-comment-limit-push", "owner": "T1", "expected": "BLOCKED", "command": "git push origin noisy", "rule": "floor.comment-push-gate", "category": "floor", "src": "gaia-floor", "context": "repo_noisy", "note": "The branch adds eight comment lines over one code line."}
 ,{"id": "floor-memory-write-subagent", "owner": "T1", "expected": "BLOCKED", "command": "gaia memory add x", "rule": "floor.subagent-memory-write", "category": "floor", "src": "gaia-floor"}
-,{"id": "floor-memory-skill-orchestrator", "owner": "T1", "expected": "BLOCKED", "command": "gaia memory add x", "rule": "floor.memory-skill-not-loaded", "category": "floor", "src": "gaia-floor", "role": "orchestrator"}
+,{"id": "floor-memory-skill-orchestrator", "owner": "T1", "expected": "BLOCKED", "command": "{GAIA} memory add x", "rule": "floor.memory-skill-not-loaded", "category": "floor", "src": "gaia-floor", "role": "orchestrator"}
 ,{"id": "floor-resume-point-subagent", "owner": "T1", "expected": "BLOCKED", "command": "gaia session resume-point set x", "rule": "floor.subagent-resume-point", "category": "floor", "src": "gaia-floor"}
 ,{"id": "floor-kubectl-secret-output", "owner": "T1", "expected": "BLOCKED", "command": "kubectl get secret s -o yaml", "rule": "floor.kubectl-secret-output", "category": "floor", "src": "gaia-floor"}
 ,{"id": "floor-commit-message", "owner": "T1", "expected": "BLOCKED", "command": "git commit -m \"bad message\"", "rule": "floor.commit-message", "category": "floor", "src": "gaia-floor", "context": "repo"}

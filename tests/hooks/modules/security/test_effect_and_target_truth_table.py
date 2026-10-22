@@ -89,7 +89,7 @@ def _nested_shells(depth: int) -> str:
 
 def observe(command: str, context: str, world: dict, role: str = "subagent", session: bool = True) -> tuple:
     for key, value in (("{CWD}", str(world["dirs"][context])), ("{SCRATCH}", world["SCRATCH"]), ("{WORKTREES}", world["WORKTREES"]),
-                       ("{NEST5}", _nested_shells(5))):
+                       ("{NEST5}", _nested_shells(5)), ("{GAIA}", str(_REPO_ROOT / "bin" / "gaia"))):
         command = command.replace(key, value)
     detect_mutative_command.cache_clear()
     tiers_module._classify_command_tier_cached.cache_clear()
