@@ -2052,6 +2052,10 @@ def cmd_finalize(args) -> int:
 
     handoff_id = outcome.get("handoff_id")
     created = bool(outcome.get("created"))
+    if created:
+        from gaia.contract.tool_record import commit_harness_record
+
+        commit_harness_record(envelope)
     if as_json:
         payload = {
             "status": "finalized",

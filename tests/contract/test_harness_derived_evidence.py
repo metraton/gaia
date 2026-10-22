@@ -71,6 +71,13 @@ def _read(path: str, harness_agent_id: str, tool: str = "Read", tool_input: dict
     }))).output
 
 
+def _spool_lines(key: str) -> list:
+    from gaia.contract import read_spool
+
+    path = read_spool.spool_path(key)
+    return path.read_text().splitlines() if path.exists() else []
+
+
 def _envelope(agent_id: str, commands=(), files=(), **extra) -> dict:
     return {
         "agent_status": {"agent_state": "NEEDS_VERIFICATION", "agent_id": agent_id},
@@ -166,7 +173,110 @@ def test_an_opencode_read_is_recorded_once_when_policy_lets_it_run():
     report = _stamp(_envelope(agent), contract_id)["evidence_report"]
 
     assert report["files_checked"] == ["/repo/a.py"]
-    assert _event_types().count("tool.called") == 1
+    assert len(_spool_lines(child_session)) == 1
+
+
+def test_a_read_is_spooled_and_opens_no_database_record():
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+
+    assert read_spool.read(agent) == ["/repo/a.py"]
+    assert "tool.called" not in _event_types()
+
+
+def test_a_path_is_redacted_before_it_reaches_the_spool():
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    _read(f"/repo/{GITHUB_TOKEN}.txt", agent)
+
+    assert GITHUB_TOKEN not in json.dumps(_spool_lines(agent))
+    assert len(read_spool.read(agent)) == 1
+
+
+def test_a_missing_or_unwritable_state_dir_never_fails_the_tool_call(tmp_path, monkeypatch):
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("x")
+    monkeypatch.setenv("GAIA_DATA_DIR", str(blocker))
+    agent = _agent()
+
+    output = _read("/repo/a.py", agent)
+
+    assert output.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+
+
+def test_parallel_appends_each_land_as_one_whole_line():
+    from concurrent.futures import ThreadPoolExecutor
+
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda n: read_spool.append(agent, "Read", f"/repo/{n}.py"), range(400)))
+
+    assert sorted(read_spool.read(agent)) == sorted(f"/repo/{n}.py" for n in range(400))
+
+
+def test_the_spool_stops_growing_at_its_bound(monkeypatch):
+    from gaia.contract import read_spool
+
+    monkeypatch.setattr(read_spool, "MAX_SPOOL_BYTES", 1024)
+    agent = _agent()
+    for n in range(200):
+        read_spool.append(agent, "Read", f"/repo/{n}.py")
+
+    assert read_spool.spool_path(agent).stat().st_size < 1024 + read_spool.MAX_LINE_BYTES
+    assert 0 < len(read_spool.read(agent)) < 200
+
+
+def test_a_torn_or_foreign_line_is_skipped_when_the_spool_is_read():
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    read_spool.append(agent, "Read", "/repo/a.py")
+    with open(read_spool.spool_path(agent), "ab") as handle:
+        handle.write(b'{"path": "/repo/tor\nnot json\n{"path": 7}\n')
+    read_spool.append(agent, "Read", "/repo/b.py")
+
+    assert read_spool.read(agent) == ["/repo/a.py", "/repo/b.py"]
+
+
+def test_a_cut_turn_is_rescued_with_the_paths_it_read_and_the_spool_is_consumed():
+    from gaia.contract import read_spool
+    from gaia.contract.tool_record import recover_spooled_files
+
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    _read("/repo/b.py", agent)
+    envelope = {"evidence_report": {"files_checked": ["/repo/a.py"]}}
+
+    harness_agent_id = recover_spooled_files(envelope, contract_id)
+
+    assert envelope["evidence_report"]["files_checked"] == ["/repo/a.py", "/repo/b.py"]
+    assert harness_agent_id == agent
+    read_spool.discard(harness_agent_id)
+    assert read_spool.read(agent) == []
+
+
+def test_finalizing_consumes_the_spool_so_a_resumed_turn_starts_empty():
+    from gaia.contract.tool_record import commit_harness_record
+
+    agent = _agent()
+    first_contract = _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    first = _stamp(_envelope(agent), first_contract)
+    commit_harness_record(first)
+    resumed_contract = _born_row(agent, agent)
+    _read("/repo/b.py", agent)
+
+    report = _stamp(_envelope(agent), resumed_contract)["evidence_report"]
+
+    assert first["evidence_report"]["files_checked"] == ["/repo/a.py"]
+    assert report["files_checked"] == ["/repo/b.py"]
 
 
 def test_a_command_the_agent_claims_but_never_ran_survives_only_as_annotation():

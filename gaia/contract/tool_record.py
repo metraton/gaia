@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from gaia.contract import read_spool
+
 TOOL_CALLED = "tool.called"
 ANNOTATION_MARK = "[agent annotation] "
 
@@ -20,8 +22,9 @@ def _command_entry(record: Dict[str, Any]) -> str:
 
 def harness_evidence(
     records: Iterable[Dict[str, Any]], agent_commands: Iterable[Any], agent_files: Iterable[Any],
+    spooled_files: Iterable[str] = (),
 ) -> Dict[str, List[str]]:
-    """The recorded commands and paths, followed by the agent's own entries the record does not hold, marked as annotations."""
+    """The recorded commands and paths, the spooled paths, then the agent's own entries the record does not hold, marked as annotations."""
     commands: List[str] = []
     files: List[str] = []
     ran = set()
@@ -33,6 +36,7 @@ def harness_evidence(
             commands.append(_command_entry(record))
         elif isinstance(path, str) and path and path not in files:
             files.append(path)
+    files.extend(path for path in dict.fromkeys(spooled_files) if path not in files)
     recorded_commands = ran | set(commands)
     for entry in agent_commands:
         if isinstance(entry, str) and entry and entry not in recorded_commands:
@@ -58,8 +62,34 @@ def stamp_harness_fields(
     report = envelope.setdefault("evidence_report", {})
     report.update(harness_evidence(
         found["records"], report.get("commands_run") or [], report.get("files_checked") or [],
+        read_spool.read(found["harness_agent_id"]),
     ))
     envelope["harness_record"] = {
         "harness_agent_id": found["harness_agent_id"],
         "through_event_id": found["through_event_id"],
     }
+
+
+def commit_harness_record(envelope: Dict[str, Any]) -> None:
+    """Delete the read spool the envelope was stamped from; called once the row that holds its paths is written."""
+    key = (envelope.get("harness_record") or {}).get("harness_agent_id")
+    if key:
+        read_spool.discard(key)
+
+
+def recover_spooled_files(
+    envelope: Dict[str, Any], contract_id: str, *, db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """Add the paths a cut turn spooled to the envelope's files_checked; returns the harness id whose spool to discard once the row is written."""
+    from gaia.store.writer import tool_records_for_contract
+
+    key = tool_records_for_contract(contract_id, db_path=db_path)["harness_agent_id"]
+    if not key:
+        return None
+    report = envelope.get("evidence_report")
+    if not isinstance(report, dict):
+        report = envelope["evidence_report"] = {}
+    files = report.get("files_checked")
+    files = list(files) if isinstance(files, list) else []
+    report["files_checked"] = files + [path for path in read_spool.read(key) if path not in files]
+    return key

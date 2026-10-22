@@ -166,7 +166,7 @@ def record_command_run(
 
 
 def record_file_checked(tool_name: str, tool_input: object, hook_data: Mapping[str, Any]) -> None:
-    """Append the path a Read, Grep or Glob call is about to open to the subagent's tool record; never raises."""
+    """Spool the path a Read, Grep or Glob call is about to open for the subagent's finalize, with no database write; never raises."""
     try:
         if not isinstance(tool_input, dict):
             return
@@ -177,8 +177,11 @@ def record_file_checked(tool_name: str, tool_input: object, hook_data: Mapping[s
         else:
             return
         if isinstance(path, str) and path:
+            from gaia.contract import read_spool
             from gaia.redaction import redact_text
 
-            _append_tool_record(tool_name, hook_data, {"path": redact_text(path)})
+            key = str(hook_data.get("harness_agent_id", hook_data.get("agent_id")) or "")
+            if key:
+                read_spool.append(key, tool_name, redact_text(path))
     except Exception as exc:
         logger.debug("tool.called not recorded (non-fatal): %s", exc)
