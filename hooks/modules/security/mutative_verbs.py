@@ -4632,6 +4632,7 @@ def _check_executor_payload(
             f"Executor '{base_cmd}' runs mutative payload {payload!r}: "
             f"{inner.reason}"
         ),
+        rule=inner.rule,
     )
 
 
@@ -5060,14 +5061,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if account_redirect is not None:
         return account_redirect
 
-    # --- Step 0-dynamic: the verb word of a verb-first CLI is a shell expansion ---
-    if family in _VERB_FIRST_FAMILIES and len(tokens) > 1 and tokens[1][:1] in ("$", "`"):
+    # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
+    verb_word = semantics.semantic_head_tokens_raw[1:2] if family in _VERB_FIRST_FAMILIES else ()
+    dynamic_word = next((word for word in (tokens[0], *verb_word) if word[:1] in ("$", "`")), None)
+    if dynamic_word is not None:
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_UNKNOWN,
-            verb="dynamic-verb",
+            verb="dynamic-program" if dynamic_word == tokens[0] else "dynamic-verb",
             cli_family=family,
-            reason=f"the verb word {tokens[1]!r} of '{base_cmd}' could not be determined",
+            reason=f"the word {dynamic_word!r} naming what runs could not be determined",
             rule="unknown.dynamic-span",
         )
 

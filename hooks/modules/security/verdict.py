@@ -77,7 +77,9 @@ _PACKAGE_INSTALLERS: FrozenSet[str] = frozenset({
 })
 _INTERACTIVE_FLAGS: FrozenSet[str] = frozenset({"-i", "-t", "-it", "-ti", "--interactive", "--tty", "--stdin"})
 _DYNAMIC = re.compile(r"^[\"']?(\$|`)")
-_WORD = re.compile(r"[a-z0-9][a-z0-9_-]*")
+_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_CAMEL = re.compile(r"[a-z][A-Z]")
+_CAMEL_PART = re.compile(r"[A-Z]?[a-z0-9]+")
 
 
 def remediation(rule: str) -> str:
@@ -109,8 +111,6 @@ def undetermined_span(verb: str, category: str, command: str) -> Optional[Tuple[
     tokens = _tokens(command)
     if verb == "script-file-unreadable":
         return UNKNOWN_SPAN, "the script that decides its effect"
-    if category == "UNKNOWN" and tokens and _DYNAMIC.match(tokens[0]):
-        return UNKNOWN_SPAN, "the program it runs"
     if verb == "exec" and "--" in tokens:
         payload = tokens[tokens.index("--") + 1:]
         if payload and _DYNAMIC.match(payload[0]):
@@ -126,7 +126,9 @@ def effect_rule(verb: str, command: str) -> str:
     """Return the leg a signed command stands on: destroys, speaks, foreign code or lands."""
     tokens = _tokens(command)
     lowered = [t.lower() for t in tokens]
-    words = set(_WORD.findall(command.lower()))
+    raw_words = _WORD.findall(command)
+    words = {w.lower() for w in raw_words}
+    words |= {part.lower() for w in raw_words if _CAMEL.search(w) for part in _CAMEL_PART.findall(w)}
     if verb == "registry-fetch":
         return "sign.foreign-code"
     if verb == "install" and "install" in lowered:
