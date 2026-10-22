@@ -46,8 +46,13 @@ import shlex
 from typing import Iterator, List, Optional, Tuple
 
 from .cli_aliases import is_cli
+from .forge_shapes import change_request_action
 
 _MAX_BODY_BYTES = 1024 * 1024
+
+_CHANGE_REQUEST_PUBLISHING = {"create", "edit", "update", "comment", "note", "review"}
+_CHANGE_REQUEST_BODY_FILE_FLAGS = {"--body-file", "-F", "--description-file"}
+_LEADING_VALUE_OPTIONS = {"-C", "-R", "--repo"}
 
 # gh subcommands whose text lands on GitHub. ``api`` is included because
 # ``gh api`` posts comments and releases just as well as the porcelain verbs.
@@ -141,6 +146,13 @@ def _flag_values(args: List[str], flags: set) -> Iterator[str]:
             yield arg.split("=", 1)[1]
 
 
+def _command_path(args: List[str]) -> List[str]:
+    """The non-flag words of *args* once leading directory and repository options are dropped."""
+    while len(args) >= 2 and args[0] in _LEADING_VALUE_OPTIONS:
+        args = args[2:]
+    return [a for a in args if not a.startswith("-")]
+
+
 def _publishing_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
     """Return the body files a publishing segment names, or None if it does not publish."""
     while tokens and (tokens[0] == "env" or _ENV_ASSIGNMENT.match(tokens[0])):
@@ -168,6 +180,8 @@ def _publishing_body_files(tokens: List[str], cwd: str) -> Optional[List[str]]:
             files = list(_flag_values(args, _GH_BODY_FILE_FLAGS))
         else:
             return None
+    elif change_request_action(_command_path(args)) in _CHANGE_REQUEST_PUBLISHING:
+        files = list(_flag_values(args, _CHANGE_REQUEST_BODY_FILE_FLAGS))
     elif base == "git":
         while len(args) >= 2 and args[0] in ("-C", "-c"):
             if args[0] == "-C":

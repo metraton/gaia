@@ -211,6 +211,51 @@ def test_each_change_request_shape_spans_every_binary():
     assert {r["id"].split("-")[-1] for r in ROWS if r["id"].startswith("forge-gh-")} >= shapes
 
 
+CHANGE_REQUEST_OPERATIONS = {
+    "create --title t --body b": "FREE",
+    "edit 42 --title t": "FREE",
+    "update 42 --title t": "FREE",
+    "view 42": "FREE",
+    "list": "FREE",
+    "comment 42 --body hi": "SIGNED",
+    "note 42 --message hi": "SIGNED",
+    "ready 42": "SIGNED",
+    "review 42 --approve": "SIGNED",
+    "close 42": "SIGNED",
+    "merge 42 --squash": "SIGNED",
+    "edit 42 --base main": "SIGNED",
+    "create --title t --auto-merge": "SIGNED",
+}
+
+CHANGE_REQUEST_SPELLINGS = {
+    "gh": "gh pr {op}",
+    "ghx": "ghx pr {op}",
+    "glab": "glab mr {op}",
+    "tea": "tea pulls {op}",
+    "env-wrapped": "env GH_HOST=example.invalid gh pr {op}",
+    "timeout-wrapped": "timeout 30 ghx -C /work/tree pr {op}",
+    "declared-wrapper": "mywrap pr {op}",
+    "quoted": "'ghx' 'pr' \"{verb}\" {rest}",
+}
+
+
+@pytest.mark.parametrize("operation", list(CHANGE_REQUEST_OPERATIONS))
+def test_a_change_request_operation_gets_one_verdict_whatever_the_binary(operation, world, monkeypatch):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(world["root"] / "gaia-data"))
+    monkeypatch.setenv("GAIA_DB", str(world["root"] / "gaia-data" / "gaia.db"))
+    monkeypatch.chdir(world["root"])
+    verb, _, rest = operation.partition(" ")
+    verdicts = {}
+    for name, template in CHANGE_REQUEST_SPELLINGS.items():
+        if name == "declared-wrapper":
+            monkeypatch.setenv("GAIA_CLI_ALIASES", "mywrap=gh")
+        else:
+            monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
+        command = template.format(op=operation, verb=verb, rest=rest)
+        verdicts[command] = observe(command, "none", world)[0]
+    assert set(verdicts.values()) == {CHANGE_REQUEST_OPERATIONS[operation]}, verdicts
+
+
 def test_every_brief_criterion_has_rows_and_every_tightening_has_a_free_twin():
     for ac in ("AC-1", "AC-2", "AC-3", "AC-4", "AC-5", "AC-6", "AC-7", "AC-8"):
         assert any(ac in r.get("ac", []) for r in ROWS), ac

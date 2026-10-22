@@ -137,8 +137,10 @@ def test_declared_wrapper_still_asks_where_gh_asks(monkeypatch, command):
     assert _mutative(command), command
 
 
-def test_undeclared_wrapper_inherits_nothing():
-    assert _mutative(f"{WRAPPER} pr create --title t")
+def test_undeclared_wrapper_is_judged_by_the_change_request_shape():
+    assert not _mutative(f"{WRAPPER} pr create --title t")
+    assert _mutative(f"{WRAPPER} pr edit 42 --base main")
+    assert _mutative(f"{WRAPPER} pr merge 42 --squash")
 
 
 def test_an_alias_named_after_a_known_cli_keeps_that_cli_gates(monkeypatch):

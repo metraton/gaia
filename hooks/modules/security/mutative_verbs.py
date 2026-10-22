@@ -27,6 +27,7 @@ from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 from .approval_messages import build_t3_approval_instructions
 from .canonical_path import is_launcher, program_identity
 from .cli_aliases import as_wrapped_cli, declared_wrapper
+from .forge_shapes import change_request_action
 from .command_semantics import (
     BOOLEAN_SHORT_FLAGS,
     CommandSemantics,
@@ -623,24 +624,25 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 
 
 # Actions exempted by name under a group whose other actions stay gated: the
-# verbs proven not to write, and `gh pr create|edit`, whose write the user
-# decided needs no consent because a PR changes nothing that runs until it is
-# merged. Every other verb under the group, including one added later, still
-# falls to the scan.
+# verbs proven not to write. Every other verb under the group, including one
+# added later, still falls to the scan.
 #
 # Key:   (base_cmd, group)  -- group is non_flag_tokens[0].
 # Value: {verb: category}.
 SUBCOMMAND_VERB_TIER_EXCEPTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
     ("gaia", "migrate"): {"plan": CATEGORY_SIMULATION},
     ("gh", "label"): {"list": CATEGORY_READ_ONLY},
-    ("gh", "pr"): {"create": CATEGORY_UNKNOWN, "edit": CATEGORY_UNKNOWN},
 }
 
-# Flags that take an exempted action back to the scan: `gh pr edit --base`
-# retargets the PR at another branch, which is the merge's own decision.
-SUBCOMMAND_VERB_EXCEPTION_REVOKING_FLAGS: Dict[Tuple[str, str, str], Tuple[str, ...]] = {
-    ("gh", "pr", "edit"): ("--base", "-B"),
-}
+# Opening or editing one's own change request changes nothing that runs until merged;
+# a flag that retargets, publishes or schedules the merge is the merge's decision.
+_CHANGE_REQUEST_OWN_WORK: FrozenSet[str] = frozenset({"create", "edit", "update"})
+_CHANGE_REQUEST_LANDING_FLAGS: Tuple[str, ...] = ("--auto-complete", "--auto-merge", "--bypass-policy")
+_CHANGE_REQUEST_EDIT_FLAGS: Tuple[str, ...] = (
+    "--base", "-B", "--target-branch", "--ready", "--draft", "--status", "--state",
+)
+_CHANGE_REQUEST_VOICE: FrozenSet[str] = frozenset({"ready", "comment", "note"})
+_FORGE_CLIS: FrozenSet[str] = frozenset({"gh", "glab", "tea", "az"})
 
 
 def _carries_revoking_flag(tokens: Union[List[str], tuple], flags: Tuple[str, ...]) -> bool:
@@ -698,7 +700,6 @@ _ACCOUNT_SLOT_ACTIONS: FrozenSet[str] = frozenset({"switch", "logout"})
 _API_BODY_FLAGS: FrozenSet[str] = frozenset({"--field", "--raw-field", "--input"})
 _API_READ_METHODS: FrozenSet[str] = frozenset({"get", "head"})
 _GRAPHQL_MUTATION_RE = re.compile(r"\bmutation\b", re.IGNORECASE)
-_PULL_REQUEST_NOUNS: FrozenSet[str] = frozenset({"pr", "mr", "pull-request", "merge-request"})
 _REVIEW_VERDICT_FLAGS: FrozenSet[str] = frozenset({
     "--approve", "--request-changes", "--comment", "-a", "-r", "-c",
 })
@@ -805,8 +806,8 @@ def _check_generic_cli_shape(
         guidance = _ACCOUNT_SLOT_GUIDANCE
     elif head == "api" and (api_verb := _api_mutating_verb(semantics.args, action == "graphql")):
         verb = api_verb
-    elif head in _PULL_REQUEST_NOUNS and action == "ready":
-        pass
+    elif change_request_action(path) in _CHANGE_REQUEST_VOICE:
+        verb = change_request_action(path)
     elif action == "review" and _REVIEW_VERDICT_FLAGS.intersection(semantics.flag_tokens):
         pass
     else:
@@ -4978,7 +4979,7 @@ def detect_mutative_command(
     A wrapper declared in ``GAIA_CLI_ALIASES`` is also read as the CLI it
     wraps, so it is never classified more leniently than that CLI.  A wrapper
     the classifier does not model is classified as that CLI outright, which
-    lets it inherit the CLI's exceptions (``gh pr create``); a declared name
+    lets it inherit the CLI's exceptions (``gh label list``); a declared name
     the classifier models keeps its own gates.  The lookup stays outside the
     cached function so the cache remains keyed on the command text alone.
     """
@@ -5897,15 +5898,25 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     ),
                 )
 
-        verb_categories = SUBCOMMAND_VERB_TIER_EXCEPTIONS.get(subcommand_key, {})
-        revoking_flags = SUBCOMMAND_VERB_EXCEPTION_REVOKING_FLAGS.get(
-            (*subcommand_key, group_verb), ()
-        )
+        cr_action = change_request_action(semantics.non_flag_tokens)
+        cr_revoking = _CHANGE_REQUEST_LANDING_FLAGS + (_CHANGE_REQUEST_EDIT_FLAGS if cr_action != "create" else ())
         if (
-            group_verb in verb_categories
+            cr_action in _CHANGE_REQUEST_OWN_WORK
+            and (base_cmd in _FORGE_CLIS or _is_unmodelled_cli(base_cmd))
             and not _scan_dangerous_flags(tokens, base_cmd)
-            and not _carries_revoking_flag(tokens, revoking_flags)
+            and not _carries_revoking_flag(tokens, cr_revoking)
         ):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_UNKNOWN,
+                verb=cr_action,
+                cli_family=family,
+                confidence="high",
+                reason=f"'{base_cmd} {' '.join(semantics.non_flag_tokens[:3])}' opens or edits a change request, free for any forge binary",
+            )
+
+        verb_categories = SUBCOMMAND_VERB_TIER_EXCEPTIONS.get(subcommand_key, {})
+        if group_verb in verb_categories and not _scan_dangerous_flags(tokens, base_cmd):
             return MutativeResult(
                 is_mutative=False,
                 category=verb_categories[group_verb],
