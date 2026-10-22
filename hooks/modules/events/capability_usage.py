@@ -137,46 +137,44 @@ def _excerpt(text: str) -> str:
     return redacted if len(redacted) <= EXCERPT_LIMIT else redacted[:EXCERPT_LIMIT] + "...[truncated]"
 
 
-def _tool_entry(tool_name: str, tool_input: Mapping[str, Any], output: str, exit_code: Optional[int],
-                hook_data: Mapping[str, Any], is_shell: bool) -> Optional[Dict[str, Any]]:
-    from gaia.redaction import redact_text
+def _append_tool_record(tool_name: str, hook_data: Mapping[str, Any], entry: Dict[str, Any]) -> None:
+    from gaia.contract.tool_record import TOOL_CALLED
 
-    if is_shell:
-        command = str(tool_input.get("command") or "")
-        if not command:
-            return None
-        return {"command": redact_text(command), "exit_code": exit_code, "excerpt": _excerpt(output)}
-    if tool_name == "Read":
-        path = tool_input.get("file_path")
-        return {"path": path} if isinstance(path, str) and path else None
-    if tool_name in ("Grep", "Glob"):
-        path = tool_input.get("path") or hook_data.get("cwd") or ""
-        return {"path": str(path), "pattern": redact_text(str(tool_input.get("pattern") or "")),
-                "excerpt": _excerpt(output)}
-    return None
+    # Only a subagent's call carries a harness id, so the orchestrator's calls leave no record.
+    key = str(hook_data.get("harness_agent_id", hook_data.get("agent_id")) or "")
+    if key:
+        _write(TOOL_CALLED, str(hook_data.get("agent_type") or ""), f"{tool_name} agent_id={key}",
+               "info", {"harness_agent_id": key, "tool": tool_name, **entry})
 
 
-def record_tool_call(
-    tool_name: str,
-    tool_input: object,
-    output: str,
-    exit_code: Optional[int],
-    hook_data: Mapping[str, Any],
-    *,
-    is_shell: bool,
+def record_command_run(
+    tool_input: object, output: str, exit_code: Optional[int], hook_data: Mapping[str, Any],
 ) -> None:
-    """Append one ``tool.called`` event to the calling subagent's tool record; the orchestrator's calls and other tools leave none; never raises."""
+    """Append a shell call's redacted command, exit code and output excerpt to the subagent's tool record; never raises."""
     try:
-        key = str(hook_data.get("harness_agent_id", hook_data.get("agent_id")) or "")
-        if not key or not isinstance(tool_input, dict):
-            return
-        entry = _tool_entry(tool_name, tool_input, output or "", exit_code, hook_data, is_shell)
-        if entry is None:
-            return
-        from gaia.contract.tool_record import TOOL_CALLED
+        from gaia.redaction import redact_text
 
-        _, agent = _caller(hook_data)
-        _write(TOOL_CALLED, agent, f"{tool_name} agent_id={key}", "info",
-               {"harness_agent_id": key, "tool": tool_name, **entry})
+        command = str(tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
+        if command:
+            _append_tool_record(str(hook_data.get("tool_name") or ""), hook_data, {
+                "command": redact_text(command), "exit_code": exit_code, "excerpt": _excerpt(output or ""),
+            })
+    except Exception as exc:
+        logger.debug("tool.called not recorded (non-fatal): %s", exc)
+
+
+def record_file_checked(tool_name: str, tool_input: object, hook_data: Mapping[str, Any]) -> None:
+    """Append the path a Read, Grep or Glob call is about to open to the subagent's tool record; never raises."""
+    try:
+        if not isinstance(tool_input, dict):
+            return
+        if tool_name == "Read":
+            path = tool_input.get("file_path")
+        elif tool_name in ("Grep", "Glob"):
+            path = tool_input.get("path") or hook_data.get("cwd")
+        else:
+            return
+        if isinstance(path, str) and path:
+            _append_tool_record(tool_name, hook_data, {"path": path})
     except Exception as exc:
         logger.debug("tool.called not recorded (non-fatal): %s", exc)

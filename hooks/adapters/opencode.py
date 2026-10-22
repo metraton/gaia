@@ -1113,6 +1113,7 @@ class OpenCodeAdapter(HookAdapter):
                 "session_id": event.session_id,
                 "tool_use_id": event.call_id or "",
                 "agent_id": event.host_agent_id or "",
+                "harness_agent_id": event.session_id if event.host_agent_id else "",
                 "agent_type": self._policy_agent_type(event),
                 "role_context": self._forward_role_context(event),
             }
@@ -1284,7 +1285,6 @@ class OpenCodeAdapter(HookAdapter):
         from modules.agents.task_result_observer import TASK_TOOL_NAMES
 
         payload = self.build_policy_payload(event)
-        payload["harness_agent_id"] = event.session_id if event.host_agent_id else ""
         payload["tool_input"] = self._without_unverified_decision(
             event, payload.get("tool_input", {})
         )

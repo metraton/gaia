@@ -98,15 +98,6 @@
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py\""
           }
         ]
-      },
-      {
-        "matcher": "Read|Grep|Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/launch.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py\""
-          }
-        ]
       }
     ],
     "PostToolUseFailure": [

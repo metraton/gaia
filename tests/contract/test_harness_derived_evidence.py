@@ -61,8 +61,14 @@ def _bash(command: str, harness_agent_id: str, stdout: str = "ok") -> None:
             harness_agent_id)
 
 
-def _read(path: str, harness_agent_id: str) -> None:
-    _claude("Read", {"file_path": path}, {"type": "text", "file": {"filePath": path}}, harness_agent_id)
+def _read(path: str, harness_agent_id: str, tool: str = "Read", tool_input: dict | None = None) -> dict:
+    adapter = ClaudeCodeAdapter()
+    return adapter.adapt_pre_tool_use(adapter.parse_event(json.dumps({
+        "hook_event_name": "PreToolUse", "session_id": "ses-parent", "cwd": "/repo",
+        "tool_name": tool, "tool_input": tool_input or {"file_path": path},
+        "tool_use_id": f"toolu-{uuid.uuid4().hex[:8]}",
+        "agent_id": harness_agent_id, "agent_type": "developer",
+    }))).output
 
 
 def _envelope(agent_id: str, commands=(), files=(), **extra) -> dict:
@@ -120,6 +126,47 @@ def test_the_opencode_after_tool_event_resolves_the_subagent_by_its_session():
     report = _stamp(_envelope(agent), contract_id)["evidence_report"]
 
     assert [entry.split(" (exit")[0] for entry in report["commands_run"]] == ["git log -1"]
+
+
+def test_grep_and_glob_are_recorded_by_the_path_they_search():
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    _read("", agent, tool="Grep", tool_input={"pattern": "def ", "path": "/repo/gaia"})
+    _read("", agent, tool="Glob", tool_input={"pattern": "**/*.py"})
+
+    report = _stamp(_envelope(agent), contract_id)["evidence_report"]
+
+    assert report["files_checked"] == ["/repo/gaia", "/repo"]
+
+
+def test_a_read_refused_before_it_runs_is_not_recorded_as_checked():
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    refused = _read("/repo/.env", agent)
+    _read("/repo/a.py", agent)
+
+    report = _stamp(_envelope(agent), contract_id)["evidence_report"]
+
+    assert refused["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert report["files_checked"] == ["/repo/a.py"]
+
+
+def test_an_opencode_read_is_recorded_once_when_policy_lets_it_run():
+    child_session = f"ses-child-{uuid.uuid4().hex[:8]}"
+    agent = _agent()
+    contract_id = _born_row(agent, child_session)
+    adapter = OpenCodeAdapter()
+    call = {"sessionID": child_session, "callID": "call-8", "agentID": "call-dispatch-handle",
+            "agent": "developer", "tool": "read", "args": {"filePath": "/repo/a.py"}}
+    adapter.adapt_pre_tool_use(adapter.parse_event(json.dumps({"event": "tool.execute.before", **call})))
+    adapter.adapt_post_tool_use(adapter.parse_event(json.dumps({
+        "event": "tool.execute.after", **call, "result": {"output": "contents"},
+    })))
+
+    report = _stamp(_envelope(agent), contract_id)["evidence_report"]
+
+    assert report["files_checked"] == ["/repo/a.py"]
+    assert _event_types().count("tool.called") == 1
 
 
 def test_a_command_the_agent_claims_but_never_ran_survives_only_as_annotation():
