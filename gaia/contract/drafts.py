@@ -473,7 +473,7 @@ def initial_envelope(agent_id: str) -> dict:
     special-cased pass): agent_state defaults to IN_PROGRESS, pending_steps is
     present (empty list), next_action is a non-empty placeholder the agent
     overwrites, and evidence_report carries all seven required keys.
-    ``failure_report`` / ``memory_delta`` / ``work_phase`` /
+    ``failure_report`` / ``memory_delta`` / ``work_phase`` / ``conclusion`` /
     ``consolidation_report`` / ``approval_request`` are seeded ``None``:
     discoverable in ``gaia contract view`` without being required
     (``gaia.contract.validator.validate_form`` only runs their shape checks
@@ -506,6 +506,7 @@ def initial_envelope(agent_id: str) -> dict:
         "failure_report": None,
         "memory_delta": None,
         "work_phase": None,
+        "conclusion": None,
     }
 
 

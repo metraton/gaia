@@ -119,14 +119,17 @@ already wrote.
   `NEEDS_VERIFICATION`; the verifier is bound through `parent_handoff_id`.
 - `consolidation_report` is required when input marks consolidation,
   cross-check, or multi-surface work.
-- Every clean close, in any closing state: `user_facing_summary` is a
-  non-blank string. It is the only part of the row that reaches the user's
-  display, so it holds what the user needs in plain words -- what was done,
-  what is left, what they must decide. `finalize` refuses a close without it
-  (`user_facing_summary_required`) and names the `gaia contract set
-  --draft-id <id> user_facing_summary '...'` call that fills it. Rows closed by
-  the reaper, the SubagentStop backstop or salvage are cut, not clean, and are
-  exempt.
+- Every clean close, in any closing state: `conclusion` is a non-blank
+  string -- the specialist's verdict for the orchestrator, in its own technical
+  register: what holds, on what evidence, what is open. The orchestrator reads
+  it on the dispatch result's summary line, validates it against the row and
+  the artifacts, and only then answers the user; it never reaches the user's
+  display directly. `finalize` refuses a close without it
+  (`conclusion_required`) and names the `gaia contract set --draft-id <id>
+  conclusion '...'` call that fills it. During the rename, a close that wrote
+  only `user_facing_summary` is stored as `conclusion` and stamped
+  `conclusion_alias`. Rows closed by the reaper, the SubagentStop backstop or
+  salvage are cut, not clean, and are exempt.
 
 `finalize` persists any valid state and converges the row born at dispatch. It
 does not turn a non-terminal state into `COMPLETE`. `validate` is read-only.
@@ -189,7 +192,7 @@ minted, `approval_id`, copied verbatim from the request's output.
 
 - `report_prose`: narrow narrative field -- why/discovery-order/purpose-frame/synthesis, never
   evidence, addressed to the orchestrator and the next agent, not the end user; full definition and
-  the line against `user_facing_summary` in `agent-protocol`.
+  the line against `conclusion` in `agent-protocol`.
 - `memory_delta`, `memorialize_suggestions`, `memory_suggestions`: proposals,
   never write authority.
 - `update_contracts`: `{contract, payload}` entries, a proposal for any

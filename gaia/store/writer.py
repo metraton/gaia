@@ -12566,7 +12566,9 @@ def contract_fill_rate(
     workspace: str | None = None,
     db_path: "Path | None" = None,
 ) -> dict:
-    """Count clean closes in a window carrying a surface (own or chain's) and a user_facing_summary."""
+    """Count clean closes in a window carrying a surface (own or chain's) and a conclusion."""
+    from gaia.contract.validator import conclusion_of
+
     clauses = [
         "cut_reason IS NULL",
         "agent_state <> 'DISPATCHED'",
@@ -12607,17 +12609,16 @@ def contract_fill_rate(
     finally:
         con.close()
 
-    def has_summary(raw: "str | None") -> bool:
+    def has_conclusion(raw: "str | None") -> bool:
         try:
-            summary = json.loads(raw or "{}").get("user_facing_summary")
-        except (TypeError, ValueError, AttributeError):
+            return conclusion_of(json.loads(raw or "{}")) is not None
+        except (TypeError, ValueError):
             return False
-        return isinstance(summary, str) and bool(summary.strip())
 
     total = len(rows)
     counts = {
         "surface": sum(1 for row in rows if row["has_surface"]),
-        "user_facing_summary": sum(1 for row in rows if has_summary(row["raw_handoff_json"])),
+        "conclusion": sum(1 for row in rows if has_conclusion(row["raw_handoff_json"])),
     }
     report: dict = {"since": since, "until": until, "rows": total}
     for field, filled in counts.items():

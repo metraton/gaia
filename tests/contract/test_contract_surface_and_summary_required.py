@@ -54,7 +54,7 @@ def _envelope(state: str = "NEEDS_VERIFICATION", summary=None) -> dict:
         "approval_request": None,
     }
     if summary is not None:
-        envelope["user_facing_summary"] = summary
+        envelope["conclusion"] = summary
     return envelope
 
 
@@ -68,16 +68,15 @@ def _draft(env: dict, envelope: dict) -> str:
 
 
 @pytest.mark.parametrize("summary", [None, "", "   "])
-def test_finalize_refuses_a_close_without_user_facing_summary(cli_env, summary):
+def test_finalize_refuses_a_close_without_conclusion(cli_env, summary):
     draft_id = _draft(cli_env, _envelope(summary=summary))
 
     fin = _run(["finalize", "--draft-id", draft_id, "--json"], cli_env)
 
     assert fin.returncode == 1, fin.stdout
     payload = json.loads(fin.stdout)
-    assert payload["reason"] == "user_facing_summary_required"
-    assert "user_facing_summary" in payload["error"]
-    assert f"gaia contract set --draft-id {draft_id} user_facing_summary" in payload["error"]
+    assert payload["reason"] == "conclusion_required"
+    assert f"gaia contract set --draft-id {draft_id} conclusion" in payload["error"]
 
 
 def test_finalize_accepts_the_close_once_the_summary_is_filled(cli_env):
@@ -85,7 +84,7 @@ def test_finalize_accepts_the_close_once_the_summary_is_filled(cli_env):
     assert _run(["finalize", "--draft-id", draft_id], cli_env).returncode == 1
 
     fixed = _run(
-        ["set", "--draft-id", draft_id, "user_facing_summary", "Task 9 is ready for review."],
+        ["set", "--draft-id", draft_id, "conclusion", "Task 9 is ready for review."],
         cli_env,
     )
     assert fixed.returncode == 0, fixed.stderr
@@ -156,7 +155,7 @@ def test_cut_lanes_close_without_a_summary_and_fill_rate_reports_both(cli_env):
     report = json.loads(res.stdout)
     assert report["rows"] == 4
     assert report["surface"]["filled"] == 3
-    assert report["user_facing_summary"]["filled"] == 3
+    assert report["conclusion"]["filled"] == 3
     assert report["surface"]["rate"] == pytest.approx(0.75)
 
     gated = _run(["fill-rate", "--since", "7d", "--min", "0.95", "--json"], cli_env)

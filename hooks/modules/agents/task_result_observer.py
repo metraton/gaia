@@ -453,7 +453,14 @@ def build_contract_summary_line(
     if fields_segment and len(line) > _LINE_HARD_CEILING:
         line = f"{core} -- {cmd}"
 
+    from gaia.conclusions import claim
+    from gaia.contract.validator import conclusion_of
     from .proposal_notices import proposal_notice
+
+    conclusion = conclusion_of(envelope)
+    ledger_session = str(row.get("session_id") or session_id or "")
+    if conclusion and claim(ledger_session, str(row.get("contract_id") or ""), conclusion):
+        line = f"{line}\nconclusion: {conclusion}"
 
     proposed = proposal_notice(
         envelope,

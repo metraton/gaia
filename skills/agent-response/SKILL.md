@@ -92,12 +92,14 @@ the owning specialist, never with a reading of the forge of your own.
 
 ## Relaying to the user
 
-On a valid single-agent `COMPLETE`, SubagentStop parses `user_facing_summary` off the same envelope the
-gate treated as authoritative (`parse_user_facing_summary`) and emits it as the turn's `systemMessage`
--- a channel that reaches the USER's display and does NOT continue your conversation (measured by
-suppression; see the comment over the relay in `hooks/adapters/claude_code.py`). Nothing arrived in
-front of you: the field lives on the row, and the one read that fetches it is `contract view --field
-user_facing_summary --harness-id <agentId>`. Read it when the user-facing report needs it and relay it
-near-verbatim. Synthesizing from `key_outputs`, verification, failures and open gaps is the fallback for
-when the field is absent, and at N>1 the per-agent summaries are inputs to one synthesis rather than N
-relays. Preserve ownership boundaries and do not hide evidence the row and the verdict disagree on.
+A specialist answers you, never the user: nothing it writes reaches the user's display before you
+handled it (`decision_gaia_especialistas_responden_al_orquestador_no_al_usuario_20261022`). Its
+`conclusion` is its verdict for you, in its technical register, and arrives once on both hosts: as
+`conclusion: <text>` on the dispatch result's contract summary line when the turn closed before that
+result, otherwise -- a background dispatch -- as `<agentId>: closed <state>, conclusion: <text>` in the
+next prompt's context, at most three per prompt and the rest named by their reader; `contract view --field conclusion
+--harness-id <agentId>` reads it again (a row closed before the rename answers from its
+`user_facing_summary`). Treat it as a claim, not as copy: validate it against the row's evidence, the
+artifacts it names and the user's intent, discuss with the specialist when they disagree, and only then
+answer the user in plain language in your own words. At N>1 the conclusions are inputs to one synthesis.
+Preserve ownership boundaries and do not hide evidence the row and the verdict disagree on.

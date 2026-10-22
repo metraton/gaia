@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Behavior tests for the optional ``user_facing_summary`` contract field (Option A).
-
-The field is the single human-audience field in the contract: a brief prose
-summary the subagent writes once for the user, which the orchestrator relays
-near-verbatim on a single-agent COMPLETE instead of re-synthesizing key_outputs.
+"""Behavior tests for ``user_facing_summary``, the pre-rename spelling of ``conclusion``, still read on old rows.
 
 These tests exercise the REAL validators and REAL parse helpers -- nothing is
 mocked, no preconditions are injected. The contract is built exactly as a
@@ -24,7 +20,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.agents import response_contract as response_contract_module  # noqa: E402
 from modules.agents.contract_validator import (  # noqa: E402
-    parse_user_facing_summary as cv_parse_user_facing_summary,
+    parse_conclusion as cv_parse_user_facing_summary,
     validate,
 )
 from modules.agents.response_contract import validate_response_contract  # noqa: E402
