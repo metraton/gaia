@@ -97,7 +97,7 @@ assets/
   the skill's `../build.md`; `npm test` runs the negative-test suite over the
   checks themselves.
 - **The dialect** (every piece, every field and every value) is documented in
-  the diagram-builder skill's `../toolbox.md`.
+  the deck-builder skill's `../toolbox.md`.
 - **`document.yaml`'s optional `version`** renders in the header — bump it on a
   meaningful change. The engine also
   supports click-and-drag panning on the canvas (grab/grabbing cursor) as a

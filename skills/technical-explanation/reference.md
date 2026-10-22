@@ -6,7 +6,7 @@ each form answers. `SKILL.md` carries the decisions and the rules; this file is
 opened when an explanation is being lowered into a rendered artifact, or when a
 form has to be checked against the criterion that produced it.
 
-## Lane 1 -- `diagram-builder` (a YAML deck)
+## Lane 1 -- `deck-builder` (a YAML deck)
 
 The deck's material is two primitives -- a **section** that arranges and a
 **component** that carries -- plus page-level **filters** whose chips light a
@@ -14,17 +14,17 @@ relation across components. The correspondence from an explanation is fixed:
 
 | Explanation | Deck | Where the field lives |
 |-------------|------|-----------------------|
-| a phase | a section, placed by its `order` among its siblings | `skills/diagram-builder/assets/engine/build-data.mjs` (`SECTION_FIELDS`) |
-| a step | a component inside its phase-section, placed by its `order` | `skills/diagram-builder/assets/engine/build-data.mjs` (`COMPONENT_FIELDS`) |
-| the path | one filter declared on the page, whose `key` every step component lists in its `filters` | `skills/diagram-builder/assets/engine/build-data.mjs` (`FILTER_FIELDS`, page `filters`) |
-| a disclosure level | a page; a filter `key` reused on two pages projects one onto the other | `skills/diagram-builder/assets/engine/build-data.mjs` (`MANIFEST_PAGE_FIELDS`) |
-| the step index | the component's `kicker`, by convention `STEP n OF m` -- open vocabulary, no validation, no rendered progress affordance | `skills/diagram-builder/assets/engine/build-data.mjs` (`COMPONENT_FIELDS`) |
+| a phase | a section, placed by its `order` among its siblings | `skills/deck-builder/assets/engine/build-data.mjs` (`SECTION_FIELDS`) |
+| a step | a component inside its phase-section, placed by its `order` | `skills/deck-builder/assets/engine/build-data.mjs` (`COMPONENT_FIELDS`) |
+| the path | one filter declared on the page, whose `key` every step component lists in its `filters` | `skills/deck-builder/assets/engine/build-data.mjs` (`FILTER_FIELDS`, page `filters`) |
+| a disclosure level | a page; a filter `key` reused on two pages projects one onto the other | `skills/deck-builder/assets/engine/build-data.mjs` (`MANIFEST_PAGE_FIELDS`) |
+| the step index | the component's `kicker`, by convention `STEP n OF m` -- open vocabulary, no validation, no rendered progress affordance | `skills/deck-builder/assets/engine/build-data.mjs` (`COMPONENT_FIELDS`) |
 
 What the crossing loses, and how each loss is carried:
 
 - **Arrows.** The engine draws no edges and its component types are closed to
   `box`, `separator`, `rail` and `spacer`
-  (`skills/diagram-builder/assets/engine/build-data.mjs`, `COMPONENT_TYPES`).
+  (`skills/deck-builder/assets/engine/build-data.mjs`, `COMPONENT_TYPES`).
   A directed relation becomes chip membership plus `order`; the direction is
   read from the packing order and from the kicker's step index.
 - **An arrow label.** A labelled arrow of the inline picture ("pushes image")

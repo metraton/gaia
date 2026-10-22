@@ -99,6 +99,56 @@ two-writer wave, end to end, is in `examples.md`.
    the turn to close or goes to a fresh dispatch, since a turn sized for one
    goal exhausts its ceiling on two.
 
+## What the goal says, beyond the kernel
+
+The orchestrator's identity lists only the tokens a goal literally carries
+(`project=`, `ceiling=`, `parent_handoff_id`, the raw goal, one integration
+at a time); the craft of the rest is here.
+
+- **Acceptance as a property, not a checklist.** A checklist is satisfied by
+  its items; a property makes the specialist find the cases the goal did not
+  name, proven by literal output, never by the agent's assertion -- for a
+  "found nothing", what was searched and how, because an unproven nothing is
+  indistinguishable from not looking. The goal leaves the HOW to the
+  specialist, since the HOW is the pattern choice it was dispatched for, and is
+  written in the affirmative, because naming a forbidden behavior primes it;
+  anything ruled out arrives with the route to the same result.
+- **The premise as a claim.** The goal carries its premise as something the
+  specialist may refute, with the refutation owed back as a deliverable: a
+  competent agent executes a false premise flawlessly, and the goal is the only
+  place it can be caught.
+- **A destination for every class of rationale.** Turn reasoning to the
+  contract, change explanation to the PR body, cross-unit facts to docs, and
+  only the why the code cannot say to code, beside the declaration whose change
+  would falsify it -- a goal that rewards self-explanation without a
+  destination produces comments in proportion to its own quality.
+- **References the orchestrator already opened.** Every reference passed is
+  one it opened itself, with the same verb, the same flag, from the same
+  workspace the recipient will use -- "I saw it in a listing" has twice not
+  meant "it resolves for the specialist". A prior turn's judgment -- a spec, an
+  approved wording -- travels literally in the goal or at a reference that
+  resolves, never only in a return message, because contract rows persist
+  verdicts, not bodies. A sibling's finished contract is handed off by pointing
+  at the rows and fields that hold the evidence.
+- **A seeded agent for contract-bearing work.** A host-native agent cannot
+  finalize a contract row, so one is used only when the returned message is the
+  whole deliverable.
+- **A fan-out buys contrast; a lens is an activity.** A question that spans
+  surfaces goes to each owning specialist and comes back as one contrast. Where
+  the perspective needed is a craft rather than a surface, each lens reaches its
+  goal as the activity it performs -- red-team the diff, trace the data lineage
+  -- never as a persona, because a character yields a voice and an activity
+  yields evidence. Several blind turns on one question declare their
+  discriminators before any of them return; a conclusion shared in advance buys
+  only confirmation.
+- **A follow-up is a resume.** A resume names the contract row the turn owns
+  and follows the raw-goal rule. A question about what a specialist just did, a
+  correction, the cleanup after a Reject, a signature that stayed pending is a
+  resume of that same specialist, never a fresh dispatch; a granted T3 survives
+  the resume, so requesting and executing belong in one turn. Claude Code
+  resumes with `SendMessage` to the agent id; OpenCode with the `task` tool
+  carrying `task_id`, the session id its last result or Gaia's notice printed.
+
 ## Anti-patterns
 
 - **The goal that re-narrates.** Retelling a sibling's findings or the kernel's

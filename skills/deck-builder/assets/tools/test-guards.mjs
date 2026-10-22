@@ -1,4 +1,4 @@
-// test-guards.mjs — permanent NEGATIVE-test suite for the diagram-builder
+// test-guards.mjs — permanent NEGATIVE-test suite for the deck-builder
 // guards (check-layout.mjs, build-data.mjs strict-schema, the YAML reader and
 // the engine's video hook). `model` is the mandatory gate for every deck edit; this
 // suite exists to prove the gate actually DETECTS what it claims to, not just

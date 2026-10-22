@@ -45,10 +45,11 @@ Ask the orchestrator "what is Gaia?" or "what can you do for me?" and it explain
 |---|---|
 | Change or investigate code, infrastructure, a cluster's desired state, or a live system | A specialist: `developer`, `platform-architect`, `gitops-operator`, `cloud-troubleshooter` |
 | Understand something -- a system, a process, what happened, why it failed | `technical-explanation` |
-| A README for a repository or a folder | `readme-writing` |
+| A README, a runbook, a PR body, a report or a CHANGELOG entry | `technical-writing` |
+| A message or an email for someone else, sent in the user's name | `ghostwriting` |
 | A ticket or an issue | `ticket-writing` |
 | A blog post | `blog-writing` |
-| A diagram deck -- an architecture map, a timeline, a flow, a comparison | `diagram-builder` |
+| A diagram deck -- an architecture map, a timeline, a flow, a comparison | `deck-builder` |
 | Capture a feature before planning it | `brief-spec` |
 | Plan it -- decompose it into verifiable tasks | `gaia-planner` (a skill and the agent of the same name) |
 | A review of a module, a branch or a PR | `code-review` |

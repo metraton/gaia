@@ -1,6 +1,6 @@
 # README Writing Reference
 
-Filled examples and blank skeletons for the readme-writing skill.
+Filled examples and blank skeletons for the README doors of the technical-writing skill.
 
 **This file branches the same way the skill does.** Step 1 of [`SKILL.md`](SKILL.md) names one of three gates, and that gate decides which part of this file is yours. Read your gate's part; do not borrow sections from another one. A section written well but belonging to a different gate is still the wrong artifact.
 

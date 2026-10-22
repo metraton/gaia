@@ -1,6 +1,6 @@
 # Document manifest — the single source of which pages render, in what order.
 # name / order / visible live ONLY here; the page file owns id + content.
-# See the diagram-builder dialect reference for the full schema.
+# See the deck-builder dialect reference for the full schema.
 title: "Diagram Deck"
 subtitle: "A portable, data-driven diagram — edit data/ and run npm run build"
 version: "0.2.0"   # optional — shown in the header; bump it when the deck changes meaningfully

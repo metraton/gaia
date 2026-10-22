@@ -2,7 +2,7 @@
 // static-census.cjs — the browser-free FOUNDATION both guardrails read: the
 // authored-data reader, the form taxonomy they share, and the collapse
 // breakpoints as the CSS declares them.
-// @version 1.1.0  (part of the diagram-builder skill; keep in sync with
+// @version 1.1.0  (part of the deck-builder skill; keep in sync with
 //                  engine/build-data.mjs — this module MIRRORS its
 //                  visible/order resolution, it does not re-implement it)
 //

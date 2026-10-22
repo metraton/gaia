@@ -1,7 +1,7 @@
 # DATA 7 OF 7 — values that combine on one box. The tour's last page.
 #
 # id lives here (+ cross-referenced in ../document.yaml); name/order/visible
-# live in the manifest. See the diagram-builder dialect reference (the skill's
+# live in the manifest. See the deck-builder dialect reference (the skill's
 # toolbox.md) for every field.
 #
 # THIS PAGE'S JOB — the data the other pages did not need: values that COMBINE

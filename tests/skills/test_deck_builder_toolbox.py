@@ -1,6 +1,6 @@
-"""diagram-builder's toolbox.md must name every property the deck engine accepts.
+"""deck-builder's toolbox.md must name every property the deck engine accepts.
 
-``skills/diagram-builder/toolbox.md`` is the one reference a deck author learns
+``skills/deck-builder/toolbox.md`` is the one reference a deck author learns
 the pieces from, and the skill's claim is that a reader who knows every property
 can compose what no template foresaw. That claim rots silently: a field added to
 a build whitelist produces no error anywhere, only a property nobody is taught.
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-_SKILL = Path(__file__).resolve().parents[2] / "skills" / "diagram-builder"
+_SKILL = Path(__file__).resolve().parents[2] / "skills" / "deck-builder"
 _TOOLBOX = _SKILL / "toolbox.md"
 _BUILD_DATA = _SKILL / "assets" / "engine" / "build-data.mjs"
 _TOKENS = _SKILL / "assets" / "engine" / "tokens.mjs"

@@ -118,7 +118,7 @@ When you modify any Gaia component (hook, skill, agent definition, routing confi
 - Changed `hooks/modules/security/protected_paths.py::is_protected_hook_path` paths → check `security-tiers/SKILL.md` for path documentation
 - Added a new agent definition → check `gaia-patterns/reference.md` for agents table
 - Modified hook enforcement logic → check `security-tiers` and `agent-protocol` references
-- When adding or modifying files in agents/, skills/, hooks/, config/, bin/, tests/, build/ or the repo root, load Skill('readme-writing') to update the relevant README.md
+- When adding or modifying files in agents/, skills/, hooks/, config/, bin/, tests/, build/ or the repo root, load Skill('technical-writing') (door: README) to update the relevant README.md
 
 **Format:** In `cross_layer_impacts`, list the doc file and the behavior change, e.g.:
 ```
