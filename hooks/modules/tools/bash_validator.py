@@ -194,19 +194,12 @@ _COMPOUND_T3_DENIAL = (
 )
 _BUILTIN_WRAPPERS = frozenset({"command", "builtin", "exec"})
 _HEREDOC_DATA_READERS = frozenset({
-    "cat", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "nl", "rev", "fold", "tee",
+    "cat", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "nl", "rev", "fold", "tee", "jq",
 })
 _BASE64_DECODE_ARGS = frozenset({"-d", "--decode", "-i", "--ignore-garbage"})
-_STDIN_PATHS = frozenset({"-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"})
-_AWK_SED_PROGRAM_FILE = frozenset({"-f", "--file"})
-_PROGRAM_FILE_FLAGS = {
-    "awk": _AWK_SED_PROGRAM_FILE, "gawk": _AWK_SED_PROGRAM_FILE, "mawk": _AWK_SED_PROGRAM_FILE,
-    "sed": _AWK_SED_PROGRAM_FILE,
-    "grep": _AWK_SED_PROGRAM_FILE, "egrep": _AWK_SED_PROGRAM_FILE, "fgrep": _AWK_SED_PROGRAM_FILE,
-    "jq": frozenset({"-f", "--from-file"}),
-    "yq": frozenset({"--from-file"}),
-}
-_XARGS_VALUE_FLAGS = frozenset({"-a", "-E", "-I", "-L", "-n", "-P", "-s", "-d"})
+_GREPS = frozenset({"grep", "egrep", "fgrep"})
+_GREP_PATTERN_FILE = frozenset({"-f", "--file"})
+_XARGS_VALUE_FLAGS = frozenset({"-a", "--arg-file", "-E", "-I", "-L", "-n", "-P", "-s", "-d"})
 _PATH_VALUE_OPTIONS = frozenset({"-C", "-c", "-R", "--repo"})
 _HEREDOC_MESSAGE_FLAGS = {
     "git": (
@@ -260,6 +253,13 @@ def _reads_message_from_stdin(program: str, args: List[str]) -> bool:
     return _command_path(args, len(next(iter(paths)))) in paths and "-" in _flag_values(args, flags)
 
 
+def _xargs_payload(reader: str) -> Optional[str]:
+    words = _peel_leading_command_wrappers(reader)[0].split()
+    if not words or os.path.basename(words[0]) != "xargs":
+        return None
+    return " ".join(_xargs_target(words[1:])) or "echo"
+
+
 def _xargs_target(args: List[str]) -> List[str]:
     index = 0
     while index < len(args) and args[index].startswith("-"):
@@ -278,10 +278,8 @@ def _heredoc_reader(head: str) -> bool:
     if not words:
         return False
     program, args = os.path.basename(words[0]), words[1:]
-    if program == "xargs":
-        return _heredoc_reader(" ".join(_xargs_target(args)))
-    if program in _PROGRAM_FILE_FLAGS:
-        return not set(_flag_values(args, _PROGRAM_FILE_FLAGS[program])) & _STDIN_PATHS
+    if program in _GREPS:
+        return not _flag_values(args, _GREP_PATTERN_FILE)
     if program == "base64":
         return set(args) <= _BASE64_DECODE_ARGS
     return _reads_message_from_stdin(program, args) or program in _HEREDOC_DATA_READERS
@@ -346,14 +344,8 @@ def _heredoc_as_program(heredoc: _Heredoc) -> Optional[str]:
     return command if program is not None and program.is_readable else None
 
 
-def _heredoc_readings(reader: str, body: List[str]) -> List[str]:
-    under_xargs = any(os.path.basename(word) == "xargs" for word in reader.split())
-    readings = []
-    for line in filter(None, (b.strip() for b in body)):
-        readings.append(line)
-        if under_xargs:
-            readings.append(f"{reader} {line}")
-    return readings
+def _heredoc_lines(body: List[str]) -> List[str]:
+    return [line for line in (b.strip() for b in body) if line]
 
 
 def _scan_heredocs(command: str) -> Tuple[str, List[_Heredoc]]:
@@ -1517,16 +1509,27 @@ class BashValidator:
 
         return result
 
-    @staticmethod
     def _fail_closed_on_code_heredoc(
-        heredocs: List[_Heredoc], result: BashValidationResult, *, is_subagent: bool, cwd: Optional[str],
+        self, heredocs: List[_Heredoc], result: BashValidationResult, *, is_subagent: bool, cwd: Optional[str],
     ) -> BashValidationResult:
         """Hold a heredoc no pure data reader reads to at least UNKNOWN; a body reading on a floor blocks, a mutative one signs."""
-        readings, unread = [], False
+        readings, xargs_commands, unread = [], [], False
         for heredoc in heredocs:
-            program = _heredoc_as_program(heredoc)
-            unread = unread or program is None
-            readings.extend([program] if program else _heredoc_readings(heredoc.reader, heredoc.body))
+            program, payload = _heredoc_as_program(heredoc), _xargs_payload(heredoc.reader)
+            if program:
+                readings.append(program)
+            elif payload is not None:
+                xargs_commands.extend(f"{payload} {line}" for line in _heredoc_lines(heredoc.body))
+            else:
+                unread = True
+                readings.extend(_heredoc_lines(heredoc.body))
+        signed = None
+        for xargs_command in xargs_commands:
+            verdict = BashValidator.validate.__wrapped__(self, xargs_command)
+            asks = verdict.block_response is not None and read_permission_decision(verdict.block_response) == "ask"
+            if not (verdict.allowed or asks):
+                return verdict
+            signed = signed or (None if verdict.allowed else verdict)
         for reading in readings:
             blocked = is_blocked_command(reading)
             if blocked.is_blocked:
@@ -1540,16 +1543,19 @@ class BashValidator:
         if not result.allowed:
             return result
         rule, undetermined = UNKNOWN_SPAN, "the program its heredoc feeds"
-        for reading in readings:
+        tripped = signed is not None
+        if tripped:
+            rule, undetermined = signed.rule, signed.undetermined
+        for reading in [] if tripped else readings:
             detected = detect_mutative_command(reading, cwd=cwd)
             if detected.is_mutative:
                 rule, undetermined = signing_rule(detected.verb, detected.category, reading, detected.rule)
                 if rule.startswith("unknown.") and not undetermined:
                     undetermined = "the span the decision reads"
+                tripped = True
                 break
-        else:
-            if not unread:
-                return result
+        if not (tripped or unread):
+            return result
         return BashValidationResult(
             allowed=False,
             tier=SecurityTier.T3_BLOCKED,

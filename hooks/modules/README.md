@@ -229,12 +229,16 @@ bash_validator checks commands in this order (short-circuit on first match):
 
 Every `<<` on a line is paired with the command segment that reads it, and bodies are taken in the order the shell reads them (`_heredoc_openers`, `_scan_heredocs` in `tools/bash_validator.py`). A segment starts after `;`, `|`, `&`, `&&`, `||` or `(`.
 
-A heredoc body is data only when that reader, after its wrappers (`sudo`, `env`, `timeout`, `nice`, `command`, `builtin`, `exec`), never runs what it reads (`_heredoc_reader`):
+A heredoc body is data only when that reader, after its wrappers (`sudo`, `env`, `timeout`, `nice`, `command`, `builtin`, `exec`), provably cannot execute or write what it reads (`_heredoc_reader`):
 
-- **Pure data readers.** `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `nl`, `rev`, `fold`, `tee`, and `base64` encoding or decoding.
-- **Expression-first tools.** `awk`/`gawk`/`mawk`, `sed`, `grep`/`egrep`/`fgrep`, `jq` and `yq` take their program from argv, so the heredoc is their input. A program-file flag reading stdin (`-f`, `--file`, `--from-file` with `-`, `/dev/stdin`, `/dev/fd/0`) makes the body their program, and it is code (`_PROGRAM_FILE_FLAGS`).
-- **`xargs` running a data reader**, as in `xargs -d , cat`. Its value flags are skipped to find the target (`_xargs_target`); any other target is code.
+- **Pure data readers.** `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `nl`, `rev`, `fold`, `tee`, and `base64` encoding or decoding. A `tee` that writes a protected or account path is still refused or signed by the write guards, which read the command line.
+- **`jq`**, even with `-f /dev/stdin`: a jq program cannot run a command.
+- **`grep`/`egrep`/`fgrep` without `-f`/`--file`.**
 - **Message flags**, keyed by program, subcommand path and flag (`_HEREDOC_MESSAGE_FLAGS`). Any other path, alias or extension (`gh x`, `gh myext run`, `gh api`) is code, because it may run stdin.
+
+`awk`, `gawk`, `sed` and `yq` are not on the list, whatever their flags. Their languages run commands or write files (`system()`, sed's `e` and `w`, `print >`), so a heredoc they read fails closed even when it only feeds them input.
+
+`xargs` is never relief. Each body line is evaluated through the whole validator as `<target> <line>`, the command xargs would run (`_xargs_payload`, value flags such as `-d`, `-I` and `--arg-file` skipped). `xargs cat` with `~/.ssh/id_rsa` is refused as a secret read, `xargs tee` with `~/.bashrc` signs as an account write, and `xargs cat` with `notes.txt` runs free.
 
 | Program | Subcommand path | Flag reading `-` |
 |---------|-----------------|------------------|
@@ -246,7 +250,7 @@ A data heredoc's command keeps its own verdict: `git commit -F - <<EOF` runs fre
 
 Every other reader makes the body code, and the heredoc fails closed (`_fail_closed_on_code_heredoc`):
 
-- Each body line is read as a shell command; under `xargs` it is also read as the reader's argument tail (`xargs kubectl` + `apply -f x`).
+- Each body line is read as a shell command.
 - A reading that hits a floor blocks the command. A mutative reading signs it, with the rule of its strongest effect.
 - With neither, the command asks as UNKNOWN (`unknown.dynamic-span`). Gaia does not parse another language: an awk program, or Python behind `timeout` or `nice`, is code it cannot read.
 
