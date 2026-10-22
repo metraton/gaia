@@ -6,7 +6,7 @@ import ast
 import inspect
 import json
 import os
-import textwrap
+import shlex
 import re
 import subprocess
 import sys
@@ -80,8 +80,16 @@ def world(tmp_path_factory):
     patch.undo()
 
 
-def observe(command: str, context: str, world: dict, role: str = "subagent") -> str:
-    for key, value in (("{CWD}", str(world["dirs"][context])), ("{SCRATCH}", world["SCRATCH"]), ("{WORKTREES}", world["WORKTREES"])):
+def _nested_shells(depth: int) -> str:
+    command = "true"
+    for _ in range(depth):
+        command = "bash -c " + shlex.quote(command)
+    return command
+
+
+def observe(command: str, context: str, world: dict, role: str = "subagent") -> tuple:
+    for key, value in (("{CWD}", str(world["dirs"][context])), ("{SCRATCH}", world["SCRATCH"]), ("{WORKTREES}", world["WORKTREES"]),
+                       ("{NEST5}", _nested_shells(5))):
         command = command.replace(key, value)
     detect_mutative_command.cache_clear()
     tiers_module._classify_command_tier_cached.cache_clear()
@@ -91,11 +99,12 @@ def observe(command: str, context: str, world: dict, role: str = "subagent") -> 
         payload.update(agent_id="atruthtable01", agent_type="developer")
     result = BashValidator().validate(command, is_subagent=subagent, session_id="s-truth-table",
                                       agent_type="developer" if subagent else "", hook_payload=payload)
+    reason = result.reason or ""
     if result.allowed:
-        return "FREE"
-    if result.approval_id or (result.reason or "").startswith(COMPOUND_DENIAL):
-        return "UNKNOWN" if UNDETERMINED in (result.reason or "").lower() else "SIGNED"
-    return "BLOCKED"
+        return "FREE", reason
+    if result.approval_id or reason.startswith(COMPOUND_DENIAL):
+        return ("UNKNOWN" if UNDETERMINED in reason.lower() else "SIGNED"), reason
+    return "BLOCKED", reason
 
 
 def _case(row: dict):
@@ -113,17 +122,27 @@ def _observe_isolated(row, world, monkeypatch):
     monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     monkeypatch.chdir(world["root"])
     assert os.environ["GAIA_DB"].startswith(str(world["root"]))
+    if row.get("seed_contracts"):
+        seeded = row["seed_contracts"]
+
+        def fake_list(*, harness_agent_id=None, contract_id=None, limit=100, **_):
+            return [c for c in seeded if c.get("harness_agent_id") == harness_agent_id or c.get("contract_id") == contract_id][:limit]
+
+        monkeypatch.setattr("gaia.store.writer.list_agent_contract_handoffs", fake_list)
     return observe(row["command"], row.get("context", "none"), world, row.get("role", "subagent"))
 
 
 @pytest.mark.parametrize("row", [_case(r) for r in ROWS])
 def test_verdict(row, world, monkeypatch):
-    assert _observe_isolated(row, world, monkeypatch) == row["expected"], row["command"]
+    verdict, reason = _observe_isolated(row, world, monkeypatch)
+    assert verdict == row["expected"], row["command"]
+    if row.get("reason_contains"):
+        assert row["reason_contains"].lower() in reason.lower(), reason
 
 
 @pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["expected"] == "UNKNOWN" and r["owner"] != "out-of-brief"])
 def test_an_undeterminable_row_asks_today(row, world, monkeypatch):
-    assert _observe_isolated(row, world, monkeypatch) in {"SIGNED", "UNKNOWN"}, row["command"]
+    assert _observe_isolated(row, world, monkeypatch)[0] in {"SIGNED", "UNKNOWN"}, row["command"]
 
 
 def test_every_row_carries_its_provenance():
@@ -163,9 +182,9 @@ def test_every_blocked_pattern_of_the_floor_has_a_row():
             assert any(pattern.search(command) for command in floor), (key, pattern.pattern)
 
 
-def test_force_push_is_the_only_blocked_case_expected_to_be_signed():
-    moved = {r["id"] for r in ROWS if "--force" in r["command"] + " -f " and r["expected"] == "SIGNED" and r["command"].startswith("git") and "push" in r["command"]}
-    assert moved and all(r["owner"] in {"T1", "T3"} for r in ROWS if r["id"] in moved)
+def test_force_push_is_the_only_blocked_case_expected_to_be_signed(world, monkeypatch):
+    refused = [r for r in ROWS if r["expected"] == "SIGNED" and _observe_isolated(r, world, monkeypatch)[0] == "BLOCKED"]
+    assert refused and all(re.search(r"\bpush\b.*(--force\b|\s-f\b)", r["command"]) for r in refused), [r["id"] for r in refused]
 
 
 def test_each_change_request_shape_spans_every_binary():
@@ -285,50 +304,72 @@ def test_every_shape_named_in_every_brief_criterion_maps_to_rows():
                 assert row_id in by_id, (ac, shape, row_id)
 
 
-REFUSAL_SOURCES = {
-    "check_gaia_cli_only": ["floor-cli-only-orchestrator"],
-    "empty command": ["floor-empty-command"],
-    "check_host_consent_verb": ["floor-consent-verb"],
-    "check_publish_attribution": ["floor-claude-attribution"],
-    "check_comment_push": ["floor-comment-limit-push"],
-    "check_gaia_db_write": ["floor-gaia-db-sqlite", "floor-gaia-db-cp"],
-    "check_subagent_memory_write": ["floor-memory-write-subagent"],
-    "check_memory_skill_loaded": ["floor-memory-skill-orchestrator"],
-    "check_subagent_resume_point": ["floor-resume-point-subagent"],
-    "check_protected_path_write": ["floor-protected-install-cp", "floor-protected-install-sed"],
-    "check_shell_write": ["floor-shell-write-redirect", "floor-shell-write-tee", "floor-shell-write-sed-i"],
-    "is_blocked_command": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
-    "check_kubectl_secret_output": ["floor-kubectl-secret-output"],
-    "_validate_commit_message": ["floor-commit-message"],
-    "validate_cloud_pipe": ["floor-cloud-pipe"],
-    "_phase4_check_composition": ["seed-continue-curl-pipe-sh"],
-    "check_sensitive_read": ["floor-secret-read-ssh-key"],
+REFUSAL_SITES = {
+    "guard_reason": ["floor-cli-only-orchestrator"],
+    "Empty command not allowed": ["floor-empty-command"],
+    "consent_verb_reason": ["floor-consent-verb"],
+    "attribution_reason": ["floor-claude-attribution"],
+    "comment_push.reason": ["floor-comment-limit-push"],
+    "db_write_reason": ["floor-gaia-db-sqlite", "floor-gaia-db-cp"],
+    "mem_write_reason": ["floor-memory-write-subagent"],
+    "skill_reason": ["floor-memory-skill-orchestrator"],
+    "resume_reason": ["floor-resume-point-subagent"],
+    "ownership_reason": ["floor-contract-ownership-own-row"],
+    "pp_write_reason": ["floor-protected-install-cp", "floor-protected-install-sed"],
+    "shell_write_reason": ["floor-shell-write-redirect", "floor-shell-write-tee", "floor-shell-write-sed-i"],
+    "Obfuscated shell nesting": ["floor-obfuscated-nesting"],
+    "blocked_result.category": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
+    "_blocked.category": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
+    "comp_blocked.category": ["floor-compound-component-blocked"],
+    "secret_violation.reason": ["floor-kubectl-secret-output"],
+    "read_permission_reason": ["floor-cloud-pipe"],
+    "sensitive_reason": ["floor-secret-read-ssh-key"],
+    "Indirect execution of blocked command": ["floor-indirect-blocked-in-wrapper", "floor-indirect-blocked-in-inline"],
+    "deny_msg": ["floor-shell-wrapper-bash-c", "floor-shell-wrapper-eval"],
+    "Dangerous pipe composition blocked": ["seed-continue-curl-pipe-sh"],
+    "Commit message validation failed": ["floor-commit-message"],
 }
-UNCOVERED = {"check_contract_ownership": "needs a contract row already owned by the agent id; the temp database holds none"}
-DISPATCHERS = {"_validate_sealed_elsewhere", "_validate_data_heredoc", "_validate_compound_command", "_validate_single_command"}
+APPROVABLE_SITES = {
+    "reason_msg": "the orchestrator gets an ask dialog for a shell wrapper, not a refusal",
+    "reason": "compound T3 denial: each stage is routed to a plan-first request, so a signature can cover it",
+    "Compound command blocked": "compound T3 denial routed to a plan-first request",
+    "requires approval": "the native ask dialog for the primary agent, a signature path",
+}
+UNCOVERED_SITES = {
+    "Command blocked by flag classifier": "reachable only for a force push, which the earlier floor refuses today and AC-2 moves to signed",
+    "COMMAND_SET persistence failed closed": "store failure path; needs an injected database failure",
+    "_uncorrelated_set_denial": "store failure path; needs an injected database failure",
+    "T3 degraded-block": "store failure path: approval persistence failed; needs an injected database failure",
+}
 
 
-def _validate_callees():
-    tree = ast.parse(textwrap.dedent(inspect.getsource(BashValidator.validate)))
-    names = set()
+def _denial_sites():
+    tree = ast.parse(inspect.getsource(sys.modules[BashValidator.__module__]))
+    sites = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
-            func = node.func
-            name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ""
-            if name.startswith(("check_", "validate_", "_validate_", "is_blocked", "_phase4")):
-                names.add(name)
-    return names
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "BashValidationResult":
+            kw = {k.arg: ast.unparse(k.value) for k in node.keywords}
+            if kw.get("allowed") == "False" and "approval_id" not in kw:
+                sites.append(kw.get("reason", ""))
+    return sites
 
 
-def test_every_non_approvable_refusal_source_has_a_blocked_row():
+def _matches(site: str, key: str) -> bool:
+    return site == key or (len(key) > 8 and key in site)
+
+
+def test_every_denial_the_validator_returns_is_accounted_for():
+    known = [*REFUSAL_SITES, *APPROVABLE_SITES, *UNCOVERED_SITES]
+    sites = _denial_sites()
+    assert len(sites) > 25
+    assert not [s for s in sites if not any(_matches(s, k) for k in known)]
+    assert not [k for k in known if not any(_matches(s, k) for s in sites)]
+
+
+def test_every_refused_denial_maps_to_blocked_rows():
     by_id = {r["id"]: r for r in ROWS}
-    for source, ids in REFUSAL_SOURCES.items():
-        assert ids and all(by_id[i]["expected"] == "BLOCKED" for i in ids), source
-
-
-def test_the_refusal_sources_are_every_guard_the_validate_path_calls():
-    unaccounted = _validate_callees() - set(REFUSAL_SOURCES) - set(UNCOVERED) - DISPATCHERS
-    assert not unaccounted, unaccounted
+    for site, ids in REFUSAL_SITES.items():
+        assert ids and all(by_id[i]["expected"] == "BLOCKED" for i in ids), site
 
 
 def test_no_row_names_a_personal_tool():
