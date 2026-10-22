@@ -139,8 +139,8 @@ the names it knows, and any other word is accepted as written. Declaring a type
 is a claim that a check ran, and the claim is priced in a companion field --
 `command`/`code` require a non-empty `command`, `semantic` a truthy
 `requires_human` (a rubric the verifier judges; a human only in the cases
-`gaia-planner` step 5 names), `self_review` a non-empty `reviewed`, any other word at least
-ONE of those three, and `none` (no oracle was required) nothing. An omission is
+`gaia-planner` step 5 names), `self_review` a non-empty `reviewed`, any other
+word at least ONE of those three, and `none` (no oracle was required) nothing. An omission is
 a `VERIFICATION_SHAPE` rejection, escapable in one deep-merging write. Spelling
 folds on separators only, so `self-review` and `self_review` are one type and
 `observation` stays itself. `type` is optional: absent or blank, no evidence is

@@ -46,8 +46,8 @@ que capturar.
    AskUserQuestion: surface type (ui, api, job, cli); the problem it solves; the
    constraints that matter; for each AC, what an agent would observe when it
    holds and what symptom would show it failing silently; what is explicitly
-   out of scope. For substantial work the gaps include the hard parts the user may not
-   have considered, and once, at capture, offer the goal the feature serves
+   out of scope. For substantial work the gaps include the hard parts the user
+   may not have considered, and once, at capture, offer the goal the feature serves
    beyond itself. Stop when every AC is observable or explicitly marked
    unresolved (step 4).
 
@@ -155,9 +155,9 @@ make it done.
 **Approve by activating.** After the audit and the user checkpoint, run
 `gaia plan set-status <slug> active`: `active` is what approved means. Dispatch
 only tasks of an active, unpaused plan whose brief is clear of `FALTA ACLARAR`
-marks in the fields and ACs those tasks rest on -- `gaia brief verify` lists them
-as `unresolved_clarification`, and a mark written after activation holds the
-tasks that cover it until the answer replaces it. Until then send corrections
+marks in the fields and ACs those tasks rest on -- `gaia brief verify` lists
+them as `unresolved_clarification`, and a mark written after activation holds
+the tasks that cover it until the answer replaces it. Until then send corrections
 back to the planner, who edits the draft directly.
 
 **Changing an approved plan goes through the planner.** Request it with the

@@ -100,6 +100,19 @@ def test_aliased_mark_skip_fails_the_oracle(red_run):
     assert not verdict.ok
 
 
+def test_unittest_skiptest_call_fails_the_oracle(red_run):
+    workdir, red = red_run
+    (workdir / TEST_FILE).write_text(
+        "import unittest\n\nclass T(unittest.TestCase):\n"
+        "    def test_claim(self):\n        self.skipTest('later')\n"
+    )
+
+    verdict = run_oracle_check(_gate(), red_selection=red)
+
+    assert verdict.exit_code == 0
+    assert not verdict.ok
+
+
 def test_interpreter_dash_m_is_not_a_marker_filter():
     assert gate_selection(f"{sys.executable} -m pytest -q x.py").filters == ()
 

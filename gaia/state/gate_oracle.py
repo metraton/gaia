@@ -106,7 +106,7 @@ _EXPECTED_EXIT_CODE = 0
 _SELECTION_FILTER_FLAGS = ("-k", "-m", "--deselect")
 _NARROWING_MARKER_RE = re.compile(
     r"\bmark\.(?:skip|skipif|xfail)\b"
-    r"|\b(?:skip|xfail|importorskip)\s*\("
+    r"|\b(?:skip|skipTest|xfail|importorskip)\s*\("
     r"|\b(?:skipIf|skipUnless|expectedFailure)\b"
     r"|\bunittest\.skip\b"
 )

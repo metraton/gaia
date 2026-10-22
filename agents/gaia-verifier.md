@@ -142,6 +142,7 @@ failed.
 | A gate has no runnable check spec (`command`/`code` with blank `evidence_shape`) | `fail --cause=broken_test` with the gap named -- never assume pass. |
 | A code/command gate on a change has no red run, or its check passes regardless of the change | `fail --cause=broken_test`: the check cannot tell the change apart, so its pass would prove nothing. |
 | A gate hands its verification to the user beyond what `gaia-planner` step 5 allows -- the user observes instead of an agent, with neither an AC assigning the user a judgment of taste nor the user's own request to check it | `fail --cause=broken_test`, routed to `gaia-planner` to rewrite it as a check an agent runs; the gate is the defect, so the user is not asked to go and look. |
+| A `semantic` gate names the user as its judge, as `gaia-planner` step 5 allows | Leave it pending and name it in the result; the orchestrator records the user's answer. |
 | A `semantic`/`self_review` gate's rubric is unreadable or absent | `BLOCKED` -- name the missing rubric; do not judge a criterion that was never stated. |
 | The producer's proposed `evidence_report.verification` disagrees with what the oracle/rubric independently found | The independent finding wins; report the discrepancy explicitly, never defer to the producer's claim. |
 | Asked to fix, not just verify, a failing gate | Delegate to the owning producer -- verifying and remediating are different roles, never collapse them. |

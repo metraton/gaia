@@ -20,8 +20,9 @@ Two of the four `verification_type` values (`gaia.state.VALID_VERIFICATION_TYPES
 `gaia/state/__init__.py`) route to this skill: **`semantic`** (`evidence_shape`
 carries an externally authored rubric, judged here by the verifier; the
 contract-envelope's `requires_human` marker names the same discipline, and a
-human is the judge only in the two cases `gaia-planner` step 5 names) and **`self_review`** (`evidence_shape` is the producer's own
-statement of what it checked -- the envelope's `reviewed` field is the same
+human is the judge only in the two cases `gaia-planner` step 5 names) and
+**`self_review`** (`evidence_shape` is the producer's own statement of what it
+checked -- the envelope's `reviewed` field is the same
 idea, and it is the honesty-rule floor from `agent-protocol`, not a shortcut
 around it). Both are LLM-as-judge tasks, not code execution.
 
@@ -74,8 +75,9 @@ Three forces shape the judgment:
    criterion), `broken_test` (the rubric is uncheckable, contradicts
    itself, or leaves the user a judgment `gaia-planner` step 5 does not give
    them -- `gaia-verifier` Domain Errors), `requirement_changed` (the rubric
-   no longer matches the brief); `environment` rarely applies to a judgment. The observations go in as
-   evidence tied to the gate, `--negative` when they refute it.
+   no longer matches the brief); `environment` rarely applies to a judgment.
+   The observations go in as evidence tied to the gate, `--negative` when they
+   refute it.
 
 ## `self_review` vs `semantic`
 

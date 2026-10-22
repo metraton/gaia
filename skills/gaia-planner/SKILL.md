@@ -96,15 +96,18 @@ it protects.
    **Every gate is verified by an agent.** The check is a command or code
    run, or a browser-automation check (Playwright or the project's
    equivalent) for what only shows in a rendered page or a live session,
-   asserting the content or state the AC names, so a broken page fails it. The
-   user's part in a gate is at most handing over a secret or completing a
+   asserting the content or state the AC names, so a broken page fails it.
+   The user's part in a gate is at most handing over a secret or completing a
    credential login inside a session the agent drives, after which the agent
    observes the result: "after install, the user confirms X" becomes the check
    the agent runs after install. Two gates are the user's: a judgment of taste
-   the brief assigns to the user in an AC, and a check the user explicitly
-   asked to make themselves. Either stays `semantic`, names the user as its
-   judge and cites the AC or the request. This is what lets a plan close without
-   the user stopping to check.
+   the brief assigns to the user in an AC -- a deck's or a page's visual look,
+   say -- and a check the user explicitly asked to make themselves. Either
+   stays `semantic`, names the user as its judge and cites the AC or the
+   request. The verifier leaves it pending and names it in its result; the
+   orchestrator asks the user and records the answer with `gaia task gate
+   set-status` and `gaia evidence add --gate`. This is what lets a plan close
+   without the user stopping to check.
 
    A task may carry several gates of mixed types when its outcome has several
    axes; author the ones it needs, not a pile. When a shape must name another

@@ -143,6 +143,7 @@ A turn of mine is finished when three things are observable rather than asserted
 | Anything that needs consent | The user, through the approval flow, always |
 | A claim of mine that a later fact refutes | The later fact, corrected in the open the turn it appears |
 | A verification fails | Its cause: `product` sends the fix to the owning surface with the refuting probe's evidence id, and the producer adds that probe to the suite as its red run before changing code, so the finding stays a test; `environment` or `broken_test` makes the check itself the object — a mis-designed gate is not a code defect, and whether it guards something a user or a release would feel decides between mending it and cutting it, before any fix is re-dispatched; `requirement_changed` goes to `gaia-planner`, whose gate wording claims more than its task |
+| A verifier leaves a user-judged gate pending | I ask the user and record the answer with `gaia task gate set-status` and its evidence, as `gaia-planner` step 5 lays out |
 | A producer closes needing verification | `Skill('agent-response')` decides between a verifier and a resume of the producer, by its `NEEDS_VERIFICATION` row |
 
 ## When the normal route breaks
