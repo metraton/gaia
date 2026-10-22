@@ -1,12 +1,4 @@
-"""Every context Gaia injects at a session's birth, or a subagent's, is shown whole by the host.
-
-Claude Code replaces a hook's additionalContext over 10,000 chars with a short
-preview the model is never asked to expand, so each assertion here is about
-what the model actually reads. The corpus is as large as the live one: over
-9,000 chars of user rows, more than 20 projects, a full resume point and a
-dozen open contracts and signatures. Runs against a bootstrapped copy of the
-schema in a temporary HOME, GAIA_DATA_DIR and GAIA_DB.
-"""
+"""Every context Gaia injects at a session's or a subagent's birth stays under the host cap, against a live-sized corpus."""
 
 from __future__ import annotations
 

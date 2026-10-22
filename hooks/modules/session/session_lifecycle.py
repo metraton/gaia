@@ -197,11 +197,7 @@ def _reconcile_install() -> tuple[str, str]:
 
 
 def start_context(source: str, alarms: list, session_id: str = "", notices: list = ()) -> str:
-    """Return ``session_id``'s birth block for ``source``, a compaction included; "" when building fails.
-
-    ``notices`` are the ones the host also shows the user, so the block drops
-    them first when it runs out of room.
-    """
+    """Return ``session_id``'s birth block for ``source``, a compaction included; "" when building fails."""
     try:
         from modules.session.session_manifest import build_session_context
         return build_session_context(

@@ -82,8 +82,7 @@ PROJECT_NOTES_BUDGET = 600
 _PROJECT_NOTE_LINE_MAX = 150
 
 KERNEL_BUDGET = CONTEXT_BUDGET
-# The skills block takes the share of KERNEL_BUDGET that USER_ROWS_BUDGET
-# takes. Inlined bodies cannot fit it: security-tiers alone is over 50,000.
+# Inlined skill bodies cannot fit KERNEL_BUDGET: security-tiers alone is over 50,000.
 SKILLS_BLOCK_BUDGET = 4_000
 _SKILLS_PREAMBLE = (
     "Preloaded by your definition. Their bodies are not in this prompt: "
@@ -398,9 +397,8 @@ def build_skills_block(
 ) -> str:
     """Render ``# Your skills`` from the agent's ``skills:`` frontmatter, or "" when it names none.
 
-    Each skill is listed with its description; under ``names_only``, or when
-    that would exceed ``SKILLS_BLOCK_BUDGET``, the names alone are listed, so
-    none drops out.
+    Each skill is listed with its description; when that would exceed
+    ``SKILLS_BLOCK_BUDGET``, or ``names_only``, the names alone are listed.
     """
     declared = _agent_frontmatter(agent_name, agents_dir).get("skills")
     if not isinstance(declared, list):
@@ -485,10 +483,7 @@ def _executor_rows(db_path=None) -> list:
 
 
 def build_memory_block(*, db_path=None, max_chars: Optional[int] = None) -> str:
-    """Render ``# How the user works`` from the executor-addressed user rows, or "".
-
-    Within ``max_chars`` when given, by leaving out whole rows, stalest first.
-    """
+    """Render ``# How the user works`` from the executor-addressed user rows, within ``max_chars`` when given, or ""."""
     from .user_sections import fit_user_sections, render_user_sections
 
     rows = _executor_rows(db_path)
@@ -522,8 +517,7 @@ def build_project_notes_block(
     by the same ``canonical_project_key`` as ``gaia context project`` and
     ``gaia memory get-relevant --initiative``, freshest first. As many lines
     as fit ``max_chars`` are kept, the tail counting the rest and naming the
-    command that lists them; the block exceeds ``max_chars`` only when the
-    tail alone does.
+    command that lists them.
     """
     dispatch_project = row.get("dispatch_project")
     if not dispatch_project:
@@ -587,17 +581,7 @@ def build_kernel_context(
     db_path=None,
     with_skills: bool = False,
 ) -> Optional[str]:
-    """The kernel payload: contract, user rows, notes, environment, CLI and, ``with_skills``, the skills block.
-
-    The order is the order of what a turn can least do without, and the whole
-    stays within ``KERNEL_BUDGET`` by shrinking in a fixed order: the CLI index
-    becomes its ``gaia --help`` line, the skills lose their descriptions, the
-    notes keep only the command that lists them, then whole user rows leave,
-    stalest first. The contract block itself is never shrunk.
-
-    Returns None when the contract block itself cannot render (no identity on
-    the row) -- the CLI/memory blocks never ship without it.
-    """
+    """The kernel payload within ``KERNEL_BUDGET``, shrunk in the order hooks/README.md names; None without a contract block."""
     kernel = build_dispatch_kernel(row, db_path=db_path)
     if not kernel:
         return None

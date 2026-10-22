@@ -563,7 +563,7 @@ def _born(one_home, *, plugin: bool) -> str:
 
 
 def _user_part(block: str) -> str:
-    return block[block.index(session_manifest.BIRTH_SECTION_HEADERS[2]):]
+    return block[block.index(session_manifest.USER_HEADER):block.index(session_manifest.ENVIRONMENT_HEADER)]
 
 
 def _standing_user_rows(one_home) -> None:

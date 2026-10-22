@@ -305,7 +305,9 @@ and as an on-disk draft -- before you run anything.
 
 Four blocks follow `# Your Contract`, in this order. `# How the user works`
 carries the user's standing rows with their bodies, only those whose audience is
-`executor` (`hooks/modules/context/kernel_builder.py::build_memory_block`).
+`executor` (`hooks/modules/context/kernel_builder.py::build_memory_block`); when
+the kernel would pass the host's cap, whole rows are left out, stalest first, and
+one line names them for `gaia memory show`.
 `# Standing notes` is one line per live anchor of the dispatch project, absent
 when it has none. `# Environment` is one capped line: the OS, the gaia CLI path
 and the tools on PATH, the user's own executables among them

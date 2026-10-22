@@ -1,18 +1,9 @@
-"""The brief a host's summarizer gets before a compaction.
-
-What the session gets back after it is not built here: a compaction is one more
-birth of the same session, so both hosts deliver
-``modules.session.session_manifest.build_session_context`` for source
-``compact``.
-"""
+"""The brief a host's summarizer gets before a compaction."""
 from __future__ import annotations
 
 
 def build_summary_instructions() -> str:
-    """The brief a host that summarizes its own session is given before it writes the summary.
-
-    Aimed at the summarizer, so only a pre-summary hook delivers it.
-    """
+    """The brief a host that summarizes its own session is given before it writes the summary."""
     return (
         "# Compaction Instructions\n\n"
         "Write the summary so the next turn can resume without re-deriving anything:\n"

@@ -17,14 +17,10 @@ The real, valid delivery mechanism is ``SessionStart`` with
 ``source == "compact"``: Claude Code's SessionStart matcherMetadata lists
 ``compact`` as one of its accepted `source` values (alongside `startup`,
 `resume`, `clear`, `fork`), and SessionStart's `hookSpecificOutput` DOES
-support `additionalContext`. ``hooks/session_start.py`` is now wired for
-``startup|resume|clear|compact|fork`` and builds the SAME compact-context refresh
-(via ``modules.context.compact_context_builder.build_compact_context``)
-when it fires with ``source == "compact"``. This file stays registered
-for the ``PostCompact`` event as a harmless, schema-valid no-op (parallel
-to pre_compact.py) purely for observability -- it no longer calls
-``build_compact_context()`` itself, to avoid a second, discarded read of
-the same DB queries on every compaction.
+support `additionalContext`. ``hooks/session_start.py`` is wired for
+``startup|resume|clear|compact|fork`` and delivers the session birth block
+for every one of them. This file stays registered for the ``PostCompact``
+event as a schema-valid no-op, purely for observability.
 """
 
 import sys

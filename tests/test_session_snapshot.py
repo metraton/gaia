@@ -408,14 +408,14 @@ def test_both_hosts_deliver_the_refresh_with_the_whole_resume_point_once_after_c
     two_sessions, tmp_path, monkeypatch,
 ):
     import bridge
-    from gaia.session_snapshot import RESUME_POINT_MAX_CHARS, build_snapshot, render_snapshot, write_resume_point
+    from gaia.session_snapshot import RESUME_POINT_MAX_CHARS, build_snapshot, render_resume_section, write_resume_point
     from modules.session.session_manifest import build_environment_section
 
     tail = " Then dispatch gaia-verifier to close task 890."
     resume = ("next " * RESUME_POINT_MAX_CHARS)[: RESUME_POINT_MAX_CHARS - len(tail)] + tail
     write_resume_point(SESSION_A, resume)
     environment = build_environment_section(SESSION_A)
-    expected = render_snapshot(build_snapshot(SESSION_A))
+    expected = render_resume_section(build_snapshot(SESSION_A))
     payload = json.dumps({"hook_event_name": "SessionStart", "session_id": SESSION_A, "source": "compact"})
     proc = subprocess.run(
         [sys.executable, str(_ROOT / "hooks" / "session_start.py")],

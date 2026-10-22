@@ -387,10 +387,8 @@ class OpenCodeAdapter(HookAdapter):
         The plugin forwards ``chat.message`` once per session it or the host
         records as parentless, so every call here is a start or a resume, and
         again with ``source: compact`` on the first message after that
-        session's compaction, which gets back the same birth block Claude
-        Code's SessionStart(compact) delivers. The bridge runs from the
-        session's workspace directory, which is the directory Claude Code's
-        start sweeps too.
+        session's compaction. The bridge runs from the session's workspace
+        directory, which is the directory Claude Code's start sweeps too.
         """
         from modules.session import session_lifecycle
         from modules.session.session_lifecycle import SessionStart, start_context

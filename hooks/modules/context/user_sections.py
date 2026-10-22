@@ -15,14 +15,8 @@ from __future__ import annotations
 USER_HEADER = "## The user"
 PREFERENCES_HEADER = "## User preferences"
 
-# Claude Code replaces a hook's additionalContext string over 10,000 chars
-# with a 2,000-char preview and a file path, without telling the model; every
-# context Gaia injects is held under this, on either host.
+# Claude Code shows only a preview of a hook context over 10,000 chars.
 CONTEXT_BUDGET = 9_500
-
-# The share of that cap the user's rows are sized for. Past it they still ship
-# whole while the block has room, and overflow_line names the excess so it is
-# curated rather than cut.
 USER_ROWS_BUDGET = 4_000
 
 
@@ -44,11 +38,7 @@ def omitted_line(names: list[str]) -> str:
 
 
 def fit_user_sections(rows: list[dict], max_chars: int) -> tuple[str, list[dict]]:
-    """The sections within ``max_chars`` and the rows they carry, dropping whole rows from the end.
-
-    ``rows`` come freshest first (``gaia.store.reader.user_anchor_rows``), so
-    the stalest row leaves first; a row is never cut.
-    """
+    """The sections within ``max_chars`` and the rows they carry; whole rows leave from the end, stalest first."""
     kept = [row for row in rows if (row.get("body") or "").strip()]
     omitted: list[str] = []
     text = render_user_sections(kept)

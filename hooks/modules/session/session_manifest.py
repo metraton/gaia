@@ -1,30 +1,8 @@
-"""The session birth block: what every session knows the moment it opens, and again after each compaction.
+"""The session birth block: what every session knows when it opens, and again after each compaction.
 
 ``build_session_context`` assembles it with no knowledge of the host, for
-every start source -- a compaction is one more birth of the same session; a
-host adapter only delivers the string (Claude Code through its SessionStart
-hook, OpenCode attached to the main session's first message, and to the first
-one after a compaction) and ``gaia session preview`` prints it. After a
-heading naming the source and the alarms that condition every write (a
-database upgrade, a schema mismatch), in this order:
-
-- The user / User preferences -- the user's standing rows, each whole (see
-  ``modules.context.user_sections``, shared with the dispatch kernel).
-- Resume point -- the session's snapshot (``gaia.session_snapshot``): its
-  resume point, active task, pending signatures and open contracts; absent
-  when the session has nothing to resume.
-- Environment -- where the session stands: machine, installation (version,
-  channel, root), folder, the `gaia` CLI path, the real data home and its
-  database, the tools on PATH (one line), and one line of pending recurring
-  work when there is any.
-- Projects -- each project's name, one line about it and its live-pending
-  count, counted by canonical project key across every workspace. A large
-  group is one line with its size. Project memory itself (anchors, threads)
-  never loads here; it arrives when that project is worked on.
-
-The whole block is sized under ``BIRTH_BUDGET`` because the host replaces a
-longer string with a short preview; ``build_session_context`` names the
-order in which it shrinks.
+every start source; its sections, their order and the order in which the
+block shrinks under ``BIRTH_BUDGET`` are described in hooks/README.md.
 
 Every builder is fail-safe: it returns "" on any error and never raises, so a
 session always starts. Building the block writes nothing unless the caller
@@ -1011,14 +989,9 @@ def build_session_context(
 ) -> str:
     """Assemble the session birth block for any start ``source``; "" when every part is empty. Never raises.
 
-    ``alarms`` (a database upgrade the host just ran) lead with the
-    schema-mismatch notice and still ship alone if assembling the rest fails;
-    ``notices`` follow them only while the block has room, since the host
-    already shows them to the user. Past ``BIRTH_BUDGET`` the block shrinks
-    in a fixed order: the notices leave, the roster degrades to a pointer, the
-    snapshot lists become counts, then whole user rows leave stalest first.
-    Nothing is written unless ``record_injection`` is set, and then only for
-    the user rows the block carries.
+    ``alarms`` still ship alone if assembling the rest fails; ``notices`` ship
+    only while the block has room. ``record_injection`` counts one injection
+    on each user row the block carries.
     """
     try:
         from gaia.session_snapshot import render_resume_section

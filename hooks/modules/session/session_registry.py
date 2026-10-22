@@ -47,9 +47,7 @@ Storage format:
     ``startup|resume|clear|compact|fork``, so Claude Code re-reads settings
     and re-fires this hook on resume and on compact too, and this hook does
     not branch on ``source`` for registration/pinning -- it always
-    re-registers and re-pins regardless (only the *content* of
-    ``additionalContext`` branches on ``source == "compact"``, see
-    ``hooks/session_start.py``'s call to ``build_compact_context()``). Only
+    re-registers and re-pins regardless. Only
     a session that never re-fires SessionStart at all (e.g. one still
     running from before this wiring change) can be left with a stale or
     absent marker.
