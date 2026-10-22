@@ -177,6 +177,33 @@ def test_an_opencode_child_sessions_write_is_its_parents_own(two_sessions, works
     assert prompt_context("B", None) == "~ changed: project memory gaia ×1 — gaia signals"
 
 
+def test_an_accepted_memory_proposal_signals_the_other_session_only(
+    two_sessions, workspace_me, monkeypatch,
+):
+    from gaia.store.writer import finalize_agent_contract_handoff, insert_dispatched_handoff
+
+    monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
+    agent = "a" + "2" * 16
+    contract_id = f"{agent}.000000000001"
+    create = {"slug": SLUG, "type": "user", "description": "Preference: probe.", "body": "probe"}
+    envelope = {
+        "agent_status": {"agent_state": "COMPLETE", "agent_id": agent,
+                         "pending_steps": [], "next_action": "done"},
+        "memory_delta": {"version": 1, "proposals": [{"operation": "create", "create": create}]},
+    }
+    insert_dispatched_handoff(contract_id, agent, "me")
+    finalize_agent_contract_handoff(contract_id=contract_id, agent_id=agent, workspace="me",
+                                    agent_state="COMPLETE", raw_handoff_json=json.dumps(envelope))
+    assert prompt_context("B", None) == ""
+    proposal_id = _scalar("SELECT id FROM proposals WHERE status = 'pending'")
+
+    _gaia("A", "contract", "proposals", "accept", str(proposal_id))
+
+    assert _scalar("SELECT COUNT(*) FROM memory WHERE name = ?", SLUG) == 1
+    assert prompt_context("B", None) == LINE
+    assert prompt_context("A", None) == ""
+
+
 def test_the_session_end_drops_the_cursor(two_sessions):
     from gaia.signals import read_cursor
 

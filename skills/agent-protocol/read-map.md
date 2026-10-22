@@ -43,6 +43,7 @@ transcript.
 | `gaia contract list` | `--harness-id`, `--contract-id`, `--session`, `--agent-id`, `--state`, `--cut [reason]`, `--workspace`, `--since`/`--until`, `--limit`, `--json` | One row per turn: id, agent, state, cut reason, session. The searchable handle when you know the front but not the row. |
 | `gaia contract view` | `--draft-id <contract_id>` or `--harness-id <harness_agent_id>`; `--field <dotted.path>`; `--json` | The whole envelope, or exactly one subtree named by the same schema keys the envelope uses (`evidence_report.open_gaps`, `agent_status.agent_state`). Never writes. |
 | `gaia contract chain` | `--contract-id <any link>` | Every contract in one continuation chain, oldest first, walking back to the root and forward to the live link. A turn that was never resumed prints as one link. |
+| `gaia contract proposals list` | `--contract-id`, `--kind memory\|context\|thread`, `--all`, `--json` | What closed turns proposed and nobody has decided yet, oldest first, each with its id and proposing contract; `--all` adds the accepted and dismissed. Deciding one (`accept`/`dismiss`) is the orchestrator's write, not a read. |
 
 `--field` is the difference between inheriting a conclusion and inheriting a whole turn. An absent
 path is a clean error: `Error: no such field 'evidence_report.nope': no key 'nope' under
