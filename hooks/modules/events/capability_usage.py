@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import logging
-import re
-import shlex
-from pathlib import PurePath, PureWindowsPath
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+
+from . import gaia_cli_grammar
 
 logger = logging.getLogger(__name__)
 
@@ -15,85 +14,12 @@ SKILL_LOADED = "skill.loaded"
 
 ORCHESTRATOR_AGENT = "gaia-orchestrator"
 
-# Must equal bin/gaia's argparse tree, or a verb is cut where a child is missing;
-# test_capability_usage.py walks the real parser and fails on any difference.
-_SUBCOMMANDS = {
-    "": (
-        "ac approvals brief cleanup context contract defects dev doctor evidence history "
-        "install lint login memory metrics migrate milestone notifications now paths plan "
-        "project query release scan session signals status task uninstall update usage "
-        "workspace worktree"
-    ),
-    "ac": "add edit remove set-status",
-    "approvals": (
-        "approve audit-secrets clean history list opencode-decide opencode-present pending "
-        "question reject reject-all replay request-file-write request-set revoke show stats"
-    ),
-    "brief": (
-        "ac close decision delete deps edit history list milestone new search set-project "
-        "set-status show verify"
-    ),
-    "brief ac": "add edit remove",
-    "brief decision": "add list",
-    "brief milestone": "add remove",
-    "context": (
-        "accept dump get get-contract move-contracts move-memory move-project project "
-        "prune-workspaces query scan show wipe"
-    ),
-    "contract": "add chain fill finalize init list reap reconcile set validate view",
-    "evidence": "add list orphans show",
-    "lint": "comments",
-    "login": "start status",
-    "memory": (
-        "add append checkpoint conflicts delete edit episode-show get-relevant link list "
-        "reclassify search show stats story"
-    ),
-    "migrate": "apply plan",
-    "milestone": "add edit remove set-status",
-    "notifications": "ack add cancel list show snooze",
-    "paths": "data db",
-    "plan": "change delete history list pause resume save set-status show",
-    "plan change": "apply approve list propose request",
-    "project": "move",
-    "release": "check publish",
-    "session": "preview resume-point snapshot",
-    "session resume-point": "set",
-    "task": "add cover depend edit gate list remove reorder set-status show",
-    "task gate": "add edit list remove reverify set-status",
-    "usage": "ingest show",
-    "workspace": "curate current declare info list merge retire",
-    "worktree": "create list prune-branches release show show-capture",
-}
 SUBCOMMAND_TREE: Dict[str, frozenset] = {
-    parent: frozenset(children.split()) for parent, children in _SUBCOMMANDS.items()
+    path: frozenset(names.split()) for path, names in gaia_cli_grammar.SUBCOMMANDS.items()
 }
-
-_FLAG_NAME = re.compile(r"^--?[A-Za-z][A-Za-z0-9_-]*$")
-_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
-_SHELL_OPERATOR_PREFIXES = ("<", ">", "|", "&", ";")
-
-
-def _program_name(token: str) -> str:
-    name = PureWindowsPath(PurePath(token).name).name.lower()
-    for suffix in (".exe", ".cmd", ".bat"):
-        if name.endswith(suffix):
-            return name[: -len(suffix)]
-    return name
-
-
-def _gaia_arguments(tokens: List[str]) -> Optional[List[str]]:
-    index = 0
-    while index < len(tokens) and _ASSIGNMENT.match(tokens[index]):
-        index += 1
-    if index >= len(tokens):
-        return None
-    program = _program_name(tokens[index])
-    if program == "gaia":
-        return tokens[index + 1:]
-    if program.startswith("python") and index + 1 < len(tokens):
-        if _program_name(tokens[index + 1]) == "gaia":
-            return tokens[index + 2:]
-    return None
+DECLARED_OPTIONS: Dict[str, frozenset] = {
+    path: frozenset(names.split()) for path, names in gaia_cli_grammar.OPTIONS.items()
+}
 
 
 def _verb_and_flags(arguments: List[str]) -> Tuple[str, Tuple[str, ...]]:
@@ -101,11 +27,11 @@ def _verb_and_flags(arguments: List[str]) -> Tuple[str, Tuple[str, ...]]:
     walking = True
     flags: List[str] = []
     for token in arguments:
-        if token == "--" or token.startswith(_SHELL_OPERATOR_PREFIXES):
+        if token == "--":
             break
         if token.startswith("-"):
             name = token.split("=", 1)[0]
-            if _FLAG_NAME.match(name) and name not in flags:
+            if name in DECLARED_OPTIONS.get(" ".join(path), ()) and name not in flags:
                 flags.append(name)
             continue
         if walking and token in SUBCOMMAND_TREE.get(" ".join(path), ()):
@@ -116,19 +42,10 @@ def _verb_and_flags(arguments: List[str]) -> Tuple[str, Tuple[str, ...]]:
 
 
 def gaia_invocations(command: str) -> List[Tuple[str, Tuple[str, ...]]]:
-    """Each gaia call in ``command`` as (subcommand path, flag names); the path is empty when unknown."""
-    from ..tools.shell_parser import parse_command
+    """Each gaia call in ``command`` as (subcommand path, declared flag names); the path is empty when unknown."""
+    from ..security.host_consent_verb_guard import gaia_calls
 
-    found = []
-    for component in parse_command(command or ""):
-        try:
-            tokens = shlex.split(component)
-        except ValueError:
-            tokens = component.split()
-        arguments = _gaia_arguments(tokens)
-        if arguments is not None:
-            found.append(_verb_and_flags(arguments))
-    return found
+    return [_verb_and_flags(arguments) for arguments in gaia_calls(command or "")]
 
 
 def _caller(hook_data: Mapping[str, Any]) -> Tuple[str, str]:

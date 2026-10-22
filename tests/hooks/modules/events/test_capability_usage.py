@@ -22,6 +22,7 @@ from adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
 from adapters.opencode import OpenCodeAdapter  # noqa: E402
 from modules.events.capability_usage import (  # noqa: E402
     CLI_INVOKED,
+    DECLARED_OPTIONS,
     SKILL_LOADED,
     SUBCOMMAND_TREE,
     gaia_invocations,
@@ -124,35 +125,51 @@ def _opencode(event: str, tool: str, args: dict, **extra) -> dict:
     return adapter.adapt_post_tool_use(parsed).output
 
 
-def _parser_paths() -> set[str]:
+def _parser_grammar() -> tuple[dict, dict]:
     loader = importlib.machinery.SourceFileLoader("gaia_cli_entry", str(REPO_ROOT / "bin" / "gaia"))
     spec = importlib.util.spec_from_loader("gaia_cli_entry", loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     parser = module._build_parser(module._discover_plugins())
-    paths: set[str] = set()
+    children: dict = {}
+    options: dict = {}
 
     def walk(node, prefix):
+        options[" ".join(prefix)] = frozenset(o for a in node._actions for o in a.option_strings)
         for action in node._actions:
             if isinstance(action, argparse._SubParsersAction):
+                children[" ".join(prefix)] = frozenset(action.choices)
                 for name, child in action.choices.items():
-                    paths.add(" ".join(prefix + (name,)))
                     walk(child, prefix + (name,))
 
     walk(parser, ())
-    return paths
+    return children, options
 
 
-def test_the_verb_grammar_is_the_cli_parser_tree():
-    declared = {
-        f"{parent} {child}".strip() for parent, children in SUBCOMMAND_TREE.items() for child in children
-    }
+def test_the_grammar_is_the_cli_parser_tree_and_its_declared_options():
+    children, options = _parser_grammar()
 
-    assert declared == _parser_paths()
+    assert SUBCOMMAND_TREE == children
+    assert DECLARED_OPTIONS == options
 
 
 @pytest.mark.parametrize(("command", "expected"), (
-    (f"gaia memory search '{PRIVATE}' --initiative gaia --limit=5", [("memory search", ("--initiative", "--limit"))]),
+    (f"gaia memory search '{PRIVATE}' --scope gaia --limit=5", [("memory search", ("--scope", "--limit"))]),
+    ("gaia memory search x --initiative gaia", [("memory search", ())]),
+    (f"gaia memory add --type project --name n --body -{PRIVATE}", [("memory add", ("--type", "--name", "--body"))]),
+    (f"gaia memory search x --{PRIVATE}", [("memory search", ())]),
+    (f"gaia memory search x --lim={PRIVATE}", [("memory search", ())]),
+    ("env GAIA_X=1 gaia brief list", [("brief list", ())]),
+    ("timeout 30 gaia brief list", [("brief list", ())]),
+    ("nice gaia brief list", [("brief list", ())]),
+    ("echo $(gaia brief list --json)", [("brief list", ("--json",))]),
+    (f"echo 'gaia memory search --{PRIVATE}'", []),
+    (
+        "gaia contract fill --json-file - <<'EOF'\n"
+        f"{{\"report_prose\": \"ran gaia brief list\"}}\ngaia memory search --{PRIVATE} -{PRIVATE}\nEOF",
+        [("contract fill", ("--json-file",))],
+    ),
+    ("bash <<'EOF'\ngaia brief list\nEOF", [("brief list", ())]),
     ("gaia task gate list T-1 --json", [("task gate list", ("--json",))]),
     ("gaia session resume-point set --text x", [("session resume-point set", ("--text",))]),
     ("/opt/pkg/bin/gaia --json brief list", [("brief list", ("--json",))]),
@@ -162,7 +179,7 @@ def test_the_verb_grammar_is_the_cli_parser_tree():
     ("gaia memory show a && gaia query --last 3", [("memory show", ()), ("query", ("--last",))]),
     ("gaia", [("", ())]),
     ("gaia --help", [("", ("--help",))]),
-    (f"gaia {PRIVATE} --x", [("", ("--x",))]),
+    (f"gaia {PRIVATE} --x", [("", ())]),
     (f"gaia memory add --body '--{PRIVATE} words'", [("memory add", ("--body",))]),
     ("ls /usr/bin/gaia", []),
     ("echo gaia memory search", []),
@@ -347,3 +364,93 @@ def test_harness_event_retention_prunes_the_new_types():
     prune_harness_events(cutoff_days=-1)
 
     assert _rows(CLI_INVOKED) == [] and _rows(SKILL_LOADED) == []
+
+
+def _every_column(event_type: str) -> list[tuple]:
+    from gaia.paths.resolver import db_path
+
+    con = sqlite3.connect(db_path())
+    try:
+        return [tuple(r) for r in con.execute("SELECT * FROM harness_events WHERE type = ?", (event_type,))]
+    finally:
+        con.close()
+
+
+def _host_run(command: str, who: dict) -> dict:
+    pre = _claude_pre(command, **who)
+    if pre["decision"] != "deny":
+        _claude_post((pre.get("updated") or {}).get("command") or command, **who)
+    return pre
+
+
+@pytest.mark.parametrize("command", (
+    f"gaia memory search {PRIVATE} --json",
+    f"gaia memory add --type project --name n --body={PRIVATE}",
+    f"gaia memory add --type project --name n --body '{PRIVATE} with words'",
+    f"gaia brief show {PRIVATE}",
+    f"gaia memory add --type project --name n --body -{PRIVATE}",
+    f"gaia memory search x --{PRIVATE}",
+))
+def test_no_argument_value_reaches_any_column(command):
+    _claude_post(command)
+
+    rows = _every_column(CLI_INVOKED)
+    assert len(rows) == 1
+    assert PRIVATE not in str(rows)
+
+
+@pytest.mark.parametrize("subagent", (False, True))
+@pytest.mark.parametrize("command", (
+    "gaia brief list",
+    "cd /tmp && gaia brief list",
+    "gaia brief list | head -3",
+    "env GAIA_X=1 gaia brief list",
+    "timeout 30 gaia brief list",
+    "nice gaia brief list",
+    "echo $(gaia brief list --json)",
+))
+def test_each_gaia_call_leaves_exactly_one_row_whatever_the_gate_decides(command, subagent):
+    who = {"agent_id": SUBAGENT_ID, "agent_type": "developer"} if subagent else {}
+
+    pre = _host_run(command, who)
+
+    [row] = _rows(CLI_INVOKED)
+    assert row["meta"]["verb"] == "brief list"
+    assert row["meta"]["outcome"] == ("denied" if pre["decision"] == "deny" else "allowed")
+
+
+def test_a_heredoc_body_is_never_read_as_a_call():
+    command = (
+        "gaia contract fill --json-file - <<'EOF'\n"
+        f"{{\"report_prose\": \"ran gaia brief list\"}}\ngaia memory search --{PRIVATE} -{PRIVATE}\nEOF"
+    )
+
+    _claude_post(command, agent_id=SUBAGENT_ID, agent_type="developer")
+
+    [row] = _rows(CLI_INVOKED)
+    assert row["meta"]["verb"] == "contract fill"
+    assert PRIVATE not in str(_every_column(CLI_INVOKED))
+
+
+def test_an_interrupted_call_is_recorded_as_interrupted():
+    _claude({
+        "hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
+        "tool_input": {"command": "gaia brief list"}, "tool_use_id": "toolu-i",
+        "error": "interrupted", "is_interrupt": True,
+    })
+
+    [row] = _rows(CLI_INVOKED)
+    assert (row["meta"]["outcome"], row["meta"]["exit_code"]) == ("interrupted", None)
+
+
+def test_a_subagent_t3_call_is_denied_once_and_a_read_runs():
+    who = {"agent_id": SUBAGENT_ID, "agent_type": "developer"}
+
+    assert _host_run("gaia install", who)["decision"] == "deny"
+    _host_run("gaia brief list --json", who)
+
+    denied, allowed = _rows(CLI_INVOKED)
+    assert (denied["meta"]["verb"], denied["meta"]["outcome"]) == ("install", "denied")
+    assert (allowed["meta"]["verb"], allowed["meta"]["role"], allowed["agent"]) == (
+        "brief list", "subagent", "developer",
+    )

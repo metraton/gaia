@@ -564,6 +564,42 @@ def _refused(command: str, cwd: Optional[str], depth: int) -> Optional[str]:
     return None
 
 
+def gaia_calls(command: str, depth: int = 0) -> List[List[str]]:
+    """The argument words of each Gaia CLI call ``command`` runs, read the way this guard reads them."""
+    if not command or depth > _MAX_DEPTH:
+        return []
+    parsed = _parse(command)
+    calls: List[List[str]] = []
+    for inner in parsed.substitutions:
+        calls.extend(gaia_calls(inner, depth + 1))
+    for simple in parsed.commands:
+        calls.extend(_command_gaia_calls(simple, depth))
+    return calls
+
+
+def _command_gaia_calls(command: _Command, depth: int) -> List[List[str]]:
+    words = _peel(command.words)
+    if not words:
+        return []
+    program = _basename(words[0])
+    if program == "xargs":
+        inner, i = words[1:], 0
+        while i < len(inner) and inner[i].text.startswith("-"):
+            i += 2 if inner[i].text in _XARGS_VALUE_FLAGS else 1
+        words = _peel(inner[i:])
+    elif program == "eval":
+        return gaia_calls(" ".join(word.text for word in words[1:]), depth + 1)
+    elif program in _SHELLS:
+        for index, word in enumerate(words[1:-1], start=1):
+            if re.match(r"^-[A-Za-z]*c[A-Za-z]*$", word.text):
+                return gaia_calls(words[index + 1].text, depth + 1)
+        if command.heredoc is not None and not _non_flags(words[1:]):
+            return gaia_calls(command.heredoc, depth + 1)
+        return []
+    gaia_args = _is_gaia(words)
+    return [[word.text for word in gaia_args]] if gaia_args is not None else []
+
+
 def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Refuse a shell command that reaches a host consent verb, naming the rule that fired."""
     reason = _refused(command, cwd, 0) if command else None
