@@ -3400,6 +3400,70 @@ def _git_local_sync(
     )
 
 
+_REPO_OPTIONS: FrozenSet[str] = frozenset({"-R", "--repo"})
+
+
+def _repo_option_values(args: List[str]) -> List[str]:
+    """Every value given to ``-R``/``--repo`` in *args*, in any of its spellings."""
+    values: List[str] = []
+    for index, arg in enumerate(args):
+        flag, equals, value = arg.partition("=")
+        if arg in _REPO_OPTIONS and index + 1 < len(args):
+            values.append(args[index + 1])
+        elif equals and flag in _REPO_OPTIONS:
+            values.append(value)
+        elif arg.startswith("-R") and len(arg) > 2:
+            values.append(arg[2:])
+    return values
+
+
+def _repo_segments(location: str) -> List[str]:
+    """``[host, owner, repo]``-style path segments of a repository URL, scp form or slug, lowercased."""
+    bare = re.sub(r"^[a-z][a-z0-9+.-]*://", "", location.strip().lower())
+    bare = re.sub(r"^[^/@]+@", "", bare).replace(":", "/")
+    bare = bare.rstrip("/").removesuffix(".git")
+    return [segment for segment in bare.split("/") if segment]
+
+
+def _change_request_elsewhere(command: str, cwd: Optional[str]) -> "Optional[MutativeResult]":
+    """Sign opening or editing a change request whose ``-R/--repo`` is not this checkout's origin.
+
+    Reads the repository, so it runs outside the classifier cache. Without a
+    readable origin, no ``-R`` value can be shown to be the user's own project.
+    """
+    for reading in _peel_wrapper_readings(command)[0]:
+        try:
+            tokens = shlex.split(reading)
+        except ValueError:
+            continue
+        base = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+        if base not in _FORGE_CLIS and not _is_unmodelled_cli(base):
+            continue
+        args = tokens[1:]
+        directory = args[1] if args[:1] == ["-C"] and len(args) > 1 else None
+        path = [a for a in args if not a.startswith("-")]
+        targets = _repo_option_values(args)
+        if not targets or not any(
+            change_request_action(path[i:]) in _CHANGE_REQUEST_OWN_WORK for i in range(len(path))
+        ):
+            continue
+        repo = _git_repo_dir(directory, cwd)
+        origin = _repo_segments(_git_read(repo, "remote", "get-url", "origin") or "") if repo else []
+        for target in targets:
+            wanted = _repo_segments(target)
+            if not wanted or origin[-len(wanted):] != wanted:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb="post",
+                    cli_family="forge",
+                    confidence="high",
+                    reason=f"the change request targets {target}, which is not this checkout's origin",
+                    rule="sign.speaks",
+                )
+    return None
+
+
 def _check_git_worktree_unlock(
     targets: "Tuple[str, ...]", family: str,
 ) -> "Optional[MutativeResult]":
@@ -5011,6 +5075,10 @@ def detect_mutative_command(
 
     if result.is_mutative:
         return result
+
+    elsewhere = None if from_source_code else _change_request_elsewhere(command, cwd)
+    if elsewhere is not None:
+        return elsewhere
 
     absorbing = _absorbing_form(command)
     if absorbing is None or absorbing == command:

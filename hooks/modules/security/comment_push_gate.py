@@ -12,7 +12,9 @@ from .publish_attribution_guard import _ENV_ASSIGNMENT, _segments
 logger = logging.getLogger(__name__)
 
 _MAX_LISTED = 30
-_NOTHING_TO_COMPARE_FLAGS = {"--tags", "--delete", "-d", "--dry-run", "-n", "--mirror", "--all"}
+_NOTHING_TO_COMPARE_FLAGS = {
+    "--tags", "--delete", "-d", "--dry-run", "-n", "--mirror", "--all", "--help", "-h",
+}
 _VALUE_FLAGS = {"-o", "--push-option", "--repo", "--receive-pack", "--exec"}
 
 

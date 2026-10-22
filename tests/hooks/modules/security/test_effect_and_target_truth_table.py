@@ -270,6 +270,7 @@ TWINS = [
     ("ctl-npm-ci-no-lifecycle", "ctl-npm-ci-postinstall"),
     ("mined-scratch-tar-x", "mined-tar-x-root-twin"),
     ("forge-gh-edit", "forge-gh-retarget"),
+    ("forge-own-repo-gh-create", "forge-other-repo-gh-create"),
     ("ctl-gcloud-login-no-activate", "ctl-gcloud-login"),
 ]
 

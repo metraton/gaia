@@ -71,9 +71,9 @@ def managed_worktree(tmp_path):
     return str(wt)
 
 
-def _mutative(command: str) -> bool:
+def _mutative(command: str, cwd: str | None = None) -> bool:
     detect_mutative_command.cache_clear()
-    return detect_mutative_command(command).is_mutative
+    return detect_mutative_command(command, cwd=cwd).is_mutative
 
 
 def _validated_tier(command: str) -> str:
@@ -90,7 +90,6 @@ def _validated_tier(command: str) -> str:
 
 PR_FREE = [
     "gh pr create --title t --body b",
-    "gh -R o/r pr create --head feat/x --base main --title t --body-file body.md",
     "gh pr edit 42 --title t --add-label ready",
     "gh pr edit 42 --body 'apply the deploy'",
 ]
@@ -108,6 +107,17 @@ def test_opening_or_editing_a_pr_is_free(command):
     assert not _mutative(command), command
 
 
+PR_OWN_REPO = "gh -R o/r pr create --head feat/x --base main --title t --body-file body.md"
+
+
+def test_a_pr_on_the_checkouts_own_origin_is_free(repo):
+    assert not _mutative(PR_OWN_REPO, cwd=repo)
+
+
+def test_a_pr_with_no_checkout_to_compare_signs():
+    assert _mutative(PR_OWN_REPO)
+
+
 @pytest.mark.parametrize("command", PR_ASKS)
 def test_merging_or_retargeting_a_pr_still_asks(command):
     assert _mutative(command), command
@@ -119,13 +129,18 @@ def test_pr_create_is_free_at_the_bash_boundary():
 
 # -- Wrappers inherit the exceptions of the CLI they are declared as ---------
 
-@pytest.mark.parametrize("command", [
-    f"{WRAPPER} -C /work/tree pr create --repo o/r --head feat/x --title t",
+@pytest.mark.parametrize("template", [
+    f"{WRAPPER} -C {{repo}} pr create --repo o/r --head feat/x --title t",
     f"{WRAPPER} pr edit 42 --title t",
 ])
-def test_declared_wrapper_inherits_the_pr_exception(monkeypatch, command):
+def test_declared_wrapper_inherits_the_pr_exception(monkeypatch, repo, template):
     monkeypatch.setenv("GAIA_CLI_ALIASES", f"{WRAPPER}=gh")
-    assert not _mutative(command), command
+    assert not _mutative(template.format(repo=repo)), template
+
+
+def test_declared_wrapper_naming_a_repo_with_no_checkout_signs(monkeypatch):
+    monkeypatch.setenv("GAIA_CLI_ALIASES", f"{WRAPPER}=gh")
+    assert _mutative(f"{WRAPPER} -C /work/tree pr create --repo o/r --head feat/x --title t")
 
 
 @pytest.mark.parametrize("command", [
