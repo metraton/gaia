@@ -111,11 +111,13 @@ class EventWriter:
         result: str,
         severity: str = "info",
         meta: Optional[Dict[str, Any]] = None,
+        lean: bool = False,
     ) -> None:
         """Append a single event to the ``harness_events`` DB table.
 
         Fails silently on any error to avoid disrupting the hook pipeline --
-        same contract as the historical file writer.
+        same contract as the historical file writer. ``lean`` takes the cheaper
+        write for events raised on every tool call (``write_harness_event_lean``).
 
         Args:
             event_type: Dotted event category (e.g. "agent.dispatch").
@@ -129,7 +131,8 @@ class EventWriter:
         try:
             writer = _import_store_writer()
             workspace = _resolve_workspace()
-            writer.write_harness_event(
+            write = writer.write_harness_event_lean if lean else writer.write_harness_event
+            write(
                 event_type=event_type,
                 source=source,
                 agent=agent,

@@ -58,10 +58,12 @@ def _caller(hook_data: Mapping[str, Any]) -> Tuple[str, str]:
     return role.value, str(hook_data.get("agent_type") or "")
 
 
-def _write(event_type: str, agent: str, result: str, severity: str, meta: Dict[str, Any]) -> None:
+def _write(
+    event_type: str, agent: str, result: str, severity: str, meta: Dict[str, Any], *, lean: bool = False,
+) -> None:
     from .event_writer import EventWriter
 
-    EventWriter().write_event(event_type, "hook", agent, result, severity=severity, meta=meta)
+    EventWriter().write_event(event_type, "hook", agent, result, severity=severity, meta=meta, lean=lean)
 
 
 def record_cli_invocations(
@@ -144,7 +146,7 @@ def _append_tool_record(tool_name: str, hook_data: Mapping[str, Any], entry: Dic
     key = str(hook_data.get("harness_agent_id", hook_data.get("agent_id")) or "")
     if key:
         _write(TOOL_CALLED, str(hook_data.get("agent_type") or ""), f"{tool_name} agent_id={key}",
-               "info", {"harness_agent_id": key, "tool": tool_name, **entry})
+               "info", {"harness_agent_id": key, "tool": tool_name, **entry}, lean=True)
 
 
 def record_command_run(
@@ -175,6 +177,8 @@ def record_file_checked(tool_name: str, tool_input: object, hook_data: Mapping[s
         else:
             return
         if isinstance(path, str) and path:
-            _append_tool_record(tool_name, hook_data, {"path": path})
+            from gaia.redaction import redact_text
+
+            _append_tool_record(tool_name, hook_data, {"path": redact_text(path)})
     except Exception as exc:
         logger.debug("tool.called not recorded (non-fatal): %s", exc)

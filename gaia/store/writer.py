@@ -1751,28 +1751,12 @@ def write_harness_event(
     Returns:
         Integer primary key of the inserted row.
     """
-    payload = json.dumps(meta, separators=(",", ":")) if meta else None
     con = _connect(db_path)
     try:
-        cur = con.execute(
-            """
-            INSERT INTO harness_events
-                (workspace, ts, type, source, agent, result, severity, payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                workspace,
-                _now_iso(),
-                event_type,
-                source,
-                agent,
-                result,
-                severity,
-                payload,
-            ),
+        row_id = _insert_harness_event(
+            con, event_type, source, agent, result, severity, meta, workspace,
         )
         con.commit()
-        row_id = cur.lastrowid
     finally:
         con.close()
     # Automatic retention (mirrors episodes): occasionally prune events older
@@ -1780,6 +1764,62 @@ def write_harness_event(
     # committed and this one is closed, behind a 1/N gate, and swallows any
     # failure so it can never mask the successful append.
     _maybe_prune_harness_events(db_path=db_path)
+    return row_id
+
+
+def _insert_harness_event(
+    con: sqlite3.Connection,
+    event_type: str,
+    source: str | None,
+    agent: str | None,
+    result: str | None,
+    severity: str | None,
+    meta: Mapping[str, Any] | None,
+    workspace: str | None,
+) -> int:
+    payload = json.dumps(meta, separators=(",", ":")) if meta else None
+    cur = con.execute(
+        """
+        INSERT INTO harness_events
+            (workspace, ts, type, source, agent, result, severity, payload)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (workspace, _now_iso(), event_type, source, agent, result, severity, payload),
+    )
+    return cur.lastrowid
+
+
+def write_harness_event_lean(
+    *,
+    event_type: str,
+    source: str | None = None,
+    agent: str | None = None,
+    result: str | None = None,
+    severity: str | None = "info",
+    meta: Mapping[str, Any] | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Append one ``harness_events`` row on a bare connection, for events raised on every tool call.
+
+    Against ``write_harness_event`` it skips the schema materialization check
+    (the database must already exist, else the insert raises), the retention
+    sweep, and the commit fsync: ``synchronous=NORMAL`` in WAL mode keeps the
+    database consistent and can lose only the last commits to a power cut.
+    A database past this code's schema window is still refused.
+    """
+    path = db_path or _db_path()
+    assert_schema_writable(path)
+    con = sqlite3.connect(str(path))
+    try:
+        con.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+        con.execute("PRAGMA synchronous = NORMAL")
+        row_id = _insert_harness_event(
+            con, event_type, source, agent, result, severity, meta, workspace,
+        )
+        con.commit()
+    finally:
+        con.close()
     return row_id
 
 
