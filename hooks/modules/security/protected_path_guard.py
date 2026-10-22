@@ -61,7 +61,7 @@ import shlex
 from typing import List, Optional, Tuple
 
 from .canonical_path import command_name
-from .protected_paths import is_protected_hook_path
+from .protected_paths import is_protected_hook_path, is_read_spool_path
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
 
@@ -119,7 +119,7 @@ def _is_protected_claude_path(token: str) -> bool:
     if not cleaned:
         return False
 
-    return is_protected_hook_path(cleaned)
+    return is_protected_hook_path(cleaned) or is_read_spool_path(cleaned)
 
 
 def _tokenize(component: str) -> List[str]:
@@ -222,6 +222,12 @@ def targets_protected_path(command: str) -> Optional[str]:
 
 def rejection_message(path: str) -> str:
     """Return the canonical rejection message for a protected-path write."""
+    if is_read_spool_path(path):
+        return (
+            f"[PROTECTED_PATH] Refusing to write the harness read spool: {path}. Only "
+            f"the PreToolUse recorder writes it; a line written by any tool would "
+            f"forge a turn's files_checked. Not approvable."
+        )
     return (
         f"[PROTECTED_PATH] Refusing to write Gaia hook code or settings via "
         f"Bash: {path}. Every Gaia hook tree -- the source checkout and each "

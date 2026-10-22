@@ -247,7 +247,7 @@ def test_a_torn_or_foreign_line_is_skipped_when_the_spool_is_read():
 
 def test_a_cut_turn_is_rescued_with_the_paths_it_read_and_the_spool_is_consumed():
     from gaia.contract import read_spool
-    from gaia.contract.tool_record import recover_spooled_files
+    from gaia.contract.tool_record import seal_cut_record
 
     agent = _agent()
     contract_id = _born_row(agent, agent)
@@ -255,7 +255,7 @@ def test_a_cut_turn_is_rescued_with_the_paths_it_read_and_the_spool_is_consumed(
     _read("/repo/b.py", agent)
     envelope = {"evidence_report": {"files_checked": ["/repo/a.py"]}}
 
-    harness_agent_id = recover_spooled_files(envelope, contract_id)
+    harness_agent_id = seal_cut_record(envelope, contract_id)
 
     assert envelope["evidence_report"]["files_checked"] == ["/repo/a.py", "/repo/b.py"]
     assert harness_agent_id == agent
@@ -436,3 +436,164 @@ def test_finalize_writes_the_row_from_the_harness_record_and_deletes_the_spool()
     ]
     assert report["files_checked"] == ["/repo/a.py"]
     assert read_spool.read(agent) == []
+
+
+def _spool_write_verdict(tool: str, tool_input: dict, harness_agent_id: str | None) -> str:
+    """'refused' when the call is denied naming the read spool; otherwise what the hook answered."""
+    adapter = ClaudeCodeAdapter()
+    event = {
+        "hook_event_name": "PreToolUse", "session_id": "ses-parent", "cwd": "/repo",
+        "tool_name": tool, "tool_input": tool_input, "tool_use_id": f"toolu-{uuid.uuid4().hex[:8]}",
+    }
+    if harness_agent_id:
+        event.update(agent_id=harness_agent_id, agent_type="developer")
+    output = adapter.adapt_pre_tool_use(adapter.parse_event(json.dumps(event))).output
+    answer = json.dumps(output) if not isinstance(output, str) else output
+    if "read spool" in answer:
+        return "refused"
+    return "delegated" if "DELEGATION REQUIRED" in answer else answer
+
+
+def test_the_read_spool_refusal_holds_for_a_primary_role_past_delegate_mode(tmp_path):
+    from gaia.contract import read_spool
+    from adapters.tool_policy import ToolPolicy
+
+    agent = _agent()
+    _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    spool = str(read_spool.spool_path(agent))
+
+    for tool_input in ({"file_path": spool, "content": "{}\n"}, {"file_path": spool, "old_string": "a", "new_string": "b"}):
+        verdict = ToolPolicy()._write_edit_verdict("Write", tool_input, is_subagent=False)
+        assert verdict.decision == "deny"
+        assert "read spool" in verdict.reason
+
+
+@pytest.mark.parametrize("subagent", [True, False], ids=["subagent", "main_session"])
+def test_the_read_spool_is_a_protected_path_no_tool_but_the_recorder_writes(tmp_path, subagent):
+    from gaia.contract import read_spool
+    from gaia.contract.tool_record import ANNOTATION_MARK
+
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    spool = read_spool.spool_path(agent)
+    line = json.dumps({"tool": "Read", "path": "/repo/forged.py"})
+    copied = tmp_path / "forged.jsonl"
+    copied.write_text(line + "\n")
+    attempts = {
+        "write_tool": ("Write", {"file_path": str(spool), "content": line + "\n"}),
+        "edit_tool": ("Edit", {"file_path": str(spool), "old_string": "a.py", "new_string": "forged.py"}),
+    }
+    if subagent:
+        attempts.update({
+            "printf_append": ("Bash", {"command": f"printf '%s\\n' '{line}' >> {spool}"}),
+            "tee_append": ("Bash", {"command": f"tee -a {spool}"}),
+            "cp_over": ("Bash", {"command": f"cp {copied} {spool}"}),
+        })
+
+    verdicts = {
+        label: _spool_write_verdict(tool, tool_input, agent if subagent else None)
+        for label, (tool, tool_input) in attempts.items()
+    }
+
+    assert verdicts == {label: "refused" if subagent else "delegated" for label in attempts}
+    report = _stamp(_envelope(agent), contract_id)["evidence_report"]
+    assert report["files_checked"] == ["/repo/a.py"]
+    assert not any(entry.startswith(ANNOTATION_MARK) for entry in report["files_checked"])
+
+
+def _cut(contract_id: str, agent: str, cut_reason: str) -> None:
+    from gaia.store.writer import finalize_agent_contract_handoff
+
+    finalize_agent_contract_handoff(
+        contract_id=contract_id, agent_id=agent, workspace="me", agent_state="IN_PROGRESS",
+        raw_handoff_json=json.dumps({"degraded": True}), cut_reason=cut_reason,
+    )
+
+
+@pytest.mark.parametrize("cut_reason", ["reaped", "backstop_capture", "salvaged_truncation"])
+def test_a_turn_resumed_after_a_cut_reads_only_its_own_calls(cut_reason):
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    cut_contract = _born_row(agent, agent)
+    _bash("echo cut-turn", agent)
+    _read("/repo/cut.py", agent)
+    _cut(cut_contract, agent, cut_reason)
+
+    cut_row = _stored(cut_contract)
+    assert cut_row["harness_record"]["harness_agent_id"] == agent
+    assert cut_row["harness_record"]["through_event_id"] > 0
+    assert cut_row["evidence_report"]["files_checked"] == ["/repo/cut.py"]
+    assert read_spool.read(agent) == []
+
+    resumed = _born_row(agent, agent)
+    _bash("echo after", agent)
+    _read("/repo/after.py", agent)
+    report = _stamp(_envelope(agent), resumed)["evidence_report"]
+
+    assert [entry.split(" (exit")[0] for entry in report["commands_run"]] == ["echo after"]
+    assert report["files_checked"] == ["/repo/after.py"]
+
+
+def test_a_turn_resumed_after_a_salvaged_draft_reads_only_its_own_calls():
+    from adapters.subagent_stop_core import salvage_truncated_draft
+    from gaia.contract.drafts import save_draft
+
+    agent = _agent()
+    cut_contract = _born_row(agent, agent)
+    save_draft(cut_contract, _envelope(agent))
+    _bash("echo cut-turn", agent)
+    _read("/repo/cut.py", agent)
+    outcome = salvage_truncated_draft(
+        parsed_contract=None, task_info={"agent_id": agent, "agent": "developer", "workspace": "me"},
+        session_id="ses-parent",
+    )
+    assert outcome["created"] is True
+
+    resumed = _born_row(agent, agent)
+    _bash("echo after", agent)
+    report = _stamp(_envelope(agent), resumed)["evidence_report"]
+
+    assert [entry.split(" (exit")[0] for entry in report["commands_run"]] == ["echo after"]
+    assert report["files_checked"] == []
+
+
+def test_a_url_password_or_private_key_never_reaches_the_tool_record():
+    password = "Pa55w0rd" + "XyzQ"
+    agent = _agent()
+    _born_row(agent, agent)
+    _bash(f"cat > /tmp/app.env <<'EOF'\nDATABASE_URL=postgres://app:{password}@db.internal:5432/app\nEOF", agent,
+          stdout="")
+    body = "MIIEowIBAAKCAQEA" + "Zk9" * 800
+    _bash("cat key.pem", agent, stdout=f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\n")
+
+    payloads = _payloads()
+    assert password not in payloads
+    assert "MIIEowIBAAKCAQEA" not in payloads and "Zk9Zk9Zk9" not in payloads
+
+
+def test_a_token_straddling_the_excerpt_window_leaves_no_prefix():
+    agent = _agent()
+    _born_row(agent, agent)
+    closed = f"-----BEGIN RSA PRIVATE KEY-----\n{'Q' * 1900}\n-----END RSA PRIVATE KEY-----\n"
+    _bash("cat mixed.txt", agent, stdout=closed + "z" * (2000 - len(closed) - 20) + GITHUB_TOKEN)
+
+    assert GITHUB_TOKEN[:20] not in _payloads()
+
+
+def test_a_spool_that_reached_its_bound_finalizes_with_one_truncation_marker(monkeypatch):
+    from gaia.contract import read_spool
+
+    monkeypatch.setattr(read_spool, "MAX_SPOOL_BYTES", 1024)
+    agent = _agent()
+    contract_id = _born_row(agent, agent)
+    for n in range(200):
+        _read(f"/repo/{n}.py", agent)
+
+    files = _stamp(_envelope(agent), contract_id)["evidence_report"]["files_checked"]
+
+    assert files[-1] == read_spool.TRUNCATION_MARK
+    assert files.count(read_spool.TRUNCATION_MARK) == 1
+    assert 0 < len(files) - 1 < 200

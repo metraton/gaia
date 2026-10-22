@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from . import gaia_cli_grammar
@@ -134,9 +135,14 @@ def record_skill_load(tool_name: str, tool_input: object, hook_data: Mapping[str
 def _excerpt(text: str) -> str:
     from gaia.redaction import redact_text
 
-    # Redacting before the cut keeps a secret that straddles it from leaving its prefix.
-    redacted = redact_text(text[: EXCERPT_LIMIT * 4])
-    return redacted if len(redacted) <= EXCERPT_LIMIT else redacted[:EXCERPT_LIMIT] + "...[truncated]"
+    # Redaction runs on a bounded window, and a token the window cuts no longer matches its
+    # shape, so the window drops its trailing word before redacting.
+    window = text[: EXCERPT_LIMIT * 4]
+    cut = len(window) < len(text)
+    redacted = redact_text(re.sub(r"\S{1,256}\Z", "", window) if cut else window)
+    if not cut and len(redacted) <= EXCERPT_LIMIT:
+        return redacted
+    return redacted[:EXCERPT_LIMIT] + "...[truncated]"
 
 
 def _append_tool_record(tool_name: str, hook_data: Mapping[str, Any], entry: Dict[str, Any]) -> None:

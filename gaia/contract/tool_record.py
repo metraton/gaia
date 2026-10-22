@@ -62,12 +62,19 @@ def stamp_harness_fields(
     report = envelope.setdefault("evidence_report", {})
     report.update(harness_evidence(
         found["records"], report.get("commands_run") or [], report.get("files_checked") or [],
-        read_spool.read(found["harness_agent_id"]),
+        _spooled(found["harness_agent_id"]),
     ))
-    envelope["harness_record"] = {
-        "harness_agent_id": found["harness_agent_id"],
-        "through_event_id": found["through_event_id"],
-    }
+    envelope["harness_record"] = _harness_record(found)
+
+
+def _spooled(key: str) -> List[str]:
+    paths = read_spool.read(key)
+    return paths + [read_spool.TRUNCATION_MARK] if read_spool.reached_bound(key) else paths
+
+
+def _harness_record(found: Dict[str, Any]) -> Dict[str, Any]:
+    """The marker a later turn of the same harness id excludes this turn's calls by (``tool_records_for_contract``)."""
+    return {"harness_agent_id": found["harness_agent_id"], "through_event_id": found["through_event_id"]}
 
 
 def commit_harness_record(envelope: Dict[str, Any]) -> None:
@@ -77,19 +84,24 @@ def commit_harness_record(envelope: Dict[str, Any]) -> None:
         read_spool.discard(key)
 
 
-def recover_spooled_files(
+def seal_cut_record(
     envelope: Dict[str, Any], contract_id: str, *, db_path: Optional[Path] = None,
 ) -> Optional[str]:
-    """Add the paths a cut turn spooled to the envelope's files_checked; returns the harness id whose spool to discard once the row is written."""
+    """Give a cut turn's envelope the paths it spooled and its harness_record; returns the harness id whose spool to discard once the row is written."""
     from gaia.store.writer import tool_records_for_contract
 
-    key = tool_records_for_contract(contract_id, db_path=db_path)["harness_agent_id"]
+    found = tool_records_for_contract(contract_id, db_path=db_path)
+    key = found["harness_agent_id"]
     if not key:
         return None
+    envelope["harness_record"] = _harness_record(found)
+    spooled = _spooled(key)
+    if not spooled:
+        return key
     report = envelope.get("evidence_report")
     if not isinstance(report, dict):
         report = envelope["evidence_report"] = {}
     files = report.get("files_checked")
     files = list(files) if isinstance(files, list) else []
-    report["files_checked"] = files + [path for path in read_spool.read(key) if path not in files]
+    report["files_checked"] = files + [path for path in spooled if path not in files]
     return key

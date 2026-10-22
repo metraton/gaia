@@ -9441,6 +9441,12 @@ def finalize_agent_contract_handoff(
 
     _assert_dispatch_can_write_handoff()
 
+    spool_key = None
+    if cut_reason is not None:
+        raw_handoff_json, spool_key = _seal_cut_harness_record(
+            contract_id, raw_handoff_json, db_path,
+        )
+
     def _work() -> dict:
         con = _connect(db_path)
         try:
@@ -9604,7 +9610,34 @@ def finalize_agent_contract_handoff(
         finally:
             con.close()
 
-    return _retry_on_locked(_work)
+    outcome = _retry_on_locked(_work)
+    if spool_key and outcome["created"]:
+        from gaia.contract import read_spool
+
+        read_spool.discard(spool_key)
+    return outcome
+
+
+def _seal_cut_harness_record(
+    contract_id: str, raw_handoff_json: str, db_path: "Path | None",
+) -> "tuple[str, str | None]":
+    """A cut row's envelope carrying its spooled paths and harness_record, and the harness id whose spool it consumes.
+
+    Every cut lane (reap, backstop capture, truncation salvage) writes through
+    finalize, so sealing here is what keeps a turn resumed under the same
+    harness id from inheriting the cut turn's calls. Failing to read the tool
+    record leaves the envelope as the lane built it: the cut row is still written.
+    """
+    from gaia.contract.tool_record import seal_cut_record
+
+    try:
+        envelope = json.loads(raw_handoff_json)
+        if not isinstance(envelope, dict):
+            return raw_handoff_json, None
+        key = seal_cut_record(envelope, contract_id, db_path=db_path)
+    except (TypeError, ValueError, sqlite3.Error):
+        return raw_handoff_json, None
+    return (json.dumps(envelope), key) if key else (raw_handoff_json, None)
 
 
 # ---------------------------------------------------------------------------

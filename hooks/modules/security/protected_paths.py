@@ -227,6 +227,25 @@ def resolved_write_target(path_str: str) -> str:
     return str(_candidates(path_str)[-1])
 
 
+def is_read_spool_path(path_str: str) -> bool:
+    """True iff `path_str` lies in the harness read spool, which only the PreToolUse recorder writes, in process.
+
+    A line written there by any tool would return as an unmarked files_checked
+    entry, so every surface refuses it for every role, with no signature.
+    """
+    if not path_str:
+        return False
+    from gaia.contract.read_spool import spool_dir
+
+    root = Path(os.path.abspath(spool_dir()))
+    roots = {root, root.resolve()}
+    return any(
+        candidate == r or r in candidate.parents
+        for candidate in _candidates(path_str)
+        for r in roots
+    )
+
+
 def is_protected_hook_path(path_str: str) -> bool:
     """Return True iff `path_str` names write-protected Gaia configuration.
 

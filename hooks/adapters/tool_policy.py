@@ -895,8 +895,10 @@ class ToolPolicy:
             build_reminder_context,
             should_remind,
         )
+        from modules.security import protected_path_guard
         from modules.security.protected_paths import (
             is_protected_hook_path,
+            is_read_spool_path,
             resolved_write_target,
         )
         from modules.security.sensitive_paths import is_account_path
@@ -912,6 +914,8 @@ class ToolPolicy:
         )
         if refusal:
             return PolicyVerdict(decision="deny", reason=refusal)
+        if is_read_spool_path(file_path):
+            return PolicyVerdict(decision="deny", reason=protected_path_guard.rejection_message(file_path))
 
         account_path = is_account_path(file_path)
         if not account_path and not is_protected_hook_path(file_path):

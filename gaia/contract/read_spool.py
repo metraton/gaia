@@ -13,11 +13,13 @@ from typing import List
 MAX_SPOOL_BYTES = 256 * 1024
 MAX_LINE_BYTES = 4096
 STALE_AFTER_SECONDS = 7 * 24 * 3600
+TRUNCATION_MARK = "[read spool truncated at its 256 KiB bound: later reads are not listed]"
 
 _SAFE_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
-def _spool_dir() -> Path:
+def spool_dir() -> Path:
+    """The directory only this module writes; every tool write into it is refused (``protected_paths.is_read_spool_path``)."""
     from gaia.paths.resolver import state_dir
 
     return state_dir() / "read_spool"
@@ -25,7 +27,7 @@ def _spool_dir() -> Path:
 
 def spool_path(key: str) -> Path:
     name = key if _SAFE_KEY.match(key) else hashlib.sha256(key.encode()).hexdigest()[:32]
-    return _spool_dir() / f"{name}.jsonl"
+    return spool_dir() / f"{name}.jsonl"
 
 
 def append(key: str, tool: str, path: str) -> bool:
@@ -69,6 +71,14 @@ def read(key: str) -> List[str]:
     return paths
 
 
+def reached_bound(key: str) -> bool:
+    """Whether the spool hit MAX_SPOOL_BYTES, past which ``append`` drops every read."""
+    try:
+        return spool_path(key).stat().st_size >= MAX_SPOOL_BYTES
+    except OSError:
+        return False
+
+
 def discard(key: str) -> None:
     """Delete the key's spool, and any spool left by a turn that was cut and never rescued."""
     try:
@@ -77,7 +87,7 @@ def discard(key: str) -> None:
         pass
     try:
         cutoff = time.time() - STALE_AFTER_SECONDS
-        for entry in _spool_dir().iterdir():
+        for entry in spool_dir().iterdir():
             if entry.stat().st_mtime < cutoff:
                 entry.unlink()
     except OSError:
