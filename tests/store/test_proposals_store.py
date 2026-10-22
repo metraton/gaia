@@ -442,6 +442,27 @@ def test_proposals_store_intake_refuses_what_memory_cannot_write(db, create, cap
     assert create["slug"] in capsys.readouterr().err
 
 
+def test_proposals_store_a_refused_proposal_is_recorded_in_the_row_once(db):
+    from gaia.store.writer import _connect
+
+    raw = json.loads(_envelope("COMPLETE", memory=["project_kept"]))
+    raw["memory_delta"]["proposals"].append({"operation": "create", "create": {
+        "slug": "atom_typed_fact", "type": "fact", "description": "Fact: x.", "body": "x"}})
+    contract_id = f"{AGENT}.00000000000d"
+    handoff_id = _close(contract_id, "COMPLETE", json.dumps(raw))
+    _close(contract_id, "COMPLETE", json.dumps(raw), born=False)
+
+    con = _connect()
+    try:
+        stored = json.loads(con.execute(
+            "SELECT raw_handoff_json FROM agent_contract_handoffs WHERE id = ?",
+            (handoff_id,)).fetchone()[0])
+    finally:
+        con.close()
+    gaps = [g for g in stored["evidence_report"]["open_gaps"] if "atom_typed_fact" in g]
+    assert len(gaps) == 1 and "fact" in gaps[0]
+
+
 @pytest.mark.parametrize("command", [
     "gaia contract proposals list --json",
     "gaia contract proposals accept 7 --project github.com/metraton/gaia",

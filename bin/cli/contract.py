@@ -633,6 +633,12 @@ def _write_if_valid(
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
+    from gaia.store.proposals import refusal_message
+
+    refusal = refusal_message(envelope)
+    if refusal:
+        _print_error(refusal, as_json)
+        return 1
     # What gets persisted is what got VALIDATED. Every enum in the envelope is
     # compared normalized (agent_state upper-cased, work_phase stripped and
     # lower-cased, verification.result lower-cased), and persisting the raw

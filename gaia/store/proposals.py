@@ -44,21 +44,59 @@ def _unwritable(proposal: dict) -> Optional[str]:
     return None
 
 
+def _refusal(item: dict, reason: str) -> str:
+    return f"memory proposal {(item.get('create') or {}).get('slug')!r} not recorded: {reason}"
+
+
+def _split_memory(envelope: Any) -> tuple:
+    """``(accepted, refused)``: the envelope's memory proposals `gaia memory add` takes, and ``[(proposal, reason)]`` for the rest."""
+    if not isinstance(envelope, dict):
+        return [], []
+    parse_memory_delta, _entries = _hook_parsers()
+    accepted, refused = [], []
+    for item in parse_memory_delta("", parsed_contract=envelope).proposals:
+        reason = _unwritable(item)
+        if reason is None:
+            accepted.append(item)
+        else:
+            refused.append((item, reason))
+    return accepted, refused
+
+
+def refusal_message(envelope: Any) -> Optional[str]:
+    """The write-time refusal for an envelope holding a proposal `gaia memory add` would reject, or None."""
+    from gaia.store.writer import VALID_MEMORY_TYPES
+
+    _accepted, refused = _split_memory(envelope)
+    if not refused:
+        return None
+    lines = [f"memory_delta refused, {_refusal(item, reason)}" for item, reason in refused]
+    lines.append(f"accepted types: {', '.join(VALID_MEMORY_TYPES)}")
+    lines.append("fix: replace memory_delta with a corrected value (gaia contract set memory_delta '<json>')")
+    return "\n".join(lines)
+
+
 def extract_proposals(envelope: Any) -> list:
     """``[(kind, payload)]``: each memory proposal `gaia memory add` accepts, then each context entry; the rest go to stderr."""
     if not isinstance(envelope, dict):
         return []
-    parse_memory_delta, proposed_entries = _hook_parsers()
-    memory = []
-    for item in parse_memory_delta("", parsed_contract=envelope).proposals:
-        reason = _unwritable(item)
-        if reason is None:
-            memory.append(item)
-        else:
-            print(f"gaia: memory proposal {(item.get('create') or {}).get('slug')!r} not "
-                  f"recorded: {reason}", file=sys.stderr)
+    _parse, proposed_entries = _hook_parsers()
+    memory, refused = _split_memory(envelope)
+    for item, reason in refused:
+        print(f"gaia: {_refusal(item, reason)}", file=sys.stderr)
     context, _note = proposed_entries(envelope.get("update_contracts"))
     return [("memory", item) for item in memory] + [("context", item) for item in context]
+
+
+def _record_refusals(con: sqlite3.Connection, handoff_id: int, envelope: dict) -> None:
+    """Add each refused memory proposal to the row's ``evidence_report.open_gaps``."""
+    gaps = envelope.setdefault("evidence_report", {}).setdefault("open_gaps", [])
+    new = [_refusal(item, reason) for item, reason in _split_memory(envelope)[1]]
+    new = [text for text in new if text not in gaps]
+    if new:
+        gaps.extend(new)
+        con.execute("UPDATE agent_contract_handoffs SET raw_handoff_json = ? WHERE id = ?",
+                    (json.dumps(envelope), handoff_id))
 
 
 def _row_project(con: sqlite3.Connection, handoff_id: int) -> Optional[str]:
@@ -104,6 +142,8 @@ def record_close(con: sqlite3.Connection, handoff_id: int, raw_handoff_json: str
     con.execute("SAVEPOINT record_proposals")
     try:
         record_proposals(con, handoff_id, envelope)
+        if isinstance(envelope, dict):
+            _record_refusals(con, handoff_id, envelope)
     except Exception as exc:
         con.execute("ROLLBACK TO SAVEPOINT record_proposals")
         print(f"gaia: proposals of handoff {handoff_id} not recorded: {exc}", file=sys.stderr)
