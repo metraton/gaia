@@ -22,27 +22,18 @@ from hooks.modules.context.context_writer import (
 # Schema bootstrap helper
 # ---------------------------------------------------------------------------
 
-def _bootstrap_schema(db_path: Path) -> None:
-    """Create the minimal schema this module reads/writes against."""
-    con = sqlite3.connect(str(db_path))
-    con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS workspaces (
-            name        TEXT PRIMARY KEY,
-            identity    TEXT NOT NULL,
-            created_at  TEXT NOT NULL
-        );
+PROJECT = "gaia"
+PROJECT_ID = "github.com/org/gaia"
 
-        CREATE TABLE IF NOT EXISTS project_context_contracts (
-            workspace     TEXT NOT NULL,
-            contract_name TEXT NOT NULL,
-            payload       TEXT NOT NULL,
-            metadata      TEXT,
-            updated_at    TEXT,
-            PRIMARY KEY (workspace, contract_name),
-            FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
-        );
-        """
+
+def _bootstrap_schema(db_path: Path) -> None:
+    """Build the full schema and the one project the writes are about."""
+    con = sqlite3.connect(str(db_path))
+    con.executescript((Path(__file__).resolve().parents[4] / "gaia" / "store" / "schema.sql").read_text())
+    con.execute("INSERT INTO workspaces (name, identity) VALUES ('me', 'me')")
+    con.execute(
+        "INSERT INTO projects (workspace, name, path, project_identity) VALUES ('me', ?, ?, ?)",
+        (PROJECT, "/home/u/ws/gaia", PROJECT_ID),
     )
     con.commit()
     con.close()
@@ -73,14 +64,23 @@ def _seed_contract(db_path: Path, workspace: str, contract_name: str, payload) -
 
 
 def _read_contract(db_path: Path, workspace: str, contract_name: str):
+    """The section as a reader of ``workspace`` sees it after the write."""
+    from gaia.store.project_context import workspace_sections
+
     con = sqlite3.connect(str(db_path))
-    row = con.execute(
-        "SELECT payload FROM project_context_contracts "
-        "WHERE workspace = ? AND contract_name = ?",
-        (workspace, contract_name),
-    ).fetchone()
+    section = workspace_sections(con, workspace).get(contract_name)
     con.close()
-    return json.loads(row[0]) if row else None
+    return section["payload"] if section else None
+
+
+def _project_rows(db_path: Path, contract_name: str) -> list:
+    con = sqlite3.connect(str(db_path))
+    rows = con.execute(
+        "SELECT project_identity, payload FROM project_context WHERE contract_name = ?",
+        (contract_name,),
+    ).fetchall()
+    con.close()
+    return [(identity, json.loads(payload)) for identity, payload in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -102,39 +102,31 @@ def tmp_db(tmp_path: Path) -> Path:
 class TestApplyUpdate:
     def test_inserts_new_row(self, tmp_db: Path):
         update = {"contract": "stack", "payload": {"languages": ["python"]}}
-        audit = apply_update(update, "developer", workspace="me", db_path=tmp_db)
+        audit = apply_update(update, "developer", workspace="me", db_path=tmp_db, project=PROJECT)
 
         assert audit["success"] is True
         assert audit["contract"] == "stack"
-        assert audit["workspace"] == "me"
-
-        con = sqlite3.connect(str(tmp_db))
-        row = con.execute(
-            "SELECT workspace, contract_name, payload FROM project_context_contracts "
-            "WHERE workspace='me' AND contract_name='stack'"
-        ).fetchone()
-        con.close()
-        assert row is not None
-        assert row[0] == "me"
-        assert row[1] == "stack"
-        assert json.loads(row[2]) == {"languages": ["python"]}
+        assert (audit["workspace"], audit["project"]) == ("me", PROJECT_ID)
+        assert _project_rows(tmp_db, "stack") == [(PROJECT_ID, {"languages": ["python"]})]
 
     def test_upsert_is_idempotent(self, tmp_db: Path):
-        """A second apply for (workspace, contract) updates payload, no duplicate row."""
+        """A second apply for (project, contract) updates payload, no duplicate row."""
         first = {"contract": "stack", "payload": {"languages": ["python"]}}
         second = {"contract": "stack", "payload": {"languages": ["python", "node"]}}
 
-        apply_update(first, "developer", workspace="me", db_path=tmp_db)
-        apply_update(second, "developer", workspace="me", db_path=tmp_db)
+        apply_update(first, "developer", workspace="me", db_path=tmp_db, project=PROJECT)
+        apply_update(second, "developer", workspace="me", db_path=tmp_db, project=PROJECT)
 
-        con = sqlite3.connect(str(tmp_db))
-        rows = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace='me' AND contract_name='stack'"
-        ).fetchall()
-        con.close()
-        assert len(rows) == 1, "upsert must not create duplicate rows"
-        assert json.loads(rows[0][0]) == {"languages": ["python", "node"]}
+        assert _project_rows(tmp_db, "stack") == [
+            (PROJECT_ID, {"languages": ["python", "node"]}),
+        ], "upsert must not create duplicate rows"
+
+    def test_a_section_with_no_project_is_refused(self, tmp_db: Path):
+        audit = apply_update({"contract": "stack", "payload": {"a": 1}}, "developer",
+                             workspace="me", db_path=tmp_db)
+
+        assert audit["success"] is False and "names no project" in audit["error"]
+        assert _project_rows(tmp_db, "stack") == []
 
     def test_db_missing_returns_error(self, tmp_path: Path):
         missing_db = tmp_path / "does-not-exist.db"
@@ -224,6 +216,7 @@ class TestApplyUpdateMerges:
             "gaia-operator",
             workspace="me",
             db_path=tmp_db,
+            project=PROJECT,
         )
 
         assert audit["success"] is True
@@ -255,6 +248,7 @@ class TestApplyUpdateMerges:
             "gaia-operator",
             workspace="me",
             db_path=tmp_db,
+            project=PROJECT,
         )
 
         stored = _read_contract(tmp_db, "me", "project_identity")
@@ -271,6 +265,7 @@ class TestApplyUpdateMerges:
                 "developer",
                 workspace="me",
                 db_path=tmp_db,
+                project=PROJECT,
             )
 
         stored = _read_contract(tmp_db, "me", "stack")
@@ -282,6 +277,7 @@ class TestApplyUpdateMerges:
             "developer",
             workspace="me",
             db_path=tmp_db,
+            project=PROJECT,
         )
         assert audit["write_mode"] == "insert"
         assert _read_contract(tmp_db, "me", "stack") == {"languages": ["python"]}
@@ -294,6 +290,7 @@ class TestApplyUpdateMerges:
             "developer",
             workspace="me",
             db_path=tmp_db,
+            project=PROJECT,
         )
 
         assert audit["success"] is True
@@ -308,6 +305,7 @@ class TestApplyUpdateMerges:
             "developer",
             workspace="me",
             db_path=tmp_db,
+            project=PROJECT,
         )
 
         assert audit["success"] is True
@@ -338,6 +336,7 @@ class TestApplyUpdateMerges:
             "gaia-operator",
             workspace="me",
             db_path=tmp_db,
+            project=PROJECT,
         )
 
         assert audit["success"] is False
@@ -370,16 +369,11 @@ class TestApplyUpdateMerges:
         _seed_contract(tmp_db, "me", "stack", {"a": 1})
         apply_update(
             {"contract": "stack", "payload": {"b": 2}},
-            "developer", workspace="me", db_path=tmp_db,
+            "developer", workspace="me", db_path=tmp_db, project=PROJECT,
         )
 
-        con = sqlite3.connect(str(tmp_db))
-        rows = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace='me' AND contract_name='stack'"
-        ).fetchall()
-        con.close()
-        assert len(rows) == 1
-        assert json.loads(rows[0][0]) == {"a": 1, "b": 2}
+        assert _project_rows(tmp_db, "stack") == [(PROJECT_ID, {"a": 1, "b": 2})], (
+            "the first project write starts from the workspace row its readers saw"
+        )
 
 

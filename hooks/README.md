@@ -164,6 +164,37 @@ rejected the emitted contract; its substantive output may have been preserved
 by `rejected_turn_relay.py` as described above. Both are warning-grade by
 default and can be isolated with `gaia defects --type=<event>`.
 
+## Project context is keyed by project (schema v68)
+
+A context section describes one project, so it is stored under that project's
+identity in `project_context` (`gaia/store/project_context.py`). Before v68 it was
+keyed by workspace in `project_context_contracts`, and a section proposed from a
+session opened in another workspace landed where no reader of the project looked.
+
+- **Routing** (`modules/context/context_writer.py::_route`): a proposal lands
+  under the project the entry names (`"project"`), else, for `project_identity`,
+  the project each key names, else the dispatch project of the proposing turn.
+  Nothing falls back to the caller's workspace. A part with no resolvable
+  project is refused, and SubagentStop stamps the reason on the proposing row
+  as `update_contracts_refused`, so the proposal and the refusal both stay on
+  the contract for a later proposal store.
+- **History**: the writer, not a trigger, appends to `project_context_history`
+  on every write, the first insert included, naming the agent and the
+  proposing contract id (`gaia context accept` passes both).
+- **Fallback per section, not per project**: until the old rows are moved
+  (plan 94, task 2) and the old table is retired, a project reads its own row
+  for a section and otherwise the old row of its workspace. A per-project
+  fallback would hide every unmoved section of a project as soon as one
+  section was written. For the same reason a first write merges into the
+  section the project's readers saw, so a delta never hides old keys.
+- **Workspace readers** (`workspace_sections`: the context provider, the
+  contracts loader, freshness, the session roster, `get-contract --workspace`)
+  read the old row merged with the rows of that workspace's projects.
+- **Compatibility**: `v67_to_v68.sql` is declared breaking. Code older than v68
+  would keep writing the old table, which readers no longer prefer, so it must
+  stop writing. Ship it with an install of every local host that shares
+  `gaia.db` (Claude Code and OpenCode).
+
 ## See also
 
 - [`build/gaia.manifest.json`](../build/gaia.manifest.json) — hook registration and matchers

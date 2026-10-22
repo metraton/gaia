@@ -93,23 +93,19 @@ def _read_workspace_identity() -> Optional[str]:
 
     try:
         from gaia.paths import db_path
+        from gaia.store.project_context import workspace_sections
 
         con = sqlite3.connect(str(db_path()))
         try:
-            row = con.execute(
-                """
-                SELECT json_extract(payload, '$.name')
-                FROM project_context_contracts
-                WHERE workspace = ? AND contract_name = 'project_identity'
-                """,
-                (workspace,),
-            ).fetchone()
+            section = workspace_sections(con, workspace).get("project_identity")
         finally:
             con.close()
     except sqlite3.Error as exc:
         logger.debug("workspace identity read failed (non-fatal): %s", exc)
         return workspace
-    return row[0] if row and row[0] else workspace
+    payload = section["payload"] if section else None
+    name = payload.get("name") if isinstance(payload, dict) else None
+    return name if isinstance(name, str) and name else workspace
 
 
 def _on_plugin_channel() -> bool:
@@ -609,8 +605,8 @@ def _collect_projects() -> Optional[dict]:
     there is nothing to index or the database cannot be read.
 
     This is NOT an index of every git repo on disk. The source is the set of
-    projects that have **active project context** -- a ``project_identity`` row
-    in ``project_context_contracts``. That filter is the point: it includes
+    projects that have **active project context** -- a ``project_identity``
+    section in a workspace's view (``workspace_sections``). That filter is the point: it includes
     AOS (which lives only in the ``me`` workspace's hand-authored contract,
     with absolute ``local_path``) and, since the scan-promotion stage
     (``tools/scan/promote.py::promote_workspace``), also includes any scanned
@@ -666,6 +662,7 @@ def _collect_projects() -> Optional[dict]:
         pass
 
     try:
+        from gaia.store.project_context import workspace_sections, workspaces_with_section
         from gaia.store.writer import _connect
     except Exception as exc:
         logger.debug("project collection import failed: %s", exc)
@@ -674,10 +671,11 @@ def _collect_projects() -> Optional[dict]:
     try:
         con = _connect()
         try:
-            identity_rows = con.execute(
-                "SELECT workspace, payload FROM project_context_contracts "
-                "WHERE contract_name = 'project_identity' ORDER BY workspace"
-            ).fetchall()
+            identity_rows = [
+                {"workspace": ws,
+                 "payload": json.dumps(workspace_sections(con, ws)["project_identity"]["payload"])}
+                for ws in workspaces_with_section(con, "project_identity")
+            ]
             # Path resolution sources: include missing rows -- the on-disk path
             # may still be valid even if the scanner marked the repo missing.
             proj_rows = con.execute(

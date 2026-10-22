@@ -106,6 +106,7 @@ def _close_turn(
     db_path: Path, monkeypatch, agent: str, state: str,
     prompt: str = "declare the project's workflow",
     payload: dict | None = None,
+    entries: list | None = None,
 ):
     """Birth, fill and finalize a turn carrying the 25793 proposal, then run
     SubagentStop from a cwd that resolves to another workspace."""
@@ -126,7 +127,7 @@ def _close_turn(
             {k: [] for k in _EVIDENCE_KEYS},
             verification={"method": "test", "result": "pass", "details": "ok"},
         ),
-        "update_contracts": [
+        "update_contracts": entries or [
             {"contract": "project_identity",
              "payload": payload or {PROJECT: {"workflow": WORKFLOW}}},
         ],
@@ -270,6 +271,28 @@ def test_a_refused_update_contracts_is_recorded_on_the_contract_row(db_path, mon
     assert any("project_identity" in message for message in refused), (
         "the row is what a later reader opens; a refusal only in the hook output is lost"
     )
+
+
+@pytest.mark.parametrize("prompt", [
+    "record the cluster", "project=not-a-known-project record the cluster",
+])
+def test_a_section_whose_project_is_unresolved_stays_on_the_row_as_refused(db_path, monkeypatch, prompt):
+    ClaudeCodeAdapter._maybe_birth_dispatched_row({"prompt": "bootstrap"}, "gaia-operator", "sess-boot")
+    _seed_project(db_path, "gaia-operator")
+
+    _close_turn(
+        db_path, monkeypatch, "gaia-operator", "NEEDS_VERIFICATION", prompt=prompt,
+        entries=[{"contract": "cluster_details", "payload": {"gke": {"version": "1.30"}}}],
+    )
+
+    shown = _cli([str(_REPO_ROOT / "bin" / "gaia"), "contract", "view",
+                  "--harness-id", HARNESS_AGENT_ID])
+    assert shown.returncode == 0, shown.stderr
+    envelope = json.loads(shown.stdout)["envelope"]
+    refused = envelope.get("update_contracts_refused") or []
+    assert any("'cluster_details': the entry names no project" in m and "Repair:" in m
+               for m in refused), refused
+    assert envelope["update_contracts"][0]["contract"] == "cluster_details", "the proposal itself is kept"
 
 
 def test_a_malformed_update_contracts_entry_is_refused_not_dropped(db_path):

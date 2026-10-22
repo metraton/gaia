@@ -90,34 +90,30 @@ def detect_cloud_provider(sections: Dict[str, Any]) -> str:
 
 
 def load_project_context(workspace: str, db_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load project context for a workspace from project_context_contracts in gaia.db.
+    """Load project context as ``workspace`` reads it (``gaia.store.project_context.workspace_sections``).
 
     Returns a dict shaped as ``{metadata: {}, sections: {contract_name: payload, ...}}``
     to remain compatible with the rest of the pipeline. Returns an empty context when the
     workspace has no rows rather than exiting.
     """
+    from gaia.store.project_context import workspace_sections
+
     try:
         con = _db_connect(db_path)
-        rows = con.execute(
-            "SELECT contract_name, payload, metadata, updated_at "
-            "FROM project_context_contracts WHERE workspace = ?",
-            (workspace,),
-        ).fetchall()
-        con.close()
+        try:
+            stored = workspace_sections(con, workspace)
+        finally:
+            con.close()
     except sqlite3.Error as exc:
         print(f"Warning: DB error reading project context for '{workspace}': {exc}", file=sys.stderr)
-        rows = []
+        stored = {}
 
     sections: Dict[str, Any] = {}
     last_updated = ""
-    for row in rows:
-        try:
-            payload = json.loads(row["payload"]) if row["payload"] else {}
-        except (json.JSONDecodeError, TypeError):
-            payload = {}
-        sections[row["contract_name"]] = payload
-        if row["updated_at"] and row["updated_at"] > last_updated:
-            last_updated = row["updated_at"]
+    for name, section in stored.items():
+        sections[name] = section["payload"] if section["payload"] is not None else {}
+        if section["updated_at"] and section["updated_at"] > last_updated:
+            last_updated = section["updated_at"]
 
     if not sections:
         print(f"Warning: No project context found for workspace '{workspace}' in gaia.db", file=sys.stderr)

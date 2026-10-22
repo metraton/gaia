@@ -6,7 +6,6 @@ Queries agent_contract_permissions and project_context_contracts in
 ~/.gaia/gaia.db to find writable contracts and check emptiness.
 """
 
-import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -72,23 +71,21 @@ def _load_context_sections_from_db(
         return {}
 
     try:
+        from gaia.store.project_context import workspace_sections
+
         con = sqlite3.connect(str(resolved))
-        rows = con.execute(
-            "SELECT contract_name, payload FROM project_context_contracts WHERE workspace = ?",
-            (workspace,),
-        ).fetchall()
-        con.close()
+        try:
+            stored = workspace_sections(con, workspace)
+        finally:
+            con.close()
     except sqlite3.Error as exc:
         logger.warning("DB error loading context sections for '%s': %s", workspace, exc)
         return {}
 
-    sections = {}
-    for contract_name, payload_str in rows:
-        try:
-            sections[contract_name] = json.loads(payload_str) if payload_str else {}
-        except (json.JSONDecodeError, TypeError):
-            sections[contract_name] = {}
-    return sections
+    return {
+        name: section["payload"] if section["payload"] is not None else {}
+        for name, section in stored.items()
+    }
 
 
 def _derive_workspace() -> str:

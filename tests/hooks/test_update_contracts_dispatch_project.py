@@ -256,7 +256,9 @@ def test_an_underscore_key_lands_in_the_workspace_owning_the_hyphenated_project(
     outcome = context_writer.apply_proposal(clause, HOOK_CWD_WORKSPACE, db_path)
 
     assert outcome["errors"] == []
-    assert outcome["applied"] == [{"contract": "project_identity", "workspace": BK_WORKSPACE}]
+    assert outcome["applied"] == [
+        {"contract": "project_identity", "workspace": BK_WORKSPACE, "project": BK_PATH},
+    ]
     assert WORKFLOW in json.dumps(
         json.loads(_stored_in(BK_WORKSPACE))["payload"][BK_KEY]
     )
@@ -279,7 +281,9 @@ def test_a_key_no_workspace_owns_is_refused_and_written_nowhere(db_path, branchk
 
     outcome = context_writer.apply_proposal(clause, HOOK_CWD_WORKSPACE, db_path)
 
-    assert outcome["applied"] == [{"contract": "project_identity", "workspace": BK_WORKSPACE}]
+    assert outcome["applied"] == [
+        {"contract": "project_identity", "workspace": BK_WORKSPACE, "project": BK_PATH},
+    ]
     assert len(outcome["errors"]) == 1
     assert "no workspace owns no_such_project" in outcome["errors"][0]
     assert "Repair:" in outcome["errors"][0]
@@ -298,7 +302,8 @@ def test_the_close_refuses_an_unowned_key_visibly_and_records_the_owned_one(
     )
 
     assert result["proposed"] == [{
-        "contract": "project_identity", "workspace": BK_WORKSPACE, "keys": [BK_KEY],
+        "contract": "project_identity", "workspace": BK_WORKSPACE, "project": BK_PATH,
+        "keys": [BK_KEY],
     }]
     assert any("no workspace owns brand_new" in e for e in result["errors"])
     assert _stored_keys(db_path, HOOK_CWD_WORKSPACE) == set()
@@ -314,7 +319,8 @@ def test_the_underscore_slug_resolves_in_gaia_context_project(db_path, branchkin
 
 def test_a_section_keyed_object_is_recorded_not_dropped(db_path, branchkinect):
     """The 3 cluster_details proposals of the last 14 days arrived as ``{section: payload}``."""
-    task_info = {"agent": AGENT, "db_path": db_path, "workspace": HOOK_CWD_WORKSPACE}
+    task_info = {"agent": AGENT, "db_path": db_path, "workspace": HOOK_CWD_WORKSPACE,
+                 "project": BK_NAME}
 
     result = context_writer.process_update_contracts(
         {"update_contracts": {"cluster_details": {"gke": {"version": "1.30"}}}}, task_info,
@@ -322,7 +328,8 @@ def test_a_section_keyed_object_is_recorded_not_dropped(db_path, branchkinect):
 
     assert result["errors"] == []
     assert result["proposed"] == [{
-        "contract": "cluster_details", "workspace": HOOK_CWD_WORKSPACE, "keys": ["gke"],
+        "contract": "cluster_details", "workspace": BK_WORKSPACE, "project": BK_PATH,
+        "keys": ["gke"],
     }]
     assert "{section: payload}" in result["normalized"]
     assert context_writer._section_keys("cluster_details", HOOK_CWD_WORKSPACE, db_path) == set()

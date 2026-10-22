@@ -851,16 +851,11 @@ def _cmd_project(args) -> int:
 
         contract_slug = None
         contract_entry = None
-        contract_row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = 'project_identity'",
-            (r_workspace,),
-        ).fetchone()
+        from gaia.store.project_context import workspace_sections
+
+        contract_row = workspace_sections(con, r_workspace).get("project_identity")
         if contract_row is not None:
-            try:
-                payload = json.loads(contract_row["payload"]) if contract_row["payload"] else {}
-            except (json.JSONDecodeError, TypeError):
-                payload = {}
+            payload = contract_row["payload"] if isinstance(contract_row["payload"], dict) else {}
             contract_slug, contract_entry = _project_match_identity_entry(
                 payload, row.get("path"), row.get("remote_url"),
             )

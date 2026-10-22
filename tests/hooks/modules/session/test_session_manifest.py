@@ -549,26 +549,37 @@ class TestExtractProjectsCarriesTypeAndDescription:
 
 
 def _patch_connect(monkeypatch, identity_rows, proj_rows=()):
-    """Point the projects roster at fixed contract + projects rows."""
+    """Point the projects roster at an in-memory DB holding these pre-v68 contract and projects rows."""
+    import sqlite3
+
     import gaia.store.writer as _writer
 
-    class _FakeCursor:
-        def __init__(self, rows):
-            self._rows = rows
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript((Path(__file__).resolve().parents[4] / "gaia" / "store" / "schema.sql").read_text())
+    con.execute("PRAGMA foreign_keys = OFF")
+    for row in identity_rows:
+        con.execute(
+            "INSERT INTO project_context_contracts (workspace, contract_name, payload) "
+            "VALUES (?, 'project_identity', ?)", (row["workspace"], row["payload"]),
+        )
+    for row in proj_rows:
+        con.execute("INSERT INTO projects (workspace, name, path) VALUES (?, ?, ?)",
+                    (row["workspace"], row["name"], row["path"]))
+    monkeypatch.setattr(_writer, "_connect", lambda: _Unclosed(con))
 
-        def fetchall(self):
-            return self._rows
 
-    class _FakeCon:
-        def execute(self, sql, *a):
-            if "project_context_contracts" in sql:
-                return _FakeCursor(list(identity_rows))
-            return _FakeCursor(list(proj_rows))
+class _Unclosed:
+    """A connection the code under test may close without losing the fixture rows."""
 
-        def close(self):
-            pass
+    def __init__(self, con):
+        self._con = con
 
-    monkeypatch.setattr(_writer, "_connect", lambda: _FakeCon())
+    def execute(self, *args):
+        return self._con.execute(*args)
+
+    def close(self):
+        pass
 
 
 _ROOMY = 10_000
