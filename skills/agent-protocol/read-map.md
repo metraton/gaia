@@ -67,13 +67,15 @@ persisting. It belongs to the write cycle, not to a coordinate; that cycle is in
 
 ## Project knowledge -- two namespaces that share section names and are not the same
 
-Nothing from the project is preloaded. The kernel's `can_read` is a MENU, pulled on demand -- and it
-is pulled with exactly one verb.
+The dispatch project's `can_read` sections are preloaded as the kernel's `# Project context` block
+(whole when they fit, else pointer lines, else one line). What the block only points at is pulled
+with exactly one verb.
 
-- `gaia context get-contract --section <s> [--workspace <w>] [--text]` is the ONLY verb that reaches
-  `project_context_contracts` -- the names the `can_read`/`can_write` menu lists. `--section` is
-  required; `--workspace` when the workspace is not the cwd's; `--text` for the human form. It
-  returns the contract payload; an unknown name exits 1 listing the available ones.
+- `gaia context get-contract --section <s> [--project <name>] [--workspace <w>] [--text]` is the ONLY
+  verb that reaches `project_context_contracts` -- the names the `can_read`/`can_write` menu lists.
+  `--section` is required; `--project` reads that project's section and falls back to the workspace
+  row; `--workspace` when the workspace is not the cwd's; `--text` for the human form. It returns
+  the contract payload; an unknown name exits 1 listing the available ones.
 - `gaia context project <name>` returns the complete project sheet by name or basename, read-only.
 - `gaia context get --section <s>` and `gaia context show` resolve against the workspace SHAPE
   (`apps`, `services`, `stack`, `git`, ...). The names OVERLAP without meaning the same thing:
