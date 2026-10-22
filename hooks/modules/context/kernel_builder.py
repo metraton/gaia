@@ -82,7 +82,6 @@ PROJECT_CONTEXT_HEADING = "# Project context"
 
 PROJECT_NOTES_BUDGET = 600
 _PROJECT_NOTE_LINE_MAX = 150
-PROJECT_CONTEXT_FLOOR = 600
 _SECTION_POINTER = "`gaia context get-contract --section {section} --project {project}`"
 
 KERNEL_BUDGET = CONTEXT_BUDGET
@@ -591,27 +590,33 @@ def _readable_project_sections(row: Mapping[str, Any], *, db_path=None) -> tuple
 
 
 def build_project_context_block(project: str, sections: list, *, max_chars: int) -> str:
-    """Render ``# Project context`` within ``max_chars``: each section whole while it fits, else a pointer line, the rest counted."""
+    """Render ``# Project context`` within ``max_chars``, degrading in three stages and never dropping the block.
+
+    Sections stay whole while the room allows, the rest are pointer lines; when
+    even every pointer does not fit, one line counts the sections and shows the
+    pointer form, and that line is shown whatever ``max_chars`` says.
+    """
     if not sections:
         return ""
-
-    def tail(more: int) -> str:
-        return f"+{more} more — " + _SECTION_POINTER.format(section="<s>", project=project)
-
-    shown = [PROJECT_CONTEXT_HEADING, ""]
-    for index, (name, payload) in enumerate(sections):
-        text = json.dumps(payload, ensure_ascii=False)
-        pointer = _SECTION_POINTER.format(section=name, project=project)
-        reserve = 0 if index == len(sections) - 1 else len(tail(len(sections))) + 1
-        fitting = [
-            line for line in (f"## {name}\n{text}", f"- {name}, {len(text):,} chars: {pointer}")
-            if len("\n".join(shown + [line])) + reserve <= max_chars
-        ]
-        if not fitting:
-            shown.append(tail(len(sections) - index))
-            break
-        shown.append(fitting[0])
-    return "\n".join(shown)
+    texts = [json.dumps(payload, ensure_ascii=False) for _, payload in sections]
+    pointers = [
+        f"- {name}, {len(text):,} chars: " + _SECTION_POINTER.format(section=name, project=project)
+        for (name, _), text in zip(sections, texts)
+    ]
+    head = [PROJECT_CONTEXT_HEADING, ""]
+    spare = max_chars - len("\n".join(head + pointers))
+    if spare < 0:
+        count = f"{len(sections)} section{'s' if len(sections) > 1 else ''}"
+        return "\n".join(
+            head + [f"{count} — " + _SECTION_POINTER.format(section="<s>", project=project)]
+        )
+    lines = list(pointers)
+    for index, ((name, _), text) in enumerate(zip(sections, texts)):
+        whole = f"## {name}\n{text}"
+        if len(whole) - len(pointers[index]) <= spare:
+            spare -= len(whole) - len(pointers[index])
+            lines[index] = whole
+    return "\n".join(head + lines)
 
 
 def build_environment_block() -> str:
@@ -653,7 +658,7 @@ def build_kernel_context(
     project, sections = _readable_project_sections(row, db_path=db_path)
     context_room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 4 - memory_size
     context = build_project_context_block(
-        project, sections, max_chars=max(context_room, PROJECT_CONTEXT_FLOOR),
+        project, sections, max_chars=context_room,
     )
 
     def over() -> bool:

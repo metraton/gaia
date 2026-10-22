@@ -19,6 +19,7 @@ for _path in (_REPO_ROOT, _REPO_ROOT / "hooks"):
 from modules.context.kernel_builder import (  # noqa: E402
     KERNEL_BUDGET,
     build_dispatch_kernel,
+    build_project_context_block,
     build_kernel_context,
 )
 
@@ -26,6 +27,7 @@ HEADING = "# Project context"
 PROJECT = "alpha"
 IDENTITY = "github.com/me/alpha"
 DISPLAY = "alpha (/work/alpha)"
+USER_ROWS = 7
 
 
 def _pointer(section: str) -> str:
@@ -120,13 +122,23 @@ def test_kernel_project_context_absent_when_the_project_has_no_rows(db):
 def test_kernel_project_context_section_larger_than_the_budget_becomes_a_pointer(db):
     _section(db, "cluster_details", {"nodes": ["n" * 200 for _ in range(970)]})
     _section(db, "stack", {"language": "go"})
-    row = _row(DISPLAY, ["cluster_details", "stack"], prompt="do it " * 1300)
+    row = _row(DISPLAY, ["cluster_details", "stack"])
 
     kernel = _kernel(db, row)
 
     assert _pointer("cluster_details") in kernel
     assert "n" * 200 not in kernel
     assert '"language": "go"' in kernel
+    assert len(kernel) <= KERNEL_BUDGET
+
+
+def test_kernel_project_context_under_a_huge_prompt_is_one_line_and_the_contract_stays_whole(db):
+    _section(db, "stack", {"language": "go"})
+    row = _row(DISPLAY, ["stack"], prompt="do it " * 1300)
+
+    kernel = _kernel(db, row)
+
+    assert "1 section — `gaia context get-contract --section <s> --project alpha`" in kernel
     assert kernel.startswith(build_dispatch_kernel(row, db_path=db))
     assert len(kernel) <= KERNEL_BUDGET
 
@@ -175,15 +187,73 @@ def test_kernel_project_context_absent_without_a_dispatch_project(db):
     assert HEADING not in kernel
 
 
-def test_kernel_project_context_points_when_user_rows_fill_the_kernel(db):
-    _user_rows(db, 9, 900)
-    _section(db, "stack", {"language": "go", "notes": "s" * 1500})
+def _user_rows_leaving_room(db: Path, row: dict, room: int) -> None:
+    """Executor rows sized so the kernel without project context leaves exactly ``room`` chars under the budget."""
+    _user_rows(db, USER_ROWS, 600)
+    base = len(_kernel(db, row))
+    delta = KERNEL_BUDGET - room - base
+    assert delta > 0, "the rows must leave more than the requested room"
+    _execute(db, "UPDATE memory SET body = body || ? WHERE name = ?", "y" * delta, f"user_pref_{USER_ROWS - 1}")
+
+
+def _assert_all_user_rows(kernel: str) -> None:
+    for i in range(USER_ROWS):
+        assert f"Preference {i}: " in kernel
+
+
+def test_kernel_project_context_points_while_every_user_row_stays(db):
     row = _row(DISPLAY, ["stack"])
+    _user_rows_leaving_room(db, row, 400)
+    _section(db, "stack", {"language": "go", "notes": "s" * 1500})
 
     kernel = _kernel(db, row)
 
     assert _pointer("stack") in kernel
     assert "s" * 1500 not in kernel
-    assert "Preference 8: " in kernel
+    _assert_all_user_rows(kernel)
     assert kernel.startswith(build_dispatch_kernel(row, db_path=db))
     assert len(kernel) <= KERNEL_BUDGET
+
+
+def test_kernel_project_context_near_the_cap_is_one_line_and_no_user_row_leaves(db):
+    row = _row(DISPLAY, ["stack", "environment", "cluster"])
+    _user_rows_leaving_room(db, row, 60)
+    for name in ("stack", "environment", "cluster"):
+        _section(db, name, {"value": name * 40})
+
+    kernel = _kernel(db, row)
+
+    assert "3 sections — `gaia context get-contract --section <s> --project alpha`" in kernel
+    assert "- stack," not in kernel
+    _assert_all_user_rows(kernel)
+    assert len(kernel) <= KERNEL_BUDGET
+
+
+def test_kernel_project_context_pointers_without_bodies_when_only_they_fit(db):
+    row = _row(DISPLAY, ["stack", "environment"])
+    _user_rows_leaving_room(db, row, 230)
+    _section(db, "stack", {"value": "a" * 150})
+    _section(db, "environment", {"value": "b" * 150})
+
+    kernel = _kernel(db, row)
+
+    assert _pointer("stack") in kernel and _pointer("environment") in kernel
+    assert "a" * 150 not in kernel and "b" * 150 not in kernel
+    _assert_all_user_rows(kernel)
+    assert len(kernel) <= KERNEL_BUDGET
+
+
+def test_project_context_block_degrades_whole_then_pointers_then_one_line():
+    sections = [("stack", {"v": "a" * 300}), ("environment", {"v": "b" * 300})]
+    whole = build_project_context_block(PROJECT, sections, max_chars=10_000)
+    mixed = build_project_context_block(PROJECT, sections, max_chars=len(whole) - 1)
+    pointers = build_project_context_block(PROJECT, sections, max_chars=len(mixed) - 150)
+    line = build_project_context_block(PROJECT, sections, max_chars=0)
+
+    assert "a" * 300 in whole and "b" * 300 in whole
+    assert _pointer("stack") not in whole
+    assert "a" * 300 in mixed and "b" * 300 not in mixed
+    assert _pointer("environment") in mixed and _pointer("stack") not in mixed
+    assert "a" * 300 not in pointers
+    assert _pointer("stack") in pointers and _pointer("environment") in pointers
+    assert line == f"{HEADING}\n\n2 sections — `gaia context get-contract --section <s> --project {PROJECT}`"
