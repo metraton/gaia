@@ -1204,6 +1204,8 @@ class BashValidator:
             is_subagent=is_subagent,
             session_id=session_id,
             agent_type=agent_type,
+            tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
+            cwd=(hook_payload or {}).get("cwd") or None,
         )
         if _composition_result is not None:
             return _composition_result
@@ -1894,6 +1896,8 @@ class BashValidator:
         is_subagent: bool = False,
         session_id: str = "",
         agent_type: str = "",
+        tool_use_id: str = "",
+        cwd: Optional[str] = None,
     ) -> Optional[BashValidationResult]:
         """Check cross-stage composition patterns (Phase 4).
 
@@ -1929,6 +1933,15 @@ class BashValidator:
             )
 
         if result.decision == CompositionDecision.ESCALATE:
+            # A signable pipe runs on its grant here: returning the T3 outcome
+            # first would leave the signed set item unreachable.
+            if check_sensitive_read(decomposed.raw, cwd)[0]:
+                signed = self._match_signed_pipeline(
+                    decomposed.raw, decomposed.stages, session_id=session_id,
+                    agent_type=agent_type, tool_use_id=tool_use_id, cwd=cwd,
+                )
+                if signed is not None:
+                    return signed
             # Converge on the single T3 decision point.  A file_to_exec
             # composition in a subagent must route to deny+approval_id (Gaia
             # approval flow) rather than escaping to the native ask dialog;

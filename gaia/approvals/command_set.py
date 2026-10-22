@@ -377,15 +377,16 @@ def validate_request_set(
 def _require_executable_pipeline(index: int, command: str) -> None:
     """Refuse a pipeline the Bash policy refuses before any grant is consulted.
 
-    The Bash policy denies a piped cloud CLI output and a dangerous stage
-    composition ahead of its COMMAND_SET match, so signing either could only
-    end in a denial.
+    The Bash policy denies a piped cloud CLI output, a blocked stage
+    composition and a secret read ahead of its COMMAND_SET match, so signing
+    any of them could only end in a denial.
     """
     from modules.security.composition_rules import (
         CompositionDecision,
         build_composition_stages,
         check_composition,
     )
+    from modules.security.sensitive_read_guard import check as check_sensitive_read
     from modules.tools.cloud_pipe_validator import validate_cloud_pipe
     from modules.tools.stage_decomposer import StageDecomposer
 
@@ -395,8 +396,12 @@ def _require_executable_pipeline(index: int, command: str) -> None:
         )
     stages = build_composition_stages(StageDecomposer().decompose(command).stages)
     composition = check_composition(stages)
-    if composition.decision != CompositionDecision.ALLOW:
+    if composition.decision == CompositionDecision.BLOCK:
         raise CommandSetValidationError(
             f"command[{index}] is a {composition.pattern} pipe composition, "
             "which the Bash policy refuses"
+        )
+    if not check_sensitive_read(command, None)[0]:
+        raise CommandSetValidationError(
+            f"command[{index}] reads a secret, which the Bash policy refuses"
         )
