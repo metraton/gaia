@@ -49,6 +49,16 @@ _LISTER_COMMANDS = frozenset({
     "get-childitem", "gci",
 })
 _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh"})
+# A program named by an expansion is unknown until the shell runs it.
+_UNDETERMINED_PROGRAM_MARKS = ("$", "`")
+# HTTP clients send a file they name (upload, form, body); the use flags only hand
+# a credential to the TLS or auth layer, which sends none of its bytes.
+_UPLOADERS = frozenset({"curl", "wget", "http", "https", "xh"})
+_UPLOADER_USE_FLAGS = frozenset({
+    "--cacert", "--capath", "--cert", "-E", "--key", "--crlfile", "--pinnedpubkey",
+    "--proxy-cacert", "--proxy-cert", "--proxy-key", "--netrc-file",
+    "--ca-certificate", "--certificate", "--private-key", "--verify", "--cert-key",
+})
 # Windows shells and the flag after which the rest of the command line is the
 # command they run.
 _WINDOWS_SHELL_INLINE_FLAGS = {
@@ -119,6 +129,13 @@ def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     )
     if flag_index is not None:
         return reads_sensitive_path(" ".join(arguments[flag_index + 1:]), cwd)
+    if tokens[0].startswith(_UNDETERMINED_PROGRAM_MARKS):
+        return first_sensitive_token(arguments, cwd)
+    if base in _UPLOADERS:
+        uploaded = [arg for index, arg in enumerate(arguments)
+                    if arg.split("=", 1)[0] not in _UPLOADER_USE_FLAGS
+                    and (index == 0 or arguments[index - 1] not in _UPLOADER_USE_FLAGS)]
+        return first_sensitive_token(uploaded, cwd)
     if base not in _READER_COMMANDS and base not in _LISTER_COMMANDS:
         return ""
     if base == "sed" and any(_SED_IN_PLACE.match(arg) for arg in arguments):
