@@ -71,12 +71,14 @@ _SHORT_FLAG_WITH_VALUE = re.compile(r"^-[A-Za-z].")
 _SSH_COPY_VALUE_FLAGS = frozenset({"-c", "-F", "-i", "-J", "-l", "-o", "-P", "-S", "-D", "-X", "-b", "-B", "-R"})
 _COPIERS = {
     "cp": frozenset({"-S", "--suffix"}),
+    "mv": frozenset({"-S", "--suffix"}),
     "scp": _SSH_COPY_VALUE_FLAGS,
     "sftp": _SSH_COPY_VALUE_FLAGS,
     "rsync": frozenset({"-e", "--rsh", "-f", "--filter", "--exclude", "--include", "-T", "--temp-dir",
                         "-B", "--block-size", "--password-file", "--log-file", "--port", "-M"}),
 }
 _COPY_TARGET_FLAGS = frozenset({"-t", "--target-directory"})
+_REMOTE_OPERAND = re.compile(r"^(?:[\w.-]+@)?[\w.-]{2,}:(?!//)|^rsync://")
 # Windows shells and the flag after which the rest of the command line is the
 # command they run.
 _WINDOWS_SHELL_INLINE_FLAGS = {
@@ -144,8 +146,28 @@ def _sent_arguments(arguments: List[str]) -> List[str]:
     return sent
 
 
+def remote_copy_destination(command: str) -> str:
+    """The scp or rsync component of *command* whose destination is another host, or ""."""
+    for component in _OPERATOR_SPLIT.split(command):
+        tokens = _strip_transparent_prefixes(_tokenize(component.strip()))
+        if not tokens or command_name(tokens[0]) not in ("scp", "rsync"):
+            continue
+        operands, _ = _copy_operands(command_name(tokens[0]), tokens[1:])
+        if len(operands) >= 2 and _REMOTE_OPERAND.match(operands[-1]):
+            return component.strip()
+    return ""
+
+
 def _copied_sources(base: str, arguments: List[str]) -> List[str]:
     """The operands a copy or transfer tool reads: every one but the destination."""
+    operands, target_given = _copy_operands(base, arguments)
+    if base == "sftp" or target_given or len(operands) < 2:
+        return operands
+    return operands[:-1]
+
+
+def _copy_operands(base: str, arguments: List[str]) -> Tuple[List[str], bool]:
+    """The operands of a copy or transfer tool, and whether a target-directory flag named its destination."""
     value_flags = _COPIERS[base]
     operands: List[str] = []
     target_given = False
@@ -160,9 +182,7 @@ def _copied_sources(base: str, arguments: List[str]) -> List[str]:
                 next(remaining, None)
         else:
             operands.append(arg)
-    if base == "sftp" or target_given or len(operands) < 2:
-        return operands
-    return operands[:-1]
+    return operands, target_given
 
 
 def http_client_written_paths(command: str) -> List[str]:

@@ -102,7 +102,7 @@ from ..security.protected_path_guard import (
     check as check_protected_path_write,
 )
 from ..security.shell_write_guard import check as check_shell_write
-from ..security.sensitive_read_guard import check as check_sensitive_read
+from ..security.sensitive_read_guard import check as check_sensitive_read, remote_copy_destination
 from ..security.publish_attribution_guard import check as check_publish_attribution
 from ..security.comment_push_gate import check as check_comment_push
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
@@ -1005,9 +1005,10 @@ class BashValidator:
                 agent_type=agent_type,
             )
 
-        # A file fed by redirect into a sender leaves the machine like a piped one;
-        # decided before the sanitizer, which strips the `< file` it rests on.
-        redirect_sender = redirected_into_sender(write_guard_scope)
+        # A file fed by redirect into a sender, or copied to another host, leaves the
+        # machine; decided before the sanitizer, which strips the `< file` it rests on.
+        redirect_sender = (redirected_into_sender(write_guard_scope)
+                           or remote_copy_destination(write_guard_scope))
         if redirect_sender:
             return decide_t3_outcome(
                 command,
@@ -1015,8 +1016,8 @@ class BashValidator:
                 category="MUTATIVE",
                 has_orchestrator_above=is_subagent,
                 native_ask_reason=(
-                    f"[T3_APPROVAL_REQUIRED] '{redirect_sender[:80]}' sends a "
-                    f"redirected file off this machine."
+                    f"[T3_APPROVAL_REQUIRED] '{redirect_sender[:80]}' sends "
+                    f"data off this machine."
                 ),
                 session_id=session_id,
                 agent_type=agent_type,
