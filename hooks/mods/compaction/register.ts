@@ -1,16 +1,7 @@
 import type { Register } from 'claude-code'
 
-export const STEERING = [
-  'Preserve continuity for the next turn:',
-  '- ACTIVE OBJECTIVE: the goal being worked on',
-  '- RESUME POINT: the exact next action',
-  '- DURABLE REFERENCES: memory slugs and brief/plan/task ids, never their bodies',
-  '- UNSAVED TRANSIENT CONTEXT: facts that exist only in this conversation',
-  '- BLOCKERS / APPROVALS: current state',
-  '- ACTIVE FILES: only the files needed to resume',
-  'Compress tool output and intermediate reasoning. Do not duplicate durable',
-  'memory or structured work; retain identifiers and the next decision.',
-].join('\n')
+// Generated: OpenCode sends build_summary_instructions; run compact_context_builder.py to rewrite this line.
+export const STEERING = "# Compaction Instructions\n\nWrite the summary so the next turn can resume without re-deriving anything:\n- Do not restate what the next turn's birth block already delivers: its resume point carries the active plan and task, open contracts, pending approvals and the resume note, or the command that lists them.\n- State the active objective and the exact next action.\n- Carry durable work as coordinates, never its body: task and plan ids, contract ids, approval ids, memory slugs, commit SHAs, brief names.\n- Keep facts that exist only in this conversation, labeled as not durable.\n- Compress tool output and intermediate reasoning to what the next decision needs."
 
 export const COMPACT_TOOL = 'compact_when_idle'
 

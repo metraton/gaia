@@ -106,6 +106,53 @@ class TestModReachesOnlyItsTriggerSurface:
             assert self.REACH.search(reach), reach
 
 
+STEERING_DECLARATION = re.compile(r"^export const STEERING = (.*)$", re.MULTILINE)
+
+
+def _mod_steering(source: str) -> str:
+    match = STEERING_DECLARATION.search(source)
+    assert match, "register.ts has no single-line STEERING declaration"
+    return json.loads(match.group(1))
+
+
+class TestOneSummarizerTextOnBothHosts:
+    """Claude Code's mod and OpenCode's adapter hand the summarizer the same build_summary_instructions text."""
+
+    def test_summary_instructions_lockstep_mod_carries_the_builder_text(self):
+        from modules.context.compact_context_builder import build_summary_instructions
+
+        assert _mod_steering((MOD_DIR / "register.ts").read_text()) == build_summary_instructions()
+
+    def test_summary_instructions_lockstep_writer_repairs_a_drifted_mod(self, tmp_path):
+        from modules.context.compact_context_builder import build_summary_instructions, write_mod_steering
+
+        drifted = tmp_path / "register.ts"
+        source = (MOD_DIR / "register.ts").read_text()
+        drifted.write_text(STEERING_DECLARATION.sub('export const STEERING = "keep the resume point"', source))
+
+        assert write_mod_steering(drifted) is True
+        assert _mod_steering(drifted.read_text()) == build_summary_instructions()
+        assert write_mod_steering(drifted) is False
+        assert STEERING_DECLARATION.sub("", drifted.read_text()) == STEERING_DECLARATION.sub("", source)
+
+    def test_summary_instructions_lockstep_writer_refuses_a_mod_without_the_declaration(self, tmp_path):
+        from modules.context.compact_context_builder import write_mod_steering
+
+        multi_line = tmp_path / "register.ts"
+        multi_line.write_text("export const STEERING = [\n  'x',\n].join('\\n')\n")
+
+        with pytest.raises(ValueError):
+            write_mod_steering(multi_line)
+
+    def test_the_text_asks_for_coordinates_and_leaves_the_resume_point_to_the_birth_block(self):
+        from modules.context.compact_context_builder import build_summary_instructions
+
+        text = build_summary_instructions()
+        for coordinate in ("task", "contract", "approval", "memory", "commit"):
+            assert coordinate in text, coordinate
+        assert "Do not restate" in text and "resume point" in text
+
+
 class TestTheRefreshDeliversTheSnapshotOnce:
     """The SessionStart(compact) refresh carries exactly one snapshot; register.test.ts pins that the mod adds none."""
 
