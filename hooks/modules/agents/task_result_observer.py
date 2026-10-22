@@ -467,7 +467,9 @@ def build_contract_summary_line(
         contract_id=row.get("contract_id"),
         dispatch_project=row.get("dispatch_project"),
     )
-    return f"{line}\n{proposed}" if proposed else line
+    if not proposed or not claim(ledger_session, str(row.get("contract_id") or ""), proposed):
+        return line
+    return f"{line}\n{proposed}"
 
 
 def contract_row_state(agent_run_id: str, session_id: str = "") -> str:

@@ -170,8 +170,8 @@ def _dispatch_result_line() -> str:
     return line
 
 
-def _notice_contract_id() -> str:
-    line = _dispatch_result_line()
+def _notice_contract_id(line: str | None = None) -> str:
+    line = line or _dispatch_result_line()
     match = re.search(r"gaia context accept ([^\s`]+)", line)
     assert match, f"the dispatch result must name the contract to apply: {line!r}"
     return match.group(1)
@@ -231,8 +231,9 @@ def test_any_specialist_may_propose_a_section_without_write_permission(db_path, 
     response = _close_turn(db_path, monkeypatch, "gaia-planner", state)
 
     assert not response.output.get("update_contracts_refused"), response.output
-    assert "1 project-context update proposed" in _dispatch_result_line()
-    applied = _apply(_notice_contract_id())
+    line = _dispatch_result_line()
+    assert "1 project-context update proposed" in line
+    applied = _apply(_notice_contract_id(line))
     assert applied.returncode == 0, applied.stderr
     assert WORKFLOW in json.dumps(_project_view(db_path))
 

@@ -94,7 +94,6 @@ def _context(out: dict) -> str:
 
 
 def _background_prompts(db, *envelopes: dict) -> list[str]:
-    """Close a background dispatch with each envelope in turn, reading one prompt after each."""
     conclusions.baseline(SESSION_ID)
     contract_id = _cc_dispatch(db, "bg")
     _cc_agent_result("async_launched")
@@ -151,6 +150,16 @@ def test_a_foreground_close_keeps_its_notice_and_the_next_prompt_adds_none(db):
     assert result.count("1 project fact proposed") == 1
     assert "proposed" not in prompt and VERB not in prompt
 
+
+def test_a_result_line_read_after_the_background_delivery_does_not_repeat_the_notice(db):
+    conclusions.baseline(SESSION_ID)
+    contract_id = _cc_dispatch(db, "late")
+    _cc_agent_result("async_launched")
+    _finalize(db, contract_id, _envelope(conclusion=CONCLUSION, memory_delta=_delta(1)))
+    prompt, result = _context(_cc_prompt()), _context(_cc_agent_result("completed"))
+
+    assert prompt.count("1 project fact proposed") == 1
+    assert "proposed" not in result and VERB not in result
 
 
 def test_an_opencode_background_close_with_proposals_says_so_once(db, monkeypatch):

@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +140,7 @@ def _reader(row: dict[str, Any]) -> str:
     return f"gaia contract view {coordinate} --field conclusion"
 
 
-def take_lines(session_id: str) -> str:
+def take_lines(session_id: str, notice_for: Callable[[dict[str, Any]], str] | None = None) -> str:
     """Return the conclusions closed in this session that no carrier delivered yet, claiming each one shown.
 
     At most ``MAX_PER_PROMPT`` are delivered; the rest are counted on one line
@@ -160,7 +161,9 @@ def take_lines(session_id: str) -> str:
         label = row.get("harness_agent_id") or row["contract_id"]
         if len(text) > MAX_CHARS:
             text = f"{text[:MAX_CHARS].rstrip()}... -- {_reader(row)}"
-        lines.append(f"{label}: closed {row['agent_state']}, conclusion: {text}")
+        line = f"{label}: closed {row['agent_state']}, conclusion: {text}"
+        notice = notice_for(row) if notice_for else ""
+        lines.append(f"{line}\n{notice}" if notice else line)
     overflow = [row for row, _ in pending[MAX_PER_PROMPT:]]
     if overflow:
         lines.append(f"+{len(overflow)} more closed, carried by the next prompts -- {_reader(overflow[0])}")
