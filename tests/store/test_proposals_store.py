@@ -48,7 +48,8 @@ def db(tmp_path, monkeypatch) -> Path:
 
 def _memory(slug: str) -> dict:
     return {"operation": "create", "create": {
-        "slug": slug, "type": "project", "description": f"Fact: {slug}.", "body": "body"}}
+        "slug": slug, "type": "atom" if slug.startswith("atom_") else "project",
+        "description": f"Fact: {slug}.", "body": "body"}}
 
 
 def _envelope(state: str, *, memory=(), context=None) -> str:
@@ -334,6 +335,47 @@ def test_proposals_store_a_subagent_still_reads_through_any_entry_point(command,
     assert _subagent_verdict(command.format(**links), "developer").allowed is True
 
 
+COMPUTED_OR_IDENTITY_CLEARING = [
+    "echo accept 1 | xargs env -u GAIA_DISPATCH_AGENT gaia contract proposals",
+    "echo accept 1 | xargs gaia contract proposals",
+    "xargs -a /tmp/verb gaia contract proposals",
+    "gaia contract proposals $(echo dismiss) 1",
+    "gaia contract proposals `echo dismiss` 1",
+    "V=accept; gaia contract proposals \"$V\" 1",
+    "gaia contract proposals {accept,} 1",
+    "gaia contract proposals acc?pt 1",
+    "G=gaia; $G contract proposals $(echo dismiss) 1",
+    f"python3 {CONTRACT_PY} proposals ${{VERB}} 1",
+    "gaia memory $(printf add) --name user_x --type user --body b --description d",
+    "env -u GAIA_DISPATCH_AGENT gaia contract view",
+    "env --unset=GAIA_DISPATCH_AGENT python3 tool.py",
+    "unset GAIA_DISPATCH_AGENT; gaia contract proposals list",
+    "GAIA_DISPATCH_AGENT= gaia contract view",
+    "export GAIA_DISPATCH_AGENT=gaia-orchestrator",
+    "env -i PATH=/usr/bin gaia contract view",
+]
+
+
+@pytest.mark.parametrize("agent", ["developer", "gaia-operator"])
+@pytest.mark.parametrize("command", COMPUTED_OR_IDENTITY_CLEARING)
+def test_proposals_store_computed_words_or_a_cleared_identity_are_refused(command, agent):
+    from modules.security.subagent_memory_write_guard import check
+
+    assert _subagent_verdict(command, agent).allowed is False
+    assert check(command, is_subagent=False) == (True, None)
+
+
+@pytest.mark.parametrize("command", [
+    "gaia contract add --draft-id x evidence_report.key_outputs 'literal $not expanded'",
+    "gaia contract fill --draft-id x --json-file - <<'EOF'\n{\"a\": \"$x `y`\"}\nEOF",
+    "grep -rn GAIA_DISPATCH_AGENT /repo/hooks",
+    "echo $HOME",
+    "find . -name '*.py' | xargs grep -n foo",
+])
+def test_proposals_store_literal_gaia_words_and_plain_reads_stay_free(command):
+    assert _subagent_verdict(command, "developer").allowed is True
+
+
 def _accept_namespace(proposal_id: int):
     return argparse.Namespace(proposal_id=proposal_id, project=PROJECT_ID, workspace=None,
                               json=True)
@@ -359,17 +401,45 @@ def test_proposals_store_accept_that_loses_a_race_writes_nothing(db, monkeypatch
     assert (rc, written[0], status[0]) == (1, 0, "dismissed"), capsys.readouterr().out
 
 
-def test_proposals_store_an_accept_whose_write_fails_stays_pending(db, capsys):
+@pytest.mark.parametrize("tampered", [
+    {"slug": "atom_typed_project"},
+    {"type": "fact"},
+])
+def test_proposals_store_an_accept_whose_write_fails_or_exits_stays_pending(db, tampered):
     from cli import contract_proposals
     from gaia.store.proposals import list_proposals
 
-    _close(f"{AGENT}.00000000000a", "COMPLETE", _envelope("COMPLETE", memory=["atom_typed_project"]))
+    _close(f"{AGENT}.00000000000a", "COMPLETE", _envelope("COMPLETE", memory=["project_fails"]))
     proposal = list_proposals(db_path=db)[0]
+    payload = dict(proposal["payload"], create=dict(proposal["payload"]["create"], **tampered))
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("UPDATE proposals SET payload = ? WHERE id = ?",
+                    (json.dumps(payload), proposal["id"]))
+        con.commit()
+    finally:
+        con.close()
 
     assert contract_proposals._cmd_accept(_accept_namespace(proposal["id"])) == 1
     after = list_proposals(status=None, db_path=db)[0]
     assert (after["status"], after["project"], after["decided_at"]) == (
         "pending", proposal["project"], None)
+
+
+@pytest.mark.parametrize("create", [
+    {"slug": "atom_typed_fact", "type": "fact"},
+    {"slug": "bad slug with spaces!", "type": "atom"},
+])
+def test_proposals_store_intake_refuses_what_memory_cannot_write(db, create, capsys):
+    from gaia.store.proposals import list_proposals
+
+    raw = json.loads(_envelope("COMPLETE", memory=["project_kept"]))
+    raw["memory_delta"]["proposals"].append({"operation": "create", "create": dict(
+        create, description="Fact: x.", body="x")})
+    _close(f"{AGENT}.00000000000c", "COMPLETE", json.dumps(raw))
+
+    assert [p["payload"]["create"]["slug"] for p in list_proposals(db_path=db)] == ["project_kept"]
+    assert create["slug"] in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("command", [

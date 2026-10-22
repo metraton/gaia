@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional, Sequence
+from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
 
 _SHELL_RESOLVED = ("$", "`", "(", ")", "*", "?", "[")
 _PYTHON_MODULE_FLAG = re.compile(r"^-[bBdEIiOPqRsSuvx]*m(?P<module>.*)$")
@@ -75,6 +76,132 @@ def _module_argv(words: Sequence[str], index: int) -> Optional[List[str]]:
         return None
     cli = _CLI_MODULE.match(module)
     return [cli["group"], *rest] if cli else None
+
+
+_UNQUOTED_COMPUTED = set("$`()*?[")
+_BRACE_EXPANSION = re.compile(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")
+_ARGV_FEEDERS = frozenset({"xargs", "parallel"})
+_IDENTITY = "GAIA_DISPATCH_AGENT"
+_ASSIGNMENT = re.compile(r"^[A-Za-z_]\w*=")
+_DECLARERS = frozenset({"export", "declare", "typeset", "local", "readonly", "unset"})
+_CLI_MODULES = frozenset(
+    path.stem for path in (Path(__file__).resolve().parents[3] / "bin" / "cli").glob("*.py"))
+
+
+def literal_words(component: str) -> List[Tuple[str, bool]]:
+    """``(word, computed)`` per shell word: computed when an expansion, substitution, glob or brace makes it."""
+    pairs: List[Tuple[str, bool]] = []
+    text, unquoted, computed, started, quote = [], [], False, False, None
+    index, size = 0, len(component)
+    while index < size:
+        char = component[index]
+        escaped = char == "\\" and index + 1 < size and quote != "'"
+        if escaped:
+            index += 1
+            text.append(component[index])
+        elif quote == "'":
+            quote = None if char == "'" else quote
+            text.extend(char if quote else "")
+        elif quote == '"':
+            quote = None if char == '"' else quote
+            computed = computed or (quote is not None and char in "$`")
+            text.extend(char if quote else "")
+        elif char in " \t\n":
+            if started:
+                pairs.append(("".join(text),
+                              computed or bool(_BRACE_EXPANSION.search("".join(unquoted)))))
+            text, unquoted, computed, started = [], [], False, False
+        elif char in "'\"":
+            quote = char
+        else:
+            computed = computed or char in _UNQUOTED_COMPUTED
+            text.append(char)
+            unquoted.append(char)
+        started = started or char not in " \t\n"
+        index += 1
+    if started:
+        pairs.append(("".join(text), computed or quote is not None
+                      or bool(_BRACE_EXPANSION.search("".join(unquoted)))))
+    return pairs
+
+
+def _is_gaia_entry(words: Sequence[str], index: int) -> bool:
+    group = entry_group(words[index])
+    if group == "":
+        return True
+    if group is not None:
+        return group in _CLI_MODULES or os.path.basename(os.path.dirname(words[index])) == "cli"
+    return _module_argv(words, index) is not None
+
+
+def computes_gaia_words(component: str) -> bool:
+    """True when a Gaia CLI call in *component* takes words the shell or an argv feeder computes."""
+    from .mutative_verbs import _peel_leading_command_wrappers
+
+    pairs = literal_words(component)
+    words = [word for word, _ in pairs]
+    if not any(computed or os.path.basename(word) in _ARGV_FEEDERS for word, computed in pairs):
+        return False
+    fed = False
+    for index, (word, computed) in enumerate(pairs):
+        fed = fed or os.path.basename(word) in _ARGV_FEEDERS
+        if not computed and _is_gaia_entry(words, index) and (
+                fed or any(later for _, later in pairs[index + 1:])):
+            return True
+    program = literal_words(_peel_leading_command_wrappers(component)[0])
+    return bool(program) and program[0][1] and any(later for _, later in program[1:])
+
+
+def clears_dispatch_identity(component: str) -> bool:
+    """True when *component* unsets, empties or overrides ``GAIA_DISPATCH_AGENT``, or clears the environment."""
+    pairs = literal_words(component)
+    words = [word for word, _ in pairs]
+    leading = 0
+    while leading < len(words) and _ASSIGNMENT.match(words[leading]):
+        if words[leading].startswith(_IDENTITY + "="):
+            return True
+        leading += 1
+    rest = pairs[leading:]
+    if rest and rest[0][0] in _DECLARERS and any(
+            computed or word == _IDENTITY or word.startswith(_IDENTITY + "=")
+            for word, computed in rest[1:]):
+        return True
+    if rest and rest[0][0] == "exec" and any(
+            word.startswith("-") and "c" in word for word, _ in rest[1:2]):
+        return True
+    return any(os.path.basename(word) == "env" and _env_clears(pairs[index + 1:])
+               for index, (word, _) in enumerate(pairs))
+
+
+def _env_clears(args: Sequence[Tuple[str, bool]]) -> bool:
+    index = 0
+    while index < len(args):
+        word = args[index][0]
+        value = args[index + 1] if index + 1 < len(args) else ("", False)
+        if word in ("-", "-i", "--ignore-environment") or word.startswith(_IDENTITY + "="):
+            return True
+        if word.startswith("--unset"):
+            named = word.partition("=")[2] if "=" in word else value[0]
+            if named == _IDENTITY or args[index][1] or ("=" not in word and value[1]):
+                return True
+            index += 1 if "=" in word else 2
+            continue
+        if word in ("-C", "--chdir"):
+            index += 2
+            continue
+        if word.startswith("-") and not word.startswith("--"):
+            before, unset, attached = word[1:].partition("u")
+            if "i" in before or (not unset and "i" in word[1:]):
+                return True
+            if unset and ((attached or value[0]) == _IDENTITY or args[index][1]
+                          or (not attached and value[1])):
+                return True
+            index += 1 if attached or not unset else 2
+            continue
+        if not _ASSIGNMENT.match(word):
+            return False
+        index += 1
+    return False
 
 
 def gaia_cli_argvs(words: Sequence[str]) -> List[List[str]]:

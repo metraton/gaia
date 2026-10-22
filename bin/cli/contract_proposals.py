@@ -109,6 +109,14 @@ def _accept_context(item: dict, owner: Optional[dict], workspace: Optional[str])
     return True, ", ".join(f"{a['contract']} -> {a['project']}" for a in outcome["applied"])
 
 
+def _write_proposal(item: dict, owner: Optional[dict], workspace: Optional[str]) -> tuple:
+    if item["kind"] == "memory":
+        return _accept_memory(item, owner, workspace)
+    if item["kind"] == "context":
+        return _accept_context(item, owner, workspace)
+    return False, f"no accept path for {item['kind']!r} proposals yet; dismiss it or wait"
+
+
 def _reject(proposal_id: int, state: str, as_json: bool) -> int:
     _print({"status": "rejected", "error": state}, f"proposal {proposal_id}: {state}", as_json,
            error=True)
@@ -138,14 +146,17 @@ def _cmd_accept(args) -> int:
                                  project=owner["identity"] if owner else None):
         return _reject(item["id"], "decided by another call meanwhile; nothing written",
                        args.json)
-    if item["kind"] == "memory":
-        ok, message = _accept_memory(item, owner, args.workspace)
-    elif item["kind"] == "context":
-        ok, message = _accept_context(item, owner, args.workspace)
-    else:
-        ok, message = False, f"no accept path for {item['kind']!r} proposals yet; dismiss it or wait"
+    ok, message = False, "the write did not complete"
+    try:
+        ok, message = _write_proposal(item, owner, args.workspace)
+    except SystemExit as exc:
+        message = f"the write exited ({exc.code}); nothing was recorded"
+    except Exception as exc:
+        message = f"the write failed: {exc}"
+    finally:
+        if not ok:
+            store.reopen_proposal(item["id"], project=item["project"])
     if not ok:
-        store.reopen_proposal(item["id"], project=item["project"])
         _print({"status": "rejected", "error": message}, f"refused: {message}", args.json,
                error=True)
         return 1

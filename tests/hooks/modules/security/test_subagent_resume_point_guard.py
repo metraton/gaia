@@ -60,6 +60,7 @@ UNPROVEN_VERBS = [
 # categorical guard runs ahead of this one in the validator; both refuse with
 # no approval.
 REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD = {"variable-group", "variable-group-verb", "glob-verb"}
+REFUSED_FIRST_BY_THE_LITERAL_WORDS_RULE = {"variable-verb", "backtick-verb"}
 
 
 @pytest.mark.parametrize(
@@ -70,7 +71,7 @@ REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD = {"variable-group", "variable-group-ver
 def test_a_subagent_resume_point_write_is_refused_outright(case_id, command):
     assert guard.check(command, is_subagent=True) == (False, guard.REJECTION_MESSAGE), case_id
     result = _validate(command, is_subagent=True)
-    if case_id in REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD:
+    if case_id in REFUSED_FIRST_BY_THE_CONSENT_VERB_GUARD | REFUSED_FIRST_BY_THE_LITERAL_WORDS_RULE:
         assert result.allowed is False and result.approval_id is None and result.block_response is None
         assert "not approvable" in result.reason, result.reason
     else:

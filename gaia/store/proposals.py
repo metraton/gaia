@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -22,12 +23,40 @@ def _hook_parsers():
     return parse_memory_delta, proposed_entries
 
 
+_SLUG = re.compile(r"[a-z0-9][a-z0-9_.-]*")
+
+
+def _unwritable(proposal: dict) -> Optional[str]:
+    if proposal.get("operation") != "create":
+        return None
+    from gaia.store.writer import VALID_MEMORY_TYPES, _validate_curated_slug
+
+    create = proposal.get("create") or {}
+    slug, mem_type = str(create.get("slug") or ""), create.get("type")
+    if mem_type not in VALID_MEMORY_TYPES:
+        return f"type {mem_type!r} is not one of {list(VALID_MEMORY_TYPES)}"
+    if not _SLUG.fullmatch(slug):
+        return f"slug {slug!r} is not lowercase letters, digits and _ . -"
+    try:
+        _validate_curated_slug(slug, mem_type)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def extract_proposals(envelope: Any) -> list:
-    """``[(kind, payload)]``: each memory proposal, then each project-context entry."""
+    """``[(kind, payload)]``: each memory proposal `gaia memory add` accepts, then each context entry; the rest go to stderr."""
     if not isinstance(envelope, dict):
         return []
     parse_memory_delta, proposed_entries = _hook_parsers()
-    memory = parse_memory_delta("", parsed_contract=envelope).proposals
+    memory = []
+    for item in parse_memory_delta("", parsed_contract=envelope).proposals:
+        reason = _unwritable(item)
+        if reason is None:
+            memory.append(item)
+        else:
+            print(f"gaia: memory proposal {(item.get('create') or {}).get('slug')!r} not "
+                  f"recorded: {reason}", file=sys.stderr)
     context, _note = proposed_entries(envelope.get("update_contracts"))
     return [("memory", item) for item in memory] + [("context", item) for item in context]
 

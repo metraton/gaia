@@ -55,7 +55,7 @@ from __future__ import annotations
 import shlex
 from typing import Optional, Tuple
 
-from .gaia_cli_invocation import gaia_cli_argvs
+from .gaia_cli_invocation import clears_dispatch_identity, computes_gaia_words, gaia_cli_argvs
 
 # Curated-memory MUTATING subcommands under `gaia memory`. Read verbs
 # (search/show/list/stats/get-relevant/conflicts/episode-show) are absent by
@@ -83,6 +83,19 @@ PROPOSAL_DECISION_REJECTION = (
     "Accepting or dismissing a proposal is the orchestrator's decision, refused for "
     "every subagent. Propose in your contract row instead. Do NOT retry -- this is "
     "not approvable."
+)
+
+IDENTITY_REJECTION = (
+    "A subagent does not unset, empty or override GAIA_DISPATCH_AGENT, nor clear its "
+    "environment (env -i). Run the command without touching your identity. Do NOT "
+    "retry -- this is not approvable."
+)
+
+COMPUTED_WORDS_REJECTION = (
+    "A subagent's Gaia CLI call must spell its words literally: this one takes words "
+    "the shell computes (an expansion, substitution, glob or brace) or that xargs "
+    "feeds. Write the literal value, single-quoted if it holds $ or a backtick. Do NOT "
+    "retry -- this is not approvable."
 )
 
 
@@ -203,6 +216,13 @@ def check(
     """
     if not is_subagent:
         return True, None
+    from ..tools.shell_parser import parse_command
+
+    components = parse_command(command)
+    if any(clears_dispatch_identity(component) for component in components):
+        return False, IDENTITY_REJECTION
+    if any(computes_gaia_words(component) for component in components):
+        return False, COMPUTED_WORDS_REJECTION
     if is_proposal_decision_attempt(command):
         return False, PROPOSAL_DECISION_REJECTION
     if agent_type in ALLOWED_AGENTS:
