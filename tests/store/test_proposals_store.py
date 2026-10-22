@@ -197,6 +197,24 @@ def test_proposals_store_backfill_runs_on_a_copy_and_leaves_the_source(db, tmp_p
     assert list_proposals(db_path=db) == []
 
 
+def test_proposals_store_accept_runs_when_contract_py_is_a_script(db):
+    import os
+    import subprocess
+
+    from gaia.store.proposals import list_proposals
+
+    _close(f"{AGENT}.000000000008", "COMPLETE", _envelope("COMPLETE", memory=["project_script"]))
+    proposal_id = list_proposals(db_path=db)[0]["id"]
+    env = {k: v for k, v in os.environ.items() if k != "GAIA_DISPATCH_AGENT"}
+    done = subprocess.run(
+        [sys.executable, str(_REPO_ROOT / "bin" / "cli" / "contract.py"),
+         "proposals", "accept", str(proposal_id)],
+        capture_output=True, text=True, env=env, timeout=120)
+
+    assert done.returncode == 0, done.stderr
+    assert list_proposals(db_path=db) == []
+
+
 def test_proposals_store_orchestrator_lane_admits_the_verbs():
     from modules.security.gaia_cli_only_guard import (
         ALLOWED_READ_PHRASES, ALLOWED_WRITE_PHRASES)

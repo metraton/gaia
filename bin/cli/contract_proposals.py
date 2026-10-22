@@ -81,12 +81,17 @@ def _accept_memory(item: dict, owner: Optional[dict], workspace: Optional[str]) 
         if owner is None:
             return False, "the proposal has no project: pass --project <identity or name>"
         argv += ["--project-ref", owner["identity"], "--workspace", workspace or owner["workspace"]]
+    bin_dir = str(Path(__file__).resolve().parents[1])
+    if bin_dir not in sys.path:
+        sys.path.insert(0, bin_dir)
     from cli import memory
 
     parser = argparse.ArgumentParser(prog="gaia")
     memory.register(parser.add_subparsers(dest="subcommand"))
     memory_args = parser.parse_args(argv)
-    return memory_args.func(memory_args) == 0, f"memory {slug} written"
+    if memory_args.func(memory_args) != 0:
+        return False, f"gaia memory add refused {slug}; the proposal stays pending"
+    return True, f"memory {slug} written"
 
 
 def _accept_context(item: dict, owner: Optional[dict], workspace: Optional[str]) -> tuple:

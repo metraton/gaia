@@ -23,7 +23,11 @@ SUBCOMMANDS = {
         'accept dump get get-contract move-contracts move-memory move-project project '
         'prune-workspaces query scan show wipe'
     ),
-    'contract': 'add chain fill fill-rate finalize init list reap reconcile set validate view',
+    'contract': (
+        'add chain fill fill-rate finalize init list proposals reap reconcile set validate '
+        'view'
+    ),
+    'contract proposals': 'accept backfill dismiss list',
     'evidence': 'add list orphans show',
     'lint': 'comments',
     'login': 'start status',
@@ -150,6 +154,11 @@ OPTIONS = {
         '--agent --agent-id --brief --contract-id --cut --harness-id --help --json --limit '
         '--plan-task --session --since --state --until --workspace -h'
     ),
+    'contract proposals': '--help -h',
+    'contract proposals accept': '--help --json --project --workspace -h',
+    'contract proposals backfill': '--apply --help --json --since-days -h',
+    'contract proposals dismiss': '--help --json --reason -h',
+    'contract proposals list': '--all --contract-id --help --json --kind -h',
     'contract reap': '--help --json --older-than-seconds -h',
     'contract reconcile': '--contract-id --harness-id --help --json --superseded-by -h',
     'contract set': '--agent-id --draft-id --help --json -h',
