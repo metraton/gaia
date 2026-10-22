@@ -96,7 +96,7 @@ def test_verdict(row, world, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(world["root"] / "gaia-data"))
     monkeypatch.setenv("GAIA_DB", str(world["root"] / "gaia-data" / "gaia.db"))
     monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
-    monkeypatch.chdir(world["dirs"][row.get("context", "none")])
+    monkeypatch.chdir(world["root"])
     assert os.environ["GAIA_DB"].startswith(str(world["root"]))
     assert observe(row["command"], row.get("context", "none"), world) == row["expected"], row["command"]
 

@@ -20,7 +20,9 @@
   "repo": {"git": "repo"},
   "managed_repo": {"git": "managed"},
   "pkg_plain": {"files": {"package.json": "{\"name\": \"app\", \"scripts\": {\"test\": \"go test ./...\", \"build\": \"node build.js\"}}"}},
-  "pkg_post": {"files": {"package.json": "{\"name\": \"app\", \"scripts\": {\"postinstall\": \"kubectl apply -f deploy.yaml\"}}"}},
+  "pkg_post": {"files": {"package.json": "{\"name\": \"app\", \"scripts\": {\"postinstall\": \"husky install\"}}"}},
+  "pkg_patch": {"files": {"package.json": "{\"name\": \"app\", \"scripts\": {\"postinstall\": \"patch-package\"}}"}},
+  "pkg_gyp": {"files": {"package.json": "{\"name\": \"app\", \"scripts\": {\"postinstall\": \"node-gyp rebuild\"}}"}},
   "code_files": {"files": {
    "tools/check.py": "import json\nimport pathlib\n\ndata = json.loads(pathlib.Path('package.json').read_text())\nprint(sorted(data))\n",
    "tools/deploy.py": "import subprocess\n\nsubprocess.run(['kubectl', 'apply', '-f', 'x.yaml'])\n",
@@ -57,6 +59,8 @@
 ,{"id": "ctl-curl-get-urlencode", "owner": "T5", "expected": "FREE", "command": "curl -G --data-urlencode q=x https://example.invalid/search", "rule": "free.reads", "category": "control", "src": "gaia-authored", "ac": ["AC-4"], "note": "curl -G turns the data into a GET query string: a read."}
 ,{"id": "ctl-curl-post", "owner": "T1", "expected": "SIGNED", "command": "curl -X POST -d x=1 https://example.invalid/hook", "rule": "sign.speaks", "category": "control", "src": "gaia-authored", "ac": ["AC-4"]}
 ,{"id": "ctl-npm-test-unreadable-package", "owner": "out-of-brief", "expected": "SIGNED", "command": "npm test", "rule": "unknown.dynamic-span", "category": "control", "src": "gaia-mined", "note": "No readable package.json: the script body that decides the effect is unknown, and the documented fallback is a signature, but today it is FREE. The brief keeps the package-script lane as today (out_of_scope), so no task owns it."}
+,{"id": "ctl-npm-ci-lifecycle-patch-package", "owner": "out-of-brief", "expected": "SIGNED", "command": "npm ci", "rule": "sign.foreign-code", "category": "control", "src": "gaia-authored", "ac": ["AC-6"], "context": "pkg_patch", "note": "Plan F18: a frozen install signs when a lifecycle script runs. Observed FREE today. The brief keeps the package-script lane as today (out_of_scope), so no task owns it; listed, not asserted."}
+,{"id": "ctl-npm-ci-lifecycle-node-gyp", "owner": "out-of-brief", "expected": "SIGNED", "command": "npm ci", "rule": "sign.foreign-code", "category": "control", "src": "gaia-authored", "ac": ["AC-6"], "context": "pkg_gyp", "note": "Same as ctl-npm-ci-lifecycle-patch-package: an ordinary lifecycle body that is FREE today; out of the brief's scope."}
 ,{"id": "mined-feature-push-u", "owner": "T1", "expected": "FREE", "command": "git push -u origin feature-x", "rule": "free.own-work", "category": "mined", "src": "gaia-mined", "ac": ["AC-2"], "context": "repo"}
 ,{"id": "mined-push-default-twin", "owner": "T1", "expected": "SIGNED", "command": "git push origin main", "rule": "sign.lands", "category": "mined", "src": "gaia-mined", "ac": ["AC-2"], "context": "repo"}
 ,{"id": "mined-rebase-worktree", "owner": "out-of-brief", "expected": "FREE", "command": "git -C {WORKTREES}/wt-a rebase origin/main", "rule": "free.own-work", "category": "mined", "src": "gaia-mined", "ac": ["AC-7"], "context": "managed_repo", "note": "Rebase in the agent's own managed worktree rewrites local history only; mined as 114 over-signed executions. AC-7 names no rebase."}
@@ -227,6 +231,8 @@
 ,{"id": "local-mv-worktree-out-twin", "owner": "T1", "expected": "SIGNED", "command": "mv {WORKTREES}/wt-a/x.txt /etc/x.txt", "rule": "sign.lands", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"], "context": "managed_repo"}
 ,{"id": "local-cp-to-account-twin", "owner": "T1", "expected": "SIGNED", "command": "cp {SCRATCH}/a ~/.bashrc", "rule": "sign.lands", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"]}
 ,{"id": "local-tar-x-managed-worktree", "owner": "T11", "expected": "FREE", "command": "tar -xf {SCRATCH}/a.tar -C {WORKTREES}/wt-a", "rule": "free.own-work", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"], "context": "managed_repo"}
+,{"id": "local-cp-managed-worktree", "owner": "T11", "expected": "FREE", "command": "cp {SCRATCH}/a.txt {WORKTREES}/wt-a/b.txt", "rule": "free.own-work", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"], "context": "managed_repo"}
+,{"id": "local-cp-worktree-git-dir-twin", "owner": "T1", "expected": "SIGNED", "command": "cp {SCRATCH}/a.txt {WORKTREES}/wt-a/.git/b", "rule": "sign.lands", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"], "context": "managed_repo"}
 ,{"id": "local-git-merge-tree", "owner": "T11", "expected": "FREE", "command": "git merge-tree --write-tree HEAD feature-x", "rule": "free.reads", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"], "context": "repo"}
 ,{"id": "local-git-grep", "owner": "T1", "expected": "FREE", "command": "git grep -n TODO", "rule": "free.reads", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"], "context": "repo"}
 ,{"id": "local-git-diff-stat", "owner": "T1", "expected": "FREE", "command": "git diff --stat", "rule": "free.reads", "category": "local-work", "src": "gaia-authored", "ac": ["AC-7"], "context": "repo"}
