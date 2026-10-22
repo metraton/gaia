@@ -58,6 +58,8 @@ from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
 from ..security.mutative_verbs import (
     READ_ONLY_BASE_CMDS,
+    _SCRIPT_FILE_INTERPRETERS,
+    _peel_leading_command_wrappers,
     account_path_redirect_target,
     detect_mutative_command,
     build_t3_block_response,
@@ -89,7 +91,7 @@ from ..security.approval_messages import (
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
 from ..security.verdict import COMPOSITION_RULES, UNDETERMINED, blocked_rule, render, signing_rule
-from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
+from ..security.shell_unwrapper import _SHELLS, ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
 from ..security.shell_substitution import extract_substitutions, extract_substitutions_truncated
@@ -188,6 +190,21 @@ def _carries_ruling(validate):
 _HEREDOC_DELIMITER = re.compile(r"-?[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
 
 
+_BUILTIN_WRAPPERS = frozenset({"command", "builtin", "exec", "xargs"})
+_HEREDOC_INTERPRETERS = _SHELLS | _SCRIPT_FILE_INTERPRETERS | {"python2", "pwsh", "powershell", "osascript", "lua", "Rscript"}
+
+
+def _heredoc_reader(head: str) -> bool:
+    if any(os.path.basename(word) in _HEREDOC_INTERPRETERS for word in head.split()):
+        return False
+    words = _peel_leading_command_wrappers(head)[0].split()
+    while words and words[0] in _BUILTIN_WRAPPERS:
+        words = words[1:]
+        while words and words[0].startswith("-"):
+            words = words[2:] if words[0] == "-a" else words[1:]
+    return bool(words) and os.path.basename(words[0]) in READ_ONLY_BASE_CMDS - _BUILTIN_WRAPPERS
+
+
 def _reader_heredoc(line: str) -> Optional[tuple]:
     quote, index = "", 0
     while index < len(line):
@@ -204,8 +221,7 @@ def _reader_heredoc(line: str) -> Optional[tuple]:
             return None
         elif line.startswith("<<", index) and not line.startswith("<<<", index):
             delimiter = _HEREDOC_DELIMITER.match(line, index + 2)
-            head = line[:index].split()
-            reader = bool(head) and os.path.basename(head[0]) in READ_ONLY_BASE_CMDS
+            reader = _heredoc_reader(line[:index])
             if not (delimiter and reader) or line[delimiter.end():].strip()[:1] not in ("", "#"):
                 return None
             return delimiter.group(1), line[index + 2:index + 3] == "-"
