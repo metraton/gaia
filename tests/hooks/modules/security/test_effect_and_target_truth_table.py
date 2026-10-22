@@ -72,7 +72,9 @@ def observe(command: str, context: str, world: dict) -> str:
         command = command.replace(key, value)
     detect_mutative_command.cache_clear()
     tiers_module._classify_command_tier_cached.cache_clear()
-    result = BashValidator().validate(command, is_subagent=True, session_id="s-truth-table", agent_type="developer")
+    payload = {"cwd": str(world["dirs"][context]), "session_id": "s-truth-table", "tool_use_id": "t-truth-table",
+               "agent_id": "atruthtable01", "agent_type": "developer"}
+    result = BashValidator().validate(command, is_subagent=True, session_id="s-truth-table", agent_type="developer", hook_payload=payload)
     if result.allowed:
         return "FREE"
     if result.approval_id or (result.reason or "").startswith(COMPOUND_DENIAL):
@@ -156,9 +158,32 @@ def test_every_brief_criterion_has_rows_and_every_tightening_has_a_free_twin():
         assert "FREE" in verdicts and verdicts - {"FREE"}, category
 
 
+TWINS = [
+    ("ctl-push-feature", "mined-push-default-twin"),
+    ("ctl-ff-own-upstream", "git-merge-ff-other-branch"),
+    ("ctl-npm-ci-no-lifecycle", "ctl-npm-ci-postinstall"),
+    ("mined-scratch-tar-x", "mined-tar-x-root-twin"),
+    ("forge-gh-edit", "forge-gh-retarget"),
+    ("ctl-gcloud-login-no-activate", "ctl-gcloud-login"),
+]
+
+
+@pytest.mark.parametrize("free_id,signed_id", TWINS)
+def test_a_twin_flips_on_its_target_or_effect_alone(free_id, signed_id):
+    by_id = {r["id"]: r for r in ROWS}
+    free, signed = by_id[free_id], by_id[signed_id]
+    assert free["owner"] == signed["owner"] == "T1"
+    assert (free["expected"], signed["expected"]) == ("FREE", "SIGNED")
+    left, right = free["command"].split(), signed["command"].split()
+    changed = sum(a != b for a, b in zip(left, right)) + abs(len(left) - len(right))
+    assert changed <= 2 or free["command"] == signed["command"]
+    if free["command"] == signed["command"]:
+        assert free.get("context") != signed.get("context")
+
+
 def test_the_named_controls_are_rows():
     commands = {r["command"] for r in ROWS if r["category"] == "control"}
-    for needed in ("gh pr create --title t --body b", "git -C {CWD} push origin feature-x", "git -C {CWD} merge --ff-only origin/main", "go test ./...", "cargo test", "npm --prefix {CWD} test",
+    for needed in ("gh pr create --title t --body b", "git push origin feature-x", "git merge --ff-only origin/main", "go test ./...", "cargo test", "npm test",
                    "kubectl get pod delete-me", "gh auth status", "kubectl config view", "terraform plan", "kubectl apply -f deploy.yaml --dry-run=client",
                    "gcloud auth login --no-activate", "gcloud auth login", "npm ci", "curl -G --data-urlencode q=x https://example.invalid/search"):
         assert needed in commands, needed
