@@ -46,10 +46,12 @@ as done one layer up.
    run (`gaia evidence list`, negative evidence tied to this gate). A check that
    was never shown failing, or that passes whether or not the change is there,
    cannot distinguish done from not done. Then check that the selection was
-   not narrowed since that red run: `git log -p` over the gate's test files
-   from the red run's `created_at` shows no new `-k`, `-m` or `--deselect` in
-   the shape and no new skip or xfail. Added tests are growth; a narrowed
-   selection is `broken_test`.
+   not narrowed since that red run. The shape lives in the gate row: its
+   current `evidence_shape` carries no `-k`, `-m` or `--deselect` absent from
+   the command recorded with the red-run evidence, and a `stale_reason` names
+   any gate edit since. The test files live in git: `git log -p` over them
+   from the red run's `created_at` shows no new skip or xfail. Added tests are
+   growth; a narrowed selection is `broken_test`.
 6. **Return the full verdict and record it.** Pass, or fail with the cause that
    says what has to move: `product` (the change does not do it),
    `environment` (the runner, a dependency, the network), `broken_test` (the

@@ -44,9 +44,9 @@ que capturar.
 
 1. **Ask only for the gaps, never the obvious**, one question per round via
    AskUserQuestion: surface type (ui, api, job, cli); the problem it solves; the
-   constraints that matter; for each AC, what the user would see when it holds
-   and what symptom would show it failing silently; what is explicitly out of
-   scope. For substantial work the gaps include the hard parts the user may not
+   constraints that matter; for each AC, what an agent would observe when it
+   holds and what symptom would show it failing silently; what is explicitly
+   out of scope. For substantial work the gaps include the hard parts the user may not
    have considered, and once, at capture, offer the goal the feature serves
    beyond itself. Stop when every AC is observable or explicitly marked
    unresolved (step 4).
@@ -66,16 +66,16 @@ que capturar.
 3. **Add each acceptance criterion as an observation:**
 
    ```bash
-   gaia brief ac add <slug> --id=AC-1 --description="<what the user observes>"
+   gaia brief ac add <slug> --id=AC-1 --description="<what an agent observes>"
    ```
 
    An AC says what is true and visible when the work is done, precisely enough
    to disagree with ("p95 under 200ms on /search", not "fast"), and visible to
    an agent: a state it reads, an output it runs, a page it drives. An AC only
    the user can observe is the exception, written as theirs with its reason --
-   a judgment of taste -- because it becomes the one gate the user judges
-   (`gaia-planner` step 5). It does not
-   prescribe the proof: which test, command or rubric shows it is the planner's
+   a judgment of taste, or a check they asked to make -- because it becomes a
+   gate the user judges (`gaia-planner` step 5). It does not prescribe the
+   proof: which test, command or rubric shows it is the planner's
    proposal, authored as gates. Fixing a mechanism here, before anyone has read
    the code, turns a guess into a requirement. Set `--evidence-type` /
    `--evidence-shape` only when the user asked to see the result a particular
@@ -166,8 +166,9 @@ proposes which tasks the change touches and why; review the proposal
 (`gaia plan change list <slug>`) and approve it (`gaia plan change approve`),
 taking it to the user first when it changes *what* is delivered. Verified tasks
 the change does not touch stay as they are, and a task already in flight
-receives the change at its next dispatch (`dispatch` principle 8). To stop dispatch without changing
-the plan, `gaia plan pause <slug> --reason="..."`, then `gaia plan resume`.
+receives the change at its next dispatch (`dispatch` principle 8). To stop
+dispatch without changing the plan, `gaia plan pause <slug> --reason="..."`,
+then `gaia plan resume`.
 
 ## Anti-Patterns
 

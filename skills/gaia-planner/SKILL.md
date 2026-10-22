@@ -100,9 +100,10 @@ it protects.
    user's part in a gate is at most handing over a secret or completing a
    credential login inside a session the agent drives, after which the agent
    observes the result: "after install, the user confirms X" becomes the check
-   the agent runs after install. The one exception is a judgment of taste the
-   brief assigns to the user in an AC: that gate stays `semantic`, names the
-   user as its judge and cites that AC. This is what lets a plan close without
+   the agent runs after install. Two gates are the user's: a judgment of taste
+   the brief assigns to the user in an AC, and a check the user explicitly
+   asked to make themselves. Either stays `semantic`, names the user as its
+   judge and cites the AC or the request. This is what lets a plan close without
    the user stopping to check.
 
    A task may carry several gates of mixed types when its outcome has several

@@ -105,10 +105,12 @@ _EXPECTED_EXIT_CODE = 0
 
 _SELECTION_FILTER_FLAGS = ("-k", "-m", "--deselect")
 _NARROWING_MARKER_RE = re.compile(
-    r"pytest\.mark\.(?:skip|skipif|xfail)\b"
-    r"|pytest\.(?:skip|xfail|importorskip)\s*\("
-    r"|unittest\.(?:skip|skipIf|skipUnless|expectedFailure)\b"
+    r"\bmark\.(?:skip|skipif|xfail)\b"
+    r"|\b(?:skip|xfail|importorskip)\s*\("
+    r"|\b(?:skipIf|skipUnless|expectedFailure)\b"
+    r"|\bunittest\.skip\b"
 )
+_TEST_FILE_GLOBS = ("test_*.py", "*_test.py")
 
 
 @dataclass(frozen=True)
@@ -131,13 +133,36 @@ def _split_filter(token: str, following: str | None) -> tuple[str, str, bool] | 
     return None
 
 
+def _pytest_args_start(argv: list[str]) -> int:
+    """Index of the first argument pytest itself parses, past ``python -m pytest``."""
+    if argv and Path(argv[0]).name.startswith("python"):
+        for index in range(1, len(argv) - 1):
+            if argv[index] == "-m" and argv[index + 1] == "pytest":
+                return index + 2
+    return 1
+
+
+def _selected_test_files(base: Path, path_part: str) -> dict[str, Path]:
+    """Map each test file a positional selects, a file or a directory, to its path."""
+    target = base / path_part
+    if target.is_file() and path_part.endswith(".py"):
+        return {path_part: target}
+    if not target.is_dir():
+        return {}
+    return {
+        str(found.relative_to(base)): found
+        for pattern in _TEST_FILE_GLOBS
+        for found in sorted(target.rglob(pattern))
+    }
+
+
 def gate_selection(command: str, cwd: str | Path | None = None) -> GateSelection:
     """Snapshot a pytest gate's selection, resolving test files against ``cwd``."""
     base = Path(cwd) if cwd is not None else Path.cwd()
     argv = shlex.split(command)
     filters: list[tuple[str, str]] = []
     markers: dict[str, int] = {}
-    index = 0
+    index = _pytest_args_start(argv)
     while index < len(argv):
         token = argv[index]
         following = argv[index + 1] if index + 1 < len(argv) else None
@@ -147,11 +172,10 @@ def gate_selection(command: str, cwd: str | Path | None = None) -> GateSelection
             filters.append((flag, value))
             index += 2 if consumed_next else 1
             continue
-        path_part = token.split("::", 1)[0]
-        test_file = base / path_part
-        if not token.startswith("-") and path_part.endswith(".py") and test_file.is_file():
-            source = test_file.read_text(encoding="utf-8", errors="replace")
-            markers[path_part] = len(_NARROWING_MARKER_RE.findall(source))
+        if not token.startswith("-"):
+            for name, test_file in _selected_test_files(base, token.split("::", 1)[0]).items():
+                source = test_file.read_text(encoding="utf-8", errors="replace")
+                markers[name] = len(_NARROWING_MARKER_RE.findall(source))
         index += 1
     return GateSelection(filters=tuple(filters), markers=markers)
 

@@ -112,7 +112,7 @@ jargon there either.
 | What changed | The concrete change made, stated plainly |
 | Impact / what it solves | The outcome the change produces for the system or the user |
 | Plan impact | For IaC changes: the plan summary -- resources to add, change, destroy |
-| Verification | How the change was verified -- tests run, dry-run/plan output, manual check |
+| Verification | How the change was verified -- tests run, dry-run/plan output, an agent-run browser check |
 | Risk / rollback (optional) | What could go wrong and how to revert, when the change carries real risk |
 | Links (optional) | Related PRs, issues, or docs -- only when they add context a reviewer needs |
 
