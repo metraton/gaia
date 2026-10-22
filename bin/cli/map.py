@@ -23,11 +23,16 @@ class Intent(NamedTuple):
 
 
 HABITS = (
-    ("the user voices a doubt, idea or pending", "gaia memory add|append (home: the project thread)"),
-    ("a time or recurrence is mentioned", "offer: gaia notifications add --at|--cron|--every"),
-    ("ids arrive (contract, handoff, plan, slug)", "append them to the project thread before answering"),
-    ("a project is named", "gaia context project <name>"),
-    ("a skill fits an intent nobody asked for", "offer it in one line; act on the user's yes"),
+    ("the user voices a doubt, an idea or a pending",
+     "Skill memory before the first verb; its Where it goes router picks the home; say where in one line"),
+    ("a time or a date is mentioned beside something to do",
+     "offer a reminder in one line; on their yes, Skill reminders"),
+    ("ids arrive in a return (contract, handoff, plan, slug)",
+     "append them to the project's thread row before answering"),
+    ("a project's depth is needed, or a (N) count sits by its name",
+     "gaia context project <name>"),
+    ("the intent needs a capability the user did not name",
+     "offer it in one line after the answer, at most one per turn; act only on their yes"),
 )
 
 INTENTS = (
@@ -49,9 +54,14 @@ INTENTS = (
     Intent("history", "what happened, events", "gaia query",
            "gaia query --since=<window> [--failed] [--group-by=...]",
            "gaia query --since=24h --failed"),
-    Intent("explain", "explain / README / ticket", "technical-explanation | readme-writing | ticket-writing",
-           "Skill technical-explanation (readme-writing, ticket-writing for those artifacts)",
-           "Skill readme-writing before rewriting a stale README"),
+    Intent("explain", "explain / document / ticket", "technical-explanation | technical-writing | ticket-writing",
+           "Skill technical-explanation (technical-writing for a README, runbook, PR body or report; "
+           "ticket-writing for a ticket)",
+           "Skill technical-writing before rewriting a stale README"),
+    Intent("deck", "a diagram deck (architecture, timeline, flow)", "Skill deck-builder",
+           "Skill deck-builder for the phases; dispatch the approved per-page tables naming deck-builder "
+           "and technical-explanation",
+           "an architecture map of the release flow: Skill deck-builder"),
     Intent("review", "review a PR or branch", "Skill code-review",
            "Skill code-review, then dispatch the reviewers it names",
            "review branch feat/x: dispatch gaia-system with Skill code-review"),
