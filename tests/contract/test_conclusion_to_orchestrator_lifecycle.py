@@ -195,10 +195,35 @@ def test_summary_line_without_a_session_id_still_claims_for_the_row_session(db):
     assert [line.count(CONCLUSION), again.count(CONCLUSION), _prompt().count(CONCLUSION)] == [1, 0, 0]
 
 
+def test_ledger_pruned_while_the_session_lives_is_rebaselined_not_redelivered(db):
+    conclusions.baseline(SESSION_ID)
+    _bg(db, 7, "delivered before idle month")
+    delivered = _prompt().count("delivered before idle month")
+    os.utime(conclusions._ledger_dir(SESSION_ID), (0, 0))
+    conclusions.baseline("another-session")
+    _bg(db, 9, "closed after the prune")
+    again = _prompt()
+    assert [delivered, again.count("delivered before idle month")] == [1, 0]
+    assert [again.count("closed after the prune"), _prompt().count("closed after the prune")] == [1, 0]
+
+
+def test_refinalized_contract_delivers_its_new_conclusion(db):
+    conclusions.baseline(SESSION_ID)
+    contract_id = f"{AGENT_ID}.refin"
+    insert_dispatched_handoff(contract_id, AGENT_ID, WORKSPACE, session_id=SESSION_ID, db_path=db)
+    _finalize(db, contract_id, _envelope(state="BLOCKED", conclusion="first conclusion blocked"))
+    first = _prompt()
+    _finalize(db, contract_id, _envelope(conclusion="second conclusion complete"))
+    second, third = _prompt(), _prompt()
+    assert [first.count("first conclusion blocked"), second.count("first conclusion blocked")] == [1, 0]
+    assert [second.count("second conclusion complete"), third.count("second conclusion complete")] == [1, 0]
+
+
 def test_prune_removes_only_aged_ledgers():
-    conclusions.claim("old-session", "c.1")
-    conclusions.claim(SESSION_ID, "c.2")
+    conclusions.claim("old-session", "c.1", "one")
+    conclusions.claim(SESSION_ID, "c.2", "two")
     aged = conclusions._ledger_dir("old-session")
     os.utime(aged, (0, 0))
     conclusions.prune()
     assert not aged.exists() and conclusions._ledger_dir(SESSION_ID).is_dir()
+    assert conclusions._tombstone("old-session").is_file() and not conclusions._tombstone(SESSION_ID).exists()
