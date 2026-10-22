@@ -1243,7 +1243,6 @@ WHEN (NEW.type = 'user' OR NEW.initiative IS NOT NULL
       OR OLD.type = 'user' OR OLD.initiative IS NOT NULL)
  AND (OLD.name IS NOT NEW.name
    OR OLD.body IS NOT NEW.body
-   OR OLD.workspace IS NOT NEW.workspace
    OR OLD.type IS NOT NEW.type
    OR OLD.description IS NOT NEW.description
    OR OLD.status IS NOT NEW.status

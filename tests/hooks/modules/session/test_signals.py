@@ -129,6 +129,24 @@ def test_project_memory_is_named_by_its_initiative_and_unkeyed_rows_are_silent(
     assert prompt_context("B", None) == "~ changed: project memory gaia ×1 — gaia signals"
 
 
+def test_a_workspace_only_move_raises_no_signal(two_sessions, workspace_me):
+    from gaia.store.writer import _connect, upsert_memory
+
+    upsert_memory("me", "atom_moved", type="atom", body="b", initiative="gaia")
+    assert prompt_context("B", None).startswith("~ changed: project memory gaia")
+    con = _connect()
+    try:
+        con.execute("INSERT INTO workspaces (name) VALUES ('ws')")
+        con.execute("UPDATE memory SET workspace = 'ws' WHERE name = 'atom_moved'")
+        con.commit()
+    finally:
+        con.close()
+
+    assert _scalar("SELECT workspace FROM memory WHERE name = 'atom_moved'") == "ws"
+    assert _scalar("SELECT COUNT(*) FROM signals") == 1
+    assert prompt_context("B", None) == ""
+
+
 def test_an_unattributed_write_reaches_every_session(two_sessions, workspace_me):
     from gaia.store.writer import upsert_memory
 
