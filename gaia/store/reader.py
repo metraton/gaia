@@ -185,6 +185,67 @@ def signals_from_others(
         con.close()
 
 
+def _read_only_rows(sql: str, params: tuple, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Rows of one SELECT run on a query_only connection, as dicts; [] on any error."""
+    try:
+        con = _ro_connect(db_path)
+    except Exception:
+        return []
+    try:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def pending_proposal_refs(db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Pending proposals oldest first, as id, kind and proposing contract only -- never the payload."""
+    return _read_only_rows(
+        "SELECT p.id, p.kind, h.contract_id FROM proposals p "
+        "JOIN agent_contract_handoffs h ON h.id = p.handoff_id "
+        "WHERE p.status = 'pending' ORDER BY p.id",
+        (), db_path,
+    )
+
+
+def dispatched_handoffs(session_id: str, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """The session's turns still in the DISPATCHED row state, newest first; [] without a session."""
+    if not session_id:
+        return []
+    return _read_only_rows(
+        "SELECT contract_id, agent_id FROM agent_contract_handoffs "
+        "WHERE session_id = ? AND agent_state = 'DISPATCHED' ORDER BY id DESC",
+        (session_id,), db_path,
+    )
+
+
+def active_plan_heads(workspace: str | None = None, db_path: Path | None = None) -> list[dict[str, Any]]:
+    """Each active, unpaused plan with its brief and lowest-ordered pending task, limited to ``workspace`` and its aliases."""
+    try:
+        con = _ro_connect(db_path)
+    except Exception:
+        return []
+    try:
+        scope_sql, params = "", []
+        if workspace is not None:
+            scope = workspace_scope(con, workspace)
+            scope_sql, params = f" AND b.workspace IN ({','.join('?' * len(scope))})", scope
+        rows = con.execute(
+            "SELECT p.id AS plan_id, b.name AS brief, t.id AS task_id, t.order_num AS task_order "
+            "FROM plans p JOIN briefs b ON b.id = p.brief_id "
+            "LEFT JOIN tasks t ON t.id = (SELECT id FROM tasks WHERE plan_id = p.id "
+            "AND status = 'pending' ORDER BY order_num LIMIT 1) "
+            f"WHERE p.status = 'active' AND p.paused_at IS NULL{scope_sql} ORDER BY p.id",
+            params,
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 def list_upcoming_notifications(
     workspace: str | None = None,
     limit: int = 50,

@@ -3,7 +3,7 @@
 SUBCOMMANDS = {
     '': (
         'ac approvals brief cleanup context contract defects dev doctor evidence history '
-        'install lint login memory metrics migrate milestone notifications now paths plan '
+        'install lint login map memory metrics migrate milestone notifications now paths plan '
         'project query release scan session signals status task uninstall update usage '
         'workspace worktree'
     ),
@@ -191,6 +191,7 @@ OPTIONS = {
     'login': '--help -h',
     'login start': '--account --force --help -h',
     'login status': '--help -h',
+    'map': '--help -h',
     'memory': '--help --json -h',
     'memory add': (
         '--audience --body --body-file --class --description --help --initiative --json '
