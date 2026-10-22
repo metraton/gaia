@@ -87,17 +87,20 @@ def _nested_shells(depth: int) -> str:
     return command
 
 
-def observe(command: str, context: str, world: dict, role: str = "subagent") -> tuple:
+def observe(command: str, context: str, world: dict, role: str = "subagent", session: bool = True) -> tuple:
     for key, value in (("{CWD}", str(world["dirs"][context])), ("{SCRATCH}", world["SCRATCH"]), ("{WORKTREES}", world["WORKTREES"]),
                        ("{NEST5}", _nested_shells(5))):
         command = command.replace(key, value)
     detect_mutative_command.cache_clear()
     tiers_module._classify_command_tier_cached.cache_clear()
     subagent = role == "subagent"
-    payload = {"cwd": str(world["dirs"][context]), "session_id": "s-truth-table", "tool_use_id": "t-truth-table"}
+    session_id = "s-truth-table" if session else ""
+    payload = {"cwd": str(world["dirs"][context]), "tool_use_id": "t-truth-table"}
+    if session:
+        payload["session_id"] = session_id
     if subagent:
         payload.update(agent_id="atruthtable01", agent_type="developer")
-    result = BashValidator().validate(command, is_subagent=subagent, session_id="s-truth-table",
+    result = BashValidator().validate(command, is_subagent=subagent, session_id=session_id,
                                       agent_type="developer" if subagent else "", hook_payload=payload)
     reason = result.reason or ""
     if result.allowed:
@@ -129,7 +132,7 @@ def _observe_isolated(row, world, monkeypatch):
             return [c for c in seeded if c.get("harness_agent_id") == harness_agent_id or c.get("contract_id") == contract_id][:limit]
 
         monkeypatch.setattr("gaia.store.writer.list_agent_contract_handoffs", fake_list)
-    return observe(row["command"], row.get("context", "none"), world, row.get("role", "subagent"))
+    return observe(row["command"], row.get("context", "none"), world, row.get("role", "subagent"), not row.get("no_session"))
 
 
 @pytest.mark.parametrize("row", [_case(r) for r in ROWS])
@@ -305,65 +308,99 @@ def test_every_shape_named_in_every_brief_criterion_maps_to_rows():
 
 
 REFUSAL_SITES = {
-    "guard_reason": ["floor-cli-only-orchestrator"],
-    "Empty command not allowed": ["floor-empty-command"],
-    "consent_verb_reason": ["floor-consent-verb"],
-    "attribution_reason": ["floor-claude-attribution"],
-    "comment_push.reason": ["floor-comment-limit-push"],
-    "db_write_reason": ["floor-gaia-db-sqlite", "floor-gaia-db-cp"],
-    "mem_write_reason": ["floor-memory-write-subagent"],
-    "skill_reason": ["floor-memory-skill-orchestrator"],
-    "resume_reason": ["floor-resume-point-subagent"],
-    "ownership_reason": ["floor-contract-ownership-own-row"],
-    "pp_write_reason": ["floor-protected-install-cp", "floor-protected-install-sed"],
-    "shell_write_reason": ["floor-shell-write-redirect", "floor-shell-write-tee", "floor-shell-write-sed-i"],
-    "Obfuscated shell nesting": ["floor-obfuscated-nesting"],
-    "blocked_result.category": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
-    "_blocked.category": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
-    "comp_blocked.category": ["floor-compound-component-blocked"],
-    "secret_violation.reason": ["floor-kubectl-secret-output"],
-    "read_permission_reason": ["floor-cloud-pipe"],
-    "sensitive_reason": ["floor-secret-read-ssh-key"],
-    "Indirect execution of blocked command": ["floor-indirect-blocked-in-wrapper", "floor-indirect-blocked-in-inline"],
-    "deny_msg": ["floor-shell-wrapper-bash-c", "floor-shell-wrapper-eval"],
-    "Dangerous pipe composition blocked": ["seed-continue-curl-pipe-sh"],
-    "Commit message validation failed": ["floor-commit-message"],
+    "validate::guard_reason": ["floor-cli-only-orchestrator"],
+    "validate::Empty command not allowed": ["floor-empty-command"],
+    "validate::consent_verb_reason": ["floor-consent-verb"],
+    "validate::attribution_reason": ["floor-claude-attribution"],
+    "validate::comment_push.reason": ["floor-comment-limit-push"],
+    "validate::db_write_reason": ["floor-gaia-db-sqlite", "floor-gaia-db-cp"],
+    "validate::mem_write_reason": ["floor-memory-write-subagent"],
+    "validate::skill_reason": ["floor-memory-skill-orchestrator"],
+    "validate::resume_reason": ["floor-resume-point-subagent"],
+    "validate::ownership_reason": ["floor-contract-ownership-own-row"],
+    "validate::pp_write_reason": ["floor-protected-install-cp", "floor-protected-install-sed"],
+    "validate::shell_write_reason": ["floor-shell-write-redirect", "floor-shell-write-tee", "floor-shell-write-sed-i"],
+    "validate::Obfuscated shell nesting detected: {unwr": ["floor-obfuscated-nesting"],
+    "validate::Command blocked by security policy: {blo": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
+    "validate::Command blocked by security policy: {com": ["floor-compound-component-blocked"],
+    "validate::secret_violation.reason": ["floor-kubectl-secret-output"],
+    "validate::read_permission_reason(pipe_block)": ["floor-cloud-pipe"],
+    "validate::sensitive_reason": ["floor-secret-read-ssh-key"],
+    "_detect_indirect_execution::Indirect execution of blocked command de": ["floor-indirect-blocked-in-wrapper", "floor-indirect-blocked-in-inline"],
+    "_detect_indirect_execution::deny_msg": ["floor-shell-wrapper-bash-c", "floor-shell-wrapper-eval"],
+    "_phase4_check_composition::Dangerous pipe composition blocked: {res": ["seed-continue-curl-pipe-sh"],
+    "_validate_commit_message::Commit message validation failed: {valid": ["floor-commit-message"],
+    "decide_t3_outcome::Command blocked by security policy: {_bl": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
+    "decide_t3_outcome::reason": ["floor-clear-secret-in-request"],
+    "decide_t3_outcome::reason#2": ["floor-no-requester"],
 }
-APPROVABLE_SITES = {
-    "reason_msg": "the orchestrator gets an ask dialog for a shell wrapper, not a refusal",
-    "reason": "compound T3 denial: each stage is routed to a plan-first request, so a signature can cover it",
-    "Compound command blocked": "compound T3 denial routed to a plan-first request",
-    "requires approval": "the native ask dialog for the primary agent, a signature path",
+PASSTHROUGH_SITES = {
+    "_validate_compound_command::Compound command blocked: component {i}/": (
+        "wraps the refusal of whichever component failed, categorical or approvable alike; each categorical component has its own row"
+    ),
 }
 UNCOVERED_SITES = {
-    "Command blocked by flag classifier": "reachable only for a force push, which the earlier floor refuses today and AC-2 moves to signed",
-    "COMMAND_SET persistence failed closed": "store failure path; needs an injected database failure",
-    "_uncorrelated_set_denial": "store failure path; needs an injected database failure",
-    "T3 degraded-block": "store failure path: approval persistence failed; needs an injected database failure",
+    "_validate_single_command::Command blocked by flag classifier: {fla": "reachable only for a force push, which the earlier floor refuses today and AC-2 moves to signed",
+    "_validate_single_command::_uncorrelated_set_denial(pending_set, se": "store failure path; needs an injected database failure",
+    "decide_t3_outcome::T3 degraded-block: approval persistence ": "store failure path: approval persistence failed; needs an injected database failure",
+    "_validate_single_command::COMMAND_SET persistence failed closed: {": "store failure path; needs an injected database failure",
+    "_validate_single_command::COMMAND_SET persistence failed closed: {#2": "store failure path; needs an injected database failure",
+    "_validate_single_command::COMMAND_SET persistence failed closed: {#3": "store failure path; needs an injected database failure",
+    "_match_signed_pipeline::COMMAND_SET persistence failed closed: {": "store failure path; needs an injected database failure",
 }
 
 
-def _denial_sites():
-    tree = ast.parse(inspect.getsource(sys.modules[BashValidator.__module__]))
-    sites = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "BashValidationResult":
-            kw = {k.arg: ast.unparse(k.value) for k in node.keywords}
-            if kw.get("allowed") == "False" and "approval_id" not in kw:
-                sites.append(kw.get("reason", ""))
-    return sites
+def _kind(response, function) -> str:
+    if response is None:
+        return "categorical"
+    text = ast.unparse(response)
+    if text.endswith(".block_response"):
+        return "passthrough"
+    if "'ask'" in text or "decision" in text:
+        return "approvable"
+    if isinstance(response, ast.Name) and f"{response.id} = build_hook_permission_response('ask'" in ast.unparse(function):
+        return "approvable"
+    return "categorical"
 
 
-def _matches(site: str, key: str) -> bool:
-    return site == key or (len(key) > 8 and key in site)
+class _DenialSites(ast.NodeVisitor):
+    def __init__(self):
+        self.stack, self.sites, self.seen = [], {}, {}
+
+    def visit_FunctionDef(self, node):
+        self.stack.append(node)
+        self.generic_visit(node)
+        self.stack.pop()
+
+    def visit_Call(self, node):
+        if getattr(node.func, "id", "") == "BashValidationResult" and self.stack:
+            kw = {k.arg: k.value for k in node.keywords}
+            allowed = kw.get("allowed")
+            if isinstance(allowed, ast.Constant) and allowed.value is False and "approval_id" not in kw:
+                reason = ast.unparse(kw["reason"]) if "reason" in kw else ""
+                text = (reason[1:] if reason[:2] in ("f'", 'f"') else reason).strip("'\"")[:40]
+                key = f"{self.stack[-1].name}::{text}"
+                self.seen[key] = self.seen.get(key, 0) + 1
+                key = key if self.seen[key] == 1 else f"{key}#{self.seen[key]}"
+                self.sites[key] = _kind(kw.get("block_response"), self.stack[-1])
+        self.generic_visit(node)
 
 
-def test_every_denial_the_validator_returns_is_accounted_for():
-    known = [*REFUSAL_SITES, *APPROVABLE_SITES, *UNCOVERED_SITES]
-    sites = _denial_sites()
+def _classified_denials() -> dict:
+    visitor = _DenialSites()
+    visitor.visit(ast.parse(inspect.getsource(sys.modules[BashValidator.__module__])))
+    return visitor.sites
+
+
+def test_every_denial_the_validator_returns_is_classified_by_what_it_carries():
+    sites = _classified_denials()
     assert len(sites) > 25
-    assert not [s for s in sites if not any(_matches(s, k) for k in known)]
-    assert not [k for k in known if not any(_matches(s, k) for s in sites)]
+    categorical = {k for k, v in sites.items() if v == "categorical"}
+    mapped = [*REFUSAL_SITES, *UNCOVERED_SITES]
+    assert len(mapped) == len(set(mapped))
+    assert categorical == set(mapped), (sorted(categorical - set(mapped)), sorted(set(mapped) - categorical))
+    assert {k for k, v in sites.items() if v == "passthrough"} == set(PASSTHROUGH_SITES)
+    assert {k for k, v in sites.items() if v == "approvable"}
 
 
 def test_every_refused_denial_maps_to_blocked_rows():
