@@ -285,8 +285,7 @@ def end_session(session_id: Optional[str]) -> None:
         logger.debug("session_registry unregister failed (non-fatal): %s", exc)
 
     try:
-        from gaia import conclusions, signals
-        signals.forget(session_id)
-        conclusions.forget(session_id)
+        from gaia.signals import forget
+        forget(session_id)
     except Exception as exc:
-        logger.debug("signals cursor or conclusions ledger not removed (non-fatal): %s", exc)
+        logger.debug("signals cursor not removed (non-fatal): %s", exc)

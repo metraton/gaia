@@ -3,7 +3,8 @@
 A synchronous dispatch carries it on the Agent/Task result line; a background
 one closes after that line ran, so the session's next prompt carries it. Both
 carriers claim a contract through one per-session ledger, and only the first
-claim delivers.
+claim delivers. The ledger outlives SessionEnd, because a resumed session keeps
+its id and a background close may still be pending; only age removes it.
 """
 
 from __future__ import annotations
@@ -12,12 +13,14 @@ import json
 import os
 import re
 import shutil
+import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 MAX_PER_PROMPT = 3
 MAX_CHARS = 600
 SCAN_LIMIT = 200
+RETENTION_SECONDS = 30 * 24 * 3600
 
 _KEY_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
 _UNFINALIZED = "DISPATCHED"
@@ -67,7 +70,8 @@ def _conclusion(row: dict[str, Any]) -> str:
 
 
 def baseline(session_id: str) -> None:
-    """Open the session's ledger with every conclusion already closed counted as delivered, unless it exists."""
+    """Prune aged ledgers; open a session's first ledger with every conclusion already closed counted as delivered."""
+    prune()
     if not session_id or _ledger_dir(session_id).is_dir():
         return
     _ledger_dir(session_id).mkdir(parents=True, exist_ok=True)
@@ -75,10 +79,15 @@ def baseline(session_id: str) -> None:
         claim(session_id, row["contract_id"])
 
 
-def forget(session_id: Optional[str]) -> None:
-    """Drop the session's ledger when the session ends."""
-    if session_id:
-        shutil.rmtree(_ledger_dir(session_id), ignore_errors=True)
+def prune(now: float | None = None) -> None:
+    """Remove the ledgers no claim has touched for ``RETENTION_SECONDS``."""
+    from gaia.paths import state_dir
+
+    cutoff = (now if now is not None else time.time()) - RETENTION_SECONDS
+    root = state_dir() / "conclusions_delivered"
+    for ledger in root.iterdir() if root.is_dir() else ():
+        if ledger.is_dir() and ledger.stat().st_mtime < cutoff:
+            shutil.rmtree(ledger, ignore_errors=True)
 
 
 def _reader(row: dict[str, Any]) -> str:
@@ -90,14 +99,12 @@ def _reader(row: dict[str, Any]) -> str:
 def take_lines(session_id: str) -> str:
     """Return the conclusions closed in this session that no carrier delivered yet, claiming each one shown.
 
-    At most ``MAX_PER_PROMPT`` are delivered; the rest are named by their
-    reader and stay unclaimed for the next prompt.
+    At most ``MAX_PER_PROMPT`` are delivered; the rest are counted on one line
+    naming the first one's reader and stay unclaimed for the next prompt.
     """
     if not session_id:
         return ""
-    if not _ledger_dir(session_id).is_dir():
-        baseline(session_id)
-        return ""
+    _ledger_dir(session_id).mkdir(parents=True, exist_ok=True)
     pending = [
         (row, text) for row in _closed_rows(session_id)
         if (text := _conclusion(row)) and not _marker(session_id, row["contract_id"]).exists()
@@ -110,6 +117,7 @@ def take_lines(session_id: str) -> str:
         if len(text) > MAX_CHARS:
             text = f"{text[:MAX_CHARS].rstrip()}... -- {_reader(row)}"
         lines.append(f"{label}: closed {row['agent_state']}, conclusion: {text}")
-    lines.extend(f"{row.get('harness_agent_id') or row['contract_id']}: closed, conclusion -- {_reader(row)}"
-                 for row, _ in pending[MAX_PER_PROMPT:])
+    overflow = [row for row, _ in pending[MAX_PER_PROMPT:]]
+    if overflow:
+        lines.append(f"+{len(overflow)} more closed, carried by the next prompts -- {_reader(overflow[0])}")
     return "\n".join(lines)
