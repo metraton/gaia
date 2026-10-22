@@ -46,6 +46,13 @@ def _build_context(spec: dict, root: Path, name: str, managed_root: Path) -> Pat
         git("remote", "add", "origin", "https://example.invalid/o/r.git")
         git("update-ref", "refs/remotes/origin/main", "HEAD")
         git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    for branch, files in spec.get("branches", {}).items():
+        git("checkout", "-q", "-b", branch)
+        for rel, text in files.items():
+            (base / rel).write_text(text, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", branch)
+        git("checkout", "-q", "main")
     for rel, text in spec.get("files", {}).items():
         target = base / rel
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -69,14 +76,17 @@ def world(tmp_path_factory):
     patch.undo()
 
 
-def observe(command: str, context: str, world: dict) -> str:
+def observe(command: str, context: str, world: dict, role: str = "subagent") -> str:
     for key, value in (("{CWD}", str(world["dirs"][context])), ("{SCRATCH}", world["SCRATCH"]), ("{WORKTREES}", world["WORKTREES"])):
         command = command.replace(key, value)
     detect_mutative_command.cache_clear()
     tiers_module._classify_command_tier_cached.cache_clear()
-    payload = {"cwd": str(world["dirs"][context]), "session_id": "s-truth-table", "tool_use_id": "t-truth-table",
-               "agent_id": "atruthtable01", "agent_type": "developer"}
-    result = BashValidator().validate(command, is_subagent=True, session_id="s-truth-table", agent_type="developer", hook_payload=payload)
+    subagent = role == "subagent"
+    payload = {"cwd": str(world["dirs"][context]), "session_id": "s-truth-table", "tool_use_id": "t-truth-table"}
+    if subagent:
+        payload.update(agent_id="atruthtable01", agent_type="developer")
+    result = BashValidator().validate(command, is_subagent=subagent, session_id="s-truth-table",
+                                      agent_type="developer" if subagent else "", hook_payload=payload)
     if result.allowed:
         return "FREE"
     if result.approval_id or (result.reason or "").startswith(COMPOUND_DENIAL):
@@ -99,7 +109,7 @@ def _observe_isolated(row, world, monkeypatch):
     monkeypatch.delenv("GAIA_CLI_ALIASES", raising=False)
     monkeypatch.chdir(world["root"])
     assert os.environ["GAIA_DB"].startswith(str(world["root"]))
-    return observe(row["command"], row.get("context", "none"), world)
+    return observe(row["command"], row.get("context", "none"), world, row.get("role", "subagent"))
 
 
 @pytest.mark.parametrize("row", [_case(r) for r in ROWS])
@@ -107,7 +117,7 @@ def test_verdict(row, world, monkeypatch):
     assert _observe_isolated(row, world, monkeypatch) == row["expected"], row["command"]
 
 
-@pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["expected"] == "UNKNOWN"])
+@pytest.mark.parametrize("row", [pytest.param(r, id=r["id"]) for r in ROWS if r["expected"] == "UNKNOWN" and r["owner"] != "out-of-brief"])
 def test_an_undeterminable_row_asks_today(row, world, monkeypatch):
     assert _observe_isolated(row, world, monkeypatch) in {"SIGNED", "UNKNOWN"}, row["command"]
 
@@ -269,6 +279,31 @@ def test_every_shape_named_in_every_brief_criterion_maps_to_rows():
             assert ids, (ac, shape)
             for row_id in ids:
                 assert row_id in by_id, (ac, shape, row_id)
+
+
+REFUSAL_SOURCES = {
+    "gaia_cli_only_guard (orchestrator role)": ["floor-cli-only-orchestrator"],
+    "empty command": ["floor-empty-command"],
+    "host_consent_verb_guard": ["floor-consent-verb"],
+    "publish_attribution_guard": ["floor-claude-attribution"],
+    "comment_push_gate": ["floor-comment-limit-push"],
+    "gaia_db_write_guard": ["floor-gaia-db-sqlite", "floor-gaia-db-cp"],
+    "subagent_memory_write_guard": ["floor-memory-write-subagent"],
+    "memory_skill_guard": ["floor-memory-skill-orchestrator"],
+    "subagent_resume_point_guard": ["floor-resume-point-subagent"],
+    "protected_path_guard": ["floor-protected-install-cp", "floor-protected-install-sed"],
+    "shell_write_guard": ["floor-shell-write-redirect", "floor-shell-write-tee", "floor-shell-write-sed-i"],
+    "blocked_commands patterns": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
+    "pipe composition (network to exec)": ["seed-continue-curl-pipe-sh"],
+    "sensitive_read_guard": ["floor-secret-read-ssh-key"],
+    "indirect execution (shell wrapper, eval)": ["floor-shell-wrapper-bash-c", "floor-shell-wrapper-eval"],
+}
+
+
+def test_every_non_approvable_refusal_source_has_a_blocked_row():
+    by_id = {r["id"]: r for r in ROWS}
+    for source, ids in REFUSAL_SOURCES.items():
+        assert ids and all(by_id[i]["expected"] == "BLOCKED" for i in ids), source
 
 
 def test_no_row_names_a_personal_tool():
