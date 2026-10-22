@@ -76,16 +76,13 @@ def _scan(db: Path, tmp_path: Path, name: str, *, remote: str) -> None:
 def _slug_of(db: Path, name: str) -> str:
     from gaia.store.writer import _connect
 
+    from gaia.store.project_context import workspace_sections
+
     con = _connect(db)
     try:
-        row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = 'project_identity'",
-            (WORKSPACE,),
-        ).fetchone()
+        entries = workspace_sections(con, WORKSPACE)["project_identity"]["payload"]
     finally:
         con.close()
-    entries = json.loads(row[0])
     return next(slug for slug, entry in entries.items() if entry.get("name") == name)
 
 
