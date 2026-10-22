@@ -92,25 +92,21 @@ Write a runbook when a task is done by hand, rarely, and a mistake is costly -- 
 
 ### PR body -- written after the commits exist
 
-A PR body explains the change to a reviewer who was not present while it was made: in English unless the repository declares another language, self-contained, with no reference to the process that produced it (no task ids, no plan or sprint labels, no "as requested", no approvals, signatures or tiers). The title reuses the commit subject's `type(scope): outcome` rule (`git-conventions`). The sections below are the default shape; a repository's PR template, or a heading set the user's rows fix for their PRs, replaces it and keeps the order of this table -- plain words first, technical detail last:
+A PR body explains the change to a reviewer who was not present while it was made: in English unless the repository declares another language, self-contained, with no reference to the process that produced it (no task ids, no plan or sprint labels, no "as requested", no approvals, signatures or tiers). The title reuses the commit subject's `type(scope): outcome` rule (`git-conventions`). The body follows the order a reviewer decides in:
 
-| Section | Content |
-|---------|---------|
-| Context | The state that existed before this change and why it needed one, as someone outside the code sees it |
-| What changed | One effect per bullet, in plain words -- not a file list |
-| Impact | The outcome the change produces for the system or the user; for IaC, the plan summary -- resources to add, change, destroy |
-| Verification | What was run and what it showed; what is still to check, named as such, never claimed |
-| Risk and rollback | One line each, when the change carries real risk |
-| Technical notes | Last: root cause, files, commands, plan output; code and names allowed here, each in its own short paragraph or block |
+1. **What changes and why** -- the effect, in plain words, and the problem it answers.
+2. **How it was verified** -- what was run and what it showed; what is still to check, named as such, never claimed.
+3. **Risk and rollback** -- when the change carries real risk.
+4. **Technical detail** -- last, where the reviewer who wants it finds it and the one who does not is not stopped by it.
 
-The structure is advisory: nothing gates the body. It exists so a reviewer gets the same shape every time, and so the technical detail sits at the end where the reviewer who wants it finds it and the one who does not is not stopped by it.
+A user or a repository that declares its own PR format wins: it arrives as one of the user's rows or as the repository's PR template.
 
 ### Report or status -- four parts, in this order
 
 1. **The situation** -- where things stand, in one to three lines, the grave thing first.
 2. **What it means** -- for the reader: what is at risk, what is settled, what changed since the last report.
 3. **What to do or decide** -- the actions open, each with who and by when; or that none is needed.
-4. **The detail** -- evidence, numbers, identifiers, each with its mark and a pointer the reader can open; or a link to where it lives.
+4. **The detail** -- evidence, numbers, identifiers, each with a pointer the reader can open, and its mark when the report is the user's to decide on (`human-register`, Rule 4); or a link to where it lives.
 
 The first line of a report is the situation, never an author or date stamp or a title block; metadata, if any, goes last. A report that opens with the detail has handed its reader the agent's register; a report whose grave line sits third misleads by emphasis (`human-register`, Rule 2). A time in a report for readers in several places is written in the standard they share.
 

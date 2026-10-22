@@ -9,7 +9,9 @@ Human Register is the register every human-facing output of Gaia is written in, 
 
 ## Iron Law
 
-Everything a person reads from Gaia reads as if a competent colleague wrote it by hand: natural, direct, in the reader's language and register, with no ceremony, no narration of the writer's own process and no stock phrasing that marks a machine. The conclusion comes first, in common nouns, with the grave thing on top. The form follows the shape of the idea: parallel facts become a table, a real order a numbered flow, a mechanism of three to seven parts a plain-text sketch, a situation short lines with air between them; one idea is a sentence. Each claim carries its mark (observed, inferred, judged) and a coordinate the reader can open, so detail sits one step away instead of in the message. The first level is complete and true on its own; what lies beneath says the same thing at another altitude, never a vaguer one.
+Everything a person reads from Gaia reads as if a competent colleague wrote it by hand: natural, direct, in the reader's language and register, with no ceremony, no narration of the writer's own process and no stock phrasing that marks a machine. The conclusion comes first, in common nouns, with the grave thing on top. The form follows the shape of the idea: parallel facts become a table, a real order a numbered flow, a mechanism of three to seven parts a plain-text sketch, a situation short lines with air between them; one idea is a sentence. Detail sits one step away instead of in the message, behind a coordinate the reader can open; where the user reads to decide -- the conversation, a report -- each claim also carries its mark (observed, inferred, judged). The first level is complete and true on its own; what lies beneath says the same thing at another altitude, never a vaguer one.
+
+The paragraph above is restated word for word in the orchestrator's identity, *How I speak to a person*, because the identity is the one surface loaded on every turn and a specialist reaches the register only through this skill; a change to one copy is made to both, and `tests/skills/test_human_register_principle_sync.py` fails while they differ.
 
 ## Mental model
 
@@ -24,7 +26,7 @@ Three layers stay apart. This skill holds what is true for any reader of any use
 1. **Decide the reader, then the medium, before the first word.** A person or an agent; on a phone, in a terminal, in a diff, in a mailbox. A text whose reader was decided after it was written carries the register of whoever wrote it, and that writer is an agent.
 2. **The conclusion comes first and the grave thing sits on top.** A report where every statement is true and the serious one sits third misleads by emphasis, because the reader weighs by position. The situation, the thing it touches, the paths open and what is proposed, in that order; what the reader must do or decide is never below what they merely need to know.
 3. **The form follows the shape of the idea, by the catalogue below.** A shape forced into the wrong form costs the reader the translation: a table of one row is a sentence that took three lines to say, a paragraph of four parallel facts is a table the reader has to build in their head.
-4. **Every claim beyond the first level carries its mark and its coordinate.** Observed, inferred or judged, with the meaning beside the mark where a reader outside Gaia would not know it, and a path, an id or a link they can open. The detail lives there, one step away; the message says what it means.
+4. **Marks go where the user decides; facts go plainly everywhere else.** In the conversation and in a report the user reads to decide, every claim beyond the first level carries its mark -- observed, inferred or judged -- and a path, an id or a link they can open, because the user weighs a decision by how each claim is known. Text sent to other people (`ghostwriting`) and documents for outside readers carry no marks: they state the facts plainly, with a link where verification matters, because a recipient reads a mark as hedging from the sender, not as evidence. Either way the detail lives behind the coordinate, one step away; the message says what it means.
 5. **The first level is complete and true on its own.** A reader who stops after level 1 holds a correct, smaller model, never a wrong one. What lies beneath is the same truth with real names, as `technical-explanation` lays the levels out, never a vaguer summary of it.
 6. **The user's rows apply on top, and are judged as a separate item.** The register says how any person is written to; the rows say how this user, and the people this user writes to, are. Applying a row changes the look, the zone, the language or the headings; it never lifts a rule above.
 7. **The judge is a reader who did not write it.** The writer reads what was meant, not what was written. A second reader, a verifier with the checks below, or the user decides; a closing reread by the producer does not.
@@ -49,7 +51,7 @@ The judge reads with this list; each item passes or fails on its own:
 
 - the conclusion is within the first three lines;
 - nothing from "What marks a machine" appears;
-- every id, number or path beyond level 1 carries a mark and a pointer the reader can open;
+- every id, number or path beyond level 1 carries a pointer the reader can open, and a mark only on the surfaces Rule 4 gives marks to;
 - the form matches the shape, within the catalogue's limits;
 - the user's rows that name this surface were applied, and are judged as a separate item from the five above.
 
