@@ -45,6 +45,10 @@ READABLE_ENV_TEMPLATES = frozenset({".env.example", ".env.sample"})
 SYSTEM_SECRET_FILES = frozenset({"/etc/shadow", "/etc/passwd"})
 SYSTEM_SECRET_DIRS = frozenset({"/etc/ssl/private"})
 
+# A process environment holds the tokens the process was started with; its
+# siblings (status, cmdline) hold none and stay readable.
+PROCESS_ENVIRON = re.compile(r"/proc/(?:self|thread-self|\d+)(?:/task/\d+)?/environ")
+
 READ = "read"
 WRITE = "write"
 _BOTH = frozenset({READ, WRITE})
@@ -241,6 +245,8 @@ def _spelling_label(path: str, cwd: Optional[str] = None) -> str:
             return "system credentials file"
         if any(candidate == d or candidate.startswith(d + "/") for d in SYSTEM_SECRET_DIRS):
             return "system private keys"
+        if PROCESS_ENVIRON.fullmatch(candidate):
+            return "process environment"
         if READ in _home_entry_marks(candidate):
             return "account credentials"
     parts = [part for part in candidate.split("/") if part]
