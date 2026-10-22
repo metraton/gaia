@@ -133,6 +133,17 @@ LONG_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
         "--impersonate-service-account", "--project", "--trace-token",
         "--verbosity",
     }),
+    "kubectl": frozenset({
+        "--as", "--as-group", "--as-uid", "--cache-dir", "--certificate-authority",
+        "--client-certificate", "--client-key", "--cluster", "--context", "--kubeconfig",
+        "--namespace", "--profile", "--profile-output", "--request-timeout", "--server",
+        "--tls-server-name", "--token", "--user",
+    }),
+    "helm": frozenset({
+        "--burst-limit", "--kube-apiserver", "--kube-as-group", "--kube-as-user", "--kube-ca-file",
+        "--kube-context", "--kube-tls-server-name", "--kube-token", "--kubeconfig", "--namespace",
+        "--qps", "--registry-config", "--repository-cache", "--repository-config",
+    }),
 }
 
 

@@ -4544,6 +4544,38 @@ def _command_option_payload(args: "List[str]") -> "Optional[str]":
 
 
 _VERB_FIRST_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "git", "docker", "cloud", "workspace", "system"})
+# CLIs whose command path runs through group words before the verb (gcloud compute instances delete).
+_GROUP_PATH_CLIS: FrozenSet[str] = frozenset({"gcloud", "aws", "az", "gsutil"})
+_KNOWN_VERBS: FrozenSet[str] = MUTATIVE_VERBS | READ_ONLY_VERBS | SIMULATION_VERBS
+
+
+def _is_shell_expansion(word: str) -> bool:
+    return word[:1] in ("$", "`")
+
+
+def _dynamic_verb_span_word(base_cmd: str, args: "List[str]") -> "Optional[str]":
+    """Return a shell-expanded word that may stand on a verb-first CLI's command path, or None."""
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            return None
+        if token.startswith("-") and len(token) > 1:
+            if "=" not in token and absorbs_next_token(base_cmd, token):
+                index += 2
+                continue
+            follower = args[index + 1] if index + 1 < len(args) else "-"
+            unknown_long = token.startswith("--") and "=" not in token and not follower.startswith("-")
+            if unknown_long and _is_shell_expansion(follower):
+                return follower
+            index += 2 if unknown_long and follower.lower() not in _KNOWN_VERBS else 1
+            continue
+        if _is_shell_expansion(token):
+            return token
+        if base_cmd not in _GROUP_PATH_CLIS or token.lower() in _KNOWN_VERBS:
+            return None
+        index += 1
+    return None
 
 # Executors whose every option is known, so a flag outside both sets leaves the payload's start unknown.
 _EXECUTOR_BOOLEAN_FLAGS: Dict[str, FrozenSet[str]] = {
@@ -5062,13 +5094,16 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         return account_redirect
 
     # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
-    verb_word = semantics.semantic_head_tokens_raw[1:2] if family in _VERB_FIRST_FAMILIES else ()
-    dynamic_word = next((word for word in (tokens[0], *verb_word) if word[:1] in ("$", "`")), None)
+    program = command.lstrip()
+    program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
+    dynamic_word = tokens[0] if program_is_dynamic else (
+        _dynamic_verb_span_word(base_cmd, tokens[1:]) if family in _VERB_FIRST_FAMILIES else None
+    )
     if dynamic_word is not None:
         return MutativeResult(
             is_mutative=True,
             category=CATEGORY_UNKNOWN,
-            verb="dynamic-program" if dynamic_word == tokens[0] else "dynamic-verb",
+            verb="dynamic-program" if program_is_dynamic else "dynamic-verb",
             cli_family=family,
             reason=f"the word {dynamic_word!r} naming what runs could not be determined",
             rule="unknown.dynamic-span",
