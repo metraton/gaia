@@ -200,8 +200,27 @@ _GREPS = frozenset({"grep", "egrep", "fgrep"})
 _BASE64_DECODE_ARGS = frozenset({"-d", "--decode", "-i", "--ignore-garbage"})
 
 
+_HEREDOC_MESSAGE_FLAGS = {
+    "git": (frozenset({"commit", "tag", "notes"}), frozenset({"-F", "--file"})),
+    "gh": (None, frozenset({"--body-file"})),
+    "glab": (None, frozenset({"--description"})),
+}
+
+
+def _reads_message_from_stdin(program: str, args: List[str]) -> bool:
+    if program not in _HEREDOC_MESSAGE_FLAGS:
+        return False
+    subcommands, flags = _HEREDOC_MESSAGE_FLAGS[program]
+    if subcommands is not None and not subcommands & set(args):
+        return False
+    attached = {f"{flag}=-" for flag in flags} | {f"{flag}-" for flag in flags if not flag.startswith("--")}
+    return any(
+        arg in attached or (arg in flags and following == "-")
+        for arg, following in zip(args, args[1:] + [""])
+    )
+
+
 def _heredoc_reader(head: str) -> bool:
-    """Return True only when the program reading a heredoc, after its wrappers, is a pure data reader."""
     if any(os.path.basename(word) == "xargs" for word in head.split()):
         return False
     words = _peel_leading_command_wrappers(head)[0].split()
@@ -212,6 +231,8 @@ def _heredoc_reader(head: str) -> bool:
     if not words:
         return False
     program, args = os.path.basename(words[0]), words[1:]
+    if _reads_message_from_stdin(program, args):
+        return True
     if program in _GREPS:
         return not any(a.startswith("--file") or (a[:2] != "--" and a[:1] == "-" and "f" in a[1:]) for a in args)
     if program == "base64":
@@ -219,8 +240,7 @@ def _heredoc_reader(head: str) -> bool:
     return program in _HEREDOC_DATA_READERS
 
 
-def _heredoc_opener(line: str) -> Optional[Tuple[str, str, bool]]:
-    """Return (reader, delimiter, strip_tabs) of the heredoc that ends *line*, else None."""
+def _heredoc_opener(line: str) -> Optional[Tuple[str, str, bool, bool]]:
     quote, index, start = "", 0, 0
     while index < len(line):
         char = line[index]
@@ -240,13 +260,12 @@ def _heredoc_opener(line: str) -> Optional[Tuple[str, str, bool]]:
             opener = _read_heredoc_opener(line, index)
             if opener is None or line[opener[3]:].strip()[:1] not in ("", "#"):
                 return None
-            return line[start:index].strip(), opener[0], opener[2]
+            return line[start:index].strip(), opener[0], opener[2], opener[1]
         index += 1
     return None
 
 
 def _heredoc_readings(reader: str, body: List[str]) -> List[str]:
-    """Return each body line as a shell command and, under xargs, also as its reader's argument tail."""
     under_xargs = any(os.path.basename(word) == "xargs" for word in reader.split())
     readings = []
     for line in filter(None, (b.strip() for b in body)):
@@ -257,19 +276,18 @@ def _heredoc_readings(reader: str, body: List[str]) -> List[str]:
 
 
 def _scan_heredocs(command: str) -> Tuple[str, List[str]]:
-    """Return *command* with data-heredoc expansions shown as echoes, and the readings of every code heredoc."""
     lines, body, opener, readings = [], [], None, []
     for line in command.split("\n"):
         if opener is None:
             lines.append(line)
             opener = _heredoc_opener(line)
             continue
-        reader, delimiter, strip_tabs = opener
+        reader, delimiter, strip_tabs, expands = opener
         if (line.lstrip("\t") if strip_tabs else line) != delimiter:
             body.append(line)
             continue
         if _heredoc_reader(reader):
-            lines.extend(f"echo {b}" if b.lstrip()[:1] in ("$", "`") else b for b in body)
+            lines.extend(f"echo {b}" for b in body if expands and set("$`") & set(b))
         else:
             lines.extend(body)
             readings.extend(_heredoc_readings(reader, body))

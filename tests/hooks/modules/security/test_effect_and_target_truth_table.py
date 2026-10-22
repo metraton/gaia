@@ -330,6 +330,7 @@ REFUSAL_SITES = {
     "validate::Obfuscated shell nesting detected: {unwr": ["floor-obfuscated-nesting"],
     "validate::Command blocked by security policy: {blo": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
     "validate::Command blocked by security policy: {com": ["floor-compound-component-blocked"],
+    "_fail_closed_on_code_heredoc::Command blocked by security policy: {blo": ["floor-v11-xargs-heredoc-tail"],
     "validate::secret_violation.reason": ["floor-kubectl-secret-output"],
     "validate::read_permission_reason(pipe_block)": ["floor-cloud-pipe"],
     "validate::sensitive_reason": ["floor-secret-read-ssh-key"],

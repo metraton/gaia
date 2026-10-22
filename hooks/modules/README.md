@@ -229,6 +229,16 @@ bash_validator checks commands in this order (short-circuit on first match):
 
 A heredoc body is data only when the program reading it, after its wrappers (`sudo`, `env`, `timeout`, `nice`, `command`, `builtin`, `exec`), is a pure data reader: `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `nl`, `rev`, `fold`, `tee`, `grep`/`egrep`/`fgrep` without `-f`/`--file`, and `base64` encoding or decoding (`_heredoc_reader` in `tools/bash_validator.py`). These programs never run what they read.
 
+A program whose flag takes stdin as a message or body file reads the heredoc as data too, keyed by program, subcommand and flag (`_HEREDOC_MESSAGE_FLAGS`):
+
+| Program | Subcommand | Flag reading `-` |
+|---------|------------|------------------|
+| `git` | `commit`, `tag`, `notes` | `-F`, `--file` |
+| `gh` | any | `--body-file` |
+| `glab` | any | `--description` |
+
+Such a command keeps its own verdict: `git commit -F - <<EOF` runs free, while `git tag -a v1 -F -` still signs for the tag. A data body is never read as commands. Only a line of an unquoted body that holds `$` or a backtick is checked, because the shell expands it before the reader sees it.
+
 Every other reader makes the body code, and the heredoc fails closed (`_fail_closed_on_code_heredoc`):
 
 - Each body line is read as a shell command; under `xargs` it is also read as the reader's argument tail (`xargs kubectl` + `apply -f x`).
