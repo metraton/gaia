@@ -7,6 +7,8 @@ import re
 import sqlite3
 from typing import Any, Optional
 
+from gaia.store.proposals import _row_project
+
 RECURRENCE_THRESHOLD = 2
 RECENT_ROWS = 200
 SAME_GAP_SIMILARITY = 0.75
@@ -53,13 +55,16 @@ def _clean_rows(con: sqlite3.Connection, handoff_id: int, workspace: str,
     return found
 
 
-def _already_held(con: sqlite3.Connection, workspace: str, handoff_id: int) -> list:
+def _already_held(con: sqlite3.Connection, workspace: str, handoff_id: int,
+                  identity: Optional[str]) -> list:
     threads = con.execute(
         "SELECT COALESCE(description, '') || ' ' || name FROM memory "
-        "WHERE workspace = ? AND class = 'thread' AND deleted_at IS NULL", (workspace,),
+        "WHERE workspace = ? AND class = 'thread' AND deleted_at IS NULL AND project_ref IS ?",
+        (workspace, identity),
     ).fetchall()
     proposed = con.execute(
-        "SELECT payload FROM proposals WHERE kind = 'thread' AND handoff_id != ?", (handoff_id,),
+        "SELECT payload FROM proposals WHERE kind = 'thread' AND handoff_id != ? AND project IS ?",
+        (handoff_id, identity),
     ).fetchall()
     return ([gap_tokens(text) for (text,) in threads]
             + [gap_tokens(json.loads(payload).get("gap", "")) for (payload,) in proposed])
@@ -80,7 +85,7 @@ def thread_candidates(con: sqlite3.Connection, handoff_id: int, envelope: Any) -
         return []
     workspace, project = row[0], row[1]
     history = _clean_rows(con, handoff_id, workspace, project)
-    held = _already_held(con, workspace, handoff_id)
+    held = _already_held(con, workspace, handoff_id, _row_project(con, handoff_id))
     candidates = []
     for gap in gaps:
         tokens = gap_tokens(gap)

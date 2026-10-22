@@ -17,6 +17,8 @@ for _p in (_REPO_ROOT, _REPO_ROOT / "bin", _REPO_ROOT / "hooks"):
 WORKSPACE = "me"
 DISPATCH_PROJECT = "gaia (/repos/gaia)"
 OTHER_PROJECT = "other (/repos/other)"
+GAIA_IDENTITY = "github.com/metraton/gaia"
+OTHER_IDENTITY = "github.com/x/other"
 AGENT = "a" + "2" * 16
 GAP = "comment lint is not wired into CI"
 SMOKE_GAP = "the release workflow lacks a smoke test"
@@ -35,7 +37,7 @@ def db(tmp_path, monkeypatch) -> Path:
     try:
         con.execute("INSERT OR IGNORE INTO workspaces (name, identity) VALUES (?, ?)",
                     (WORKSPACE, WORKSPACE))
-        for name, identity in (("gaia", "github.com/metraton/gaia"), ("other", "github.com/x/other")):
+        for name, identity in (("gaia", GAIA_IDENTITY), ("other", OTHER_IDENTITY)):
             con.execute(
                 "INSERT INTO projects (workspace, name, path, project_identity) VALUES (?, ?, ?, ?)",
                 (WORKSPACE, name, f"/repos/{name}", identity),
@@ -133,10 +135,10 @@ def test_a_gap_a_thread_already_holds_is_not_proposed_again(db):
     con = _connect()
     try:
         con.execute(
-            "INSERT INTO memory (workspace, name, type, description, body, class, status) "
-            "VALUES (?, ?, 'project', ?, ?, 'thread', 'closed')",
+            "INSERT INTO memory (workspace, name, type, description, body, class, status, project_ref) "
+            "VALUES (?, ?, 'project', ?, ?, 'thread', 'closed', ?)",
             (WORKSPACE, "thread_comment_lint_ci", "Thread: comment lint not wired into CI",
-             "Closed when the CI job ran the comment lint."),
+             "Closed when the CI job ran the comment lint.", GAIA_IDENTITY),
         )
         con.commit()
     finally:
@@ -148,6 +150,32 @@ def test_a_gap_a_thread_already_holds_is_not_proposed_again(db):
 
     threads = _threads()
     assert [thread["payload"]["gap"] for thread in threads] == [SMOKE_GAP]
+
+
+def test_the_same_gap_recurring_in_two_projects_yields_a_thread_in_each(db):
+    _close(f"{AGENT}.m1", SMOKE_GAP, project=OTHER_PROJECT)
+    _close(f"{AGENT}.m2", SMOKE_GAP, project=OTHER_PROJECT)
+    _close(f"{AGENT}.m3", SMOKE_GAP)
+    _close(f"{AGENT}.m4", SMOKE_GAP)
+    assert sorted(thread["project"] for thread in _cli_threads()) == [GAIA_IDENTITY, OTHER_IDENTITY]
+
+
+def test_a_thread_row_of_another_project_does_not_hold_the_gap(db):
+    from gaia.store.writer import _connect
+
+    con = _connect()
+    try:
+        con.execute(
+            "INSERT INTO memory (workspace, name, type, description, body, class, status, project_ref) "
+            "VALUES (?, ?, 'project', ?, ?, 'thread', 'open', ?)",
+            (WORKSPACE, "release_workflow_smoke_test", SMOKE_GAP, "Open.", OTHER_IDENTITY),
+        )
+        con.commit()
+    finally:
+        con.close()
+    _close(f"{AGENT}.n1", SMOKE_GAP)
+    _close(f"{AGENT}.n2", SMOKE_GAP)
+    assert [thread["project"] for thread in _threads()] == [GAIA_IDENTITY]
 
 
 def test_a_cut_row_neither_counts_nor_proposes(db):
