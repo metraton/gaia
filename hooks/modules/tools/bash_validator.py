@@ -50,15 +50,13 @@ import json
 import shlex
 import shutil
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
 from ..security.mutative_verbs import (
-    READ_ONLY_BASE_CMDS,
-    _SCRIPT_FILE_INTERPRETERS,
     _peel_leading_command_wrappers,
     account_path_redirect_target,
     detect_mutative_command,
@@ -90,11 +88,13 @@ from ..security.approval_messages import (
     build_t3_degraded_block_message,
 )
 from ..security.fail_open import clear_classification, note_mutative_classification
-from ..security.verdict import COMPOSITION_RULES, UNDETERMINED, blocked_rule, render, signing_rule
-from ..security.shell_unwrapper import _SHELLS, ShellUnwrapper, shell_command_string
+from ..security.verdict import COMPOSITION_RULES, UNDETERMINED, UNKNOWN_SPAN, blocked_rule, render, signing_rule
+from ..security.shell_unwrapper import ShellUnwrapper, shell_command_string
 from ..security.data_heredoc import data_heredoc_header
 from ..security.program_heredoc import heredoc_program
-from ..security.shell_substitution import extract_substitutions, extract_substitutions_truncated
+from ..security.shell_substitution import (
+    _read_heredoc_opener, extract_substitutions, extract_substitutions_truncated,
+)
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.host_consent_verb_guard import check as check_host_consent_verb
 from ..security.subagent_resume_point_guard import check as check_subagent_resume_point
@@ -187,26 +187,41 @@ def _carries_ruling(validate):
     return wrapper
 
 
-_HEREDOC_DELIMITER = re.compile(r"-?[ \t]*([A-Za-z_][A-Za-z0-9_]*)")
-
-
-_BUILTIN_WRAPPERS = frozenset({"command", "builtin", "exec", "xargs"})
-_HEREDOC_INTERPRETERS = _SHELLS | _SCRIPT_FILE_INTERPRETERS | {"python2", "pwsh", "powershell", "osascript", "lua", "Rscript"}
+_COMPOUND_T3_DENIAL = (
+    "Compound T3 execution is disabled. Create a plan-first "
+    "request-set and run each command directly as a separate Bash "
+    "call, with no wrapper (bash -c, sh -c, eval)."
+)
+_BUILTIN_WRAPPERS = frozenset({"command", "builtin", "exec"})
+_HEREDOC_DATA_READERS = frozenset({
+    "cat", "head", "tail", "wc", "sort", "uniq", "tr", "cut", "nl", "rev", "fold", "tee",
+})
+_GREPS = frozenset({"grep", "egrep", "fgrep"})
+_BASE64_DECODE_ARGS = frozenset({"-d", "--decode", "-i", "--ignore-garbage"})
 
 
 def _heredoc_reader(head: str) -> bool:
-    if any(os.path.basename(word) in _HEREDOC_INTERPRETERS for word in head.split()):
+    """Return True only when the program reading a heredoc, after its wrappers, is a pure data reader."""
+    if any(os.path.basename(word) == "xargs" for word in head.split()):
         return False
     words = _peel_leading_command_wrappers(head)[0].split()
     while words and words[0] in _BUILTIN_WRAPPERS:
         words = words[1:]
         while words and words[0].startswith("-"):
             words = words[2:] if words[0] == "-a" else words[1:]
-    return bool(words) and os.path.basename(words[0]) in READ_ONLY_BASE_CMDS - _BUILTIN_WRAPPERS
+    if not words:
+        return False
+    program, args = os.path.basename(words[0]), words[1:]
+    if program in _GREPS:
+        return not any(a.startswith("--file") or (a[:2] != "--" and a[:1] == "-" and "f" in a[1:]) for a in args)
+    if program == "base64":
+        return set(args) <= _BASE64_DECODE_ARGS
+    return program in _HEREDOC_DATA_READERS
 
 
-def _reader_heredoc(line: str) -> Optional[tuple]:
-    quote, index = "", 0
+def _heredoc_opener(line: str) -> Optional[Tuple[str, str, bool]]:
+    """Return (reader, delimiter, strip_tabs) of the heredoc that ends *line*, else None."""
+    quote, index, start = "", 0, 0
     while index < len(line):
         char = line[index]
         if quote:
@@ -218,32 +233,51 @@ def _reader_heredoc(line: str) -> Optional[tuple]:
         elif char == "#" and (index == 0 or line[index - 1] in " \t"):
             return None
         elif char in "|;&":
-            return None
-        elif line.startswith("<<", index) and not line.startswith("<<<", index):
-            delimiter = _HEREDOC_DELIMITER.match(line, index + 2)
-            reader = _heredoc_reader(line[:index])
-            if not (delimiter and reader) or line[delimiter.end():].strip()[:1] not in ("", "#"):
+            start = index + 1
+        elif line.startswith("<<<", index):
+            index += 2
+        elif line.startswith("<<", index):
+            opener = _read_heredoc_opener(line, index)
+            if opener is None or line[opener[3]:].strip()[:1] not in ("", "#"):
                 return None
-            return delimiter.group(1), line[index + 2:index + 3] == "-"
+            return line[start:index].strip(), opener[0], opener[2]
         index += 1
     return None
 
 
-def _heredoc_body_lines_as_data(command: str) -> str:
-    lines, body, opener = [], [], None
+def _heredoc_readings(reader: str, body: List[str]) -> List[str]:
+    """Return each body line as a shell command and, under xargs, also as its reader's argument tail."""
+    under_xargs = any(os.path.basename(word) == "xargs" for word in reader.split())
+    readings = []
+    for line in filter(None, (b.strip() for b in body)):
+        readings.append(line)
+        if under_xargs:
+            readings.append(f"{reader} {line}")
+    return readings
+
+
+def _scan_heredocs(command: str) -> Tuple[str, List[str]]:
+    """Return *command* with data-heredoc expansions shown as echoes, and the readings of every code heredoc."""
+    lines, body, opener, readings = [], [], None, []
     for line in command.split("\n"):
         if opener is None:
             lines.append(line)
-            opener = _reader_heredoc(line)
+            opener = _heredoc_opener(line)
             continue
-        delimiter, strip_tabs = opener
-        if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+        reader, delimiter, strip_tabs = opener
+        if (line.lstrip("\t") if strip_tabs else line) != delimiter:
+            body.append(line)
+            continue
+        if _heredoc_reader(reader):
             lines.extend(f"echo {b}" if b.lstrip()[:1] in ("$", "`") else b for b in body)
-            lines.append(line)
-            body, opener = [], None
-            continue
-        body.append(line)
-    return "\n".join(lines + body)
+        else:
+            lines.extend(body)
+            readings.extend(_heredoc_readings(reader, body))
+        lines.append(line)
+        body, opener = [], None
+    if opener is not None and not _heredoc_reader(opener[0]):
+        readings.extend(_heredoc_readings(opener[0], body))
+    return "\n".join(lines + body), readings
 
 
 def _rules_t3_outcome(decide):
@@ -1338,13 +1372,14 @@ class BashValidator:
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
         tool_use_id = str((hook_payload or {}).get("tool_use_id", ""))
-        classified = _heredoc_body_lines_as_data(command)
+        classified, heredoc_readings = _scan_heredocs(command)
         if parsed_components is not None and classified != command:
             parsed_components = self.shell_parser.parse(classified)
+        program = heredoc_program(command)
         # An interpreter's heredoc is its program: splitting it into shell
         # components would validate the body's lines one by one and never
         # show the classifier the program whose effect decides the tier.
-        if not has_operators or heredoc_program(command) is not None:
+        if not has_operators or program is not None:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
@@ -1359,6 +1394,10 @@ class BashValidator:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type, tool_use_id=tool_use_id, cwd=payload_cwd,
+            )
+        if heredoc_readings and not (program is not None and program.is_readable):
+            result = self._fail_closed_on_code_heredoc(
+                heredoc_readings, result, is_subagent=is_subagent, cwd=payload_cwd,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
@@ -1376,6 +1415,40 @@ class BashValidator:
                 inject_updated_input(result.block_response, {"command": command})
 
         return result
+
+    @staticmethod
+    def _fail_closed_on_code_heredoc(
+        readings: List[str], result: BashValidationResult, *, is_subagent: bool, cwd: Optional[str],
+    ) -> BashValidationResult:
+        """Hold a heredoc no pure data reader reads to at least UNKNOWN; a body reading on a floor blocks, a mutative one signs."""
+        for reading in readings:
+            blocked = is_blocked_command(reading)
+            if blocked.is_blocked:
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"Command blocked by security policy: {blocked.category}",
+                    suggestions=[blocked.suggestion] if blocked.suggestion else [],
+                    rule=blocked_rule(blocked.category),
+                )
+        if not result.allowed:
+            return result
+        rule, undetermined = UNKNOWN_SPAN, "the program its heredoc feeds"
+        for reading in readings:
+            detected = detect_mutative_command(reading, cwd=cwd)
+            if detected.is_mutative:
+                rule, undetermined = signing_rule(detected.verb, detected.category, reading, detected.rule)
+                if rule.startswith("unknown.") and not undetermined:
+                    undetermined = "the span the decision reads"
+                break
+        return BashValidationResult(
+            allowed=False,
+            tier=SecurityTier.T3_BLOCKED,
+            reason=_COMPOUND_T3_DENIAL,
+            block_response=build_hook_permission_response("deny" if is_subagent else "ask", _COMPOUND_T3_DENIAL),
+            rule=rule,
+            undetermined=undetermined,
+        )
 
     def _validate_data_heredoc(
         self,
@@ -1865,11 +1938,7 @@ class BashValidator:
             )
             if signed is not None:
                 return signed
-            reason = (
-                "Compound T3 execution is disabled. Create a plan-first "
-                "request-set and run each command directly as a separate Bash "
-                "call, with no wrapper (bash -c, sh -c, eval)."
-            )
+            reason = _COMPOUND_T3_DENIAL
             decision = "deny" if is_subagent else "ask"
             rule, undetermined = (
                 signing_rule(tripped.verb, tripped.category, tripped_command, tripped.rule)

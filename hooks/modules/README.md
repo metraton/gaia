@@ -225,6 +225,20 @@ bash_validator checks commands in this order (short-circuit on first match):
 5. **Mutative verbs** (mutative_verbs.py) — CLI-agnostic verb detector, native `ask` dialog
 6. **Everything else** — SAFE by elimination (auto-approved)
 
+### Heredoc readers
+
+A heredoc body is data only when the program reading it, after its wrappers (`sudo`, `env`, `timeout`, `nice`, `command`, `builtin`, `exec`), is a pure data reader: `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, `tr`, `cut`, `nl`, `rev`, `fold`, `tee`, `grep`/`egrep`/`fgrep` without `-f`/`--file`, and `base64` encoding or decoding (`_heredoc_reader` in `tools/bash_validator.py`). These programs never run what they read.
+
+Every other reader makes the body code, and the heredoc fails closed (`_fail_closed_on_code_heredoc`):
+
+- Each body line is read as a shell command; under `xargs` it is also read as the reader's argument tail (`xargs kubectl` + `apply -f x`).
+- A reading that hits a floor blocks the command. A mutative reading signs it, with the rule of its strongest effect.
+- With neither, the command asks as UNKNOWN (`unknown.dynamic-span`). Gaia does not parse another language: an awk program, or Python behind `timeout` or `nice`, is code it cannot read.
+
+One reader is read in full: an interpreter that takes its program from the heredoc with nothing before it (`python3 -`, `node -`, `bash -s`, bare `sh`; `security/program_heredoc.py`). Its body goes through the inline-code or script lanes like a script file. That holds only while the body is the program that runs. An unquoted delimiter whose body carries `$` or a backtick lets the shell rewrite the body first, so it asks as UNKNOWN too.
+
+The list is short on purpose. A reader left off it over-asks (`awk '{print}'` asks), which is the cost of failing closed. A reader wrongly on it would run a body nobody classified.
+
 ### Tier Classification
 - **T0**: Read-only (get, list, describe, show)
 - **T1**: Local validation (validate, lint, fmt, check)
