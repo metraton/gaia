@@ -37,11 +37,11 @@ path for a subagent is to PROPOSE, not to escalate. Read verbs
 
 Detection
 ---------
-Invocation-form agnostic: matches the installed launcher (`gaia memory add`),
-the re-dispatched form (`python3 <path>/bin/gaia memory add`), and compound
-chains (`cd /x && gaia memory add ...`). Tokenizes the full command and scans
-for a `gaia`-basename token followed (skipping flags) by the `memory`
-subcommand and then a write verb.
+Entry-point agnostic: each operator-separated component is tokenized and
+every argv a Gaia entry point in it may receive (``gaia_cli_invocation``: the
+launcher, a symlink or renamed copy, ``bin/cli/<group>.py``, ``-m cli.<group>``,
+a shell-resolved word) is matched against the group and a write verb. No
+identity a subagent's shell carries survives ``env -u``, so this is the boundary.
 
 Public API:
     is_memory_write_attempt(command: str) -> bool
@@ -54,6 +54,8 @@ from __future__ import annotations
 
 import shlex
 from typing import Optional, Tuple
+
+from .gaia_cli_invocation import gaia_cli_argvs
 
 # Curated-memory MUTATING subcommands under `gaia memory`. Read verbs
 # (search/show/list/stats/get-relevant/conflicts/episode-show) are absent by
@@ -82,12 +84,6 @@ PROPOSAL_DECISION_REJECTION = (
     "every subagent. Propose in your contract row instead. Do NOT retry -- this is "
     "not approvable."
 )
-
-
-def _basename(token: str) -> str:
-    """Return the last path component of a token ('/a/bin/gaia' -> 'gaia')."""
-    # Handle both '/' and trailing separators without importing os for a hot path.
-    return token.rsplit("/", 1)[-1]
 
 
 def is_memory_write_attempt(
@@ -137,7 +133,13 @@ def _invokes(command: str, group: tuple, verbs: frozenset[str]) -> bool:
 def _component_invokes(
     component: str, *, group: tuple, help_exempt: bool, verbs: frozenset[str],
 ) -> bool:
-    """True iff one operator-free component invokes `gaia <group...> <verb>`, verb in ``verbs``."""
+    """True iff one operator-free component may invoke `gaia <group...> <verb>`, verb in ``verbs``.
+
+    The candidates are every argv a Gaia entry point in the component may
+    receive (``gaia_cli_invocation.gaia_cli_argvs``). A multi-word group is
+    also matched from its second word on wherever it appears, because a
+    renamed copy of ``bin/cli/<group>.py`` takes that tail under any name.
+    """
     try:
         tokens = shlex.split(component)
     except ValueError:
@@ -145,21 +147,22 @@ def _component_invokes(
         # partially-parseable command is still inspected conservatively.
         tokens = component.split()
 
-    n = len(tokens)
-    for i, tok in enumerate(tokens):
-        if _basename(tok) != "gaia":
-            continue
-        k = _skip_flags(tokens, i + 1)
-        matched = 0
-        while matched < len(group) and k < n and tokens[k] == group[matched]:
-            k = _skip_flags(tokens, k + 1)
-            matched += 1
-        if matched == len(group) and k < n and tokens[k] in verbs:
-            tail = tokens[k + 1:]
-            if help_exempt and tail and tail[0] in {"--help", "-h", "-?", "--usage"}:
-                continue
-            return True
-    return False
+    candidates = gaia_cli_argvs(tokens)
+    if len(group) > 1:
+        candidates += [[group[0], *tokens[i:]] for i, tok in enumerate(tokens) if tok == group[1]]
+    return any(_argv_invokes(argv, group, verbs, help_exempt) for argv in candidates)
+
+
+def _argv_invokes(argv: list, group: tuple, verbs: frozenset[str], help_exempt: bool) -> bool:
+    k = _skip_flags(argv, 0)
+    for word in group:
+        if k >= len(argv) or argv[k] != word:
+            return False
+        k = _skip_flags(argv, k + 1)
+    if k >= len(argv) or argv[k] not in verbs:
+        return False
+    tail = argv[k + 1:]
+    return not (help_exempt and tail and tail[0] in {"--help", "-h", "-?", "--usage"})
 
 
 def _skip_flags(tokens: list, index: int) -> int:

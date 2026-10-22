@@ -154,6 +154,34 @@ def decide_proposal(
         con.close()
 
 
+def _update_one(sql: str, params: tuple, db_path: Optional[Path]) -> bool:
+    from gaia.store.writer import _connect
+
+    con = _connect(db_path)
+    try:
+        cur = con.execute(sql, params)
+        con.commit()
+        return cur.rowcount == 1
+    finally:
+        con.close()
+
+
+def note_decision(proposal_id: int, note: str, *, db_path: Optional[Path] = None) -> bool:
+    """Record what a decided proposal's acceptance wrote; False when it is still pending."""
+    return _update_one("UPDATE proposals SET decision_note = ? WHERE id = ? AND status != 'pending'",
+                       (note, proposal_id), db_path)
+
+
+def reopen_proposal(
+    proposal_id: int, *, project: Optional[str], db_path: Optional[Path] = None,
+) -> bool:
+    """Return an accepted proposal whose write failed to pending, restoring its ``project``."""
+    return _update_one(
+        "UPDATE proposals SET status = 'pending', project = ?, decided_at = NULL, "
+        "decided_by = NULL, decision_note = NULL WHERE id = ? AND status = 'accepted'",
+        (project, proposal_id), db_path)
+
+
 def backfill_proposals(
     *, since_days: int = 30, apply: bool = False, db_path: Optional[Path] = None,
 ) -> dict:

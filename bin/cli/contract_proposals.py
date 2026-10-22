@@ -109,17 +109,23 @@ def _accept_context(item: dict, owner: Optional[dict], workspace: Optional[str])
     return True, ", ".join(f"{a['contract']} -> {a['project']}" for a in outcome["applied"])
 
 
+def _reject(proposal_id: int, state: str, as_json: bool) -> int:
+    _print({"status": "rejected", "error": state}, f"proposal {proposal_id}: {state}", as_json,
+           error=True)
+    return 1
+
+
 def _cmd_accept(args) -> int:
-    from gaia.store.proposals import decide_proposal, get_proposal
+    """Claim the proposal, then write it; a lost claim writes nothing and a failed write reopens it."""
+    from gaia.store import proposals as store
 
     if (refused := _refused("accept", args.json)) is not None:
         return refused
-    item = get_proposal(args.proposal_id)
+    item = store.get_proposal(args.proposal_id)
     if item is None or item["status"] != "pending":
-        state = "no such proposal" if item is None else f"already {item['status']}"
-        _print({"status": "rejected", "error": state}, f"proposal {args.proposal_id}: {state}",
-               args.json, error=True)
-        return 1
+        return _reject(args.proposal_id,
+                       "no such proposal" if item is None else f"already {item['status']}",
+                       args.json)
     owner = None
     reference = args.project or item["project"]
     if reference:
@@ -128,6 +134,10 @@ def _cmd_accept(args) -> int:
             message = f"project {reference!r} is not a known active project (see `gaia context project`)"
             _print({"status": "rejected", "error": message}, message, args.json, error=True)
             return 1
+    if not store.decide_proposal(item["id"], "accepted", decided_by="orchestrator",
+                                 project=owner["identity"] if owner else None):
+        return _reject(item["id"], "decided by another call meanwhile; nothing written",
+                       args.json)
     if item["kind"] == "memory":
         ok, message = _accept_memory(item, owner, args.workspace)
     elif item["kind"] == "context":
@@ -135,11 +145,11 @@ def _cmd_accept(args) -> int:
     else:
         ok, message = False, f"no accept path for {item['kind']!r} proposals yet; dismiss it or wait"
     if not ok:
+        store.reopen_proposal(item["id"], project=item["project"])
         _print({"status": "rejected", "error": message}, f"refused: {message}", args.json,
                error=True)
         return 1
-    decide_proposal(item["id"], "accepted", decided_by="orchestrator",
-                    project=owner["identity"] if owner else None, note=message)
+    store.note_decision(item["id"], message)
     _print({"status": "accepted", "id": item["id"], "detail": message},
            f"accepted #{item['id']}: {message}", args.json)
     return 0

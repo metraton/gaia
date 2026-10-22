@@ -276,6 +276,102 @@ def test_proposals_store_hook_guard_lets_a_subagent_read(command):
     assert check(command, is_subagent=True, agent_type="developer") == (True, None)
 
 
+CONTRACT_PY = _REPO_ROOT / "bin" / "cli" / "contract.py"
+MEMORY_ADD = "memory add --name user_x --type user --body b --description d"
+DECISION_ENTRY_POINTS = [
+    "gaia contract proposals accept 1",
+    f"python3 {_REPO_ROOT}/bin/gaia contract proposals accept 1",
+    f"python3 {CONTRACT_PY} proposals accept 1",
+    f"env -u GAIA_DISPATCH_AGENT python3 {CONTRACT_PY} proposals dismiss 1",
+    f"GAIA_DISPATCH_AGENT= python3 -W ignore {CONTRACT_PY} proposals accept 1",
+    f"{CONTRACT_PY} proposals --json dismiss 1",
+    f"cd {_REPO_ROOT}/bin && python3 -m cli.contract proposals accept 1",
+    "python3 -I -mcli.contract proposals dismiss 1",
+    f"cd {_REPO_ROOT}/bin/cli && python3 contract.py proposals accept 1",
+    f"uv run {CONTRACT_PY} proposals accept 1",
+    f"timeout 5 nice python3 {CONTRACT_PY} proposals accept 1",
+    "{gaia_link} contract proposals accept 1",
+    "env -u GAIA_DISPATCH_AGENT {gaia_link} contract proposals dismiss 1",
+    "python3 {contract_link} proposals accept 1",
+    f"{{gaia_link}} {MEMORY_ADD}",
+    f"env -u GAIA_DISPATCH_AGENT {{gaia_link}} {MEMORY_ADD}",
+]
+
+
+@pytest.fixture()
+def links(tmp_path):
+    gaia_link, contract_link = tmp_path / "g", tmp_path / "helper"
+    gaia_link.symlink_to(_REPO_ROOT / "bin" / "gaia")
+    contract_link.symlink_to(CONTRACT_PY)
+    return {"gaia_link": str(gaia_link), "contract_link": str(contract_link)}
+
+
+def _subagent_verdict(command: str, agent: str):
+    from modules.tools.bash_validator import BashValidator
+
+    return BashValidator().validate(command, is_subagent=True, session_id="s", agent_type=agent,
+                                    hook_payload={"agent_type": agent, "agent_id": "a1"})
+
+
+@pytest.mark.parametrize("agent", ["developer", "gaia-operator"])
+@pytest.mark.parametrize("command", DECISION_ENTRY_POINTS)
+def test_proposals_store_every_cli_entry_point_is_refused_to_a_subagent(command, agent, links):
+    if agent == "gaia-operator" and "memory add" in command:
+        pytest.skip("gaia-operator is the sanctioned memory writer")
+    result = _subagent_verdict(command.format(**links), agent)
+
+    assert result.allowed is False, (result.tier, result.reason)
+
+
+@pytest.mark.parametrize("command", [
+    f"python3 {CONTRACT_PY} proposals list --json",
+    "{gaia_link} contract proposals list",
+    f"python3 {CONTRACT_PY} proposals accept --help",
+    f"cat {CONTRACT_PY}",
+    "{gaia_link} memory search proposals",
+])
+def test_proposals_store_a_subagent_still_reads_through_any_entry_point(command, links):
+    assert _subagent_verdict(command.format(**links), "developer").allowed is True
+
+
+def _accept_namespace(proposal_id: int):
+    return argparse.Namespace(proposal_id=proposal_id, project=PROJECT_ID, workspace=None,
+                              json=True)
+
+
+def test_proposals_store_accept_that_loses_a_race_writes_nothing(db, monkeypatch, capsys):
+    from cli import contract_proposals
+    from gaia.store import proposals as store
+
+    _close(f"{AGENT}.000000000009", "COMPLETE", _envelope("COMPLETE", memory=["project_raced"]))
+    pending = store.list_proposals(db_path=db)[0]
+    assert store.decide_proposal(pending["id"], "dismissed", decided_by="orchestrator")
+    monkeypatch.setattr(store, "get_proposal", lambda _pid, **_kw: pending)
+
+    rc = contract_proposals._cmd_accept(_accept_namespace(pending["id"]))
+
+    con = sqlite3.connect(str(db))
+    try:
+        written = con.execute("SELECT count(*) FROM memory WHERE name = 'project_raced'").fetchone()
+        status = con.execute("SELECT status FROM proposals WHERE id = ?", (pending["id"],)).fetchone()
+    finally:
+        con.close()
+    assert (rc, written[0], status[0]) == (1, 0, "dismissed"), capsys.readouterr().out
+
+
+def test_proposals_store_an_accept_whose_write_fails_stays_pending(db, capsys):
+    from cli import contract_proposals
+    from gaia.store.proposals import list_proposals
+
+    _close(f"{AGENT}.00000000000a", "COMPLETE", _envelope("COMPLETE", memory=["atom_typed_project"]))
+    proposal = list_proposals(db_path=db)[0]
+
+    assert contract_proposals._cmd_accept(_accept_namespace(proposal["id"])) == 1
+    after = list_proposals(status=None, db_path=db)[0]
+    assert (after["status"], after["project"], after["decided_at"]) == (
+        "pending", proposal["project"], None)
+
+
 @pytest.mark.parametrize("command", [
     "gaia contract proposals list --json",
     "gaia contract proposals accept 7 --project github.com/metraton/gaia",
