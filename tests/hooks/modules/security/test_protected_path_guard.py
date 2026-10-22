@@ -302,3 +302,28 @@ def test_rejection_message_names_path():
     msg = rejection_message(".claude/hooks/x.py")
     assert ".claude/hooks/x.py" in msg
     assert "hard security boundary" in msg
+
+
+class TestRelativeTargetsAnchorAtCwd:
+    HOOKS = "/home/user/proj/.claude/hooks"
+
+    @pytest.mark.parametrize("command,cwd", [
+        ("cp payload.py pre_tool_use.py", HOOKS),
+        ("echo x > pre_tool_use.py", HOOKS),
+        ("cp payload.py hooks/pre_tool_use.py", "/home/user/proj/.claude"),
+        (f"cd {HOOKS} && cp payload.py pre_tool_use.py", "/repo"),
+        ("cd .claude/hooks && cp payload.py pre_tool_use.py", "/home/user/proj"),
+        (f"cd {HOOKS} && echo $(cp payload.py pre_tool_use.py)", "/repo"),
+    ])
+    def test_relative_write_that_lands_in_the_tree_is_refused(self, command, cwd):
+        hit = targets_protected_path(command, cwd)
+        assert hit is not None and ".claude" in hit
+
+    @pytest.mark.parametrize("command,cwd", [
+        ("cp payload.py pre_tool_use.py", "/home/user/proj/src"),
+        ("cp payload.py pre_tool_use.py", None),
+        (f"cd {HOOKS} && cat pre_tool_use.py", "/repo"),
+        (f"cd {HOOKS} && cd /repo && cp payload.py pre_tool_use.py", "/repo"),
+    ])
+    def test_relative_write_elsewhere_or_a_read_passes(self, command, cwd):
+        assert targets_protected_path(command, cwd) is None

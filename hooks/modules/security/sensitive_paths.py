@@ -131,7 +131,7 @@ _HOME_SPELLINGS = (
 )
 
 
-def _expand_home(path: str) -> str:
+def expand_home(path: str) -> str:
     """Expand the spellings of $HOME and the Windows profile folders a command may carry unexpanded."""
     for spelling, below_home in _HOME_SPELLINGS:
         match = spelling.match(path)
@@ -142,7 +142,7 @@ def _expand_home(path: str) -> str:
 
 
 def _canonical(path: str) -> str:
-    return canonical_path(_expand_home(path.strip()), _SHORT_NAMES)
+    return canonical_path(expand_home(path.strip()), _SHORT_NAMES)
 
 
 def _home_relative(candidate: str) -> str:

@@ -61,6 +61,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 from .canonical_path import canonical_path, native_path
+from .sensitive_paths import expand_home
 
 # The npm package name Gaia ships under. It identifies a Gaia root in the
 # source checkout and in every installed materialisation alike, because the
@@ -227,21 +228,26 @@ def resolved_write_target(path_str: str) -> str:
     return str(_candidates(path_str)[-1])
 
 
-def is_read_spool_path(path_str: str) -> bool:
+def is_read_spool_path(path_str: str, cwd: Optional[str] = None) -> bool:
     """True iff `path_str` lies in the harness read spool, which only the PreToolUse recorder writes, in process.
 
     A line written there by any tool would return as an unmarked files_checked
     entry, so every surface refuses it for every role, with no signature.
+    `$HOME`, `${HOME}` and `~` expand as the sensitive-path guard expands them,
+    and a relative path is anchored at `cwd` when the caller has one.
     """
     if not path_str:
         return False
     from gaia.contract.read_spool import spool_dir
 
+    spelled = expand_home(path_str)
+    if cwd and not os.path.isabs(spelled) and not spelled.startswith("~"):
+        spelled = os.path.join(cwd, spelled)
     root = Path(os.path.abspath(spool_dir()))
     roots = {root, root.resolve()}
     return any(
         candidate == r or r in candidate.parents
-        for candidate in _candidates(path_str)
+        for candidate in _candidates(spelled)
         for r in roots
     )
 

@@ -438,11 +438,11 @@ def test_finalize_writes_the_row_from_the_harness_record_and_deletes_the_spool()
     assert read_spool.read(agent) == []
 
 
-def _spool_write_verdict(tool: str, tool_input: dict, harness_agent_id: str | None) -> str:
+def _spool_write_verdict(tool: str, tool_input: dict, harness_agent_id: str | None, cwd: str = "/repo") -> str:
     """'refused' when the call is denied naming the read spool; otherwise what the hook answered."""
     adapter = ClaudeCodeAdapter()
     event = {
-        "hook_event_name": "PreToolUse", "session_id": "ses-parent", "cwd": "/repo",
+        "hook_event_name": "PreToolUse", "session_id": "ses-parent", "cwd": cwd,
         "tool_name": tool, "tool_input": tool_input, "tool_use_id": f"toolu-{uuid.uuid4().hex[:8]}",
     }
     if harness_agent_id:
@@ -501,6 +501,70 @@ def test_the_read_spool_is_a_protected_path_no_tool_but_the_recorder_writes(tmp_
     report = _stamp(_envelope(agent), contract_id)["evidence_report"]
     assert report["files_checked"] == ["/repo/a.py"]
     assert not any(entry.startswith(ANNOTATION_MARK) for entry in report["files_checked"])
+
+
+@pytest.fixture
+def data_dir_under_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("GAIA_DATA_DIR", str(home / ".gaia"))
+
+
+def _spool_spellings(spool: Path, line: str) -> dict:
+    """Each way a shell reaches the spool without writing its absolute path: name -> (command, cwd)."""
+    spool_dir = spool.parent
+    below_home = spool.relative_to(Path.home())
+    append = f"printf '%s\\n' '{line}' >>"
+    return {
+        "home_variable": (f"{append} $HOME/{below_home}", "/repo"),
+        "home_variable_braced": (f"{append} ${{HOME}}/{below_home}", "/repo"),
+        "home_variable_quoted": (f'{append} "$HOME/{below_home}"', "/repo"),
+        "tee_home_variable": (f"echo '{line}' | tee -a $HOME/{below_home}", "/repo"),
+        "cp_home_variable": (f"cp /dev/null $HOME/{below_home}", "/repo"),
+        "relative_to_cwd": (f"{append} {spool.name}", str(spool_dir)),
+        "relative_dot_to_cwd": (f"{append} ./{spool.name}", str(spool_dir)),
+        "relative_from_parent": (f"{append} {spool_dir.name}/{spool.name}", str(spool_dir.parent)),
+        "after_cd": (f"cd {spool_dir} && {append} {spool.name}", "/repo"),
+    }
+
+
+def test_a_shell_spelling_of_the_read_spool_that_hides_its_path_is_still_refused(data_dir_under_home):
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    spool = read_spool.spool_path(agent)
+    line = json.dumps({"tool": "Read", "path": "/repo/forged.py"})
+
+    verdicts = {
+        name: _spool_write_verdict("Bash", {"command": command}, agent, cwd=cwd)
+        for name, (command, cwd) in _spool_spellings(spool, line).items()
+    }
+
+    assert verdicts == {name: "refused" for name in verdicts}
+    assert read_spool.read(agent) == ["/repo/a.py"]
+
+
+def test_a_write_beside_the_read_spool_is_not_mistaken_for_it(data_dir_under_home):
+    from gaia.contract import read_spool
+
+    agent = _agent()
+    _born_row(agent, agent)
+    _read("/repo/a.py", agent)
+    spool_dir = read_spool.spool_dir()
+    neighbours = {
+        "home_variable": ("printf x >> $HOME/notes.txt", "/repo"),
+        "relative_in_other_cwd": (f"printf x >> {read_spool.spool_path(agent).name}", "/repo"),
+        "relative_beside_dir": ("printf x >> notes.txt", str(spool_dir.parent)),
+    }
+
+    verdicts = {
+        name: _spool_write_verdict("Bash", {"command": command}, agent, cwd=cwd)
+        for name, (command, cwd) in neighbours.items()
+    }
+
+    assert "refused" not in verdicts.values()
 
 
 def _cut(contract_id: str, agent: str, cut_reason: str) -> None:

@@ -49,18 +49,20 @@ literal token and is not caught here. The literal-token slice is the bounded,
 low-false-positive portion that is closed.
 
 Public API:
-    targets_protected_path(command: str) -> str | None   -- offending path or None
+    targets_protected_path(command: str, cwd: str | None = None) -> str | None
     rejection_message(path: str) -> str
-    check(command: str) -> tuple[bool, str | None]        -- main entrypoint
+    check(command: str, cwd: str | None = None) -> tuple[bool, str | None]
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import List, Optional, Tuple
 
 from .canonical_path import command_name
+from .mutative_verbs import cwd_after_component
 from .protected_paths import is_protected_hook_path, is_read_spool_path
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
@@ -101,25 +103,38 @@ _FILESYSTEM_WRITE_COMMANDS = frozenset({
 _OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
 
-def _is_protected_claude_path(token: str) -> bool:
-    """Return True iff `token` names a protected Gaia path.
+def _protected_spelling(token: str, cwd: Optional[str] = None) -> Optional[str]:
+    """Return the protected path `token` names, or None.
 
     This decides only what a shell TOKEN is -- the scope of the protected set
     belongs to ``protected_paths.is_protected_hook_path`` and is deliberately
-    not restated. The name is historical: the set now covers every Gaia hook
-    tree, the source checkout included, not just the ``.claude/`` copy.
+    not restated. The set covers every Gaia hook tree, the source checkout
+    included, not just the ``.claude/`` copy. A relative token is also judged
+    anchored at `cwd`; when only that anchoring makes it protected, the
+    absolute path is returned so ``rejection_message`` can still name it.
     """
     if not token or token.startswith("-"):
-        return False
+        return None
 
     # Strip any leading redirect / quoting cruft that survived tokenization
     # (e.g. ">file" from an unspaced redirect).
     cleaned = token.lstrip("<>&|")
     cleaned = cleaned.strip("'\"")
     if not cleaned:
-        return False
+        return None
 
-    return is_protected_hook_path(cleaned) or is_read_spool_path(cleaned)
+    if is_protected_hook_path(cleaned) or is_read_spool_path(cleaned):
+        return cleaned
+    if cwd and not os.path.isabs(cleaned):
+        anchored = os.path.join(cwd, cleaned)
+        if is_protected_hook_path(anchored) or is_read_spool_path(anchored):
+            return anchored
+    return None
+
+
+def _is_protected_claude_path(token: str, cwd: Optional[str] = None) -> bool:
+    """Return True iff `token` names a protected Gaia path."""
+    return _protected_spelling(token, cwd) is not None
 
 
 def _tokenize(component: str) -> List[str]:
@@ -132,7 +147,7 @@ def _tokenize(component: str) -> List[str]:
         return component.split()
 
 
-def _component_writes_protected_path(component: str) -> Optional[str]:
+def _component_writes_protected_path(component: str, cwd: Optional[str] = None) -> Optional[str]:
     """Return the offending protected path if `component` writes to one.
 
     The component is unwrapped before tokenization: the write capability is
@@ -147,7 +162,7 @@ def _component_writes_protected_path(component: str) -> Optional[str]:
         return None
 
     # Any protected-path token present in this component.
-    protected_tokens = [t for t in tokens if _is_protected_claude_path(t)]
+    protected_tokens = [p for p in (_protected_spelling(t, cwd) for t in tokens) if p]
     if not protected_tokens:
         return None
 
@@ -156,8 +171,10 @@ def _component_writes_protected_path(component: str) -> Optional[str]:
     # Redirect into a protected path: ">"/">>" token or an unspaced ">file".
     for tok in tokens:
         stripped = tok.lstrip("<>&|")
-        if tok != stripped and _is_protected_claude_path(stripped):
-            return stripped
+        if tok != stripped:
+            hit = _protected_spelling(stripped, cwd)
+            if hit:
+                return hit
     if any(t in (">", ">>") for t in tokens):
         # A bare redirect operator with a protected target already matched
         # above via protected_tokens; surface the first protected path.
@@ -178,27 +195,34 @@ def _component_writes_protected_path(component: str) -> Optional[str]:
     return None
 
 
-def targets_protected_path(command: str) -> Optional[str]:
+def targets_protected_path(command: str, cwd: Optional[str] = None) -> Optional[str]:
     """Return the offending path if `command` writes into the protected tree.
 
     Args:
         command: The full Bash command line (may contain operator-linked
             components, quotes, and redirects).
+        cwd: The directory the command runs in; relative targets anchor there,
+            and a ``cd`` component moves it for the components that follow.
 
     Returns:
-        The protected path string being written, or None if the command does
-        not write into the protected ``.claude/`` tree.
+        The protected path string being written (absolute when it was spelled
+        relative), or None if the command does not write into the protected
+        tree.
     """
     if not command:
         return None
 
+    running_cwd = cwd
+    seen_cwds = [cwd]
     for component in _OPERATOR_SPLIT.split(command):
         component = component.strip()
         if not component:
             continue
-        hit = _component_writes_protected_path(component)
+        hit = _component_writes_protected_path(component, running_cwd)
         if hit is not None:
             return hit
+        running_cwd = cwd_after_component(component, running_cwd)
+        seen_cwds.append(running_cwd)
 
     # A command substitution runs BEFORE the command that contains it, so
     # ``echo $(cp payload.py .claude/hooks/pre_tool_use.py)`` overwrites the
@@ -213,9 +237,10 @@ def targets_protected_path(command: str) -> Optional[str]:
             inner_component = inner_component.strip()
             if not inner_component:
                 continue
-            hit = _component_writes_protected_path(inner_component)
-            if hit is not None:
-                return hit
+            for inner_cwd in seen_cwds:
+                hit = _component_writes_protected_path(inner_component, inner_cwd)
+                if hit is not None:
+                    return hit
 
     return None
 
@@ -239,18 +264,19 @@ def rejection_message(path: str) -> str:
     )
 
 
-def check(command: str) -> Tuple[bool, Optional[str]]:
+def check(command: str, cwd: Optional[str] = None) -> Tuple[bool, Optional[str]]:
     """Main entrypoint for PreToolUse Bash hook integration.
 
     Args:
         command: The Bash command line.
+        cwd: The directory the command runs in, when the caller knows it.
 
     Returns:
         (allowed, reason)
         - (True, None)  if command does not write the protected tree
         - (False, msg)  if command writes into the protected .claude/ tree
     """
-    hit = targets_protected_path(command)
+    hit = targets_protected_path(command, cwd)
     if hit is not None:
         return False, rejection_message(hit)
     return True, None
