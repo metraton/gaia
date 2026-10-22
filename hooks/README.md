@@ -164,10 +164,10 @@ rejected the emitted contract; its substantive output may have been preserved
 by `rejected_turn_relay.py` as described above. Both are warning-grade by
 default and can be isolated with `gaia defects --type=<event>`.
 
-## Project context is keyed by project (schema v68)
+## Project context is keyed by project (schema v69)
 
 A context section describes one project, so it is stored under that project's
-identity in `project_context` (`gaia/store/project_context.py`). Before v68 it was
+identity in `project_context` (`gaia/store/project_context.py`). Before v69 it was
 keyed by workspace in `project_context_contracts`, and a section proposed from a
 session opened in another workspace landed where no reader of the project looked.
 
@@ -198,7 +198,7 @@ session opened in another workspace landed where no reader of the project looked
 - **Workspace readers** (`workspace_sections`: the context provider, the
   contracts loader, freshness, the session roster, `get-contract --workspace`)
   read the old row merged with the rows of that workspace's projects.
-- **Compatibility**: `v67_to_v68.sql` is declared breaking. Code older than v68
+- **Compatibility**: `v68_to_v69.sql` is declared breaking. Code older than v69
   would keep writing the old table, which readers no longer prefer, so it must
   stop writing. Ship it with an install of every local host that shares
   `gaia.db` (Claude Code and OpenCode).

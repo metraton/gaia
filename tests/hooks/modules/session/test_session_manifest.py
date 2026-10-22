@@ -549,7 +549,7 @@ class TestExtractProjectsCarriesTypeAndDescription:
 
 
 def _patch_connect(monkeypatch, identity_rows, proj_rows=()):
-    """Point the projects roster at an in-memory DB holding these pre-v68 contract and projects rows."""
+    """Point the projects roster at an in-memory DB holding these pre-v69 contract and projects rows."""
     import sqlite3
 
     import gaia.store.writer as _writer

@@ -1642,7 +1642,7 @@ def register(subparsers) -> None:
         metavar="P",
         default=None,
         help="Project identity or name: read the section stored for that "
-             "project, falling back to its workspace's pre-v68 row",
+             "project, falling back to its workspace's pre-v69 row",
     )
     gc_parser.add_argument(
         "--section",

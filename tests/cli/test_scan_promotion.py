@@ -269,7 +269,7 @@ def test_rescan_preserves_description_added_between_scans(tmp_db):
     _seed_project(tmp_db, ws, "app", path="/abs/app", identity="/abs/app/.git")
     promote_workspace(ws, db_path=tmp_db, apply=True)
 
-    # An agent enriches the entry the way agents write since v68: through the writer.
+    # An agent enriches the entry the way agents write since v69: through the writer.
     from hooks.modules.context.context_writer import apply_update
 
     slug = next(iter(_read_contract(tmp_db, ws)))

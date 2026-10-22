@@ -189,7 +189,7 @@ def test_alpha_own_entry_replaces_a_target_entry_for_the_same_repo(alpha_in_a, t
     from gaia.store.writer import _connect
 
     stale = {"integration": "direct"}
-    # A pre-v68 entry for the same repo left in b's workspace-keyed row; since v68 a
+    # A pre-v69 entry for the same repo left in b's workspace-keyed row; since v69 a
     # write through the writer would land in alpha's own project row instead.
     con = _connect(db)
     con.execute(

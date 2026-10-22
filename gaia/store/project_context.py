@@ -1,4 +1,4 @@
-"""Project context sections keyed by project, with the pre-v68 workspace rows as fallback."""
+"""Project context sections keyed by project, with the pre-v69 workspace rows as fallback."""
 
 from __future__ import annotations
 
