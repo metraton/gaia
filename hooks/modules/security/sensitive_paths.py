@@ -72,13 +72,16 @@ HOME_ENTRIES = {
 # a CLI that keeps them only in the OS keychain has no file to refuse.
 CODING_CLI_CREDENTIAL_STORES = {
     ".claude/.credentials.json": "https://code.claude.com/docs/en/iam#credential-management",
+    ".claude.json": "https://code.claude.com/docs/en/settings (MCP server configurations, whose env and headers carry tokens)",
     ".config/anthropic": "https://code.claude.com/docs/en/iam#anthropic-profiles-and-federation-credentials",
-    ".codex/auth.json": "https://learn.chatgpt.com/docs/auth",
+    ".codex/auth.json": "https://developers.openai.com/codex/auth",
     ".gemini/oauth_creds.json": "google-gemini/gemini-cli packages/core/src/config/storage.ts::OAUTH_FILE",
     ".gemini/mcp-oauth-tokens.json": "google-gemini/gemini-cli packages/core/src/config/storage.ts::getMcpOAuthTokensPath",
     ".qwen/oauth_creds.json": "QwenLM/qwen-code docs/users/qwen-serve.md",
     ".local/share/opencode/auth.json": "https://opencode.ai/docs/providers/#credentials",
     ".copilot/config.json": "https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/authenticate-copilot-cli",
+    ".config/github-copilot/hosts.json": "https://aider.chat/docs/llms/github.html (oauth_token of the Copilot IDE plugins)",
+    ".config/github-copilot/apps.json": "https://aider.chat/docs/llms/github.html (oauth_token of the Copilot IDE plugins)",
 }
 HOME_ENTRIES.update(dict.fromkeys(CODING_CLI_CREDENTIAL_STORES, _BOTH))
 
@@ -189,7 +192,7 @@ def _file_name_label(name: str) -> str:
         name.startswith(ENV_FILE_NAME + ".") and name not in READABLE_ENV_TEMPLATES
     ):
         return "environment secrets file"
-    if name in CREDENTIAL_FILE_NAMES:
+    if any(name == known or name.startswith(known + ".") for known in CREDENTIAL_FILE_NAMES):
         return "credentials file"
     if any(name == stem or name.startswith(stem + ".") for stem in PRIVATE_KEY_STEMS):
         return "private key"

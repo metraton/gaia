@@ -338,6 +338,7 @@ REFUSAL_SITES = {
     "_phase4_check_composition::Dangerous pipe composition blocked: {res": ["seed-continue-curl-pipe-sh"],
     "_validate_commit_message::Commit message validation failed: {valid": ["floor-commit-message"],
     "decide_t3_outcome::Command blocked by security policy: {_bl": ["floor-aws-delete-vpc", "floor-rm-root", "floor-disk-dd"],
+    "_categorical_refusal::reason": ["floor-secret-into-account-write", "floor-account-write-then-blocked"],
     "decide_t3_outcome::reason": ["floor-clear-secret-in-request"],
     "decide_t3_outcome::reason#2": ["floor-no-requester"],
 }

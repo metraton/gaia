@@ -226,8 +226,13 @@ _FILE_READ_EXECUTABLES = frozenset({
 _NETWORK_EXECUTABLES = frozenset({
     "curl", "wget", "http", "https",
     "nc", "ncat", "netcat",
+    "socat", "telnet",
     "fetch",
 })
+
+# ssh options taking a value, and the ones that keep stdin from the remote side.
+_SSH_VALUE_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
+_SSH_NO_STDIN_FLAGS = frozenset("fNn")
 
 _ENV_DUMP_EXECUTABLES = frozenset({
     "env", "printenv", "set", "export",
@@ -352,6 +357,8 @@ def classify_stage(command: str) -> StageType:
         if exe in ("nc", "ncat", "netcat"):
             if len(tokens) >= 3:
                 return StageType.NETWORK_WRITE
+        if exe in ("socat", "telnet") and len(tokens) >= 2:
+            return StageType.NETWORK_WRITE
         return StageType.NETWORK_READ
 
     # 3. Exec sink (before safe_filter so bash/sh/python are caught)
@@ -391,6 +398,32 @@ def classify_stage(command: str) -> StageType:
         return StageType.FILE_READ
 
     return StageType.UNKNOWN
+
+
+def _pipe_run_start(stages: List[CompositionStage], index: int) -> int:
+    """The first stage of the unbroken pipe that feeds stage *index*."""
+    while index > 0 and stages[index - 1].operator == "|":
+        index -= 1
+    return index
+
+
+def _ssh_sends_stdin(command: str) -> bool:
+    """True when *command* is an ssh that forwards its stdin to the remote host."""
+    tokens = _strip_transparent_prefixes(_tokenize_safe(command))
+    if not tokens or _get_executable(tokens) != "ssh":
+        return False
+    options = iter(tokens[1:])
+    for token in options:
+        if not token.startswith("-") or token == "--":
+            return True
+        for position, flag in enumerate(token[1:], start=2):
+            if flag in _SSH_NO_STDIN_FLAGS:
+                return False
+            if flag in _SSH_VALUE_FLAGS:
+                if position == len(token):
+                    next(options, None)
+                break
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -494,16 +527,20 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
         src_type = src.stage_type
         dst_type = dst.stage_type
 
-        # Rule 1: Exfiltration -- sensitive_read | network_write
-        if src_type == StageType.SENSITIVE_READ and dst_type == StageType.NETWORK_WRITE:
+        sends = dst_type == StageType.NETWORK_WRITE or _ssh_sends_stdin(dst.command)
+        upstream = range(_pipe_run_start(stages, src_idx), dst_idx)
+        secret_idx = next((k for k in upstream if stages[k].stage_type == StageType.SENSITIVE_READ), None)
+
+        # Rule 1: Exfiltration -- sensitive_read | ... | network_write, through any filter
+        if sends and secret_idx is not None:
             return CompositionResult(
                 decision=CompositionDecision.BLOCK,
                 pattern="exfiltration",
                 reason=(
-                    f"Exfiltration detected: '{src.command[:60]}' reads sensitive data "
+                    f"Exfiltration detected: '{stages[secret_idx].command[:60]}' reads sensitive data "
                     f"and pipes it to network write '{dst.command[:60]}'"
                 ),
-                matched_stages=[src_idx, dst_idx],
+                matched_stages=[secret_idx, dst_idx],
                 stage_types=all_types,
             )
 
@@ -547,7 +584,7 @@ def check_composition(stages: List[CompositionStage]) -> CompositionResult:
                 stage_types=all_types,
             )
 
-        if dst_type == StageType.NETWORK_WRITE:
+        if sends:
             return CompositionResult(
                 decision=CompositionDecision.ESCALATE,
                 pattern="egress",

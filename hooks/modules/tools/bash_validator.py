@@ -966,6 +966,19 @@ class BashValidator:
                 ],
             )
 
+        # A sensitive read is refused before any check that can ask, and before the
+        # sanitizer, which would strip a `< file` input with the trailing redirect.
+        sensitive_allowed, sensitive_reason = check_sensitive_read(
+            write_guard_scope, (hook_payload or {}).get("cwd") or None,
+        )
+        if not sensitive_allowed:
+            logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=sensitive_reason,
+            )
+
         # ================================================================
         # ACCOUNT-PATH WRITE
         # A redirect onto a path that grants account access is legitimate work
@@ -1175,24 +1188,6 @@ class BashValidator:
         )
         if _composition_result is not None:
             return _composition_result
-
-        # ================================================================
-        # SENSITIVE READ GUARD
-        # Reading or listing a path on the shared sensitive list is refused
-        # with the same reason Read/Glob/Grep get, and no approval. Runs after
-        # composition so the exfiltration pipe keeps its own verdict, and
-        # after the account-path write above so a write keeps its signature.
-        # ================================================================
-        sensitive_allowed, sensitive_reason = check_sensitive_read(
-            command, (hook_payload or {}).get("cwd") or None,
-        )
-        if not sensitive_allowed:
-            logger.warning("BLOCKED sensitive read via Bash: %s", command[:120])
-            return BashValidationResult(
-                allowed=False,
-                tier=SecurityTier.T3_BLOCKED,
-                reason=sensitive_reason,
-            )
 
         # ================================================================
         # PHASE 5: AGGREGATE
@@ -2520,6 +2515,19 @@ def _build_sealed_payload(
     )
 
 
+def _categorical_refusal(command: str, cwd: str | None) -> BashValidationResult | None:
+    """The refusal *command* carries anywhere in it, which outranks every signature request."""
+    parts = [command, *(part.strip() for part in get_shell_parser().parse(command))]
+    blocked = next((verdict for verdict in map(is_blocked_command, parts) if verdict.is_blocked), None)
+    if blocked is not None:
+        reason = f"Command blocked by security policy: {blocked.category}"
+    else:
+        reason = check_sensitive_read(command, cwd)[1]
+    if not reason:
+        return None
+    return BashValidationResult(allowed=False, tier=SecurityTier.T3_BLOCKED, reason=reason)
+
+
 def decide_t3_outcome(
     command: str,
     verb: str,
@@ -2585,6 +2593,10 @@ def decide_t3_outcome(
         A blocked BashValidationResult (allowed=False, tier T3) whose
         block_response is either a "deny" (with approval_id) or an "ask".
     """
+    refusal = _categorical_refusal(command, cwd)
+    if refusal is not None:
+        return refusal
+
     # Breadcrumb for the fail-open path. Reaching this function IS the moment
     # the command becomes known to require consent, so from here on a failure
     # anywhere in the gate must not degrade it into a permission -- see

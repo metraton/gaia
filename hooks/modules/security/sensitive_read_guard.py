@@ -65,6 +65,9 @@ _FIND_PATTERN_FLAGS = frozenset({
     "-name", "-iname", "-path", "-ipath", "-wholename", "-regex", "-iregex",
 })
 
+_INPUT_REDIRECTS = frozenset({"<", "<>"})
+_OTHER_REDIRECTS = frozenset({">", ">>", ">|", ">&", "&>", "&>>", "<<", "<<<", "<<-"})
+
 _OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
 
@@ -75,9 +78,34 @@ def _tokenize(component: str) -> List[str]:
         return component.split()
 
 
+def _split_redirects(component: str) -> Tuple[List[str], List[str]]:
+    """The words of *component* without its redirections, and the files it reads through ``<``."""
+    lexer = shlex.shlex(component, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return _tokenize(component), []
+    words: List[str] = []
+    inputs: List[str] = []
+    remaining = iter(tokens)
+    for token in remaining:
+        if token in _INPUT_REDIRECTS:
+            inputs.append(next(remaining, ""))
+        elif token in _OTHER_REDIRECTS:
+            next(remaining, None)
+        else:
+            words.append(token)
+    return words, inputs
+
+
 def _component_reads_sensitive(component: str, cwd: Optional[str]) -> str:
     """The sensitive path a single command component reads or lists, or ""."""
-    tokens = _strip_transparent_prefixes(_tokenize(strip_grouping_wrappers(component)))
+    words, inputs = _split_redirects(strip_grouping_wrappers(component))
+    fed = first_sensitive_token(inputs, cwd)
+    if fed:
+        return fed
+    tokens = _strip_transparent_prefixes(words)
     if not tokens:
         return ""
     base = command_name(tokens[0])
