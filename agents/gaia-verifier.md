@@ -5,6 +5,7 @@ description: Use when a task's gates are ready to be independently confirmed -- 
 tools: Read, Write, Bash, Skill
 model: inherit
 disallowedTools: [Edit, NotebookEdit]
+surface: verification
 project_context_contracts:
   read: [project_identity]
   write: []

@@ -184,6 +184,24 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
 # DISPATCH KERNEL DATA (no routing, no preloaded context)
 # ============================================================================
 
+def _declared_surface(agent_name: str) -> str:
+    """The ``routing.surface`` or top-level ``surface`` in ``agents/<name>.md`` frontmatter, or ""."""
+    if not agent_name or Path(agent_name).name != agent_name:
+        return ""
+    path = Path(_PACKAGE_ROOT) / "agents" / f"{agent_name}.md"
+    try:
+        from tools.scan.seed_contract_permissions import _parse_frontmatter
+
+        frontmatter = _parse_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(frontmatter, dict):
+        return ""
+    routing = frontmatter.get("routing")
+    declared = routing.get("surface") if isinstance(routing, dict) else None
+    return str(declared or frontmatter.get("surface") or "").strip()
+
+
 def build_kernel_sections(
     agent_name: str,
     workspace: Optional[str] = None,
@@ -202,8 +220,9 @@ def build_kernel_sections(
         provider-scoped exactly as the retired telemetry path was, so the set
         is identical to what ``get_context_update_contract`` produced).
       * ``surface`` is the agent's own declared surface -- the ``surface_routing``
-        row whose ``primary_agent`` is this agent -- a fact of the assignment,
-        not a classification of it. Empty for an agent that owns no surface.
+        row whose ``primary_agent`` is this agent, else the surface its
+        frontmatter declares (:func:`_declared_surface`) -- a fact of the
+        assignment, not a classification of it.
       * ``role`` is dispatch data: ``verifier`` when the binding says so,
         ``primary`` otherwise (the orchestrator dispatched this agent as the
         owner of the task).
@@ -236,6 +255,7 @@ def build_kernel_sections(
                 break
     except Exception:
         surface = ""
+    surface = surface or _declared_surface(agent_name)
 
     sections = {
         "role": "verifier" if turn_role == "verifier" else "primary",

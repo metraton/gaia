@@ -12556,6 +12556,72 @@ def list_agent_contract_handoffs(
         con.close()
 
 
+def contract_fill_rate(
+    *,
+    since: str,
+    until: str | None = None,
+    workspace: str | None = None,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Count clean closes in a window carrying a surface (own or chain's) and a user_facing_summary."""
+    clauses = [
+        "cut_reason IS NULL",
+        "agent_state <> 'DISPATCHED'",
+        "contract_id NOT LIKE 'hook-backstop.%'",
+        "created_at >= ?",
+    ]
+    params: list[Any] = [since]
+    if until is not None:
+        clauses.append("created_at <= ?")
+        params.append(until)
+    con = _connect(db_path)
+    try:
+        if workspace is not None:
+            from gaia.store.workspace_retire import workspace_scope
+
+            scope = workspace_scope(con, workspace)
+            clauses.append(f"workspace IN ({','.join('?' * len(scope))})")
+            params.extend(scope)
+        params.append(_MAX_CONTINUATION_LINKS)
+        rows = con.execute(
+            "WITH RECURSIVE closed AS ("
+            f"  SELECT id, raw_handoff_json FROM agent_contract_handoffs WHERE {' AND '.join(clauses)}"
+            "), lineage(root, surface, parent, depth) AS ("
+            "  SELECT h.id, json_extract(h.kernel_sections, '$.surface'),"
+            "         h.continues_handoff_id, 0"
+            "  FROM closed c JOIN agent_contract_handoffs h ON h.id = c.id"
+            "  UNION ALL"
+            "  SELECT l.root, json_extract(p.kernel_sections, '$.surface'),"
+            "         p.continues_handoff_id, l.depth + 1"
+            "  FROM lineage l JOIN agent_contract_handoffs p ON p.id = l.parent"
+            "  WHERE TRIM(COALESCE(l.surface, '')) = '' AND l.depth < ?"
+            ") SELECT c.raw_handoff_json, EXISTS ("
+            "  SELECT 1 FROM lineage l WHERE l.root = c.id"
+            "  AND TRIM(COALESCE(l.surface, '')) <> ''"
+            ") AS has_surface FROM closed c",
+            params,
+        ).fetchall()
+    finally:
+        con.close()
+
+    def has_summary(raw: "str | None") -> bool:
+        try:
+            summary = json.loads(raw or "{}").get("user_facing_summary")
+        except (TypeError, ValueError, AttributeError):
+            return False
+        return isinstance(summary, str) and bool(summary.strip())
+
+    total = len(rows)
+    counts = {
+        "surface": sum(1 for row in rows if row["has_surface"]),
+        "user_facing_summary": sum(1 for row in rows if has_summary(row["raw_handoff_json"])),
+    }
+    report: dict = {"since": since, "until": until, "rows": total}
+    for field, filled in counts.items():
+        report[field] = {"filled": filled, "rate": filled / total if total else None}
+    return report
+
+
 # ---------------------------------------------------------------------------
 # Public API: insert_episode / insert_episode_anomaly
 # ---------------------------------------------------------------------------

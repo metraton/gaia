@@ -1939,6 +1939,25 @@ def cmd_finalize(args) -> int:
             print(f"Rejected: {msg}", file=sys.stderr)
         return 1
 
+    summary = envelope.get("user_facing_summary")
+    if not isinstance(summary, str) or not summary.strip():
+        msg = (
+            "user_facing_summary is empty, but it is the only part of the "
+            "contract the user reads. Write what the user should know in plain "
+            f"words: gaia contract set --draft-id {draft_id} user_facing_summary "
+            "'<what was done, what is left, what they must decide>', then "
+            "finalize."
+        )
+        if as_json:
+            print(json.dumps({
+                "status": "rejected",
+                "reason": "user_facing_summary_required",
+                "error": msg,
+            }))
+        else:
+            print(f"Rejected: {msg}", file=sys.stderr)
+        return 1
+
     # Blind-verification anti-leak at the CLI seam (plan 34 task 8). The
     # SubagentStop gate already refuses a plan-task-bound self-COMPLETE
     # (hooks/adapters/claude_code.py::_blind_verification_required), but that gate
@@ -2356,6 +2375,38 @@ def cmd_reap(args) -> int:
 # ---------------------------------------------------------------------------
 # Argparse wiring (shared by register() and the standalone shim)
 # ---------------------------------------------------------------------------
+
+def cmd_fill_rate(args) -> int:
+    """Report surface and user_facing_summary fill rates over a window; exit 1 under ``--min``."""
+    from gaia.store.reader import parse_when
+    from gaia.store.writer import contract_fill_rate
+
+    try:
+        since = parse_when(args.since)
+        until = _until_bound(args.until) if args.until else None
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    report = contract_fill_rate(since=since, until=until, workspace=args.workspace)
+    fields = ("surface", "user_facing_summary")
+    rates = [report[field]["rate"] for field in fields]
+    if args.min is not None:
+        report["min"] = args.min
+        report["pass"] = all(rate is not None and rate >= args.min for rate in rates)
+
+    if args.json:
+        print(json.dumps(report))
+    else:
+        print(f"rows: {report['rows']} clean closes since {since}")
+        for field in fields:
+            entry = report[field]
+            shown = "n/a" if entry["rate"] is None else f"{entry['rate']:.1%}"
+            print(f"  {field}: {entry['filled']}/{report['rows']} ({shown})")
+        if args.min is not None:
+            print(f"  min {args.min:.1%}: {'pass' if report['pass'] else 'FAIL'}")
+    return 1 if report.get("pass") is False else 0
+
 
 def _add_common_draft_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -2777,6 +2828,26 @@ def _build_subcommands(sub) -> None:
     p_reap.add_argument("--json", action="store_true", help="JSON output")
     p_reap.set_defaults(func=cmd_reap)
 
+    p_fill_rate = sub.add_parser(
+        "fill-rate",
+        help="Share of clean closes carrying a surface and a user_facing_summary (read-only)",
+        description=(
+            "Over rows created in the window that closed clean (no cut_reason, "
+            "not DISPATCHED, not hook-backstop residue), report how many carry a "
+            "surface and how many a user_facing_summary. With --min, exit 1 "
+            "when either rate is below it or the window holds no rows."
+        ),
+    )
+    p_fill_rate.add_argument("--since", default="7d", metavar="DUR_OR_DATE",
+                             help="Window start: a duration (24h, 7d) or a date (default: 7d)")
+    p_fill_rate.add_argument("--until", metavar="DUR_OR_DATE",
+                             help="Window end, same forms as --since; a bare date includes its day")
+    p_fill_rate.add_argument("--workspace", metavar="NAME", help="Filter by workspace")
+    p_fill_rate.add_argument("--min", type=float, metavar="RATE",
+                             help="Fail (exit 1) when a rate is below this fraction, e.g. 0.95")
+    p_fill_rate.add_argument("--json", action="store_true", help="JSON output")
+    p_fill_rate.set_defaults(func=cmd_fill_rate)
+
 
 def _contract_default(args) -> int:
     print("Usage: gaia contract SUBCOMMAND [options]")
@@ -2798,6 +2869,7 @@ def _contract_default(args) -> int:
     print("                               never changes agent_state, refuses an agent's own cut row")
     print("  reap --older-than-seconds N -- promote stale DISPATCHED rows with no live host evidence")
     print("                               (production caller for dispatch_lifecycle.reap_stale_turn)")
+    print("  fill-rate [--since 7d] [--min RATE] -- share of clean closes with a surface and a summary")
     print("")
     print("Run 'gaia contract --help' for more information.")
     return 0
