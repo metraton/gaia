@@ -136,7 +136,8 @@ def effect_rule(verb: str, command: str) -> str:
         if installer.rsplit("/", 1)[-1] in _PACKAGE_INSTALLERS:
             return "sign.foreign-code"
     push_rewrites = verb == "push" and any(t[:1] in "+:" and len(t) > 1 for t in tokens)
-    if push_rewrites or words & _DESTROY_WORDS or verb.lower() in _DESTROY_WORDS:
+    hyphen_parts = {part for w in words for part in w.split("-")}
+    if push_rewrites or (words | hyphen_parts) & _DESTROY_WORDS or verb.lower() in _DESTROY_WORDS:
         return "sign.destroys"
     interactive = verb == "exec" and any(t in _INTERACTIVE_FLAGS for t in lowered)
     sender = bool(lowered) and lowered[0].rsplit("/", 1)[-1] in _NETWORK_SENDERS

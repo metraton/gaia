@@ -4553,6 +4553,14 @@ def _is_shell_expansion(word: str) -> bool:
     return word[:1] in ("$", "`")
 
 
+def _verb_word_effect(word: str) -> str:
+    """Return the strongest category among a verb word's hyphen parts: MUTATIVE, READ_ONLY, or "" when none is a verb."""
+    parts = word.lower().split("-")
+    if any(part in MUTATIVE_VERBS or part == "rm" for part in parts):
+        return CATEGORY_MUTATIVE
+    return CATEGORY_READ_ONLY if any(part in _SHARED_VERBS for part in parts) else ""
+
+
 def _is_known_verb(word: str) -> bool:
     word = word.lower()
     return word in _SHARED_VERBS or word.split("-", 1)[0] in _SHARED_VERBS
@@ -5116,11 +5124,11 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     # --- Step 0-dynamic: the program, or the verb word of a verb-first CLI, is a shell expansion ---
     program = command.lstrip()
     program_is_dynamic = _is_shell_expansion(tokens[0]) or program.startswith(("$(", "`"))
-    subcommand_shaped = family in _VERB_FIRST_FAMILIES or (
-        family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS and len(tokens) > 1 and tokens[1].startswith("--")
-    )
+    first_word = next((t for t in tokens[1:] if not t.startswith("-") and not _is_shell_expansion(t)), "")
+    unlisted_subcommand = family == "unknown" and base_cmd not in READ_ONLY_BASE_CMDS and _is_known_verb(first_word)
     dynamic_word = tokens[0] if program_is_dynamic else (
-        _dynamic_verb_span_word(base_cmd, tokens[1:]) if subcommand_shaped else None
+        _dynamic_verb_span_word(base_cmd, tokens[1:])
+        if family in _VERB_FIRST_FAMILIES or unlisted_subcommand else None
     )
     if dynamic_word is not None and not from_source_code:
         return MutativeResult(
@@ -5130,6 +5138,15 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             cli_family=family,
             reason=f"the word {dynamic_word!r} naming what runs could not be determined",
             rule="unknown.dynamic-span",
+        )
+    if unlisted_subcommand and "-" in first_word and _verb_word_effect(first_word) == CATEGORY_MUTATIVE:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=first_word,
+            cli_family=family,
+            confidence="medium",
+            reason=f"the verb word {first_word!r} carries a mutative part",
         )
 
     # --- Step 1: Command alias fast-path ---
