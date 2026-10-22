@@ -45,10 +45,10 @@ Code preloads those bodies itself, so ``build_kernel_context`` carries it only
 ``with_skills``.
 
 Everything renders from the ROW (goal from ``dispatch_prompt``, scope from
-``kernel_sections`` persisted at birth) plus three reads: ``task_gates`` for
+``kernel_sections`` persisted at birth) plus four reads: ``task_gates`` for
 the acceptance block, the dispatch project's ``project_identity`` entry for its
-declared workflow, and ``memory`` for the user's rows. No other project context
-is rebuilt here.
+declared workflow, its ``can_read`` sections for ``# Project context``, and
+``memory`` for the user's rows.
 
 Gotchas:
   * ``kernel_sections`` arrives as a JSON string on the row; this module
@@ -78,8 +78,12 @@ SKILLS_HEADING = "# Your skills"
 PROJECT_NOTES_HEADING = "# Standing notes"
 ENVIRONMENT_HEADING = "# Environment"
 
+PROJECT_CONTEXT_HEADING = "# Project context"
+
 PROJECT_NOTES_BUDGET = 600
 _PROJECT_NOTE_LINE_MAX = 150
+PROJECT_CONTEXT_FLOOR = 600
+_SECTION_POINTER = "`gaia context get-contract --section {section} --project {project}`"
 
 KERNEL_BUDGET = CONTEXT_BUDGET
 # Inlined skill bodies cannot fit KERNEL_BUDGET: security-tiers alone is over 50,000.
@@ -557,6 +561,59 @@ def build_project_notes_block(
     return "\n".join(shown)
 
 
+def _readable_project_sections(row: Mapping[str, Any], *, db_path=None) -> tuple:
+    """The dispatch project's name and the non-empty ``(section, payload)`` pairs of its ``can_read``, in that order."""
+    dispatch_project = row.get("dispatch_project")
+    sections = _parse_json_field(row.get("kernel_sections"))
+    can_read = sections.get("can_read") if isinstance(sections, dict) else None
+    if not dispatch_project or not can_read:
+        return "", []
+    try:
+        from ..core.paths import ensure_package_root_importable
+
+        ensure_package_root_importable()
+        from gaia.store.project_context import project_sections, resolve_project
+
+        con = _connect(db_path)
+        try:
+            project = resolve_project(con, dispatch_project, str(row.get("workspace") or "") or None)
+            stored = project_sections(con, project) if project else {}
+        finally:
+            con.close()
+    except Exception:
+        logger.debug("project context read failed (non-fatal)", exc_info=True)
+        return "", []
+    readable = [
+        (str(name), stored[name]["payload"]) for name in can_read
+        if name in stored and stored[name]["payload"]
+    ]
+    return (project["name"] if readable else ""), readable
+
+
+def build_project_context_block(project: str, sections: list, *, max_chars: int) -> str:
+    """Render ``# Project context`` within ``max_chars``: each section whole while it fits, else a pointer line, the rest counted."""
+    if not sections:
+        return ""
+
+    def tail(more: int) -> str:
+        return f"+{more} more — " + _SECTION_POINTER.format(section="<s>", project=project)
+
+    shown = [PROJECT_CONTEXT_HEADING, ""]
+    for index, (name, payload) in enumerate(sections):
+        text = json.dumps(payload, ensure_ascii=False)
+        pointer = _SECTION_POINTER.format(section=name, project=project)
+        reserve = 0 if index == len(sections) - 1 else len(tail(len(sections))) + 1
+        fitting = [
+            line for line in (f"## {name}\n{text}", f"- {name}, {len(text):,} chars: {pointer}")
+            if len("\n".join(shown + [line])) + reserve <= max_chars
+        ]
+        if not fitting:
+            shown.append(tail(len(sections) - index))
+            break
+        shown.append(fitting[0])
+    return "\n".join(shown)
+
+
 def build_environment_block() -> str:
     """Render ``# Environment`` from the session's environment line, or "" when empty."""
     try:
@@ -593,9 +650,14 @@ def build_kernel_context(
     environment = build_environment_block()
     cli = build_cli_block(agent_name, agents_dir=agents_dir, workspace=workspace)
     skills = build_skills_block(agent_name, agents_dir=agents_dir) if with_skills else ""
+    project, sections = _readable_project_sections(row, db_path=db_path)
+    context_room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 4 - memory_size
+    context = build_project_context_block(
+        project, sections, max_chars=max(context_room, PROJECT_CONTEXT_FLOOR),
+    )
 
     def over() -> bool:
-        return len(_joined(kernel, notes, environment, cli, skills)) + 2 + memory_size > KERNEL_BUDGET
+        return len(_joined(kernel, context, notes, environment, cli, skills)) + 2 + memory_size > KERNEL_BUDGET
 
     if over():
         cli = f"{CLI_HEADING}\n\n{_CLI_BASE_LINES[-1]}"
@@ -603,6 +665,6 @@ def build_kernel_context(
         skills = build_skills_block(agent_name, agents_dir=agents_dir, names_only=True)
     if over() and notes:
         notes = build_project_notes_block(row, db_path=db_path, max_chars=0)
-    room = KERNEL_BUDGET - len(_joined(kernel, notes, environment, cli, skills)) - 2
+    room = KERNEL_BUDGET - len(_joined(kernel, context, notes, environment, cli, skills)) - 2
     memory = build_memory_block(db_path=db_path, max_chars=room)
-    return _joined(kernel, memory, notes, environment, cli, skills)
+    return _joined(kernel, memory, context, notes, environment, cli, skills)

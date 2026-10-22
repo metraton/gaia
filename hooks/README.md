@@ -88,7 +88,7 @@ The order defends what matters most if the block is ever cut. Over the budget it
 3. the snapshot lists become counts plus the `gaia session snapshot --session-id` command;
 4. whole user rows leave, stalest first (the reader orders them by `updated_at`), and one line names them. No row is ever cut mid-text, and only the rows the block carries count an injection.
 
-**The kernel** (`modules/context/kernel_builder.py::build_kernel_context`) holds the same budget, with OpenCode's `# Your skills` block counted inside it (`with_skills=True`). It shrinks in this order: `# Your CLI` becomes its `gaia --help` line, which rebuilds the rest, the skills lose their descriptions, `# Standing notes` keeps only the command that lists them, then whole user rows leave, stalest first. `# Your Contract` is never shrunk, so a dispatch prompt over about 8,000 chars can still exceed the cap.
+**The kernel** (`modules/context/kernel_builder.py::build_kernel_context`) holds the same budget, with OpenCode's `# Your skills` block counted inside it (`with_skills=True`). `# Project context` carries the dispatch project's `can_read` sections whole in the room the other blocks leave, never less than `PROJECT_CONTEXT_FLOOR`; a section that does not fit becomes a `gaia context get-contract --section <s> --project <name>` line, and what fits neither is counted. Then it shrinks in this order: `# Your CLI` becomes its `gaia --help` line, which rebuilds the rest, the skills lose their descriptions, `# Standing notes` keeps only the command that lists them, then whole user rows leave, stalest first. `# Your Contract` is never shrunk, so a dispatch prompt over about 8,000 chars can still exceed the cap.
 
 ## Entry point -> adapter -> module
 
